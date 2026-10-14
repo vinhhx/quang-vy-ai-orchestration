@@ -69,14 +69,16 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──┬──► Phase 4
   3. `brain lead` chỉ ghi `.plan.md` (`git status` sạch ngoài plan); `brain dev` chỉ sửa file trong plan và ghi "Vướng mắc" rồi dừng khi plan thiếu; `brain qa` ghi `.qa-report.md` mà không sửa code.
   4. Dự án có `profile: work` chạy với đúng `CLAUDE_CONFIG_DIR` của work.
   5. 5 task thật đã hoàn thành qua giao thức, mỗi task có nhật ký (số turn Dev trước khi sửa, Dev có đọc file ngoài plan không, QA phát hiện gì, có làm lại không).
-**Plans**: 5 plans
+**Plans**: 7 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Tracer + Lead slice: `brain lead` end to end (routing, profile env, task branch, runner, `.plan.md` contract, ROLE-01 check) — wave 1
-- [ ] 02-02-PLAN.md — Project selection: P1-01..P1-04 + P1-10 from shared JSON fixtures, `brain scan` / `brain add` (ROUTE-05/06) — wave 2
-- [ ] 02-03-PLAN.md — Dev + QA roles: guard hook, `brain dev` (Vướng mắc stop), `brain qa` (report only), lead → dev → qa pipeline — wave 2
-- [ ] 02-04-PLAN.md — Task log instrumentation (stream-json turn counting, spec §7 log, 5-task check) + installer, README, live manual — wave 2
-- [ ] 02-05-PLAN.md — Integration preflight + live acceptance P1-01..P1-10 + 5 real tasks (user checkpoints) — wave 3
+- [ ] 02-01-PLAN.md — Tracer: `brain lead` end to end against the fake claude (routing, profile env, task branch, runner, `.plan.md` commit) — wave 1
+- [ ] 02-02-PLAN.md — `.plan.md` / `.qa-report.md` file contract: spec templates, parser/validator, JSON fixtures shared with Phase 3 — wave 2
+- [ ] 02-03-PLAN.md — Lead protocol enforcement: skeleton, ROLE-01 post-run check (P1-06), plan validation, refusals, re-plan, Lead prompt rules — wave 3
+- [ ] 02-04-PLAN.md — Project selection: P1-01..P1-04 + P1-10 from shared JSON fixtures, `brain scan` / `brain add` (ROUTE-05/06) — wave 4
+- [ ] 02-05-PLAN.md — Dev + QA roles: guard hook, `brain dev` (Vướng mắc stop), `brain qa` (report only), lead → dev → qa pipeline — wave 4
+- [ ] 02-06-PLAN.md — Task log instrumentation (stream-json turn counting, spec §7 log, 5-task check) + installer, README, live manual — wave 4
+- [ ] 02-07-PLAN.md — Integration preflight + live acceptance P1-01..P1-10 + 5 real tasks (user checkpoints) — wave 5
 
 ### Phase 3: Rust CLI Core
 **Goal**: Giao thức của Phase 2 chạy được qua binary Rust `agent-brain` (CLI, chưa có UI) với quản lý tiến trình an toàn, bắt log stream-json, lưu token vào SQLite và fast-path không tốn token.
