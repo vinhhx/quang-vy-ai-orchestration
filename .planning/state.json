@@ -1,0 +1,43 @@
+{
+  "contract": "1.0.0",
+  "flavor": "core",
+  "milestone": null,
+  "phases": [
+    {
+      "number": "1",
+      "name": "Verify Assumptions",
+      "status": "pending"
+    },
+    {
+      "number": "2",
+      "name": "Protocol MVP (Scripts)",
+      "status": "in_progress"
+    },
+    {
+      "number": "3",
+      "name": "Rust CLI Core",
+      "status": "pending"
+    },
+    {
+      "number": "4",
+      "name": "Session & Token Optimization",
+      "status": "pending"
+    },
+    {
+      "number": "5",
+      "name": "Embedded Dashboard",
+      "status": "pending"
+    },
+    {
+      "number": "6",
+      "name": "Multi-engine & Media Branch",
+      "status": "pending"
+    }
+  ],
+  "next": {
+    "command": "/gsd:progress --next",
+    "label": "Advance to the next step",
+    "reason": "Phase 2 of 6 · 0% · executing"
+  },
+  "updated_at": "2026-10-14T14:16:46.955Z"
+}
