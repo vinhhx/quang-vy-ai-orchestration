@@ -1,0 +1,13 @@
+{
+  "source_path": "/mnt/data/IDE/QuangVy-Orchestration/files/03-phase2-loi-rust.md",
+  "type": "SPEC",
+  "confidence": "medium",
+  "manifest_override": false,
+  "title": "Phase 2 — Lõi Rust (CLI, chưa có giao diện)",
+  "summary": "Phase 2 plan for a Rust CLI binary agent-brain covering process runner, stream-json parsing, SQLite storage, fast-path commands, and profiles.",
+  "scope": ["agent-brain CLI", "process runner", "process group kill", "stream-json parser", "SQLite schema (projects, tasks, runs, events)", "fast-path levels 1 and 2", "profile selection", "projects scan"],
+  "cross_refs": [],
+  "locked": false,
+  "precedence": null,
+  "notes": "No ADR markers (no Status field, no Context/Decision/Consequences, no numbered ADR filename). No PRD markers (no user stories or as-a-user language; acceptance criteria are test-case table rows, not product requirements). Technical signals dominate: CLI command contract, SQLite table definitions, module layout, and process-group kill behavior. Classified SPEC with medium confidence. The document is also a phase plan with a task checklist and risk table, so DOC is a plausible alternative. Filename uses a 2-digit '03-' prefix, which does not match the ADR 4-digit numbering heuristic. Output filename omits the source_hash suffix because no shell or hashing tool is available to this classifier; the orchestrator should rename or re-key this file if it relies on the hash convention. Source text contains Vietnamese; scope and summary are rendered in English."
+}

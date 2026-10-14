@@ -1,0 +1,13 @@
+{
+  "source_path": "/mnt/data/IDE/QuangVy-Orchestration/files/01-phase0-kiem-chung.md",
+  "type": "DOC",
+  "confidence": "low",
+  "manifest_override": false,
+  "title": "Phase 0 — Kiểm chứng giả định",
+  "summary": "Verification plan with eight CLI spikes testing assumptions about Claude Code stream-json, session fork, prompt cache, process kill, profiles, DeepSeek, Antigravity and max-turns.",
+  "scope": ["Claude Code CLI", "stream-json output", "session resume and fork", "prompt cache", "process tree kill", "CLAUDE_CONFIG_DIR profiles", "DeepSeek via ANTHROPIC_BASE_URL", "Antigravity headless mode", "--max-turns"],
+  "cross_refs": ["spike-results.md"],
+  "locked": false,
+  "precedence": null,
+  "notes": "No ADR, PRD or SPEC hallmarks. Manual test plan in Vietnamese with acceptance checklist and result template. DOC is the closest fit. spike-results.md is an output file, not an existing doc."
+}

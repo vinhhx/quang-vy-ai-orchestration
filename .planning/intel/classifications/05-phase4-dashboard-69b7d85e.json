@@ -1,0 +1,13 @@
+{
+  "source_path": "/mnt/data/IDE/QuangVy-Orchestration/files/05-phase4-dashboard.md",
+  "type": "SPEC",
+  "confidence": "medium",
+  "manifest_override": false,
+  "title": "Phase 4 — Dashboard nhúng trong binary",
+  "summary": "Phase 4 plan for an embedded web dashboard in the agent-brain binary: live task logs via SSE, task control, token stats, localhost-only token access.",
+  "scope": ["agent-brain binary", "Axum web server", "SSE log streaming", "HTML + Tailwind + Alpine.js UI", "stream.rs broadcast channel", "SQLite events table", "projects_map.json", "profile selection", "task pipeline Lead→Dev→QA", "kill run", "token statistics"],
+  "cross_refs": [],
+  "locked": false,
+  "precedence": null,
+  "notes": "Endpoint table, API contract, stream data-flow and embedded-asset requirement indicate SPEC; goals/scope and acceptance table (P4-01..P4-10) are PRD-like. Medium confidence: phase plan mixing PRD and SPEC content."
+}

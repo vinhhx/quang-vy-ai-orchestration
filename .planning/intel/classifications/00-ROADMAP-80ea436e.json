@@ -1,0 +1,13 @@
+{
+  "source_path": "/mnt/data/IDE/QuangVy-Orchestration/files/00-ROADMAP.md",
+  "type": "DOC",
+  "confidence": "medium",
+  "manifest_override": false,
+  "title": "Rust Agent Brain — Roadmap tổng",
+  "summary": "Overall roadmap for a lightweight Rust orchestrator that coordinates multiple AI agents, split into phases 0–5 with gates, dependencies, estimates, and KPIs.",
+  "scope": ["Rust Agent Brain orchestrator", "agent coordination protocol (Lead, Dev, QA)", "SQLite token logging", "CLI binary", "web dashboard with SSE", "multi-engine routing", "media video pipeline", "Antigravity headless capability"],
+  "cross_refs": ["01-phase0-kiem-chung.md", "02-phase1-giao-thuc-mvp.md", "03-phase2-loi-rust.md", "04-phase3-toi-uu-session.md", "05-phase4-dashboard.md", "06-phase5-da-doi-hinh-media.md"],
+  "locked": false,
+  "precedence": null,
+  "notes": "No ADR signals (no Status field, no Context/Decision/Consequences sections, no numbered ADR filename). No PRD signals (no user stories or 'as a user' language; phase gates are acceptance tests, not user stories). No SPEC signals (no endpoint, schema, or protocol definitions). Content is prose plus roadmap tables and open questions, which maps to DOC (context only). Alternative reading: UNKNOWN, since the doc contains phase acceptance criteria and the 'Câu hỏi còn mở' section that could be treated as requirements by the synthesizer. Hash suffix could not be computed: this agent has no shell or hashing tool, so the file is written as 00-ROADMAP-NOHASH.json and must be renamed to 00-ROADMAP-{sha256(source_path)[:8]}.json by the orchestrator."
+}

@@ -1,0 +1,13 @@
+{
+  "source_path": "/mnt/data/IDE/QuangVy-Orchestration/files/04-phase3-toi-uu-session.md",
+  "type": "SPEC",
+  "confidence": "medium",
+  "manifest_override": false,
+  "title": "Phase 3 — Tối ưu session & token",
+  "summary": "Plan to reduce per-task token use by summarizing .gsd context, forking sessions, and handing over long sessions, measured against Phase 2 SQLite data.",
+  "scope": ["token optimization", "session management", ".gsd context", "prompt cache", "SQLite sessions table", ".gsd-summary.md", ".handover.md", "Lead/Dev/QA roles"],
+  "cross_refs": [],
+  "locked": false,
+  "precedence": null,
+  "notes": "No ADR signals (no Status field, no Context/Decision/Consequences structure, no numbered ADR filename). No user stories or 'as a user' language. Dominant signals are technical design: a sessions table schema, file templates, approach comparison table (A/B/C), and a token threshold. Acceptance-criteria table (P3-01 to P3-06) and task checklist are PRD-like but secondary. Classified as SPEC with medium confidence. Output filename omits the source_hash suffix because no hashing tool was available to the classifier; the synthesizer should key on source_path."
+}

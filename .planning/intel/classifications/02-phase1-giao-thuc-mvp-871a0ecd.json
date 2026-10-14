@@ -1,0 +1,13 @@
+{
+  "source_path": "/mnt/data/IDE/QuangVy-Orchestration/files/02-phase1-giao-thuc-mvp.md",
+  "type": "SPEC",
+  "confidence": "medium",
+  "manifest_override": false,
+  "title": "Phase 1 — Giao thức MVP (chưa có Rust)",
+  "summary": "Phase 1 MVP spec for a Lead→Dev→QA protocol: project routing via projects_map.json, role prompts, .plan.md template, and acceptance tests.",
+  "scope": ["projects_map.json", "project routing with Vietnamese name matching", "Fallback Ask rule", "Lead/Dev/QA roles", ".plan.md template", ".qa-report.md", "brain lead/dev/qa scripts", "CLAUDE_CONFIG_DIR profiles"],
+  "cross_refs": [],
+  "locked": false,
+  "precedence": null,
+  "notes": "Medium confidence. No filename/path convention matches ADR/PRD/SPEC/RFC. Content signals: JSON data schema (projects_map.json), role input/output contract table, file templates, and acceptance-test table point to SPEC. Competing PRD signals (Mục tiêu/Phạm vi goals, acceptance-test table) are present but the content is implementation-level (schema, script names, CLI flags), so SPEC wins. No Status field, so not ADR. Output filename uses placeholder suffix '-UNHASHED' because the SHA-256 path hash could not be computed with the available tools (Read/Write/Grep/Glob only); the synthesizer must match on source_path, not the filename."
+}

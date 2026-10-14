@@ -1,0 +1,13 @@
+{
+  "source_path": "/mnt/data/IDE/QuangVy-Orchestration/files/06-phase5-da-doi-hinh-media.md",
+  "type": "SPEC",
+  "confidence": "low",
+  "manifest_override": false,
+  "title": "Phase 5 — Đa đội hình & nhánh Media",
+  "summary": "Phase 5 plan: per-role engine routing (Claude, DeepSeek, Antigravity) with quota fallback, and a separate media/video rendering branch outside Git worktrees.",
+  "scope": ["teams.json", "role routing (Lead/Dev/QA)", "engines (Claude, DeepSeek, Antigravity)", "quota/rate-limit fallback", "media project branch", "FFmpeg", "Remotion", "render runner", "SQLite runs.engine", "SQLite media_jobs table", "Orca Git worktree", "whiteboard script pipeline"],
+  "cross_refs": [],
+  "locked": false,
+  "precedence": null,
+  "notes": "Signals conflict. SPEC signals: teams.json config contract, engine env/command table, media_jobs SQLite data model. PRD-like signals: goals section (Mục tiêu), acceptance test table (Tiêu chí nghiệm thu), task checklist. No ADR signals (no Status field, no Context/Decision/Consequences structure). Ambiguity resolved by precedence rule (SPEC > PRD). Document is a phase plan with design; no taxonomy type fits it exactly, so user may wish to type-tag via manifest. cross_refs left empty: the mentions of .plan.md, .handover.md, .qa-report.md are artifact file types, not other planning docs; references to Phase 0 items S1, S5, S6, S7 and Phase 1/Phase 2 do not carry file paths. Output filename uses placeholder suffix NOHASH because the SHA-256 path hash could not be computed with the available tools (Read, Write, Grep, Glob); rename to {slug}-{first 8 hex of sha256 of source_path}.json before synthesis."
+}
