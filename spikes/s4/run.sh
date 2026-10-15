@@ -58,7 +58,7 @@ rec() {
 # signal only recorded processes that are still the same process; print what was signalled
 sig_rec() {
   local s="$1" i p
-  for i in ${!REC_PIDS[@]+"${!REC_PIDS[@]}"}; do
+  for i in "${!REC_PIDS[@]}"; do
     p="${REC_PIDS[$i]}"
     [ "$(starttime "$p" 2>/dev/null || true)" = "${REC_ST[$i]}" ] || continue
     kill -"$s" "$p" 2>/dev/null || continue
