@@ -1,0 +1,5 @@
+credentials_copied=no
+file_count=1003
+mode=700
+excludes=projects/ sessions/ history.jsonl file-history/ session-env/ shell-snapshots/ telemetry/ backups/ .credentials.json
+method=rsync
