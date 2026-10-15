@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "id": "web-ban-hang",
+      "name_vi": "Web bán hàng",
+      "aliases": [
+        "shop",
+        "bán hàng",
+        "web shop",
+        "web"
+      ],
+      "path": "/placeholder/web-ban-hang"
+    },
+    {
+      "id": "web-admin",
+      "name_vi": "Web quản trị",
+      "aliases": [
+        "web",
+        "admin"
+      ],
+      "path": "/placeholder/web-admin"
+    },
+    {
+      "id": "admin",
+      "name_vi": "Admin tool",
+      "aliases": [],
+      "path": "/placeholder/admin"
+    },
+    {
+      "id": "da-nang-tour",
+      "name_vi": "Đà Nẵng tour",
+      "aliases": [],
+      "path": "/placeholder/da-nang-tour"
+    }
+  ],
+  "cases": [
+    {
+      "id": "P1-01",
+      "query": "web bán hàng",
+      "expect": {
+        "kind": "match",
+        "project": "web-ban-hang"
+      }
+    },
+    {
+      "id": "P1-02",
+      "query": "shop",
+      "expect": {
+        "kind": "match",
+        "project": "web-ban-hang"
+      }
+    },
+    {
+      "id": "P1-02-accent",
+      "query": "Bán Hàng",
+      "expect": {
+        "kind": "match",
+        "project": "web-ban-hang"
+      }
+    },
+    {
+      "id": "P1-03",
+      "query": "web",
+      "expect": {
+        "kind": "ambiguous",
+        "candidates": [
+          "web-ban-hang",
+          "web-admin"
+        ]
+      }
+    },
+    {
+      "id": "P1-04",
+      "query": "khong ton tai",
+      "expect": {
+        "kind": "none",
+        "candidates": [
+          "web-ban-hang",
+          "web-admin",
+          "admin",
+          "da-nang-tour"
+        ]
+      }
+    },
+    {
+      "id": "R-no-substring",
+      "query": "ban",
+      "expect": {
+        "kind": "none",
+        "candidates": [
+          "web-ban-hang",
+          "web-admin",
+          "admin",
+          "da-nang-tour"
+        ]
+      }
+    },
+    {
+      "id": "R-exact-id-wins",
+      "query": "admin",
+      "expect": {
+        "kind": "match",
+        "project": "admin"
+      }
+    },
+    {
+      "id": "R-exact-id-case",
+      "query": "Admin",
+      "expect": {
+        "kind": "ambiguous",
+        "candidates": [
+          "web-admin",
+          "admin"
+        ]
+      }
+    },
+    {
+      "id": "R-empty-query",
+      "query": "",
+      "expect": {
+        "kind": "none",
+        "candidates": [
+          "web-ban-hang",
+          "web-admin",
+          "admin",
+          "da-nang-tour"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "N-basic",
+      "input": "web bán hàng",
+      "normalized": "web ban hang",
+      "slug": "web-ban-hang"
+    },
+    {
+      "id": "N-capital-d",
+      "input": "Đà Nẵng",
+      "normalized": "da nang",
+      "slug": "da-nang"
+    },
+    {
+      "id": "N-mixed-separators",
+      "input": "web_ban-HÀNG",
+      "normalized": "web ban hang",
+      "slug": "web-ban-hang"
+    },
+    {
+      "id": "N-punctuation",
+      "input": "Thêm nút Đăng xuất!",
+      "normalized": "them nut dang xuat!",
+      "slug": "them-nut-dang-xuat"
+    },
+    {
+      "id": "N-symbols-only",
+      "input": "!!!",
+      "normalized": "!!!",
+      "slug": ""
+    },
+    {
+      "id": "N-vietnamese-vowels",
+      "input": "bữa cơm trưa",
+      "normalized": "bua com trua",
+      "slug": "bua-com-trua"
+    },
+    {
+      "id": "N-whitespace",
+      "input": "  dự án mới   ",
+      "normalized": "du an moi",
+      "slug": "du-an-moi"
+    },
+    {
+      "id": "N-repeated-separators",
+      "input": "web___ban--hang   demo",
+      "normalized": "web ban hang demo",
+      "slug": "web-ban-hang-demo"
+    }
+  ]
+}

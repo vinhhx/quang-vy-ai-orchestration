@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "profiles": {
+    "work": {
+      "claude_config_dir": null,
+      "unset_env": [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL"
+      ]
+    },
+    "personal": {
+      "claude_config_dir": "~/.claude-orca",
+      "unset_env": [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "P1-10",
+      "profile": "work",
+      "base_env": {
+        "CLAUDE_CONFIG_DIR": "/tmp/other",
+        "PATH": "/bin:/usr/bin",
+        "HOME": "/home/u"
+      },
+      "expect": {
+        "absent": [
+          "CLAUDE_CONFIG_DIR",
+          "ANTHROPIC_API_KEY",
+          "ANTHROPIC_AUTH_TOKEN",
+          "ANTHROPIC_BASE_URL"
+        ],
+        "equals": {
+          "PATH": "/bin:/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    {
+      "id": "P1-10-personal",
+      "profile": "personal",
+      "base_env": {
+        "HOME": "/home/u",
+        "PATH": "/usr/bin"
+      },
+      "expect": {
+        "absent": [
+          "ANTHROPIC_API_KEY",
+          "ANTHROPIC_AUTH_TOKEN",
+          "ANTHROPIC_BASE_URL"
+        ],
+        "equals": {
+          "CLAUDE_CONFIG_DIR": "/home/u/.claude-orca",
+          "HOME": "/home/u",
+          "PATH": "/usr/bin"
+        }
+      }
+    },
+    {
+      "id": "P1-10-nested-vars",
+      "profile": "work",
+      "base_env": {
+        "HOME": "/home/u",
+        "PATH": "/bin",
+        "CLAUDECODE": "1",
+        "CLAUDE_CODE_CHILD_SESSION": "1",
+        "CLAUDE_CODE_SESSION_ID": "sess-1",
+        "CLAUDE_PID": "12345",
+        "CLAUDE_EFFORT": "high",
+        "CLAUDE_VC_ENV": "1",
+        "CLAUDE_CODE_MESSAGING_SOCKET": "/tmp/sock",
+        "CLAUDE_CODE_MESSAGING_TOKEN": "token",
+        "CLAUDE_CODE_SESSION_ATTENDED": "1",
+        "CLAUDE_CODE_ENTRYPOINT": "cli",
+        "CLAUDE_CODE_EXECPATH": "/usr/bin/claude"
+      },
+      "expect": {
+        "absent": [
+          "CLAUDECODE",
+          "CLAUDE_CODE_CHILD_SESSION",
+          "CLAUDE_CODE_SESSION_ID",
+          "CLAUDE_PID",
+          "CLAUDE_EFFORT",
+          "CLAUDE_VC_ENV",
+          "CLAUDE_CODE_MESSAGING_SOCKET",
+          "CLAUDE_CODE_MESSAGING_TOKEN",
+          "CLAUDE_CODE_SESSION_ATTENDED",
+          "CLAUDE_CODE_ENTRYPOINT",
+          "CLAUDE_CODE_EXECPATH"
+        ],
+        "equals": {
+          "HOME": "/home/u",
+          "PATH": "/bin"
+        }
+      }
+    },
+    {
+      "id": "P1-10-unset-env",
+      "profile": "work",
+      "base_env": {
+        "HOME": "/home/u",
+        "PATH": "/bin",
+        "ANTHROPIC_API_KEY": "sk-ant-test",
+        "ANTHROPIC_AUTH_TOKEN": "token-test",
+        "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
+      },
+      "expect": {
+        "absent": [
+          "ANTHROPIC_API_KEY",
+          "ANTHROPIC_AUTH_TOKEN",
+          "ANTHROPIC_BASE_URL"
+        ],
+        "equals": {
+          "HOME": "/home/u",
+          "PATH": "/bin"
+        }
+      }
+    },
+    {
+      "id": "D-07-empty",
+      "profile": "",
+      "base_env": {
+        "HOME": "/home/u"
+      },
+      "expect": {
+        "error": "profile"
+      }
+    },
+    {
+      "id": "D-07-none",
+      "profile": null,
+      "base_env": {
+        "HOME": "/home/u"
+      },
+      "expect": {
+        "error": "profile"
+      }
+    },
+    {
+      "id": "R-unknown-profile",
+      "profile": "family",
+      "base_env": {
+        "HOME": "/home/u"
+      },
+      "expect": {
+        "error": "profile"
+      }
+    }
+  ]
+}
