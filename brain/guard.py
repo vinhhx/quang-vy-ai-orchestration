@@ -76,7 +76,7 @@ def write_hook_settings(
             "PreToolUse": [
                 {
                     "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob",
-                    "command": cmd,
+                    "hooks": [{"type": "command", "command": cmd}],
                 }
             ]
         }
