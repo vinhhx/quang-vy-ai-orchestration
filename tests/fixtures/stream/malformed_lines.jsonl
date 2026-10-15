@@ -1,0 +1,6 @@
+
+not json
+[1, 2]
+{"type": "system", "sub
+{"type": "system", "subtype": "hook_response", "outcome": "success"}
+{"type": "result", "subtype": "success", "session_id": "s-malformed", "num_turns": 1, "total_cost_usd": 0.0, "duration_ms": 100, "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}, "permission_denials": []}
