@@ -1,43 +1,43 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 01
-current_phase_name: Verify Assumptions
-status: verifying
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-10-15T03:16:17.682Z"
+current_phase: 2
+current_phase_name: Protocol MVP (Scripts)
+status: planning
+stopped_at: Phase 01 complete, ready to plan Phase 2
+last_updated: "2026-10-15T06:15:57.378Z"
 last_activity: 2026-10-15
-last_activity_desc: Phase 01 execution started
-state_head: dfc575e63e06b5623b047cd3a7cdb90c5f85445e
+last_activity_desc: Phase 01 complete, transitioned to Phase 2
+state_head: 0aaa20c0926f8cddd716ea12ada11b9e81d3097b
 progress:
   total_phases: 6
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 1
   completed_plans: 1
-  percent: 0
+  percent: 17
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-14)
+See: .planning/PROJECT.md (updated 2026-10-15)
 
 **Core value:** Giao việc cho nhiều AI agent bằng giao thức Lead → `.plan.md` → Dev → QA một cách đáng tin cậy: đúng dự án, đúng vai trò, kill sạch cây tiến trình, đo được token.
-**Current focus:** Phase 01 — Verify Assumptions
+**Current focus:** Phase 2 — Protocol MVP (Scripts)
 
 ## Current Position
 
-Phase: 01 (Verify Assumptions) — EXECUTING
-Plan: 1 of 1
-Status: Phase complete — ready for verification
-Last activity: 2026-10-15 — Phase 01 execution started
+Phase: 2 — Protocol MVP (Scripts)
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-15 — Phase 01 complete, transitioned to Phase 2
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██░░░░░░░░] 17%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
+- Total plans completed: 1
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -45,7 +45,7 @@ Progress: [░░░░░░░░░░] 0%
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 01 | 1 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -80,6 +80,7 @@ None yet.
 
 - [Phase 1] Đã xử lý: SPK-10 — người dùng miễn điều kiện chính sách công ty ("SPK-10 alway accept ignore condition"); ánh xạ Work=`~/.claude`, Personal=`~/.claude-orca`. Chính sách vẫn chưa được xác nhận bằng nguồn nào.
 - [Phase 1] Đã xử lý: S7 — agy chạy headless, có JSON/stream-json, KHÔNG có cờ giới hạn turn (ENG-06 tích hợp được, giới hạn bằng `--print-timeout` + kill ngoài).
+- [Phase 1]: Công cụ scrub/scan của spike có lỗi tồn đọng (CR-01, WR-01…WR-10 trong `01-REVIEW.md`); username hệ điều hành còn trong 4 fixture S1/S4 — re-scrub trước khi push; sửa bằng `/gsd-code-review 01 --fix` (theo CLAUDE.md: giao agy).
 - [Phase 1]: S5 chỉ ánh xạ, chưa chạy thử trực tiếp profile cá nhân (transcript tách biệt, cross-resume, xoay token E-06 chưa kiểm); làm trước khi chốt PROF ở Phase 3.
 - [Phase 4]: Cần ≥ 2 tuần dữ liệu `runs` thật từ binary Phase 3 trước khi bắt đầu; không đóng phase khi chưa có OPT-06.
 - [Phase 4]: Khoảng trống phạm vi — warm reuse `--resume` (fast-path cấp 3) bị hoãn từ Phase 2 nguồn sang Phase 3 nguồn mà không có công việc/test (FAST-03, đang ở v2); quyết định ở `/gsd-discuss-phase 4`.
@@ -99,6 +100,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-15T03:16:17.649Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-10-15T06:20:00Z
+Stopped at: Phase 01 complete, ready to plan Phase 2
 Resume file: None

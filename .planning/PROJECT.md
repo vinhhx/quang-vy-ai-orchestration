@@ -30,13 +30,12 @@ Cổng qua phase (phase gates) nằm trong `ROADMAP.md` (mỗi phase có Success
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ **Phase 1 — Kiểm chứng giả định** (SPK-01…10): 8 spike S1–S8 đã chạy thật, kết quả trong `spikes/spike-results.md` (S1–S4 Đạt, S5–S8 Một phần + follow-up); SPK-10 quyết định Work = `~/.claude`, Personal = `~/.claude-orca` — Phase 1
 
 ### Active
 
 65 yêu cầu v1 trong `.planning/REQUIREMENTS.md`, suy ra từ 42 test case nghiệm thu của các tài liệu nguồn (P1-01…P5-07) cộng với 23 yêu cầu suy ra từ mục tiêu, danh sách công việc và cổng phase. Nhóm theo phase:
 
-- [ ] **Phase 1 — Kiểm chứng giả định** (SPK-01…10): 8 spike S1–S8 + phương án thay thế + quyết định tài khoản Work/Personal
 - [ ] **Phase 2 — Giao thức MVP bằng script** (ROUTE, ROLE, PROF-01): định tuyến dự án tiếng Việt + Fallback Ask, 3 vai trò Lead/Dev/QA, profile, 5 task thật
 - [ ] **Phase 3 — Lõi Rust CLI** (CLI, PROF-02, PROC, LOG, FAST, STAT, DIST): process group + kill sạch, bắt log stream-json, SQLite token, fast-path cấp 1–2, binary portable
 - [ ] **Phase 4 — Tối ưu session & token** (OPT): báo cáo token, `.gsd-summary.md`, `.handover.md`, giảm token/task đo được
@@ -99,16 +98,18 @@ Không có ADR trong bộ tài liệu nạp, nên **không có quyết định n
 |----------|-----------|---------|
 | Giao thức trước, giao diện sau (nguồn 00-ROADMAP §1) | Giá trị nằm ở cách agent phối hợp; dashboard chỉ là lớp hiển thị | — Pending |
 | Đo trước khi tối ưu (00-ROADMAP §1; Phase 3 spec) | Tránh tối ưu theo ước đoán; cần số liệu token thật | — Pending |
-| Kiểm chứng giả định sớm ở Phase 1 (00-ROADMAP §1) | Một giả định sai có thể hỏng cả phase phía sau | — Pending |
+| Kiểm chứng giả định sớm ở Phase 1 (00-ROADMAP §1) | Một giả định sai có thể hỏng cả phase phía sau | ✓ Good — Phase 1 phát hiện E-05 sai, cache bucket 1h (không phải ~5 phút), `--max-turns` không dùng được cho review diff, dsh không có stream-json |
 | Fallback Ask: khớp 0 hoặc >1 dự án thì dừng và hỏi, không bao giờ đoán (Phase 1 spec §3.2) | Tránh chạy nhầm repo (KPI = 0) | — Pending |
 | CLI trước UI (Phase 2 spec §3.1) | Phần khó nhất là quản lý tiến trình và đọc stream async; dễ test bằng terminal | — Pending |
-| Process group + SIGTERM/SIGKILL, giữ `kill_on_drop` làm lớp hai (Phase 2 spec §3.2) | `kill_on_drop` chỉ giết tiến trình con trực tiếp | — Pending |
-| Làm phương án A (tóm tắt `.gsd`) trước, chỉ làm B (golden session + fork) nếu số liệu cho thấy đáng (Phase 3 spec §2.3) | Cache chỉ sống ~5 phút; fork không chắc tiết kiệm token | — Pending |
+| Process group + SIGTERM/SIGKILL, giữ `kill_on_drop` làm lớp hai (Phase 2 spec §3.2) | `kill_on_drop` chỉ giết tiến trình con trực tiếp | — Pending (S4: ghi PID + con cháu, SIGTERM PID, chờ 5 s, quét sót; SIGKILL bỏ sót con) |
+| Làm phương án A (tóm tắt `.gsd`) trước, chỉ làm B (golden session + fork) nếu số liệu cho thấy đáng (Phase 3 spec §2.3) | Cache chỉ sống ~5 phút; fork không chắc tiết kiệm token | — Pending (S3: cache thực tế là bucket 1h, ấm ở 10 phút, nguội ở 65 phút; S2: `--fork-session` đọc cache của session cha) |
 | Ngưỡng độ dài session ban đầu 45.000 token, chỉnh theo số liệu (Phase 3 spec §2.4) | Context phình to làm tăng token | — Pending |
 | Nhúng UI vào binary, localhost + token (Phase 4 spec §3) | Không Node/CORS; bảo mật tối thiểu vì UI chạy được lệnh | — Pending |
 | Mỗi vai trò chạy được trên engine khác nhau vì chỉ trao đổi qua file (Phase 5 spec §2.1) | Đổi engine một vai trò không ảnh hưởng vai trò khác | — Pending |
 | Không tự chuyển engine ngầm khi hết quota; QA luôn chạy engine mạnh (Phase 5 spec §2.3, §6) | Chất lượng các engine khác nhau | — Pending |
 | Nhánh Media chạy ở thư mục riêng ngoài Git worktree, render là tiến trình riêng do runner quản lý (Phase 5 spec §2.4) | File video hàng GB làm nặng Orca/Git | — Pending |
+| Work = `~/.claude` (Team seat), Personal = `~/.claude-orca` (Pro) — SPK-10, người dùng miễn xác nhận chính sách công ty (Phase 1) | Hai profile tách biệt theo tài khoản; rủi ro tuân thủ đã chấp nhận (AR-1-01) | ✓ Accepted — S5 live test trên profile Personal chưa chạy |
+| Phân công: Claude phân tích/lập kế hoạch/review, Antigravity (`agy`) thực thi (CLAUDE.md, sau Phase 1) | Tách người lập kế hoạch và người làm; agy headless được (S7) | — Pending (quyền tool của agy chưa kiểm chứng) |
 
 ## Evolution
 
@@ -128,4 +129,4 @@ Tài liệu này tiến hóa theo vòng đời dự án.
 4. Cập nhật Context theo hiện trạng
 
 ---
-*Last updated: 2026-10-14 after initialization from ingested docs (new-project-from-ingest)*
+*Last updated: 2026-10-15 after Phase 1*

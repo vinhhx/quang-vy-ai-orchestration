@@ -23,7 +23,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 | 5 | Phase 4 — Dashboard nhúng | `05-phase4-dashboard.md` | P4-01…P4-10 |
 | 6 | Phase 5 — Đa đội hình & Media | `06-phase5-da-doi-hinh-media.md` | P5-01…P5-07 |
 
-- [ ] **Phase 1: Verify Assumptions** - Thử thật 8 spike (S1–S8) và ghi `spike-results.md` trước khi viết dòng Rust nào
+- [x] **Phase 1: Verify Assumptions** - Thử thật 8 spike (S1–S8) và ghi `spike-results.md` trước khi viết dòng Rust nào (completed 2026-10-15)
 - [ ] **Phase 2: Protocol MVP (Scripts)** - Chạy Lead → `.plan.md` → Dev → QA trên dự án thật chỉ bằng script và file cấu hình
 - [ ] **Phase 3: Rust CLI Core** - Binary `agent-brain` với kill sạch cây tiến trình, bắt log stream-json, token trong SQLite, fast-path
 - [ ] **Phase 4: Session & Token Optimization** - Giảm token/task dựa trên số liệu `runs` thật (`.gsd-summary.md`, `.handover.md`)
@@ -156,7 +156,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Verify Assumptions | 1/1 | In Progress | - |
+| 1. Verify Assumptions | 1/1 | Complete    | 2026-10-15 |
 | 2. Protocol MVP (Scripts) | 0/TBD | Not started | - |
 | 3. Rust CLI Core | 0/TBD | Not started | - |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
