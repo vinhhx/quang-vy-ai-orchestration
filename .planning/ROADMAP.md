@@ -74,7 +74,7 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──┬──► Phase 4
   4. Dự án có `profile: work` chạy với đúng `CLAUDE_CONFIG_DIR` của work.
   5. 5 task thật đã hoàn thành qua giao thức, mỗi task có nhật ký (số turn Dev trước khi sửa, Dev có đọc file ngoài plan không, QA phát hiện gì, có làm lại không).
 
-**Plans**: 3/7 plans executed
+**Plans**: 4/7 plans executed
 
 Plans:
 **Wave 1**
@@ -87,7 +87,7 @@ Plans:
 - [x] 02-03-PLAN.md — Lead protocol enforcement: skeleton, ROLE-01 post-run check (P1-06), plan validation, refusals, re-plan, Lead prompt rules — wave 3
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 02-04-PLAN.md — Project selection: P1-01..P1-04 + P1-10 from shared JSON fixtures, `brain scan` / `brain add` (ROUTE-05/06) — wave 4
+- [x] 02-04-PLAN.md — Project selection: P1-01..P1-04 + P1-10 from shared JSON fixtures, `brain scan` / `brain add` (ROUTE-05/06) — wave 4
 - [ ] 02-05-PLAN.md — Dev + QA roles: guard hook, `brain dev` (Vướng mắc stop), `brain qa` (report only), lead → dev → qa pipeline — wave 4
 - [ ] 02-06-PLAN.md — Task log instrumentation (stream-json turn counting, spec §7 log, 5-task check) + installer, README, live manual — wave 4
 
@@ -175,7 +175,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Verify Assumptions | 1/1 | Complete    | 2026-10-15 |
-| 2. Protocol MVP (Scripts) | 3/7 | In Progress | - |
+| 2. Protocol MVP (Scripts) | 4/7 | In Progress | - |
 | 3. Rust CLI Core | 0/TBD | Not started | - |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 0/TBD | Not started | - |

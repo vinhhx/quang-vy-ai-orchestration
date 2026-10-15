@@ -35,7 +35,7 @@ Phase này người dùng tự chạy tay để hiểu hành vi CLI; agent có t
 - [ ] **ROUTE-03**: Khi tên khớp hơn 1 dự án, hệ thống dừng, liệt kê các dự án khớp và hỏi lại; không chạy agent (luật Fallback Ask — không bao giờ đoán). *(src: P1-03)*
 - [ ] **ROUTE-04**: Khi tên không khớp dự án nào, hệ thống dừng, liệt kê toàn bộ dự án và hỏi lại; không chạy agent. *(src: P1-04)*
 - [ ] **ROUTE-05**: Sau khi clone dự án mới và chạy quét thư mục gốc, dự án mới xuất hiện trong `projects_map.json` và các alias/`name_vi` đã sửa tay không bị ghi đè. *(src: P1-05)*
-- [ ] **ROUTE-06**: Script quét cảnh báo khi có alias trùng giữa các dự án. *(derived: 02-phase1 §3.2, §8)*
+- [x] **ROUTE-06**: Script quét cảnh báo khi có alias trùng giữa các dự án. *(derived: 02-phase1 §3.2, §8)*
 
 ### Role Protocol (GSD Phase 2 — nguồn Phase 1)
 
@@ -171,7 +171,7 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | ROUTE-03 | Phase 2 | Pending |
 | ROUTE-04 | Phase 2 | Pending |
 | ROUTE-05 | Phase 2 | Pending |
-| ROUTE-06 | Phase 2 | Pending |
+| ROUTE-06 | Phase 2 | Complete |
 | ROLE-01 | Phase 2 | Pending |
 | ROLE-02 | Phase 2 | Pending |
 | ROLE-03 | Phase 2 | Pending |
