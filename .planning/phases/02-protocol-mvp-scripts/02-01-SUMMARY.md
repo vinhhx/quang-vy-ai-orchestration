@@ -132,5 +132,5 @@ None.
 ## Next Phase Readiness
 
 - Plan 02-02 (file contract) can start; it does not depend on the two findings.
-- Fix findings 1 and 2 before plan 02-04 (project scan writes the map; dev/qa handlers are added).
+- Findings 1 and 2: **resolved** in `5a46d0f` (tests) and `3eced24` (fix), via `.planning/fixes/02-01-review-fixes.plan.md`, executed by agy and reviewed by Claude: an unreadable map now exits 1 naming the file and leaves it unchanged; only a missing handler module/function gets the "chưa có" message.
 - Requirements ROLE-01, ROLE-05, ROLE-06, ROUTE-01, ROUTE-03, ROUTE-04 and PROF-01 are only proven at tracer level here; they are not marked complete until plans 02-03 and 02-04 test them fully.

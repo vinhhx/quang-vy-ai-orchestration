@@ -109,5 +109,5 @@ None.
 
 ## Next Phase Readiness
 
-- Run the review-fix plan, then plan 02-03 (Lead protocol enforcement).
+- Finding **resolved** in `298dea1` (6 contract cases) and `1230a35` (`not_a_file`, `glob_path` codes in `validate_plan`), reviewed by Claude; each test commit fails on its own and its fix commit passes. Next: plan 02-03 (Lead protocol enforcement).
 - ROLE-01, ROLE-03, ROLE-04 and ROLE-06 have their file-level checks here; they are marked complete only once the role commands enforce them (plans 02-03 and 02-05).
