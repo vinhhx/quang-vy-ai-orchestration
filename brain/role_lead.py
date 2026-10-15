@@ -40,13 +40,6 @@ def cmd_lead(args) -> int:
     require_runnable(project, cfg)
 
     proj_path = Path(os.path.expanduser(project["path"])).resolve()
-    dirty = gitops.changed_paths(proj_path)
-    if dirty:
-        raise BrainError(
-            "Working tree có thay đổi chưa commit — dừng, không tự stash:\n"
-            + "\n".join(sorted(dirty)),
-            EXIT_ERROR,
-        )
 
     task = slugify(args.name or args.request)
     if not task:
@@ -55,6 +48,16 @@ def cmd_lead(args) -> int:
             EXIT_ERROR,
         )
     branch = f"task/{task}"
+
+    dirty = gitops.changed_paths(proj_path)
+    if gitops.current_branch(proj_path) == branch:
+        dirty -= {".plan.md"}
+    if dirty:
+        raise BrainError(
+            "Working tree có thay đổi chưa commit — dừng, không tự stash:\n"
+            + "\n".join(sorted(dirty)),
+            EXIT_ERROR,
+        )
 
     curr_branch = gitops.current_branch(proj_path)
     is_replan = curr_branch == branch
