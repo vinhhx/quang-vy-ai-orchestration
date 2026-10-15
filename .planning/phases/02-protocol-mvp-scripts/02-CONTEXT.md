@@ -65,7 +65,7 @@ Chạy được quy trình Lead → `.plan.md` → Dev → QA trên dự án th�
 - `.planning/PROJECT.md` §Constraints — "Protocol" (chỉ trao đổi qua file, cấm bằng giới hạn tool), "Secrets".
 
 ### Prior phase decisions
-- `.planning/phases/01-verify-assumptions/01-CONTEXT.md` — D-06: profile work = `~/.claude`, personal = `~/.claude-personal` (thay `~/.claude-max`); D-08: Linux. Phase 2 dùng ánh xạ này cho `CLAUDE_CONFIG_DIR` (PROF-01).
+- `spikes/spike-results.md` S5 + SPK-10 — profile work = `~/.claude` (bỏ đặt `CLAUDE_CONFIG_DIR`), personal = `~/.claude-orca` (quyết định của người dùng 2026-10-15, thay D-06 trong `01-CONTEXT.md`). `.planning/phases/01-verify-assumptions/01-CONTEXT.md` — D-08: Linux. Phase 2 dùng ánh xạ này cho `CLAUDE_CONFIG_DIR` (PROF-01).
 - `spikes/spike-results.md` (tạo ở Phase 1, **chưa tồn tại** — Phase 1 chưa chạy) — S1 (định dạng stream-json, dùng để đếm turn/D-17), S5 (tách profile), S8 (`--max-turns`). Planner/researcher phải đọc nếu đã có; nếu chưa, đánh dấu các giả định về cờ CLI là chưa kiểm chứng.
 
 </canonical_refs>

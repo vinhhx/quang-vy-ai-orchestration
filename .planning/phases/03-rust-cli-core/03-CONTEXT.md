@@ -62,7 +62,7 @@ Binary Rust `agent-brain` (CLI, chưa có UI) chạy được giao thức Lead �
 
 ### Prior phase decisions (Phase 3 phải giữ hành vi)
 - `.planning/phases/02-protocol-mvp-scripts/02-CONTEXT.md` — Schema `projects_map.json` (D-04..D-07), định tuyến + Fallback Ask (D-08, D-09), chế độ chạy & giới hạn tool từng vai trò (D-10..D-13), nhánh/file giao thức (D-14..D-16), nhật ký (D-17).
-- `.planning/phases/01-verify-assumptions/01-CONTEXT.md` — D-06 ánh xạ profile (work = `~/.claude`, personal = `~/.claude-personal`), D-08 Linux, D-12 cách kill đã kiểm chứng (S4), D-03 output thô làm fixture.
+- `.planning/phases/01-verify-assumptions/01-CONTEXT.md` — D-06 ánh xạ profile (đã được thay bởi SPK-10 trong `spikes/spike-results.md`: work = `~/.claude`, personal = `~/.claude-orca`), D-08 Linux, D-12 cách kill đã kiểm chứng (S4), D-03 output thô làm fixture.
 - Code/prompt/fixture Phase 2 trong `brain/` (tạo ở Phase 2, **chưa tồn tại** khi viết file này) — nguồn hành vi để port.
 - `spikes/spike-results.md` và `spikes/s1/raw/`, `spikes/s4/`, `spikes/s5/`, `spikes/s8/` (tạo ở Phase 1, **chưa tồn tại** — Phase 1 chưa chạy) — định dạng stream-json, cách kill, tách profile, `--max-turns`. Planner/researcher phải đọc nếu đã có; nếu chưa, đánh dấu các giả định về cờ CLI là chưa kiểm chứng.
 
