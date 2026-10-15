@@ -75,8 +75,13 @@ def main(argv: list[str] | None = None) -> int:
     mod_name, func_name = handler_target.split(":")
     try:
         mod = importlib.import_module(mod_name)
-        func = getattr(mod, func_name)
-    except (ImportError, AttributeError, ModuleNotFoundError):
+    except ModuleNotFoundError as e:
+        if e.name != mod_name:
+            raise
+        sys.stderr.write(f"Lệnh '{args.subcommand}' chưa có trong bản cài này\n")
+        return EXIT_ERROR
+    func = getattr(mod, func_name, None)
+    if not callable(func):
         sys.stderr.write(f"Lệnh '{args.subcommand}' chưa có trong bản cài này\n")
         return EXIT_ERROR
 

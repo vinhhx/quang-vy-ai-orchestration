@@ -19,18 +19,34 @@ def map_path() -> Path:
 
 def load_map(path: Path | str | None = None) -> dict:
     p = Path(path).resolve() if path is not None else map_path()
-    if not p.is_file():
+    if not p.exists():
         return {"scan_roots": [], "projects": []}
     try:
         with open(p, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if not isinstance(data, dict):
-            return {"scan_roots": [], "projects": []}
-        data.setdefault("scan_roots", [])
-        data.setdefault("projects", [])
-        return data
-    except Exception:
-        return {"scan_roots": [], "projects": []}
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        raise BrainError(
+            f"Không đọc được {p}: {e} — sửa file rồi chạy lại (brain không ghi đè file này)",
+            EXIT_ERROR,
+        )
+    if not isinstance(data, dict):
+        raise BrainError(
+            f"Không đọc được {p}: phải là JSON object — sửa file rồi chạy lại (brain không ghi đè file này)",
+            EXIT_ERROR,
+        )
+    if not isinstance(data.get("projects", []), list):
+        raise BrainError(
+            f"Không đọc được {p}: 'projects' phải là danh sách — sửa file rồi chạy lại (brain không ghi đè file này)",
+            EXIT_ERROR,
+        )
+    if not isinstance(data.get("scan_roots", []), list):
+        raise BrainError(
+            f"Không đọc được {p}: 'scan_roots' phải là danh sách — sửa file rồi chạy lại (brain không ghi đè file này)",
+            EXIT_ERROR,
+        )
+    data.setdefault("scan_roots", [])
+    data.setdefault("projects", [])
+    return data
 
 
 def select_project(query: str, data: dict | None = None) -> dict:
