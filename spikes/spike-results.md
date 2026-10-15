@@ -64,15 +64,31 @@
 
 ## S3 — Prompt cache
 
-- Ngày thử:
-- Phiên bản:
+- Ngày thử: 2026-10-15 (mốc 0 lúc 01:30Z; các mốc 1/10/65 phút chạy tách rời, dự kiến xong khoảng 02:36Z)
+- Phiên bản: claude 2.1.300 (Claude Code), tài khoản work `~/.claude` (gói Team seat), `--output-format json`, cùng cờ ở mọi lần chạy
 - Lệnh:
-- Kết quả:
+  - Ba thư mục không phải git ngoài repo `~/.cache/qv-spikes/s3/w1`, `w10`, `w65`; mỗi thư mục có `CLAUDE.md` bắt đầu bằng một nonce duy nhất và khoảng 49 KB chữ giả ngẫu nhiên (phần riêng của dự án, D-09).
+  - Mốc 0 (nguội): trong mỗi thư mục chạy `claude -p "Reply with the single word OK" --output-format json </dev/null`.
+  - Mốc 1, 10, 65 phút: đúng một lần thăm dò giống hệt trong w1, w10, w65 tính từ lúc kết thúc mốc 0 của chính thư mục đó (ba tiền tố độc lập vì mỗi lần cache hit đều làm lại bộ đếm TTL). Lịch chạy tách rời bằng `setsid nohup bash spikes/s3/schedule.sh`.
+  - Chạy lại bằng `bash spikes/s3/run.sh`, phân loại bằng `bash spikes/s3/verify.sh`.
+- Kết quả: đang đo — hoàn tất ở Task 8 (chờ duyệt)
 - Quan sát:
-- Ảnh hưởng tới thiết kế:
-- Phương án thay thế:
-- Phase bị ảnh hưởng:
+  - Kiểm tra trước: không có biến FORCE_PROMPT_CACHING_5M, CLAUDE_CODE_PROMPT_CACHE_TTL, ENABLE_PROMPT_CACHING_1H, DISABLE_PROMPT_CACHING, và không có `promptCacheTtl` trong `~/.claude/settings.json`.
+  - Mốc 0 (nguội), phần riêng của dự án P = `cache_creation_input_tokens`: w1 = 33733, w10 = 33806, w65 = 33773; `cache_read_input_tokens` của cả ba là 11168 (phần tĩnh dùng chung của Claude Code). Cả ba đều qua ngưỡng 8000 token nên lịch thăm dò đã được khởi động.
+  - Bucket TTL của lần ghi cache ở mốc 0: toàn bộ nằm ở `ephemeral_1h` (33733, 33806, 33773), `ephemeral_5m` bằng 0. Nghĩa là gói subscription xin TTL 1 giờ (xác nhận cũng thấy ở S1 và S2); việc máy chủ có giữ đúng 1 giờ hay không chỉ biết được sau khi có kết quả mốc 10 và 65 phút.
+  - Ảnh hưởng tới quota subscription: chưa đo được. Số liệu sử dụng lưu trong `~/.claude.json` đã cũ hơn 15 giờ và chỉ có độ phân giải 1 phần trăm, không đủ để thấy tác động của 6 lần chạy nhỏ.
+  - Cảnh báo: dòng `rate_limit_event` ở S1 báo mức dùng 7 ngày của tài khoản work là 0.94; nếu vượt hạn mức, tài liệu nói hội thoại chính bị hạ về TTL 5 phút và làm sai lệch phép đo.
+- Ảnh hưởng tới thiết kế: (sẽ ghi ở Task 8) kết luận về cửa sổ "golden session" của Phase 4 phụ thuộc vào việc mốc 10 và 65 phút là ấm hay nguội.
+- Phương án thay thế: (sẽ ghi ở Task 8 nếu kết quả là Một phần hoặc Không đạt)
+- Phase bị ảnh hưởng: Phase 4 (OPT/SESS)
 - Bằng chứng:
+  - `spikes/s3/raw/s3-precheck.txt`
+  - `spikes/s3/raw/s3-timeline.tsv`
+  - `spikes/s3/raw/schedule.log`
+  - `spikes/s3/raw/s3-w1-t0-*.json`
+  - `spikes/s3/raw/s3-w10-t0-*.json`
+  - `spikes/s3/raw/s3-w65-t0-*.json`
+  - `spikes/s3/run.sh`
 
 ## S4 — Kill cây tiến trình
 
