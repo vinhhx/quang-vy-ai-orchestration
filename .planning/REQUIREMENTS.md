@@ -43,7 +43,7 @@ Phase này người dùng tự chạy tay để hiểu hành vi CLI; agent có t
 - [ ] **ROLE-02**: Dev chạy với plan đầy đủ chỉ sửa các file được nêu trong plan và commit trên nhánh task với message "<task>: <mô tả ngắn>". *(src: P1-07)*
 - [ ] **ROLE-03**: Dev chạy với plan thiếu thông tin ghi vào mục "Vướng mắc" của `.plan.md` rồi dừng, không sửa bừa và không sửa ngoài plan. *(src: P1-08)*
 - [ ] **ROLE-04**: Sau khi QA chạy, có `.qa-report.md` (khớp plan từng mục, sửa ngoài plan, rủi ro, kết luận Đạt / Cần sửa) và không có code bị sửa. *(src: P1-09)*
-- [ ] **ROLE-05**: Người dùng chạy được `brain lead "<dự án>" "<yêu cầu>"` (định tuyến → tạo nhánh task → chạy Lead), `brain dev "<dự án>"` (Dev đọc `.plan.md`) và `brain qa "<dự án>"` (QA trên `git diff`); 3 prompt vai trò lưu thành file riêng. *(derived: 02-phase1 §4.3, §4.4, §5)*
+- [x] **ROLE-05**: Người dùng chạy được `brain lead "<dự án>" "<yêu cầu>"` (định tuyến → tạo nhánh task → chạy Lead), `brain dev "<dự án>"` (Dev đọc `.plan.md`) và `brain qa "<dự án>"` (QA trên `git diff`); 3 prompt vai trò lưu thành file riêng. *(derived: 02-phase1 §4.3, §4.4, §5)*
 - [ ] **ROLE-06**: Lệnh cấm của từng vai trò được thực thi bằng giới hạn công cụ (`--allowedTools` / `--disallowedTools`), không chỉ bằng prompt; các vai trò chỉ trao đổi thông tin qua file (`.plan.md`, `git diff`, `.qa-report.md`). *(derived: 02-phase1 §3.3, §8)*
 - [ ] **ROLE-07**: Hoàn thành 5 task thật bằng giao thức Lead → Dev → QA, mỗi task có nhật ký (số turn của Dev trước khi sửa, Dev có đọc file ngoài plan không, QA phát hiện gì, có phải làm lại không và vì sao). *(derived: 00-ROADMAP §2 cổng Phase 1; 02-phase1 §5, §7)*
 
@@ -176,7 +176,7 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | ROLE-02 | Phase 2 | Pending |
 | ROLE-03 | Phase 2 | Pending |
 | ROLE-04 | Phase 2 | Pending |
-| ROLE-05 | Phase 2 | Pending |
+| ROLE-05 | Phase 2 | Complete |
 | ROLE-06 | Phase 2 | Pending |
 | ROLE-07 | Phase 2 | Pending |
 | PROF-01 | Phase 2 | Pending |
