@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "qa-verdict-dat-plain",
+      "markdown": "# QA: Task 1\n<!-- brain-meta: {\"task\": \"task-1\"} -->\n## Thay đổi có khớp plan không (từng mục)\nĐúng\n## Sửa ngoài plan (nếu có)\nKhông\n## Rủi ro\nThấp\n## Kết luận\nĐạt\n",
+      "expect": {
+        "verdict": "Đạt"
+      }
+    },
+    {
+      "id": "qa-verdict-dat-bold",
+      "markdown": "# QA: Task 1\n<!-- brain-meta: {\"task\": \"task-1\"} -->\n## Thay đổi có khớp plan không (từng mục)\nĐúng\n## Sửa ngoài plan (nếu có)\nKhông\n## Rủi ro\nThấp\n## Kết luận\n**Đạt**\n",
+      "expect": {
+        "verdict": "Đạt"
+      }
+    },
+    {
+      "id": "qa-verdict-dat-list",
+      "markdown": "# QA: Task 1\n<!-- brain-meta: {\"task\": \"task-1\"} -->\n## Thay đổi có khớp plan không (từng mục)\nĐúng\n## Sửa ngoài plan (nếu có)\nKhông\n## Rủi ro\nThấp\n## Kết luận\n- đạt\n",
+      "expect": {
+        "verdict": "Đạt"
+      }
+    },
+    {
+      "id": "qa-verdict-can-sua-plain",
+      "markdown": "# QA: Task 1\n<!-- brain-meta: {\"task\": \"task-1\"} -->\n## Thay đổi có khớp plan không (từng mục)\nChưa khớp\n## Sửa ngoài plan (nếu có)\nKhông\n## Rủi ro\nCao\n## Kết luận\nCần sửa\n",
+      "expect": {
+        "verdict": "Cần sửa"
+      }
+    },
+    {
+      "id": "qa-verdict-can-sua-bold",
+      "markdown": "# QA: Task 1\n<!-- brain-meta: {\"task\": \"task-1\"} -->\n## Thay đổi có khớp plan không (từng mục)\nChưa khớp\n## Sửa ngoài plan (nếu có)\nKhông\n## Rủi ro\nCao\n## Kết luận\n**Cần sửa**\n",
+      "expect": {
+        "verdict": "Cần sửa"
+      }
+    },
+    {
+      "id": "qa-verdict-both",
+      "markdown": "# QA: Task 1\n<!-- brain-meta: {\"task\": \"task-1\"} -->\n## Thay đổi có khớp plan không (từng mục)\nĐúng\n## Sửa ngoài plan (nếu có)\nKhông\n## Rủi ro\nThấp\n## Kết luận\n- Đạt\n- Cần sửa\n",
+      "expect": {
+        "verdict": null
+      }
+    },
+    {
+      "id": "qa-verdict-neither",
+      "markdown": "# QA: Task 1\n<!-- brain-meta: {\"task\": \"task-1\"} -->\n## Thay đổi có khớp plan không (từng mục)\nĐúng\n## Sửa ngoài plan (nếu có)\nKhông\n## Rủi ro\nThấp\n## Kết luận\nĐang xem xét kiểm thử\n",
+      "expect": {
+        "verdict": null
+      }
+    },
+    {
+      "id": "qa-verdict-khong-dat",
+      "markdown": "# QA: Task 1\n<!-- brain-meta: {\"task\": \"task-1\"} -->\n## Thay đổi có khớp plan không (từng mục)\nChưa được\n## Sửa ngoài plan (nếu có)\nKhông\n## Rủi ro\nCao\n## Kết luận\nKhông đạt\n",
+      "expect": {
+        "verdict": null
+      }
+    }
+  ]
+}

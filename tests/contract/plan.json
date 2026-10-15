@@ -1,0 +1,246 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "plan-valid-full",
+      "markdown": "# Plan: Test task\n<!-- brain-meta: {\"branch\": \"task/test\", \"request\": \"fix bug\", \"task\": \"test-task\"} -->\n## Mục tiêu\nSửa lỗi logic trong ứng dụng\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/app.py | 10-20 | sửa điều kiện rẽ nhánh | tránh crash |\n## Không được đụng tới\nsrc/other.py\n## Cách kiểm tra\npython3 -m unittest\n## Vướng mắc (Dev ghi vào đây nếu có)\n<!-- Dev ghi vào đây nếu có -->\n",
+      "expect": {
+        "valid": true,
+        "error_codes": [],
+        "files": [
+          "src/app.py"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-skeleton-empty",
+      "markdown": "# Plan: Test skeleton\n<!-- brain-meta: {\"branch\": \"task/test\", \"request\": \"fix bug\", \"task\": \"test-task\"} -->\n## Mục tiêu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n## Không được đụng tới\n## Cách kiểm tra\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "no_changes"
+        ],
+        "files": [],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-dedup-files",
+      "markdown": "# Plan: Dedup files\n<!-- brain-meta: {\"task\": \"dedup\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/app.py | 1-10 | update | bug |\n| 2 | `./src/app.py` | 20-30 | update | bug |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": true,
+        "error_codes": [],
+        "files": [
+          "src/app.py"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-nfd-path",
+      "markdown": "# Plan: NFD path\n<!-- brain-meta: {\"task\": \"nfd\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/tài-liệu.py | toàn bộ | update | bug |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": true,
+        "error_codes": [],
+        "files": [
+          "src/tài-liệu.py"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-comma-files",
+      "markdown": "# Plan: Comma files\n<!-- brain-meta: {\"task\": \"comma\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/a.py, src/b.py | toàn bộ | update | bug |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": true,
+        "error_codes": [],
+        "files": [
+          "src/a.py",
+          "src/b.py"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-absolute-path",
+      "markdown": "# Plan: Absolute path\n<!-- brain-meta: {\"task\": \"abs\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | /etc/passwd | toàn bộ | hack | bad |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "absolute_path:/etc/passwd"
+        ],
+        "files": [
+          "/etc/passwd"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-parent-traversal",
+      "markdown": "# Plan: Parent traversal\n<!-- brain-meta: {\"task\": \"parent\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | ../x.py | toàn bộ | escape | bad |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "parent_traversal:../x.py"
+        ],
+        "files": [
+          "../x.py"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-home-path",
+      "markdown": "# Plan: Home path\n<!-- brain-meta: {\"task\": \"home\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | ~/x | toàn bộ | home | bad |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "home_path:~/x"
+        ],
+        "files": [
+          "~/x"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-git-dir",
+      "markdown": "# Plan: Git dir\n<!-- brain-meta: {\"task\": \"git\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | .git/config | toàn bộ | git | bad |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "git_dir:.git/config"
+        ],
+        "files": [
+          ".git/config"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-protocol-file",
+      "markdown": "# Plan: Protocol file plan\n<!-- brain-meta: {\"task\": \"proto\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | .plan.md | toàn bộ | proto | bad |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "protocol_file:.plan.md"
+        ],
+        "files": [
+          ".plan.md"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-protocol-file-qa",
+      "markdown": "# Plan: Protocol file qa\n<!-- brain-meta: {\"task\": \"proto\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | .qa-report.md | toàn bộ | proto | bad |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "protocol_file:.qa-report.md"
+        ],
+        "files": [
+          ".qa-report.md"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-empty-file-cell",
+      "markdown": "# Plan: Empty file cell\n<!-- brain-meta: {\"task\": \"empty-file\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 |  | toàn bộ | empty | bad |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "empty_file_cell:1"
+        ],
+        "files": [],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-bad-row",
+      "markdown": "# Plan: Bad row\n<!-- brain-meta: {\"task\": \"bad-row\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/app.py | toàn bộ |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "bad_row:1"
+        ],
+        "files": [],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-missing-section",
+      "markdown": "# Plan: Missing section\n<!-- brain-meta: {\"task\": \"missing-sec\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/app.py | toàn bộ | fix | ok |\n## Không được đụng tới\nNone\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "missing_section:Cách kiểm tra"
+        ],
+        "files": [
+          "src/app.py"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-missing-title",
+      "markdown": "## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/app.py | toàn bộ | fix | ok |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "missing_title"
+        ],
+        "files": [
+          "src/app.py"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-has-blockers",
+      "markdown": "# Plan: Has blockers\n<!-- brain-meta: {\"task\": \"blockers\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/app.py | toàn bộ | fix | ok |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n<!-- Dev ghi vào đây nếu có -->\nThiếu thông tin database schema.\n",
+      "expect": {
+        "valid": true,
+        "error_codes": [],
+        "files": [
+          "src/app.py"
+        ],
+        "has_blockers": true
+      }
+    },
+    {
+      "id": "plan-blockers-only-comment",
+      "markdown": "# Plan: Blockers only comment\n<!-- brain-meta: {\"task\": \"blockers-comment\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/app.py | toàn bộ | fix | ok |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n<!-- Dev ghi vào đây nếu có -->\n<!-- Ghi chú thêm: không có vấn đề gì -->\n",
+      "expect": {
+        "valid": true,
+        "error_codes": [],
+        "files": [
+          "src/app.py"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-outside-root",
+      "markdown": "# Plan: Outside root\n<!-- brain-meta: {\"task\": \"outside\"} -->\n## Mục tiêu\nTối ưu\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | symlink_escape.py | toàn bộ | fix | ok |\n## Không được đụng tới\nNone\n## Cách kiểm tra\npython3 test.py\n## Vướng mắc (Dev ghi vào đây nếu có)\n",
+      "root_layout": {
+        "files": [],
+        "symlinks": {
+          "symlink_escape.py": "../outside_target.py"
+        }
+      },
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "outside_root:symlink_escape.py"
+        ],
+        "files": [
+          "symlink_escape.py"
+        ],
+        "has_blockers": false
+      }
+    }
+  ]
+}
