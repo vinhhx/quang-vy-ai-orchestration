@@ -17,16 +17,16 @@ Yêu cầu cho bản phát hành đầu tiên. Mỗi yêu cầu ánh xạ đúng
 
 Phase này người dùng tự chạy tay để hiểu hành vi CLI; agent có thể giải thích output nhưng không được tự kết luận thay người dùng. Kết quả ghi vào `spike-results.md` theo mẫu (Ngày thử, Lệnh, Kết quả Đạt/Không đạt/Một phần, Quan sát, Ảnh hưởng tới thiết kế).
 
-- [ ] **SPK-01**: S1 — `claude -p ... --output-format stream-json --verbose` được thử thật và ghi nhận: có dòng chứa `session_id`; dòng cuối `type: result` có usage/token; mỗi tool call là một dòng riêng. *(derived: 01-phase0 §3 S1)*
-- [ ] **SPK-02**: S2 — Resume và fork được thử thật: `--resume <id>` nhớ ngữ cảnh; `--fork-session` tạo `session_id` mới và session gốc không bị đổi. *(derived: 01-phase0 §3 S2)*
-- [ ] **SPK-03**: S3 — Prompt cache được đo: chạy cùng task 2 lần cách nhau 1 phút, rồi 2 lần cách nhau 10 phút, so sánh cache read token trong dòng `result`; ghi nhận ảnh hưởng tới quota của gói subscription (nếu quan sát được). *(derived: 01-phase0 §3 S3)*
-- [ ] **SPK-04**: S4 — Kill cây tiến trình được thử thật: cho agent chạy `sleep 300` qua bash, kill tiến trình `claude`, chạy `ps -ef | grep sleep` và ghi lại tiến trình sót. *(derived: 01-phase0 §3 S4)*
-- [ ] **SPK-05**: S5 — Tách profile được thử thật: `CLAUDE_CONFIG_DIR=~/.claude-work` và `~/.claude-max` dùng đúng tài khoản và lịch sử session riêng. *(derived: 01-phase0 §3 S5)*
-- [ ] **SPK-06**: S6 — DeepSeek qua Claude Code được thử thật (`ANTHROPIC_BASE_URL` + key DeepSeek, task nhỏ có sửa file): tool call hoạt động và stream-json cùng định dạng. *(derived: 01-phase0 §3 S6)*
-- [ ] **SPK-07**: S7 — Antigravity được kiểm tra qua tài liệu chính thức: có lệnh không tương tác (headless), có xuất JSON, có cờ giới hạn turn hay không; nếu không có thì ghi rõ để Phase 6 thiết kế phương án khác. *(derived: 01-phase0 §3 S7)*
-- [ ] **SPK-08**: S8 — `claude -p "review git diff" --max-turns 1 --output-format json` được thử: dừng đúng 1 turn và kết quả dùng được. *(derived: 01-phase0 §3 S8)*
-- [ ] **SPK-09**: Cả 8 spike có kết quả Đạt / Không đạt / Một phần theo mẫu trong `spike-results.md`, và mỗi kết quả "Không đạt" có ghi phương án thay thế. *(derived: 01-phase0 §4)*
-- [ ] **SPK-10**: Đã quyết định profile Work/Personal dùng tài khoản Claude nào, sau khi xác nhận chính sách công ty (hai tài khoản đều do công ty cấp — có được dùng cho dự án cá nhân và dựng video không). *(derived: 01-phase0 §4; 00-ROADMAP §7 câu hỏi mở)*
+- [x] **SPK-01**: S1 — `claude -p ... --output-format stream-json --verbose` được thử thật và ghi nhận: có dòng chứa `session_id`; dòng cuối `type: result` có usage/token; mỗi tool call là một dòng riêng. *(derived: 01-phase0 §3 S1)*
+- [x] **SPK-02**: S2 — Resume và fork được thử thật: `--resume <id>` nhớ ngữ cảnh; `--fork-session` tạo `session_id` mới và session gốc không bị đổi. *(derived: 01-phase0 §3 S2)*
+- [x] **SPK-03**: S3 — Prompt cache được đo: chạy cùng task 2 lần cách nhau 1 phút, rồi 2 lần cách nhau 10 phút, so sánh cache read token trong dòng `result`; ghi nhận ảnh hưởng tới quota của gói subscription (nếu quan sát được). *(derived: 01-phase0 §3 S3)*
+- [x] **SPK-04**: S4 — Kill cây tiến trình được thử thật: cho agent chạy `sleep 300` qua bash, kill tiến trình `claude`, chạy `ps -ef | grep sleep` và ghi lại tiến trình sót. *(derived: 01-phase0 §3 S4)*
+- [x] **SPK-05**: S5 — Tách profile được thử thật: `CLAUDE_CONFIG_DIR=~/.claude-work` và `~/.claude-max` dùng đúng tài khoản và lịch sử session riêng. *(derived: 01-phase0 §3 S5)*
+- [x] **SPK-06**: S6 — DeepSeek qua Claude Code được thử thật (`ANTHROPIC_BASE_URL` + key DeepSeek, task nhỏ có sửa file): tool call hoạt động và stream-json cùng định dạng. *(derived: 01-phase0 §3 S6)*
+- [x] **SPK-07**: S7 — Antigravity được kiểm tra qua tài liệu chính thức: có lệnh không tương tác (headless), có xuất JSON, có cờ giới hạn turn hay không; nếu không có thì ghi rõ để Phase 6 thiết kế phương án khác. *(derived: 01-phase0 §3 S7)*
+- [x] **SPK-08**: S8 — `claude -p "review git diff" --max-turns 1 --output-format json` được thử: dừng đúng 1 turn và kết quả dùng được. *(derived: 01-phase0 §3 S8)*
+- [x] **SPK-09**: Cả 8 spike có kết quả Đạt / Không đạt / Một phần theo mẫu trong `spike-results.md`, và mỗi kết quả "Không đạt" có ghi phương án thay thế. *(derived: 01-phase0 §4)*
+- [x] **SPK-10**: Đã quyết định profile Work/Personal dùng tài khoản Claude nào, sau khi xác nhận chính sách công ty (hai tài khoản đều do công ty cấp — có được dùng cho dự án cá nhân và dựng video không). *(derived: 01-phase0 §4; 00-ROADMAP §7 câu hỏi mở)*
 
 ### Project Routing (GSD Phase 2 — nguồn Phase 1)
 
@@ -156,16 +156,16 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SPK-01 | Phase 1 | Pending |
-| SPK-02 | Phase 1 | Pending |
-| SPK-03 | Phase 1 | Pending |
-| SPK-04 | Phase 1 | Pending |
-| SPK-05 | Phase 1 | Pending |
-| SPK-06 | Phase 1 | Pending |
-| SPK-07 | Phase 1 | Pending |
-| SPK-08 | Phase 1 | Pending |
-| SPK-09 | Phase 1 | Pending |
-| SPK-10 | Phase 1 | Pending |
+| SPK-01 | Phase 1 | Complete |
+| SPK-02 | Phase 1 | Complete |
+| SPK-03 | Phase 1 | Complete |
+| SPK-04 | Phase 1 | Complete |
+| SPK-05 | Phase 1 | Complete |
+| SPK-06 | Phase 1 | Complete |
+| SPK-07 | Phase 1 | Complete |
+| SPK-08 | Phase 1 | Complete |
+| SPK-09 | Phase 1 | Complete |
+| SPK-10 | Phase 1 | Complete |
 | ROUTE-01 | Phase 2 | Pending |
 | ROUTE-02 | Phase 2 | Pending |
 | ROUTE-03 | Phase 2 | Pending |

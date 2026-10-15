@@ -47,6 +47,7 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──┬──► Phase 4
 ## Phase Details
 
 ### Phase 1: Verify Assumptions
+
 **Goal**: Mọi giả định kỹ thuật mà kiến trúc dựa vào (cờ CLI, khả năng headless, hành vi cache/kill/profile) đã được thử thật và ghi lại kết quả, để không phase nào phía sau thiết kế trên một giả định sai.
 **Source**: Phase 0 — `01-phase0-kiem-chung.md`
 **Depends on**: Nothing (first phase)
@@ -56,9 +57,12 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──┬──► Phase 4
   2. Mỗi kết quả "Không đạt" có ghi phương án thay thế; riêng S7 nói rõ Antigravity có chạy headless và xuất log JSON không, để Phase 6 biết phải tích hợp hay dùng thủ công.
   3. Các số liệu nền đã có: stream-json cần `--verbose` ở chế độ `-p`, `session_id` và usage nằm ở dòng nào (S1), cache nóng/nguội 1 phút so với 10 phút (S3), tiến trình sót sau khi kill (S4), `--max-turns 1` dừng đúng 1 turn (S8).
   4. Đã quyết định profile Work/Personal dùng tài khoản Claude nào, sau khi xác nhận chính sách công ty cho phép.
+
 **Plans**: TBD
+- [x] 01-01-PLAN.md
 
 ### Phase 2: Protocol MVP (Scripts)
+
 **Goal**: Người dùng chạy được quy trình Lead → `.plan.md` → Dev → QA trên dự án thật chỉ bằng script và file cấu hình, chứng minh giao thức hiệu quả trước khi đầu tư vào app Rust.
 **Source**: Phase 1 — `02-phase1-giao-thuc-mvp.md`
 **Depends on**: Phase 1
@@ -69,9 +73,11 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──┬──► Phase 4
   3. `brain lead` chỉ ghi `.plan.md` (`git status` sạch ngoài plan); `brain dev` chỉ sửa file trong plan và ghi "Vướng mắc" rồi dừng khi plan thiếu; `brain qa` ghi `.qa-report.md` mà không sửa code.
   4. Dự án có `profile: work` chạy với đúng `CLAUDE_CONFIG_DIR` của work.
   5. 5 task thật đã hoàn thành qua giao thức, mỗi task có nhật ký (số turn Dev trước khi sửa, Dev có đọc file ngoài plan không, QA phát hiện gì, có làm lại không).
+
 **Plans**: TBD
 
 ### Phase 3: Rust CLI Core
+
 **Goal**: Giao thức của Phase 2 chạy được qua binary Rust `agent-brain` (CLI, chưa có UI) với quản lý tiến trình an toàn, bắt log stream-json, lưu token vào SQLite và fast-path không tốn token.
 **Source**: Phase 2 — `03-phase2-loi-rust.md`
 **Depends on**: Phase 2 (và kết quả S1, S4, S5, S8 + quyết định tài khoản từ Phase 1)
@@ -82,9 +88,11 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──┬──► Phase 4
   3. Sau mỗi run, bảng `runs` có đủ token (input/output/cache), `session_id`, `pid`, thời gian; một dòng JSON lỗi trong stream được lưu thô và chương trình không dừng.
   4. `agent-brain status` trả kết quả git với 0 token và không gọi AI; `agent-brain inspect` chạy đúng 1 turn và không để lại session.
   5. `agent-brain stats --profile work` chỉ tính run của profile work; copy binary sang máy/thư mục khác vẫn chạy mà không cần cài thêm gì (trừ CLI agent).
+
 **Plans**: TBD
 
 ### Phase 4: Session & Token Optimization
+
 **Goal**: Token trung bình mỗi task giảm đo được so với mốc Phase 3, dựa trên số liệu thật trong SQLite chứ không phải ước đoán.
 **Source**: Phase 3 — `04-phase3-toi-uu-session.md`
 **Depends on**: Phase 3 (kèm điều kiện: ít nhất 2 tuần dữ liệu `runs` từ việc dùng thực tế)
@@ -95,9 +103,11 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──┬──► Phase 4
   3. Khi session vượt ngưỡng (ban đầu 45.000 token), có `.handover.md` và session mới tiếp tục đúng việc mà không hỏi lại những quyết định đã chốt; session cũ vẫn được giữ.
   4. Token/task trung bình giảm đo được so với mốc Phase 3 (cổng phase — không đóng phase khi chưa có số liệu này).
   5. Quyết định có làm golden session + fork (phương án B) hay không đã được ghi lại kèm lý do dựa trên số liệu đo lại.
+
 **Plans**: TBD
 
 ### Phase 5: Embedded Dashboard
+
 **Goal**: Người dùng xem task và log realtime, giao việc, kill và xem thống kê token qua web UI nằm trong chính binary `agent-brain`, vẫn là một file chạy duy nhất.
 **Source**: Phase 4 — `05-phase4-dashboard.md`
 **Depends on**: Phase 3
@@ -108,10 +118,12 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──┬──► Phase 4
   3. Reload trang giữa một run thì vẫn thấy log cũ và tiếp tục nhận log mới.
   4. Bấm Kill trên UI thì run dừng và không còn tiến trình sót.
   5. Đổi profile thì thống kê và task mới theo đúng profile; màn hình Thống kê (token theo ngày/profile/dự án/vai trò) và màn hình Dự án (sửa alias, quét lại) hoạt động; nếu có thiết kế Figma thì UI khớp checklist UI của người dùng.
+
 **Plans**: TBD
 **UI hint**: yes
 
 ### Phase 6: Multi-engine & Media Branch
+
 **Goal**: Mỗi vai trò (Lead/Dev/QA) chạy được bằng engine khác nhau và đổi được giữa các task khi hết quota (không đổi ngầm), và sản xuất video chạy ở nhánh riêng tách khỏi Git worktree nhưng vẫn điều phối chung một nơi.
 **Source**: Phase 5 — `06-phase5-da-doi-hinh-media.md`
 **Depends on**: Phase 3 (kết quả S1, S5, S6, S7 từ Phase 1; phụ thuộc mềm vào `.handover.md` của Phase 4)
@@ -122,6 +134,7 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──┬──► Phase 4
   3. Key DeepSeek không xuất hiện trong file đã commit hay trong log.
   4. Dự án media không tạo Git worktree, file render nằm ngoài repo; kịch bản whiteboard đã duyệt chuyển thành cấu hình render rồi file output; kill job render thì FFmpeg dừng và không còn tiến trình sót.
   5. Antigravity được xử lý theo kết quả S7 (chạy headless như engine, hoặc dùng thủ công và theo dõi qua `git diff`), và tỉ lệ "Cần sửa" của QA được ghi theo engine.
+
 **Plans**: TBD
 
 ## Cross-cutting KPIs
@@ -143,7 +156,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Verify Assumptions | 0/TBD | Not started | - |
+| 1. Verify Assumptions | 1/1 | In Progress | - |
 | 2. Protocol MVP (Scripts) | 0/TBD | Not started | - |
 | 3. Rust CLI Core | 0/TBD | Not started | - |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
