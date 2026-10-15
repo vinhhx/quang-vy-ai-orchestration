@@ -92,16 +92,51 @@
 
 ## S4 — Kill cây tiến trình
 
-- Ngày thử:
-- Phiên bản:
+- Ngày thử: 2026-10-15 (01:40Z)
+- Phiên bản: claude 2.1.300 (Claude Code), Linux 7.0.0-38-generic (D-08), chạy từ terminal thường của người dùng (nested=no), tài khoản work `~/.claude`
 - Lệnh:
-- Kết quả:
+  - `bash spikes/s4/run.sh` (người dùng chạy; agent không được chạy lệnh kill). Mỗi lần chạy: `timeout 600 claude -p "Run this exact bash command and wait for it: sleep 31N" --allowedTools "Bash(sleep *)" --output-format stream-json --verbose </dev/null`, N = 7/8/9 (dấu hiệu riêng `sleep 317`, `318`, `319`).
+  - r1: `kill -TERM <pid claude>`. r2: `kill -KILL <pid claude>`. r3: khởi chạy qua `setsid`, rồi `kill -TERM -- -<PGID>` (PGID của launcher).
+  - Sau mỗi tín hiệu: chờ 5 giây, chụp `ps`, tìm tiến trình sót bằng khớp neo `^sleep 31N$`, rồi quét (sweep) các hậu duệ đã ghi: TERM, 2 giây sau KILL.
+  - Điều chỉnh so với nguồn: dùng dấu hiệu duy nhất thay cho `sleep 300` và chụp `ps -o pid,ppid,pgid,sid,etimes,args` chỉ trên các PID đã ghi thay cho `ps -ef | grep sleep`.
+- Kết quả: Đạt (chờ duyệt)
 - Quan sát:
-- Ảnh hưởng tới thiết kế:
-- Phương án thay thế:
-- Phase bị ảnh hưởng:
+  - Cây tiến trình trước khi kill (cả 3 lần giống nhau): `timeout` > `claude` > `/bin/bash -c ... eval 'sleep N'` > `sleep N`. Tiến trình Bash con của claude và `sleep` nằm trong session và nhóm tiến trình RIÊNG (sid = pgid = PID của bash con), khác nhóm của `timeout`/`claude`. Vì vậy `kill -- -PGID` của launcher không trực tiếp chạm tới chúng.
+  - r1 SIGTERM vào PID claude: launcher thoát mã 143. Sau 5 giây không còn tiến trình nào trong ảnh `after`; không sót `sleep 317` (leftover = none). Claude tự dọn: dòng stream có `system/task_notification` (`status: stopped`) và `task_updated` (`status: killed`), sau đó vẫn in dòng `result` (`subtype: success`, `terminal_reason: completed`, `num_turns: 2`) trước khi thoát. Sweep = none, final = none.
+  - r2 SIGKILL vào PID claude: launcher thoát mã 137. Bash con (PID 1087003) và `sleep 318` (PID 1087004) SỐNG SÓT, bị `init`/trình thu dọn tái gán cha (`ppid` đổi thành 5646): leftover = `pid=1087004 ppid=1087003`. Stream bị cắt ngay sau dòng `user` (`tool_result`), không có dòng `result`. Sweep (TERM vào 1087003 và 1087004) dọn sạch: final = none.
+  - r3 SIGTERM vào nhóm tiến trình của launcher (PGID 1087367, gồm `timeout` và `claude`): launcher thoát mã 143, leftover = none, sweep = none, final = none. Cũng có `task_notification: stopped` và dòng `result` như r1. Cây con được dọn vì claude nhận SIGTERM rồi tự kill task nền của nó, chứ không phải vì tín hiệu tới thẳng bash con (bash con ở nhóm khác).
+  - Lệnh `sleep` được Claude Code chạy dưới dạng task nền (`is_backgrounded: true`, `task_type: local_bash`); trong cả 3 lần, tiến trình bash con vẫn là con trực tiếp của PID claude và nằm trong tập hậu duệ đã ghi. Kết luận phạm vi: chỉ kiểm chứng với lệnh nền do Claude tự chuyển nền, chưa thử một lệnh chạy ở foreground thật sự lâu hoặc một lệnh tự fork tiếp.
+  - So với giả định E-05 trong kế hoạch ("SIGTERM tree-kill; SIGKILL và `kill -- -PGID` để sót"): SIGTERM tree-kill đúng; SIGKILL để sót đúng; `kill -TERM -- -PGID` KHÔNG để sót (mâu thuẫn với giả định). SIGKILL vào cả nhóm chưa được thử, nên không rút ra điều gì về nó.
+  - Ba tệp `s4-rN.jsonl` là dữ liệu mẫu stream bị cắt cụt/kết thúc sớm cho Phase 3 (r2 không có dòng `result`).
+- Ảnh hưởng tới thiết kế: PROC-01/02. Hủy một task phải (1) ghi lại PID claude và toàn bộ hậu duệ (đọc `/proc`/`ps`) TRƯỚC khi gửi tín hiệu, (2) gửi SIGTERM vào PID claude (không gửi SIGKILL trước), (3) chờ vài giây, (4) quét các hậu duệ đã ghi còn sống: TERM, rồi KILL sau 2 giây, kiểm tra bằng thời điểm bắt đầu tiến trình để không đụng PID bị tái sử dụng. Nếu buộc phải SIGKILL claude thì bước quét là bắt buộc vì bash con và `sleep` mồ côi. Parser phải chịu được stream kết thúc không có dòng `result` (bị SIGKILL) và có dòng `result` thành công dù bị SIGTERM (không dùng sự có mặt của `result` để suy ra task tự kết thúc). Theo D-08, nếu sau này chạy trên Windows cần Job Object thay cho cách này.
+- Phương án thay thế: Không cần (kết quả Đạt). Nếu sau này `kill -TERM` tới claude không đủ (ví dụ lệnh foreground tự fork), dùng ngay bước quét hậu duệ đã ghi.
+- Phase bị ảnh hưởng: Phase 3
 - Bằng chứng:
-- Cách làm đã kiểm chứng (D-13):
+  - `spikes/s4/raw/s4-r1.jsonl`
+  - `spikes/s4/raw/s4-r2.jsonl`
+  - `spikes/s4/raw/s4-r3.jsonl`
+  - `spikes/s4/raw/s4-r1-descendants.txt`
+  - `spikes/s4/raw/s4-r2-descendants.txt`
+  - `spikes/s4/raw/s4-r3-descendants.txt`
+  - `spikes/s4/raw/s4-r1-before.txt`
+  - `spikes/s4/raw/s4-r1-after.txt`
+  - `spikes/s4/raw/s4-r2-before.txt`
+  - `spikes/s4/raw/s4-r2-after.txt`
+  - `spikes/s4/raw/s4-r3-before.txt`
+  - `spikes/s4/raw/s4-r3-after.txt`
+  - `spikes/s4/raw/s4-r1-leftover.txt`
+  - `spikes/s4/raw/s4-r2-leftover.txt`
+  - `spikes/s4/raw/s4-r3-leftover.txt`
+  - `spikes/s4/raw/s4-r1-sweep.txt`
+  - `spikes/s4/raw/s4-r2-sweep.txt`
+  - `spikes/s4/raw/s4-r3-sweep.txt`
+  - `spikes/s4/raw/s4-r1-final.txt`
+  - `spikes/s4/raw/s4-r2-final.txt`
+  - `spikes/s4/raw/s4-r3-final.txt`
+  - `spikes/s4/raw/s4-exit.txt`
+  - `spikes/s4/raw/s4-env.txt`
+  - `spikes/s4/run.sh`
+- Cách làm đã kiểm chứng (D-13): Chuỗi đã để lại `none` ở cả 3 lần: (1) ghi PID claude (con duy nhất của launcher `timeout`) và toàn bộ hậu duệ bằng `/proc`/`ps` kèm thời điểm bắt đầu; (2) `kill -TERM <pid claude>`; (3) chờ 5 giây; (4) quét: mọi hậu duệ đã ghi còn sống (cùng thời điểm bắt đầu) nhận TERM, 2 giây sau nhận KILL; (5) kiểm tra không còn tiến trình nào khớp dấu hiệu. Với SIGTERM bước (4) không có gì để quét; với SIGKILL (r2) bước (4) là thứ duy nhất dọn được bash con và `sleep` mồ côi. Không dùng lệnh kill theo tên tiến trình. Ghi chú sự cố khi chạy: lần chạy đầu của `run.sh` lỗi ở r1 vì dòng `${!REC_PIDS[@]+...}` bị bash 5.2 từ chối (`invalid variable name`); đã sửa thành vòng `for i in "${!REC_PIDS[@]}"` (commit 28dbdf5) và chạy lại từ đầu; script tự xóa output dở dang của lần lỗi.
 
 ## S5 — Tách profile
 

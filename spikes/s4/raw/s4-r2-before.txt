@@ -1,0 +1,6 @@
+# 2026-10-15T01:40:37Z run=r2 before
+pid ppid pgid sid etimes args
+1086816 1086391 1086816 1083769       4 timeout 600 claude -p Run this exact bash command and wait for it: sleep 318 --allowedTools Bash(sleep *) --output-format stream-json --verbose
+1086820 1086816 1086816 1083769       4 claude -p Run this exact bash command and wait for it: sleep 318 --allowedTools Bash(sleep *) --output-format stream-json --verbose
+1087003 1086820 1087003 1087003       0 /bin/bash -c source ~/.claude/shell-snapshots/snapshot-bash-1792028436756-4dg39c.sh 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'sleep 318' < /dev/null && pwd -P >| /tmp/claude-142a-cwd
+1087004 1087003 1087004 1087003       0 sleep 318

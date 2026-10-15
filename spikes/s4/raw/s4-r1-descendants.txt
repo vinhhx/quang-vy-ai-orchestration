@@ -1,0 +1,4 @@
+# 2026-10-15T01:40:24Z run=r1 descendants of claude (marker_pid=1086598)
+pid ppid pgid sid etimes args
+1086597 1086412 1086597 1086597       0 /bin/bash -c source ~/.claude/shell-snapshots/snapshot-bash-1792028423807-zal7pk.sh 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'sleep 317' < /dev/null && pwd -P >| /tmp/claude-0756-cwd
+1086598 1086597 1086598 1086597       0 sleep 317

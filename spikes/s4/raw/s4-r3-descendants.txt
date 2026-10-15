@@ -1,0 +1,5 @@
+# 2026-10-15T01:40:50Z run=r3 descendants of claude (marker_pid=1087527)
+pid ppid pgid sid etimes args
+1087526 1087371 1087526 1087526       0 /bin/bash -c source ~/.claude/shell-snapshots/snapshot-bash-1792028449843-nsmgyi.sh 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'sleep 319' < /dev/null && pwd -P >| /tmp/claude-54b4-cwd
+1087527 1087526 1087527 1087526       0 sleep 319
+launcher=1087367 claude=1087371 pgid=1087367

@@ -1,0 +1,6 @@
+# 2026-10-15T01:40:50Z run=r3 before
+pid ppid pgid sid etimes args
+1087367 1086391 1087367 1087367       5 timeout 600 claude -p Run this exact bash command and wait for it: sleep 319 --allowedTools Bash(sleep *) --output-format stream-json --verbose
+1087371 1087367 1087367 1087367       5 claude -p Run this exact bash command and wait for it: sleep 319 --allowedTools Bash(sleep *) --output-format stream-json --verbose
+1087526 1087371 1087526 1087526       1 /bin/bash -c source ~/.claude/shell-snapshots/snapshot-bash-1792028449843-nsmgyi.sh 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'sleep 319' < /dev/null && pwd -P >| /tmp/claude-54b4-cwd
+1087527 1087526 1087527 1087526       1 sleep 319
