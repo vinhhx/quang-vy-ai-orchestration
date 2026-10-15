@@ -1,0 +1,16 @@
+variant=a marker=s6k-dc04803e3dad
+launcher_pid=1175878 client_pid=1175880
+marker_seen=yes sleep_child_seen=yes
+before:
+  245 0 245 node /usr/local/bin/dsh --profile headless Run the bash command sleep 120 and wait for it, then repl
+  276 245 276 bash -c sleep 120 && echo "sleep finished"
+  277 276 276 sleep 120
+signal: TERM to host-side docker exec client pid=1175880
+launcher_exit_code=0
+client_alive_after_signal=no
+leftover:
+  245 0 245 node /usr/local/bin/dsh --profile headless Run the bash command sleep 120 and wait for it, then repl
+  276 245 276 bash -c sleep 120 && echo "sleep finished"
+  277 276 276 sleep 120
+sweep: TERM pids=245 276 277 ; KILL pids=none
+final: none

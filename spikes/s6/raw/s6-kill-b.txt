@@ -1,0 +1,12 @@
+variant=b marker=s6k-a70cfcaa357b
+launcher_pid=1176587 client_pid=1176589
+marker_seen=yes sleep_child_seen=yes
+before:
+  321 0 321 node /usr/local/bin/dsh --profile headless Run the bash command sleep 120 and wait for it, then repl
+  351 321 351 sleep 120
+signal: TERM to in-container pid=321 (recorded in /tmp/s6pid-a70cfcaa357b) via docker exec
+launcher_exit_code=0
+client_alive_after_signal=no
+leftover: none
+sweep: none
+final: none

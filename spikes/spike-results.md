@@ -173,15 +173,37 @@
 
 ## S6 — DeepSeek qua harness Docker
 
-- Ngày thử:
-- Phiên bản:
+- Ngày thử: 2026-10-15
+- Phiên bản: Docker 29.8.1; container `dsh-deepseek-harness` (không restart, không stop, không rebuild; không liệt kê env, không đọc `.env.docker`); `dsh --profile headless` (bản `--help` không in số phiên bản); chạy từ host Linux (D-08)
 - Lệnh:
-- Kết quả:
+  - Chế độ basic (agent chạy): `timeout 300 docker exec -w <spikes/s6/scratch> dsh-deepseek-harness dsh --profile headless "Append the line 'edited-by-dsh' to a.txt, then reply DONE" </dev/null`; thêm `dsh --profile headless --help`. Thư mục scratch nằm trong repo (git-ignore), đường dẫn giống hệt bên trong container nhờ bind mount; sau khi chạy được xóa bằng `docker exec ... rm -rf` có kiểm tra đường dẫn kết thúc bằng `/spikes/s6/scratch`.
+  - Chế độ kill: `bash spikes/s6/run.sh --kill`. Mỗi biến thể có dấu hiệu riêng `s6k-<nonce>` trong prompt, yêu cầu dsh chạy `sleep 120`. (a) gửi SIGTERM vào PID của `docker exec` client phía host. (b) khởi chạy qua `sh -c` ghi `$$` vào `/tmp/s6pid-<nonce>` trong container rồi `exec dsh`, sau đó `docker exec kill -TERM <pid đó>`. Kiểm tra sót bằng `ps` trong container lọc theo dấu hiệu cùng hậu duệ; quét theo PID.
+  - Điều chỉnh so với nguồn: chạy qua container thay vì `ANTHROPIC_BASE_URL` trên host (D-07); biến thể (c) dựa theo mẫu tên tiến trình bị bỏ vì có thể chạm tới tiến trình headless khác không do spike khởi chạy.
+  - Chạy lại bằng `bash spikes/s6/run.sh` và `bash spikes/s6/run.sh --kill`.
+- Kết quả: Một phần (chờ duyệt)
 - Quan sát:
-- Ảnh hưởng tới thiết kế:
-- Phương án thay thế:
-- Phase bị ảnh hưởng:
+  - (1) Gọi headless từ host qua `docker exec`: được. Thoát mã 0, stdout đúng một dòng `DONE`, stderr rỗng. `dsh --profile headless --help` mô tả "Answer one task, print the final assistant message, and exit"; chỉ có cờ `-h`, không có cờ chọn định dạng đầu ra, không có giới hạn lượt, không có cờ session.
+  - (2) Tương đương stream-json: KHÔNG. `s6-format.txt` ghi `json_lines=0 text_lines=1`: stdout chỉ là thông điệp cuối cùng dạng văn bản, không có sự kiện từng bước, không có `session_id`, không có `usage`, không có `tool_use`. Phase 6 không thể dùng parser stream-json của Phase 3 cho dsh.
+  - (3) Công cụ sửa file: hoạt động. `a.txt` từ `hello` thành `hello` + `edited-by-dsh` (`contains_edited_by_dsh=yes`). File thuộc `uid:gid=0:0` (root trong container), trong khi người dùng host là `1000:1000`; thư mục scratch phải xóa bằng `docker exec` chứ `rm` thường trên host không đủ quyền với file do dsh tạo/ghi.
+  - (4a) Kill từ ngoài, SIGTERM vào `docker exec` client phía host: client thoát (`client_alive_after_signal=no`) nhưng tiến trình TRONG container SỐNG SÓT nguyên vẹn: `node /usr/local/bin/dsh` (PID 245), `bash -c "sleep 120 && echo ..."` (PID 276, nhóm tiến trình riêng) và `sleep 120` (PID 277) đều còn sau 5 giây, giống hệt ảnh trước khi kill. Quét theo PID đã ghi (TERM 245 276 277, không cần KILL) đưa về `final: none`. Giả định E-08 ("kill client host có thể để sót tiến trình trong container") được xác nhận.
+  - (4b) Kill bằng TERM tới PID dsh trong container (qua `docker exec kill`): dsh thoát cùng con `sleep 120` (PID 351), leftover = none, sweep = none, final = none. Client phía host cũng thoát. Mã thoát của launcher ghi nhận là 0 ở cả (a) lẫn (b), không phải 143, nên mã thoát của `timeout`/`docker exec` KHÔNG dùng được để suy ra việc bị kill.
+  - Khác biệt cần lưu ý: ở (a) dsh dùng một `bash -c` trung gian ở nhóm tiến trình riêng, ở (b) con `sleep` là con trực tiếp của dsh. Cách dsh khởi chạy lệnh có thể thay đổi giữa các lần chạy, nên thiết kế không được dựa vào hình dạng cây này mà phải ghi hậu duệ trước khi kill như ở S4.
+  - Phần kill do điều phối viên (agent orchestrator) chạy thay người dùng theo yêu cầu rõ ràng của người dùng ("You support test for me"), vì lần tự chạy trong terminal của người dùng không tạo ra tệp kết quả nào và không có thông báo lỗi nào được chia sẻ. Đây là điều chỉnh so với kế hoạch ("người dùng chạy"); script vẫn chỉ gửi tín hiệu tới PID client do chính nó khởi chạy và PID trong container mang dấu hiệu `s6k-`. Sau khi chạy, không còn tiến trình `s6k-` hay `sleep 120` trong container (kiểm tra lại trong lúc xác minh), và thư mục scratch đã bị xóa.
+  - Quét bí mật: `scan-secrets.sh --container dsh-deepseek-harness` in `CLEAN`; không có giá trị khóa nào trong evidence.
+  - Chưa kiểm chứng: chất lượng tác vụ lớn hơn một dòng; biến thể kill khi dsh đang chạy lệnh foreground tự fork; `dsh web` API; tính tương thích khóa DeepSeek với endpoint định dạng Anthropic (E-09, không thử).
+- Ảnh hưởng tới thiết kế: Phase 6 (ENG) chỉ có thể coi dsh headless là một "hộp đen một lần": đưa prompt vào, nhận một khối văn bản cuối cùng. Không có log theo thời gian thực, không có session để resume, không có token/cost; tiến độ và kết quả phải suy ra từ `git diff`/trạng thái file. Hủy task dsh KHÔNG được dựa vào việc kill `docker exec` client: phải kill tiến trình bên trong container (ghi PID trong container trước, như biến thể (b), hoặc chạy qua `sh -c` ghi `$$`), sau đó quét các hậu duệ đã ghi (cách của S4). File do dsh ghi thuộc root nên Phase 6 cần tính tới quyền sở hữu khi dọn worktree hoặc commit.
+- Phương án thay thế: (1) Nếu cần log có cấu trúc hoặc dùng được parser Phase 3: chạy Claude Code trên host với `ANTHROPIC_BASE_URL` trỏ tới endpoint định dạng Anthropic của DeepSeek (chưa kiểm chứng việc khóa có tương thích, E-09; cần Phase 6 thử). (2) Giữ dsh headless, bỏ qua stream: lấy văn bản cuối cộng `git diff` làm kết quả. (3) Mục nghiên cứu cho Phase 6: API của `dsh web` (có thể cung cấp sự kiện có cấu trúc). Với kill: dùng biến thể (b) kèm quét hậu duệ.
+- Phase bị ảnh hưởng: Phase 6
 - Bằng chứng:
+  - `spikes/s6/raw/s6-stdout.txt`
+  - `spikes/s6/raw/s6-stderr.txt`
+  - `spikes/s6/raw/s6-dsh-help.txt`
+  - `spikes/s6/raw/s6-a-after.txt`
+  - `spikes/s6/raw/s6-format.txt`
+  - `spikes/s6/raw/s6-kill-a.txt`
+  - `spikes/s6/raw/s6-kill-b.txt`
+  - `spikes/s6/run.sh`
+  - `spikes/s6/verify.sh`
 
 ## S7 — Antigravity headless
 
