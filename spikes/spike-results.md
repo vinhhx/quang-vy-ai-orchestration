@@ -207,15 +207,31 @@
 
 ## S7 — Antigravity headless
 
-- Ngày thử:
-- Phiên bản:
+- Ngày thử: 2026-10-15
+- Phiên bản: agy 1.3.5 (`~/.local/bin/agy`); trang docs `antigravity.google/docs/cli/headless` lấy ngày 2026-10-15. Kết luận dựa trên docs cộng chạy local (không phải chỉ docs), xem `spikes/s7/NOTES.md`.
 - Lệnh:
-- Kết quả:
+  - Mọi lệnh chạy dạng `timeout 10 agy ... </dev/null > <tệp>` từ thư mục tạm ngoài repo: `agy --version`; `agy --help`; `agy -p "Reply with the single word OK" --output-format json`; cùng prompt với `--output-format stream-json`; phép thử bác bỏ E-10 `agy -p x --max-turns 1`.
+  - Docs lấy bằng `curl` rồi rút thành văn bản (công cụ WebFetch không có trong phiên thực thi). Không chạy binary khởi chạy IDE, không cài gì.
+  - Chạy lại bằng `bash spikes/s7/run.sh`.
+- Kết quả: Một phần (chờ duyệt)
 - Quan sát:
-- Ảnh hưởng tới thiết kế:
-- Phương án thay thế:
-- Phase bị ảnh hưởng:
+  - Headless: CÓ. `-p` (bí danh `--print`, `--prompt`) chạy một prompt không tương tác rồi thoát. Trên máy này chạy thẳng bằng thông tin đăng nhập đã lưu, không báo `authentication required`, hoàn tất khoảng 3 đến 4 giây, thoát mã 0, không chạm giới hạn 10 s.
+  - JSON: CÓ. `--output-format json` cho một phong bì với `conversation_id`, `status` (`SUCCESS`), `response`, `duration_seconds`, `num_turns`, `usage` (`input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `total_tokens`). `--output-format stream-json` cho NDJSON với khóa `event` thuộc `init`, `step_update`, `result`; khác Claude ở chỗ không có `type`/`tool_use`/`tool_result` mà dùng `step_update.step_type` (docs nêu `user_input`, `agent_response`, `tool`, `checkpoint`; lần chạy local không dùng công cụ nên chưa thấy `tool`). `usage` có ở `step_update` và `result`.
+  - Cờ giới hạn lượt: KHÔNG. Bảng cờ trong docs không có, `agy --help` không liệt kê, và phép thử bác bỏ `agy -p x --max-turns 1` thoát mã 2 với `flags provided but not defined: -max-turns`. `num_turns` chỉ là bộ đếm tích lũy, không phải giới hạn. Giả định E-10 được xác nhận. Cờ duy nhất để chặn là `--print-timeout` (thời gian, không phải số lượt).
+  - Lệch giữa docs và bản cài: docs nói `--print-timeout` mặc định 5 phút, nhưng `agy --help` của 1.3.5 ghi mặc định `0s` ("chờ đến khi lượt xong"); chưa đo hành vi thật. `agy --help` và lỗi cờ lạ được in ra stderr, không phải stdout.
+  - `total_tokens` chỉ là input cộng output; `cache_read_tokens` tách riêng và có thể lớn hơn tổng.
+  - Chưa kiểm chứng: tác vụ có công cụ ghi tệp/chạy lệnh (mặc định `permission_mode` là `request-review`, công cụ cần duyệt bị soft-deny và vẫn thoát mã 0), `--input-format stream-json`, `--conversation`/`--continue`, kill giữa chừng, và trường hợp chưa đăng nhập.
+- Ảnh hưởng tới thiết kế: ENG-06 có thể tích hợp agy như một engine headless: spawn `agy -p "<prompt>" --output-format stream-json` (hoặc `json`) với stdout ra tệp và `</dev/null`, đọc `result.status`, `result.response`, `result.usage`. Parser của Phase 3 phải có một nhánh riêng cho agy vì sự kiện khác (khóa `event`, không có `tool_use`). Vì không có giới hạn lượt, giới hạn chi phí/độ dài phải dựa vào `--print-timeout` tường minh cộng việc kill cây tiến trình theo cách đã kiểm chứng ở S4 (ghi hậu duệ trước, SIGTERM, quét), và vào `--dangerously-skip-permissions` hoặc `permissions.allow` để tác vụ có công cụ không bị soft-deny im lặng. Cần đặt `--print-timeout` tường minh vì mặc định docs và bản cài khác nhau.
+- Phương án thay thế: Vì không có cờ giới hạn lượt: bound mỗi lần chạy bằng `--print-timeout` (ví dụ `5m`) cộng `timeout` bên ngoài, đếm `step_update` của luồng stream-json làm tín hiệu tiến độ, và kill theo S4 khi vượt ngưỡng; nếu cần giới hạn lượt cứng thì dùng engine khác (Claude `--max-turns`, xem S8). Nếu về sau agy hỏi đăng nhập trong môi trường không terminal thì coi đó là điều kiện tiên quyết: đăng nhập agy tương tác một lần trước khi chạy.
+- Phase bị ảnh hưởng: Phase 6
 - Bằng chứng:
+  - `spikes/s7/raw/s7-version.txt`
+  - `spikes/s7/raw/s7-help.txt`
+  - `spikes/s7/raw/s7-json.json`
+  - `spikes/s7/raw/s7-stream.jsonl`
+  - `spikes/s7/raw/s7-maxturns.txt`
+  - `spikes/s7/NOTES.md`
+  - `spikes/s7/run.sh`
 
 ## S8 — Max turns
 
