@@ -69,7 +69,27 @@ Five assumptions (A-03..A-07) and A-10 are settled only by the live run. The one
 
 ## Task 2: Live acceptance P1-01..P1-10 (checkpoint, user)
 
-Not started. Precondition met: `spikes/spike-results.md` exists and is approved; the personal profile is `~/.claude-orca` (SPK-10). The user follows `tests/protocol-manual.md` and fills `protocol-log/nghiem-thu-p1.md`.
+Run by the user on 2026-10-15 against the throwaway repo `/mnt/data/IDE/du-an-nhap` (profile work) and the real project `apec`. The user marked all ten rows Pass; the reviewer checked each against the run dirs under `~/.local/share/agent-brain/runs/`, the test repo's history and the work/personal transcript dirs.
+
+| ID | Reviewer check | Verdict |
+|----|----------------|---------|
+| P1-01..P1-04 | Dry runs reported by the user; routing of "dự án apec" and "dự án nháp" seen live | accepted |
+| P1-05 | New repo `du-an-nhap` picked up by `brain scan`; hand-edited name/aliases of `QuangVy-Orchestration` kept | accepted |
+| P1-06 | `9b39b9d them-ham-tinh-tong: plan` touches only `.plan.md`; the plan is complete and valid | confirmed |
+| P1-07 | `b09d2c8` touches only the two plan files; Dev turns before first edit 1; no reads outside the plan; **`guard.jsonl` has 6 lines (3 Read, 3 Edit, all allowed) under the real CLI** | confirmed |
+| P1-08 | No evidence: one Dev run in total, no `vướng mắc` commit, no exit-4 run dir | **not run; Pass not accepted** |
+| P1-09 | `d26e890 them-ham-tinh-tong: qa` adds only `.qa-report.md`; verdict Đạt | confirmed |
+| P1-10 | All four live session ids are under `~/.claude/projects/`, none under `~/.claude-orca/projects/` | confirmed |
+
+Assumptions settled live: **A-05 confirmed** (the `--settings` PreToolUse hook runs in `-p` and logs every guarded call), A-06 confirmed for the work profile (personal not run live), A-07 confirmed (`--model opus` → `claude-opus-5-5`, `--append-system-prompt`, `--strict-mcp-config` accepted), A-04 consistent (Lead and QA reads needed no permission). **A-03 inconsistent:** `Write(./.plan.md)` allowed Lead's write in `du-an-nhap` but denied both the Write and the Edit of `.plan.md` in `apec` (same code, same rule shape, cwd = project root in both; cause unknown). brain handled it correctly: the skeleton failed `validate_plan`, so no plan commit was made.
+
+Other live findings:
+
+- Lead's compound Bash commands (`cd … && …`, `;` chains) are denied; Lead recovers with Read but spends turns (7 denials in apec).
+- QA has no permission to run tests, by spec (diff-only, D-16 report-only); it tried once and said so in its report.
+- `brain scan --root <nonexistent>` exits 0 and saves the bad root; the summary line silently counts it out.
+- `tests/test_tasklog.py::test_record_run_failure_prints_warning` has no `runs_dir` in its config, so each suite run writes `proj-1/task-fail` run dirs into the real `~/.local/share/agent-brain/runs/`.
+- The manual does not say how to create the throwaway project for P1-06..P1-09.
 
 ## Task 3: Five real tasks (checkpoint, user)
 
