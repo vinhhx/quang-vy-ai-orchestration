@@ -35,15 +35,32 @@
 
 ## S2 — Resume và fork
 
-- Ngày thử:
-- Phiên bản:
+- Ngày thử: 2026-10-15
+- Phiên bản: claude 2.1.300 (Claude Code), tài khoản work `~/.claude`, chạy lồng đã bỏ biến CLAUDE_CODE_*
 - Lệnh:
-- Kết quả:
+  - `claude -p "nhớ số 42" --output-format json` rồi lấy `.session_id`
+  - `claude -p "số tôi bảo nhớ là gì?" --resume <id> --output-format json`
+  - băm `sha256sum` và `wc -l` của transcript gốc trước và sau bước fork
+  - `claude -p "số đó cộng 1?" --resume <id> --fork-session --output-format json`
+  - Điều chỉnh so với nguồn: thêm `--output-format json` ở bước 2 và 3 để lấy được session_id. Chạy lại bằng `bash spikes/s2/run.sh`.
+- Kết quả: Đạt (chờ duyệt)
 - Quan sát:
-- Ảnh hưởng tới thiết kế:
-- Phương án thay thế:
-- Phase bị ảnh hưởng:
+  - `--resume` giữ nguyên `session_id` (resume_same_id=yes). `--resume --fork-session` tạo `session_id` mới (fork_new_id=yes) và có file transcript riêng.
+  - Transcript gốc không đổi qua bước fork: cùng `sha256` và cùng 65 dòng trước và sau (transcript_unchanged=yes).
+  - Câu trả lời: resume nhớ 42; fork trả lời "42 + 1 = 43" (fork_answer_has_43=yes), tức fork kế thừa hội thoại.
+  - Cache: request đầu của fork đọc cache của bản gốc. Resume: cache_read 21900 và cache_creation 723; fork: cache_read 22623 và cache_creation 57. 22623 đúng bằng 21900 + 723, tức fork đọc lại toàn bộ tiền tố mà resume vừa ghi (A4 được xác nhận cho CLI `--fork-session`, trong cùng thư mục và vài giây sau resume).
+  - Bước 1 mất 3 turn vì Claude tự ghi số 42 vào auto-memory (`~/.claude/projects/<thư mục>/memory/number-42.md`). Do đó phép thử "resume còn nhớ" bị lẫn với bộ nhớ dài hạn; thư mục memory này nằm trong profile work, ngoài repo, không commit.
+  - Bucket TTL của lần ghi cache: toàn bộ ở `ephemeral_1h` (10732, 723, 57), `ephemeral_5m` bằng 0.
+- Ảnh hưởng tới thiết kế: Phase 4 (OPT/SESS) có thể dùng "golden session" cộng `--resume <id> --fork-session`: mỗi task rẽ một session mới mà không làm đổi session gốc và request đầu đọc được cache của bản gốc (với điều kiện cache của bản gốc còn sống, xem S3). Phase 3 phải lưu `session_id` của phiên gốc và của phiên fork riêng. Phải tính tới auto-memory: task chạy headless có thể ghi file memory làm đổi hành vi giữa các phiên, cần quyết định tắt hay chấp nhận ở Phase 3/4.
+- Phương án thay thế: Không cần (kết quả Đạt).
+- Phase bị ảnh hưởng: Phase 4, Phase 3
 - Bằng chứng:
+  - `spikes/s2/raw/s2-1-create.json`
+  - `spikes/s2/raw/s2-2-resume.json`
+  - `spikes/s2/raw/s2-3-fork.json`
+  - `spikes/s2/raw/s2-transcript-hash.txt`
+  - `spikes/s2/raw/s2-observations.txt`
+  - `spikes/s2/run.sh`
 
 ## S3 — Prompt cache
 
