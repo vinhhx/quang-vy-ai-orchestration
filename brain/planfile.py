@@ -250,6 +250,10 @@ def validate_plan(plan: Plan, root: Path | None = None) -> list[str]:
             errors.append(f"git_dir:{f}")
         elif f in (".plan.md", ".qa-report.md") or f.endswith("/.plan.md") or f.endswith("/.qa-report.md"):
             errors.append(f"protocol_file:{f}")
+        elif _normalize_path(f) == ".":
+            errors.append(f"not_a_file:{f}")
+        elif any(c in f for c in ("*", "?", "[", "]")):
+            errors.append(f"glob_path:{f}")
         elif root is not None:
             root_resolved = Path(root).resolve()
             target_resolved = (Path(root) / f).resolve()
