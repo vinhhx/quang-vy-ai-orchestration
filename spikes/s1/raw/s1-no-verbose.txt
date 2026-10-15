@@ -1,0 +1,5 @@
+--- command: claude -p <prompt> --output-format stream-json --allowedTools 'Bash(ls *)'  (no --verbose)
+--- stdout (0 lines, first 5 shown) ---
+--- stderr ---
+Error: When using --print, --output-format=stream-json requires --verbose
+exit_code=1

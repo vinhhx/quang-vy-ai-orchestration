@@ -1,0 +1,29 @@
+OBSERVATIONS S1 (2026-10-15T01:26:17Z)
+positive_exit_code=0 duration_s=6 stderr_lines=0 stdout_lines=9
+claude_version=2.1.300 (Claude Code)
+--- init (session_id, model, version)
+{"session_id":"1794dfc4-1acc-4f78-afc7-5dd721fe31d6","model":"claude-opus-5-5","claude_code_version":"2.1.300"}
+--- distinct type/subtype pairs (count type subtype)
+      3 assistant	-
+      1 rate_limit_event	-
+      1 result	success
+      1 system	hook_response
+      1 system	hook_started
+      1 system	init
+      1 user	-
+--- assistant lines (message.id, content block types)
+{"id":"msg_011Cg39n7mL4Qu1F5pfs5NUK","blocks":["tool_use"]}
+{"id":"msg_011Cg39nH5RYvEXGyPoxgxKx","blocks":["thinking"]}
+{"id":"msg_011Cg39nH5RYvEXGyPoxgxKx","blocks":["text"]}
+--- user lines (content block types)
+{"blocks":["tool_result"]}
+--- counts
+tool_use_blocks=1
+tool_result_blocks=1
+assistant_lines=3
+distinct_message_ids=2
+--- result
+{"subtype":"success","is_error":false,"num_turns":2,"terminal_reason":"completed","session_id":"1794dfc4-1acc-4f78-afc7-5dd721fe31d6","total_cost_usd":0.0958094}
+{"input":4,"output":293,"cache_read":30387,"cache_creation":10482,"ephemeral_5m":0,"ephemeral_1h":10482}
+--- no-verbose case
+exit_code=1
