@@ -1,0 +1,6 @@
+--- a.txt content
+hello
+edited-by-dsh
+--- owner uid:gid=0:0
+me uid:gid=1000:1000
+contains_edited_by_dsh=yes
