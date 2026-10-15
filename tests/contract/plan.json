@@ -241,6 +241,90 @@
         ],
         "has_blockers": false
       }
+    },
+    {
+      "id": "plan-dot-root",
+      "markdown": "# Plan: Test task\n<!-- brain-meta: {\"branch\": \"task/test\", \"request\": \"fix bug\", \"task\": \"test-task\"} -->\n## Mục tiêu\nSửa lỗi logic trong ứng dụng\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | . | 10-20 | sửa điều kiện rẽ nhánh | tránh crash |\n## Không được đụng tới\nsrc/other.py\n## Cách kiểm tra\npython3 -m unittest\n## Vướng mắc (Dev ghi vào đây nếu có)\n<!-- Dev ghi vào đây nếu có -->\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "not_a_file:."
+        ],
+        "files": [
+          "."
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-dot-slash-root",
+      "markdown": "# Plan: Test task\n<!-- brain-meta: {\"branch\": \"task/test\", \"request\": \"fix bug\", \"task\": \"test-task\"} -->\n## Mục tiêu\nSửa lỗi logic trong ứng dụng\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | ./ | 10-20 | sửa điều kiện rẽ nhánh | tránh crash |\n## Không được đụng tới\nsrc/other.py\n## Cách kiểm tra\npython3 -m unittest\n## Vướng mắc (Dev ghi vào đây nếu có)\n<!-- Dev ghi vào đây nếu có -->\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "not_a_file:."
+        ],
+        "files": [
+          "."
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-dir-up-to-root",
+      "markdown": "# Plan: Test task\n<!-- brain-meta: {\"branch\": \"task/test\", \"request\": \"fix bug\", \"task\": \"test-task\"} -->\n## Mục tiêu\nSửa lỗi logic trong ứng dụng\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/.. | 10-20 | sửa điều kiện rẽ nhánh | tránh crash |\n## Không được đụng tới\nsrc/other.py\n## Cách kiểm tra\npython3 -m unittest\n## Vướng mắc (Dev ghi vào đây nếu có)\n<!-- Dev ghi vào đây nếu có -->\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "not_a_file:."
+        ],
+        "files": [
+          "."
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-glob-star",
+      "markdown": "# Plan: Test task\n<!-- brain-meta: {\"branch\": \"task/test\", \"request\": \"fix bug\", \"task\": \"test-task\"} -->\n## Mục tiêu\nSửa lỗi logic trong ứng dụng\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/* | 10-20 | sửa điều kiện rẽ nhánh | tránh crash |\n## Không được đụng tới\nsrc/other.py\n## Cách kiểm tra\npython3 -m unittest\n## Vướng mắc (Dev ghi vào đây nếu có)\n<!-- Dev ghi vào đây nếu có -->\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "glob_path:src/*"
+        ],
+        "files": [
+          "src/*"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-glob-double-star",
+      "markdown": "# Plan: Test task\n<!-- brain-meta: {\"branch\": \"task/test\", \"request\": \"fix bug\", \"task\": \"test-task\"} -->\n## Mục tiêu\nSửa lỗi logic trong ứng dụng\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | ** | 10-20 | sửa điều kiện rẽ nhánh | tránh crash |\n## Không được đụng tới\nsrc/other.py\n## Cách kiểm tra\npython3 -m unittest\n## Vướng mắc (Dev ghi vào đây nếu có)\n<!-- Dev ghi vào đây nếu có -->\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "glob_path:**"
+        ],
+        "files": [
+          "**"
+        ],
+        "has_blockers": false
+      }
+    },
+    {
+      "id": "plan-glob-brackets",
+      "markdown": "# Plan: Test task\n<!-- brain-meta: {\"branch\": \"task/test\", \"request\": \"fix bug\", \"task\": \"test-task\"} -->\n## Mục tiêu\nSửa lỗi logic trong ứng dụng\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/[ab].py | 10-20 | sửa điều kiện rẽ nhánh | tránh crash |\n## Không được đụng tới\nsrc/other.py\n## Cách kiểm tra\npython3 -m unittest\n## Vướng mắc (Dev ghi vào đây nếu có)\n<!-- Dev ghi vào đây nếu có -->\n",
+      "expect": {
+        "valid": false,
+        "error_codes": [
+          "glob_path:src/[ab].py"
+        ],
+        "files": [
+          "src/[ab].py"
+        ],
+        "has_blockers": false
+      }
     }
   ]
 }
