@@ -4,6 +4,7 @@
 > Máy chuẩn: Linux (D-08). Mọi output thô đã qua `spikes/lib/scrub.py` và `spikes/lib/scan-secrets.sh` trước khi commit (D-03).
 > Phiên bản công cụ: claude 2.1.300 (Claude Code) | agy 1.3.5 | docker 29.8.1 (build 4a63305) | dsh 0.1.1-rc.2 (trong container `dsh-deepseek-harness`)
 > Script chạy lại được: `spikes/sN/run.sh`; kiểm tra bằng chứng: `spikes/sN/verify.sh`; kiểm tra file này: `spikes/lib/check-results.sh`.
+> Phê duyệt: người dùng (vinhhx) duyệt cả 8 kết quả S1..S8 đúng như đã đề xuất, ngày 2026-10-15, qua chat ("approved" rồi "Yes, accept as proposed"). Các nhãn chờ duyệt được executor gỡ theo chỉ thị rõ ràng của người dùng, không sửa nội dung kết quả nào (lệch so với D-02 là chỉ người dùng gỡ nhãn; ghi trong SUMMARY). "Cách làm đã kiểm chứng" của S1, S4 và quyết định SPK-10 (miễn điều kiện chính sách) được chấp nhận như đã ghi.
 
 ## S1 — Stream JSON
 
@@ -13,7 +14,7 @@
   - Dương tính: `cd <thư mục tạm có 3 file> && claude -p "liệt kê file trong thư mục này" --output-format stream-json --verbose --allowedTools "Bash(ls *)" </dev/null > spikes/s1/raw/s1.jsonl`
   - Âm tính (E-01): cùng lệnh nhưng bỏ `--verbose`
   - Chạy lại bằng `bash spikes/s1/run.sh`
-- Kết quả: Đạt (chờ duyệt)
+- Kết quả: Đạt
 - Quan sát:
   - Dòng `system/init` có `session_id`, `model`, `claude_code_version`, `cwd`, danh sách tool/skill. Dòng cuối `type: result` (`subtype: success`, `num_turns: 2`, `terminal_reason: completed`) có `usage`, `session_id`, `total_cost_usd`, `modelUsage`.
   - Có đủ 9 dòng. Các cặp type/subtype: `system/hook_started`, `system/hook_response`, `system/init`, `rate_limit_event`, `assistant` x3, `user` x1, `result/success`. Dòng hook (SessionStart) đến TRƯỚC `init`; `rate_limit_event` là loại dòng không có trong tài liệu gốc (E-02, A13).
@@ -43,7 +44,7 @@
   - băm `sha256sum` và `wc -l` của transcript gốc trước và sau bước fork
   - `claude -p "số đó cộng 1?" --resume <id> --fork-session --output-format json`
   - Điều chỉnh so với nguồn: thêm `--output-format json` ở bước 2 và 3 để lấy được session_id. Chạy lại bằng `bash spikes/s2/run.sh`.
-- Kết quả: Đạt (chờ duyệt)
+- Kết quả: Đạt
 - Quan sát:
   - `--resume` giữ nguyên `session_id` (resume_same_id=yes). `--resume --fork-session` tạo `session_id` mới (fork_new_id=yes) và có file transcript riêng.
   - Transcript gốc không đổi qua bước fork: cùng `sha256` và cùng 65 dòng trước và sau (transcript_unchanged=yes).
@@ -71,7 +72,7 @@
   - Mốc 0 (nguội): trong mỗi thư mục chạy `claude -p "Reply with the single word OK" --output-format json </dev/null`.
   - Mốc 1, 10, 65 phút: đúng một lần thăm dò giống hệt trong w1, w10, w65 tính từ lúc kết thúc mốc 0 của chính thư mục đó (ba tiền tố độc lập vì mỗi lần cache hit đều làm lại bộ đếm TTL). Lịch chạy tách rời bằng `setsid nohup bash spikes/s3/schedule.sh`.
   - Chạy lại bằng `bash spikes/s3/run.sh`, phân loại bằng `bash spikes/s3/verify.sh`.
-- Kết quả: Đạt (chờ duyệt)
+- Kết quả: Đạt
 - Quan sát:
   - Kiểm tra trước: không có biến FORCE_PROMPT_CACHING_5M, CLAUDE_CODE_PROMPT_CACHE_TTL, ENABLE_PROMPT_CACHING_1H, DISABLE_PROMPT_CACHING, và không có `promptCacheTtl` trong `~/.claude/settings.json`.
   - Mốc 0 (nguội), phần riêng của dự án P = `cache_creation_input_tokens`: w1 = 33733, w10 = 33806, w65 = 33773; `cache_read_input_tokens` của cả ba là 11168 (phần tĩnh dùng chung của Claude Code). Cả ba đều qua ngưỡng 8000 token nên lịch thăm dò đã được khởi động.
@@ -117,7 +118,7 @@
   - r1: `kill -TERM <pid claude>`. r2: `kill -KILL <pid claude>`. r3: khởi chạy qua `setsid`, rồi `kill -TERM -- -<PGID>` (PGID của launcher).
   - Sau mỗi tín hiệu: chờ 5 giây, chụp `ps`, tìm tiến trình sót bằng khớp neo `^sleep 31N$`, rồi quét (sweep) các hậu duệ đã ghi: TERM, 2 giây sau KILL.
   - Điều chỉnh so với nguồn: dùng dấu hiệu duy nhất thay cho `sleep 300` và chụp `ps -o pid,ppid,pgid,sid,etimes,args` chỉ trên các PID đã ghi thay cho `ps -ef | grep sleep`.
-- Kết quả: Đạt (chờ duyệt)
+- Kết quả: Đạt
 - Quan sát:
   - Cây tiến trình trước khi kill (cả 3 lần giống nhau): `timeout` > `claude` > `/bin/bash -c ... eval 'sleep N'` > `sleep N`. Tiến trình Bash con của claude và `sleep` nằm trong session và nhóm tiến trình RIÊNG (sid = pgid = PID của bash con), khác nhóm của `timeout`/`claude`. Vì vậy `kill -- -PGID` của launcher không trực tiếp chạm tới chúng.
   - r1 SIGTERM vào PID claude: launcher thoát mã 143. Sau 5 giây không còn tiến trình nào trong ảnh `after`; không sót `sleep 317` (leftover = none). Claude tự dọn: dòng stream có `system/task_notification` (`status: stopped`) và `task_updated` (`status: killed`), sau đó vẫn in dòng `result` (`subtype: success`, `terminal_reason: completed`, `num_turns: 2`) trước khi thoát. Sweep = none, final = none.
@@ -164,7 +165,7 @@
   - `bash spikes/s5/run.sh clone`: nhân bản `~/.claude-orca` sang `~/.claude-personal` bằng rsync, loại `.credentials.json`, `projects/`, `sessions/`, `history.jsonl`, `file-history/`, `session-env/`, `shell-snapshots/`, `telemetry/`, `backups/`; `chmod 700`.
   - `bash spikes/s5/run.sh partial`: `claude auth status` (profile work với `CLAUDE_CONFIG_DIR` bỏ đặt; bản nhân bản với `CLAUDE_CONFIG_DIR=~/.claude-personal`) qua bộ lọc allowlist; một lệnh `claude -p "hi" --output-format json` ở profile work; cùng lệnh đó với bản nhân bản chưa đăng nhập; đọc `organizationType`/`seatTier`/`organizationRole` từ `oauthAccount` của hai file `.claude.json` (chỉ đọc, qua allowlist); so sánh dấu vân tay `~/.claude-orca` (sha256, kích thước, mtime) trước và sau.
   - Không chạy claude với `~/.claude-orca` và không sửa nó (E-06). Không đăng nhập ở bất kỳ đâu.
-- Kết quả: Một phần (chờ duyệt)
+- Kết quả: Một phần
 - Quan sát:
   - Quyết định của người dùng tại điểm dừng đăng nhập: profile Personal CHÍNH LÀ `~/.claude-orca` (đã đăng nhập sẵn), không phải `~/.claude-personal`. Phiên GSD này đang chạy trên `~/.claude-orca`, nên kế hoạch cấm chạy claude với nó và cấm sửa nó (token có thể xoay vòng, E-06). Vì vậy chỉ ánh xạ, không chạy thử trực tiếp.
   - Bản nhân bản `~/.claude-personal` vẫn nằm đó, KHÔNG dùng và KHÔNG xóa: `credentials_copied=no`, 1003 file, quyền 700, phương pháp rsync.
@@ -198,7 +199,7 @@
   - Chế độ kill: `bash spikes/s6/run.sh --kill`. Mỗi biến thể có dấu hiệu riêng `s6k-<nonce>` trong prompt, yêu cầu dsh chạy `sleep 120`. (a) gửi SIGTERM vào PID của `docker exec` client phía host. (b) khởi chạy qua `sh -c` ghi `$$` vào `/tmp/s6pid-<nonce>` trong container rồi `exec dsh`, sau đó `docker exec kill -TERM <pid đó>`. Kiểm tra sót bằng `ps` trong container lọc theo dấu hiệu cùng hậu duệ; quét theo PID.
   - Điều chỉnh so với nguồn: chạy qua container thay vì `ANTHROPIC_BASE_URL` trên host (D-07); biến thể (c) dựa theo mẫu tên tiến trình bị bỏ vì có thể chạm tới tiến trình headless khác không do spike khởi chạy.
   - Chạy lại bằng `bash spikes/s6/run.sh` và `bash spikes/s6/run.sh --kill`.
-- Kết quả: Một phần (chờ duyệt)
+- Kết quả: Một phần
 - Quan sát:
   - (1) Gọi headless từ host qua `docker exec`: được. Thoát mã 0, stdout đúng một dòng `DONE`, stderr rỗng. `dsh --profile headless --help` mô tả "Answer one task, print the final assistant message, and exit"; chỉ có cờ `-h`, không có cờ chọn định dạng đầu ra, không có giới hạn lượt, không có cờ session.
   - (2) Tương đương stream-json: KHÔNG. `s6-format.txt` ghi `json_lines=0 text_lines=1`: stdout chỉ là thông điệp cuối cùng dạng văn bản, không có sự kiện từng bước, không có `session_id`, không có `usage`, không có `tool_use`. Phase 6 không thể dùng parser stream-json của Phase 3 cho dsh.
@@ -231,7 +232,7 @@
   - Mọi lệnh chạy dạng `timeout 10 agy ... </dev/null > <tệp>` từ thư mục tạm ngoài repo: `agy --version`; `agy --help`; `agy -p "Reply with the single word OK" --output-format json`; cùng prompt với `--output-format stream-json`; phép thử bác bỏ E-10 `agy -p x --max-turns 1`.
   - Docs lấy bằng `curl` rồi rút thành văn bản (công cụ WebFetch không có trong phiên thực thi). Không chạy binary khởi chạy IDE, không cài gì.
   - Chạy lại bằng `bash spikes/s7/run.sh`.
-- Kết quả: Một phần (chờ duyệt)
+- Kết quả: Một phần
 - Quan sát:
   - Headless: CÓ. `-p` (bí danh `--print`, `--prompt`) chạy một prompt không tương tác rồi thoát. Trên máy này chạy thẳng bằng thông tin đăng nhập đã lưu, không báo `authentication required`, hoàn tất khoảng 3 đến 4 giây, thoát mã 0, không chạm giới hạn 10 s.
   - JSON: CÓ. `--output-format json` cho một phong bì với `conversation_id`, `status` (`SUCCESS`), `response`, `duration_seconds`, `num_turns`, `usage` (`input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `total_tokens`). `--output-format stream-json` cho NDJSON với khóa `event` thuộc `init`, `step_update`, `result`; khác Claude ở chỗ không có `type`/`tool_use`/`tool_result` mà dùng `step_update.step_type` (docs nêu `user_input`, `agent_response`, `tool`, `checkpoint`; lần chạy local không dùng công cụ nên chưa thấy `tool`). `usage` có ở `step_update` và `result`.
@@ -260,7 +261,7 @@
   - Biến thể A (lệnh nguồn nguyên văn): `claude -p "review git diff" --max-turns 1 --output-format json`.
   - Biến thể B (dạng FAST-02): `claude -p "Review this diff in two sentences:\n<nội dung diff>" --max-turns 1 --tools "" --no-session-persistence --output-format json`; đếm file `*.jsonl` trong `~/.claude/projects/<kho tạm>/` trước và sau B.
   - Cả hai chạy qua `run_claude` (môi trường sạch, `</dev/null`). Chạy lại bằng `bash spikes/s8/run.sh`.
-- Kết quả: Một phần (chờ duyệt)
+- Kết quả: Một phần
 - Quan sát:
   - Biến thể A: `subtype: error_max_turns`, `is_error: true`, `terminal_reason: max_turns`, `stop_reason: tool_use`, `num_turns: 2`, thông báo trong `errors` là "Reached maximum number of turns (1)". Dòng `result` KHÔNG có khóa `result` (không có văn bản review nào): `result_nonempty=no`. Mã thoát `1` (không phải 0). Một turn duy nhất bị dùng cho lời gọi công cụ (đi đọc `git diff`) nên không có câu trả lời. `permission_denials` rỗng. E-11 được xác nhận.
   - Lưu ý: `num_turns` báo 2 dù giới hạn là 1, tức giá trị này đếm cả lượt vượt ngưỡng nên không thể dùng nó để kiểm chứng ngưỡng.
