@@ -191,7 +191,24 @@ def execute_role(
             stderr_f.close()
             finished_at = datetime.now(timezone.utc).isoformat()
             sys.stderr.write(f"[brain] {spec.role} xong · exit {exit_code} · log {raw_log}\n")
-            sys.stderr.flush()
+            res = RunResult(
+                role=spec.role,
+                exit_code=exit_code,
+                raw_log=raw_log,
+                stderr_log=stderr_log,
+                run_dir=run_dir,
+                started_at=started_at,
+                finished_at=finished_at,
+                timed_out=timed_out,
+                interrupted=True,
+            )
+            try:
+                from brain.tasklog import record_run
+
+                record_run(project, task, spec.role, res, cfg)
+            except Exception:
+                sys.stderr.write("[brain] cảnh báo: không ghi được nhật ký\n")
+                sys.stderr.flush()
             raise BrainError("Đã dừng (Ctrl+C)", EXIT_INTERRUPTED)
 
         reader_thread.join(timeout=5)
@@ -203,7 +220,7 @@ def execute_role(
     sys.stderr.write(f"[brain] {spec.role} xong · exit {exit_code} · log {raw_log}\n")
     sys.stderr.flush()
 
-    return RunResult(
+    res = RunResult(
         role=spec.role,
         exit_code=exit_code,
         raw_log=raw_log,
@@ -214,3 +231,14 @@ def execute_role(
         timed_out=timed_out,
         interrupted=interrupted,
     )
+
+    try:
+        from brain.tasklog import record_run
+
+        record_run(project, task, spec.role, res, cfg)
+    except Exception:
+        sys.stderr.write("[brain] cảnh báo: không ghi được nhật ký\n")
+        sys.stderr.flush()
+
+    return res
+

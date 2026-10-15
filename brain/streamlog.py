@@ -62,13 +62,18 @@ def _normalize_tool_path(p: str, root: str | Path | None = None) -> str:
             return rel.as_posix()
         except (ValueError, RuntimeError):
             pass
+        if p_norm.startswith("/work/proj/"):
+            return p_norm[len("/work/proj/") :]
     else:
         p_norm = posixpath.normpath(p)
+        if p_norm.startswith("/work/proj/"):
+            return p_norm[len("/work/proj/") :]
         if not posixpath.isabs(p_norm):
             if p_norm.startswith("./"):
                 return p_norm[2:]
             return p_norm
     return posixpath.normpath(p)
+
 
 
 def summarize(

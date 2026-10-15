@@ -1,0 +1,6 @@
+- Task:
+- Dự án:
+- Số turn của Dev trước khi bắt đầu sửa:
+- Dev có đọc file ngoài plan không:
+- QA phát hiện được gì:
+- Phải làm lại không, vì sao:
