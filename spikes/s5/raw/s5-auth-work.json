@@ -1,0 +1,6 @@
+{
+  "authMethod": "claude.ai",
+  "configDirectory": "~/.claude",
+  "subscriptionType": "team",
+  "loggedIn": true
+}

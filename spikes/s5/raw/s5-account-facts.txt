@@ -1,0 +1,2 @@
+work {"organizationType": "claude_team", "seatTier": "team_standard", "organizationRole": "user"}
+personal_orca {"organizationType": "claude_pro", "seatTier": null, "organizationRole": "admin"}

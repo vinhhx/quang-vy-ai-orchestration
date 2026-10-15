@@ -1,0 +1,5 @@
+{
+  "authMethod": "none",
+  "configDirectory": "~/.claude-personal",
+  "loggedIn": false
+}

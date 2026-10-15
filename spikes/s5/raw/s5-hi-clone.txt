@@ -1,0 +1,4 @@
+exit_code=1
+subtype=success is_error=true num_turns=1 total_cost_usd=0
+result=Not logged in · Please run /login
+work_hi_exit_code=0

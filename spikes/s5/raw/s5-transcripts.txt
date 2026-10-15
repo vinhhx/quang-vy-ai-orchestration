@@ -1,0 +1,4 @@
+work_sid_in_work_profile=yes
+work_sid_in_clone_profile=no
+personal_sid_in_personal_profile=not_run
+personal_sid_in_work_profile=not_run

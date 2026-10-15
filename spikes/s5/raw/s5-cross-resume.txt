@@ -1,0 +1,2 @@
+work_sid_resumed_under_personal not_run (no personal login; user chose map-only)
+personal_sid_resumed_under_work not_run (no personal login; user chose map-only)

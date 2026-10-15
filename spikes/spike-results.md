@@ -140,15 +140,36 @@
 
 ## S5 — Tách profile
 
-- Ngày thử:
-- Phiên bản:
+- Ngày thử: 2026-10-15
+- Phiên bản: claude 2.1.300 (Claude Code), Linux (D-08). Chế độ `partial` của `spikes/s5/run.sh`: người dùng chọn "Map only, skip live test" nên chỉ chạy phần không cần đăng nhập cá nhân.
 - Lệnh:
-- Kết quả:
+  - `bash spikes/s5/run.sh clone`: nhân bản `~/.claude-orca` sang `~/.claude-personal` bằng rsync, loại `.credentials.json`, `projects/`, `sessions/`, `history.jsonl`, `file-history/`, `session-env/`, `shell-snapshots/`, `telemetry/`, `backups/`; `chmod 700`.
+  - `bash spikes/s5/run.sh partial`: `claude auth status` (profile work với `CLAUDE_CONFIG_DIR` bỏ đặt; bản nhân bản với `CLAUDE_CONFIG_DIR=~/.claude-personal`) qua bộ lọc allowlist; một lệnh `claude -p "hi" --output-format json` ở profile work; cùng lệnh đó với bản nhân bản chưa đăng nhập; đọc `organizationType`/`seatTier`/`organizationRole` từ `oauthAccount` của hai file `.claude.json` (chỉ đọc, qua allowlist); so sánh dấu vân tay `~/.claude-orca` (sha256, kích thước, mtime) trước và sau.
+  - Không chạy claude với `~/.claude-orca` và không sửa nó (E-06). Không đăng nhập ở bất kỳ đâu.
+- Kết quả: Một phần (chờ duyệt)
 - Quan sát:
-- Ảnh hưởng tới thiết kế:
-- Phương án thay thế:
-- Phase bị ảnh hưởng:
+  - Quyết định của người dùng tại điểm dừng đăng nhập: profile Personal CHÍNH LÀ `~/.claude-orca` (đã đăng nhập sẵn), không phải `~/.claude-personal`. Phiên GSD này đang chạy trên `~/.claude-orca`, nên kế hoạch cấm chạy claude với nó và cấm sửa nó (token có thể xoay vòng, E-06). Vì vậy chỉ ánh xạ, không chạy thử trực tiếp.
+  - Bản nhân bản `~/.claude-personal` vẫn nằm đó, KHÔNG dùng và KHÔNG xóa: `credentials_copied=no`, 1003 file, quyền 700, phương pháp rsync.
+  - Profile work (`CLAUDE_CONFIG_DIR` bỏ đặt): `claude auth status` báo `loggedIn=true`, `authMethod=claude.ai`, `subscriptionType=team`, `configDirectory=~/.claude`. Bản `auth status` của phiên bản này KHÔNG in `organizationType`/`seatTier`/`organizationRole`; ba trường này lấy từ `oauthAccount` trong `.claude.json`: work = claude_team / team_standard / user; `~/.claude-orca` = claude_pro / (không có seatTier) / admin.
+  - Bản nhân bản chưa có credentials: `auth status` báo `loggedIn=false`, `authMethod=none` dù `.claude.json` nhân bản vẫn mang `oauthAccount` của tài khoản orca. Tức là phần nhận dạng trong `.claude.json` không đủ để đăng nhập.
+  - `claude -p "hi"` với bản nhân bản chưa đăng nhập: thoát ngay mã 1, `is_error=true`, `result` là "Not logged in · Please run /login", chi phí 0, không gọi API. Profile trống KHÔNG âm thầm rơi về profile work `~/.claude`.
+  - `claude -p "hi"` ở profile work: `success`, `is_error=false`, 1 turn. Transcript của session này nằm ở `~/.claude/projects/<thư mục>/<session_id>.jsonl` (work_sid_in_work_profile=yes) và không có trong bản nhân bản (work_sid_in_clone_profile=no).
+  - Dấu vân tay `~/.claude-orca`: `.credentials.json` không đổi (credentials_unchanged=yes). `.claude.json` có đổi (claude_json_unchanged=no): phiên agent này đang chạy trên `~/.claude-orca` nên có thể tự ghi file đó; spike chỉ đọc, không chạy claude với nó (claude_run_against_orca=no).
+  - CHƯA kiểm chứng: (1) chạy claude thật với profile cá nhân; (2) tách transcript giữa hai profile cho session của profile cá nhân (hai dòng `personal_*` ghi `not_run`); (3) cross-resume hai chiều giữa hai profile (`not_run`); (4) E-06, việc sao chép credentials làm đăng xuất nguồn (không sao chép credentials nên không thử); (5) E-07, `CLAUDE_CONFIG_DIR=~/.claude` tường minh (không thử).
+- Ảnh hưởng tới thiết kế: Quy tắc ghi lại cho PROF: bỏ đặt `CLAUDE_CONFIG_DIR` với profile work, chỉ đặt nó cho profile không mặc định (E-07). Profile Personal là `~/.claude-orca`, nên Phase 3 spawn task cá nhân với `CLAUDE_CONFIG_DIR=~/.claude-orca`; profile trống thất bại nhanh và rõ ràng chứ không rơi về work, nên có thể dùng "đăng nhập chưa" làm kiểm tra tiền điều kiện. Vì `~/.claude-orca` cũng là profile của chính phiên điều phối đang chạy, việc spawn thêm tiến trình claude dùng chung credentials đó chưa được kiểm chứng về xoay token (E-06).
+- Phương án thay thế: (1) Trước khi thiết kế PROF chốt, chạy phép thử trực tiếp một lần: đăng nhập tài khoản cá nhân vào profile phụ (`CLAUDE_CONFIG_DIR=~/.claude-personal claude`, rồi `/login`) và chạy `bash spikes/s5/run.sh test`; bản nhân bản `~/.claude-personal` được giữ lại đúng để dùng cho việc này. (2) Hoặc chạy phép thử trực tiếp với `~/.claude-orca` từ một terminal ngoài phiên GSD khi không còn phiên nào dùng nó. (3) Trong lúc chưa kiểm: Phase 3 coi thư mục profile là cấu hình, không giả định transcript tách biệt và không chạy hai tiến trình claude song song trên cùng một profile cá nhân.
+- Phase bị ảnh hưởng: Phase 2 và Phase 3 (PROF: chọn profile khi spawn, cách ly transcript và credentials)
 - Bằng chứng:
+  - `spikes/s5/raw/s5-clone.txt`
+  - `spikes/s5/raw/s5-auth-work.json`
+  - `spikes/s5/raw/s5-auth-personal.json`
+  - `spikes/s5/raw/s5-account-facts.txt`
+  - `spikes/s5/raw/s5-hi-work.json`
+  - `spikes/s5/raw/s5-hi-clone.txt`
+  - `spikes/s5/raw/s5-transcripts.txt`
+  - `spikes/s5/raw/s5-cross-resume.txt`
+  - `spikes/s5/raw/s5-orca-untouched.txt`
+  - `spikes/s5/run.sh`
 
 ## S6 — DeepSeek qua harness Docker
 
@@ -190,9 +211,9 @@
 
 | Profile | Thư mục | organizationType | seatTier | organizationRole |
 |---------|---------|------------------|----------|------------------|
-| Work | `~/.claude` | (chờ S5) | (chờ S5) | (chờ S5) |
-| Personal | `~/.claude-personal` | (chờ S5) | (chờ S5) | (chờ S5) |
+| Work | `~/.claude` | claude_team | team_standard | user |
+| Personal | `~/.claude-orca` | claude_pro | (không có) | admin |
 
 - Câu hỏi chính sách: Chính sách công ty cho phép dùng chỗ ngồi Team của công ty cho việc nào, và tài khoản cá nhân có được dùng cho việc cá nhân/dựng video không?
-- Quyết định: (chờ người dùng xác nhận chính sách)
-- Người xác nhận / ngày:
+- Quyết định: Hai profile (hình dạng option-a). Work = chỗ ngồi Team của công ty, thư mục `~/.claude`, dùng cho việc công ty. Personal = tài khoản Pro cá nhân, thư mục `~/.claude-orca` (không phải `~/.claude-personal`), dùng cho việc cá nhân/dựng video. Chính sách công ty: không xác nhận, người dùng miễn (waived by user). Không có nguồn chính sách nào được ghi lại. Câu trả lời nguyên văn của người dùng ngày 2026-10-15: "SPK-10 alway accept ignore condition". Diễn giải của điều phối viên: người dùng chấp nhận cách ánh xạ hai profile và chủ động chọn tiếp tục mà không xác nhận điều kiện chính sách công ty. Ánh xạ thư mục lấy từ câu trả lời nguyên văn tại điểm dừng đăng nhập S5: "personal logged in change claude config personal is claude-orca". Quan sát tài khoản: `~/.claude` là chỗ ngồi Team của công ty (claude_team), `~/.claude-orca` là tài khoản Pro cá nhân (claude_pro, admin); tiền đề "cả hai tài khoản đều do công ty cấp" không khớp với máy này (E-12).
+- Người xác nhận / ngày: Người dùng (vinhhx) / 2026-10-15
