@@ -155,27 +155,38 @@ def main() -> None:
         # Check hooks
         is_blocked = False
         hook_stderr = ""
-        for hook in hooks:
-            matcher = hook.get("matcher", "")
+        for entry in hooks:
+            if not isinstance(entry, dict):
+                continue
+            nested_hooks = entry.get("hooks")
+            if not isinstance(nested_hooks, list):
+                continue
+            matcher = entry.get("matcher", "")
             if matcher and re.fullmatch(matcher, tool_name):
-                cmd = hook.get("command", "")
-                payload = {
-                    "hook_event_name": "PreToolUse",
-                    "tool_name": tool_name,
-                    "tool_input": tool_input,
-                    "cwd": os.getcwd(),
-                }
-                res = subprocess.run(
-                    cmd,
-                    shell=True,
-                    input=json.dumps(payload),
-                    text=True,
-                    capture_output=True,
-                )
-                if res.returncode == 2:
-                    is_blocked = True
-                    hook_stderr = res.stderr
-                    break
+                for hook_item in nested_hooks:
+                    if not isinstance(hook_item, dict):
+                        continue
+                    if hook_item.get("type") == "command":
+                        cmd = hook_item.get("command", "")
+                        payload = {
+                            "hook_event_name": "PreToolUse",
+                            "tool_name": tool_name,
+                            "tool_input": tool_input,
+                            "cwd": os.getcwd(),
+                        }
+                        res = subprocess.run(
+                            cmd,
+                            shell=True,
+                            input=json.dumps(payload),
+                            text=True,
+                            capture_output=True,
+                        )
+                        if res.returncode == 2:
+                            is_blocked = True
+                            hook_stderr = res.stderr
+                            break
+            if is_blocked:
+                break
 
         if is_blocked:
             blocked.append({"tool": tool_name, "path": path_for_blocked})

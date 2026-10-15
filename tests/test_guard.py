@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -281,17 +282,84 @@ class TestGuardHook(unittest.TestCase):
         settings_data = json.loads(settings_path.read_text(encoding="utf-8"))
         hooks = settings_data.get("hooks", {}).get("PreToolUse", [])
         self.assertEqual(len(hooks), 1)
-        self.assertEqual(hooks[0]["matcher"], "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob")
-        cmd = hooks[0]["command"]
-        self.assertIn("guard.py", cmd)
+        entry = hooks[0]
+        self.assertEqual(entry["matcher"], "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob")
+        self.assertNotIn("command", entry)
+        nested_hooks = entry.get("hooks")
+        self.assertIsInstance(nested_hooks, list)
+        self.assertEqual(len(nested_hooks), 1)
+        cmd = nested_hooks[0].get("command", "")
+        self.assertEqual(entry["hooks"], [{"type": "command", "command": cmd}])
+        self.assertIn("-I", cmd)
+        self.assertIn(str(self.guard_py), cmd)
         self.assertIn("--policy", cmd)
 
         policy_path = run_dir / "policy.json"
         self.assertTrue(policy_path.is_file())
+        self.assertIn(str(policy_path), cmd)
         pdata = json.loads(policy_path.read_text(encoding="utf-8"))
         self.assertEqual(pdata["root"], str(self.root))
         self.assertIn(str(self.app_py), pdata["read_allow"])
         self.assertEqual(pdata["log"], str(run_dir / "guard.jsonl"))
+
+    def test_fake_ignores_flat_hook_shape(self):
+        fake_claude = (repo_root() / "tests" / "fakes" / "fake_claude.py").resolve()
+        run_dir = self.root / "flat_run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        policy_path = run_dir / "policy.json"
+        policy_data = {
+            "root": str(self.root),
+            "read_allow": [str(self.app_py)],
+            "write_allow": [str(self.app_py)],
+            "log": str(run_dir / "guard.jsonl"),
+        }
+        policy_path.write_text(json.dumps(policy_data, indent=2), encoding="utf-8")
+
+        cmd = (
+            f"{shlex.quote(sys.executable)} -I {shlex.quote(str(self.guard_py))} "
+            f"--policy {shlex.quote(str(policy_path))}"
+        )
+        flat_settings = {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob",
+                        "command": cmd,
+                    }
+                ]
+            }
+        }
+        settings_path = run_dir / "settings.json"
+        settings_path.write_text(json.dumps(flat_settings, indent=2), encoding="utf-8")
+
+        scenario_path = self.root / "flat_scenario.json"
+        scenario = {
+            "ops": [
+                {"op": "read", "path": str(self.other_py)},
+            ]
+        }
+        scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+
+        record_path = self.root / "flat_record.jsonl"
+        env = dict(os.environ)
+        env["FAKE_CLAUDE_SCENARIO"] = str(scenario_path)
+        env["FAKE_CLAUDE_RECORD"] = str(record_path)
+
+        res = subprocess.run(
+            [sys.executable, str(fake_claude), "--settings", str(settings_path)],
+            cwd=str(self.root),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+
+        self.assertTrue(record_path.is_file())
+        recs = [json.loads(line) for line in record_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["blocked"], [])
+        self.assertFalse((run_dir / "guard.jsonl").exists())
 
     def test_fake_claude_hook_simulation(self):
         from brain.guard import write_hook_settings
