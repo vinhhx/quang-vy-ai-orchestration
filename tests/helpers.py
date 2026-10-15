@@ -230,3 +230,61 @@ class Sandbox:
 
     def cleanup(self) -> None:
         self.temp_dir.cleanup()
+
+
+def plan_text(
+    title: str,
+    rows: list[tuple[str, str, str, str] | list[str]],
+    checks: str = "python3 -m unittest",
+    blockers: str = "",
+) -> str:
+    lines = [
+        f"# Plan: {title}",
+        "## Mục tiêu",
+        f"Thực hiện {title}",
+        "## Thay đổi",
+        "| # | File | Dòng / hàm | Sửa gì | Lý do |",
+        "|---|---|---|---|---|",
+    ]
+    for i, r in enumerate(rows, start=1):
+        f, where, what, why = r
+        lines.append(f"| {i} | {f} | {where} | {what} | {why} |")
+    lines.extend([
+        "## Không được đụng tới",
+        "",
+        "## Cách kiểm tra",
+        checks,
+        "## Vướng mắc (Dev ghi vào đây nếu có)",
+        blockers,
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def lead_scenario(rows: list, **kw) -> dict:
+    title = kw.get("title", "Kế hoạch")
+    checks = kw.get("checks", "python3 -m unittest")
+    blockers = kw.get("blockers", "")
+
+    ops: list[dict] = [{"op": "read", "path": ".plan.md"}]
+    for r in rows:
+        f = r[0]
+        ops.append({"op": "read", "path": f})
+
+    p_text = plan_text(title, rows, checks=checks, blockers=blockers)
+    ops.append({
+        "op": "write",
+        "path": ".plan.md",
+        "content": p_text,
+        "keep_meta": True,
+    })
+
+    if "extra_ops" in kw:
+        ops.extend(kw["extra_ops"])
+
+    scenario: dict = {"ops": ops}
+    for k, v in kw.items():
+        if k not in ("title", "checks", "blockers", "extra_ops"):
+            scenario[k] = v
+    return scenario
+

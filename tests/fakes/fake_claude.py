@@ -64,11 +64,32 @@ def main() -> None:
             if not target_path.is_absolute():
                 target_path = Path(os.getcwd()) / target_path
             existed = target_path.exists()
+            content = op.get("content", "")
+            if existed and op.get("keep_meta"):
+                try:
+                    with open(target_path, "r", encoding="utf-8") as f:
+                        old_lines = f.read().splitlines()
+                    if len(old_lines) >= 2:
+                        meta_line = old_lines[1]
+                        new_lines = content.splitlines()
+                        if new_lines:
+                            content = (
+                                new_lines[0]
+                                + "\n"
+                                + meta_line
+                                + "\n"
+                                + "\n".join(new_lines[1:])
+                                + ("\n" if content.endswith("\n") else "")
+                            )
+                        else:
+                            content = meta_line + "\n"
+                except Exception:
+                    pass
             tool_name = "Edit" if existed else "Write"
             target_path.parent.mkdir(parents=True, exist_ok=True)
             mode = "a" if op.get("append") else "w"
             with open(target_path, mode, encoding="utf-8") as f:
-                f.write(op.get("content", ""))
+                f.write(content)
             tool_input = {"file_path": str(target_path.resolve())}
         elif op_type == "read":
             target_path = Path(op["path"])
