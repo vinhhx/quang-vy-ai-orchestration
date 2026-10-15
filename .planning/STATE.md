@@ -3,7 +3,7 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Protocol MVP (Scripts)
 status: executing
-stopped_at: Phase 2 plans merged, ready to execute
+stopped_at: "02-07 checkpoint: Task 2 live acceptance P1-01..P1-10 (user, real Claude accounts)"
 last_updated: "2026-10-15T09:03:05.659Z"
 last_activity: 2026-10-15
 last_activity_desc: Merged Phase 1 into main and brought in the Phase 2 plans (7) and Phase 3 context
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-15)
 
 Phase: 2 (Protocol MVP (Scripts)) — READY TO EXECUTE
 Plan: 6 of 7 in current phase
-Status: Ready to execute
+Status: Waiting at 02-07 Task 2 checkpoint (user live run)
 Last activity: 2026-10-15 — Merged Phase 1 into main and brought in the Phase 2 plans (written before the Phase 1 spike results)
 
 Progress: [██░░░░░░░░] 17%
@@ -100,6 +100,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-15T08:00:00Z
-Stopped at: Phase 2 plans merged, ready to execute
-Resume file: None
+Last session: 2026-10-15T09:11:19Z
+Stopped at: 02-07 checkpoint, Task 2 live acceptance P1-01..P1-10 (user)
+Resume file: .planning/phases/02-protocol-mvp-scripts/02-07-SUMMARY.md
