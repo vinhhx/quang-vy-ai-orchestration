@@ -2,7 +2,7 @@
 
 > Quy ước (D-01, D-02): agent chạy lệnh và ghi số liệu khách quan, rồi đề xuất kết quả kèm nhãn chờ duyệt đặt trong ngoặc đơn ngay sau kết quả. Chỉ người dùng được kết luận: sửa kết quả nếu cần rồi xóa nhãn. Phase chỉ đóng khi không còn nhãn nào (D-13).
 > Máy chuẩn: Linux (D-08). Mọi output thô đã qua `spikes/lib/scrub.py` và `spikes/lib/scan-secrets.sh` trước khi commit (D-03).
-> Phiên bản công cụ: claude (điền ở Task 8) | agy (điền ở Task 8) | docker (điền ở Task 8)
+> Phiên bản công cụ: claude 2.1.300 (Claude Code) | agy 1.3.5 | docker 29.8.1 (build 4a63305) | dsh 0.1.1-rc.2 (trong container `dsh-deepseek-harness`)
 > Script chạy lại được: `spikes/sN/run.sh`; kiểm tra bằng chứng: `spikes/sN/verify.sh`; kiểm tra file này: `spikes/lib/check-results.sh`.
 
 ## S1 — Stream JSON
