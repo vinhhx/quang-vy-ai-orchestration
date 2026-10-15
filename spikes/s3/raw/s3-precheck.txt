@@ -9,3 +9,4 @@ util_before: util five_hour={"utilization":14,"resets_at":"2026-10-14T14:30:00.6
 w1 nonce=9df58dd8-d592-4102-8992-6fa4b0b47f64 bytes=49192
 w10 nonce=bcb88e8b-8bb5-4b48-b7ba-52786b10db7f bytes=49213
 w65 nonce=64d07095-3c4a-4e97-8756-cce39ceff525 bytes=49163
+util_after: util five_hour={"utilization":14,"resets_at":"2026-10-14T14:30:00.695695+00:00","limit_dollars":null,"used_dollars":null,"remaining_dollars":null,"locked_reason":null} seven_day={"utilization":82,"resets_at":"2026-10-18T08:00:00.695719+00:00","limit_dollars":null,"used_dollars":null,"remaining_dollars":null,"locked_reason":null} fetched_age_s=60673

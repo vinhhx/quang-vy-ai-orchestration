@@ -1,0 +1,4 @@
+# K	gap_min	t0_cache_read	t0_cache_creation	cache_read	cache_creation	ephemeral_5m	ephemeral_1h	num_turns	classification
+1	1.0	11168	33733	44901	0	0	0	1	warm
+10	10.0	11168	33806	44974	0	0	0	1	warm
+65	65.0	11168	33773	11168	33773	0	33773	1	cold
