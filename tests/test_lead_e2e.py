@@ -376,6 +376,116 @@ class TestLeadE2E(unittest.TestCase):
             with self.assertRaises(BrainError):
                 build_command(spec, cfg)
 
+    def test_replan_after_timeout_regenerates_and_keeps_base_commit(self):
+        repo = self.sandbox.make_repo("web-ban-hang")
+        entry = self.sandbox.project_entry(repo, id="web-ban-hang", profile="work")
+        self.sandbox.write_map([entry])
+        base = self.sandbox.git(repo, "rev-parse", "HEAD").strip()
+
+        self.sandbox.write_config(timeout_seconds={"lead": 1, "dev": 30, "qa": 30})
+        res1 = self.sandbox.run_brain(
+            "lead",
+            "web-ban-hang",
+            "thêm nút",
+            scenario={"sleep": 5},
+        )
+        self.assertEqual(res1.returncode, 1)
+        current_branch = self.sandbox.git(repo, "branch", "--show-current").strip()
+        self.assertEqual(current_branch, "task/them-nut")
+        status1 = self.sandbox.git(repo, "status", "--porcelain")
+        self.assertIn("?? .plan.md", status1)
+
+        self.sandbox.write_config()
+        scenario = lead_scenario([("src/app.py", "app()", "trả về 2", "demo")])
+        res2 = self.sandbox.run_brain(
+            "lead",
+            "web-ban-hang",
+            "thêm nút",
+            scenario=scenario,
+        )
+        self.assertEqual(res2.returncode, 0, f"STDOUT: {res2.stdout}\nSTDERR: {res2.stderr}")
+
+        head_subject = self.sandbox.git(repo, "log", "-1", "--format=%s").strip()
+        self.assertEqual(head_subject, "them-nut: plan")
+
+        status2 = self.sandbox.git(repo, "status", "--porcelain")
+        self.assertEqual(status2.strip(), "")
+
+        plan_content = (repo / ".plan.md").read_text(encoding="utf-8")
+        meta = read_meta(plan_content)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta["base_commit"], base)
+
+    def test_replan_after_validation_failure_succeeds(self):
+        repo = self.sandbox.make_repo("web-ban-hang")
+        entry = self.sandbox.project_entry(repo, id="web-ban-hang", profile="work")
+        self.sandbox.write_map([entry])
+
+        sc1 = lead_scenario([])
+        res1 = self.sandbox.run_brain("lead", "web-ban-hang", "thêm nút", scenario=sc1)
+        self.assertEqual(res1.returncode, 1)
+        status1 = self.sandbox.git(repo, "status", "--porcelain")
+        self.assertIn(".plan.md", status1)
+        head_subject1 = self.sandbox.git(repo, "log", "-1", "--format=%s").strip()
+        self.assertEqual(head_subject1, "init")
+
+        sc2 = lead_scenario([("src/app.py", "app()", "trả về 2", "demo")])
+        res2 = self.sandbox.run_brain("lead", "web-ban-hang", "thêm nút", scenario=sc2)
+        self.assertEqual(res2.returncode, 0, f"STDOUT: {res2.stdout}\nSTDERR: {res2.stderr}")
+
+        head_subject2 = self.sandbox.git(repo, "log", "-1", "--format=%s").strip()
+        self.assertEqual(head_subject2, "them-nut: plan")
+
+    def test_replan_refuses_when_other_files_dirty(self):
+        repo = self.sandbox.make_repo("web-ban-hang")
+        entry = self.sandbox.project_entry(repo, id="web-ban-hang", profile="work")
+        self.sandbox.write_map([entry])
+
+        self.sandbox.write_config(timeout_seconds={"lead": 1, "dev": 30, "qa": 30})
+        res1 = self.sandbox.run_brain(
+            "lead",
+            "web-ban-hang",
+            "thêm nút",
+            scenario={"sleep": 5},
+        )
+        self.assertEqual(res1.returncode, 1)
+
+        records_before = len(self.sandbox.records())
+        (repo / "src" / "app.py").write_text("# manual edit\n", encoding="utf-8")
+
+        self.sandbox.write_config()
+        sc2 = lead_scenario([("src/app.py", "app()", "trả về 2", "demo")])
+        res2 = self.sandbox.run_brain(
+            "lead",
+            "web-ban-hang",
+            "thêm nút",
+            scenario=sc2,
+        )
+        self.assertEqual(res2.returncode, 1)
+        combined_output = res2.stdout + res2.stderr
+        self.assertIn("src/app.py", combined_output)
+        self.assertEqual(len(self.sandbox.records()), records_before)
+        self.assertEqual(
+            (repo / "src" / "app.py").read_text(encoding="utf-8"),
+            "# manual edit\n",
+        )
+
+    def test_leftover_plan_on_other_branch_refuses(self):
+        repo = self.sandbox.make_repo("web-ban-hang")
+        entry = self.sandbox.project_entry(repo, id="web-ban-hang", profile="work")
+        self.sandbox.write_map([entry])
+
+        (repo / ".plan.md").write_text("# leftover plan\n", encoding="utf-8")
+
+        res = self.sandbox.run_brain("lead", "web-ban-hang", "việc khác")
+        self.assertEqual(res.returncode, 1)
+        combined_output = res.stdout + res.stderr
+        self.assertIn(".plan.md", combined_output)
+
+        branches = self.sandbox.git(repo, "branch", "--list", "task/*").strip()
+        self.assertEqual(branches, "")
+        self.assertEqual(len(self.sandbox.records()), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
