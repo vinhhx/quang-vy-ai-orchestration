@@ -15,7 +15,12 @@ covered_files:
   - spikes/spike-results.md
 covered_digest: "v3:sha256:3ec75df8518b0fefb141429f9d0fff6b3b07529a5e3b890efe426134b6899f6d"
 behavior_unverified: 0
-overrides_applied: 0
+overrides_applied: 1
+overrides:
+  - must_have: "Work/Personal account decided after confirming company policy permits it"
+    reason: "User waived the policy confirmation; mapping recorded in spikes/spike-results.md SPK-10"
+    accepted_by: "vinhhx"
+    accepted_at: "2026-10-15T00:00:00Z"
 re_verification: false
 gaps: []
 human_verification:
