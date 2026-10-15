@@ -77,7 +77,7 @@ Run by the user on 2026-10-15 against the throwaway repo `/mnt/data/IDE/du-an-nh
 | P1-05 | New repo `du-an-nhap` picked up by `brain scan`; hand-edited name/aliases of `QuangVy-Orchestration` kept | accepted |
 | P1-06 | `9b39b9d them-ham-tinh-tong: plan` touches only `.plan.md`; the plan is complete and valid | confirmed |
 | P1-07 | `b09d2c8` touches only the two plan files; Dev turns before first edit 1; no reads outside the plan; **`guard.jsonl` has 6 lines (3 Read, 3 Edit, all allowed) under the real CLI** | confirmed |
-| P1-08 | No evidence: one Dev run in total, no `vướng mắc` commit, no exit-4 run dir | **not run; Pass not accepted** |
+| P1-08 | Task `them-ham-can-bac-hai`: plan stripped to file names only (`33ab426`); Dev exit 4, commit `580e70e … vướng mắc` touches only `.plan.md`; the Vướng mắc names the empty rows and what is missing (function name, types, negative-input handling, tests); `guard.jsonl` 3 Read + 1 Edit of `.plan.md`. Two earlier attempts did not exercise it: `them-ham-chia` (plan never stripped) and `them-ham-luy-thua` (only two columns stripped; Mục tiêu and Cách kiểm tra still specified the work, and Dev said so and implemented it within the plan files) | confirmed |
 | P1-09 | `d26e890 them-ham-tinh-tong: qa` adds only `.qa-report.md`; verdict Đạt | confirmed |
 | P1-10 | All four live session ids are under `~/.claude/projects/`, none under `~/.claude-orca/projects/` | confirmed |
 
