@@ -1,0 +1,445 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "P1-05",
+      "layout": {
+        "roots": {
+          "R": {
+            "web-ban-hang": {
+              "git": true,
+              "remote": "git@example.com:org/web.git"
+            },
+            "notes": {
+              "git": false
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "scan",
+          "roots": ["R"]
+        },
+        {
+          "op": "edit",
+          "project": "web-ban-hang",
+          "set": {
+            "name_vi": "Web bán hàng",
+            "aliases": ["shop"],
+            "profile": "work"
+          }
+        },
+        {
+          "op": "mkrepo",
+          "root": "R",
+          "name": "tool-moi",
+          "remote": null
+        },
+        {
+          "op": "scan"
+        }
+      ],
+      "expect": {
+        "exit_codes": [0, 0, 0, 0],
+        "projects": {
+          "web-ban-hang": {
+            "id": "web-ban-hang",
+            "name_vi": "Web bán hàng",
+            "aliases": ["shop"],
+            "profile": "work",
+            "type": "code",
+            "repo": "git@example.com:org/web.git",
+            "missing": false
+          },
+          "tool-moi": {
+            "id": "tool-moi",
+            "name_vi": "tool-moi",
+            "aliases": [],
+            "profile": "",
+            "type": "code",
+            "repo": null,
+            "missing": false
+          }
+        },
+        "absent": ["notes"],
+        "warnings": []
+      }
+    },
+    {
+      "id": "ROUTE-06-alias",
+      "layout": {
+        "roots": {
+          "R": {
+            "proj-a": {
+              "git": true
+            },
+            "proj-b": {
+              "git": true
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "scan",
+          "roots": ["R"]
+        },
+        {
+          "op": "edit",
+          "project": "proj-a",
+          "set": {
+            "aliases": ["shop"]
+          }
+        },
+        {
+          "op": "edit",
+          "project": "proj-b",
+          "set": {
+            "aliases": ["shop"]
+          }
+        },
+        {
+          "op": "scan"
+        }
+      ],
+      "expect": {
+        "exit_codes": [0, 0, 0, 0],
+        "projects": {
+          "proj-a": {
+            "id": "proj-a",
+            "aliases": ["shop"]
+          },
+          "proj-b": {
+            "id": "proj-b",
+            "aliases": ["shop"]
+          }
+        },
+        "absent": [],
+        "warnings": [
+          {
+            "key": "shop",
+            "ids": ["proj-a", "proj-b"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ROUTE-06-alias-vs-id",
+      "layout": {
+        "roots": {
+          "R": {
+            "shop": {
+              "git": true
+            },
+            "other": {
+              "git": true
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "scan",
+          "roots": ["R"]
+        },
+        {
+          "op": "edit",
+          "project": "other",
+          "set": {
+            "aliases": ["shop"]
+          }
+        },
+        {
+          "op": "scan"
+        }
+      ],
+      "expect": {
+        "exit_codes": [0, 0, 0],
+        "projects": {
+          "shop": {
+            "id": "shop"
+          },
+          "other": {
+            "id": "other",
+            "aliases": ["shop"]
+          }
+        },
+        "absent": [],
+        "warnings": [
+          {
+            "key": "shop",
+            "ids": ["shop", "other"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "D-06-depth",
+      "layout": {
+        "roots": {
+          "R": {
+            "top-repo": {
+              "git": true
+            },
+            "group": {
+              "git": false,
+              "children": {
+                "inner": {
+                  "git": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "scan",
+          "roots": ["R"]
+        }
+      ],
+      "expect": {
+        "exit_codes": [0],
+        "projects": {
+          "top-repo": {
+            "id": "top-repo",
+            "type": "code",
+            "missing": false
+          }
+        },
+        "absent": ["group", "inner"],
+        "warnings": []
+      }
+    },
+    {
+      "id": "D-06-missing-restore",
+      "layout": {
+        "roots": {
+          "R": {
+            "repo-x": {
+              "git": true
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "scan",
+          "roots": ["R"]
+        },
+        {
+          "op": "rmdir",
+          "path": "{R}/repo-x"
+        },
+        {
+          "op": "scan"
+        },
+        {
+          "op": "mkdir",
+          "path": "{R}/repo-x",
+          "git": true
+        },
+        {
+          "op": "scan"
+        }
+      ],
+      "expect": {
+        "exit_codes": [0, 0, 0, 0, 0],
+        "projects": {
+          "repo-x": {
+            "id": "repo-x",
+            "missing": false
+          }
+        },
+        "absent": [],
+        "warnings": []
+      }
+    },
+    {
+      "id": "R-id-collision",
+      "layout": {
+        "roots": {
+          "R1": {
+            "web": {
+              "git": true
+            }
+          },
+          "R2": {
+            "web": {
+              "git": true
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "scan",
+          "roots": ["R1", "R2"]
+        }
+      ],
+      "expect": {
+        "exit_codes": [0],
+        "projects": {
+          "web": {
+            "id": "web",
+            "path": "{R1}/web"
+          },
+          "web-2": {
+            "id": "web-2",
+            "path": "{R2}/web"
+          }
+        },
+        "absent": [],
+        "warnings": []
+      }
+    },
+    {
+      "id": "R-remote-credentials",
+      "layout": {
+        "roots": {
+          "R": {
+            "repo-secret": {
+              "git": true,
+              "remote": "https://user:tok3n@host.example/x.git"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "scan",
+          "roots": ["R"]
+        }
+      ],
+      "expect": {
+        "exit_codes": [0],
+        "projects": {
+          "repo-secret": {
+            "id": "repo-secret",
+            "repo": "https://host.example/x.git"
+          }
+        },
+        "absent": [],
+        "warnings": []
+      }
+    },
+    {
+      "id": "D-05-add-media",
+      "layout": {
+        "roots": {
+          "R": {
+            "photos": {
+              "git": false
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "add",
+          "path": "{R}/photos"
+        }
+      ],
+      "expect": {
+        "exit_codes": [0],
+        "projects": {
+          "photos": {
+            "id": "photos",
+            "type": "media",
+            "repo": null,
+            "profile": "",
+            "missing": false
+          }
+        },
+        "absent": [],
+        "warnings": []
+      }
+    },
+    {
+      "id": "D-05-add-existing",
+      "layout": {
+        "roots": {
+          "R": {
+            "app": {
+              "git": true
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "add",
+          "path": "{R}/app"
+        },
+        {
+          "op": "edit",
+          "project": "app",
+          "set": {
+            "name_vi": "Ứng dụng chính",
+            "profile": "work"
+          }
+        },
+        {
+          "op": "add",
+          "path": "{R}/app"
+        }
+      ],
+      "expect": {
+        "exit_codes": [0, 0, 0],
+        "projects": {
+          "app": {
+            "id": "app",
+            "name_vi": "Ứng dụng chính",
+            "profile": "work",
+            "type": "code",
+            "missing": false
+          }
+        },
+        "absent": [],
+        "warnings": []
+      }
+    },
+    {
+      "id": "R-unknown-keys",
+      "layout": {
+        "roots": {
+          "R": {
+            "custom-app": {
+              "git": true
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "scan",
+          "roots": ["R"]
+        },
+        {
+          "op": "edit",
+          "project": "custom-app",
+          "set": {
+            "custom_field": 12345,
+            "extra_info": "keep me"
+          }
+        },
+        {
+          "op": "scan"
+        }
+      ],
+      "expect": {
+        "exit_codes": [0, 0, 0],
+        "projects": {
+          "custom-app": {
+            "id": "custom-app",
+            "custom_field": 12345,
+            "extra_info": "keep me"
+          }
+        },
+        "absent": [],
+        "warnings": []
+      }
+    }
+  ]
+}
