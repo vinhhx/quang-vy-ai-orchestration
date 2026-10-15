@@ -235,15 +235,31 @@
 
 ## S8 — Max turns
 
-- Ngày thử:
-- Phiên bản:
+- Ngày thử: 2026-10-15
+- Phiên bản: claude 2.1.300 (Claude Code), tài khoản work `~/.claude`, chạy lồng đã bỏ biến CLAUDE_CODE_*
 - Lệnh:
-- Kết quả:
+  - Kho git tạm ngoài repo (`~/.cache/qv-spikes/s8/repo`): commit `calc.py` nhỏ rồi sửa thêm hàm `divide`, diff được lưu vào `raw/s8-diff.patch` (nội dung không nhạy cảm).
+  - Biến thể A (lệnh nguồn nguyên văn): `claude -p "review git diff" --max-turns 1 --output-format json`.
+  - Biến thể B (dạng FAST-02): `claude -p "Review this diff in two sentences:\n<nội dung diff>" --max-turns 1 --tools "" --no-session-persistence --output-format json`; đếm file `*.jsonl` trong `~/.claude/projects/<kho tạm>/` trước và sau B.
+  - Cả hai chạy qua `run_claude` (môi trường sạch, `</dev/null`). Chạy lại bằng `bash spikes/s8/run.sh`.
+- Kết quả: Một phần (chờ duyệt)
 - Quan sát:
-- Ảnh hưởng tới thiết kế:
-- Phương án thay thế:
-- Phase bị ảnh hưởng:
+  - Biến thể A: `subtype: error_max_turns`, `is_error: true`, `terminal_reason: max_turns`, `stop_reason: tool_use`, `num_turns: 2`, thông báo trong `errors` là "Reached maximum number of turns (1)". Dòng `result` KHÔNG có khóa `result` (không có văn bản review nào): `result_nonempty=no`. Mã thoát `1` (không phải 0). Một turn duy nhất bị dùng cho lời gọi công cụ (đi đọc `git diff`) nên không có câu trả lời. `permission_denials` rỗng. E-11 được xác nhận.
+  - Lưu ý: `num_turns` báo 2 dù giới hạn là 1, tức giá trị này đếm cả lượt vượt ngưỡng nên không thể dùng nó để kiểm chứng ngưỡng.
+  - Biến thể B: `subtype: success`, `is_error: false`, `terminal_reason: completed`, `stop_reason: end_turn`, `num_turns: 1`, `result` có nội dung (nhận xét 2 câu về việc `divide` chưa xử lý chia cho 0), mã thoát `0`. `permission_denials` rỗng.
+  - `--no-session-persistence`: số file transcript trong thư mục project của kho tạm là `before=1 after=1` quanh biến thể B (file duy nhất là của biến thể A), tức B không để lại transcript nào (xác nhận cho FAST-02 "không tạo session lưu lại").
+  - Chi phí rất nhỏ: A tốn 0.072 USD quy đổi, B tốn 0.019 USD quy đổi (đơn vị của `total_cost_usd`, chỉ để so sánh; không phải mức trừ vào quota subscription).
+  - Chưa kiểm chứng: `--max-turns` lớn hơn 1 với tác vụ nhiều bước; hành vi khi diff lớn hơn giới hạn độ dài đối số dòng lệnh (diff được truyền qua đối số prompt; stdin vẫn là `/dev/null`).
+- Ảnh hưởng tới thiết kế: FAST-02 (chế độ review nhanh một lượt) phải dùng dạng B: nhúng diff vào prompt, tắt toàn bộ công cụ bằng `--tools ""`, thêm `--no-session-persistence`, và đặt `--max-turns 1`; dạng A (để Claude tự đọc `git diff`) cho `error_max_turns` không có kết quả và mã thoát 1. Phase 3 phải coi `subtype` khác `success` là kết quả không dùng được dù mã thoát là gì, đọc `terminal_reason`, và xử lý dòng `result` không có khóa `result`. Diff lớn truyền qua đối số cần giới hạn kích thước hoặc cắt bớt trước khi gọi.
+- Phương án thay thế: Dùng biến thể B cho FAST-02. Nếu diff quá dài cho đối số dòng lệnh, cắt diff theo tệp hoặc tóm tắt bằng `git diff --stat` cộng phần trích, hoặc nâng `--max-turns` lên 2 và cho phép đúng một công cụ đọc (`--allowedTools "Bash(git diff*)"`) chấp nhận tốn thêm một turn.
+- Phase bị ảnh hưởng: Phase 3 (FAST-02)
 - Bằng chứng:
+  - `spikes/s8/raw/s8-a.json`
+  - `spikes/s8/raw/s8-b.json`
+  - `spikes/s8/raw/s8-exit.txt`
+  - `spikes/s8/raw/s8-transcripts.txt`
+  - `spikes/s8/raw/s8-diff.patch`
+  - `spikes/s8/run.sh`
 
 ## SPK-10 — Quyết định profile Work/Personal
 

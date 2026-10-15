@@ -1,0 +1,2 @@
+A exit_code=1
+B exit_code=0
