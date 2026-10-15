@@ -2,3 +2,5 @@
 .claude/.gsd-staging/
 spikes/**/work/
 spikes/**/scratch/
+__pycache__/
+*.pyc

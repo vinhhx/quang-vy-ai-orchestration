@@ -1,0 +1,41 @@
+{
+  "claude_bin": "claude",
+  "models": {
+    "lead": "opus",
+    "dev": "sonnet",
+    "qa": "sonnet"
+  },
+  "profiles": {
+    "work": {
+      "claude_config_dir": null,
+      "unset_env": [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL"
+      ]
+    },
+    "personal": {
+      "claude_config_dir": "~/.claude-orca",
+      "unset_env": [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL"
+      ]
+    }
+  },
+  "common_args": [
+    "--strict-mcp-config"
+  ],
+  "max_turns": {
+    "lead": null,
+    "dev": null,
+    "qa": null
+  },
+  "timeout_seconds": {
+    "lead": 1800,
+    "dev": 1800,
+    "qa": 1200
+  },
+  "runs_dir": null,
+  "protocol_log_dir": null
+}
