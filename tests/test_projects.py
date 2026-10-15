@@ -82,15 +82,18 @@ class TestProjects(unittest.TestCase):
                 elif op == "mkrepo":
                     r_dir = root_paths[step["root"]]
                     sb.make_repo(step["name"], root=r_dir, remote=step.get("remote"))
+                    actual_exit_codes.append(0)
                 elif op == "rmdir":
                     target = Path(step["path"].format(**format_dict))
                     if target.is_dir():
                         shutil.rmtree(target)
+                    actual_exit_codes.append(0)
                 elif op == "mkdir":
                     target = Path(step["path"].format(**format_dict))
                     target.mkdir(parents=True, exist_ok=True)
                     if step.get("git"):
                         sb.make_repo(target.name, root=target.parent)
+                    actual_exit_codes.append(0)
 
             expect = case.get("expect", {})
             if "exit_codes" in expect:
