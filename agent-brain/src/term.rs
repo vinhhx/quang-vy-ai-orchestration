@@ -1,12 +1,14 @@
 use crate::stream::{StreamEvent, Summary};
 use std::time::Duration;
 
+/// Emits a line to stderr, swallowing all write errors (including EPIPE / BrokenPipe and EIO) without panicking.
 pub fn emit(line: &str) {
     use std::io::Write;
     let mut stderr = std::io::stderr();
     let _ = writeln!(stderr, "{line}");
 }
 
+/// Emits a line to stdout, swallowing all write errors (including EPIPE / BrokenPipe and EIO) without panicking.
 pub fn emit_out(line: &str) {
     use std::io::Write;
     let mut stdout = std::io::stdout();
@@ -197,4 +199,56 @@ pub fn summary_line(
         base.push_str(&format!(" · {t} turn trước lần sửa đầu"));
     }
     base
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stream::{classify, summarize_file};
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_s1_init_and_tool_use_lines() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let s1_path = manifest_dir.join("../spikes/s1/raw/s1.jsonl");
+        let content = std::fs::read_to_string(&s1_path).expect("read s1.jsonl");
+        let lines: Vec<&str> = content.lines().collect();
+
+        // Line 3 (0-indexed 2) is the init line
+        let init_ev = classify(lines[2].as_bytes()).expect("classify init");
+        let init_txt = event_text(&init_ev, false);
+        assert!(
+            init_txt.starts_with("init · session 1794dfc4-1acc-4f78-afc7-5dd721fe31d6"),
+            "got: {init_txt}"
+        );
+
+        // Line 4 (0-indexed 3) is the tool_use line
+        let tool_ev = classify(lines[3].as_bytes()).expect("classify tool_use");
+        let tool_txt = event_text(&tool_ev, false);
+        assert!(tool_txt.starts_with("tool Bash"), "got: {tool_txt}");
+    }
+
+    #[test]
+    fn test_truncate_chars_unicode() {
+        assert_eq!(truncate_chars("đđđđ", 2), "đđ");
+    }
+
+    #[test]
+    fn test_summary_line_kpi_text() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let fixture_path =
+            manifest_dir.join("../tests/fixtures/stream/dev_two_reads_then_edit.jsonl");
+        let summary = summarize_file(
+            &fixture_path,
+            Some(vec!["src/app.py".to_string()]),
+            Some(PathBuf::from("/work/proj")),
+        )
+        .expect("summarize fixture");
+
+        let line = summary_line(1, Some(1), "succeeded", &summary, Duration::from_secs(3));
+        assert!(
+            line.contains("2 turn trước lần sửa đầu"),
+            "summary line missing KPI text: {line}"
+        );
+    }
 }
