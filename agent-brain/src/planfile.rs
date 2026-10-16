@@ -91,3 +91,109 @@ pub fn render_plan_skeleton(task_title: &str, meta: &serde_json::Value) -> Strin
     }
     new_lines.join("\n") + "\n"
 }
+
+pub const PLAN_SECTIONS: [&str; 5] = [
+    "Mục tiêu",
+    "Thay đổi",
+    "Không được đụng tới",
+    "Cách kiểm tra",
+    "Vướng mắc",
+];
+pub const QA_SECTIONS: [&str; 4] = [
+    "Thay đổi có khớp plan không (từng mục)",
+    "Sửa ngoài plan (nếu có)",
+    "Rủi ro",
+    "Kết luận",
+];
+pub const QA_VERDICTS: [&str; 2] = ["Đạt", "Cần sửa"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    pub file: String,
+    pub where_: String,
+    pub what: String,
+    pub why: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Plan {
+    pub title: String,
+    pub meta: Option<serde_json::Value>,
+    pub sections: std::collections::BTreeMap<String, String>,
+    pub changes: Vec<Change>,
+}
+
+pub fn posix_normpath(_p: &str) -> String {
+    unimplemented!("posix_normpath stub")
+}
+
+pub fn realpath_nonstrict(_p: &std::path::Path) -> std::path::PathBuf {
+    unimplemented!("realpath_nonstrict stub")
+}
+
+pub fn normalize_plan_path(_p: &str) -> String {
+    unimplemented!("normalize_plan_path stub")
+}
+
+pub fn section_text(_text: &str, _name: &str) -> String {
+    unimplemented!("section_text stub")
+}
+
+pub fn parse_plan(_text: &str) -> Plan {
+    unimplemented!("parse_plan stub")
+}
+
+pub fn validate_plan(_plan: &Plan, _root: Option<&std::path::Path>) -> Vec<String> {
+    unimplemented!("validate_plan stub")
+}
+
+pub fn plan_files(_plan: &Plan) -> Vec<String> {
+    unimplemented!("plan_files stub")
+}
+
+pub fn has_blockers(_plan: &Plan) -> bool {
+    unimplemented!("has_blockers stub")
+}
+
+pub fn render_qa_skeleton(_task_title: &str, _meta: &serde_json::Value) -> String {
+    unimplemented!("render_qa_skeleton stub")
+}
+
+pub fn parse_qa_verdict(_text: &str) -> Option<&'static str> {
+    unimplemented!("parse_qa_verdict stub")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_posix_normpath_cases() {
+        assert_eq!(posix_normpath("."), ".");
+        assert_eq!(posix_normpath("./x"), "x");
+        assert_eq!(posix_normpath("a/../b"), "b");
+        assert_eq!(posix_normpath("a//b/"), "a/b");
+        assert_eq!(posix_normpath("../a"), "../a");
+    }
+
+    #[test]
+    fn test_realpath_nonstrict_missing_file_under_symlinked_dir() {
+        let td = tempfile::tempdir().unwrap();
+        let real_dir = td.path().join("real_dir");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let link_dir = td.path().join("link_dir");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+
+        let missing = link_dir.join("missing_file.txt");
+        let resolved = realpath_nonstrict(&missing);
+        let expected = real_dir.canonicalize().unwrap().join("missing_file.txt");
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn test_table_splitter_escaped_pipe() {
+        // Will test hand-rolled splitter
+        unimplemented!("table splitter stub");
+    }
+}
