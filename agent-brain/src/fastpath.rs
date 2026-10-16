@@ -85,6 +85,93 @@ pub fn cmd_status(ctx: &mut Ctx, project_query: &str) -> BrainResult<i32> {
     Ok(0)
 }
 
+pub const INSPECT_PROMPT_HEADER: &str = "Review ngắn bản thay đổi dưới đây, trả lời bằng tiếng Việt, tối đa 15 dòng: (1) tóm tắt thay đổi; (2) rủi ro dễ thấy; (3) có khớp .plan.md không (nếu có .plan.md bên dưới). Không dùng công cụ nào.\n\n";
+pub const INSPECT_HARD_CAP: usize = 120_000;
+
+pub fn build_inspect_prompt(
+    _plan: Option<&str>,
+    _diff: &str,
+    _base: &str,
+    _cap: usize,
+) -> (String, Option<(usize, usize)>) {
+    (String::new(), None)
+}
+
+pub fn inspect_argv(_cfg: &crate::config::Config, _prompt: &str) -> BrainResult<Vec<String>> {
+    Err(BrainError::not_available("inspect_argv"))
+}
+
+pub fn is_session_uuid(_s: &str) -> bool {
+    false
+}
+
+pub fn cleanup_session_files(
+    _config_dir: &std::path::Path,
+    _session_id: &str,
+) -> Vec<std::path::PathBuf> {
+    Vec::new()
+}
+
 pub fn cmd_inspect(_ctx: &mut Ctx, _project: &str, _verbose: bool) -> BrainResult<i32> {
     Err(BrainError::not_available("inspect"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_inspect_prompt_cap_boundary() {
+        let base = "HEAD";
+        let plan = None;
+        let prefix = format!("{INSPECT_PROMPT_HEADER}--- git diff {base} ---\n");
+        let diff = "line 1\nline 2\nline 3\n";
+        let total_len = prefix.len() + diff.len();
+
+        let (p1, cut1) = build_inspect_prompt(plan, diff, base, total_len);
+        assert_eq!(cut1, None);
+        assert_eq!(p1.len(), total_len);
+        assert!(!p1.contains("[diff cắt"));
+
+        let cap2 = total_len - 1;
+        let (p2, cut2) = build_inspect_prompt(plan, diff, base, cap2);
+        assert!(cut2.is_some());
+        let (sent, total) = cut2.unwrap();
+        assert_eq!(total, diff.len());
+        assert!(sent < total);
+        assert!(p2.len() <= cap2);
+        assert!(p2.contains("[diff cắt: đã gửi "));
+    }
+
+    #[test]
+    fn test_is_session_uuid() {
+        assert!(is_session_uuid("d2edd3e2-1234-5678-9abc-def012345678"));
+        assert!(!is_session_uuid("D2EDD3E2-1234-5678-9ABC-DEF012345678"));
+        assert!(!is_session_uuid("../../etc"));
+        assert!(!is_session_uuid(""));
+        assert!(!is_session_uuid("d2edd3e2123456789abcdef012345678"));
+    }
+
+    #[test]
+    fn test_cleanup_session_files_symlink_not_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path();
+        let projects_dir = config_dir.join("projects");
+        std::fs::create_dir_all(&projects_dir).unwrap();
+
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let uuid = "11111111-2222-3333-4444-555555555555";
+        let outside_file = outside.join(format!("{uuid}.jsonl"));
+        std::fs::write(&outside_file, "secret").unwrap();
+
+        let symlink_proj = projects_dir.join("symlink-proj");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &symlink_proj).unwrap();
+
+        let removed = cleanup_session_files(config_dir, uuid);
+        assert!(removed.is_empty(), "cleanup must not follow symlinks");
+        assert!(outside_file.exists(), "outside file must not be deleted");
+    }
 }
