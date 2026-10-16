@@ -89,7 +89,7 @@ Re-run by the reviewer:
 
 - Both Task 1 `<verify>` commands print `manifest ok` / `assets ok`; all acceptance criteria pass (`agent-brain/target/` in .gitignore, `EXIT_INTERRUPTED`, `not_available`, `pub mod error;`, no `src/main.rs`, `brain/` untouched); Python suite 114 tests OK.
 - Code read in full: `error.rs` matches the interfaces contract exactly; `config.default.json` values equal `brain/config.json` plus the four new keys.
-- After Task 3: `git ls-files agent-brain/Cargo.lock` lists the file; `cargo test --manifest-path agent-brain/Cargo.toml --offline --locked` → 5 passed; `rustup target list --installed` includes `x86_64-unknown-linux-musl`; `command -v musl-gcc` → not found (open item).
+- After Task 3: `git ls-files agent-brain/Cargo.lock` lists the file; `cargo test --manifest-path agent-brain/Cargo.toml --offline --locked` → 5 passed; `rustup target list --installed` includes `x86_64-unknown-linux-musl`; `command -v musl-gcc` → not found at first; `/usr/bin/musl-gcc` after the user installed musl-tools (open item resolved).
 - Scope: Task 1 touched exactly its ten files. `spikes/lib/scan-secrets.sh`: OK.
 
 ## Next Phase Readiness
