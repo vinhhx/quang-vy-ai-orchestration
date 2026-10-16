@@ -1,4 +1,7 @@
-use agent_brain::planfile::{has_blockers, parse_plan, plan_files, validate_plan};
+use agent_brain::planfile::{
+    has_blockers, meta_line, parse_plan, parse_qa_verdict, plan_files, read_meta,
+    render_qa_skeleton, validate_plan, QA_SECTIONS,
+};
 use std::path::Path;
 
 #[test]
@@ -125,4 +128,94 @@ fn plan_contract_cases() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+#[test]
+fn qa_report_contract_cases() {
+    let fixture_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/contract/qa_report.json");
+    let fixture_str = std::fs::read_to_string(&fixture_path).expect("read qa_report.json");
+    let fixture: serde_json::Value =
+        serde_json::from_str(&fixture_str).expect("parse qa_report.json");
+    assert_eq!(fixture["version"], 1);
+
+    let cases = fixture["cases"].as_array().expect("cases array");
+    assert_eq!(cases.len(), 8);
+
+    let mut failures = Vec::new();
+
+    for case in cases {
+        let case_id = case["id"].as_str().unwrap();
+        let markdown = case["markdown"].as_str().unwrap();
+        let expect = &case["expect"];
+        let expected_verdict = expect["verdict"].as_str();
+
+        let actual_verdict = parse_qa_verdict(markdown);
+        if actual_verdict != expected_verdict {
+            failures.push(format!(
+                "{case_id}: verdict mismatch: expected {expected_verdict:?}, got {actual_verdict:?}"
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "QA contract failures ({}):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn qa_skeleton_matches_python_shape() {
+    let meta = serde_json::json!({
+        "task": "t",
+        "plan_commit": "abc",
+    });
+    let rendered = render_qa_skeleton("Thêm nút", &meta);
+    assert!(
+        rendered.starts_with("# QA: Thêm nút\n<!-- brain-meta: "),
+        "Must start with '# QA: Thêm nút\\n<!-- brain-meta: ', got:\n{rendered}"
+    );
+
+    let mut last_pos = 0;
+    for sec in QA_SECTIONS {
+        let heading = format!("## {sec}");
+        if let Some(pos) = rendered[last_pos..].find(&heading) {
+            last_pos += pos + heading.len();
+        } else {
+            panic!("Missing QA section '{heading}' in order. Rendered:\n{rendered}");
+        }
+    }
+
+    assert!(
+        rendered.ends_with('\n'),
+        "Rendered QA skeleton must end with newline"
+    );
+}
+
+#[test]
+fn reads_python_meta_line() {
+    let python_meta_line =
+        r#"<!-- brain-meta: {"base_branch": "main", "request": "a > b", "task": "t"} -->"#;
+    let read = read_meta(python_meta_line).expect("must parse python meta line");
+    assert_eq!(read["base_branch"], "main");
+    assert_eq!(read["request"], "a > b");
+    assert_eq!(read["task"], "t");
+
+    let ml = meta_line(&read);
+    assert!(ml.contains(r"\u003e"));
+
+    let payload = ml
+        .strip_prefix("<!-- brain-meta: ")
+        .unwrap()
+        .strip_suffix(" -->")
+        .unwrap();
+    assert!(
+        !payload.contains('>'),
+        "Payload should not have raw '>': {payload}"
+    );
+
+    let roundtrip = read_meta(&ml).expect("must roundtrip rust meta line");
+    assert_eq!(roundtrip, read);
 }
