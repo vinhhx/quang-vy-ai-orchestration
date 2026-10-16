@@ -51,23 +51,26 @@ Kết quả nghiệm thu sẽ được người dùng điền vào bảng tổng
 
 ---
 
-### P2-02: Kill khi agent đang chạy `sleep 300`
+### P2-02: Kill khi agent đang chạy lệnh dài (python sleep 307)
 - **Mục tiêu**: Kiểm tra khả năng ngắt triệt để cây tiến trình qua lệnh `agent-brain kill`, không để sót tiến trình con hay cháu.
+- **Lưu ý**: Claude Code 2.1.301 chặn lệnh `sleep N` ở foreground ("Blocked: standalone sleep"), do đó các ca kiểm tra dùng `python3 -c 'import time; time.sleep(307)'`, và wrapper cho phép `Bash(python3 *)` chỉ riêng cho các ca kiểm tra này.
 - **Chuẩn bị cấu hình wrapper cho phép sleep**:
-  Claude Code ở chế độ bình thường không có quyền chạy `sleep`. Sử dụng file wrapper `scripts/live/claude-allow-sleep.sh` để thêm quyền `Bash(sleep *)` cho đợt kiểm tra này:
+  Sử dụng file wrapper `scripts/live/claude-allow-sleep.sh` để thêm quyền `Bash(python3 *)` cho đợt kiểm tra này:
   ```bash
   python3 -c "import json, os; c = json.load(open('agent-brain/assets/config.default.json')); c['claude_bin'] = os.path.abspath('scripts/live/claude-allow-sleep.sh'); json.dump(c, open('/tmp/ab-live.json', 'w'), indent=2)"
   ```
 - **Lệnh thực hiện (Terminal 1)**:
   ```bash
-  AGENT_BRAIN_CONFIG=/tmp/ab-live.json agent-brain run lead "dự án nháp" "Trước khi làm gì khác, chạy đúng lệnh bash này và chờ nó xong: sleep 307" --name p202-kill
+  AGENT_BRAIN_CONFIG=/tmp/ab-live.json agent-brain run lead "dự án nháp" "Trước khi làm gì khác, chạy đúng lệnh bash này ở foreground (KHÔNG dùng run_in_background) và chờ nó xong: python3 -c 'import time; time.sleep(307)'" --name p202-kill
   ```
 - **Thực hiện kill (Terminal 2)**:
-  1. Khi thấy dòng log `tool Bash sleep 307` xuất hiện trên Terminal 1, mở Terminal 2 và quan sát cây tiến trình:
+  1. Khi thấy dòng log `tool Bash python3 -c 'import time; time.sleep(307)'` xuất hiện trên Terminal 1, mở Terminal 2 và quan sát cây tiến trình cùng PID chính xác:
      ```bash
-     ps -eo pid,ppid,pgid,sid,args --forest
+     ps -eo pid,ppid,pgid,sid,args --forest | grep -A3 '[a]gent-brain run lead'
+     pgrep -f '^python3 -c import time; time.sleep\(307\)'
      ```
-     Ghi lại 3 PID: tiến trình Claude (nằm dưới agent-brain), tiến trình con bash, và tiến trình cháu `sleep 307`.
+     Ghi lại 3 PID: tiến trình Claude (nằm dưới `agent-brain`), tiến trình con bash, và tiến trình cháu `python3`.
+     *Lưu ý*: Lệnh tìm `pgrep -f time.sleep` thông thường sẽ khớp cả `agent-brain` và `claude` do câu lệnh request nằm trong danh sách đối số (`argv`) của chúng. Hơn nữa, tiến trình con bash chạy trong PGID và SID riêng, nên việc kiểm tra phải bao quát toàn bộ từng PID đã ghi nhận (`<claude>,<bash>,<python>`), chứ không chỉ riêng process group.
   2. Đọc mã task `N` từ dòng log khởi tạo `task N, run M` ở Terminal 1.
   3. Chạy lệnh kill:
      ```bash
@@ -75,10 +78,12 @@ Kết quả nghiệm thu sẽ được người dùng điền vào bảng tổng
      ```
   4. Chờ 5 giây (`sleep 5`), sau đó kiểm tra lại các PID đã ghi nhận:
      ```bash
-     ps -p <claude>,<bash>,<sleep> -o pid,args
+     ps -p <claude>,<bash>,<python> -o pid,args
+     pgrep -af '^python3 -c import time; time.sleep\(307\)' || echo sạch
      ```
 - **Kết quả mong đợi**:
   - Lệnh `ps` chỉ in dòng tiêu đề `PID ARGS`, cả 3 tiến trình đều đã biến mất hoàn toàn.
+  - Lệnh `pgrep` in `sạch`.
   - Kiểm tra trạng thái:
      ```bash
      agent-brain status "dự án nháp"
@@ -89,6 +94,7 @@ Kết quả nghiệm thu sẽ được người dùng điền vào bảng tổng
   ```bash
   git -C /mnt/data/IDE/du-an-nhap checkout -f main
   git -C /mnt/data/IDE/du-an-nhap branch -D task/p202-kill
+  rm -f /mnt/data/IDE/du-an-nhap/.plan.md
   ```
 
 ---
@@ -100,23 +106,60 @@ Kết quả nghiệm thu sẽ được người dùng điền vào bảng tổng
   1. **Kịch bản A (Ctrl+C một lần)**:
      - Chạy:
        ```bash
-       AGENT_BRAIN_CONFIG=/tmp/ab-live.json agent-brain run lead "dự án nháp" "Trước khi làm gì khác, chạy đúng lệnh bash này và chờ nó xong: sleep 307" --name p203-a
+       AGENT_BRAIN_CONFIG=/tmp/ab-live.json agent-brain run lead "dự án nháp" "Trước khi làm gì khác, chạy đúng lệnh bash này ở foreground (KHÔNG dùng run_in_background) và chờ nó xong: python3 -c 'import time; time.sleep(307)'" --name p203-a
        ```
-     - Khi thấy `tool Bash sleep 307`, ghi nhận PID của claude và sleep qua terminal khác.
+     - Khi thấy dòng log `tool Bash python3 -c 'import time; time.sleep(307)'`, ghi nhận các PID `<claude>,<bash>,<python>` qua terminal khác (`ps -eo pid,ppid,pgid,sid,args --forest | grep -A3 '[a]gent-brain run lead'`).
      - Nhấn `Ctrl+C` một lần trên terminal chạy.
-     - Chờ trong vòng 5 giây, kiểm tra `ps -p <claude>,<sleep> -o pid,args`: không còn tiến trình nào.
+     - Chờ trong vòng 5 giây (`sleep 5`), kiểm tra:
+       ```bash
+       ps -p <claude>,<bash>,<python> -o pid,args
+       pgrep -af '^python3 -c import time; time.sleep\(307\)' || echo sạch
+       ```
+       Không còn tiến trình nào sót lại (lệnh `ps` chỉ in tiêu đề `PID ARGS`, `pgrep` in `sạch`).
      - `agent-brain status "dự án nháp"` hiển thị run là `killed`.
-     - Dọn dẹp: `git -C /mnt/data/IDE/du-an-nhap checkout -f main && git -C /mnt/data/IDE/du-an-nhap branch -D task/p203-a`.
+     - Dọn dẹp:
+       ```bash
+       git -C /mnt/data/IDE/du-an-nhap checkout -f main
+       git -C /mnt/data/IDE/du-an-nhap branch -D task/p203-a
+       rm -f /mnt/data/IDE/du-an-nhap/.plan.md
+       ```
   2. **Kịch bản B (Ctrl+C hai lần nhanh)**:
-     - Chạy với `--name p203-b`.
+     - Chạy:
+       ```bash
+       AGENT_BRAIN_CONFIG=/tmp/ab-live.json agent-brain run lead "dự án nháp" "Trước khi làm gì khác, chạy đúng lệnh bash này ở foreground (KHÔNG dùng run_in_background) và chờ nó xong: python3 -c 'import time; time.sleep(307)'" --name p203-b
+       ```
+     - Khi thấy dòng log `tool Bash python3 -c 'import time; time.sleep(307)'`, ghi nhận các PID `<claude>,<bash>,<python>`.
      - Nhấn `Ctrl+C` hai lần liên tiếp thật nhanh (< 1 giây).
-     - Kiểm tra các PID tương tự: toàn bộ nhóm tiến trình lập tức bị ngắt.
-     - Dọn dẹp: `git -C /mnt/data/IDE/du-an-nhap checkout -f main && git -C /mnt/data/IDE/du-an-nhap branch -D task/p203-b`.
+     - Chờ trong vòng 5 giây (`sleep 5`), kiểm tra các PID:
+       ```bash
+       ps -p <claude>,<bash>,<python> -o pid,args
+       pgrep -af '^python3 -c import time; time.sleep\(307\)' || echo sạch
+       ```
+       Toàn bộ nhóm tiến trình lập tức bị ngắt (lệnh `ps` chỉ in tiêu đề `PID ARGS`, `pgrep` in `sạch`).
+     - Dọn dẹp:
+       ```bash
+       git -C /mnt/data/IDE/du-an-nhap checkout -f main
+       git -C /mnt/data/IDE/du-an-nhap branch -D task/p203-b
+       rm -f /mnt/data/IDE/du-an-nhap/.plan.md
+       ```
   3. **Kịch bản C (Đóng cửa sổ terminal)**:
-     - Mở một cửa sổ terminal mới, chạy với `--name p203-c`.
-     - Khi `sleep 307` đang chạy, đóng hẳn cửa sổ terminal đó (gửi SIGHUP).
-     - Tại terminal còn lại, kiểm tra các PID: toàn bộ tiến trình biến mất trong vòng 5 giây.
-     - Dọn dẹp: `git -C /mnt/data/IDE/du-an-nhap checkout -f main && git -C /mnt/data/IDE/du-an-nhap branch -D task/p203-c`.
+     - Mở một cửa sổ terminal mới, chạy:
+       ```bash
+       AGENT_BRAIN_CONFIG=/tmp/ab-live.json agent-brain run lead "dự án nháp" "Trước khi làm gì khác, chạy đúng lệnh bash này ở foreground (KHÔNG dùng run_in_background) và chờ nó xong: python3 -c 'import time; time.sleep(307)'" --name p203-c
+       ```
+     - Khi `python3 -c 'import time; time.sleep(307)'` đang chạy, ghi nhận các PID `<claude>,<bash>,<python>`, sau đó đóng hẳn cửa sổ terminal đó (gửi SIGHUP).
+     - Tại terminal còn lại, kiểm tra các PID sau 5 giây:
+       ```bash
+       ps -p <claude>,<bash>,<python> -o pid,args
+       pgrep -af '^python3 -c import time; time.sleep\(307\)' || echo sạch
+       ```
+       Toàn bộ tiến trình biến mất trong vòng 5 giây (lệnh `ps` chỉ in tiêu đề `PID ARGS`, `pgrep` in `sạch`).
+     - Dọn dẹp:
+       ```bash
+       git -C /mnt/data/IDE/du-an-nhap checkout -f main
+       git -C /mnt/data/IDE/du-an-nhap branch -D task/p203-c
+       rm -f /mnt/data/IDE/du-an-nhap/.plan.md
+       ```
 - **Ghi nhận**: Điền `Đạt` vào dòng `P2-03` trong `protocol-log/nghiem-thu-p2.md`.
 
 ---
