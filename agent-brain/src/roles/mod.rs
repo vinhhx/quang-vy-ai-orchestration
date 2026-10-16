@@ -1,4 +1,6 @@
+pub mod dev;
 pub mod lead;
+pub mod qa;
 
 use crate::app::Ctx;
 use crate::config::Config;
@@ -380,7 +382,25 @@ pub fn cmd_run(
             };
             lead::cmd_lead(ctx, project, req, name, dry_run, verbose)
         }
-        Role::Dev => Err(BrainError::not_available("run dev")),
-        Role::Qa => Err(BrainError::not_available("run qa")),
+        Role::Dev => {
+            if let Some(r) = request {
+                if !r.trim().is_empty() {
+                    crate::term::emit(
+                        "Bỏ qua <yêu cầu> cho vai trò dev: vai trò này chỉ đọc .plan.md / git diff",
+                    );
+                }
+            }
+            dev::cmd_dev(ctx, project, dry_run, verbose)
+        }
+        Role::Qa => {
+            if let Some(r) = request {
+                if !r.trim().is_empty() {
+                    crate::term::emit(
+                        "Bỏ qua <yêu cầu> cho vai trò qa: vai trò này chỉ đọc .plan.md / git diff",
+                    );
+                }
+            }
+            qa::cmd_qa(ctx, project, dry_run, verbose)
+        }
     }
 }

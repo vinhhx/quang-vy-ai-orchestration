@@ -1,8 +1,11 @@
 use agent_brain::app;
-use agent_brain::error::{BrainError, EXIT_ROUTING};
+use agent_brain::error::EXIT_ROUTING;
+use agent_brain::fastpath;
+use agent_brain::guard;
 use agent_brain::projects;
 use agent_brain::roles;
 use agent_brain::runner;
+use agent_brain::stats;
 use agent_brain::term;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -124,9 +127,9 @@ fn main() {
         }
     };
 
-    if let Commands::Guard { .. } = cmd {
-        term::emit("agent-brain guard: chưa có trong bản này — chặn (fail-closed)");
-        std::process::exit(2);
+    if let Commands::Guard { policy } = &cmd {
+        let code = guard::cmd_guard(policy.as_deref());
+        std::process::exit(code);
     }
 
     let mut ctx = match app::open_ctx() {
@@ -163,10 +166,16 @@ fn main() {
             dry_run,
             verbose,
         ),
-        Commands::Status { .. } => Err(BrainError::not_available("status")),
-        Commands::Inspect { .. } => Err(BrainError::not_available("inspect")),
+        Commands::Status { project } => fastpath::cmd_status(&mut ctx, &project),
+        Commands::Inspect { project, verbose } => {
+            fastpath::cmd_inspect(&mut ctx, &project, verbose)
+        }
         Commands::Kill { task_id } => runner::cmd_kill(&mut ctx, task_id),
-        Commands::Stats { .. } => Err(BrainError::not_available("stats")),
+        Commands::Stats {
+            profile,
+            since,
+            json,
+        } => stats::cmd_stats(&mut ctx, profile.as_deref(), since.as_deref(), json),
     };
 
     match result {
