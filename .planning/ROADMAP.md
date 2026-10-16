@@ -107,11 +107,11 @@ Plans:
   4. `agent-brain status` trả kết quả git với 0 token và không gọi AI; `agent-brain inspect` chạy đúng 1 turn và không để lại session.
   5. `agent-brain stats --profile work` chỉ tính run của profile work; copy binary sang máy/thư mục khác vẫn chạy mà không cần cài thêm gì (trừ CLI agent).
 
-**Plans**: 1/13 plans executed
+**Plans**: 2/13 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 03-01-PLAN.md — Crate manifest with pinned deps, error module, embedded prompts/templates/config; user checkpoints: crate legitimacy, musl toolchain + lockfile + fetch
+- [x] 03-01-PLAN.md — Crate manifest with pinned deps, error module, embedded prompts/templates/config; user checkpoints: crate legitimacy, musl toolchain + lockfile + fetch
 - [x] 03-02-PLAN.md — Shared contract fixtures `tests/contract/stream.json` and `guard.json` with Python loaders (D-03)
 
 **Wave 2** *(blocked on Wave 1 completion)*
@@ -206,7 +206,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 |-------|----------------|--------|-----------|
 | 1. Verify Assumptions | 1/1 | Complete    | 2026-10-15 |
 | 2. Protocol MVP (Scripts) | 7/7 | Complete    | 2026-10-16 |
-| 3. Rust CLI Core | 1/13 | In Progress | - |
+| 3. Rust CLI Core | 2/13 | In Progress | - |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 0/TBD | Not started | - |
 | 6. Multi-engine & Media Branch | 0/TBD | Not started | - |
