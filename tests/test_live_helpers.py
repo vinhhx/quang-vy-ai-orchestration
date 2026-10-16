@@ -42,7 +42,7 @@ class TestLiveHelpers(unittest.TestCase):
             "-p",
             "x",
             "--allowedTools",
-            "Bash(sleep *)",
+            "Bash(python3 *)",
             "Read",
             "Grep",
             "--disallowedTools",
@@ -74,6 +74,42 @@ class TestLiveHelpers(unittest.TestCase):
         self.assertTrue(lines, "No fake claude record written")
         recorded_argv = lines[-1]["argv"]
         expected_argv = ["-p", "x", "--disallowedTools", "Task"]
+        self.assertEqual(recorded_argv, expected_argv)
+
+    def test_wrapper_inserts_only_once(self):
+        with tempfile.NamedTemporaryFile(mode="r", delete=False) as f:
+            record_path = f.name
+        self.addCleanup(lambda: os.unlink(record_path) if os.path.exists(record_path) else None)
+
+        env = os.environ.copy()
+        env["AGENT_BRAIN_REAL_CLAUDE"] = str(self.fake_claude)
+        env["FAKE_CLAUDE_RECORD"] = record_path
+
+        cmd = [
+            str(self.script_path),
+            "-p",
+            "x",
+            "--allowedTools",
+            "Read",
+            "--allowedTools",
+            "Grep",
+        ]
+        res = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"stdout: {res.stdout}, stderr: {res.stderr}")
+
+        with open(record_path, "r", encoding="utf-8") as f:
+            lines = [json.loads(line) for line in f if line.strip()]
+        self.assertTrue(lines, "No fake claude record written")
+        recorded_argv = lines[-1]["argv"]
+        expected_argv = [
+            "-p",
+            "x",
+            "--allowedTools",
+            "Bash(python3 *)",
+            "Read",
+            "--allowedTools",
+            "Grep",
+        ]
         self.assertEqual(recorded_argv, expected_argv)
 
 
