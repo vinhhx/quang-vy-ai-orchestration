@@ -53,10 +53,7 @@ fn p2_01_run_lead_prints_steps_and_records_run() {
 
     let re_time = regex::Regex::new(r"^\d\d:\d\d:\d\d ").unwrap();
     let time_lines: Vec<&str> = out.stderr.lines().filter(|l| re_time.is_match(l)).collect();
-    assert!(
-        !time_lines.is_empty(),
-        "No time lines matching HH:MM:SS in stderr"
-    );
+    assert!(!time_lines.is_empty(), "No time lines matching HH:MM:SS in stderr");
 
     assert!(
         time_lines.iter().any(|l| l.contains("init")),
@@ -277,9 +274,11 @@ fn p2_01_run_lead_prints_steps_and_records_run() {
     assert!(started_at <= ended_at.expect("ended_at"));
 
     let event_count: i64 = conn
-        .query_row("SELECT count(*) FROM events WHERE run_id = 1", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT count(*) FROM events WHERE run_id = 1",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(event_count, 6);
 
@@ -375,4 +374,263 @@ fn run_lead_personal_profile_sets_config_dir() {
         .query_row("SELECT profile FROM runs WHERE id = 1", [], |r| r.get(0))
         .unwrap();
     assert_eq!(prof, "personal");
+}
+
+#[test]
+fn run_lead_fallback_ask_exits_2_without_agent() {
+    let sb = Sandbox::new();
+    let r1 = sb.make_repo("p1", &[], None, None);
+    let r2 = sb.make_repo("p2", &[], None, None);
+    let mut e1 = sb.project_entry(&r1, "p1", "work");
+    e1["aliases"] = serde_json::json!(["shop"]);
+    let mut e2 = sb.project_entry(&r2, "p2", "work");
+    e2["aliases"] = serde_json::json!(["shop"]);
+    sb.write_map(serde_json::json!([e1, e2]), &[]);
+
+    let out = sb.run(&["run", "lead", "shop", "thêm tính năng"], None);
+    assert_eq!(out.code, 2);
+    assert!(
+        out.stdout.contains("khớp 2 dự án"),
+        "stdout missing 'khớp 2 dự án': {}",
+        out.stdout
+    );
+
+    let out_missing = sb.run(&["run", "lead", "khong-co", "thêm tính năng"], None);
+    assert_eq!(out_missing.code, 2);
+    assert!(
+        out_missing
+            .stdout
+            .contains("Không tìm thấy dự án \"khong-co\""),
+        "stdout missing 'Không tìm thấy dự án \"khong-co\"': {}",
+        out_missing.stdout
+    );
+
+    assert!(sb.records().is_empty());
+    let branch1 = sb.git(&r1, &["branch", "--show-current"]);
+    assert_eq!(branch1.trim(), "main");
+
+    let conn = sb.db();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn run_lead_refuses_dirty_tree() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("dirty-repo", &[], None, None);
+    let entry = sb.project_entry(&repo, "dirty-repo", "work");
+    sb.write_map(serde_json::json!([entry]), &[]);
+
+    std::fs::write(repo.join("untracked.txt"), "hello").unwrap();
+
+    let out = sb.run(&["run", "lead", "dirty-repo", "yêu cầu"], None);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("Working tree có thay đổi chưa commit"),
+        "stderr missing dirty refusal: {}",
+        out.stderr
+    );
+    assert!(sb.records().is_empty());
+    let branches = sb.git(&repo, &["branch"]);
+    assert!(!branches.contains("task/"), "branch created: {}", branches);
+}
+
+#[test]
+fn run_lead_empty_profile_exits_1_without_agent() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("repo", &[], None, None);
+    let entry = sb.project_entry(&repo, "repo", "");
+    sb.write_map(serde_json::json!([entry]), &[]);
+
+    let out = sb.run(&["run", "lead", "repo", "yêu cầu"], None);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("Dự án chưa đặt profile (work|personal)"),
+        "stderr missing profile check: {}",
+        out.stderr
+    );
+    assert!(sb.records().is_empty());
+    let branch = sb.git(&repo, &["branch", "--show-current"]);
+    assert_eq!(branch.trim(), "main");
+    let conn = sb.db();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn run_lead_missing_claude_bin_exits_1() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("repo", &[], None, None);
+    let entry = sb.project_entry(&repo, "repo", "work");
+    sb.write_map(serde_json::json!([entry]), &[]);
+    sb.write_config(serde_json::json!({
+        "claude_bin": "/nonexistent/claude"
+    }));
+
+    let out = sb.run(&["run", "lead", "repo", "yêu cầu"], None);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("Không tìm thấy lệnh claude: /nonexistent/claude"),
+        "stderr: {}",
+        out.stderr
+    );
+    let conn = sb.db();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn run_lead_forbidden_flag_refused() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("repo", &[], None, None);
+    let entry = sb.project_entry(&repo, "repo", "work");
+    sb.write_map(serde_json::json!([entry]), &[]);
+    sb.write_config(serde_json::json!({
+        "common_args": ["--strict-mcp-config", "--dangerously-skip-permissions"]
+    }));
+
+    let out = sb.run(&["run", "lead", "repo", "yêu cầu"], None);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("Cờ quyền không được phép: --dangerously-skip-permissions"),
+        "stderr: {}",
+        out.stderr
+    );
+    assert!(sb.records().is_empty());
+    let conn = sb.db();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn run_lead_bad_json_line_recorded() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("repo", &[], None, None);
+    let entry = sb.project_entry(&repo, "repo", "work");
+    sb.write_map(serde_json::json!([entry]), &[]);
+
+    let init_line = serde_json::json!({
+        "type": "system",
+        "subtype": "init",
+        "session_id": "fake-session",
+        "model": "fake"
+    })
+    .to_string();
+
+    let result_line = serde_json::json!({
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "num_turns": 1,
+        "session_id": "fake-session",
+        "total_cost_usd": 0.0,
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0
+        },
+        "permission_denials": []
+    })
+    .to_string();
+
+    let scenario = serde_json::json!({
+        "raw_lines": [
+            init_line,
+            "not json",
+            result_line
+        ]
+    });
+
+    let out = sb.run(&["run", "lead", "repo", "yêu cầu"], Some(scenario));
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+
+    let conn = sb.db();
+    let mut stmt = conn
+        .prepare("SELECT kind, raw_json FROM events WHERE run_id = 1 ORDER BY seq ASC")
+        .unwrap();
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].0, "system/init");
+    assert_eq!(rows[1].0, "bad_json");
+    assert_eq!(rows[1].1, "not json");
+    assert_eq!(rows[2].0, "result");
+}
+
+#[test]
+fn cli_usage_errors_exit_1() {
+    let sb = Sandbox::new();
+
+    let out_no_args = sb.run(&[], None);
+    assert_eq!(out_no_args.code, 1);
+    assert!(
+        out_no_args.stderr.contains("Usage: ") || out_no_args.stderr.contains("agent-brain"),
+        "stderr: {}",
+        out_no_args.stderr
+    );
+
+    let out_bogus = sb.run(&["run", "bogus", "x", "y"], None);
+    assert_eq!(out_bogus.code, 1);
+
+    let out_kill_abc = sb.run(&["kill", "abc"], None);
+    assert_eq!(out_kill_abc.code, 1);
+
+    let out_kill_999 = sb.run(&["kill", "999"], None);
+    assert_eq!(out_kill_999.code, 1);
+
+    let out_help = sb.run(&["--help"], None);
+    assert_eq!(out_help.code, 0);
+
+    let out_ver = sb.run(&["--version"], None);
+    assert_eq!(out_ver.code, 0);
+    assert!(
+        out_ver.stdout.contains("0.1.0"),
+        "stdout: {}",
+        out_ver.stdout
+    );
+}
+
+#[test]
+fn guard_without_policy_fails_closed() {
+    let sb = Sandbox::new();
+    let out = sb.run(&["guard"], None);
+    assert_eq!(out.code, 2);
+    assert!(!out.stderr.is_empty(), "stderr should not be empty");
+    assert!(!sb.db_path.exists(), "DB file must not exist afterwards");
+}
+
+#[test]
+fn run_dev_request_is_ignored_with_note() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("web-ban-hang", &[], None, None);
+    let entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    sb.write_map(serde_json::json!([entry]), &[]);
+
+    let out = sb.run(
+        &["run", "dev", "web-ban-hang", "làm thêm việc khác"],
+        None,
+    );
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("Bỏ qua <yêu cầu> cho vai trò dev"),
+        "stderr: {}",
+        out.stderr
+    );
+    assert!(sb.records().is_empty());
 }
