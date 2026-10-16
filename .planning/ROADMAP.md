@@ -107,7 +107,7 @@ Plans:
   4. `agent-brain status` trả kết quả git với 0 token và không gọi AI; `agent-brain inspect` chạy đúng 1 turn và không để lại session.
   5. `agent-brain stats --profile work` chỉ tính run của profile work; copy binary sang máy/thư mục khác vẫn chạy mà không cần cài thêm gì (trừ CLI agent).
 
-**Plans**: 3/13 plans executed
+**Plans**: 4/13 plans executed
 
 Plans:
 **Wave 1**
@@ -118,7 +118,7 @@ Plans:
 - [x] 03-03-PLAN.md — Foundation: config, Vietnamese routing, project map, profile env, git ops, plan meta, SQLite schema v1 + API, task adoption, /proc identity, stale-run reconciliation (library tests, no binary yet)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 03-04-PLAN.md — Tracer: `agent-brain run lead` end to end (CLI → routing → profile → git → runner → stream → SQLite → terminal), command entry points, refusal paths, test sandbox
+- [x] 03-04-PLAN.md — Tracer: `agent-brain run lead` end to end (CLI → routing → profile → git → runner → stream → SQLite → terminal), command entry points, refusal paths, test sandbox
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 03-05-PLAN.md — `projects scan/add`, routing, profile and config parity on the shared fixtures (CLI-02, PROF-02)
@@ -206,7 +206,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 |-------|----------------|--------|-----------|
 | 1. Verify Assumptions | 1/1 | Complete    | 2026-10-15 |
 | 2. Protocol MVP (Scripts) | 7/7 | Complete    | 2026-10-16 |
-| 3. Rust CLI Core | 3/13 | In Progress | - |
+| 3. Rust CLI Core | 4/13 | In Progress | - |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 0/TBD | Not started | - |
 | 6. Multi-engine & Media Branch | 0/TBD | Not started | - |
