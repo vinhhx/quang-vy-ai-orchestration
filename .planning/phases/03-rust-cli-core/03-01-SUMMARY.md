@@ -11,7 +11,7 @@ provides:
   - "agent-brain crate shell: Cargo.toml with ten =-pinned crates, committed Cargo.lock (98 packages), all crates in the local cargo cache"
   - "agent_brain::error: BrainError {message, code}, BrainResult, EXIT_OK..EXIT_INTERRUPTED (same values as brain/__init__.py)"
   - "Embedded assets: byte copies of the three prompts and two templates, config.default.json with kill_grace_secs, inspect_model, inspect_max_diff_bytes, timeout_seconds.inspect"
-  - "Rust target x86_64-unknown-linux-musl installed (musl-gcc still missing, see Open item)"
+  - "Rust target x86_64-unknown-linux-musl and musl-tools (musl-gcc) installed; musl release build verified"
 affects: [03-03, 03-04, 03-06, 03-12]
 
 actuals:
@@ -81,7 +81,7 @@ status: complete
 ## Deviations from Plan
 
 - Task 3 was run by Claude instead of the user, at the user's explicit request. The user's first report of "toolchain ready" could not be confirmed (no lockfile, no musl target, no fetched crates on this machine).
-- **Open item:** `musl-tools` is not installed (`sudo` needs the user's password). The musl release build of step 6 fails with `failed to find tool "x86_64-linux-musl-gcc"`, so that acceptance criterion is not met yet. It blocks nothing until plan 03-12, whose `scripts/build-release.sh` has the host-gcc fallback (route B). The user should run `sudo apt install musl-tools` before 03-12.
+- **Open item (resolved 2026-10-16):** `musl-tools` was missing at first (`sudo` needs the user's password), so the step 6 musl build failed with `failed to find tool "x86_64-linux-musl-gcc"`. The user then installed `musl-tools` 1.2.4-2 (`/usr/bin/musl-gcc`). The reviewer re-ran step 6 on a `git archive` snapshot of `8b79edf`: `CC_x86_64_unknown_linux_musl=musl-gcc cargo build --release --offline --locked --target x86_64-unknown-linux-musl` finished in 1m 12s, bundled SQLite included. Route A is available for plan 03-12.
 
 ## Review (Claude)
 
