@@ -234,25 +234,7 @@ pub fn cmd_lead(
     }
 
     let plan = crate::planfile::parse_plan(&text);
-    let mut errors = crate::planfile::validate_plan(&plan, Some(&proj_path));
-    if std::env::var("FAKE_CLAUDE_RECORD").is_ok() {
-        let has_ops = if let Ok(sc_path) = std::env::var("FAKE_CLAUDE_SCENARIO") {
-            if let Ok(sc_content) = std::fs::read_to_string(sc_path) {
-                if let Ok(sc_json) = serde_json::from_str::<serde_json::Value>(&sc_content) {
-                    sc_json.get("ops").is_some()
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-        if !has_ops {
-            errors.retain(|e| e != "no_changes");
-        }
-    }
+    let errors = crate::planfile::validate_plan(&plan, Some(&proj_path));
     if !errors.is_empty() {
         let err_lines = errors
             .iter()
