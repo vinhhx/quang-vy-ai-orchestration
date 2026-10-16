@@ -2,9 +2,10 @@ use std::path::Path;
 
 fn init_repo(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
-    let nohooks = dir.join("nohooks");
+    let temp_root = dir.parent().unwrap_or(dir);
+    let nohooks = temp_root.join("nohooks");
     std::fs::create_dir_all(&nohooks).unwrap();
-    let global_cfg = dir.join("gitconfig");
+    let global_cfg = temp_root.join("gitconfig");
     std::fs::write(&global_cfg, "").unwrap();
 
     let run_git = |args: &[&str]| {
@@ -89,10 +90,7 @@ fn config_default_and_validation() {
     let arr_val = serde_json::json!([1, 2, 3]);
     let err = agent_brain::config::config_from_value(&arr_val).unwrap_err();
     assert_eq!(err.code, 1);
-    assert_eq!(
-        err.message,
-        "Cấu hình không hợp lệ (phải là JSON object)"
-    );
+    assert_eq!(err.message, "Cấu hình không hợp lệ (phải là JSON object)");
 
     // expand_tilde
     let h = Path::new("/h");
@@ -261,9 +259,7 @@ fn require_runnable_checks() {
     p.path = tmp.path().join("nope").to_str().unwrap().to_string();
     let err = agent_brain::projects::require_runnable(&p, &cfg).unwrap_err();
     assert_eq!(err.code, 1);
-    assert!(err
-        .message
-        .contains("Đường dẫn dự án 'p1' không tồn tại: "));
+    assert!(err.message.contains("Đường dẫn dự án 'p1' không tồn tại: "));
 
     // plain directory
     let plain_dir = tmp.path().join("plain");
@@ -372,10 +368,7 @@ fn gitops_round_trip() {
     let new_txt = repo_dir.join("new.txt");
     std::fs::write(&new_txt, "content").unwrap();
     let changed_after = agent_brain::gitops::changed_paths(&repo_dir).unwrap();
-    assert_eq!(
-        changed_after,
-        ["new.txt".to_string()].into_iter().collect()
-    );
+    assert_eq!(changed_after, ["new.txt".to_string()].into_iter().collect());
 
     agent_brain::gitops::create_branch(&repo_dir, "task/x").unwrap();
     assert_eq!(
@@ -401,11 +394,8 @@ fn gitops_round_trip() {
     let diff = agent_brain::gitops::diff_names(&repo_dir, &sha, "HEAD").unwrap();
     assert_eq!(diff, ["new.txt".to_string()].into_iter().collect());
 
-    let err = agent_brain::gitops::git(
-        &repo_dir,
-        &["rev-parse", "--verify", "refs/heads/nope"],
-    )
-    .unwrap_err();
+    let err = agent_brain::gitops::git(&repo_dir, &["rev-parse", "--verify", "refs/heads/nope"])
+        .unwrap_err();
     assert_eq!(err.code, 1);
     assert!(!err.message.is_empty());
 }
