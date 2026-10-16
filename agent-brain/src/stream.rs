@@ -357,7 +357,7 @@ impl Summary {
                                         if let Some(raw) = raw_path {
                                             let norm_p =
                                                 normalize_tool_path(raw, self.root.as_deref());
-                                            if name == "Read" || name == "Grep" || name == "Glob" {
+                                            if name == "Read" {
                                                 if !self.reads.contains(&norm_p) {
                                                     self.reads.push(norm_p.clone());
                                                 }
