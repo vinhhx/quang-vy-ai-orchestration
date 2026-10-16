@@ -91,6 +91,14 @@ Other live findings:
 - `tests/test_tasklog.py::test_record_run_failure_prints_warning` has no `runs_dir` in its config, so each suite run writes `proj-1/task-fail` run dirs into the real `~/.local/share/agent-brain/runs/`.
 - The manual does not say how to create the throwaway project for P1-06..P1-09.
 
+### Live-run fix (`.planning/fixes/02-07-live-run-fixes.plan.md`)
+
+Root cause of Lead's denied `.plan.md` writes: Claude Code auto-allows read-only `cd X && …` commands, the Bash cwd persists, and `Write(./.plan.md)` resolves against that cwd. Both denied runs (`apec/khao-sat`, `app-sale-api/them-api-insert-tuoi-cho-user`) had a `cd` into a subfolder that was never undone; every run that wrote fine had no `cd` or undid it. The app-sale-api plan was recovered from the denied Write's input (valid, 16 files).
+
+Executed by agy (gemini-3.8-flash-high, 956 s): `3c9d40d`, `35eb5e0` (`CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1` in `build_env`; `abs_rules` adds `Tool(//<abs path>)` next to every `./` rule for Lead, Dev and QA), `8b5347c`, `056ffde` (`brain scan --root <missing>` → exit 1, map untouched; saved missing roots warned), `fd4d08e` (tasklog test gets a temp `runs_dir`), `6c10577` (manual: throwaway project, strict P1-08, gate from repo root, troubleshooting row; README A-11 unverified).
+
+Reviewer re-run: 114 tests OK; test commits fail at `3c9d40d` (5 failures, 2 errors) and `8b5347c` (2 failures); run dirs under the real home 31 → 31 after a full suite run; `brain scan --root /nonexistent-xyz` exit 1 with a temp config; dry runs show the `//` rules for Lead and Dev; only the 14 in-scope files changed. A-11 is settled by the next live run that has a `cd`.
+
 ## Task 3: Five real tasks (checkpoint, user)
 
 Not started. Gate: `python3 -m brain.tasklog check protocol-log --min 5` exits 0.
