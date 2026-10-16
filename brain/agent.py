@@ -35,6 +35,21 @@ class RunResult:
     interrupted: bool
 
 
+def abs_rules(
+    root: Path,
+    rel_files: list[str] | tuple[str, ...] | set[str],
+    tools: tuple[str, ...] | list[str],
+) -> list[str]:
+    rules: list[str] = []
+    for rel in rel_files:
+        clean = rel[2:] if rel.startswith("./") else rel
+        clean = clean.lstrip("/")
+        abs_path = str(root / clean)
+        for tool in tools:
+            rules.append(f"{tool}(/{abs_path})")
+    return rules
+
+
 def new_run_dir(cfg: dict, project: dict, task: str, role: str) -> Path:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     base = runs_dir(cfg)

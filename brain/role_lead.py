@@ -7,7 +7,7 @@ import shlex
 import sys
 
 from brain import BrainError, EXIT_ERROR, EXIT_PROTOCOL
-from brain.agent import RoleSpec, build_command, execute_role
+from brain.agent import RoleSpec, abs_rules, build_command, execute_role
 from brain.config import describe_profile, load_config, repo_root
 from brain import gitops
 from brain.planfile import parse_plan, read_meta, render_plan_skeleton, set_meta, validate_plan
@@ -110,7 +110,7 @@ def cmd_lead(args) -> int:
             "Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo). "
             "Ghi kế hoạch vào .plan.md theo đúng mẫu."
         ),
-        allowed_tools=LEAD_ALLOWED_TOOLS,
+        allowed_tools=LEAD_ALLOWED_TOOLS + abs_rules(proj_path, [".plan.md"], ("Write", "Edit")),
         disallowed_tools=LEAD_DISALLOWED_TOOLS,
     )
 

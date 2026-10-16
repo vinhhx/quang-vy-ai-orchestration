@@ -112,6 +112,7 @@ def build_env(
             dir_str = os.path.normpath(os.path.join(home, dir_str[1:].lstrip("/\\")))
         env["CLAUDE_CONFIG_DIR"] = dir_str
 
+    env["CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"] = "1"
     return env
 
 

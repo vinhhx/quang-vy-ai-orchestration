@@ -15,7 +15,7 @@ from brain import (
     EXIT_OK,
     EXIT_PROTOCOL,
 )
-from brain.agent import RoleSpec, build_command, execute_role, new_run_dir
+from brain.agent import RoleSpec, abs_rules, build_command, execute_role, new_run_dir
 from brain.config import load_config, repo_root
 from brain import gitops
 from brain.guard import write_hook_settings
@@ -32,7 +32,7 @@ DEV_DISALLOWED_TOOLS: list[str] = [
 ]
 
 
-def dev_allowed_tools(files: list[str]) -> list[str]:
+def dev_allowed_tools(files: list[str], root: Path | None = None) -> list[str]:
     all_files = list(files)
     if ".plan.md" not in all_files:
         all_files.append(".plan.md")
@@ -40,6 +40,8 @@ def dev_allowed_tools(files: list[str]) -> list[str]:
     for f in all_files:
         clean_f = f[2:] if f.startswith("./") else f
         tools.extend([f"Read(./{clean_f})", f"Edit(./{clean_f})", f"Write(./{clean_f})"])
+        if root is not None:
+            tools.extend(abs_rules(root, [clean_f], ("Read", "Edit", "Write")))
     tools.extend(["Bash(git add *)", "Bash(git commit *)"])
     return tools
 
@@ -96,7 +98,7 @@ def cmd_dev(args) -> int:
             EXIT_ERROR,
         )
 
-    allowed = dev_allowed_tools(files)
+    allowed = dev_allowed_tools(files, root=proj_path)
 
     if getattr(args, "dry_run", False):
         print(f"Allowlist: {', '.join(files)}")

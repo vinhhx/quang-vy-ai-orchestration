@@ -10,7 +10,7 @@ from brain import (
     EXIT_OK,
     EXIT_PROTOCOL,
 )
-from brain.agent import RoleSpec, execute_role
+from brain.agent import RoleSpec, abs_rules, execute_role
 from brain.config import load_config, repo_root
 from brain import gitops
 from brain.planfile import parse_qa_verdict, read_meta, render_qa_skeleton
@@ -102,7 +102,7 @@ def cmd_qa(args) -> int:
         role="qa",
         prompt_file=repo_root() / "brain" / "prompts" / "qa.md",
         user_input=user_input,
-        allowed_tools=QA_ALLOWED_TOOLS,
+        allowed_tools=QA_ALLOWED_TOOLS + abs_rules(proj_path, [".qa-report.md"], ("Write", "Edit")),
         disallowed_tools=QA_DISALLOWED_TOOLS,
     )
 
