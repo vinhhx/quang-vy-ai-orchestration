@@ -530,4 +530,37 @@ mod tests {
         assert_eq!(ev.kind, "unknown:x");
         assert_eq!(ev.raw, "{\"type\":\"x\"}");
     }
+
+    #[test]
+    fn test_reads_counts_only_read_not_grep() {
+        let mut summary = Summary::new(None, None);
+        let line = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg-grep-read",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Grep",
+                        "input": {
+                            "path": "src/lib.rs",
+                            "pattern": "fn main"
+                        }
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {
+                            "file_path": "src/main.rs"
+                        }
+                    }
+                ]
+            }
+        });
+        let raw = serde_json::to_vec(&line).unwrap();
+        summary.feed(&raw);
+        assert_eq!(summary.reads, vec!["src/main.rs"]);
+        assert_eq!(summary.tool_counts.get("Grep"), Some(&1));
+        assert_eq!(summary.tool_counts.get("Read"), Some(&1));
+    }
 }
