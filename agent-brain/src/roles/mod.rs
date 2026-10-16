@@ -1,0 +1,386 @@
+pub mod lead;
+
+use crate::app::Ctx;
+use crate::config::Config;
+use crate::error::{BrainError, BrainResult};
+use crate::projects::Project;
+use crate::runner::RunOutcome;
+use crate::stream::Summary;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Role {
+    Lead,
+    Dev,
+    Qa,
+}
+
+impl Role {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Role::Lead => "lead",
+            Role::Dev => "dev",
+            Role::Qa => "qa",
+        }
+    }
+}
+
+pub const LEAD_PROMPT: &str = include_str!("../../assets/prompts/lead.md");
+pub const DEV_PROMPT: &str = include_str!("../../assets/prompts/dev.md");
+pub const QA_PROMPT: &str = include_str!("../../assets/prompts/qa.md");
+
+pub fn prompt_for(role: Role) -> &'static str {
+    match role {
+        Role::Lead => LEAD_PROMPT,
+        Role::Dev => DEV_PROMPT,
+        Role::Qa => QA_PROMPT,
+    }
+}
+
+pub fn check_forbidden_args(args: &[String]) -> BrainResult<()> {
+    for arg in args {
+        if arg.starts_with("--dangerously-skip-permissions")
+            || arg.starts_with("--allow-dangerously-skip-permissions")
+            || arg.starts_with("--permission-mode")
+            || arg.contains("bypassPermissions")
+        {
+            return Err(BrainError::error(format!(
+                "Cờ quyền không được phép: {arg}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub struct RoleSpec {
+    pub role: Role,
+    pub user_input: String,
+    pub allowed_tools: Vec<String>,
+    pub disallowed_tools: Vec<String>,
+    pub extra_args: Vec<String>,
+}
+
+pub fn abs_rules(root: &Path, rel_files: &[&str], tools: &[&str]) -> Vec<String> {
+    let mut rules = Vec::new();
+    for rel in rel_files {
+        let clean = rel.strip_prefix("./").unwrap_or(rel);
+        let clean = clean.trim_start_matches('/');
+        let abs_path = root.join(clean);
+        let abs_path_str = abs_path.to_string_lossy();
+        for tool in tools {
+            rules.push(format!("{tool}(/{abs_path_str})"));
+        }
+    }
+    rules
+}
+
+pub fn build_command(spec: &RoleSpec, cfg: &Config) -> BrainResult<Vec<String>> {
+    check_forbidden_args(&cfg.common_args)?;
+    check_forbidden_args(&spec.extra_args)?;
+
+    let prompt_text = prompt_for(spec.role);
+    let model = cfg.model_for(spec.role.as_str())?;
+
+    let mut cmd = vec![
+        cfg.claude_bin.clone(),
+        "-p".to_string(),
+        spec.user_input.clone(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--model".to_string(),
+        model,
+        "--append-system-prompt".to_string(),
+        prompt_text.to_string(),
+    ];
+
+    cmd.extend(cfg.common_args.iter().cloned());
+
+    if let Some(Some(max_turns)) = cfg.max_turns.get(spec.role.as_str()) {
+        cmd.push("--max-turns".to_string());
+        cmd.push(max_turns.to_string());
+    }
+
+    cmd.extend(spec.extra_args.iter().cloned());
+
+    if !spec.allowed_tools.is_empty() {
+        cmd.push("--allowedTools".to_string());
+        cmd.extend(spec.allowed_tools.iter().cloned());
+    }
+
+    if !spec.disallowed_tools.is_empty() {
+        cmd.push("--disallowedTools".to_string());
+        cmd.extend(spec.disallowed_tools.iter().cloned());
+    }
+
+    Ok(cmd)
+}
+
+pub fn new_run_dir(cfg: &Config, project_id: &str, task: &str, role: &str) -> BrainResult<PathBuf> {
+    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S%6fZ").to_string();
+    let base = crate::config::runs_dir(cfg);
+    let target = base
+        .join(project_id)
+        .join(task)
+        .join(format!("{ts}-{role}"));
+
+    let mut to_create = Vec::new();
+    let mut cur = target.clone();
+    while !cur.exists() && cur.parent().is_some() {
+        to_create.push(cur.clone());
+        cur = cur.parent().unwrap().to_path_buf();
+    }
+    to_create.reverse();
+    for d in to_create {
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        let _ = builder.create(&d);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    if !target.exists() {
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&target)?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700));
+    }
+
+    Ok(target)
+}
+
+pub struct RunPlan {
+    pub role: String,
+    pub model: String,
+    pub argv: Vec<String>,
+    pub task_id: Option<i64>,
+    pub task_slug: String,
+    pub base_commit: Option<String>,
+    pub plan_files: Option<Vec<String>>,
+    pub verbose: bool,
+    pub timeout: Duration,
+    pub run_dir: Option<PathBuf>,
+}
+
+pub struct RoleRun {
+    pub run_id: i64,
+    pub outcome: RunOutcome,
+    pub summary: Summary,
+    pub run_dir: PathBuf,
+}
+
+pub fn execute_role(
+    ctx: &mut Ctx,
+    project: &Project,
+    root: &Path,
+    plan: RunPlan,
+) -> BrainResult<RoleRun> {
+    let env = crate::profile::build_env(
+        &project.profile,
+        &ctx.cfg.profiles,
+        &crate::profile::current_env(),
+    )?;
+    let run_dir = match &plan.run_dir {
+        Some(rd) => {
+            std::fs::create_dir_all(rd)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(rd, std::fs::Permissions::from_mode(0o700));
+            }
+            rd.clone()
+        }
+        None => new_run_dir(&ctx.cfg, &project.id, &plan.task_slug, &plan.role)?,
+    };
+
+    let p_desc = crate::profile::describe_profile(&project.profile, &ctx.cfg.profiles);
+    crate::term::emit(&format!(
+        "[agent-brain] {} · {} · profile {} ({}) · model {}",
+        plan.role, project.id, project.profile, p_desc, plan.model
+    ));
+
+    let stderr_path = run_dir.join("stderr.txt");
+    let stream_path = run_dir.join("stream.jsonl");
+
+    let req = crate::runner::RunRequest {
+        argv: plan.argv.clone(),
+        cwd: root.to_path_buf(),
+        env,
+        stderr_path,
+        stream_path,
+        timeout: plan.timeout,
+        kill_grace: Duration::from_secs(ctx.cfg.kill_grace_secs),
+    };
+
+    struct Observer<'a> {
+        ctx: &'a Ctx,
+        plan: &'a RunPlan,
+        project_id: &'a str,
+        profile: &'a str,
+        run_dir: &'a Path,
+        summary: Summary,
+        run_id: Option<i64>,
+        seq: i64,
+    }
+
+    impl<'a> crate::runner::RunObserver for Observer<'a> {
+        fn on_spawn(&mut self, pid: i32, pgid: i32, pid_start: u64) -> BrainResult<()> {
+            let proj_row_id = crate::db::project_row_id(&self.ctx.conn, self.project_id)?;
+            let new_run = crate::db::NewRun {
+                task_id: self.plan.task_id,
+                project_id: proj_row_id,
+                role: self.plan.role.clone(),
+                profile: self.profile.to_string(),
+                model: Some(self.plan.model.clone()),
+                pid: pid as i64,
+                pgid: pgid as i64,
+                pid_start: pid_start as i64,
+                base_commit: self.plan.base_commit.clone(),
+                run_dir: Some(self.run_dir.to_string_lossy().to_string()),
+            };
+            let run_id = crate::db::insert_run(&self.ctx.conn, &new_run)?;
+            self.run_id = Some(run_id);
+            if let Some(tid) = self.plan.task_id {
+                crate::term::emit(&format!("task {tid}, run {run_id}"));
+            } else {
+                crate::term::emit(&format!("run {run_id}"));
+            }
+            Ok(())
+        }
+
+        fn on_line(&mut self, line: &[u8]) {
+            if let Some(ev) = self.summary.feed(line) {
+                self.seq += 1;
+                if let Some(run_id) = self.run_id {
+                    let _ = crate::db::insert_event(
+                        &self.ctx.conn,
+                        run_id,
+                        self.seq,
+                        crate::db::now_ms(),
+                        &ev.kind,
+                        &ev.raw,
+                    );
+                }
+                let line_text = crate::term::event_line(&ev, self.plan.verbose);
+                crate::term::emit(&line_text);
+            }
+        }
+
+        fn on_notice(&mut self, message: &str) {
+            crate::term::emit(message);
+        }
+
+        fn kill_requested(&mut self) -> bool {
+            if let Some(run_id) = self.run_id {
+                let req: Option<i64> = self
+                    .ctx
+                    .conn
+                    .query_row(
+                        "SELECT kill_requested_at FROM runs WHERE id = ?1",
+                        rusqlite::params![run_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(None);
+                req.is_some()
+            } else {
+                false
+            }
+        }
+    }
+
+    let mut obs = Observer {
+        ctx,
+        plan: &plan,
+        project_id: &project.id,
+        profile: &project.profile,
+        run_dir: &run_dir,
+        summary: Summary::new(plan.plan_files.clone(), Some(root.to_path_buf())),
+        run_id: None,
+        seq: 0,
+    };
+
+    let outcome = crate::runner::supervise(&req, &mut obs)?;
+    obs.summary.finish();
+
+    if let Some(run_id) = obs.run_id {
+        let finish = crate::db::RunFinish {
+            status: outcome.status.as_str().to_string(),
+            exit_code: outcome.exit_code,
+            session_id: if obs.summary.session_id.is_empty() {
+                None
+            } else {
+                Some(obs.summary.session_id.clone())
+            },
+            usage: obs.summary.usage,
+            usage_source: obs.summary.usage_source.as_str().to_string(),
+            cost_usd: obs.summary.cost_usd,
+            num_turns: obs.summary.num_turns,
+            assistant_turns: Some(obs.summary.assistant_turns),
+            turns_before_first_edit: obs.summary.turns_before_first_edit,
+            reads_outside_plan: obs
+                .summary
+                .reads_outside_plan
+                .as_ref()
+                .map(|v| v.len() as i64),
+            permission_denials: obs.summary.permission_denials,
+            error: None,
+        };
+        crate::db::finish_run(&ctx.conn, run_id, &finish)?;
+        crate::term::emit(&crate::term::summary_line(
+            run_id,
+            plan.task_id,
+            outcome.status.as_str(),
+            &obs.summary,
+            outcome.elapsed,
+        ));
+    }
+
+    let run_id = obs.run_id.unwrap_or(0);
+    Ok(RoleRun {
+        run_id,
+        outcome,
+        summary: obs.summary,
+        run_dir,
+    })
+}
+
+pub fn cmd_run(
+    ctx: &mut Ctx,
+    role: Role,
+    project: &str,
+    request: Option<&str>,
+    name: Option<&str>,
+    dry_run: bool,
+    verbose: bool,
+) -> BrainResult<i32> {
+    match role {
+        Role::Lead => {
+            let req = match request {
+                Some(r) if !r.trim().is_empty() => r.trim(),
+                _ => {
+                    return Err(BrainError::error(
+                        "run lead cần <yêu cầu> — ví dụ: agent-brain run lead \"<dự án>\" \"<yêu cầu>\"",
+                    ));
+                }
+            };
+            lead::cmd_lead(ctx, project, req, name, dry_run, verbose)
+        }
+        Role::Dev => Err(BrainError::not_available("run dev")),
+        Role::Qa => Err(BrainError::not_available("run qa")),
+    }
+}

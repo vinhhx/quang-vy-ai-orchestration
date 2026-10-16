@@ -228,7 +228,9 @@ impl Sandbox {
     }
 
     pub fn map_path(&self) -> PathBuf {
-        self.xdg_config.join("agent-brain").join("projects_map.json")
+        self.xdg_config
+            .join("agent-brain")
+            .join("projects_map.json")
     }
 
     pub fn read_map(&self) -> serde_json::Value {

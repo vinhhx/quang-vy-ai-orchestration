@@ -53,7 +53,10 @@ fn p2_01_run_lead_prints_steps_and_records_run() {
 
     let re_time = regex::Regex::new(r"^\d\d:\d\d:\d\d ").unwrap();
     let time_lines: Vec<&str> = out.stderr.lines().filter(|l| re_time.is_match(l)).collect();
-    assert!(!time_lines.is_empty(), "No time lines matching HH:MM:SS in stderr");
+    assert!(
+        !time_lines.is_empty(),
+        "No time lines matching HH:MM:SS in stderr"
+    );
 
     assert!(
         time_lines.iter().any(|l| l.contains("init")),
@@ -274,11 +277,9 @@ fn p2_01_run_lead_prints_steps_and_records_run() {
     assert!(started_at <= ended_at.expect("ended_at"));
 
     let event_count: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM events WHERE run_id = 1",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT count(*) FROM events WHERE run_id = 1", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(event_count, 6);
 
