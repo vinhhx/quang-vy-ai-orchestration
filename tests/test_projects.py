@@ -197,6 +197,64 @@ class TestProjects(unittest.TestCase):
         finally:
             sb.cleanup()
 
+    def test_scan_missing_root_fails_and_leaves_map_untouched(self) -> None:
+        sb = Sandbox()
+        try:
+            # Case 1: map file does not exist yet
+            missing_1 = "/path/that/does/not/exist/at/all"
+            res = sb.run_brain("scan", "--root", missing_1)
+            self.assertEqual(res.returncode, 1)
+            self.assertIn(f"Thư mục không tồn tại: {Path(missing_1).resolve()}", res.stderr)
+            map_file = sb.xdg_config / "agent-brain" / "projects_map.json"
+            self.assertFalse(map_file.exists())
+
+            # Case 2: map file exists, remains unchanged byte-for-byte
+            valid_root = sb.root / "valid_root"
+            valid_root.mkdir()
+            res_init = sb.run_brain("scan", "--root", str(valid_root))
+            self.assertEqual(res_init.returncode, 0)
+            self.assertTrue(map_file.exists())
+            before_bytes = map_file.read_bytes()
+
+            missing_2 = "/another/missing/dir/xyz"
+            res2 = sb.run_brain("scan", "--root", missing_2)
+            self.assertEqual(res2.returncode, 1)
+            self.assertIn(f"Thư mục không tồn tại: {Path(missing_2).resolve()}", res2.stderr)
+            after_bytes = map_file.read_bytes()
+            self.assertEqual(before_bytes, after_bytes)
+        finally:
+            sb.cleanup()
+
+    def test_scan_warns_on_saved_missing_root(self) -> None:
+        sb = Sandbox()
+        try:
+            valid_root = sb.root / "valid_root"
+            valid_root.mkdir()
+            sb.make_repo("my-app", root=valid_root)
+
+            missing_root = sb.root / "missing_root"  # intentionally not created
+            map_file = sb.xdg_config / "agent-brain" / "projects_map.json"
+            map_file.parent.mkdir(parents=True, exist_ok=True)
+            initial_data = {
+                "scan_roots": [str(valid_root), str(missing_root)],
+                "projects": [],
+            }
+            map_file.write_text(json.dumps(initial_data, indent=2) + "\n", encoding="utf-8")
+
+            res = sb.run_brain("scan")
+            self.assertEqual(res.returncode, 0)
+            self.assertIn(f"CẢNH BÁO: thư mục gốc không tồn tại, bỏ qua: {missing_root}", res.stderr)
+            self.assertIn("Đã quét 1 thư mục gốc", res.stdout)
+
+            with open(map_file, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            self.assertIn(str(missing_root), saved["scan_roots"])
+            self.assertIn(str(valid_root), saved["scan_roots"])
+            proj_ids = [p["id"] for p in saved["projects"]]
+            self.assertIn("my-app", proj_ids)
+        finally:
+            sb.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
