@@ -5,7 +5,7 @@
 | ID | Kịch bản | Kết quả mong đợi | Kết quả | Ngày | Ghi chú |
 | --- | --- | --- | --- | --- | --- |
 | P2-01 | `run lead` trên dự án thật | Log hiện từng bước trên terminal | Đạt | 2026-10-16 | claude 2.1.301, opus; task 1 run 1 succeeded, 4 turn, 28.3s, ~0.16 USD; log từng bước (init, tool, kết quả tool, assistant, result) + dòng `Kết thúc run`; plan commit `fd501e6` trên `task/them-ham-tinh-hieu-hai-so-vao-calcpy`; `status` 0.03s. Ghi chú: Lead phát hiện `hieu` đã có nên plan chỉ thêm test; log in nhiều dòng `system thinking_tokens` (nhiễu). |
-| P2-02 | Kill khi agent đang chạy `sleep 300` | Sau 5 giây, `ps` không còn `claude` hay `sleep` liên quan | | | |
+| P2-02 | Kill khi agent đang chạy `sleep 300` | Sau 5 giây, `ps` không còn `claude` hay `sleep` liên quan | Đạt (lệnh thay thế) | 2026-10-16 | claude 2.1.301 chặn `sleep 307` ở foreground ("Blocked: standalone sleep"), kể cả `sleep 307 && echo xong` → thay bằng `python3 -c 'import time; time.sleep(307)'` qua wrapper tạm cho phép `Bash(python3 *)`. Cây: claude 308926 → bash 309121 (PGID/SID riêng) → python3 309122. `agent-brain kill 2` dừng sau 1382 ms, run exit 130, status `killed`; 5 s sau `ps -p` chỉ in tiêu đề, không còn tiến trình nào. Cần sửa LIVE-CHECKS.md + claude-allow-sleep.sh cho đúng cách mới. |
 | P2-03 | Đóng terminal (Ctrl+C) giữa chừng | Không còn tiến trình sót | | | |
 | P2-04 | Run kết thúc | Bảng `runs` có đủ token, session_id, thời gian | | | |
 | P2-05 | Dòng JSON lỗi trong stream | Lưu thô, chương trình không dừng | | | |
