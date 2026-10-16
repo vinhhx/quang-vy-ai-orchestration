@@ -1,7 +1,7 @@
 use crate::projects::Project;
 use regex::Regex;
 use std::sync::OnceLock;
-use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+use unicode_normalization::UnicodeNormalization;
 
 pub const SLUG_MAX_LEN: usize = 48;
 
@@ -32,15 +32,14 @@ impl std::error::Error for RoutingError {}
 
 pub fn normalize(text: &str) -> String {
     static RE_SPACE: OnceLock<Regex> = OnceLock::new();
+    static RE_MN: OnceLock<Regex> = OnceLock::new();
     let re_space = RE_SPACE.get_or_init(|| Regex::new(r"[\s_\-]+").unwrap());
+    let re_mn = RE_MN.get_or_init(|| Regex::new(r"\p{Mn}").unwrap());
 
-    let s: String = text
-        .replace(['đ', 'Đ'], "d")
-        .nfd()
-        .filter(|c| !is_combining_mark(*c))
-        .collect();
+    let s_nfd: String = text.replace(['đ', 'Đ'], "d").nfd().collect();
+    let s_clean = re_mn.replace_all(&s_nfd, "");
     re_space
-        .replace_all(&s.to_lowercase(), " ")
+        .replace_all(&s_clean.to_lowercase(), " ")
         .trim()
         .to_string()
 }

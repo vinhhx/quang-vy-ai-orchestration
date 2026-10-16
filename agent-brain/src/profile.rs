@@ -31,6 +31,39 @@ pub fn check_profile(profile: &str, profiles: &BTreeMap<String, ProfileCfg>) -> 
     Ok(())
 }
 
+pub fn posix_normpath(path: &str) -> String {
+    if path.is_empty() {
+        return ".".to_string();
+    }
+    let is_abs = path.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            if let Some(last) = parts.last() {
+                if *last != ".." {
+                    parts.pop();
+                    continue;
+                }
+            }
+            if !is_abs {
+                parts.push("..");
+            }
+        } else {
+            parts.push(seg);
+        }
+    }
+    if is_abs {
+        format!("/{}", parts.join("/"))
+    } else if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    }
+}
+
 pub fn build_env(
     profile: &str,
     profiles: &BTreeMap<String, ProfileCfg>,
@@ -56,8 +89,8 @@ pub fn build_env(
                     .cloned()
                     .unwrap_or_else(|| crate::config::home_dir().to_string_lossy().to_string());
                 let remainder = dir_str[1..].trim_start_matches(['/', '\\']);
-                let joined = std::path::PathBuf::from(home).join(remainder);
-                joined.to_string_lossy().to_string()
+                let joined = format!("{}/{}", home.trim_end_matches(['/', '\\']), remainder);
+                posix_normpath(&joined)
             } else {
                 dir_str.clone()
             };
