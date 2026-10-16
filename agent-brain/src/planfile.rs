@@ -123,36 +123,409 @@ pub struct Plan {
     pub changes: Vec<Change>,
 }
 
-pub fn posix_normpath(_p: &str) -> String {
-    unimplemented!("posix_normpath stub")
+pub fn posix_normpath(path: &str) -> String {
+    if path.is_empty() {
+        return ".".to_string();
+    }
+    let (initial_slashes, tail) = if !path.starts_with('/') {
+        ("", path)
+    } else if !path[1..].starts_with('/') || path.starts_with("///") {
+        ("/", &path[1..])
+    } else {
+        ("//", &path[2..])
+    };
+
+    let mut comps: Vec<&str> = Vec::new();
+    for comp in tail.split('/') {
+        if comp.is_empty() || comp == "." {
+            continue;
+        }
+        if comp != ".."
+            || (initial_slashes.is_empty() && comps.is_empty())
+            || (!comps.is_empty() && comps.last() == Some(&".."))
+        {
+            comps.push(comp);
+        } else if !comps.is_empty() {
+            comps.pop();
+        }
+    }
+
+    let joined = comps.join("/");
+    let res = format!("{initial_slashes}{joined}");
+    if res.is_empty() {
+        ".".to_string()
+    } else {
+        res
+    }
 }
 
-pub fn realpath_nonstrict(_p: &std::path::Path) -> std::path::PathBuf {
-    unimplemented!("realpath_nonstrict stub")
+pub fn realpath_nonstrict(p: &std::path::Path) -> std::path::PathBuf {
+    let abs_p = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+            .join(p)
+    };
+
+    let mut cur = abs_p.clone();
+    let mut tail = Vec::new();
+
+    loop {
+        if let Ok(canon) = cur.canonicalize() {
+            let mut result = canon;
+            for part in tail.into_iter().rev() {
+                result.push(part);
+            }
+            return result;
+        }
+
+        #[cfg(unix)]
+        {
+            if cur.is_symlink() {
+                if let Ok(target) = std::fs::read_link(&cur) {
+                    let next = if target.is_absolute() {
+                        target
+                    } else {
+                        cur.parent()
+                            .unwrap_or(std::path::Path::new("/"))
+                            .join(target)
+                    };
+                    let mut resolved = realpath_nonstrict(&next);
+                    for part in tail.into_iter().rev() {
+                        resolved.push(part);
+                    }
+                    return resolved;
+                }
+            }
+        }
+
+        if let Some(file_name) = cur.file_name() {
+            tail.push(file_name.to_os_string());
+            if let Some(parent) = cur.parent() {
+                cur = parent.to_path_buf();
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    abs_p
 }
 
-pub fn normalize_plan_path(_p: &str) -> String {
-    unimplemented!("normalize_plan_path stub")
+pub fn normalize_plan_path(p: &str) -> String {
+    let s = p
+        .trim()
+        .trim_matches('`')
+        .trim_matches(|c| c == '\'' || c == '"')
+        .trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    let nfc: String = s.nfc().collect();
+    let norm = posix_normpath(&nfc);
+    if let Some(stripped) = norm.strip_prefix("./") {
+        stripped.to_string()
+    } else {
+        norm
+    }
 }
 
-pub fn section_text(_text: &str, _name: &str) -> String {
-    unimplemented!("section_text stub")
+fn split_table_row(line: &str) -> Option<Vec<String>> {
+    let s = line.trim();
+    if !s.starts_with('|') || s.chars().filter(|&c| c == '|').count() < 2 {
+        return None;
+    }
+    let mut content = s;
+    if content.starts_with('|') {
+        content = &content[1..];
+    }
+    if content.ends_with('|') {
+        content = &content[..content.len() - 1];
+    }
+
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut chars = content.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next_c) = chars.peek() {
+                if next_c == '|' {
+                    chars.next();
+                    current.push('|');
+                    continue;
+                }
+            }
+            current.push('\\');
+        } else if c == '|' {
+            cells.push(current.trim().to_string());
+            current.clear();
+        } else {
+            current.push(c);
+        }
+    }
+    cells.push(current.trim().to_string());
+    Some(cells)
 }
 
-pub fn parse_plan(_text: &str) -> Plan {
-    unimplemented!("parse_plan stub")
+fn is_separator_row(cells: &[String]) -> bool {
+    static SEP_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = SEP_RE.get_or_init(|| regex::Regex::new(r"^:?-+:?$").unwrap());
+    !cells.is_empty() && cells.iter().all(|c| re.is_match(c))
 }
 
-pub fn validate_plan(_plan: &Plan, _root: Option<&std::path::Path>) -> Vec<String> {
-    unimplemented!("validate_plan stub")
+fn is_header_row(cells: &[String]) -> bool {
+    cells.len() >= 2 && cells[0] == "#" && cells[1].eq_ignore_ascii_case("file")
 }
 
-pub fn plan_files(_plan: &Plan) -> Vec<String> {
-    unimplemented!("plan_files stub")
+pub fn section_text(text: &str, name: &str) -> String {
+    let norm_name: String = name.nfc().collect();
+    let norm_name = norm_name.trim();
+    let mut in_section = false;
+    let mut section_lines = Vec::new();
+
+    for line in text.lines() {
+        if line.starts_with("## ") || line.starts_with("# ") {
+            let heading_raw = line.trim_start_matches('#').trim();
+            let heading: String = heading_raw.nfc().collect();
+            if in_section {
+                break;
+            }
+            if heading.starts_with(norm_name) {
+                in_section = true;
+                continue;
+            }
+        } else if in_section {
+            section_lines.push(line);
+        }
+    }
+
+    if !in_section {
+        return String::new();
+    }
+    section_lines.join("\n").trim().to_string()
 }
 
-pub fn has_blockers(_plan: &Plan) -> bool {
-    unimplemented!("has_blockers stub")
+pub fn parse_plan(text: &str) -> Plan {
+    let meta = read_meta(text);
+
+    // Title
+    let mut title = String::new();
+    for line in text.lines() {
+        let line_clean = line.trim();
+        let lower = line_clean.to_lowercase();
+        if lower.starts_with("# plan:") {
+            title = line_clean[7..].trim().nfc().collect();
+            break;
+        } else if line_clean.starts_with("# ") && !lower.starts_with("# qa:") {
+            title = line_clean[2..].trim().nfc().collect();
+            break;
+        }
+    }
+
+    // Sections
+    let mut sections = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        if line.starts_with("## ") {
+            let heading: String = line[3..].trim().nfc().collect();
+            let mut matched = false;
+            for &sec in &PLAN_SECTIONS {
+                if heading.starts_with(sec) {
+                    sections
+                        .entry(sec.to_string())
+                        .or_insert_with(|| section_text(text, sec));
+                    matched = true;
+                    break;
+                }
+            }
+            if !matched {
+                sections
+                    .entry(heading.clone())
+                    .or_insert_with(|| section_text(text, &heading));
+            }
+        }
+    }
+
+    // Changes from Thay đổi
+    let mut changes = Vec::new();
+    let thay_doi_text = sections.get("Thay đổi").map(|s| s.as_str()).unwrap_or("");
+    for line in thay_doi_text.lines() {
+        if let Some(cells) = split_table_row(line) {
+            if is_header_row(&cells) || is_separator_row(&cells) {
+                continue;
+            }
+            if cells.len() < 5 {
+                continue;
+            }
+            let file_cell = cells[1].trim();
+            let where_cell = cells[2].clone();
+            let what_cell = cells[3].clone();
+            let why_cell = cells[4].clone();
+
+            if file_cell.is_empty() {
+                changes.push(Change {
+                    file: String::new(),
+                    where_: where_cell,
+                    what: what_cell,
+                    why: why_cell,
+                });
+            } else {
+                for sub_f in file_cell.split(',') {
+                    let norm_f = normalize_plan_path(sub_f);
+                    changes.push(Change {
+                        file: norm_f,
+                        where_: where_cell.clone(),
+                        what: what_cell.clone(),
+                        why: why_cell.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    Plan {
+        title,
+        meta,
+        sections,
+        changes,
+    }
+}
+
+pub fn validate_plan(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    // 1. missing_title
+    if plan.title.trim().is_empty() {
+        errors.push("missing_title".to_string());
+    }
+
+    // 2. missing_section
+    for sec in &PLAN_SECTIONS {
+        if !plan.sections.contains_key(*sec) {
+            errors.push(format!("missing_section:{sec}"));
+        }
+    }
+
+    // Check table rows in Thay đổi
+    let thay_doi_text = plan
+        .sections
+        .get("Thay đổi")
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    let mut data_rows_count = 0;
+    let mut bad_rows = Vec::new();
+    let mut empty_cells = Vec::new();
+
+    for line in thay_doi_text.lines() {
+        if let Some(cells) = split_table_row(line) {
+            if is_header_row(&cells) || is_separator_row(&cells) {
+                continue;
+            }
+
+            data_rows_count += 1;
+            if cells.len() < 5 {
+                bad_rows.push(data_rows_count);
+                continue;
+            }
+
+            let file_cell = cells[1].trim();
+            if file_cell.is_empty() {
+                empty_cells.push(data_rows_count);
+            } else {
+                for sub_f in file_cell.split(',') {
+                    if normalize_plan_path(sub_f).is_empty() {
+                        empty_cells.push(data_rows_count);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    for r in &bad_rows {
+        errors.push(format!("bad_row:{r}"));
+    }
+    for r in &empty_cells {
+        errors.push(format!("empty_file_cell:{r}"));
+    }
+
+    // 3. no_changes
+    if data_rows_count == 0
+        || (plan.changes.is_empty() && bad_rows.is_empty() && empty_cells.is_empty())
+    {
+        errors.push("no_changes".to_string());
+    }
+
+    // 4. File path errors for each change
+    let mut seen_outside_root = std::collections::HashSet::new();
+    for change in &plan.changes {
+        let f = &change.file;
+        if f.is_empty() {
+            continue;
+        }
+        if f.starts_with('/') {
+            errors.push(format!("absolute_path:{f}"));
+        } else if f == "~" || f.starts_with("~/") {
+            errors.push(format!("home_path:{f}"));
+        } else if f == ".." || f.starts_with("../") || f.contains("/../") || f.ends_with("/..") {
+            errors.push(format!("parent_traversal:{f}"));
+        } else if f == ".git"
+            || f.starts_with(".git/")
+            || f.contains("/.git/")
+            || f.ends_with("/.git")
+        {
+            errors.push(format!("git_dir:{f}"));
+        } else if f == ".plan.md"
+            || f == ".qa-report.md"
+            || f.ends_with("/.plan.md")
+            || f.ends_with("/.qa-report.md")
+        {
+            errors.push(format!("protocol_file:{f}"));
+        } else if normalize_plan_path(f) == "." {
+            errors.push(format!("not_a_file:{f}"));
+        } else if f
+            .chars()
+            .any(|c| c == '*' || c == '?' || c == '[' || c == ']')
+        {
+            errors.push(format!("glob_path:{f}"));
+        } else if let Some(root_path) = root {
+            let root_resolved = realpath_nonstrict(root_path);
+            let target_resolved = realpath_nonstrict(&root_path.join(f));
+            if target_resolved.strip_prefix(&root_resolved).is_err() {
+                if seen_outside_root.insert(f.clone()) {
+                    errors.push(format!("outside_root:{f}"));
+                }
+            }
+        }
+    }
+
+    errors
+}
+
+pub fn plan_files(plan: &Plan) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for c in &plan.changes {
+        if !c.file.is_empty() && seen.insert(c.file.clone()) {
+            result.push(c.file.clone());
+        }
+    }
+    result
+}
+
+pub fn has_blockers(plan: &Plan) -> bool {
+    static COMMENT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = COMMENT_RE.get_or_init(|| regex::Regex::new(r"(?s)<!--.*?-->").unwrap());
+    let body = plan
+        .sections
+        .get("Vướng mắc")
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    let no_comments = re.replace_all(body, "");
+    !no_comments.trim().is_empty()
 }
 
 pub fn render_qa_skeleton(_task_title: &str, _meta: &serde_json::Value) -> String {
@@ -193,7 +566,9 @@ mod tests {
 
     #[test]
     fn test_table_splitter_escaped_pipe() {
-        // Will test hand-rolled splitter
-        unimplemented!("table splitter stub");
+        let row = r"| 1 | src/a\|b.py | toàn bộ | fix | ok |";
+        let cells = split_table_row(row).expect("row should parse");
+        assert_eq!(cells.len(), 5);
+        assert_eq!(cells[1], "src/a|b.py");
     }
 }
