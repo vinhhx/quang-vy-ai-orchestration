@@ -528,12 +528,62 @@ pub fn has_blockers(plan: &Plan) -> bool {
     !no_comments.trim().is_empty()
 }
 
-pub fn render_qa_skeleton(_task_title: &str, _meta: &serde_json::Value) -> String {
-    unimplemented!("render_qa_skeleton stub")
+pub fn render_qa_skeleton(task_title: &str, meta: &serde_json::Value) -> String {
+    let raw_first_line = task_title.lines().next().unwrap_or(task_title);
+    let title_100: String = raw_first_line.chars().take(100).collect();
+    let norm_title: String = title_100.nfc().collect();
+    let lines: Vec<&str> = QA_TEMPLATE.lines().collect();
+    let first_line = lines
+        .first()
+        .copied()
+        .unwrap_or("")
+        .replace("<tên task>", &norm_title);
+    let ml = meta_line(meta);
+    let mut new_lines = vec![first_line, ml];
+    if lines.len() > 1 {
+        new_lines.extend(lines[1..].iter().map(|s| s.to_string()));
+    }
+    new_lines.join("\n") + "\n"
 }
 
-pub fn parse_qa_verdict(_text: &str) -> Option<&'static str> {
-    unimplemented!("parse_qa_verdict stub")
+pub fn parse_qa_verdict(text: &str) -> Option<&'static str> {
+    static BULLET_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let bullet_re =
+        BULLET_RE.get_or_init(|| regex::Regex::new(r"^[>\s*+-]+(?:\d+\.)?\s*").unwrap());
+
+    static PREFIX_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let prefix_re =
+        PREFIX_RE.get_or_init(|| regex::Regex::new(r"(?i)^(?:kết luận|ket luan)\s*:\s*").unwrap());
+
+    let kt_body = section_text(text, "Kết luận");
+    if kt_body.is_empty() {
+        return None;
+    }
+
+    let mut found_verdicts = std::collections::BTreeSet::new();
+    for raw_line in kt_body.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let after_bullet = bullet_re.replace(trimmed, "");
+        let after_prefix = prefix_re.replace(&after_bullet, "");
+        let cleaned = after_prefix
+            .trim_matches(|c: char| matches!(c, '`' | '*' | '"' | '\'' | '_' | ' ' | '\t'));
+        let norm: String = cleaned.nfc().collect();
+        let lower = norm.to_lowercase();
+        if lower == "đạt" {
+            found_verdicts.insert("Đạt");
+        } else if lower == "cần sửa" {
+            found_verdicts.insert("Cần sửa");
+        }
+    }
+
+    if found_verdicts.len() == 1 {
+        found_verdicts.into_iter().next()
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
