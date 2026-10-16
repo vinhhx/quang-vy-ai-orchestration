@@ -16,7 +16,7 @@
     {
       "number": "3",
       "name": "Rust CLI Core",
-      "status": "in_progress"
+      "status": "complete"
     },
     {
       "number": "4",
@@ -26,7 +26,7 @@
     {
       "number": "5",
       "name": "Embedded Dashboard",
-      "status": "pending"
+      "status": "in_progress"
     },
     {
       "number": "6",
@@ -35,9 +35,9 @@
     }
   ],
   "next": {
-    "command": "/gsd:progress --next",
-    "label": "Advance to the next step",
-    "reason": "Phase 03 of 6 · 33% · executing"
+    "command": "/gsd:progress",
+    "label": "Show progress",
+    "reason": "Unsure of state — showing progress"
   },
-  "updated_at": "2026-10-16T09:29:48.684Z"
+  "updated_at": "2026-10-16T18:59:04.921Z"
 }
