@@ -20,7 +20,10 @@ class TestTasklog(unittest.TestCase):
         self.root = Path(self.temp_dir.name).resolve()
         self.protocol_dir = self.root / "protocol_log"
         self.protocol_dir.mkdir(parents=True, exist_ok=True)
+        self.runs_dir = self.root / "runs"
+        self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.cfg = {
+            "runs_dir": str(self.runs_dir),
             "protocol_log_dir": str(self.protocol_dir),
             "common_args": [],
             "models": {
