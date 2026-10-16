@@ -1,6 +1,10 @@
 mod common;
+#[allow(dead_code)]
+#[path = "support/protocol.rs"]
+mod protocol;
 
 use common::Sandbox;
+use protocol::lead_scenario;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
@@ -546,13 +550,8 @@ fn run_lead_bad_json_line_recorded() {
     })
     .to_string();
 
-    let scenario = serde_json::json!({
-        "raw_lines": [
-            init_line,
-            "not json",
-            result_line
-        ]
-    });
+    let mut scenario = lead_scenario(&[("README.md", "1", "sửa", "lý do")]);
+    scenario["raw_lines"] = serde_json::json!([init_line, "not json", result_line]);
 
     let out = sb.run(&["run", "lead", "repo", "yêu cầu"], Some(scenario));
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);

@@ -1,6 +1,10 @@
 mod common;
+#[allow(dead_code)]
+#[path = "support/protocol.rs"]
+mod protocol;
 
 use common::Sandbox;
+use protocol::lead_scenario;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -486,7 +490,8 @@ fn kill_unknown_or_idle_task() {
     );
 
     // 2. finished run with fake_claude
-    let run_out = sb.run(&["run", "lead", "web-ban-hang", "tạo task"], None);
+    let scenario = lead_scenario(&[("README.md", "1", "sửa", "lý do")]);
+    let run_out = sb.run(&["run", "lead", "web-ban-hang", "tạo task"], Some(scenario));
     assert_eq!(run_out.code, 0, "run lead failed: {}", run_out.stderr);
 
     let kill_idle = sb.run(&["kill", "1"], None);
@@ -601,6 +606,46 @@ fn fast_run_drain_breaks_immediately() {
     let entry = sb.project_entry(&repo, "web-ban-hang", "work");
     sb.write_map(serde_json::json!([entry]), &[]);
 
+    let fake_fast = sb.root.join("fake_fast.sh");
+    std::fs::write(
+        &fake_fast,
+        r#"#!/bin/bash
+meta=$(sed -n '2p' .plan.md)
+cat > .plan.md <<EOF
+# Plan: test nhanh
+$meta
+
+## Mục tiêu
+test nhanh
+
+## Thay đổi
+| # | File | Dòng / hàm | Sửa gì | Lý do |
+|---|---|---|---|---|
+| 1 | README.md | 1 | sửa | lý do |
+
+## Không được đụng tới
+
+## Cách kiểm tra
+python3 -m unittest
+
+## Vướng mắc
+EOF
+echo '{"type":"system","subtype":"init","session_id":"fast-session","model":"fake"}'
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"fast-session","total_cost_usd":0,"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"permission_denials":[]}'
+exit 0
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_fast, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    sb.write_config(serde_json::json!({
+        "claude_bin": fake_fast.to_str().unwrap()
+    }));
+
     let start = Instant::now();
     let out = sb.run(&["run", "lead", "web-ban-hang", "test nhanh"], None);
     let elapsed = start.elapsed();
@@ -625,6 +670,26 @@ fn grandchild_holding_stdout_drain_deadline() {
     std::fs::write(
         &fake_holder,
         r#"#!/bin/bash
+meta=$(sed -n '2p' .plan.md)
+cat > .plan.md <<EOF
+# Plan: test holder
+$meta
+
+## Mục tiêu
+test holder
+
+## Thay đổi
+| # | File | Dòng / hàm | Sửa gì | Lý do |
+|---|---|---|---|---|
+| 1 | README.md | 1 | sửa | lý do |
+
+## Không được đụng tới
+
+## Cách kiểm tra
+python3 -m unittest
+
+## Vướng mắc
+EOF
 echo '{"type":"system","subtype":"init","session_id":"holder-session","model":"fake"}'
 (sleep 5) &
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"holder-session","total_cost_usd":0,"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"permission_denials":[]}'
