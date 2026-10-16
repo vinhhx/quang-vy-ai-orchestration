@@ -107,7 +107,7 @@ Plans:
   4. `agent-brain status` trả kết quả git với 0 token và không gọi AI; `agent-brain inspect` chạy đúng 1 turn và không để lại session.
   5. `agent-brain stats --profile work` chỉ tính run của profile work; copy binary sang máy/thư mục khác vẫn chạy mà không cần cài thêm gì (trừ CLI agent).
 
-**Plans**: 8/13 plans executed
+**Plans**: 10/13 plans executed
 
 Plans:
 **Wave 1**
@@ -127,8 +127,8 @@ Plans:
 - [x] 03-08-PLAN.md — `status` (0 token), `inspect` (1 turn, no session), `stats` (FAST-01/02, STAT-01)
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 03-09-PLAN.md — S4 process-tree kill, Ctrl+C/SIGHUP/timeout handling, `kill <task_id>`, PID-reuse safety (PROC-01/02)
-- [ ] 03-10-PLAN.md — Lead parity through the binary: plan validation, re-plan, branch rules, dry-run, E-06 personal-run refusal, shared role helpers (CLI-03)
+- [x] 03-09-PLAN.md — S4 process-tree kill, Ctrl+C/SIGHUP/timeout handling, `kill <task_id>`, PID-reuse safety (PROC-01/02)
+- [x] 03-10-PLAN.md — Lead parity through the binary: plan validation, re-plan, branch rules, dry-run, E-06 personal-run refusal, shared role helpers (CLI-03)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 03-11-PLAN.md — Dev and QA parity through the binary and the lead → dev → qa pipeline (CLI-03)
@@ -206,7 +206,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 |-------|----------------|--------|-----------|
 | 1. Verify Assumptions | 1/1 | Complete    | 2026-10-15 |
 | 2. Protocol MVP (Scripts) | 7/7 | Complete    | 2026-10-16 |
-| 3. Rust CLI Core | 8/13 | In Progress | - |
+| 3. Rust CLI Core | 10/13 | In Progress | - |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 0/TBD | Not started | - |
 | 6. Multi-engine & Media Branch | 0/TBD | Not started | - |
