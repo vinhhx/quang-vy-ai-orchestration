@@ -36,8 +36,21 @@ def _find_child_pid(ppid: int) -> int | None:
 def _is_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
-        return True
     except (ProcessLookupError, PermissionError):
+        return False
+    stat_path = f"/proc/{pid}/stat"
+    try:
+        with open(stat_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        rp = content.rfind(")")
+        if rp != -1:
+            fields = content[rp + 2 :].split()
+            if fields:
+                state = fields[0]
+                if state in ("Z", "X"):
+                    return False
+        return True
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
         return False
 
 
@@ -50,8 +63,17 @@ class TestFakeClaudeTree(unittest.TestCase):
         )
         self.procs_to_clean: list[int] = []
         self.groups_to_clean: list[int] = []
+        self.open_procs: list[subprocess.Popen] = []
 
     def tearDown(self):
+        for proc in getattr(self, "open_procs", []):
+            try:
+                if proc.stdout:
+                    proc.stdout.close()
+                if proc.stderr:
+                    proc.stderr.close()
+            except Exception:
+                pass
         for pgid in self.groups_to_clean:
             try:
                 os.killpg(pgid, signal.SIGKILL)
@@ -79,6 +101,7 @@ class TestFakeClaudeTree(unittest.TestCase):
             start_new_session=True,
         )
         self.procs_to_clean.append(proc.pid)
+        self.open_procs.append(proc)
 
         # Poll up to 5s for the pidfile
         start_wait = time.time()
@@ -224,6 +247,7 @@ class TestFakeClaudeTree(unittest.TestCase):
         # Wait until all three are gone
         gone_wait = time.time()
         while time.time() - gone_wait < 3.0:
+            proc.poll()
             if not _is_alive(fake_pid) and not _is_alive(bash_pid) and not _is_alive(sleep_pid):
                 break
             time.sleep(0.05)

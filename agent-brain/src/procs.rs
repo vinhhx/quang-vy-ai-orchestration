@@ -1,4 +1,5 @@
-use std::sync::atomic::AtomicBool;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy)]
@@ -48,24 +49,132 @@ pub fn alive(p: ProcId) -> bool {
     matches!(read_stat(p.pid), Some(s) if s.start == p.start && s.state != 'Z' && s.state != 'X')
 }
 
-pub fn descendants(_root_pid: i32) -> Vec<ProcId> {
-    Vec::new()
+pub fn descendants(root_pid: i32) -> Vec<ProcId> {
+    let mut ppid_map: HashMap<i32, Vec<ProcId>> = HashMap::new();
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    for entry in entries.flatten() {
+        if let Ok(name) = entry.file_name().into_string() {
+            if let Ok(pid) = name.parse::<i32>() {
+                if let Some(st) = read_stat(pid) {
+                    ppid_map.entry(st.ppid).or_default().push(ProcId {
+                        pid,
+                        start: st.start,
+                    });
+                }
+            }
+        }
+    }
+
+    let mut result = Vec::new();
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    queue.push_back(root_pid);
+    visited.insert(root_pid);
+
+    while let Some(curr) = queue.pop_front() {
+        if let Some(children) = ppid_map.get(&curr) {
+            for child in children {
+                if visited.insert(child.pid) {
+                    result.push(*child);
+                    queue.push_back(child.pid);
+                }
+            }
+        }
+    }
+
+    result
 }
 
-pub fn signal_group(_root: ProcId, _sig: i32) -> bool {
+pub fn signal_group(root: ProcId, sig: i32) -> bool {
+    let ours = unsafe { libc::getpgrp() };
+    if root.pid > 1 && root.pid != ours && alive(root) {
+        if let Some(stat) = read_stat(root.pid) {
+            if stat.pgrp == root.pid {
+                let res = unsafe { libc::killpg(root.pid, sig) };
+                return res == 0;
+            }
+        }
+    }
     false
 }
 
-pub fn signal_proc(_p: ProcId, _sig: i32) -> bool {
+pub fn signal_proc(p: ProcId, sig: i32) -> bool {
+    let ours = unsafe { libc::getpid() };
+    if p.pid > 1 && p.pid != ours && alive(p) {
+        let res = unsafe { libc::kill(p.pid, sig) };
+        return res == 0;
+    }
     false
 }
 
-pub fn kill_tree(_root: ProcId, _grace: Duration, _force: &AtomicBool) -> KillReport {
+pub fn kill_tree(root: ProcId, grace: Duration, force: &AtomicBool) -> KillReport {
+    let start = std::time::Instant::now();
+    let mut recorded = vec![root];
+    recorded.extend(descendants(root.pid));
+
+    if !recorded.iter().any(|p| alive(*p)) {
+        return KillReport {
+            recorded,
+            survivors: Vec::new(),
+            escalated: false,
+            elapsed: start.elapsed(),
+        };
+    }
+
+    if !signal_group(root, libc::SIGTERM) {
+        signal_proc(root, libc::SIGTERM);
+    }
+
+    let poll_interval = Duration::from_millis(50);
+    loop {
+        let any_alive = recorded.iter().any(|p| alive(*p));
+        if !any_alive {
+            break;
+        }
+        if force.load(Ordering::Relaxed) {
+            break;
+        }
+        if start.elapsed() >= grace {
+            break;
+        }
+        let remaining = grace.saturating_sub(start.elapsed());
+        std::thread::sleep(poll_interval.min(remaining));
+    }
+
+    let mut escalated = false;
+    if recorded.iter().any(|p| alive(*p)) {
+        escalated = true;
+        signal_group(root, libc::SIGKILL);
+        for p in &recorded {
+            if alive(*p) {
+                signal_proc(*p, libc::SIGKILL);
+            }
+        }
+
+        let sweep_start = std::time::Instant::now();
+        let sweep_budget = Duration::from_secs(1);
+        loop {
+            let any_alive = recorded.iter().any(|p| alive(*p));
+            if !any_alive {
+                break;
+            }
+            if sweep_start.elapsed() >= sweep_budget {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    let survivors: Vec<ProcId> = recorded.iter().copied().filter(|p| alive(*p)).collect();
     KillReport {
-        recorded: Vec::new(),
-        survivors: Vec::new(),
-        escalated: false,
-        elapsed: Duration::ZERO,
+        recorded,
+        survivors,
+        escalated,
+        elapsed: start.elapsed(),
     }
 }
 
@@ -205,7 +314,7 @@ mod tests {
         let mut child = cmd.spawn().expect("spawn fake_claude_tree");
         let root = proc_id(child.id() as i32).expect("proc_id root");
 
-        // Wait for pidfile
+        // Wait for pidfile and children to be ready
         for _ in 0..50 {
             if pidfile.is_file() {
                 break;
@@ -213,6 +322,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         assert!(pidfile.is_file(), "pidfile should exist");
+        // Give grandchild a moment to spawn
+        for _ in 0..20 {
+            if !descendants(root.pid).is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
 
         let force = AtomicBool::new(false);
         let report = kill_tree(root, Duration::from_millis(500), &force);
@@ -250,7 +366,7 @@ mod tests {
         let mut child = cmd.spawn().expect("spawn fake_claude_tree");
         let root = proc_id(child.id() as i32).expect("proc_id root");
 
-        // Wait for pidfile
+        // Wait for pidfile and children to be ready
         for _ in 0..50 {
             if pidfile.is_file() {
                 break;
@@ -258,6 +374,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         assert!(pidfile.is_file(), "pidfile should exist");
+        for _ in 0..20 {
+            if !descendants(root.pid).is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
 
         let force = AtomicBool::new(false);
         let report = kill_tree(root, Duration::from_secs(2), &force);
