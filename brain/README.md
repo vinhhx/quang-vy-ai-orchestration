@@ -156,8 +156,9 @@ Các khóa cấu hình chính:
 - **Định nghĩa turn**: Một assistant turn được tính là một `message.id` riêng biệt trên dòng có `type == "assistant"`. "Số turn của Dev trước khi bắt đầu sửa" là số turn trợ lý diễn ra trước công cụ Edit/Write đầu tiên sửa một file không phải là file giao thức (`.plan.md`, `.qa-report.md`).
 - **Lệnh kiểm tra cổng**:
   ```bash
-  python3 -m brain.tasklog check protocol-log --min 5
+  cd <repo root> && python3 -m brain.tasklog check protocol-log --min 5
   ```
+  Lưu ý: Lệnh `python3 -m brain...` chỉ hoạt động khi chạy từ thư mục gốc của repo (`<repo root>`).
 > [!CAUTION]
 > **Không dogfood trên chính repo này**: Tuyệt đối không chạy `brain lead/dev/qa` trên repo QuangVy-Orchestration. Thư mục `protocol-log/` của repo sẽ bị thay đổi trong quá trình chạy và làm kích hoạt vi phạm hậu kiểm git (thoát mã 3); Phase 3 D-01 cũng nghiêm cấm dogfooding trên chính repo công cụ.
 
@@ -183,4 +184,5 @@ Toàn bộ các prompt (`brain/prompts/*.md`), mẫu tài liệu (`brain/templat
 | **A-08** | Cờ `--max-turns` tồn tại và giới hạn số lượt. | S8 | **Đã xác nhận** (`claude -p ... --max-turns 1`). | `max_turns.*` trong `config.json`. |
 | **A-09** | SIGTERM tới PID claude dọn sạch các tiến trình con Bash. | S4 | **Đã xác nhận** (S4 SIGTERM tree-kill thành công, SIGKILL để sót con). | `timeout_seconds`. |
 | **A-10** | Công cụ subagent tên là `Task`, có `MultiEdit`/`NotebookEdit`; đưa vào `--disallowedTools` một tên CLI không biết thì vô hại. | S1 | **Chưa kiểm chứng**: dòng `init` của S1 có liệt kê tên công cụ, nhưng việc cấm một tên không tồn tại chưa được thử. | `DEV_DISALLOWED_TOOLS`, `QA_DISALLOWED_TOOLS`, `LEAD_DISALLOWED_TOOLS`. |
+| **A-11** | Biến môi trường `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1` giữ cwd của agent tại gốc repo sau lệnh Bash; cú pháp quyền đường dẫn tuyệt đối `//path` cho phép ghi file khi agent đổi thư mục. | — | **Chưa kiểm chứng tới lần chạy thật tiếp theo** (unverified until the next live run). | `brain/config.py:build_env`, `brain/agent.py:abs_rules`. |
 | **E-06** | Dùng chung `~/.claude-orca` khi phiên agent khác đang chạy có nguy cơ xoay token (E-06). | S5 | **Chưa kiểm chứng** (cần chạy ngoài phiên). | Hướng dẫn vận hành người dùng. |
