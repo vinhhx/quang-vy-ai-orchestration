@@ -1,6 +1,358 @@
 use crate::app::Ctx;
 use crate::error::{BrainError, BrainResult};
+use std::path::Path;
+use unicode_normalization::UnicodeNormalization;
 
-pub fn cmd_dev(_ctx: &mut Ctx, _project: &str, _dry_run: bool, _verbose: bool) -> BrainResult<i32> {
-    Err(BrainError::not_available("run dev"))
+pub const DEV_DISALLOWED_TOOLS: [&str; 6] = [
+    "Grep",
+    "Glob",
+    "WebFetch",
+    "WebSearch",
+    "NotebookEdit",
+    "Task",
+];
+
+pub fn dev_allowed_tools(files: &[String], root: Option<&Path>) -> Vec<String> {
+    let mut all_files = files.to_vec();
+    if !all_files
+        .iter()
+        .any(|f| f.strip_prefix("./").unwrap_or(f) == ".plan.md")
+    {
+        all_files.push(".plan.md".to_string());
+    }
+    let mut tools = Vec::new();
+    for f in &all_files {
+        let clean_f = f.strip_prefix("./").unwrap_or(f);
+        tools.push(format!("Read(./{clean_f})"));
+        tools.push(format!("Edit(./{clean_f})"));
+        tools.push(format!("Write(./{clean_f})"));
+        if let Some(r) = root {
+            tools.extend(crate::roles::abs_rules(
+                r,
+                &[clean_f],
+                &["Read", "Edit", "Write"],
+            ));
+        }
+    }
+    tools.push("Bash(git add *)".to_string());
+    tools.push("Bash(git commit *)".to_string());
+    tools
+}
+
+pub fn cmd_dev(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> BrainResult<i32> {
+    let proj = crate::projects::select_project(project, &ctx.map)?;
+    let proj_path = crate::projects::require_runnable(&proj, &ctx.cfg)?;
+
+    let plan_path = proj_path.join(".plan.md");
+    if !plan_path.is_file() {
+        return Err(BrainError::error("Không tìm thấy .plan.md ở gốc dự án"));
+    }
+
+    let text = std::fs::read_to_string(&plan_path)?;
+    let meta = crate::planfile::read_meta(&text);
+    let task = match meta
+        .as_ref()
+        .and_then(|m| m.get("task"))
+        .and_then(|v| v.as_str())
+    {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => return Err(BrainError::error("File .plan.md không có metadata hợp lệ")),
+    };
+
+    let expected_branch = meta
+        .as_ref()
+        .and_then(|m| m.get("branch"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("task/{task}"));
+
+    let curr_branch = crate::gitops::current_branch(&proj_path);
+    let branch_ok = match &curr_branch {
+        Some(b) => b.starts_with("task/") && b == &expected_branch,
+        None => false,
+    };
+    if !branch_ok {
+        let cur_display = curr_branch.as_deref().unwrap_or("None");
+        return Err(BrainError::error(format!(
+            "Không ở nhánh task '{expected_branch}' (nhánh hiện tại: '{cur_display}') — không đoán"
+        )));
+    }
+
+    let dirty = crate::gitops::changed_paths(&proj_path)?;
+    if !dirty.is_empty() {
+        let mut sorted_dirty: Vec<String> = dirty.into_iter().collect();
+        sorted_dirty.sort();
+        let list = sorted_dirty
+            .iter()
+            .map(|p| format!("  {p}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(BrainError::error(format!(
+            "Working tree có thay đổi chưa commit — hãy commit thay đổi tay với message '{task}: plan':\n{list}"
+        )));
+    }
+
+    let plan = crate::planfile::parse_plan(&text);
+    let errors = crate::planfile::validate_plan(&plan, Some(&proj_path));
+    let files = crate::planfile::plan_files(&plan);
+    if !errors.is_empty() || files.is_empty() {
+        let err_msg = if !errors.is_empty() {
+            let err_list = errors
+                .iter()
+                .map(|e| format!("  - {e}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("Kế hoạch trong .plan.md không hợp lệ:\n{err_list}")
+        } else {
+            "Kế hoạch không có file nào trong bảng Thay đổi".to_string()
+        };
+        return Err(BrainError::error(err_msg));
+    }
+
+    if crate::planfile::has_blockers(&plan) {
+        return Err(BrainError::error(
+            "Vướng mắc chưa xử lý trong .plan.md — hãy xử lý trước khi chạy dev",
+        ));
+    }
+
+    let allowed = dev_allowed_tools(&files, Some(&proj_path));
+    let disallowed = DEV_DISALLOWED_TOOLS
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+
+    if dry_run {
+        crate::term::emit_out(&format!("Allowlist: {}", files.join(", ")));
+        let spec_dry = crate::roles::RoleSpec {
+            role: crate::roles::Role::Dev,
+            user_input: format!(
+                "Task: {task}\nĐọc .plan.md rồi sửa đúng các mục trong bảng Thay đổi.\nFile được đọc và sửa: {}\nCommit với message: \"{task}: <mô tả ngắn>\".",
+                files.join(", ")
+            ),
+            allowed_tools: allowed,
+            disallowed_tools: disallowed,
+            extra_args: vec![
+                "--settings".to_string(),
+                "<run_dir/settings.json>".to_string(),
+            ],
+        };
+        let cmd = crate::roles::build_command(&spec_dry, &ctx.cfg)?;
+        crate::term::emit_out(&format!(
+            "Command: {}",
+            crate::roles::display_argv(&cmd, "assets/prompts/dev.md")
+        ));
+        return Ok(crate::error::EXIT_OK);
+    }
+
+    let proj_row_id = crate::db::project_row_id(&ctx.conn, &proj.id)?;
+    let task_row = crate::tasks::current_task(&ctx.conn, proj_row_id, &proj_path)?;
+    let task_id = task_row.map(|t| t.id);
+
+    let dev_base = crate::gitops::head_sha(&proj_path)?;
+    let run_dir = crate::roles::new_run_dir(&ctx.cfg, &proj.id, &task, "dev")?;
+
+    let mut allow_paths = Vec::new();
+    for f in &files {
+        allow_paths.push(proj_path.join(f));
+    }
+    allow_paths.push(proj_path.join(".plan.md"));
+
+    let exe = std::env::current_exe()?;
+    let settings = crate::guard::write_hook_settings(
+        &run_dir,
+        &proj_path,
+        Some(&allow_paths),
+        &allow_paths,
+        &exe,
+    )?;
+
+    let user_input = format!(
+        "Task: {task}\nĐọc .plan.md rồi sửa đúng các mục trong bảng Thay đổi.\nFile được đọc và sửa: {}\nCommit với message: \"{task}: <mô tả ngắn>\".",
+        files.join(", ")
+    );
+
+    let spec = crate::roles::RoleSpec {
+        role: crate::roles::Role::Dev,
+        user_input,
+        allowed_tools: allowed,
+        disallowed_tools: disallowed,
+        extra_args: vec![
+            "--settings".to_string(),
+            settings.to_string_lossy().to_string(),
+        ],
+    };
+
+    let argv = crate::roles::build_command(&spec, &ctx.cfg)?;
+    let model = ctx.cfg.model_for("dev")?;
+    let timeout = ctx.cfg.timeout_for("dev");
+
+    let run_plan = crate::roles::RunPlan {
+        role: "dev".to_string(),
+        model,
+        argv,
+        task_id,
+        task_slug: task.clone(),
+        base_commit: Some(dev_base.clone()),
+        plan_files: Some(files.clone()),
+        verbose,
+        timeout,
+        run_dir: Some(run_dir),
+    };
+
+    let role_run = crate::roles::execute_role(ctx, &proj, &proj_path, run_plan)?;
+
+    let changed_now = crate::gitops::changed_paths(&proj_path)?;
+    let emit_changed_now = |changed: &std::collections::BTreeSet<String>| {
+        if !changed.is_empty() {
+            let list: Vec<String> = changed.iter().cloned().collect();
+            crate::term::emit(&format!(
+                "Các file đã thay đổi:\n{}",
+                list.iter()
+                    .map(|p| format!("  {p}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+    };
+
+    match role_run.outcome.status {
+        crate::runner::RunStatus::TimedOut => {
+            emit_changed_now(&changed_now);
+            return Err(BrainError::error(format!(
+                "Dev chạy quá thời gian (timeout) trên task '{task}'"
+            )));
+        }
+        crate::runner::RunStatus::Killed => {
+            emit_changed_now(&changed_now);
+            return Err(BrainError::new(
+                "Dev bị ngắt bởi người dùng",
+                crate::error::EXIT_INTERRUPTED,
+            ));
+        }
+        crate::runner::RunStatus::Failed => {
+            emit_changed_now(&changed_now);
+            let code = role_run.outcome.exit_code.unwrap_or(1);
+            return Err(BrainError::error(format!(
+                "Dev thất bại với mã lỗi {code} trên task '{task}'"
+            )));
+        }
+        _ => {
+            if let Some(code) = role_run.outcome.exit_code {
+                if code != 0 {
+                    emit_changed_now(&changed_now);
+                    return Err(BrainError::error(format!(
+                        "Dev thất bại với mã lỗi {code} trên task '{task}'"
+                    )));
+                }
+            }
+        }
+    }
+
+    let diff_tree = crate::gitops::diff_names(&proj_path, &dev_base, "HEAD")?;
+    let uncommitted = crate::gitops::changed_paths(&proj_path)?;
+    let mut all_changed = diff_tree;
+    all_changed.extend(uncommitted);
+
+    let all_changed_nfc: std::collections::BTreeSet<String> =
+        all_changed.into_iter().map(|p| p.nfc().collect()).collect();
+
+    let mut allowed_nfc: std::collections::BTreeSet<String> = files
+        .iter()
+        .map(|f| {
+            let norm = crate::planfile::normalize_plan_path(f);
+            norm.nfc().collect()
+        })
+        .collect();
+    allowed_nfc.insert(".plan.md".to_string());
+
+    let violations: Vec<String> = all_changed_nfc.difference(&allowed_nfc).cloned().collect();
+    if !violations.is_empty() {
+        crate::term::emit_out("Dev đã sửa file ngoài plan — vi phạm giao thức (ROLE-06):");
+        let mut sorted_violations = violations;
+        sorted_violations.sort();
+        for p in &sorted_violations {
+            crate::term::emit_out(&format!("  {p}"));
+        }
+        crate::term::emit_out("agent-brain không tự hoàn tác");
+        crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
+        return Ok(crate::error::EXIT_PROTOCOL);
+    }
+
+    let plan_curr_text = std::fs::read_to_string(&plan_path)?;
+    let plan_curr = crate::planfile::parse_plan(&plan_curr_text);
+    let has_block = crate::planfile::has_blockers(&plan_curr);
+
+    let pending = crate::gitops::changed_paths(&proj_path)?;
+    if !pending.is_empty() {
+        let msg = if has_block {
+            format!("{task}: vướng mắc")
+        } else {
+            let muctieu = plan_curr
+                .sections
+                .get("Mục tiêu")
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            static PREFIX_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+            let prefix_re = PREFIX_RE.get_or_init(|| regex::Regex::new(r"^[-*+\d.]+\s*").unwrap());
+            let mut short = String::new();
+            for line in muctieu.lines() {
+                let trimmed = line.trim();
+                let stripped = prefix_re.replace(trimmed, "").trim().to_string();
+                if !stripped.is_empty() {
+                    short = stripped.chars().take(72).collect();
+                    break;
+                }
+            }
+            if short.is_empty() {
+                short = "dev".to_string();
+            }
+            format!("{task}: {short}")
+        };
+        let mut sorted_pending: Vec<String> = pending.into_iter().collect();
+        sorted_pending.sort();
+        let pending_refs: Vec<&str> = sorted_pending.iter().map(|s| s.as_str()).collect();
+        crate::gitops::commit_paths(&proj_path, &pending_refs, &msg)?;
+    }
+
+    let commits = crate::gitops::commit_subjects(&proj_path, &dev_base, "HEAD")?;
+    for (sha, subj) in commits {
+        if !subj.starts_with(&format!("{task}: ")) {
+            let sha_short = if sha.len() >= 7 { &sha[..7] } else { &sha };
+            crate::term::emit(&format!(
+                "CẢNH BÁO: Commit {sha_short} có subject không đúng chuẩn '{task}: ...': '{subj}'"
+            ));
+        }
+    }
+
+    let final_changed = crate::gitops::diff_names(&proj_path, &dev_base, "HEAD")?;
+    if !final_changed.is_empty() {
+        crate::term::emit_out("Các file đã sửa:");
+        let mut sorted_final: Vec<String> = final_changed.into_iter().collect();
+        sorted_final.sort();
+        for p in sorted_final {
+            crate::term::emit_out(&format!("  {p}"));
+        }
+    }
+
+    let kt_text = crate::planfile::section_text(&plan_curr_text, "Cách kiểm tra");
+    crate::term::emit_out(&format!(
+        "Cách kiểm tra (agent-brain không tự chạy — hãy chạy tay trong {}):\n{kt_text}",
+        proj_path.display()
+    ));
+
+    if has_block {
+        let vm_text = crate::planfile::section_text(&plan_curr_text, "Vướng mắc");
+        crate::term::emit_out(&format!("Vướng mắc:\n{vm_text}"));
+        crate::term::emit_out("Bước tiếp theo: sửa .plan.md hoặc chạy lại agent-brain run lead");
+        crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "dev:blocked")?;
+        if let Some(tid) = task_id {
+            crate::db::set_task_status(&ctx.conn, tid, "blocked")?;
+        }
+        return Ok(crate::error::EXIT_BLOCKED);
+    }
+
+    if let Some(tid) = task_id {
+        crate::db::set_task_status(&ctx.conn, tid, "dev_done")?;
+    }
+    Ok(crate::error::EXIT_OK)
 }

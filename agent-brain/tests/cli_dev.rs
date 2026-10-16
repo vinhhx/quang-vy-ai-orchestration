@@ -329,18 +329,16 @@ fn dev_refusals_exit_1_without_claude() {
 
     // 3. Plan with zero rows
     let empty_plan = plan_text("Trống", &[], "python3 -m unittest", "");
-    let sc_empty = serde_json::json!({
-        "ops": [
-            {"op": "write", "path": ".plan.md", "content": empty_plan, "keep_meta": true}
-        ]
-    });
-    let out_rewrite = sb.run(&["run", "lead", "web-ban-hang", "sửa app"], Some(sc_empty));
-    assert_eq!(out_rewrite.code, 0);
-    let records_after_rewrite = sb.records().len();
+    let old_text = std::fs::read_to_string(repo.join(".plan.md")).unwrap();
+    let meta = agent_brain::planfile::read_meta(&old_text).unwrap();
+    let set_text_empty = agent_brain::planfile::set_meta(&empty_plan, &meta);
+    std::fs::write(repo.join(".plan.md"), set_text_empty).unwrap();
+    sb.git(&repo, &["add", ".plan.md"]);
+    sb.git(&repo, &["commit", "-m", &format!("{task}: plan")]);
 
     let out_empty = sb.run(&["run", "dev", "web-ban-hang"], None);
     assert_eq!(out_empty.code, 1);
-    assert_eq!(sb.records().len(), records_after_rewrite);
+    assert_eq!(sb.records().len(), records_after_lead);
 
     // 4. Plan row with parent traversal
     let traversal_plan = plan_text(
@@ -358,7 +356,7 @@ fn dev_refusals_exit_1_without_claude() {
 
     let out_trav = sb.run(&["run", "dev", "web-ban-hang"], None);
     assert_eq!(out_trav.code, 1);
-    assert_eq!(sb.records().len(), records_after_rewrite);
+    assert_eq!(sb.records().len(), records_after_lead);
 
     // 5. Unresolved vướng mắc before the run
     let vm_plan = plan_text(
@@ -375,7 +373,7 @@ fn dev_refusals_exit_1_without_claude() {
     let out_vm = sb.run(&["run", "dev", "web-ban-hang"], None);
     assert_eq!(out_vm.code, 1);
     assert!(out_vm.stderr.contains("Vướng mắc"));
-    assert_eq!(sb.records().len(), records_after_rewrite);
+    assert_eq!(sb.records().len(), records_after_lead);
 }
 
 #[test]
