@@ -71,15 +71,17 @@ fn start_tree(
     sb.write_config(cfg_overrides);
 
     let pidfile = sb.root.join("tree.pid");
-    let child = sb.spawn_env(
+    let mut cmd = sb.command(
         &["run", "lead", "web-ban-hang", "chạy sleep"],
-        None,
         &[
             ("FAKE_TREE_PIDFILE", pidfile.to_str().unwrap()),
             ("FAKE_TREE_MODE", mode),
             ("FAKE_TREE_SLEEP", "317"),
         ],
     );
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let child = cmd.spawn().expect("spawn run lead");
 
     // Wait <= 10 s for pidfile
     let start_wait = Instant::now();
