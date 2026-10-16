@@ -50,36 +50,36 @@ Phase này người dùng tự chạy tay để hiểu hành vi CLI; agent có t
 ### Profiles (GSD Phase 2 và 3)
 
 - [x] **PROF-01**: Dự án có `profile: work` chạy với đúng `CLAUDE_CONFIG_DIR` của profile work (mức biến môi trường, trong script). *(src: P1-10)*
-- [ ] **PROF-02**: `agent-brain` chọn `CLAUDE_CONFIG_DIR` / biến môi trường engine theo trường `profile` của dự án (`profile.rs`). *(derived: 03-phase2 §4.3, §5)*
+- [x] **PROF-02**: `agent-brain` chọn `CLAUDE_CONFIG_DIR` / biến môi trường engine theo trường `profile` của dự án (`profile.rs`). *(derived: 03-phase2 §4.3, §5)*
 
 ### Rust CLI Core (GSD Phase 3 — nguồn Phase 2)
 
-- [ ] **CLI-01**: `agent-brain run lead "<dự án>" "<yêu cầu>"` chạy trên dự án thật và log hiện từng bước (khởi tạo, tin nhắn assistant, tool call, kết quả tool, kết quả cuối) trên terminal. *(src: P2-01)*
-- [ ] **CLI-02**: `agent-brain projects scan` cùng việc so khớp tên không dấu và Fallback Ask cho kết quả giống hành vi script Phase 2 (ROUTE-01…06 vẫn đúng khi chạy qua binary, module `projects.rs`). *(derived: 03-phase2 §4.1, §5)*
-- [ ] **CLI-03**: `agent-brain run <lead|dev|qa> "<dự án>" "<yêu cầu>"` chạy đủ 3 vai trò bằng 3 prompt chuyển từ Phase 2 vào binary, giữ nguyên ràng buộc giao thức (ROLE-01…04, ROLE-06). *(derived: 03-phase2 §4.1, §5 "Chuyển 3 prompt")*
+- [x] **CLI-01**: `agent-brain run lead "<dự án>" "<yêu cầu>"` chạy trên dự án thật và log hiện từng bước (khởi tạo, tin nhắn assistant, tool call, kết quả tool, kết quả cuối) trên terminal. *(src: P2-01)*
+- [x] **CLI-02**: `agent-brain projects scan` cùng việc so khớp tên không dấu và Fallback Ask cho kết quả giống hành vi script Phase 2 (ROUTE-01…06 vẫn đúng khi chạy qua binary, module `projects.rs`). *(derived: 03-phase2 §4.1, §5)*
+- [x] **CLI-03**: `agent-brain run <lead|dev|qa> "<dự án>" "<yêu cầu>"` chạy đủ 3 vai trò bằng 3 prompt chuyển từ Phase 2 vào binary, giữ nguyên ràng buộc giao thức (ROLE-01…04, ROLE-06). *(derived: 03-phase2 §4.1, §5 "Chuyển 3 prompt")*
 
 ### Process Management (GSD Phase 3)
 
-- [ ] **PROC-01**: `agent-brain kill <task_id>` khi agent đang chạy `sleep 300`: sau 5 giây, `ps` không còn tiến trình `claude` hay `sleep` liên quan (tiến trình con chạy trong process group riêng; SIGTERM cả group → chờ vài giây → SIGKILL cả group; `kill_on_drop` là lớp thứ hai). *(src: P2-02)*
-- [ ] **PROC-02**: Đóng terminal hoặc Ctrl+C giữa chừng một run thì không còn tiến trình sót. *(src: P2-03)*
+- [x] **PROC-01**: `agent-brain kill <task_id>` khi agent đang chạy `sleep 300`: sau 5 giây, `ps` không còn tiến trình `claude` hay `sleep` liên quan (tiến trình con chạy trong process group riêng; SIGTERM cả group → chờ vài giây → SIGKILL cả group; `kill_on_drop` là lớp thứ hai). *(src: P2-02)*
+- [x] **PROC-02**: Đóng terminal hoặc Ctrl+C giữa chừng một run thì không còn tiến trình sót. *(src: P2-03)*
 
 ### Log Capture & Storage (GSD Phase 3)
 
-- [ ] **LOG-01**: Khi một run kết thúc, bảng `runs` có đủ input/output/cache read/cache write token, `cost_usd`, `session_id`, `pid`, trạng thái và thời gian bắt đầu/kết thúc; các dòng log lưu vào `events` kèm `raw_json`. *(src: P2-04)*
-- [ ] **LOG-02**: Dòng JSON lỗi trong stream được lưu dạng thô và chương trình không dừng; trường lạ trong JSON được bỏ qua (parse mềm). *(src: P2-05)*
+- [x] **LOG-01**: Khi một run kết thúc, bảng `runs` có đủ input/output/cache read/cache write token, `cost_usd`, `session_id`, `pid`, trạng thái và thời gian bắt đầu/kết thúc; các dòng log lưu vào `events` kèm `raw_json`. *(src: P2-04)*
+- [x] **LOG-02**: Dòng JSON lỗi trong stream được lưu dạng thô và chương trình không dừng; trường lạ trong JSON được bỏ qua (parse mềm). *(src: P2-05)*
 
 ### Fast-path (GSD Phase 3)
 
-- [ ] **FAST-01**: `agent-brain status "<dự án>"` trả kết quả `git status`/`git log`/`git diff --stat` do Rust tự chạy, không gọi AI, 0 token (cấp 1). *(src: P2-06)*
-- [ ] **FAST-02**: `agent-brain inspect "<dự án>"` gom `git diff` vào prompt và chạy đúng 1 turn (`--max-turns 1`), không tạo session lưu lại (cấp 2). *(src: P2-07)*
+- [x] **FAST-01**: `agent-brain status "<dự án>"` trả kết quả `git status`/`git log`/`git diff --stat` do Rust tự chạy, không gọi AI, 0 token (cấp 1). *(src: P2-06)*
+- [x] **FAST-02**: `agent-brain inspect "<dự án>"` gom `git diff` vào prompt và chạy đúng 1 turn (`--max-turns 1`), không tạo session lưu lại (cấp 2). *(src: P2-07)*
 
 ### Stats (GSD Phase 3)
 
-- [ ] **STAT-01**: `agent-brain stats --profile work` chỉ tính các run của profile work (và tương tự cho `personal`). *(src: P2-08)*
+- [x] **STAT-01**: `agent-brain stats --profile work` chỉ tính các run của profile work (và tương tự cho `personal`). *(src: P2-08)*
 
 ### Distribution (GSD Phase 3)
 
-- [ ] **DIST-01**: Copy binary `agent-brain` sang máy/thư mục khác vẫn chạy được, không cần cài thêm gì (trừ CLI của agent). *(src: P2-09)*
+- [x] **DIST-01**: Copy binary `agent-brain` sang máy/thư mục khác vẫn chạy được, không cần cài thêm gì (trừ CLI của agent). *(src: P2-09)*
 
 ### Session & Token Optimization (GSD Phase 4 — nguồn Phase 3)
 
@@ -180,18 +180,18 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | ROLE-06 | Phase 2 | Complete |
 | ROLE-07 | Phase 2 | Complete |
 | PROF-01 | Phase 2 | Complete |
-| CLI-01 | Phase 3 | Pending |
-| CLI-02 | Phase 3 | Pending |
-| CLI-03 | Phase 3 | Pending |
-| PROF-02 | Phase 3 | Pending |
-| PROC-01 | Phase 3 | Pending |
-| PROC-02 | Phase 3 | Pending |
-| LOG-01 | Phase 3 | Pending |
-| LOG-02 | Phase 3 | Pending |
-| FAST-01 | Phase 3 | Pending |
-| FAST-02 | Phase 3 | Pending |
-| STAT-01 | Phase 3 | Pending |
-| DIST-01 | Phase 3 | Pending |
+| CLI-01 | Phase 3 | Complete |
+| CLI-02 | Phase 3 | Complete |
+| CLI-03 | Phase 3 | Complete |
+| PROF-02 | Phase 3 | Complete |
+| PROC-01 | Phase 3 | Complete |
+| PROC-02 | Phase 3 | Complete |
+| LOG-01 | Phase 3 | Complete |
+| LOG-02 | Phase 3 | Complete |
+| FAST-01 | Phase 3 | Complete |
+| FAST-02 | Phase 3 | Complete |
+| STAT-01 | Phase 3 | Complete |
+| DIST-01 | Phase 3 | Complete |
 | OPT-01 | Phase 4 | Pending |
 | OPT-02 | Phase 4 | Pending |
 | OPT-03 | Phase 4 | Pending |

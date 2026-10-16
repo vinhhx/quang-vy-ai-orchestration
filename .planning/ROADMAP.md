@@ -25,7 +25,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Verify Assumptions** - Thử thật 8 spike (S1–S8) và ghi `spike-results.md` trước khi viết dòng Rust nào (completed 2026-10-15)
 - [x] **Phase 2: Protocol MVP (Scripts)** - Chạy Lead → `.plan.md` → Dev → QA trên dự án thật chỉ bằng script và file cấu hình (completed 2026-10-16)
-- [ ] **Phase 3: Rust CLI Core** - Binary `agent-brain` với kill sạch cây tiến trình, bắt log stream-json, token trong SQLite, fast-path
+- [x] **Phase 3: Rust CLI Core** - Binary `agent-brain` với kill sạch cây tiến trình, bắt log stream-json, token trong SQLite, fast-path (completed 2026-10-16)
 - [ ] **Phase 4: Session & Token Optimization** - Giảm token/task dựa trên số liệu `runs` thật (`.gsd-summary.md`, `.handover.md`)
 - [ ] **Phase 5: Embedded Dashboard** - Web UI + SSE trong cùng binary: xem log realtime, giao việc, kill, thống kê
 - [ ] **Phase 6: Multi-engine & Media Branch** - Mỗi vai trò một engine, xử lý hết quota không đổi ngầm, nhánh video tách khỏi Git worktree
@@ -107,7 +107,7 @@ Plans:
   4. `agent-brain status` trả kết quả git với 0 token và không gọi AI; `agent-brain inspect` chạy đúng 1 turn và không để lại session.
   5. `agent-brain stats --profile work` chỉ tính run của profile work; copy binary sang máy/thư mục khác vẫn chạy mà không cần cài thêm gì (trừ CLI agent).
 
-**Plans**: 12/13 plans executed
+**Plans**: 13/13 plans complete
 
 Plans:
 **Wave 1**
@@ -137,7 +137,7 @@ Plans:
 - [x] 03-12-PLAN.md — Static musl release build + DIST-01 check, README, live-check script and wrapper
 
 **Wave 8** *(blocked on Wave 7 completion)*
-- [ ] 03-13-PLAN.md — Live acceptance P2-01/02/03/07/09, D-02 parity task, E-06 personal run, retire Python symlink (user checkpoints)
+- [x] 03-13-PLAN.md — Live acceptance P2-01/02/03/07/09, D-02 parity task, E-06 personal run, retire Python symlink (user checkpoints)
 
 ### Phase 4: Session & Token Optimization
 
@@ -206,7 +206,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 |-------|----------------|--------|-----------|
 | 1. Verify Assumptions | 1/1 | Complete    | 2026-10-15 |
 | 2. Protocol MVP (Scripts) | 7/7 | Complete    | 2026-10-16 |
-| 3. Rust CLI Core | 12/13 | In Progress | - |
+| 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 0/TBD | Not started | - |
 | 6. Multi-engine & Media Branch | 0/TBD | Not started | - |

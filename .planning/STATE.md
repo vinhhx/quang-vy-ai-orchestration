@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 03
-current_phase_name: Rust CLI Core
-status: executing
-stopped_at: 03-13 live acceptance 4/7 passed (P2-01, P2-02, P2-07, P2-09); P2-03, D-02, E-06 wait on user
-last_updated: "2026-10-16T16:40:00.000Z"
+current_phase: 04
+current_phase_name: "Phase 3 complete — next phase (4, 5 or 6) to be chosen"
+status: ready_to_plan
+stopped_at: Phase 3 complete (03-13 live acceptance 11/11 Đạt); choose Phase 4, 5 or 6
+last_updated: "2026-10-16T17:00:00.000Z"
 last_activity: 2026-10-16
-last_activity_desc: 03-13 live checks P2-01/02/07/09 passed; live-sleep fix reviewed
+last_activity_desc: Phase 3 verified and complete
 state_head: 40d102c051883dc30b74f602f60c3caff4ed4dc6
 progress:
   total_phases: 6
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 21
-  completed_plans: 20
-  percent: 95
+  completed_plans: 21
+  percent: 50
 ---
 
 # Project State
@@ -23,21 +23,21 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-15)
 
 **Core value:** Giao việc cho nhiều AI agent bằng giao thức Lead → `.plan.md` → Dev → QA một cách đáng tin cậy: đúng dự án, đúng vai trò, kill sạch cây tiến trình, đo được token.
-**Current focus:** Phase 03 — Rust CLI Core
+**Current focus:** Chọn phase tiếp theo sau Phase 3 (4 token / 5 dashboard / 6 đa engine)
 
 ## Current Position
 
-Phase: 03 (Rust CLI Core) — EXECUTING
-Plan: 13 of 13 (03-13 live acceptance: 4/7 passed — P2-03, D-02, E-06 left, user checkpoints)
-Status: Executing Phase 03
-Last activity: 2026-10-16 — 03-13: binary installed at ~/.local/bin/agent-brain; P2-01, P2-02 (python sleep), P2-07, P2-09 Đạt in protocol-log/nghiem-thu-p2.md
+Phase: 03 (Rust CLI Core) — COMPLETE (verified 2026-10-16, 5/5 success criteria)
+Plan: 13 of 13 complete
+Status: Ready to plan the next phase
+Last activity: 2026-10-16 — Phase 3 complete: live acceptance 11/11 Đạt (P2-01..P2-09, D-02 on apec, E-06 personal); binary installed, Python `brain` symlink removed
 
-Progress: [██████████] 95% of plans (phase 3/6 in progress)
+Progress: [█████░░░░░] 50% (3/6 phases complete, 21/21 planned plans done)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 20
+- Total plans completed: 21
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -47,7 +47,7 @@ Progress: [██████████] 95% of plans (phase 3/6 in progress)
 |-------|-------|-------|----------|
 | 01 | 1 | - | - |
 | 2 | 7 | - | - |
-| 03 | 12 | - | - |
+| 03 | 13 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -81,18 +81,17 @@ None yet.
 ### Blockers/Concerns
 
 - [Phase 3 / 03-13] claude 2.1.301 chặn `sleep N` foreground trong Bash tool ("Blocked: standalone sleep") → P2-02/P2-03 dùng `python3 -c 'import time; time.sleep(307)'`, wrapper `scripts/live/claude-allow-sleep.sh` cho phép `Bash(python3 *)` (fix plan `.planning/fixes/03-13-live-sleep-method.plan.md`, agy, commits 65386f2, 87f8e71, 00443c9; đã review). Shell của Bash tool chạy trong PGID/SID riêng — kill phải quét theo PID đã ghi, không chỉ process group.
-- [Phase 3 / 03-13] Còn chờ người dùng: P2-03 (Ctrl+C 1 lần, 2 lần, đóng terminal), D-02 (1 task thật qua binary rồi `bash brain/install.sh --uninstall`), E-06 (profile personal, chỉ khi không phiên nào dùng ~/.claude-orca).
-- [Phase 3 / 03-13] Ghi nhận nhỏ, chưa sửa: log `run` in nhiều dòng `system thinking_tokens` (nhiễu); claude tạo thư mục rỗng `~/.claude/session-env/<id>/` cho mỗi phiên kể cả `inspect` không lưu session.
-- [Ops] Có một phiên agy tương tác (`agy --dangerously-skip-permissions --conversation b168a5a8…`, pts/20, từ 09:38) không do Claude khởi chạy; đóng trước khi chạy live checks còn lại.
+- [Phase 3, mở cho phase sau] Ghi nhận nhỏ, chưa sửa: log `run` in nhiều dòng `system thinking_tokens` (nhiễu); claude tạo thư mục rỗng `~/.claude/session-env/<id>/` cho mỗi phiên kể cả `inspect` không lưu session.
 
 - [Phase 1] Đã xử lý: SPK-10 — người dùng miễn điều kiện chính sách công ty ("SPK-10 alway accept ignore condition"); ánh xạ Work=`~/.claude`, Personal=`~/.claude-orca`. Chính sách vẫn chưa được xác nhận bằng nguồn nào.
 - [Phase 1] Đã xử lý: S7 — agy chạy headless, có JSON/stream-json, KHÔNG có cờ giới hạn turn (ENG-06 tích hợp được, giới hạn bằng `--print-timeout` + kill ngoài).
 - [Phase 1]: Công cụ scrub/scan của spike có lỗi tồn đọng (CR-01, WR-01…WR-10 trong `01-REVIEW.md`); username hệ điều hành còn trong 4 fixture S1/S4 — re-scrub trước khi push; sửa bằng `/gsd-code-review 01 --fix` (theo CLAUDE.md: giao agy).
-- [Phase 1]: S5 chỉ ánh xạ, chưa chạy thử trực tiếp profile cá nhân (transcript tách biệt, cross-resume, xoay token E-06 chưa kiểm); làm trước khi chốt PROF ở Phase 3.
+- [Phase 1] Đã xử lý ở Phase 3 (E-06 Đạt 2026-10-16): S5 chỉ ánh xạ, chưa chạy thử trực tiếp profile cá nhân (transcript tách biệt, cross-resume, xoay token E-06 chưa kiểm); làm trước khi chốt PROF ở Phase 3.
 - [Phase 4]: Cần ≥ 2 tuần dữ liệu `runs` thật từ binary Phase 3 trước khi bắt đầu; không đóng phase khi chưa có OPT-06.
 - [Phase 4]: Khoảng trống phạm vi — warm reuse `--resume` (fast-path cấp 3) bị hoãn từ Phase 2 nguồn sang Phase 3 nguồn mà không có công việc/test (FAST-03, đang ở v2); quyết định ở `/gsd-discuss-phase 4`.
 - [Phase 6]: Phụ thuộc mềm vào `.handover.md` của Phase 4 (ENG-03 chỉ cần `.plan.md`).
-- [Open]: Chọn Phase 4 (token), 5 (dashboard) hay 6 (routing) trước — quyết định sau Phase 3.
+- [Open — cần quyết định ngay]: Chọn Phase 4 (token), 5 (dashboard) hay 6 (routing) trước. Phase 4 cần ≥ 2 tuần dữ liệu `runs` thật (hiện có 12 run, từ 2026-10-16).
+- [Ops] `projects_map.json` có thêm dự án nháp `du-an-nhap-ca-nhan` (profile personal) cho E-06; 2 phiên claude interactive trên `~/.claude-orca` (loyalty, phu-gia) đã dừng — mở lại bằng `claude --resume d22b640e-d2bd-4d51-a6fb-e409b1c23c54` / `ce573fa2-07a1-4b39-806f-106ad36e947f`.
 - [Open]: Tham chiếu ngoài bộ nạp chưa có tài liệu: "bảng kiến trúc gốc" #1–#11, định dạng `.gsd`, pipeline kịch bản whiteboard, Orca, Paperclip (không có yêu cầu di chuyển).
 - [Open]: `.planning/config.json` chưa tồn tại khi tạo roadmap; đã giả định granularity "standard" và ID phase tuần tự (`sequential`).
 
@@ -107,6 +106,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-16T16:40:00Z
-Stopped at: 03-13 4/7 live checks passed; user runs P2-03, D-02, E-06 per agent-brain/LIVE-CHECKS.md, then Claude writes 03-13-SUMMARY.md + VERIFICATION.md
-Resume file: protocol-log/nghiem-thu-p2.md
+Last session: 2026-10-16T17:00:00Z
+Stopped at: Phase 3 complete; next: choose Phase 4, 5 or 6 (/gsd-discuss-phase N)
+Resume file: .planning/phases/03-rust-cli-core/03-VERIFICATION.md
