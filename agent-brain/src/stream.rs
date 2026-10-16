@@ -1,5 +1,97 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use unicode_normalization::UnicodeNormalization;
+
+const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
+const PROTOCOL_FILES: &[&str] = &[".plan.md", ".qa-report.md"];
+
+fn is_protocol_file(p: &str) -> bool {
+    let basename = p.rsplit('/').next().unwrap_or(p);
+    PROTOCOL_FILES.contains(&p) || PROTOCOL_FILES.contains(&basename)
+}
+
+fn posix_normpath(p: &str) -> String {
+    if p.is_empty() {
+        return ".".to_string();
+    }
+    let is_abs = p.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for part in p.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            if let Some(&top) = parts.last() {
+                if top != ".." {
+                    parts.pop();
+                    continue;
+                }
+            }
+            if !is_abs {
+                parts.push("..");
+            }
+        } else {
+            parts.push(part);
+        }
+    }
+    if is_abs {
+        if parts.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", parts.join("/"))
+        }
+    } else if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    }
+}
+
+pub fn normalize_tool_path(p: &str, root: Option<&Path>) -> String {
+    let p_nfc: String = p.nfc().collect();
+    let p_trimmed = p_nfc.trim();
+    if p_trimmed.is_empty() {
+        return String::new();
+    }
+
+    if let Some(r) = root {
+        let r_str = r.to_string_lossy();
+        let r_nfc: String = r_str.nfc().collect();
+        let root_norm = posix_normpath(r_nfc.trim());
+        let mut p_norm = posix_normpath(p_trimmed);
+
+        if p_norm == root_norm {
+            return ".".to_string();
+        }
+        let prefix = format!("{root_norm}/");
+        if let Some(rest) = p_norm.strip_prefix(&prefix) {
+            return rest.to_string();
+        }
+        if !p_norm.starts_with('/') {
+            if let Some(rest) = p_norm.strip_prefix("./") {
+                p_norm = rest.to_string();
+            }
+            return p_norm;
+        }
+        if let (Ok(p_path), Ok(r_path)) =
+            (std::fs::canonicalize(p_trimmed), std::fs::canonicalize(r))
+        {
+            if let Ok(rel) = p_path.strip_prefix(&r_path) {
+                return rel.to_string_lossy().to_string();
+            }
+        }
+        p_norm
+    } else {
+        let mut p_norm = posix_normpath(p_trimmed);
+        if !p_norm.starts_with('/') {
+            if let Some(rest) = p_norm.strip_prefix("./") {
+                p_norm = rest.to_string();
+            }
+            return p_norm;
+        }
+        p_norm
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Usage {
@@ -104,12 +196,15 @@ pub struct Summary {
     pub first_edit_file: Option<String>,
     pub turns_before_first_edit: Option<i64>,
     pub reads_outside_plan: Option<Vec<String>>,
+    plan_files: Option<Vec<String>>,
+    root: Option<PathBuf>,
     seen_msg_ids: BTreeSet<String>,
+    msg_usages: BTreeMap<String, Usage>,
     result_seen: bool,
 }
 
 impl Summary {
-    pub fn new(_plan_files: Option<Vec<String>>, _root: Option<PathBuf>) -> Self {
+    pub fn new(plan_files: Option<Vec<String>>, root: Option<PathBuf>) -> Self {
         Self {
             session_id: String::new(),
             model: None,
@@ -131,7 +226,10 @@ impl Summary {
             first_edit_file: None,
             turns_before_first_edit: None,
             reads_outside_plan: None,
+            plan_files,
+            root,
             seen_msg_ids: BTreeSet::new(),
+            msg_usages: BTreeMap::new(),
             result_seen: false,
         }
     }
@@ -164,6 +262,7 @@ impl Summary {
             } else if ev.kind == "assistant" {
                 let mut msg_id = None;
                 let mut content_list: Option<&Vec<serde_json::Value>> = None;
+                let mut msg_usage: Option<Usage> = None;
 
                 if let Some(msg) = obj.get("message").and_then(|m| m.as_object()) {
                     msg_id = msg.get("id").and_then(|v| v.as_str());
@@ -173,6 +272,26 @@ impl Summary {
                             self.model = Some(m.to_string());
                         }
                     }
+                    if let Some(u) = msg.get("usage").and_then(|v| v.as_object()) {
+                        msg_usage = Some(Usage {
+                            input_tokens: u
+                                .get("input_tokens")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            output_tokens: u
+                                .get("output_tokens")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            cache_read_input_tokens: u
+                                .get("cache_read_input_tokens")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            cache_creation_input_tokens: u
+                                .get("cache_creation_input_tokens")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                        });
+                    }
                 } else if let Some(c) = obj.get("content").and_then(|v| v.as_array()) {
                     content_list = Some(c);
                 }
@@ -180,14 +299,43 @@ impl Summary {
                 if msg_id.is_none() {
                     msg_id = obj.get("id").and_then(|v| v.as_str());
                 }
+                if msg_usage.is_none() {
+                    if let Some(u) = obj.get("usage").and_then(|v| v.as_object()) {
+                        msg_usage = Some(Usage {
+                            input_tokens: u
+                                .get("input_tokens")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            output_tokens: u
+                                .get("output_tokens")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            cache_read_input_tokens: u
+                                .get("cache_read_input_tokens")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            cache_creation_input_tokens: u
+                                .get("cache_creation_input_tokens")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                        });
+                    }
+                }
 
                 if let Some(mid) = msg_id {
                     if !self.seen_msg_ids.contains(mid) {
                         self.seen_msg_ids.insert(mid.to_string());
                         self.assistant_turns += 1;
                     }
+                    if let Some(u) = msg_usage {
+                        self.msg_usages.insert(mid.to_string(), u);
+                    }
                 } else {
                     self.assistant_turns += 1;
+                    if let Some(u) = msg_usage {
+                        let anon_id = format!("__anon_{}", self.assistant_turns);
+                        self.msg_usages.insert(anon_id, u);
+                    }
                 }
 
                 if let Some(contents) = content_list {
@@ -196,6 +344,38 @@ impl Summary {
                             if item_obj.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
                                 if let Some(name) = item_obj.get("name").and_then(|v| v.as_str()) {
                                     *self.tool_counts.entry(name.to_string()).or_insert(0) += 1;
+
+                                    if let Some(input_obj) =
+                                        item_obj.get("input").and_then(|v| v.as_object())
+                                    {
+                                        let raw_path = input_obj
+                                            .get("file_path")
+                                            .or_else(|| input_obj.get("notebook_path"))
+                                            .or_else(|| input_obj.get("path"))
+                                            .and_then(|v| v.as_str());
+
+                                        if let Some(raw) = raw_path {
+                                            let norm_p =
+                                                normalize_tool_path(raw, self.root.as_deref());
+                                            if name == "Read" || name == "Grep" || name == "Glob" {
+                                                if !self.reads.contains(&norm_p) {
+                                                    self.reads.push(norm_p.clone());
+                                                }
+                                            } else if EDIT_TOOLS.contains(&name) {
+                                                if !self.edits.contains(&norm_p) {
+                                                    self.edits.push(norm_p.clone());
+                                                }
+                                                let is_proto = is_protocol_file(&norm_p);
+                                                if !is_proto
+                                                    && self.turns_before_first_edit.is_none()
+                                                {
+                                                    self.turns_before_first_edit =
+                                                        Some(self.assistant_turns - 1);
+                                                    self.first_edit_file = Some(norm_p);
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -252,9 +432,36 @@ impl Summary {
         if self.result_seen {
             self.format_ok = true;
             self.usage_source = UsageSource::Result;
+        } else if !self.msg_usages.is_empty() {
+            self.format_ok = false;
+            self.usage_source = UsageSource::Partial;
+            let mut sum_usage = Usage::default();
+            for u in self.msg_usages.values() {
+                sum_usage.input_tokens += u.input_tokens;
+                sum_usage.output_tokens += u.output_tokens;
+                sum_usage.cache_read_input_tokens += u.cache_read_input_tokens;
+                sum_usage.cache_creation_input_tokens += u.cache_creation_input_tokens;
+            }
+            self.usage = sum_usage;
         } else {
             self.format_ok = false;
             self.usage_source = UsageSource::None;
+        }
+
+        if let Some(ref pf) = self.plan_files {
+            let norm_plan_files: BTreeSet<String> = pf
+                .iter()
+                .map(|f| normalize_tool_path(f, self.root.as_deref()))
+                .collect();
+            let mut outside = Vec::new();
+            for r in &self.reads {
+                if !is_protocol_file(r) && !norm_plan_files.contains(r) {
+                    outside.push(r.clone());
+                }
+            }
+            self.reads_outside_plan = Some(outside);
+        } else {
+            self.reads_outside_plan = None;
         }
     }
 }

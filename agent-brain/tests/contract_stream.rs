@@ -40,10 +40,7 @@ fn stream_contract_cases() {
                     .collect()
             });
 
-        let root: Option<PathBuf> = case
-            .get("root")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from);
+        let root: Option<PathBuf> = case.get("root").and_then(|v| v.as_str()).map(PathBuf::from);
 
         let summary = match summarize_file(&file_path, plan_files, root) {
             Ok(s) => s,
@@ -250,7 +247,9 @@ fn stream_contract_cases() {
         let exp_in = exp_usage["input_tokens"].as_i64().unwrap_or(0);
         let exp_out = exp_usage["output_tokens"].as_i64().unwrap_or(0);
         let exp_cr = exp_usage["cache_read_input_tokens"].as_i64().unwrap_or(0);
-        let exp_cw = exp_usage["cache_creation_input_tokens"].as_i64().unwrap_or(0);
+        let exp_cw = exp_usage["cache_creation_input_tokens"]
+            .as_i64()
+            .unwrap_or(0);
 
         if summary.usage.input_tokens != exp_in
             || summary.usage.output_tokens != exp_out
@@ -271,7 +270,10 @@ fn stream_contract_cases() {
         }
 
         if !case_errors.is_empty() {
-            failures.push(format!("Case {cid} failures:\n  {}", case_errors.join("\n  ")));
+            failures.push(format!(
+                "Case {cid} failures:\n  {}",
+                case_errors.join("\n  ")
+            ));
         }
     }
 
