@@ -119,6 +119,40 @@ pub fn build_command(spec: &RoleSpec, cfg: &Config) -> BrainResult<Vec<String>> 
     Ok(cmd)
 }
 
+pub fn shell_join(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| {
+            if !arg.is_empty()
+                && arg.chars().all(|c| {
+                    c.is_ascii_alphanumeric()
+                        || matches!(c, '_' | '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '-')
+                })
+            {
+                arg.clone()
+            } else {
+                crate::guard::sh_quote(arg)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn display_argv(argv: &[String], prompt_label: &str) -> String {
+    let label = if prompt_label.starts_with('<') && prompt_label.ends_with('>') {
+        prompt_label.to_string()
+    } else {
+        format!("<{prompt_label}>")
+    };
+    let mut display_cmd = argv.to_vec();
+    for i in 0..display_cmd.len() {
+        if display_cmd[i] == "--append-system-prompt" && i + 1 < display_cmd.len() {
+            display_cmd[i + 1] = label.clone();
+            break;
+        }
+    }
+    shell_join(&display_cmd)
+}
+
 pub fn new_run_dir(cfg: &Config, project_id: &str, task: &str, role: &str) -> BrainResult<PathBuf> {
     let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S%6fZ").to_string();
     let base = crate::config::runs_dir(cfg);
@@ -192,6 +226,35 @@ pub fn execute_role(
     root: &Path,
     plan: RunPlan,
 ) -> BrainResult<RoleRun> {
+    let running = crate::db::running_runs(&ctx.conn)?;
+    for r in running {
+        if r.profile == project.profile {
+            if let (Some(pid), Some(pid_start)) = (r.pid, r.pid_start) {
+                let proc_id = crate::procs::ProcId {
+                    pid: pid as i32,
+                    start: pid_start as u64,
+                };
+                if crate::procs::alive(proc_id) {
+                    if project.profile == "personal" {
+                        let tid_str = r
+                            .task_id
+                            .map(|tid| tid.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        return Err(BrainError::error(format!(
+                            "Profile personal đang có run {} chạy (task {tid_str}) — không chạy song song trên cùng thư mục cấu hình (E-06)",
+                            r.id
+                        )));
+                    } else {
+                        crate::term::emit(&format!(
+                            "Cảnh báo: profile {} đang có run {} chạy song song",
+                            project.profile, r.id
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     let env = crate::profile::build_env(
         &project.profile,
         &ctx.cfg.profiles,
@@ -402,5 +465,38 @@ pub fn cmd_run(
             }
             qa::cmd_qa(ctx, project, dry_run, verbose)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shell_join() {
+        assert_eq!(shell_join(&[]), "");
+        assert_eq!(
+            shell_join(&["hello".to_string(), "world".to_string()]),
+            "hello world"
+        );
+        assert_eq!(shell_join(&["a b".to_string(), "c".to_string()]), "'a b' c");
+        assert_eq!(
+            shell_join(&["Write(./.plan.md)".to_string()]),
+            "'Write(./.plan.md)'"
+        );
+    }
+
+    #[test]
+    fn test_display_argv() {
+        let argv = vec![
+            "claude".to_string(),
+            "--append-system-prompt".to_string(),
+            "very long prompt".to_string(),
+            "--model".to_string(),
+            "opus".to_string(),
+        ];
+        let disp = display_argv(&argv, "assets/prompts/lead.md");
+        assert!(disp.contains("<assets/prompts/lead.md>"));
+        assert!(!disp.contains("very long prompt"));
     }
 }

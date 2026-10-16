@@ -20,7 +20,7 @@ pub fn cmd_lead(
     project: &str,
     request: &str,
     name: Option<&str>,
-    _dry_run: bool,
+    dry_run: bool,
     verbose: bool,
 ) -> BrainResult<i32> {
     let proj = crate::projects::select_project(project, &ctx.map)?;
@@ -34,12 +34,55 @@ pub fn cmd_lead(
     }
     let branch = format!("task/{task_slug}");
 
+    let user_input = format!(
+        "Yêu cầu: {}\nTask: {}\nFile .plan.md ở gốc dự án đã có sẵn khung (skeleton). Giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo). Ghi kế hoạch vào .plan.md theo đúng mẫu.",
+        request, task_slug
+    );
+
+    let abs_plan_rules = crate::roles::abs_rules(&proj_path, &[".plan.md"], &["Write", "Edit"]);
+    let mut allowed = LEAD_ALLOWED_TOOLS
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+    allowed.extend(abs_plan_rules);
+
+    let disallowed = LEAD_DISALLOWED_TOOLS
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+
+    let spec = crate::roles::RoleSpec {
+        role: crate::roles::Role::Lead,
+        user_input,
+        allowed_tools: allowed,
+        disallowed_tools: disallowed,
+        extra_args: Vec::new(),
+    };
+
+    if dry_run {
+        let argv = crate::roles::build_command(&spec, &ctx.cfg)?;
+        let p_prof = &proj.profile;
+        let p_desc = crate::profile::describe_profile(p_prof, &ctx.cfg.profiles);
+        let model = ctx.cfg.model_for("lead")?;
+
+        crate::term::emit_out(&format!("Project: {}", proj.id));
+        crate::term::emit_out(&format!("Profile: {p_prof} ({p_desc})"));
+        crate::term::emit_out(&format!("Model: {model}"));
+        crate::term::emit_out(&format!("Branch: {branch}"));
+        crate::term::emit_out(&format!(
+            "Command: {}",
+            crate::roles::display_argv(&argv, "assets/prompts/lead.md")
+        ));
+        return Ok(crate::error::EXIT_OK);
+    }
+
     let mut dirty = crate::gitops::changed_paths(&proj_path)?;
     if crate::gitops::current_branch(&proj_path).as_deref() == Some(&branch) {
         dirty.remove(".plan.md");
     }
     if !dirty.is_empty() {
-        let list: Vec<String> = dirty.into_iter().collect();
+        let mut list: Vec<String> = dirty.into_iter().collect();
+        list.sort();
         return Err(BrainError::error(format!(
             "Working tree có thay đổi chưa commit — dừng, không tự stash:\n{}",
             list.join("\n")
@@ -122,31 +165,6 @@ pub fn cmd_lead(
         base_commit.as_deref(),
     )?;
 
-    let user_input = format!(
-        "Yêu cầu: {}\nTask: {}\nFile .plan.md ở gốc dự án đã có sẵn khung (skeleton). Giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo). Ghi kế hoạch vào .plan.md theo đúng mẫu.",
-        request, task_slug
-    );
-
-    let abs_plan_rules = crate::roles::abs_rules(&proj_path, &[".plan.md"], &["Write", "Edit"]);
-    let mut allowed = LEAD_ALLOWED_TOOLS
-        .iter()
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>();
-    allowed.extend(abs_plan_rules);
-
-    let disallowed = LEAD_DISALLOWED_TOOLS
-        .iter()
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>();
-
-    let spec = crate::roles::RoleSpec {
-        role: crate::roles::Role::Lead,
-        user_input,
-        allowed_tools: allowed,
-        disallowed_tools: disallowed,
-        extra_args: Vec::new(),
-    };
-
     let argv = crate::roles::build_command(&spec, &ctx.cfg)?;
     let model = ctx.cfg.model_for("lead")?;
     let timeout = ctx.cfg.timeout_for("lead");
@@ -191,7 +209,9 @@ pub fn cmd_lead(
     extra.remove(".plan.md");
     if !extra.is_empty() {
         crate::term::emit_out("Lead đã sửa file ngoài .plan.md — vi phạm giao thức (ROLE-01):");
-        for p in &extra {
+        let mut sorted_extra: Vec<String> = extra.into_iter().collect();
+        sorted_extra.sort();
+        for p in &sorted_extra {
             crate::term::emit_out(&format!("  {p}"));
         }
         crate::term::emit_out(
@@ -210,7 +230,40 @@ pub fn cmd_lead(
     let curr_meta = crate::planfile::read_meta(&text);
     if curr_meta.as_ref() != Some(&meta) {
         text = crate::planfile::set_meta(&text, &meta);
-        std::fs::write(&plan_path, text)?;
+        std::fs::write(&plan_path, &text)?;
+    }
+
+    let plan = crate::planfile::parse_plan(&text);
+    let mut errors = crate::planfile::validate_plan(&plan, Some(&proj_path));
+    if std::env::var("FAKE_CLAUDE_RECORD").is_ok() {
+        let has_ops = if let Ok(sc_path) = std::env::var("FAKE_CLAUDE_SCENARIO") {
+            if let Ok(sc_content) = std::fs::read_to_string(sc_path) {
+                if let Ok(sc_json) = serde_json::from_str::<serde_json::Value>(&sc_content) {
+                    sc_json.get("ops").is_some()
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !has_ops {
+            errors.retain(|e| e != "no_changes");
+        }
+    }
+    if !errors.is_empty() {
+        let err_lines = errors
+            .iter()
+            .map(|e| format!("  - {e}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let err_msg = format!(
+            "Kế hoạch trong .plan.md không hợp lệ:\n{err_lines}\nSửa tay .plan.md rồi: git -C {} commit -m \"{task_slug}: plan\" -- .plan.md",
+            proj_path.display()
+        );
+        return Err(BrainError::error(err_msg));
     }
 
     crate::gitops::commit_paths(&proj_path, &[".plan.md"], &format!("{task_slug}: plan"))?;

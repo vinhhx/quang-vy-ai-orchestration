@@ -15,14 +15,21 @@ fn p1_06_lead_writes_only_plan() {
         &["run", "lead", "web bán hàng", "thêm nút đăng xuất"],
         Some(scenario),
     );
-    assert_eq!(out.code, 0, "stderr: {}\nstdout: {}", out.stderr, out.stdout);
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
 
     // HEAD subject is them-nut-dang-xuat: plan
     let head_subject = sb.git(&repo, &["log", "-1", "--format=%s"]);
     assert_eq!(head_subject.trim(), "them-nut-dang-xuat: plan");
 
     // HEAD touches only .plan.md
-    let diff_tree = sb.git(&repo, &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]);
+    let diff_tree = sb.git(
+        &repo,
+        &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+    );
     assert_eq!(diff_tree.trim(), ".plan.md");
 
     // git status --porcelain is empty
@@ -50,11 +57,12 @@ fn lead_extra_file_is_protocol_violation() {
         ]
     });
 
-    let out = sb.run(
-        &["run", "lead", "web bán hàng", "sửa app"],
-        Some(scenario),
+    let out = sb.run(&["run", "lead", "web bán hàng", "sửa app"], Some(scenario));
+    assert_eq!(
+        out.code, 3,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
     );
-    assert_eq!(out.code, 3, "stderr: {}\nstdout: {}", out.stderr, out.stdout);
     assert!(
         out.stdout
             .contains("Lead đã sửa file ngoài .plan.md — vi phạm giao thức (ROLE-01):"),
@@ -80,11 +88,12 @@ fn lead_invalid_plan_not_committed() {
     let base_commit = sb.git(&repo, &["rev-parse", "HEAD"]);
 
     let scenario = serde_json::json!({ "ops": [] });
-    let out = sb.run(
-        &["run", "lead", "web bán hàng", "thêm nút"],
-        Some(scenario),
+    let out = sb.run(&["run", "lead", "web bán hàng", "thêm nút"], Some(scenario));
+    assert_eq!(
+        out.code, 1,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
     );
-    assert_eq!(out.code, 1, "stderr: {}\nstdout: {}", out.stderr, out.stdout);
     assert!(
         out.stderr.contains("Kế hoạch trong .plan.md không hợp lệ"),
         "stderr missing invalid plan message: {}",
@@ -107,10 +116,7 @@ fn lead_replan_keeps_base_commit() {
 
     // First run
     let sc1 = lead_scenario(&[("src/app.py", "1", "sửa lần 1", "lý do 1")]);
-    let out1 = sb.run(
-        &["run", "lead", "web bán hàng", "thêm nút"],
-        Some(sc1),
-    );
+    let out1 = sb.run(&["run", "lead", "web bán hàng", "thêm nút"], Some(sc1));
     assert_eq!(
         out1.code, 0,
         "out1 stderr: {}\nstdout: {}",
@@ -130,10 +136,7 @@ fn lead_replan_keeps_base_commit() {
 
     // Second run on the same branch
     let sc2 = lead_scenario(&[("src/app.py", "2", "sửa lần 2", "lý do 2")]);
-    let out2 = sb.run(
-        &["run", "lead", "web bán hàng", "thêm nút"],
-        Some(sc2),
-    );
+    let out2 = sb.run(&["run", "lead", "web bán hàng", "thêm nút"], Some(sc2));
     assert_eq!(
         out2.code, 0,
         "out2 stderr: {}\nstdout: {}",
@@ -165,14 +168,14 @@ fn lead_branch_exists_not_checked_out() {
     // Create branch task/them-nut-dang-xuat while staying on main
     sb.git(&repo, &["branch", "task/them-nut-dang-xuat"]);
 
-    let out = sb.run(
-        &["run", "lead", "web bán hàng", "thêm nút đăng xuất"],
-        None,
+    let out = sb.run(&["run", "lead", "web bán hàng", "thêm nút đăng xuất"], None);
+    assert_eq!(
+        out.code, 1,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
     );
-    assert_eq!(out.code, 1, "stderr: {}\nstdout: {}", out.stderr, out.stdout);
     assert!(
-        out.stderr
-            .contains("đã tồn tại nhưng chưa được checkout"),
+        out.stderr.contains("đã tồn tại nhưng chưa được checkout"),
         "stderr missing 'đã tồn tại nhưng chưa được checkout': {}",
         out.stderr
     );
@@ -214,7 +217,11 @@ fn lead_dry_run_has_no_side_effects() {
         &["run", "lead", "web bán hàng", "thêm nút", "--dry-run"],
         None,
     );
-    assert_eq!(out.code, 0, "stderr: {}\nstdout: {}", out.stderr, out.stdout);
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
 
     assert!(
         out.stdout.contains("Project: web-ban-hang"),
@@ -280,11 +287,12 @@ fn forbidden_flag_in_config_refused() {
         "common_args": ["--strict-mcp-config", "--dangerously-skip-permissions"]
     }));
 
-    let out = sb.run(
-        &["run", "lead", "web bán hàng", "thêm nút"],
-        None,
+    let out = sb.run(&["run", "lead", "web bán hàng", "thêm nút"], None);
+    assert_eq!(
+        out.code, 1,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
     );
-    assert_eq!(out.code, 1, "stderr: {}\nstdout: {}", out.stderr, out.stdout);
     assert!(
         out.stderr
             .contains("Cờ quyền không được phép: --dangerously-skip-permissions"),
@@ -341,7 +349,11 @@ fn personal_profile_refuses_concurrent_run() {
 
     // run lead on personal project exits 1 with message and no record
     let out = sb.run(&["run", "lead", "web bán hàng", "thêm nút 1"], None);
-    assert_eq!(out.code, 1, "stderr: {}\nstdout: {}", out.stderr, out.stdout);
+    assert_eq!(
+        out.code, 1,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
     assert!(
         out.stderr
             .contains("không chạy song song trên cùng thư mục cấu hình (E-06)"),
@@ -359,10 +371,7 @@ fn personal_profile_refuses_concurrent_run() {
     .expect("update run profile");
 
     let sc = lead_scenario(&[("src/app.py", "1", "sửa", "lý do")]);
-    let out_work = sb.run(
-        &["run", "lead", "web bán hàng", "thêm nút 2"],
-        Some(sc),
-    );
+    let out_work = sb.run(&["run", "lead", "web bán hàng", "thêm nút 2"], Some(sc));
     assert_eq!(
         out_work.code, 0,
         "out_work stderr: {}\nstdout: {}",
