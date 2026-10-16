@@ -14,7 +14,7 @@ Kết quả nghiệm thu sẽ được người dùng điền vào bảng tổng
 1. **Dự án nháp (Throwaway repo)**:
    - Sử dụng thư mục `/mnt/data/IDE/du-an-nhap` trên nhánh `main` sạch sẽ.
    - Dự án đã được đăng ký trong `~/.config/agent-brain/projects_map.json` với `name_vi: "dự án nháp"` và `profile: "work"`.
-   - File `calc.py` cơ bản đã được commit lần đầu trên `main`.
+   - File `src/calc.py` cơ bản đã được commit lần đầu trên `main`.
 
 2. **Quy trình dọn nhánh sau mỗi lần kill**:
    Sau mỗi lần ngắt hoặc kill một tác vụ thử nghiệm, thực hiện dọn dẹp nhánh task vừa tạo để đưa repo về trạng thái sạch:
@@ -168,9 +168,9 @@ Kết quả nghiệm thu sẽ được người dùng điền vào bảng tổng
 - **Mục tiêu**: Kiểm tra lệnh `inspect` chỉ tốn đúng 1 turn, đọc diff chưa commit và không để lại session file lưu rác.
 - **Tiền điều kiện**: Dự án `/mnt/data/IDE/du-an-nhap` ở nhánh `main`.
 - **Lệnh thực hiện**:
-  1. Tạo sửa đổi chưa commit trên file `calc.py`:
+  1. Tạo sửa đổi chưa commit trên file `src/calc.py`:
      ```bash
-     echo "# test uncommitted diff" >> /mnt/data/IDE/du-an-nhap/calc.py
+     echo "# test uncommitted diff" >> /mnt/data/IDE/du-an-nhap/src/calc.py
      ```
   2. Tạo mốc thời gian kiểm tra:
      ```bash
@@ -196,7 +196,7 @@ Kết quả nghiệm thu sẽ được người dùng điền vào bảng tổng
 - **Ghi nhận**: Điền `Đạt` vào dòng `P2-07` trong `protocol-log/nghiem-thu-p2.md`.
 - **Dọn dẹp**:
   ```bash
-  git -C /mnt/data/IDE/du-an-nhap checkout -- calc.py
+  git -C /mnt/data/IDE/du-an-nhap checkout -- src/calc.py
   rm -f /tmp/ab-p207-stamp
   ```
 
