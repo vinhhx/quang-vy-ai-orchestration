@@ -167,8 +167,38 @@ Plans:
   4. Bấm Kill trên UI thì run dừng và không còn tiến trình sót.
   5. Đổi profile thì thống kê và task mới theo đúng profile; màn hình Thống kê (token theo ngày/profile/dự án/vai trò) và màn hình Dự án (sửa alias, quét lại) hoạt động; nếu có thiết kế Figma thì UI khớp checklist UI của người dùng.
 
-**Plans**: TBD
+**Plans**: 11 plans
 **UI hint**: yes
+
+Plans:
+**Wave 1**
+- [ ] 05-01-PLAN.md — Pin axum/futures-util, offline CSS tooling; user checkpoints: legitimacy (Alpine CSP flagged SUS), cargo fetch + Cargo.lock, Tailwind binary, Alpine vendoring, first app.css
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 05-02-PLAN.md — Tracer: `agent-brain serve` → token gate → embedded shell → live SSE of a terminal-started run; single instance, loopback-only, refusal matrix, Last-Event-ID resume
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 05-03-PLAN.md — Giao việc server: job manager (child `agent-brain run`, PDEATHSIG), POST /api/tasks, preflight, busy rules, resolve gate, D-08 stop/crash
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 05-04-PLAN.md — Task pipeline server: derived step states/actions, task list/detail with plan & QA, Dev/QA/re-plan, Kill, Lead outcome fix
+- [ ] 05-05-PLAN.md — Stats server: by day / by profile breakdowns, GET /api/stats with profile & since filters
+- [ ] 05-06-PLAN.md — Projects server: ranked suggestions, list/status, alias edit with etag, rescan
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 05-07-PLAN.md — UI shell (router, profile switcher, theme) + Tổng quan + Giao việc screens + headless smoke script
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 05-08-PLAN.md — UI Chi tiết task: stepper, actions/Kill, read-only plan & QA, live log pane
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 05-09-PLAN.md — UI Thống kê + Dự án screens; DASH-09 offline asset test; five-screen smoke
+
+**Wave 8** *(blocked on Wave 7 completion)*
+- [ ] 05-10-PLAN.md — Release smoke (serve from the static binary in env -i), README, LIVE-CHECKS P4, acceptance table
+
+**Wave 9** *(blocked on Wave 8 completion)*
+- [ ] 05-11-PLAN.md — Live acceptance P4-01..P4-10 with the real claude, browser, LAN and offline checks (user checkpoints)
 
 ### Phase 6: Multi-engine & Media Branch
 
@@ -208,5 +238,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 2. Protocol MVP (Scripts) | 7/7 | Complete    | 2026-10-16 |
 | 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
-| 5. Embedded Dashboard | 0/TBD | Not started | - |
+| 5. Embedded Dashboard | 0/11 | Planned | - |
 | 6. Multi-engine & Media Branch | 0/TBD | Not started | - |
