@@ -63,6 +63,12 @@ class TestDevE2E(unittest.TestCase):
         self.assertIn("Write(./src/app.py)", argv)
         self.assertIn("Read(./.plan.md)", argv)
         self.assertIn("Edit(./.plan.md)", argv)
+        self.assertIn(f"Read(/{self.repo}/src/app.py)", argv)
+        self.assertIn(f"Edit(/{self.repo}/src/app.py)", argv)
+        self.assertIn(f"Write(/{self.repo}/src/app.py)", argv)
+        self.assertIn(f"Read(/{self.repo}/.plan.md)", argv)
+        self.assertIn(f"Edit(/{self.repo}/.plan.md)", argv)
+        self.assertIn(f"Write(/{self.repo}/.plan.md)", argv)
         self.assertIn("Bash(git add *)", argv)
         self.assertIn("Bash(git commit *)", argv)
 
@@ -303,6 +309,18 @@ class TestDevE2E(unittest.TestCase):
         prompt_file = Path(__file__).resolve().parent.parent / "brain" / "prompts" / "dev.md"
         prompt_text = prompt_file.read_text(encoding="utf-8")
         self.assertNotIn("qa-report", prompt_text)
+
+
+    def test_dev_allowed_tools_with_root(self):
+        from brain.role_dev import dev_allowed_tools
+        tools = dev_allowed_tools(["src/app.py"], root=Path("/my/proj"))
+        self.assertIn("Read(./src/app.py)", tools)
+        self.assertIn("Read(//my/proj/src/app.py)", tools)
+        self.assertIn("Edit(//my/proj/src/app.py)", tools)
+        self.assertIn("Write(//my/proj/src/app.py)", tools)
+        self.assertIn("Read(//my/proj/.plan.md)", tools)
+        self.assertIn("Edit(//my/proj/.plan.md)", tools)
+        self.assertIn("Write(//my/proj/.plan.md)", tools)
 
 
 if __name__ == "__main__":

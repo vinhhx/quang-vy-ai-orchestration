@@ -90,6 +90,9 @@ class TestQAE2E(unittest.TestCase):
         argv = qa_rec["argv"]
 
         self.assertIn("Write(./.qa-report.md)", argv)
+        self.assertIn("Edit(./.qa-report.md)", argv)
+        self.assertIn(f"Write(/{self.repo}/.qa-report.md)", argv)
+        self.assertIn(f"Edit(/{self.repo}/.qa-report.md)", argv)
         self.assertIn("--model", argv)
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
 

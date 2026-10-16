@@ -64,6 +64,10 @@ class TestLeadE2E(unittest.TestCase):
         self.assertIn("--model", argv)
         self.assertEqual(argv[argv.index("--model") + 1], "opus")
         self.assertIn("--allowedTools", argv)
+        self.assertIn("Write(./.plan.md)", argv)
+        self.assertIn("Edit(./.plan.md)", argv)
+        self.assertIn(f"Write(/{repo}/.plan.md)", argv)
+        self.assertIn(f"Edit(/{repo}/.plan.md)", argv)
 
         self.assertIsNone(rec["claude_config_dir"])
         self.assertEqual(rec["present_vars"], [])
@@ -485,6 +489,28 @@ class TestLeadE2E(unittest.TestCase):
         branches = self.sandbox.git(repo, "branch", "--list", "task/*").strip()
         self.assertEqual(branches, "")
         self.assertEqual(len(self.sandbox.records()), 0)
+
+
+    def test_abs_rules(self):
+        from brain.agent import abs_rules
+        self.assertEqual(
+            abs_rules(Path("/a/b"), [".plan.md"], ("Write", "Edit")),
+            ["Write(//a/b/.plan.md)", "Edit(//a/b/.plan.md)"],
+        )
+
+    def test_lead_dry_run_shows_absolute_rules(self):
+        repo = self.sandbox.make_repo("web-ban-hang")
+        entry = self.sandbox.project_entry(
+            repo,
+            id="web-ban-hang",
+            name_vi="Web bán hàng",
+            profile="work",
+        )
+        self.sandbox.write_map([entry])
+        res = self.sandbox.run_brain("lead", "web-ban-hang", "yeu cau", "--dry-run")
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("Write(./.plan.md)", res.stdout)
+        self.assertIn(f"Write(/{repo}/.plan.md)", res.stdout)
 
 
 if __name__ == "__main__":

@@ -109,5 +109,11 @@ class TestProfile(unittest.TestCase):
                         self.assertEqual(env.get(k), v)
 
 
+    def test_build_env_maintains_project_working_dir(self) -> None:
+        for profile in ("work", "personal"):
+            env = build_env(profile, self.cfg, {"CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "0"})
+            self.assertEqual(env.get("CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"), "1")
+
+
 if __name__ == "__main__":
     unittest.main()
