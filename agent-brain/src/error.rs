@@ -24,7 +24,10 @@ impl BrainError {
     }
 
     pub fn not_available(command: &str) -> Self {
-        Self::new(format!("Lệnh '{command}' chưa có trong bản này"), EXIT_ERROR)
+        Self::new(
+            format!("Lệnh '{command}' chưa có trong bản này"),
+            EXIT_ERROR,
+        )
     }
 }
 
