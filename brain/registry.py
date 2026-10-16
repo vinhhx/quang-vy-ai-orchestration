@@ -10,11 +10,16 @@ from brain.projects import add_project, find_duplicates, load_map, save_map, sca
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
+    for r in getattr(args, "root", []) or []:
+        r_path = Path(r).resolve()
+        if not r_path.is_dir():
+            raise BrainError(f"Thư mục không tồn tại: {r_path}", EXIT_ERROR)
+
     data = load_map()
 
     existing_roots = list(data.get("scan_roots", []))
     roots_set = {os.path.realpath(r) for r in existing_roots}
-    for r in getattr(args, "root", []):
+    for r in getattr(args, "root", []) or []:
         r_abs = str(Path(r).resolve())
         r_real = os.path.realpath(r_abs)
         if r_real not in roots_set:
@@ -29,6 +34,9 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     report = scan(data)
     save_map(data)
+
+    for br in report.get("bad_roots", []):
+        sys.stderr.write(f"CẢNH BÁO: thư mục gốc không tồn tại, bỏ qua: {br}\n")
 
     num_roots = len(data["scan_roots"]) - len(report.get("bad_roots", []))
     sys.stdout.write(
