@@ -30,26 +30,26 @@ Phase này người dùng tự chạy tay để hiểu hành vi CLI; agent có t
 
 ### Project Routing (GSD Phase 2 — nguồn Phase 1)
 
-- [ ] **ROUTE-01**: Người dùng gọi dự án bằng tên tiếng Việt có dấu (ví dụ "web bán hàng") và hệ thống khớp đúng dự án `web-ban-hang` (bỏ dấu cả hai phía, so với `name_vi` và `aliases` trong `projects_map.json`). *(src: P1-01)*
-- [ ] **ROUTE-02**: Người dùng gọi dự án bằng alias (ví dụ "shop") và hệ thống khớp đúng dự án. *(src: P1-02)*
-- [ ] **ROUTE-03**: Khi tên khớp hơn 1 dự án, hệ thống dừng, liệt kê các dự án khớp và hỏi lại; không chạy agent (luật Fallback Ask — không bao giờ đoán). *(src: P1-03)*
-- [ ] **ROUTE-04**: Khi tên không khớp dự án nào, hệ thống dừng, liệt kê toàn bộ dự án và hỏi lại; không chạy agent. *(src: P1-04)*
-- [ ] **ROUTE-05**: Sau khi clone dự án mới và chạy quét thư mục gốc, dự án mới xuất hiện trong `projects_map.json` và các alias/`name_vi` đã sửa tay không bị ghi đè. *(src: P1-05)*
+- [x] **ROUTE-01**: Người dùng gọi dự án bằng tên tiếng Việt có dấu (ví dụ "web bán hàng") và hệ thống khớp đúng dự án `web-ban-hang` (bỏ dấu cả hai phía, so với `name_vi` và `aliases` trong `projects_map.json`). *(src: P1-01)*
+- [x] **ROUTE-02**: Người dùng gọi dự án bằng alias (ví dụ "shop") và hệ thống khớp đúng dự án. *(src: P1-02)*
+- [x] **ROUTE-03**: Khi tên khớp hơn 1 dự án, hệ thống dừng, liệt kê các dự án khớp và hỏi lại; không chạy agent (luật Fallback Ask — không bao giờ đoán). *(src: P1-03)*
+- [x] **ROUTE-04**: Khi tên không khớp dự án nào, hệ thống dừng, liệt kê toàn bộ dự án và hỏi lại; không chạy agent. *(src: P1-04)*
+- [x] **ROUTE-05**: Sau khi clone dự án mới và chạy quét thư mục gốc, dự án mới xuất hiện trong `projects_map.json` và các alias/`name_vi` đã sửa tay không bị ghi đè. *(src: P1-05)*
 - [x] **ROUTE-06**: Script quét cảnh báo khi có alias trùng giữa các dự án. *(derived: 02-phase1 §3.2, §8)*
 
 ### Role Protocol (GSD Phase 2 — nguồn Phase 1)
 
-- [ ] **ROLE-01**: Sau khi Lead chạy xong, không file code nào bị sửa (`git status` sạch ngoài `.plan.md`); `.plan.md` theo đúng mẫu (Mục tiêu / Thay đổi gồm file, dòng/hàm, sửa gì, lý do / Không được đụng tới / Cách kiểm tra / Vướng mắc). *(src: P1-06)*
-- [ ] **ROLE-02**: Dev chạy với plan đầy đủ chỉ sửa các file được nêu trong plan và commit trên nhánh task với message "<task>: <mô tả ngắn>". *(src: P1-07)*
-- [ ] **ROLE-03**: Dev chạy với plan thiếu thông tin ghi vào mục "Vướng mắc" của `.plan.md` rồi dừng, không sửa bừa và không sửa ngoài plan. *(src: P1-08)*
-- [ ] **ROLE-04**: Sau khi QA chạy, có `.qa-report.md` (khớp plan từng mục, sửa ngoài plan, rủi ro, kết luận Đạt / Cần sửa) và không có code bị sửa. *(src: P1-09)*
+- [x] **ROLE-01**: Sau khi Lead chạy xong, không file code nào bị sửa (`git status` sạch ngoài `.plan.md`); `.plan.md` theo đúng mẫu (Mục tiêu / Thay đổi gồm file, dòng/hàm, sửa gì, lý do / Không được đụng tới / Cách kiểm tra / Vướng mắc). *(src: P1-06)*
+- [x] **ROLE-02**: Dev chạy với plan đầy đủ chỉ sửa các file được nêu trong plan và commit trên nhánh task với message "<task>: <mô tả ngắn>". *(src: P1-07)*
+- [x] **ROLE-03**: Dev chạy với plan thiếu thông tin ghi vào mục "Vướng mắc" của `.plan.md` rồi dừng, không sửa bừa và không sửa ngoài plan. *(src: P1-08)*
+- [x] **ROLE-04**: Sau khi QA chạy, có `.qa-report.md` (khớp plan từng mục, sửa ngoài plan, rủi ro, kết luận Đạt / Cần sửa) và không có code bị sửa. *(src: P1-09)*
 - [x] **ROLE-05**: Người dùng chạy được `brain lead "<dự án>" "<yêu cầu>"` (định tuyến → tạo nhánh task → chạy Lead), `brain dev "<dự án>"` (Dev đọc `.plan.md`) và `brain qa "<dự án>"` (QA trên `git diff`); 3 prompt vai trò lưu thành file riêng. *(derived: 02-phase1 §4.3, §4.4, §5)*
-- [ ] **ROLE-06**: Lệnh cấm của từng vai trò được thực thi bằng giới hạn công cụ (`--allowedTools` / `--disallowedTools`), không chỉ bằng prompt; các vai trò chỉ trao đổi thông tin qua file (`.plan.md`, `git diff`, `.qa-report.md`). *(derived: 02-phase1 §3.3, §8)*
-- [ ] **ROLE-07**: Hoàn thành 5 task thật bằng giao thức Lead → Dev → QA, mỗi task có nhật ký (số turn của Dev trước khi sửa, Dev có đọc file ngoài plan không, QA phát hiện gì, có phải làm lại không và vì sao). *(derived: 00-ROADMAP §2 cổng Phase 1; 02-phase1 §5, §7)*
+- [x] **ROLE-06**: Lệnh cấm của từng vai trò được thực thi bằng giới hạn công cụ (`--allowedTools` / `--disallowedTools`), không chỉ bằng prompt; các vai trò chỉ trao đổi thông tin qua file (`.plan.md`, `git diff`, `.qa-report.md`). *(derived: 02-phase1 §3.3, §8)*
+- [x] **ROLE-07**: Hoàn thành 5 task thật bằng giao thức Lead → Dev → QA, mỗi task có nhật ký (số turn của Dev trước khi sửa, Dev có đọc file ngoài plan không, QA phát hiện gì, có phải làm lại không và vì sao). *(derived: 00-ROADMAP §2 cổng Phase 1; 02-phase1 §5, §7)*
 
 ### Profiles (GSD Phase 2 và 3)
 
-- [ ] **PROF-01**: Dự án có `profile: work` chạy với đúng `CLAUDE_CONFIG_DIR` của profile work (mức biến môi trường, trong script). *(src: P1-10)*
+- [x] **PROF-01**: Dự án có `profile: work` chạy với đúng `CLAUDE_CONFIG_DIR` của profile work (mức biến môi trường, trong script). *(src: P1-10)*
 - [ ] **PROF-02**: `agent-brain` chọn `CLAUDE_CONFIG_DIR` / biến môi trường engine theo trường `profile` của dự án (`profile.rs`). *(derived: 03-phase2 §4.3, §5)*
 
 ### Rust CLI Core (GSD Phase 3 — nguồn Phase 2)
@@ -166,20 +166,20 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | SPK-08 | Phase 1 | Complete |
 | SPK-09 | Phase 1 | Complete |
 | SPK-10 | Phase 1 | Complete |
-| ROUTE-01 | Phase 2 | Pending |
-| ROUTE-02 | Phase 2 | Pending |
-| ROUTE-03 | Phase 2 | Pending |
-| ROUTE-04 | Phase 2 | Pending |
-| ROUTE-05 | Phase 2 | Pending |
+| ROUTE-01 | Phase 2 | Complete |
+| ROUTE-02 | Phase 2 | Complete |
+| ROUTE-03 | Phase 2 | Complete |
+| ROUTE-04 | Phase 2 | Complete |
+| ROUTE-05 | Phase 2 | Complete |
 | ROUTE-06 | Phase 2 | Complete |
-| ROLE-01 | Phase 2 | Pending |
-| ROLE-02 | Phase 2 | Pending |
-| ROLE-03 | Phase 2 | Pending |
-| ROLE-04 | Phase 2 | Pending |
+| ROLE-01 | Phase 2 | Complete |
+| ROLE-02 | Phase 2 | Complete |
+| ROLE-03 | Phase 2 | Complete |
+| ROLE-04 | Phase 2 | Complete |
 | ROLE-05 | Phase 2 | Complete |
-| ROLE-06 | Phase 2 | Pending |
-| ROLE-07 | Phase 2 | Pending |
-| PROF-01 | Phase 2 | Pending |
+| ROLE-06 | Phase 2 | Complete |
+| ROLE-07 | Phase 2 | Complete |
+| PROF-01 | Phase 2 | Complete |
 | CLI-01 | Phase 3 | Pending |
 | CLI-02 | Phase 3 | Pending |
 | CLI-03 | Phase 3 | Pending |

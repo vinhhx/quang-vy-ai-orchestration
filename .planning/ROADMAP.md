@@ -24,7 +24,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 | 6 | Phase 5 — Đa đội hình & Media | `06-phase5-da-doi-hinh-media.md` | P5-01…P5-07 |
 
 - [x] **Phase 1: Verify Assumptions** - Thử thật 8 spike (S1–S8) và ghi `spike-results.md` trước khi viết dòng Rust nào (completed 2026-10-15)
-- [ ] **Phase 2: Protocol MVP (Scripts)** - Chạy Lead → `.plan.md` → Dev → QA trên dự án thật chỉ bằng script và file cấu hình
+- [x] **Phase 2: Protocol MVP (Scripts)** - Chạy Lead → `.plan.md` → Dev → QA trên dự án thật chỉ bằng script và file cấu hình (completed 2026-10-16)
 - [ ] **Phase 3: Rust CLI Core** - Binary `agent-brain` với kill sạch cây tiến trình, bắt log stream-json, token trong SQLite, fast-path
 - [ ] **Phase 4: Session & Token Optimization** - Giảm token/task dựa trên số liệu `runs` thật (`.gsd-summary.md`, `.handover.md`)
 - [ ] **Phase 5: Embedded Dashboard** - Web UI + SSE trong cùng binary: xem log realtime, giao việc, kill, thống kê
@@ -74,7 +74,7 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──┬──► Phase 4
   4. Dự án có `profile: work` chạy với đúng `CLAUDE_CONFIG_DIR` của work.
   5. 5 task thật đã hoàn thành qua giao thức, mỗi task có nhật ký (số turn Dev trước khi sửa, Dev có đọc file ngoài plan không, QA phát hiện gì, có làm lại không).
 
-**Plans**: 6/7 plans executed
+**Plans**: 7/7 plans complete
 
 Plans:
 **Wave 1**
@@ -92,7 +92,7 @@ Plans:
 - [x] 02-06-PLAN.md — Task log instrumentation (stream-json turn counting, spec §7 log, 5-task check) + installer, README, live manual — wave 4
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 02-07-PLAN.md — Integration preflight + live acceptance P1-01..P1-10 + 5 real tasks (user checkpoints) — wave 5
+- [x] 02-07-PLAN.md — Integration preflight + live acceptance P1-01..P1-10 + 5 real tasks (user checkpoints) — wave 5
 
 ### Phase 3: Rust CLI Core
 
@@ -175,7 +175,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Verify Assumptions | 1/1 | Complete    | 2026-10-15 |
-| 2. Protocol MVP (Scripts) | 6/7 | In Progress | - |
+| 2. Protocol MVP (Scripts) | 7/7 | Complete    | 2026-10-16 |
 | 3. Rust CLI Core | 0/TBD | Not started | - |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 0/TBD | Not started | - |

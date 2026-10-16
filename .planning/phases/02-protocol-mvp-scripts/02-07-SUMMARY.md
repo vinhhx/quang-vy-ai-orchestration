@@ -13,7 +13,7 @@ provides:
 affects: [03-rust-cli-core]
 
 actuals:
-  tasks: 1
+  tasks: 3
   commits: 1
 
 key-files:
@@ -24,15 +24,15 @@ key-files:
 key-decisions:
   - "Task 1 executed by Antigravity (agy, gemini-3.8-flash-high); reviewed by Claude. Tasks 2 and 3 are the user's live checkpoints."
 
-requirements-completed: []
+requirements-completed: [ROLE-01, ROLE-02, ROLE-03, ROLE-04, ROLE-06, ROLE-07, ROUTE-01, ROUTE-02, ROUTE-03, ROUTE-04, ROUTE-05, PROF-01]
 
-completed: null
-status: checkpoint
+completed: 2026-10-16
+status: complete
 ---
 
 # Phase 2 Plan 07: Integration Preflight and Live Acceptance Summary
 
-**Status: Task 1 done. Waiting at the Task 2 checkpoint, the user's live run of P1-01..P1-10 with real Claude accounts. Task 3 (five real tasks) follows.**
+**Status: complete. Integration preflight automated; live acceptance P1-01..P1-10 confirmed against run logs; five real tasks on four projects pass the task-log gate.**
 
 ## Task 1: Integration preflight (done)
 
@@ -99,9 +99,27 @@ Executed by agy (gemini-3.8-flash-high, 956 s): `3c9d40d`, `35eb5e0` (`CLAUDE_BA
 
 Reviewer re-run: 114 tests OK; test commits fail at `3c9d40d` (5 failures, 2 errors) and `8b5347c` (2 failures); run dirs under the real home 31 → 31 after a full suite run; `brain scan --root /nonexistent-xyz` exit 1 with a temp config; dry runs show the `//` rules for Lead and Dev; only the 14 in-scope files changed. A-11 is settled by the next live run that has a `cd`.
 
-## Task 3: Five real tasks (checkpoint, user)
+## Task 3: Five real tasks (done)
 
-Not started. Gate: `python3 -m brain.tasklog check protocol-log --min 5` exits 0.
+Gate: `python3 -m brain.tasklog check protocol-log --min 5` → `5/6 nhật ký đủ 6 dòng`, exit 0 (the sixth log is the first, failed apec Lead run, kept as evidence of the cwd-drift defect). Test-repo P1 runs are kept apart in `protocol-log/du-an-nhap/`.
+
+| Task | Project | Lead turns | Dev turns before first edit | Dev read outside plan | Dev files | QA | Reviewer check |
+|------|---------|-----------|-----------------------------|-----------------------|-----------|----|----------------|
+| Language JSON translations page | apec | 14 | 3 | Không | 9 (in plan) | Đạt | `php -l` clean on 8 files |
+| `POST /v1/users/{id}/age` | app-sale-api | 12 (write denied, plan recovered) | 4 | Không | 16 (in plan) | Đạt | `php -l` clean; tests not run (no separate test DB) |
+| CSV import, skip bad emails | du-an-nhap (test repo, realistic request) | 6 | 1 | Không | 2 new | Đạt | 15/15 tests OK |
+| Tests for `RoleHierarchy` (T-232) | messer | 6 | 1 | Không | 1 new | Đạt | 33 tests pass in `messer_app`; mutation `>=`→`>` makes 2 fail |
+| `RouteHelper` env() → config() | karofi | 7 | 2 | Không | 2 (in plan) | Đạt | `php -l` clean; 4 config values equal `.env`; helper returns URL |
+
+KPIs over the five tasks:
+
+- Dev read outside the plan: 0 of 5. The guard logged every Dev read and edit; no guard blocks in any real task.
+- Dev turns before first edit: 1–4 (median 2). The manual's ≤ 2 target was set on the test repo; the 3 and 4 are the two largest changes (9 and 16 files).
+- Rework: none of the five needed a Dev rerun. QA said Đạt every time and still listed concrete risks each time (for example apec `mount()` 500 on unusual language codes, app-sale-api `age` added to every User response, messer deprecated `assertContainsOnly`).
+- Permission enforcement held: Dev's three attempts in app-sale-api to write files with `cat >` in Bash were denied; Lead/QA attempts at compound shell commands were denied.
+- QA never ran tests (diff-only by spec); the reviewer ran them where the project allowed.
+- The judgment lines for app-sale-api, messer and karofi were written by Claude on the user's explicit delegation ("you test all for me"); apec and du-an-nhap lines were Claude's drafts, chosen by the user. Each delegated line says so.
+- A-11 (cwd fix) confirmed live: in the app-sale-api Dev run, two `cd` into subfolders ran and later Edit/Write calls were still allowed.
 
 ## Deviations from Plan
 
