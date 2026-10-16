@@ -4,3 +4,4 @@ spikes/**/work/
 spikes/**/scratch/
 __pycache__/
 *.pyc
+agent-brain/target/
