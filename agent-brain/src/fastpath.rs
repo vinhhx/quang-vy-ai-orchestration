@@ -1,6 +1,7 @@
 use crate::app::Ctx;
 use crate::error::{BrainError, BrainResult};
 use crate::term;
+use std::path::{Path, PathBuf};
 
 pub fn cmd_status(ctx: &mut Ctx, project_query: &str) -> BrainResult<i32> {
     let project = crate::projects::select_project(project_query, &ctx.map)?;
@@ -89,31 +90,247 @@ pub const INSPECT_PROMPT_HEADER: &str = "Review ngắn bản thay đổi dưới
 pub const INSPECT_HARD_CAP: usize = 120_000;
 
 pub fn build_inspect_prompt(
-    _plan: Option<&str>,
-    _diff: &str,
-    _base: &str,
-    _cap: usize,
+    plan: Option<&str>,
+    diff: &str,
+    base: &str,
+    cap: usize,
 ) -> (String, Option<(usize, usize)>) {
-    (String::new(), None)
+    let mut header = String::from(INSPECT_PROMPT_HEADER);
+    if let Some(p) = plan {
+        header.push_str("--- .plan.md ---\n");
+        if p.len() <= 20_000 {
+            header.push_str(p);
+            if !p.ends_with('\n') {
+                header.push('\n');
+            }
+        } else {
+            let cut_notice = "[plan cắt]\n";
+            let target_limit = 20_000usize.saturating_sub(cut_notice.len());
+            let cut_idx = p[..target_limit].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            header.push_str(&p[..cut_idx]);
+            header.push_str(cut_notice);
+        }
+    }
+    header.push_str(&format!("--- git diff {base} ---\n"));
+
+    let prefix_len = header.len();
+    let m = diff.len();
+    if prefix_len + m <= cap {
+        let mut prompt = header;
+        prompt.push_str(diff);
+        return (prompt, None);
+    }
+
+    let max_n = cap.saturating_sub(prefix_len).min(m);
+    let bytes = diff.as_bytes();
+    let mut best_n = 0;
+    let mut best_notice = String::new();
+
+    let mut idx = max_n;
+    while idx > 0 {
+        if bytes[idx - 1] == b'\n' {
+            let notice = format!("[diff cắt: đã gửi {idx}/{m} byte]");
+            if prefix_len + idx + notice.len() <= cap {
+                best_n = idx;
+                best_notice = notice;
+                break;
+            }
+        }
+        idx -= 1;
+    }
+
+    if best_n == 0 {
+        best_notice = format!("[diff cắt: đã gửi 0/{m} byte]");
+    }
+
+    let mut prompt = header;
+    prompt.push_str(&diff[..best_n]);
+    prompt.push_str(&best_notice);
+    (prompt, Some((best_n, m)))
 }
 
-pub fn inspect_argv(_cfg: &crate::config::Config, _prompt: &str) -> BrainResult<Vec<String>> {
-    Err(BrainError::not_available("inspect_argv"))
+pub fn inspect_argv(cfg: &crate::config::Config, prompt: &str) -> BrainResult<Vec<String>> {
+    crate::roles::check_forbidden_args(&cfg.common_args)?;
+    let mut argv = vec![
+        cfg.claude_bin.clone(),
+        "-p".to_string(),
+        prompt.to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--model".to_string(),
+        cfg.inspect_model.clone(),
+        "--max-turns".to_string(),
+        "1".to_string(),
+        "--tools".to_string(),
+        "".to_string(),
+        "--no-session-persistence".to_string(),
+    ];
+    argv.extend(cfg.common_args.iter().cloned());
+    Ok(argv)
 }
 
-pub fn is_session_uuid(_s: &str) -> bool {
-    false
+pub fn is_session_uuid(s: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+            .unwrap()
+    });
+    re.is_match(s)
 }
 
-pub fn cleanup_session_files(
-    _config_dir: &std::path::Path,
-    _session_id: &str,
-) -> Vec<std::path::PathBuf> {
-    Vec::new()
+pub fn cleanup_session_files(config_dir: &Path, session_id: &str) -> Vec<PathBuf> {
+    if !is_session_uuid(session_id) {
+        return Vec::new();
+    }
+    let projects_dir = config_dir.join("projects");
+    let entries = match std::fs::read_dir(&projects_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut removed = Vec::new();
+    for entry_res in entries {
+        let entry = match entry_res {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let p = entry.path();
+        let meta = match std::fs::symlink_metadata(&p) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_dir() || meta.file_type().is_symlink() {
+            continue;
+        }
+
+        let jsonl_file = p.join(format!("{session_id}.jsonl"));
+        if let Ok(m) = std::fs::symlink_metadata(&jsonl_file) {
+            if m.is_file() && !m.file_type().is_symlink() {
+                if std::fs::remove_file(&jsonl_file).is_ok() {
+                    removed.push(jsonl_file);
+                }
+            }
+        }
+
+        let session_dir = p.join(session_id);
+        if let Ok(m) = std::fs::symlink_metadata(&session_dir) {
+            if m.is_dir() && !m.file_type().is_symlink() {
+                if std::fs::remove_dir_all(&session_dir).is_ok() {
+                    removed.push(session_dir);
+                }
+            }
+        }
+    }
+    removed
 }
 
-pub fn cmd_inspect(_ctx: &mut Ctx, _project: &str, _verbose: bool) -> BrainResult<i32> {
-    Err(BrainError::not_available("inspect"))
+pub fn cmd_inspect(ctx: &mut Ctx, project: &str, verbose: bool) -> BrainResult<i32> {
+    let project = crate::projects::select_project(project, &ctx.map)?;
+    let root = crate::projects::require_runnable(&project, &ctx.cfg)?;
+    let project_row_id = crate::db::project_row_id(&ctx.conn, &project.id)?;
+    let task = crate::tasks::current_task(&ctx.conn, project_row_id, &root)?;
+
+    let (base, task_id, task_slug) = match &task {
+        Some(t) => (
+            t.base_commit.as_deref().unwrap_or("HEAD"),
+            Some(t.id),
+            t.slug.clone(),
+        ),
+        None => ("HEAD", None, "inspect".to_string()),
+    };
+
+    let plan_path = root.join(".plan.md");
+    let plan_content = if plan_path.is_file() {
+        std::fs::read_to_string(&plan_path).ok()
+    } else {
+        None
+    };
+
+    let diff = crate::gitops::git(
+        &root,
+        &[
+            "diff",
+            base,
+            "--",
+            ".",
+            ":(exclude).plan.md",
+            ":(exclude).qa-report.md",
+        ],
+    )?;
+
+    if diff.trim().is_empty() {
+        term::emit_out(&format!("Không có thay đổi so với {base} — không gọi AI"));
+        return Ok(0);
+    }
+
+    let cap = ctx.cfg.inspect_max_diff_bytes.min(INSPECT_HARD_CAP);
+    let (prompt, cut_info) = build_inspect_prompt(plan_content.as_deref(), &diff, base, cap);
+    if let Some((sent, total)) = cut_info {
+        term::emit(&format!("Diff quá lớn — đã cắt: gửi {sent}/{total} byte"));
+    }
+
+    let argv = inspect_argv(&ctx.cfg, &prompt)?;
+    let resolved_base_sha = crate::gitops::git(&root, &["rev-parse", base])
+        .ok()
+        .map(|s| s.trim().to_string());
+
+    let run_plan = crate::roles::RunPlan {
+        role: "inspect".to_string(),
+        model: ctx.cfg.inspect_model.clone(),
+        argv,
+        task_id,
+        task_slug,
+        base_commit: resolved_base_sha,
+        plan_files: None,
+        verbose,
+        timeout: ctx.cfg.timeout_for("inspect"),
+        run_dir: None,
+    };
+
+    let role_run = crate::roles::execute_role(ctx, &project, &root, run_plan)?;
+
+    if let Some(ref text) = role_run.summary.result_text {
+        term::emit_out(text);
+    }
+
+    // Cleanup session files
+    let env = crate::profile::build_env(
+        &project.profile,
+        &ctx.cfg.profiles,
+        &crate::profile::current_env(),
+    )?;
+    let config_dir = match env.get("CLAUDE_CONFIG_DIR") {
+        Some(d) => PathBuf::from(d),
+        None => crate::config::home_dir().join(".claude"),
+    };
+    let removed = cleanup_session_files(&config_dir, &role_run.summary.session_id);
+    for p in removed {
+        term::emit(&format!("Đã xóa file session còn sót: {}", p.display()));
+    }
+
+    if role_run.outcome.status == crate::runner::RunStatus::Killed {
+        return Ok(130);
+    }
+
+    let is_success = role_run.outcome.status == crate::runner::RunStatus::Succeeded
+        && role_run.summary.subtype.as_deref() == Some("success")
+        && role_run.summary.num_turns == Some(1);
+
+    if is_success {
+        Ok(0)
+    } else {
+        let status_str = role_run.outcome.status.as_str();
+        let subtype_str = role_run.summary.subtype.as_deref().unwrap_or("-");
+        let num_turns_str = role_run
+            .summary
+            .num_turns
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        term::emit(&format!(
+            "inspect không dùng được: trạng thái {status_str}, subtype {subtype_str}, num_turns {num_turns_str} (cần success và đúng 1 turn)"
+        ));
+        Ok(1)
+    }
 }
 
 #[cfg(test)]
@@ -125,16 +342,16 @@ mod tests {
         let base = "HEAD";
         let plan = None;
         let prefix = format!("{INSPECT_PROMPT_HEADER}--- git diff {base} ---\n");
-        let diff = "line 1\nline 2\nline 3\n";
+        let diff = "123456789\n".repeat(50); // 500 bytes
         let total_len = prefix.len() + diff.len();
 
-        let (p1, cut1) = build_inspect_prompt(plan, diff, base, total_len);
+        let (p1, cut1) = build_inspect_prompt(plan, &diff, base, total_len);
         assert_eq!(cut1, None);
         assert_eq!(p1.len(), total_len);
         assert!(!p1.contains("[diff cắt"));
 
         let cap2 = total_len - 1;
-        let (p2, cut2) = build_inspect_prompt(plan, diff, base, cap2);
+        let (p2, cut2) = build_inspect_prompt(plan, &diff, base, cap2);
         assert!(cut2.is_some());
         let (sent, total) = cut2.unwrap();
         assert_eq!(total, diff.len());
