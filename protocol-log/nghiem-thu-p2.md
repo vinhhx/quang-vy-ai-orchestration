@@ -4,7 +4,7 @@
 
 | ID | Kịch bản | Kết quả mong đợi | Kết quả | Ngày | Ghi chú |
 | --- | --- | --- | --- | --- | --- |
-| P2-01 | `run lead` trên dự án thật | Log hiện từng bước trên terminal | | | |
+| P2-01 | `run lead` trên dự án thật | Log hiện từng bước trên terminal | Đạt | 2026-10-16 | claude 2.1.301, opus; task 1 run 1 succeeded, 4 turn, 28.3s, ~0.16 USD; log từng bước (init, tool, kết quả tool, assistant, result) + dòng `Kết thúc run`; plan commit `fd501e6` trên `task/them-ham-tinh-hieu-hai-so-vao-calcpy`; `status` 0.03s. Ghi chú: Lead phát hiện `hieu` đã có nên plan chỉ thêm test; log in nhiều dòng `system thinking_tokens` (nhiễu). |
 | P2-02 | Kill khi agent đang chạy `sleep 300` | Sau 5 giây, `ps` không còn `claude` hay `sleep` liên quan | | | |
 | P2-03 | Đóng terminal (Ctrl+C) giữa chừng | Không còn tiến trình sót | | | |
 | P2-04 | Run kết thúc | Bảng `runs` có đủ token, session_id, thời gian | | | |
