@@ -276,3 +276,51 @@ pub fn summarize_file(
     summary.finish();
     Ok(summary)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_classify_bad_json_array() {
+        let ev = classify(b"[1, 2]").expect("event");
+        assert_eq!(ev.kind, "bad_json");
+        assert_eq!(ev.raw, "[1, 2]");
+        assert!(ev.value.is_none());
+    }
+
+    #[test]
+    fn test_classify_truncated() {
+        let ev = classify(b"{\"type\":\"system\",\"sub").expect("event");
+        assert_eq!(ev.kind, "bad_json");
+        assert_eq!(ev.raw, "{\"type\":\"system\",\"sub");
+        assert!(ev.value.is_none());
+    }
+
+    #[test]
+    fn test_classify_whitespace_none() {
+        assert!(classify(b"   \n").is_none());
+    }
+
+    #[test]
+    fn test_classify_invalid_utf8() {
+        let ev = classify(&[0xFF, 0xFE]).expect("event");
+        assert_eq!(ev.kind, "bad_json");
+        assert!(ev.raw.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn test_classify_trailing_newline_same() {
+        let with_nl = classify(b"{\"type\":\"x\"}\n").expect("with nl");
+        let without_nl = classify(b"{\"type\":\"x\"}").expect("without nl");
+        assert_eq!(with_nl.kind, without_nl.kind);
+        assert_eq!(with_nl.raw, without_nl.raw);
+    }
+
+    #[test]
+    fn test_classify_unknown_type() {
+        let ev = classify(b"{\"type\":\"x\"}").expect("event");
+        assert_eq!(ev.kind, "unknown:x");
+        assert_eq!(ev.raw, "{\"type\":\"x\"}");
+    }
+}
