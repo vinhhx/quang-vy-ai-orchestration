@@ -1,0 +1,346 @@
+{
+  "version": 1,
+  "description": "Các trường hợp kiểm thử hợp đồng cho guard hook dùng chung giữa Python và Rust.",
+  "layout": {
+    "files": {
+      "src/app.py": "def app(): pass\n",
+      ".plan.md": "# Plan\n",
+      "other.py": "# other\n",
+      "tiếng_việt.py": "# vn\n"
+    },
+    "outside_files": {
+      "secret.py": "secret = 1\n"
+    },
+    "symlinks": {
+      "link.py": "{outside}/secret.py"
+    }
+  },
+  "default_policy": {
+    "read_allow": [
+      "src/app.py",
+      ".plan.md",
+      "tiếng_việt.py"
+    ],
+    "write_allow": [
+      "src/app.py",
+      ".plan.md"
+    ]
+  },
+  "cases": [
+    {
+      "id": "G-read-allowed",
+      "payload": {
+        "tool_name": "Read",
+        "tool_input": {
+          "file_path": "{root}/src/app.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 0,
+        "decision": "allow",
+        "tool": "Read"
+      }
+    },
+    {
+      "id": "G-read-denied",
+      "payload": {
+        "tool_name": "Read",
+        "tool_input": {
+          "file_path": "{root}/other.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 2,
+        "stderr_contains": [
+          "other.py",
+          "chặn Read"
+        ],
+        "decision": "block"
+      }
+    },
+    {
+      "id": "G-relative-path",
+      "payload": {
+        "tool_name": "Read",
+        "tool_input": {
+          "file_path": "src/app.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 0,
+        "decision": "allow"
+      }
+    },
+    {
+      "id": "G-parent-traversal",
+      "payload": {
+        "tool_name": "Read",
+        "tool_input": {
+          "file_path": "src/../other.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 2,
+        "stderr_contains": [
+          "other.py"
+        ],
+        "decision": "block"
+      }
+    },
+    {
+      "id": "G-symlink-outside",
+      "payload": {
+        "tool_name": "Read",
+        "tool_input": {
+          "file_path": "{root}/link.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 2,
+        "decision": "block"
+      }
+    },
+    {
+      "id": "G-edit-allowed",
+      "payload": {
+        "tool_name": "Edit",
+        "tool_input": {
+          "file_path": "{root}/src/app.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 0,
+        "decision": "allow"
+      }
+    },
+    {
+      "id": "G-write-new-outside",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "{root}/new.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 2,
+        "stderr_contains": [
+          "new.py"
+        ],
+        "decision": "block"
+      }
+    },
+    {
+      "id": "G-multiedit-allowed",
+      "payload": {
+        "tool_name": "MultiEdit",
+        "tool_input": {
+          "file_path": "{root}/src/app.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 0,
+        "decision": "allow"
+      }
+    },
+    {
+      "id": "G-multiedit-blocked",
+      "payload": {
+        "tool_name": "MultiEdit",
+        "tool_input": {
+          "file_path": "{root}/other.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 2,
+        "decision": "block"
+      }
+    },
+    {
+      "id": "G-notebookedit-allowed",
+      "payload": {
+        "tool_name": "NotebookEdit",
+        "tool_input": {
+          "notebook_path": "{root}/src/app.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 0,
+        "decision": "allow"
+      }
+    },
+    {
+      "id": "G-notebookedit-blocked",
+      "payload": {
+        "tool_name": "NotebookEdit",
+        "tool_input": {
+          "notebook_path": "{root}/other.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 2,
+        "decision": "block"
+      }
+    },
+    {
+      "id": "G-grep-blocked",
+      "payload": {
+        "tool_name": "Grep",
+        "tool_input": {
+          "pattern": "def",
+          "path": "{root}"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 2,
+        "decision": "block"
+      }
+    },
+    {
+      "id": "G-glob-blocked",
+      "payload": {
+        "tool_name": "Glob",
+        "tool_input": {
+          "pattern": "*.py",
+          "path": "{root}"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 2,
+        "decision": "block"
+      }
+    },
+    {
+      "id": "G-readfree-read-any",
+      "policy": {
+        "read_allow": null,
+        "write_allow": [
+          "src/app.py",
+          ".plan.md"
+        ]
+      },
+      "payload": {
+        "tool_name": "Read",
+        "tool_input": {
+          "file_path": "{root}/other.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 0,
+        "decision": "allow"
+      }
+    },
+    {
+      "id": "G-readfree-grep",
+      "policy": {
+        "read_allow": null,
+        "write_allow": [
+          "src/app.py",
+          ".plan.md"
+        ]
+      },
+      "payload": {
+        "tool_name": "Grep",
+        "tool_input": {
+          "pattern": "def",
+          "path": "{root}"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 0,
+        "decision": "allow"
+      }
+    },
+    {
+      "id": "G-readfree-write-outside",
+      "policy": {
+        "read_allow": null,
+        "write_allow": [
+          "src/app.py",
+          ".plan.md"
+        ]
+      },
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "{root}/other.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 2,
+        "decision": "block"
+      }
+    },
+    {
+      "id": "G-bash-not-guarded",
+      "payload": {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "git status"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 0,
+        "decision": "allow"
+      }
+    },
+    {
+      "id": "G-malformed-stdin",
+      "stdin_raw": "not a json",
+      "expect": {
+        "exit": 2
+      }
+    },
+    {
+      "id": "G-missing-policy",
+      "stdin_raw": "{}",
+      "policy_path": "{root}/nonexistent.json",
+      "expect": {
+        "exit": 2
+      }
+    },
+    {
+      "id": "G-write-missing-path",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {},
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 2,
+        "decision": "block"
+      }
+    },
+    {
+      "id": "G-nfd-path",
+      "normalize_payload_path": "NFD",
+      "payload": {
+        "tool_name": "Read",
+        "tool_input": {
+          "file_path": "{root}/tiếng_việt.py"
+        },
+        "cwd": "{root}"
+      },
+      "expect": {
+        "exit": 0,
+        "decision": "allow"
+      }
+    }
+  ]
+}
