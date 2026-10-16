@@ -107,7 +107,31 @@ Plans:
   4. `agent-brain status` trả kết quả git với 0 token và không gọi AI; `agent-brain inspect` chạy đúng 1 turn và không để lại session.
   5. `agent-brain stats --profile work` chỉ tính run của profile work; copy binary sang máy/thư mục khác vẫn chạy mà không cần cài thêm gì (trừ CLI agent).
 
-**Plans**: TBD
+**Plans**: 11 plans
+
+Plans:
+**Wave 1**
+- [ ] 03-01-PLAN.md — Crate manifest with pinned deps, error module, embedded prompts/templates/config; user checkpoints: crate legitimacy, musl toolchain + lockfile + fetch
+- [ ] 03-02-PLAN.md — Shared contract fixtures `tests/contract/stream.json` and `guard.json` with Python loaders (D-03)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 03-03-PLAN.md — Tracer: `agent-brain run lead` end to end (CLI → routing → profile → git → runner → stream → SQLite → terminal), schema v1, test sandbox
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 03-04-PLAN.md — `projects scan/add`, routing, profile and config parity on the shared fixtures (CLI-02, PROF-02)
+- [ ] 03-05-PLAN.md — `.plan.md` / `.qa-report.md` contract and prompt/template byte parity (CLI-03)
+- [ ] 03-06-PLAN.md — Stream summary parity + partial usage, terminal lines, P2-04/P2-05, `agent-brain guard` hook (LOG-01/02)
+- [ ] 03-07-PLAN.md — `status` (0 token), `inspect` (1 turn, no session), `stats` (FAST-01/02, STAT-01)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 03-08-PLAN.md — S4 process-tree kill, Ctrl+C/SIGHUP/timeout handling, `kill <task_id>`, PID-reuse safety (PROC-01/02)
+- [ ] 03-09-PLAN.md — Lead/Dev/QA parity through the binary and the lead → dev → qa pipeline (CLI-03)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 03-10-PLAN.md — Static musl release build + DIST-01 check, README, live-check script and wrapper
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 03-11-PLAN.md — Live acceptance P2-01/02/03/07/09, D-02 parity task, E-06 personal run, retire Python symlink (user checkpoints)
 
 ### Phase 4: Session & Token Optimization
 
@@ -176,7 +200,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 |-------|----------------|--------|-----------|
 | 1. Verify Assumptions | 1/1 | Complete    | 2026-10-15 |
 | 2. Protocol MVP (Scripts) | 7/7 | Complete    | 2026-10-16 |
-| 3. Rust CLI Core | 0/TBD | Not started | - |
+| 3. Rust CLI Core | 0/11 | Planned | - |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 0/TBD | Not started | - |
 | 6. Multi-engine & Media Branch | 0/TBD | Not started | - |
