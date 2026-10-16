@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 current_phase: 03
 current_phase_name: Rust CLI Core
 status: executing
-stopped_at: 03-12 complete, 03-13 (live acceptance, user checkpoints) next
-last_updated: "2026-10-16T14:20:00.000Z"
+stopped_at: 03-13 live acceptance 4/7 passed (P2-01, P2-02, P2-07, P2-09); P2-03, D-02, E-06 wait on user
+last_updated: "2026-10-16T16:40:00.000Z"
 last_activity: 2026-10-16
-last_activity_desc: 03-12 reviewed and complete
+last_activity_desc: 03-13 live checks P2-01/02/07/09 passed; live-sleep fix reviewed
 state_head: 40d102c051883dc30b74f602f60c3caff4ed4dc6
 progress:
   total_phases: 6
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-10-15)
 ## Current Position
 
 Phase: 03 (Rust CLI Core) — EXECUTING
-Plan: 13 of 13 (03-13 live acceptance, waiting on user)
+Plan: 13 of 13 (03-13 live acceptance: 4/7 passed — P2-03, D-02, E-06 left, user checkpoints)
 Status: Executing Phase 03
-Last activity: 2026-10-16 — 03-12 complete (static musl build, README, live-check guide)
+Last activity: 2026-10-16 — 03-13: binary installed at ~/.local/bin/agent-brain; P2-01, P2-02 (python sleep), P2-07, P2-09 Đạt in protocol-log/nghiem-thu-p2.md
 
 Progress: [██████████] 95% of plans (phase 3/6 in progress)
 
@@ -80,6 +80,11 @@ None yet.
 
 ### Blockers/Concerns
 
+- [Phase 3 / 03-13] claude 2.1.301 chặn `sleep N` foreground trong Bash tool ("Blocked: standalone sleep") → P2-02/P2-03 dùng `python3 -c 'import time; time.sleep(307)'`, wrapper `scripts/live/claude-allow-sleep.sh` cho phép `Bash(python3 *)` (fix plan `.planning/fixes/03-13-live-sleep-method.plan.md`, agy, commits 65386f2, 87f8e71, 00443c9; đã review). Shell của Bash tool chạy trong PGID/SID riêng — kill phải quét theo PID đã ghi, không chỉ process group.
+- [Phase 3 / 03-13] Còn chờ người dùng: P2-03 (Ctrl+C 1 lần, 2 lần, đóng terminal), D-02 (1 task thật qua binary rồi `bash brain/install.sh --uninstall`), E-06 (profile personal, chỉ khi không phiên nào dùng ~/.claude-orca).
+- [Phase 3 / 03-13] Ghi nhận nhỏ, chưa sửa: log `run` in nhiều dòng `system thinking_tokens` (nhiễu); claude tạo thư mục rỗng `~/.claude/session-env/<id>/` cho mỗi phiên kể cả `inspect` không lưu session.
+- [Ops] Có một phiên agy tương tác (`agy --dangerously-skip-permissions --conversation b168a5a8…`, pts/20, từ 09:38) không do Claude khởi chạy; đóng trước khi chạy live checks còn lại.
+
 - [Phase 1] Đã xử lý: SPK-10 — người dùng miễn điều kiện chính sách công ty ("SPK-10 alway accept ignore condition"); ánh xạ Work=`~/.claude`, Personal=`~/.claude-orca`. Chính sách vẫn chưa được xác nhận bằng nguồn nào.
 - [Phase 1] Đã xử lý: S7 — agy chạy headless, có JSON/stream-json, KHÔNG có cờ giới hạn turn (ENG-06 tích hợp được, giới hạn bằng `--print-timeout` + kill ngoài).
 - [Phase 1]: Công cụ scrub/scan của spike có lỗi tồn đọng (CR-01, WR-01…WR-10 trong `01-REVIEW.md`); username hệ điều hành còn trong 4 fixture S1/S4 — re-scrub trước khi push; sửa bằng `/gsd-code-review 01 --fix` (theo CLAUDE.md: giao agy).
@@ -102,6 +107,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-16T14:20:00Z
-Stopped at: 03-12 complete; 03-13 needs the user to run agent-brain/LIVE-CHECKS.md
-Resume file: .planning/phases/03-rust-cli-core/03-12-SUMMARY.md
+Last session: 2026-10-16T16:40:00Z
+Stopped at: 03-13 4/7 live checks passed; user runs P2-03, D-02, E-06 per agent-brain/LIVE-CHECKS.md, then Claude writes 03-13-SUMMARY.md + VERIFICATION.md
+Resume file: protocol-log/nghiem-thu-p2.md
