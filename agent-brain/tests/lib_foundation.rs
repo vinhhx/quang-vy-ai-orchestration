@@ -497,6 +497,7 @@ fn db_open_creates_schema_with_private_modes() {
         assert!(names.contains(&expected.to_string()), "missing: {expected}");
     }
 
+    drop(stmt);
     drop(conn);
     let conn2 = agent_brain::db::open(&db_file).expect("db::open reopen ok");
     let user_ver2: i64 = conn2
@@ -613,8 +614,15 @@ fn db_task_run_event_api() {
     assert_eq!(running_for_task.id, run_id);
 
     agent_brain::db::insert_event(&conn, run_id, 1, 1000, "user", r#"{"type":"user"}"#).unwrap();
-    agent_brain::db::insert_event(&conn, run_id, 2, 2000, "assistant", r#"{"type":"assistant"}"#)
-        .unwrap();
+    agent_brain::db::insert_event(
+        &conn,
+        run_id,
+        2,
+        2000,
+        "assistant",
+        r#"{"type":"assistant"}"#,
+    )
+    .unwrap();
     assert!(agent_brain::db::insert_event(&conn, run_id, 1, 3000, "user", "{}").is_err());
 
     let finish = agent_brain::db::RunFinish {
@@ -780,16 +788,9 @@ fn tasks_current_task_and_adoption() {
     // branch task/z with upsert_task works even without .plan.md
     agent_brain::gitops::create_branch(&repo_dir, "task/z").unwrap();
     std::fs::remove_file(repo_dir.join(".plan.md")).unwrap();
-    let z_id = agent_brain::db::upsert_task(
-        &conn,
-        proj_row_id,
-        "z",
-        "Title Z",
-        "task/z",
-        None,
-        None,
-    )
-    .unwrap();
+    let z_id =
+        agent_brain::db::upsert_task(&conn, proj_row_id, "z", "Title Z", "task/z", None, None)
+            .unwrap();
     let cur_z = agent_brain::tasks::current_task(&conn, proj_row_id, &repo_dir)
         .unwrap()
         .expect("task z found");
