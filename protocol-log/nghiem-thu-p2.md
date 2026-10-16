@@ -10,8 +10,8 @@
 | P2-04 | Run kết thúc | Bảng `runs` có đủ token, session_id, thời gian | | | |
 | P2-05 | Dòng JSON lỗi trong stream | Lưu thô, chương trình không dừng | | | |
 | P2-06 | `status` | Trả kết quả git, không gọi AI, 0 token | | | |
-| P2-07 | `inspect` | Đúng 1 turn, không tạo session lưu lại | | | |
+| P2-07 | `inspect` | Đúng 1 turn, không tạo session lưu lại | Đạt | 2026-10-16 | claude 2.1.301, sonnet; run 5: 1 turn, exit 0, 7.7s, ~0.014 USD; review đúng diff chưa commit. 0 transcript `.jsonl` mới dưới `~/.claude/projects` (giả định A1 `--max-turns` đúng). `stats` có dòng role inspect. Ghi chú: claude vẫn tạo thư mục rỗng `~/.claude/session-env/<session-id>/` (không phải transcript). Lệch hướng dẫn: `calc.py` thật ở `src/calc.py` (LIVE-CHECKS ghi `calc.py` ở gốc repo, cần sửa). |
 | P2-08 | `stats --profile work` | Chỉ tính các run của profile work | | | |
-| P2-09 | Copy binary sang máy/thư mục khác | Chạy được, không cần cài thêm gì (trừ CLI agent) | | | |
+| P2-09 | Copy binary sang máy/thư mục khác | Chạy được, không cần cài thêm gì (trừ CLI agent) | Đạt | 2026-10-16 | `build-release.sh` → `P2-09 OK (route A)`, 6 118 976 byte, sha256 0662979a…; `file`: static-pie linked, `readelf -d` 0 NEEDED. Copy sang thư mục khác: `--version` và `stats` exit 0; `env -i HOME=<tmp> PATH=/nonexistent ... stats --json` exit 0. Chưa thử trên máy khác. |
 | D-02 | Chạy thử một task thật hoàn chỉnh Lead → Dev → QA và gỡ symlink Python | Chạy thành công qua binary Rust, sau `bash brain/install.sh --uninstall` lệnh `command -v brain` không còn | | | |
 | E-06 | Chạy tác vụ với profile `personal` | File transcript session chỉ lưu dưới `~/.claude-orca`, không lưu dưới `~/.claude` | | | |
