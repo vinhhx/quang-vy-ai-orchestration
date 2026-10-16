@@ -4,14 +4,14 @@ Phase 3 has no network API or SDK. Its one external surface is the local `claude
 
 | capability | decision | reason |
 |---|---|---|
-| `-p` headless prompt (stdin = /dev/null) | INTEGRATE | plans 03-03, 03-09 (roles), 03-07 (inspect) |
+| `-p` headless prompt (stdin = /dev/null) | INTEGRATE | plans 03-04, 03-10, 03-11 (roles), 03-08 (inspect) |
 | `--output-format stream-json` + `--verbose` | INTEGRATE | real-time log for LOG-01/02 (S1: stream-json needs --verbose) |
 | `--model` (opus / sonnet aliases) | INTEGRATE | per-role models from config; inspect uses inspect_model |
 | `--append-system-prompt` | INTEGRATE | the three Phase 2 role prompts (CLI-03) |
 | `--allowedTools` / `--disallowedTools` rules | INTEGRATE | role tool limits (ROLE-06): `Tool(./path)`, `Tool(//abs)` (02-07 live fix), `Bash(cmd *)` |
-| `--settings` with a PreToolUse command hook | INTEGRATE | Dev guard, served by `agent-brain guard` (03-06, 03-09) |
+| `--settings` with a PreToolUse command hook | INTEGRATE | Dev guard, served by `agent-brain guard` (03-07, 03-11) |
 | `--strict-mcp-config` | INTEGRATE | config common_args; keeps the user's MCP servers out of role runs |
-| `--max-turns` | INTEGRATE | inspect only (`--max-turns 1`); acceptance on 2.1.301 checked live in 03-11 (research A1) |
+| `--max-turns` | INTEGRATE | inspect only (`--max-turns 1`); acceptance on 2.1.301 checked live in 03-13 (research A1) |
 | `--tools ""` | INTEGRATE | inspect: no tools, one turn (S8 variant B) |
 | `--no-session-persistence` | INTEGRATE | inspect leaves no transcript (D-15, S8) |
 | env `CLAUDE_CONFIG_DIR` per profile | INTEGRATE | PROF-02; work unsets it, personal sets ~/.claude-orca (S5, SPK-10) |
