@@ -1,7 +1,8 @@
 ---
 phase: "5"
 slug: "embedded-dashboard"
-status: draft
+status: approved
+reviewed_at: 2026-10-17
 shadcn_initialized: false
 preset: none
 created: "2026-10-17"
@@ -299,7 +300,7 @@ All strings are exact. `{x}` = a runtime value. Strings marked (server) come fro
 | Tổng quan | `Giao việc` (link-button to `#/assign`) |
 | Giao việc | `Giao việc`; in flight `Đang giao...`; after 202 `Đã giao việc — đang mở task...` |
 | Chi tiết task | `Chạy Dev` · `Chạy QA` · `Chạy lại Lead` · `Kill` |
-| Dự án | `Lưu alias` (edit), `Quét lại` (secondary), `Sửa alias`, `Hủy sửa alias`, `Trạng thái git` |
+| Dự án | `Lưu alias` (edit; in flight `Đang lưu...`), `Quét lại` (secondary; in flight `Đang quét...`), `Sửa alias`, `Hủy sửa alias`, `Trạng thái git` |
 
 ### Empty states
 
@@ -362,7 +363,7 @@ Zero / one / many: Vietnamese has no plural forms, so counts are shown as numera
 
 ## UI Considerations
 
-Applicable state considerations resolved: 28 covered, 5 backstop, 2 unresolved. Empty-state and error-state copy lives in `## Copywriting Contract`; rows below reference it.
+Applicable state considerations resolved: 51 covered, 6 backstop, 2 unresolved. Empty-state and error-state copy lives in `## Copywriting Contract`; rows below reference it. Rows tagged `(probe E1..E10)` were added after verification by the ui-consideration probe (65 applicable element×state considerations over 10 surfaces), so every probe-raised consideration now has a row; the two unresolved items were kept as planner assumptions by the user on 2026-10-17.
 
 | Category | Element(s) | Status | Resolution / Reason |
 |----------|------------|--------|---------------------|
@@ -394,6 +395,30 @@ Applicable state considerations resolved: 28 covered, 5 backstop, 2 unresolved. 
 | empty | list-collection: Thống kê | ✅ covered | Empty card replaces the body; windows with a single day render one wide column (`max-w-16` per column keeps bars from becoming slabs) |
 | overflow | list-collection: Thống kê rows | ✅ covered | Project names `truncate` with `title`; `Theo dự án` capped at 10 rows plus `Hiện tất cả` |
 | empty / partial | list-collection: Dự án | ✅ covered | Empty copy; missing directory badge and disabled git status; project without aliases shows `Chưa có alias` |
+| partial | list-collection: Tổng quan task item without runs | ✅ covered | Step pills show `○ Lead` / `○ Dev` / `○ QA` (chờ); banner text per task state; `Cập nhật` time from the task row (probe E1) |
+| loading | form: Giao việc submit and preflight | ✅ covered | While submitting, `Giao việc` is disabled and reads `Đang giao...`; while preflight runs, the disabled reason is `Đang kiểm tra...`; a second click is impossible (probe E2) |
+| populated | list-collection: project suggestions | ✅ covered | Option rows `min-h-12 px-4 py-2` with `name_vi (id)` and the profile badge; highlighted row uses the indigo tint (probe E3) |
+| partial | list-collection: project suggestions | ✅ covered | Projects whose directory is missing render `opacity-60`, `aria-disabled="true"`, are skipped by arrow keys and cannot be chosen (probe E3) |
+| zero-one-many | list-collection: project suggestions | ✅ covered | Exactly one match is still never auto-chosen — the user must pick it (D-05); zero shows the no-match copy; many scroll inside `max-h-64` (probe E3) |
+| empty / zero-one-many | list-collection: stepper | ✅ covered | Always exactly three steps Lead, Dev, QA in that order; a task with no runs shows `Chưa chạy` on all three and no current-step ring (probe E4) |
+| populated | list-collection: stepper | ✅ covered | Current step carries `ring-2 ring-indigo-600 dark:ring-indigo-400` and `aria-current="step"`; action buttons only on the current step (probe E4) |
+| long-text | nav: task detail header | ✅ covered | Title `line-clamp-3` with full text in `title`; branch monospace `break-all` (probe E4) |
+| loading | list-collection: log pane | ✅ covered | Stream status line reads `đang kết nối` until the first SSE event; rows already read from history render first (probe E6) |
+| populated / zero-one-many | list-collection: log pane | ✅ covered | One `<button>` row per event per the Log pane contract; zero rows show the log-empty copy; no plural copy (probe E6) |
+| loading / error | list-collection: Lịch sử run | ✅ covered | Loaded with the task detail: `Đang tải...` then the Global load-error card with `Thử lại`; a failed poll keeps the table and shows `Không cập nhật được — đang thử lại...` (probe E7) |
+| populated / partial | list-collection: Lịch sử run | ✅ covered | Table recipe with columns `Run`, `Vai trò`, `Trạng thái`, `Kết quả`, `Token`, `Chi phí`, `Bắt đầu`, `Thời gian`; a running run without `result` shows `—` in Token, Chi phí and Thời gian (probe E7) |
+| overflow | list-collection: Lịch sử run | ✅ covered | Table wrapper `overflow-x-auto`; rows grow with the page (probe E7) |
+| loading | list-collection: Thống kê | ✅ covered | First load shows `Đang tải...` in place of the body; changing `Khoảng thời gian` or the profile filter keeps the previous figures until the response arrives (probe E8) |
+| error | list-collection: Thống kê | ✅ covered | Global load-error card with `Thử lại` replaces the body (probe E8) |
+| populated | list-collection: Thống kê | ✅ covered | Five total cards, `Theo ngày` chart and three breakdown cards exactly as the Thống kê screen contract (probe E8) |
+| partial | list-collection: Thống kê rows with missing cost or cache | 🧪 backstop | Unknown cost or cache figures render `—`, never `0`; verified in UAT (05-13) against a run row with no `result` (probe E8) |
+| loading | list-collection: Dự án list, Quét lại, Lưu alias | ✅ covered | First load `Đang tải...`; while a rescan runs `Quét lại` is disabled and reads `Đang quét...`; while saving `Lưu alias` is disabled and reads `Đang lưu...` (probe E9) |
+| error | list-collection: Dự án save and rescan | ✅ covered | Save conflict / errors in a rose callout with the Copywriting text; rescan non-zero exit shows the `Kết quả quét (mã thoát {n})` block with stderr; load failure uses the Global load-error card (probe E9) |
+| populated / zero-one-many | list-collection: Dự án cards | ✅ covered | One card per project in `space-y-4` per the Dự án screen contract; one or many render the same; no plural copy (probe E9) |
+| long-text | static-content: Dự án name and path | ✅ covered | `name_vi` heading `break-words`; `id` and `path` monospace `break-all`; alias chips wrap freely (probe E9) |
+| loading | nav: shell header | ✅ covered | Header and nav render immediately from static HTML and never wait for data; theme applied before first paint by `theme.js` (probe E10) |
+| error | nav: shell header banners | ✅ covered | Connection-lost banner after two consecutive failed polls; session-lost banner on any 401 (probe E10) |
+| long-text | nav: shell header busy text and filter chip | ✅ covered | Busy text `truncate` with full text in `title`; header row `flex-wrap` (probe E10) |
 | long-text | static-content: paths, branches, JSON | 🧪 backstop | `break-all` / `whitespace-pre-wrap`; verified visually in UAT (05-13) with a 120-character path and a 22 KB raw event |
 | long-text | static-content: Vietnamese titles in clamped / truncated elements | 🧪 backstop | `leading-normal` on every clipped element so stacked diacritics are not cut; verified visually in UAT with a title full of Ế/Ộ/Ữ |
 | overflow | static-content: day-label row, 30 columns | 🧪 backstop | Labels thinned to every 5th plus first and last; verified at 1024 px and 768 px in UAT |
@@ -472,12 +497,12 @@ Vendored non-registry assets (already gated by plan 05-01, recorded here for com
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
-- [ ] Dimension 7 Inventory Provenance: PASS (n/a: `Tool: none`, no component inventory)
+- [x] Dimension 1 Copywriting: FLAG (non-blocking: verb-only labels Đóng, Sao chép, Quét lại, Thử lại)
+- [x] Dimension 2 Visuals: FLAG (non-blocking: Giao việc, Thống kê, Dự án declare no focal point)
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS
+- [x] Dimension 5 Spacing: PASS
+- [x] Dimension 6 Registry Safety: PASS
+- [x] Dimension 7 Inventory Provenance: PASS (n/a: `Tool: none`, no component inventory)
 
-**Approval:** pending
+**Approval:** approved 2026-10-17 (gsd-ui-checker, after 1 revision)
