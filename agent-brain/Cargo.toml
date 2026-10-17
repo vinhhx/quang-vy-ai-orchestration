@@ -10,11 +10,13 @@ clap = { version = "=4.6.7", features = ["derive"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["preserve_order"] }
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
-tokio = { version = "=1.53.3", features = ["rt", "process", "io-util", "signal", "time", "macros", "sync"] }
+tokio = { version = "=1.53.3", features = ["rt", "rt-multi-thread", "net", "process", "io-util", "signal", "time", "macros", "sync"] }
 libc = "=0.2.190"
 unicode-normalization = "=0.1.25"
 regex = "=1.13.1"
 chrono = { version = "=0.4.45", default-features = false, features = ["clock", "std"] }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
+futures-util = { version = "=0.3.34", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
