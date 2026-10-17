@@ -217,6 +217,7 @@ pub fn cmd_lead(
         crate::term::emit_out(
             "Gợi ý: agent-brain không tự revert thay đổi; bạn hãy kiểm tra và xử lý bằng tay.",
         );
+        crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
         return Ok(crate::error::EXIT_PROTOCOL);
     }
 

@@ -8,6 +8,7 @@ pub mod jobs;
 pub mod lock;
 pub mod pump;
 pub mod sse;
+pub mod taskstate;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
