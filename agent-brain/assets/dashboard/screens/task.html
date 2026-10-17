@@ -1,0 +1,252 @@
+<section data-screen="task" x-data="task" :data-loaded="loadedAttr" class="space-y-6">
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="stale">Không cập nhật được — đang thử lại...</p>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isLoading">Đang tải...</p>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="hasError">
+    <h2 class="text-xl font-semibold leading-[1.2]">Không tải được dữ liệu</h2>
+    <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="errorBody"></p>
+    <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="reload">Thử lại</button>
+  </div>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700" x-show="notFound">
+    <div class="space-y-4 py-12 text-center">
+      <h2 class="text-xl font-semibold leading-[1.2]" x-text="notFoundTitle"></h2>
+      <p class="text-base font-normal leading-normal text-slate-600 dark:text-slate-400">Kiểm tra lại số task ở Tổng quan.</p>
+      <a href="#/" class="text-indigo-700 underline hover:text-indigo-900 dark:text-indigo-300 dark:hover:text-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">← Tổng quan</a>
+    </div>
+  </div>
+
+  <div class="space-y-6" x-show="hasTask">
+    <!-- Header card -->
+    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <a href="#/" class="text-indigo-700 underline hover:text-indigo-900 dark:text-indigo-300 dark:hover:text-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">← Tổng quan</a>
+      <h1 class="text-2xl font-semibold leading-normal line-clamp-3 break-words" :title="title" x-text="title"></h1>
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="projectLine"></span>
+        <span :class="profileBadgeClass" x-text="profile"></span>
+        <span class="font-mono text-sm leading-normal break-all text-slate-600 dark:text-slate-400" x-text="branch"></span>
+      </div>
+      <div x-show="banner" :class="bannerClass">
+        <span aria-hidden="true" class="w-6 text-center" x-text="bannerGlyph"></span>
+        <span x-text="banner"></span>
+      </div>
+    </div>
+
+    <!-- Stepper card -->
+    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <ol aria-label="Pipeline Lead, Dev, QA" class="flex flex-col gap-4 md:flex-row md:items-stretch">
+        <li class="min-w-0 flex-1 space-y-4 rounded-2xl p-6" :class="stepRing('lead')" :aria-current="stepCurrentAttr('lead')">
+          <h2 class="text-xl font-semibold leading-[1.2]">Lead</h2>
+          <div :class="stepBadgeClass('lead')">
+            <span aria-hidden="true" :class="stepGlyphClass('lead')" x-text="stepGlyph('lead')"></span>
+            <span x-text="stepLabel('lead')"></span>
+          </div>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noRun('lead')">Chưa chạy</p>
+          <div class="space-y-1" x-show="hasRun('lead')">
+            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="tokensText('lead')"></p>
+            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="durationText('lead')"></p>
+            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="costText('lead')"></p>
+          </div>
+          <div class="flex flex-wrap gap-2" x-show="hasActions('lead')">
+            <template x-for="a in actionsFor('lead')" :key="a.id">
+              <div class="space-y-1">
+                <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
+                <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
+                <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="actionHelp(a)" x-text="actionHelp(a)"></p>
+              </div>
+            </template>
+          </div>
+        </li>
+
+        <li aria-hidden="true" class="hidden items-center text-slate-400 md:flex">→</li>
+
+        <li class="min-w-0 flex-1 space-y-4 rounded-2xl p-6" :class="stepRing('dev')" :aria-current="stepCurrentAttr('dev')">
+          <h2 class="text-xl font-semibold leading-[1.2]">Dev</h2>
+          <div :class="stepBadgeClass('dev')">
+            <span aria-hidden="true" :class="stepGlyphClass('dev')" x-text="stepGlyph('dev')"></span>
+            <span x-text="stepLabel('dev')"></span>
+          </div>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noRun('dev')">Chưa chạy</p>
+          <div class="space-y-1" x-show="hasRun('dev')">
+            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="tokensText('dev')"></p>
+            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="durationText('dev')"></p>
+            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="costText('dev')"></p>
+          </div>
+          <div class="flex flex-wrap gap-2" x-show="hasActions('dev')">
+            <template x-for="a in actionsFor('dev')" :key="a.id">
+              <div class="space-y-1">
+                <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
+                <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
+                <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="actionHelp(a)" x-text="actionHelp(a)"></p>
+              </div>
+            </template>
+          </div>
+        </li>
+
+        <li aria-hidden="true" class="hidden items-center text-slate-400 md:flex">→</li>
+
+        <li class="min-w-0 flex-1 space-y-4 rounded-2xl p-6" :class="stepRing('qa')" :aria-current="stepCurrentAttr('qa')">
+          <h2 class="text-xl font-semibold leading-[1.2]">QA</h2>
+          <div :class="stepBadgeClass('qa')">
+            <span aria-hidden="true" :class="stepGlyphClass('qa')" x-text="stepGlyph('qa')"></span>
+            <span x-text="stepLabel('qa')"></span>
+          </div>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noRun('qa')">Chưa chạy</p>
+          <div class="space-y-1" x-show="hasRun('qa')">
+            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="tokensText('qa')"></p>
+            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="durationText('qa')"></p>
+            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="costText('qa')"></p>
+          </div>
+          <div class="flex flex-wrap gap-2" x-show="hasActions('qa')">
+            <template x-for="a in actionsFor('qa')" :key="a.id">
+              <div class="space-y-1">
+                <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
+                <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
+                <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="actionHelp(a)" x-text="actionHelp(a)"></p>
+              </div>
+            </template>
+          </div>
+        </li>
+      </ol>
+      <p aria-live="polite" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="messageText" x-text="messageText"></p>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isDone" x-text="doneText"></p>
+    </div>
+
+    <!-- D-03 callouts -->
+    <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="isBlocked">
+      <p class="font-semibold leading-normal">Dev dừng vì vướng mắc</p>
+      <p class="text-base font-normal leading-normal" x-text="blockedBody"></p>
+    </div>
+
+    <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="isQaFix">
+      <p class="font-semibold leading-normal">QA kết luận Cần sửa</p>
+      <p class="text-base font-normal leading-normal" x-text="qaFixBody"></p>
+    </div>
+
+    <!-- Plan card -->
+    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Kế hoạch (.plan.md)</h2>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="planNote"></p>
+      <div class="space-y-2" x-show="noPlan">
+        <p class="text-sm font-semibold leading-normal">Chưa có .plan.md</p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Lead chưa chạy xong hoặc đã lỗi. Khi Lead xong, plan hiện ở đây để bạn duyệt.</p>
+      </div>
+      <div class="space-y-4" x-show="hasPlan">
+        <div class="flex flex-wrap items-center gap-2">
+          <code id="ab-plan-path" class="font-mono text-sm leading-normal break-all" x-text="planPath"></code>
+          <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="copyPath">Sao chép</button>
+        </div>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="planCommitText" x-text="planCommitText"></p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="planSourceText" x-text="planSourceText"></p>
+        <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200" x-show="planDirtyText" x-text="planDirtyText"></div>
+        <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2" x-show="hasPlanErrors">
+          <template x-for="err in planErrors" :key="err">
+            <p class="font-mono text-sm leading-normal break-all" x-text="err"></p>
+          </template>
+        </div>
+        <template x-for="s in planHead" :key="s.name">
+          <section class="space-y-2 rounded-xl p-4" :class="sectionRing(s.name)">
+            <h3 class="text-sm font-semibold leading-normal" x-text="s.name"></h3>
+            <p :class="sectionTextClass(s.name)" x-text="sectionText(s)"></p>
+          </section>
+        </template>
+        <div class="space-y-2">
+          <h3 class="text-sm font-semibold leading-normal">Thay đổi</h3>
+          <div class="overflow-x-auto" x-show="hasChanges">
+            <table class="w-full text-left text-sm">
+              <thead>
+                <tr>
+                  <th class="py-2 pr-4 font-semibold">File</th>
+                  <th class="py-2 pr-4 font-semibold">Dòng / hàm</th>
+                  <th class="py-2 pr-4 font-semibold">Sửa gì</th>
+                  <th class="py-2 pr-4 font-semibold">Lý do</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(c, idx) in changes" :key="idx">
+                  <tr class="border-t border-slate-200 dark:border-slate-700">
+                    <td class="py-2 pr-4 align-top font-mono break-all" x-text="c.file"></td>
+                    <td class="py-2 pr-4 align-top break-words" x-text="c.where"></td>
+                    <td class="py-2 pr-4 align-top break-words" x-text="c.what"></td>
+                    <td class="py-2 pr-4 align-top break-words" x-text="c.why"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noChanges">(trống)</p>
+        </div>
+        <template x-for="s in planTail" :key="s.name">
+          <section class="space-y-2 rounded-xl p-4" :class="sectionRing(s.name)">
+            <h3 class="text-sm font-semibold leading-normal" x-text="s.name"></h3>
+            <p :class="sectionTextClass(s.name)" x-text="sectionText(s)"></p>
+          </section>
+        </template>
+      </div>
+    </div>
+
+    <!-- QA card -->
+    <div x-show="hasQa" class="rounded-2xl bg-white p-6 shadow-sm dark:bg-slate-800 space-y-4" :class="qaCardRing">
+      <h2 class="text-xl font-semibold leading-[1.2]">Báo cáo QA (.qa-report.md)</h2>
+      <div x-show="qaVerdictText" :class="qaVerdictClass" x-text="qaVerdictText"></div>
+      <template x-for="s in qaSections" :key="s.name">
+        <div class="space-y-2">
+          <h3 class="text-sm font-semibold leading-normal" x-text="s.name"></h3>
+          <p class="whitespace-pre-wrap break-words text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="sectionText(s)"></p>
+        </div>
+      </template>
+    </div>
+
+    <!-- Runs card -->
+    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Lịch sử run</h2>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noRuns">Chưa có run nào.</p>
+      <div class="overflow-x-auto" x-show="hasRuns">
+        <table class="w-full text-left text-sm">
+          <thead>
+            <tr>
+              <th class="py-2 pr-4 font-semibold">Run</th>
+              <th class="py-2 pr-4 font-semibold">Vai trò</th>
+              <th class="py-2 pr-4 font-semibold">Trạng thái</th>
+              <th class="py-2 pr-4 font-semibold">Kết quả</th>
+              <th class="py-2 pr-4 font-semibold">Token</th>
+              <th class="py-2 pr-4 font-semibold">Chi phí</th>
+              <th class="py-2 pr-4 font-semibold">Bắt đầu</th>
+              <th class="py-2 pr-4 font-semibold">Thời gian</th>
+              <th class="py-2 pr-4 font-semibold"><span class="sr-only">Log</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="r in runs" :key="r.id">
+              <tr class="border-t border-slate-200 dark:border-slate-700" :class="runRowClass(r)">
+                <td class="py-2 pr-4 align-top" x-text="r.id"></td>
+                <td class="py-2 pr-4 align-top" x-text="runRole(r)"></td>
+                <td class="py-2 pr-4 align-top font-mono" x-text="r.status"></td>
+                <td class="py-2 pr-4 align-top font-mono" x-text="r.outcome || '—'"></td>
+                <td class="py-2 pr-4 align-top" x-text="runTokens(r)"></td>
+                <td class="py-2 pr-4 align-top" x-text="runCost(r)"></td>
+                <td class="py-2 pr-4 align-top" x-text="runStart(r)"></td>
+                <td class="py-2 pr-4 align-top" x-text="runDuration(r)"></td>
+                <td class="py-2 pr-4 align-top">
+                  <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isViewing(r)" @click="selectRun(r.id)" x-text="runButtonText(r)"></button>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirmation dialog -->
+  <div x-show="dialogOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-6">
+    <div role="alertdialog" aria-modal="true" aria-labelledby="ab-dlg-title" aria-describedby="ab-dlg-body" @keydown.escape="dialogCancel" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 w-full max-w-lg space-y-4">
+      <h2 id="ab-dlg-title" class="text-xl font-semibold leading-[1.2]" x-text="dialogTitle"></h2>
+      <p id="ab-dlg-body" class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="dialogBody"></p>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button id="ab-dlg-cancel" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="dialogCancel" x-text="dialogCancelLabel"></button>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="dialogOkClass" @click="dialogOk" x-text="dialogOkLabel"></button>
+      </div>
+    </div>
+  </div>
+</section>
