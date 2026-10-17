@@ -352,7 +352,7 @@ Quy trình nghiệm thu các chức năng của giao diện web nhúng `agent-br
   3. Chọn dự án `dự án nháp` trong danh sách tìm kiếm gợi ý.
   4. Nhập nội dung yêu cầu tiếng Việt:
      `thêm hàm tính bình phương vào src/calc.py`
-  5. Bấm nút **Giao việc cho Lead**.
+  5. Bấm nút **Giao việc**.
   6. Giao diện tự động chuyển tới màn hình **Chi tiết task**:
      - Quan sát hộp log hiển thị các sự kiện trực tiếp từ Claude qua SSE.
      - Bước Lead hiển thị trạng thái `đang chạy`, sau khi hoàn thành chuyển sang `xong`.
@@ -392,7 +392,7 @@ Quy trình nghiệm thu các chức năng của giao diện web nhúng `agent-br
   2. Mở dashboard trên trình duyệt, vào màn hình **Giao việc**, chọn `dự án nháp`, nhập yêu cầu giữ tiến trình:
      `Trước khi làm gì khác, chạy đúng lệnh bash này ở foreground (KHÔNG dùng run_in_background) và chờ nó xong: python3 -c 'import time; time.sleep(307)'`
      với tên slug `p406-kill`.
-  3. Bấm nút **Giao việc cho Lead**.
+  3. Bấm nút **Giao việc**.
   4. Khi thấy dòng sự kiện `tool Bash python3 -c 'import time; time.sleep(307)'` xuất hiện trên khung log của UI, mở một cửa sổ terminal khác và kiểm tra cây tiến trình:
      ```bash
      ps -eo pid,ppid,pgid,sid,args --forest | grep -A3 '[a]gent-brain'
