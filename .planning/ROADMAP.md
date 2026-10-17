@@ -167,12 +167,12 @@ Plans:
   4. Bấm Kill trên UI thì run dừng và không còn tiến trình sót.
   5. Đổi profile thì thống kê và task mới theo đúng profile; màn hình Thống kê (token theo ngày/profile/dự án/vai trò) và màn hình Dự án (sửa alias, quét lại) hoạt động; nếu có thiết kế Figma thì UI khớp checklist UI của người dùng.
 
-**Plans**: 13 plans
+**Plans**: 1/13 plans executed
 **UI hint**: yes
 
 Plans:
 **Wave 1**
-- [ ] 05-01-PLAN.md — Pin axum/futures-util, offline CSS tooling; user checkpoints: legitimacy (Alpine CSP flagged SUS), cargo fetch + Cargo.lock, Tailwind binary, Alpine vendoring, first app.css
+- [x] 05-01-PLAN.md — Pin axum/futures-util, offline CSS tooling; user checkpoints: legitimacy (Alpine CSP flagged SUS), cargo fetch + Cargo.lock, Tailwind binary, Alpine vendoring, first app.css
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 05-02-PLAN.md — Tracer: `agent-brain serve` → token gate → embedded shell → live SSE of a terminal-started run
@@ -244,5 +244,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 2. Protocol MVP (Scripts) | 7/7 | Complete    | 2026-10-16 |
 | 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
-| 5. Embedded Dashboard | 0/13 | Planned | - |
+| 5. Embedded Dashboard | 1/13 | In Progress | - |
 | 6. Multi-engine & Media Branch | 0/TBD | Not started | - |
