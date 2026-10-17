@@ -14,12 +14,31 @@
       lastFocus: null,
       runId: null,
 
+      // Live log state
+      pinned: false,
+      rows: [],
+      dropped: false,
+      streamState: '',
+      streamRun: null,
+      follow: true,
+      showThinking: false,
+      raw: null,
+      rawFocus: null,
+      _es: null,
+
       init: function () {
         var self = this;
         this.load();
 
         window.AB.every(3000, function () {
           self.load();
+        });
+
+        window.AB.onLeave(function () {
+          if (self._es) {
+            self._es.close();
+            self._es = null;
+          }
         });
       },
 
@@ -33,6 +52,24 @@
             self.stale = false;
             self.error = '';
             self.notFound = false;
+
+            if (!self.pinned) {
+              var targetId = null;
+              if (self.task && self.task.steps) {
+                for (var i = 0; i < self.task.steps.length; i++) {
+                  if (self.task.steps[i].state === 'dang_chay' && self.task.steps[i].run_id) {
+                    targetId = self.task.steps[i].run_id;
+                    break;
+                  }
+                }
+              }
+              if (!targetId && self.task && self.task.runs && self.task.runs.length > 0) {
+                targetId = self.task.runs[self.task.runs.length - 1].id;
+              }
+              if (targetId && targetId !== self.runId) {
+                self.openStream(targetId);
+              }
+            }
           } else if (res.status === 404) {
             self.loaded = true;
             self.notFound = true;
@@ -51,6 +88,138 @@
       reload: function () {
         this.error = '';
         this.load();
+      },
+
+      openStream: function (id) {
+        var self = this;
+        if (this._es) {
+          this._es.close();
+          this._es = null;
+        }
+        this.runId = id;
+        this.rows = [];
+        this.dropped = false;
+        this.streamState = 'đang kết nối';
+
+        if (this.task && this.task.runs) {
+          for (var i = 0; i < this.task.runs.length; i++) {
+            if (this.task.runs[i].id === id) {
+              this.streamRun = {
+                role: this.task.runs[i].role,
+                status: this.task.runs[i].status
+              };
+              break;
+            }
+          }
+        }
+
+        var es = new EventSource('/api/runs/' + id + '/stream');
+        this._es = es;
+
+        es.onopen = function () {
+          self.streamState = 'live';
+        };
+
+        es.onmessage = function (e) {
+          try {
+            var row = JSON.parse(e.data);
+            self.rows.push(row);
+            if (self.rows.length > 5000) {
+              self.rows.shift();
+              self.dropped = true;
+            }
+            if (self.follow) {
+              setTimeout(function () {
+                var el = document.getElementById('ab-log');
+                if (el) el.scrollTop = el.scrollHeight;
+              }, 0);
+            }
+          } catch (err) {}
+        };
+
+        es.addEventListener('status', function (e) {
+          try {
+            var s = JSON.parse(e.data);
+            self.streamRun = {
+              role: s.role,
+              status: s.status
+            };
+          } catch (err) {}
+        });
+
+        es.addEventListener('end', function () {
+          self.streamState = 'đã kết thúc';
+          es.close();
+          self._es = null;
+          self.load();
+        });
+
+        es.onerror = function () {
+          if (es.readyState === EventSource.CLOSED) {
+            self.streamState = 'lỗi';
+          } else {
+            self.streamState = 'mất kết nối — đang thử lại...';
+          }
+        };
+      },
+
+      selectRun: function (id) {
+        this.pinned = true;
+        this.openStream(id);
+      },
+
+      onScroll: function () {
+        var el = document.getElementById('ab-log');
+        if (!el) return;
+        var dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+        if (dist > 40) {
+          this.follow = false;
+        } else {
+          this.follow = true;
+        }
+      },
+
+      jumpLive: function () {
+        this.follow = true;
+        var el = document.getElementById('ab-log');
+        if (el) el.scrollTop = el.scrollHeight;
+      },
+
+      toggleThinking: function () {
+        this.showThinking = !this.showThinking;
+      },
+
+      openRaw: function (r) {
+        var self = this;
+        this.rawFocus = document.activeElement;
+        this.raw = { seq: r.seq, text: '', error: '' };
+        window.AB.lockScroll(true);
+        window.AB.api('GET', '/api/runs/' + this.runId + '/events/' + r.seq + '/raw').then(function (res) {
+          if (res.ok && res.data && res.data.raw_json !== undefined) {
+            try {
+              self.raw.text = JSON.stringify(JSON.parse(res.data.raw_json), null, 2);
+            } catch (e) {
+              self.raw.text = res.data.raw_json;
+            }
+          } else {
+            self.raw.error = 'Không tải được dữ liệu thô của dòng này.';
+          }
+          window.AB.focusLater('ab-raw-close');
+        });
+      },
+
+      closeRaw: function () {
+        this.raw = null;
+        window.AB.lockScroll(false);
+        if (this.rawFocus && this.rawFocus.focus) {
+          this.rawFocus.focus();
+        }
+      },
+
+      onRawOverlay: function (event) {
+        if (event.target === event.currentTarget) {
+          this.closeRaw();
+        }
       },
 
       get loadedAttr() {
@@ -343,6 +512,82 @@
         return 'Lead';
       },
 
+      get visibleRows() {
+        var show = this.showThinking;
+        return this.rows.filter(function (r) {
+          return show || r.ev !== 'system/thinking_tokens';
+        });
+      },
+
+      get hiddenCount() {
+        var count = 0;
+        for (var i = 0; i < this.rows.length; i++) {
+          if (this.rows[i].ev === 'system/thinking_tokens') {
+            count++;
+          }
+        }
+        return count;
+      },
+
+      get thinkingLabel() {
+        if (this.showThinking) {
+          return 'Ẩn thinking_tokens';
+        }
+        return 'Hiện thinking_tokens (' + this.hiddenCount + ' đang ẩn)';
+      },
+
+      get streamLine() {
+        if (!this.runId) return '';
+        var role = '';
+        var status = '';
+        if (this.streamRun) {
+          role = window.AB.roleName(this.streamRun.role);
+          status = this.streamRun.status;
+        } else if (this.task && this.task.runs) {
+          var id = this.runId;
+          for (var i = 0; i < this.task.runs.length; i++) {
+            if (this.task.runs[i].id === id) {
+              role = window.AB.roleName(this.task.runs[i].role);
+              status = this.task.runs[i].status;
+              break;
+            }
+          }
+        }
+        return 'run ' + this.runId + ' · ' + role + ' · ' + status;
+      },
+
+      get showJump() {
+        return !this.follow;
+      },
+
+      get showLogEmpty() {
+        return this.visibleRows.length === 0;
+      },
+
+      get logEmptyText() {
+        if (this.streamState === 'đã kết thúc') {
+          return 'Run này không có dòng log nào.';
+        }
+        return 'Chưa có dòng log nào. Log hiện khi run bắt đầu.';
+      },
+
+      get rawOpen() {
+        return Boolean(this.raw);
+      },
+
+      get rawTitle() {
+        if (!this.raw) return '';
+        return 'Dữ liệu thô (events.raw_json) · run ' + this.runId + ' · dòng ' + this.raw.seq;
+      },
+
+      get rawText() {
+        return this.raw ? (this.raw.text || '') : '';
+      },
+
+      get rawError() {
+        return this.raw ? (this.raw.error || '') : '';
+      },
+
       step: function (role) {
         if (!this.task || !this.task.steps) return null;
         for (var i = 0; i < this.task.steps.length; i++) {
@@ -574,6 +819,42 @@
           : 'whitespace-pre-wrap break-words';
       },
 
+      glyph: function (r) {
+        if (!r) return 'ⓘ\uFE0E';
+        switch (r.kind) {
+          case 'tool': return '▶\uFE0E';
+          case 'assistant': return '✎\uFE0E';
+          case 'tool_result': return '↩\uFE0E';
+          case 'result': return '✔\uFE0E';
+          case 'error': return '⚠\uFE0E';
+          case 'system':
+          default:
+            return 'ⓘ\uFE0E';
+        }
+      },
+
+      kindLabel: function (r) {
+        return r ? r.kind : '';
+      },
+
+      kindPrefix: function (r) {
+        return r ? (r.kind + ': ') : '';
+      },
+
+      rowTextClass: function (r) {
+        if (!r) return 'text-slate-400';
+        switch (r.kind) {
+          case 'tool': return 'font-mono text-slate-200';
+          case 'assistant': return 'text-slate-100';
+          case 'tool_result': return 'font-mono text-slate-400';
+          case 'result': return 'text-emerald-300';
+          case 'error': return 'text-rose-300';
+          case 'system':
+          default:
+            return 'text-slate-400';
+        }
+      },
+
       runRole: function (r) {
         return window.AB.roleName(r.role);
       },
@@ -609,9 +890,7 @@
 
       runButtonText: function (r) {
         return this.isViewing(r) ? 'Đang xem' : 'Xem log';
-      },
-
-      selectRun: function (id) {}
+      }
     };
   });
 })();

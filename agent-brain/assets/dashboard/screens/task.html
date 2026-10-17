@@ -197,6 +197,30 @@
       </template>
     </div>
 
+    <!-- Log card -->
+    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Log realtime</h2>
+      <div class="flex flex-wrap items-center gap-4">
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400"><span x-text="streamLine"></span><span x-show="streamLine"> · </span><span x-text="streamState"></span></p>
+        <button type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="toggleThinking" x-text="thinkingLabel"></button>
+      </div>
+      <div class="relative">
+        <div id="ab-log" role="log" aria-live="off" aria-label="Log realtime" tabindex="0" class="h-96 overflow-y-auto rounded-xl bg-slate-950 p-4 text-sm leading-normal lg:h-[32rem]" @scroll="onScroll">
+          <p x-show="dropped" class="px-2 py-1 text-slate-400">Đã ẩn các dòng cũ hơn — giữ 5000 dòng mới nhất</p>
+          <p x-show="showLogEmpty" class="px-2 py-1 text-slate-400" x-text="logEmptyText"></p>
+          <template x-for="r in visibleRows" :key="r.seq">
+            <button type="button" class="flex w-full items-start gap-2 rounded-md px-2 py-1 text-left hover:bg-slate-800 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-indigo-400" :title="kindLabel(r)" @click="openRaw(r)">
+              <span class="w-20 shrink-0 font-mono text-slate-400" x-text="r.time"></span>
+              <span aria-hidden="true" class="w-6 shrink-0 text-center" x-text="glyph(r)"></span>
+              <span class="sr-only" x-text="kindPrefix(r)"></span>
+              <span class="min-w-0 flex-1 break-words" :class="rowTextClass(r)" x-text="r.text"></span>
+            </button>
+          </template>
+        </div>
+        <button type="button" x-show="showJump" @click="jumpLive" class="absolute bottom-4 right-6 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-slate-800 px-4 py-2 text-base font-semibold text-slate-100 ring-1 ring-slate-600 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400">Về cuối (live)</button>
+      </div>
+    </div>
+
     <!-- Runs card -->
     <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
       <h2 class="text-xl font-semibold leading-[1.2]">Lịch sử run</h2>
@@ -246,6 +270,18 @@
       <div class="flex flex-wrap justify-end gap-2">
         <button id="ab-dlg-cancel" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="dialogCancel" x-text="dialogCancelLabel"></button>
         <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="dialogOkClass" @click="dialogOk" x-text="dialogOkLabel"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Raw JSON dialog -->
+  <div x-show="rawOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-6" @click="onRawOverlay">
+    <div role="dialog" aria-modal="true" aria-labelledby="ab-raw-title" @keydown.escape="closeRaw" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 w-full max-w-3xl space-y-4">
+      <h2 id="ab-raw-title" class="text-xl font-semibold leading-[1.2] break-words" x-text="rawTitle"></h2>
+      <pre class="rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all whitespace-pre-wrap text-slate-900 dark:bg-slate-900 dark:text-slate-100 max-h-[60vh] overflow-auto" x-text="rawText"></pre>
+      <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200" x-show="rawError" x-text="rawError"></div>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button id="ab-raw-close" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="closeRaw">Đóng</button>
       </div>
     </div>
   </div>
