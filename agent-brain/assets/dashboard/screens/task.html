@@ -211,7 +211,7 @@
           <template x-for="r in visibleRows" :key="r.seq">
             <button type="button" class="flex w-full items-start gap-2 rounded-md px-2 py-1 text-left hover:bg-slate-800 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-indigo-400" :title="kindLabel(r)" @click="openRaw(r)">
               <span class="w-20 shrink-0 font-mono text-slate-400" x-text="r.time"></span>
-              <span aria-hidden="true" class="w-6 shrink-0 text-center" x-text="glyph(r)"></span>
+              <span aria-hidden="true" class="w-6 shrink-0 text-center" :class="rowTextClass(r)" x-text="glyph(r)"></span>
               <span class="sr-only" x-text="kindPrefix(r)"></span>
               <span class="min-w-0 flex-1 break-words" :class="rowTextClass(r)" x-text="r.text"></span>
             </button>
