@@ -285,3 +285,143 @@ fn query_by_day_and_profile_filters() {
         agent_brain::stats::query_report(&conn, None, None, Some(since_ms)).expect("report recent");
     assert_eq!(total_recent_runs, report_recent.total.runs);
 }
+
+#[test]
+fn dash11_stats_breakdowns() {
+    let sb = Sandbox::new();
+    let _conn = seed_stats_data(&sb);
+    let mut srv = sb.serve(&[]);
+
+    let r = srv.get("/api/stats");
+    assert_eq!(r.status, 200);
+    let j = r.json();
+
+    assert_eq!(j["total"]["runs"], 5);
+    assert_eq!(j["total"]["input_tokens"], 362);
+    assert_eq!(j["total"]["output_tokens"], 47);
+    assert_eq!(j["total"]["cache_read_tokens"], 3507);
+    assert_eq!(j["total"]["cache_write_tokens"], 142);
+    assert!((j["total"]["cost_usd"].as_f64().unwrap() - 1.06).abs() < 1e-4);
+
+    let by_project = j["by_project"].as_array().expect("by_project array");
+    assert_eq!(by_project.len(), 2);
+    assert_eq!(by_project[0]["project"], "proj-a");
+    assert_eq!(by_project[0]["runs"], 4);
+    assert_eq!(by_project[1]["project"], "proj-b");
+    assert_eq!(by_project[1]["runs"], 1);
+
+    let by_role = j["by_role"].as_array().expect("by_role array");
+    assert_eq!(by_role.len(), 4);
+
+    let by_day = j["by_day"].as_array().expect("by_day array");
+    assert_eq!(by_day.len(), 2);
+    assert!(by_day[0]["runs"].as_i64().unwrap() >= 1);
+    assert!(by_day[1]["runs"].as_i64().unwrap() >= 1);
+    let sum_day_runs: i64 = by_day.iter().map(|d| d["runs"].as_i64().unwrap()).sum();
+    assert_eq!(sum_day_runs, 5);
+
+    let by_profile = j["by_profile"].as_array().expect("by_profile array");
+    assert_eq!(by_profile.len(), 2);
+    assert_eq!(by_profile[0]["profile"], "personal");
+    assert_eq!(by_profile[0]["runs"], 1);
+    assert_eq!(by_profile[1]["profile"], "work");
+    assert_eq!(by_profile[1]["runs"], 4);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn dash08_stats_profile_filter() {
+    let sb = Sandbox::new();
+    let _conn = seed_stats_data(&sb);
+    let mut srv = sb.serve(&[]);
+
+    // ?profile=work
+    let r_work = srv.get("/api/stats?profile=work");
+    assert_eq!(r_work.status, 200);
+    let j_work = r_work.json();
+    assert_eq!(j_work["total"]["runs"], 4);
+    let by_prof_work = j_work["by_profile"].as_array().unwrap();
+    assert_eq!(by_prof_work.len(), 1);
+    assert_eq!(by_prof_work[0]["profile"], "work");
+    assert_eq!(by_prof_work[0]["runs"], 4);
+
+    // ?profile=personal
+    let r_pers = srv.get("/api/stats?profile=personal");
+    assert_eq!(r_pers.status, 200);
+    let j_pers = r_pers.json();
+    assert_eq!(j_pers["total"]["runs"], 1);
+    let by_prof_pers = j_pers["by_profile"].as_array().unwrap();
+    assert_eq!(by_prof_pers.len(), 1);
+    assert_eq!(by_prof_pers[0]["profile"], "personal");
+    assert_eq!(by_prof_pers[0]["runs"], 1);
+
+    // no parameter -> both
+    let r_all = srv.get("/api/stats");
+    assert_eq!(r_all.status, 200);
+    let j_all = r_all.json();
+    assert_eq!(j_all["total"]["runs"], 5);
+    let by_prof_all = j_all["by_profile"].as_array().unwrap();
+    assert_eq!(by_prof_all.len(), 2);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn stats_since_filter() {
+    let sb = Sandbox::new();
+    let _conn = seed_stats_data(&sb);
+    let mut srv = sb.serve(&[]);
+
+    // ?since=1d excludes the run seeded 3 days ago
+    let r = srv.get("/api/stats?since=1d");
+    assert_eq!(r.status, 200);
+    let j = r.json();
+    assert_eq!(j["total"]["runs"], 4);
+    assert_eq!(j["total"]["input_tokens"], 312);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn stats_bad_params_are_400() {
+    let sb = Sandbox::new();
+    let _conn = seed_stats_data(&sb);
+    let mut srv = sb.serve(&[]);
+
+    // ?profile=bogus -> 400 with check_profile message
+    let r_prof = srv.get("/api/stats?profile=bogus");
+    assert_eq!(r_prof.status, 400);
+    let err_prof = r_prof.json()["error"].as_str().unwrap().to_string();
+    assert!(
+        err_prof.contains("Profile không hợp lệ: 'bogus'"),
+        "unexpected error: {err_prof}"
+    );
+
+    // ?since=abc -> 400 containing Khoảng thời gian không hợp lệ
+    let r_since = srv.get("/api/stats?since=abc");
+    assert_eq!(r_since.status, 400);
+    let err_since = r_since.json()["error"].as_str().unwrap().to_string();
+    assert!(
+        err_since.contains("Khoảng thời gian không hợp lệ"),
+        "unexpected error: {err_since}"
+    );
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn stats_requires_cookie() {
+    let sb = Sandbox::new();
+    let mut srv = sb.serve(&[]);
+
+    let r = srv.request("GET", "/api/stats", &[], b"");
+    assert_eq!(r.status, 401);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
