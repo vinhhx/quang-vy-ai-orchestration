@@ -1,5 +1,6 @@
 pub mod assets;
 pub mod auth;
+pub mod lock;
 pub mod pump;
 pub mod sse;
 
@@ -88,7 +89,27 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
 
     let port = port_flag.unwrap_or(cfg.dashboard_port);
 
-    // NOTE: Plan 05-03 single-instance lock acquisition goes here.
+    let data_dir = crate::config::data_dir();
+    let mut serve_lock = match lock::acquire(&data_dir) {
+        Ok(l) => l,
+        Err(lock::LockError::Held { pid, port }) => {
+            let pid_str = pid
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            let port_str = port
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            crate::term::emit(&format!(
+                "agent-brain serve đã chạy (pid {pid_str}) tại http://127.0.0.1:{port_str}/ — mở URL có token in ở terminal đang chạy serve, hoặc dừng nó trước (Ctrl+C)."
+            ));
+            return 1;
+        }
+        Err(lock::LockError::Io(e)) => {
+            let path = data_dir.join(lock::LOCK_FILE);
+            crate::term::emit(&format!("Không tạo được file khóa {}: {e}", path.display()));
+            return 1;
+        }
+    };
 
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -120,6 +141,11 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
         }
     };
     let real_port = local_addr.port();
+
+    if let Err(e) = serve_lock.write_info(std::process::id(), real_port, crate::db::now_ms()) {
+        crate::term::emit(&format!("Không ghi được thông tin khóa: {e}"));
+        return 1;
+    }
 
     let map_p = crate::config::map_path();
     let db_p = crate::config::db_path();
@@ -154,6 +180,34 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
 
     let app_router = router(state);
 
+    let mut sigint = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+    {
+        Ok(s) => s,
+        Err(e) => {
+            crate::term::emit(&format!("Không đăng ký được tín hiệu ngắt (SIGINT): {e}"));
+            return 1;
+        }
+    };
+    let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
+        Ok(s) => s,
+        Err(e) => {
+            crate::term::emit(&format!(
+                "Không đăng ký được tín hiệu kết thúc (SIGTERM): {e}"
+            ));
+            return 1;
+        }
+    };
+    let mut sighup = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+        Ok(s) => s,
+        Err(e) => {
+            crate::term::emit(&format!(
+                "Không đăng ký được tín hiệu ngắt kết nối (SIGHUP): {e}"
+            ));
+            return 1;
+        }
+    };
+
     crate::term::emit_out(&format!(
         "agent-brain dashboard: http://127.0.0.1:{real_port}/?token={token}"
     ));
@@ -162,16 +216,11 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
     );
 
     let signal_fut = async {
-        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
         tokio::select! {
             _ = sigint.recv() => {},
             _ = sigterm.recv() => {},
             _ = sighup.recv() => {},
         }
-        Ok::<(), std::io::Error>(())
     };
 
     let (graceful_tx, graceful_rx) = tokio::sync::oneshot::channel::<()>();
@@ -188,10 +237,7 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
                 crate::term::emit(&format!("Lỗi serve: {e}"));
             }
         }
-        sig_res = signal_fut => {
-            if let Err(e) = sig_res {
-                crate::term::emit(&format!("Lỗi lắng nghe tín hiệu: {e}"));
-            }
+        _ = signal_fut => {
             let _ = shutdown_tx.send(true);
             pump_stop.store(true, Ordering::SeqCst);
             // Spot for plan 05-04: job manager shutdown goes here.
@@ -209,6 +255,7 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
         }
     }
 
+    drop(serve_lock);
     crate::term::emit("Đã dừng dashboard.");
     0
 }
