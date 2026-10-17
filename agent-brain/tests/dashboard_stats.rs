@@ -397,7 +397,7 @@ fn stats_bad_params_are_400() {
     assert_eq!(r_prof.status, 400);
     let err_prof = r_prof.json()["error"].as_str().unwrap().to_string();
     assert!(
-        err_prof.contains("Profile không hợp lệ: 'bogus'"),
+        err_prof.contains("Profile 'bogus' không hợp lệ"),
         "unexpected error: {err_prof}"
     );
 
