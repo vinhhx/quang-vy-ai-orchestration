@@ -448,7 +448,7 @@ fn d06_branch_exists_refused() {
 #[test]
 fn d04_project_busy_refused() {
     let sb = Sandbox::new();
-    let repo_a = setup_project(&sb, "work");
+    let _repo_a = setup_project(&sb, "work");
 
     let repo_b = sb.make_repo("kho-hang", &[("README.md", "# kho\n")], None, None);
     let entry_b = sb.project_entry(&repo_b, "kho-hang", "work");
@@ -537,7 +537,7 @@ fn d04_project_busy_refused() {
             |r| r.get(0),
         )
         .unwrap();
-    sb.run(&["kill", &tid_b.to_string()]);
+    sb.run(&["kill", &tid_b.to_string()], None);
     let _ = child_b.wait();
 
     let tid_a: i64 = sb
@@ -548,7 +548,7 @@ fn d04_project_busy_refused() {
             |r| r.get(0),
         )
         .unwrap();
-    sb.run(&["kill", &tid_a.to_string()]);
+    sb.run(&["kill", &tid_a.to_string()], None);
 
     srv.stop(libc::SIGINT, Duration::from_secs(5));
 }
@@ -608,7 +608,7 @@ fn d17_second_personal_run_refused() {
             |r| r.get(0),
         )
         .unwrap();
-    sb.run(&["kill", &tid_1.to_string()]);
+    sb.run(&["kill", &tid_1.to_string()], None);
 
     srv.stop(libc::SIGINT, Duration::from_secs(5));
 }

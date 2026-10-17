@@ -1,3 +1,5 @@
+//! Task endpoints: giao việc, preflight guards, busy rules, and resolve gate.
+
 use crate::config::Config;
 use crate::dashboard::jobs::JobManager;
 use crate::dashboard::{blocking, json_error, AppState};
