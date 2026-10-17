@@ -39,7 +39,7 @@ created: "2026-10-17"
 
 ## Per-Task Verification Map
 
-Task IDs mapped from the PLAN.md files (05-01..05-13). Test files are created by the plan that owns the task (no separate Wave 0 plan: the Cargo checkpoint is 05-01; the HTTP/SSE helpers and the tracer test are 05-02; `dashboard_http.rs` and the SSE edge tests are 05-03). Plans 05-03 and 05-09 were split out of the former 05-02 and 05-07 at checker revision 1, and later plans renumbered.
+Task IDs mapped from the PLAN.md files (05-01..05-13). Test files are created by the plan that owns the task (no separate Wave 0 plan: the Cargo checkpoint is 05-01; the HTTP/SSE helpers and the tracer test are 05-02; `dashboard_http.rs` and the SSE edge tests are 05-03). Plans 05-03 and 05-09 were split out of the former 05-02 and 05-07 at checker revision 1, and later plans renumbered. The UI plans 05-08..05-11 were revised against `05-UI-SPEC.md` on 2026-10-17: every UI task now also runs the banned-class grep and `bash scripts/dashboard-ui-lint.sh` (created in 05-08 Task 2), 05-10 gained Task 3 (reviewer note R1), and 05-12 / 05-13 carry the six UI-SPEC backstop checks UI-01..UI-06.
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
@@ -59,12 +59,14 @@ Task IDs mapped from the PLAN.md files (05-01..05-13). Test files are created by
 | 05-06-T1/T2 | 05-06 | 5 | DASH-08 (stats), DASH-11 | T-5-24 | parameterised SQL, validated profile/since | unit + integration | `cargo test --manifest-path agent-brain/Cargo.toml --offline --locked --test dashboard_stats -- --test-threads=1` | ❌ created by task | ⬜ pending |
 | 05-07-T1 | 05-07 | 5 | DASH-07 (suggest), DASH-08 (picker) | — | N/A | unit + integration | `cargo test --manifest-path agent-brain/Cargo.toml --offline --locked --test routing_suggest --test dashboard_projects -- --test-threads=1` | ❌ created by task | ⬜ pending |
 | 05-07-T2 | 05-07 | 5 | DASH-12 | T-5-26, T-5-27 | etag conflict → 409, other map keys preserved, no profile edit | integration | `cargo test --manifest-path agent-brain/Cargo.toml --offline --locked --test dashboard_projects -- --test-threads=1` | ❌ created by task | ⬜ pending |
-| 05-08-T1/T2 | 05-08 | 6 | DASH-08, DASH-11 (UI shell, Tổng quan) | T-5-30..32 | x-text only, no external URL, token cookie never read by JS | script + headless | `bash scripts/dashboard-smoke.sh overview` | ❌ created by task | ⬜ pending |
-| 05-09-T1 | 05-09 | 7 | DASH-04, DASH-07, DASH-08 (Giao việc UI) | T-5-33, T-5-48, T-5-49 | start body never carries a profile; only a listed project id can start a run | script + headless | `bash scripts/dashboard-smoke.sh overview assign` | ❌ created by task | ⬜ pending |
-| 05-10-T1/T2 | 05-10 | 8 | DASH-04, DASH-05, DASH-06 (UI) | T-5-34 | agent output never rendered as HTML | script + headless | `bash scripts/dashboard-smoke.sh overview assign task` | ❌ created by task | ⬜ pending |
-| 05-11-T1/T2 | 05-11 | 9 | DASH-11, DASH-12, DASH-08 (UI) | T-5-37, T-5-39 | N/A | script + headless | `bash scripts/dashboard-smoke.sh stats projects` | ❌ created by task | ⬜ pending |
+| 05-08-T1/T2 | 05-08 | 6 | DASH-08, DASH-11 (UI shell, Tổng quan) | T-5-30..32 | x-text only, no external URL, token cookie never read by JS | script + headless | `bash scripts/dashboard-smoke.sh overview` and `bash scripts/dashboard-ui-lint.sh` | ❌ created by task | ⬜ pending |
+| 05-09-T1 | 05-09 | 7 | DASH-04, DASH-07, DASH-08 (Giao việc UI) | T-5-33, T-5-48, T-5-49 | start body never carries a profile; only a listed, non-missing project id can start a run (click or Enter) | script + headless | `bash scripts/dashboard-smoke.sh overview assign` and `bash scripts/dashboard-ui-lint.sh` | ❌ created by task | ⬜ pending |
+| 05-10-T1/T2 | 05-10 | 8 | DASH-04, DASH-05, DASH-06 (UI) | T-5-34, T-5-36, T-5-50 | agent output never rendered as HTML; Kill and Chạy lại Lead behind an in-page confirmation with a safe default | script + headless | `bash scripts/dashboard-smoke.sh overview assign task` and `bash scripts/dashboard-ui-lint.sh` | ❌ created by task | ⬜ pending |
+| 05-10-T3 | 05-10 | 8 | DASH-04 (R1: a timed-out Lead offers Chạy lại Lead) | T-5-51 | relead still requires the derived, enabled action | unit | `cargo test --manifest-path agent-brain/Cargo.toml --offline --locked --lib dashboard::taskstate` | ✅ (taskstate.rs, test added by task) | ⬜ pending |
+| 05-11-T1/T2 | 05-11 | 9 | DASH-11, DASH-12, DASH-08 (UI) | T-5-37, T-5-39 | alias conflict shown with the server's text | script + headless | `bash scripts/dashboard-smoke.sh stats projects` and `bash scripts/dashboard-ui-lint.sh` | ❌ created by task | ⬜ pending |
 | 05-11-T3 | 05-11 | 9 | DASH-09 | T-5-38 | no external loads in embedded assets | unit | `cargo test --manifest-path agent-brain/Cargo.toml --offline --locked --test dashboard_assets -- --test-threads=1` | ❌ created by task | ⬜ pending |
 | 05-08..05-11 | 05-08..05-11 | 6-9 | JS syntax | — | N/A | script | `for f in agent-brain/assets/dashboard/js/*.js; do node --check "$f" \|\| exit 1; done` | ❌ created by task | ⬜ pending |
+| 05-08-T2..05-11-T3 | 05-08..05-11 | 6-9 | UI-SPEC class, type, spacing and focus rules (deltas 1-5, 28) | — | N/A | script | the banned-class grep of each UI task's second `<automated>` (no off-scale size, weight or spacing class, no lighter primary hover in index.html, screens/, js/) and `bash scripts/dashboard-ui-lint.sh` (lang vi, color-scheme, FOCUS on every link, button, input, select and textarea) | ❌ created by task | ⬜ pending |
 | 05-12-T1 | 05-12 | 10 | DASH-01 (release), DIST-01 kept | T-5-41 | token never printed | script | `bash scripts/build-release.sh` (prints `P2-09 OK` and `P4-01 OK`) | ✅ (extended) | ⬜ pending |
 | 05-12-T2 / 05-13 | 05-12, 05-13 | 10-11 | DASH-10 | — | N/A (D-18: no Figma design) | — | P4-10 row `Không áp dụng` in protocol-log/nghiem-thu-p4.md; record in VERIFICATION | — | — |
 
@@ -90,6 +92,7 @@ Task IDs mapped from the PLAN.md files (05-01..05-13). Test files are created by
 | Real run from UI, live log, reload mid-run | DASH-04/05 (P4-04/05) | real `claude` | Assign Vietnamese task in UI, watch stepper and log, reload mid-run |
 | Kill from UI leaves no processes | DASH-06 (P4-06) | real `claude` | Live run with `python3 -c 'import time; time.sleep(307)'`, press Kill, check no descendants |
 | UI smoke under CSP | DASH-01/09 | headless browser | `google-chrome --headless=new --no-sandbox --virtual-time-budget=4000 --dump-dom <url>` shows mounted screen |
+| UI-SPEC backstops UI-01..UI-06 (unknown usage shows `—`, long paths / branches / raw JSON, clamped Vietnamese titles, day labels at 1024 / 768 px, header at 768 / 480 px, stepper at 480 px) | DASH-04, DASH-11, DASH-12 (UI) | real browser at several widths, live runs | 05-13 Task 1 (UI-04..UI-06) and Task 2 (UI-01..UI-03); results in the UI table of protocol-log/nghiem-thu-p4.md |
 
 ---
 
