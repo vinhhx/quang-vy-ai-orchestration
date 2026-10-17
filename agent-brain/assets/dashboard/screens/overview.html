@@ -1,0 +1,66 @@
+<section data-screen="overview" x-data="overview" :data-loaded="loadedAttr" class="space-y-6">
+  <div class="flex flex-wrap items-center gap-4">
+    <h1 class="text-2xl font-semibold leading-[1.2]">Tổng quan</h1>
+    <span role="status" :class="filterClass" x-show="filterChip" x-text="filterChip"></span>
+    <span class="min-w-0 truncate text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" :title="busyText" x-show="busyText" x-text="busyText"></span>
+    <a href="#/assign" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">Giao việc</a>
+  </div>
+
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="stale">Không cập nhật được — đang thử lại...</p>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isLoading">Đang tải...</p>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="hasError">
+    <h2 class="text-xl font-semibold leading-[1.2]">Không tải được dữ liệu</h2>
+    <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="errorBody"></p>
+    <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="reload">Thử lại</button>
+  </div>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700" x-show="isEmptyAll">
+    <div class="space-y-4 py-12 text-center">
+      <h2 class="text-xl font-semibold leading-[1.2]">Chưa có task nào</h2>
+      <p class="text-base font-normal leading-normal text-slate-600 dark:text-slate-400">Giao việc đầu tiên: chọn một dự án và mô tả việc bằng tiếng Việt. Lead sẽ lập plan để bạn duyệt trước khi Dev chạy.</p>
+      <a href="#/assign" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">Giao việc</a>
+    </div>
+  </div>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700" x-show="isEmptyFiltered">
+    <div class="space-y-4 py-12 text-center">
+      <h2 class="text-xl font-semibold leading-[1.2]" x-text="emptyFilteredTitle"></h2>
+      <p class="text-base font-normal leading-normal text-slate-600 dark:text-slate-400">Đổi bộ lọc sang Tất cả để xem thêm.</p>
+    </div>
+  </div>
+
+  <div class="grid gap-6 lg:grid-cols-2" x-show="hasTasks">
+    <template x-for="g in groups" :key="g.key">
+      <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <h2 class="text-xl font-semibold leading-[1.2]" x-text="g.title"></h2>
+          <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="count(g)"></span>
+        </div>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="g.hint"></p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isEmptyGroup(g)" x-text="g.empty"></p>
+        <ul class="space-y-4">
+          <template x-for="t in g.items" :key="t.id">
+            <li>
+              <a :href="href(t)" class="block space-y-2 rounded-xl p-4 ring-1 ring-slate-200 hover:bg-slate-50 dark:ring-slate-700 dark:hover:bg-slate-700/50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+                <p class="font-semibold leading-normal line-clamp-2 break-words" :title="t.title" x-text="t.title"></p>
+                <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 truncate" :title="metaText(t)"><span x-text="t.project_name"></span> · <span class="font-mono" x-text="t.slug"></span></p>
+                <div class="flex flex-wrap items-center gap-2">
+                  <span :class="profileClass(t.profile)" x-text="t.profile"></span>
+                  <span role="img" :class="pillClass(t, 'lead')" :title="pillLabel(t, 'lead')" :aria-label="pillLabel(t, 'lead')"><span aria-hidden="true" :class="pillGlyphClass(t, 'lead')" x-text="pillGlyph(t, 'lead')"></span>Lead</span>
+                  <span role="img" :class="pillClass(t, 'dev')" :title="pillLabel(t, 'dev')" :aria-label="pillLabel(t, 'dev')"><span aria-hidden="true" :class="pillGlyphClass(t, 'dev')" x-text="pillGlyph(t, 'dev')"></span>Dev</span>
+                  <span role="img" :class="pillClass(t, 'qa')" :title="pillLabel(t, 'qa')" :aria-label="pillLabel(t, 'qa')"><span aria-hidden="true" :class="pillGlyphClass(t, 'qa')" x-text="pillGlyph(t, 'qa')"></span>QA</span>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="text-sm font-semibold leading-normal" x-show="t.banner" x-text="t.banner"></span>
+                  <span class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="when(t)"></span>
+                </div>
+              </a>
+            </li>
+          </template>
+        </ul>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasMore(g)" @click="showMore">Hiện thêm 10</button>
+      </div>
+    </template>
+  </div>
+</section>
