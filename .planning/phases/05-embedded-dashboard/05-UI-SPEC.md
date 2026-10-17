@@ -45,18 +45,20 @@ Declared values (all multiples of 4; Tailwind step in brackets):
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| xs | 4px (`1`) | Gap between a glyph and its label, log-row vertical padding, chip gaps |
-| sm | 8px (`2`) | Compact gaps, button vertical padding, table cell vertical padding |
-| md | 16px (`4`) | Default gap between controls, button/input horizontal padding, stepper card gap |
+| xs | 4px (`1`) | Gap between a glyph and its label, badge/chip/log-row vertical padding |
+| sm | 8px (`2`) | Compact gaps, badge/chip/log-row horizontal padding, log-row gap, button vertical padding, table cell vertical padding |
+| md | 16px (`4`) | Default gap between controls, button/input horizontal padding, stepper card gap, log pane padding, chart row gap |
 | lg | 24px (`6`) | Card padding, gap between cards (`gap-6`, `space-y-6`), page horizontal padding |
 | xl | 32px (`8`) | Page vertical padding (`py-8`), gap between major blocks inside a card |
 | 2xl | 48px (`12`) | Empty-state vertical padding |
 | 3xl | 64px (`16`) | Not used on any screen in this phase; reserved |
 
+Every padding, margin and gap value is drawn from the scale above (4 / 8 / 16 / 24 / 32 / 48 / 64). The 12px step (`px-3`, `gap-3`, `p-3`, `py-3`) is not used anywhere: badges, chips and log rows use 8px horizontally (`px-2`, `gap-2`) and 4px vertically (`py-1`); the log pane and chart rows use 16px (`p-4`, `gap-4`).
+
 Exceptions (explicit, nothing else is allowed):
-- **12px (`3`)**: horizontal padding and gap inside compact pills/badges and log rows (`px-3`, `gap-3`). It is a multiple of 4 but sits between sm and md.
-- **40px minimum control height** (`min-h-10`): buttons, inputs, selects, list options (touch/click target comfort).
+- **48px minimum control height** (`min-h-12`, 3 x 16px): buttons, inputs, selects, list options. It is on the scale (2xl) and gives a pointer/touch target above the WCAG 2.2 AA minimum of 24px and the 44px recommended size. The natural height of these controls is 40px (24px line + 2 x 8px padding), so the rule raises them to 48px.
 - **1px / 2px**: hairline `ring-1` borders and the 2px focus outline. These are not spacing.
+- Fixed component dimensions (`h-40` chart, `h-96` log pane, `w-6` glyph, `w-20` time column, `h-4` bar track, `max-w-16`) are sizes, not spacing, and are all multiples of 4.
 - Container: `max-w-6xl mx-auto px-6 py-8` (1152px max).
 
 Layout rules
@@ -102,7 +104,7 @@ The system follows `prefers-color-scheme` and a manual toggle (D-21). Only Tailw
 | Log pane | `bg-slate-950` (both themes) | `bg-slate-950` | Terminal-style block; text colors below |
 
 Accent reserved for (and nothing else):
-1. Primary action button fill: Giao việc, Chạy Dev, Chạy QA, Chạy lại Lead (only when it is the first enabled action), Lưu. Exactly one primary button per card.
+1. Primary action button fill: Giao việc, Chạy Dev, Chạy QA, Chạy lại Lead (only when it is the first enabled action), Lưu alias. Exactly one primary button per card.
 2. The active nav item (tinted `bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200`).
 3. The keyboard focus outline on every interactive element.
 4. The "đang chạy" state: its badge tint, the Đang chạy group accent, and the ring on the current stepper card.
@@ -166,13 +168,13 @@ FOCUS = `focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:ou
 | Card | `rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700` |
 | Card title | `text-xl font-semibold leading-[1.2]` |
 | Page title | `text-2xl font-semibold leading-[1.2]` |
-| Primary button | `inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 ` + FOCUS |
-| Secondary button | `inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 ` + FOCUS |
-| Destructive button (Kill) | `inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-base font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50 ` + FOCUS |
-| Text input / textarea / select | `w-full min-h-10 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 ` + FOCUS (field borders are 4.5:1 so the control is identifiable) |
+| Primary button | `inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 ` + FOCUS |
+| Secondary button | `inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 ` + FOCUS |
+| Destructive button (Kill) | `inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-base font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50 ` + FOCUS |
+| Text input / textarea / select | `w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 ` + FOCUS (field borders are 4.5:1 so the control is identifiable) |
 | Field label | `text-sm font-semibold leading-normal` |
 | Helper text | `text-sm font-normal leading-normal text-slate-600 dark:text-slate-400` |
-| Badge / pill | `inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-semibold` + the state or profile colors above |
+| Badge / pill | `inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold` + the state or profile colors above |
 | Nav item (normal) | `rounded-xl px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700 ` + FOCUS |
 | Nav item (active) | `rounded-xl px-4 py-2 text-sm font-semibold bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200 ` + FOCUS, with `aria-current="page"` |
 | Link | `text-indigo-700 underline hover:text-indigo-900 dark:text-indigo-300 dark:hover:text-indigo-200 ` + FOCUS |
@@ -227,20 +229,20 @@ Vertical order: header card, stepper card, (blocked / needs-fix callout), plan c
 - Title row: `Thống kê` (Display), filter chip when active, right side a labelled select (`Khoảng thời gian`: `7 ngày` / `30 ngày` / `Tất cả`, default 30 ngày) and below the title the note `Chi phí là giá trị tương đương theo API, không phải hóa đơn`.
 - Totals: `grid grid-cols-2 gap-4 lg:grid-cols-5` of cards using the Card recipe unchanged (`p-6`). Each: caption (Label) and value (Display): `Số run`, `Token vào`, `Token ra`, `Cache đọc / ghi` (two numbers `R / W`), `Chi phí ≈`.
 - `Theo ngày` card: fixed-height chart `h-40` flex row `items-end gap-1`; each day is a column (`flex-1 min-w-0`) whose bar is `w-full rounded-t-md bg-indigo-500 dark:bg-indigo-400`, height from `colStyle` (object), minimum 2% when non-zero, 0 when zero. Under the bars, day labels `DD/MM` (helper style): all labels for 7 ngày, every 5th plus first and last for 30 ngày and Tất cả (the others are rendered with `class` hiding via the same getter, not absent from the DOM). Each column has `title` and `aria-label` = `rowTitle` (`DD/MM · vào X · ra Y · cache R/W · ≈ $C`). A caption above the chart: `Cao nhất: <fmtNum> token / ngày`.
-- `Theo profile`, `Theo dự án`, `Theo vai trò` cards: rows `grid grid-cols-[8rem_1fr_auto] items-center gap-3` (name truncated with `title`; track `h-3 rounded-full bg-slate-100 dark:bg-slate-700` holding the bar `h-3 rounded-full bg-indigo-500 dark:bg-indigo-400` via `barStyle`; numbers right-aligned in secondary text: `vào X · ra Y`). The remaining figures (cache, cost) are in `title`. Rows sorted descending by tokens in + out. At most 10 rows are shown for `Theo dự án`; extra rows collapse behind a secondary button `Hiện tất cả`.
+- `Theo profile`, `Theo dự án`, `Theo vai trò` cards: rows `grid grid-cols-[8rem_1fr_auto] items-center gap-4` (name truncated with `title`; track `h-4 rounded-full bg-slate-100 dark:bg-slate-700` holding the bar `h-4 rounded-full bg-indigo-500 dark:bg-indigo-400` via `barStyle`; numbers right-aligned in secondary text: `vào X · ra Y`). The remaining figures (cache, cost) are in `title`. Rows sorted descending by tokens in + out. At most 10 rows are shown for `Theo dự án`; extra rows collapse behind a secondary button `Hiện tất cả`.
 - Empty: see Copywriting. When there are no runs in the window, the empty-state card replaces the totals and all four breakdown cards (no zero-filled charts).
 
 ### Dự án (`#/projects`)
 - Title row: `Dự án` (Display), filter chip when active, right side secondary button `Quét lại`; note under the title `Danh sách lấy từ projects_map.json`.
 - Warning callouts (amber): duplicates and save warnings. Rose callout: save conflict / errors. After a rescan: a monospace block `Kết quả quét (mã thoát N)` with stdout then stderr lines.
-- One card per project, `space-y-4`: row 1 `name_vi` (Heading) + profile badge + `thiếu thư mục` badge (rose) when missing; row 2 `id` and `path` (monospace, `break-all`, helper style) and `type`; row 3 the caption `Profile chỉ đổi trong projects_map.json` (helper); row 4 alias chips (`rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-700 dark:bg-slate-700 dark:text-slate-200`, wrap freely) or `Chưa có alias` (helper) and the button `Sửa alias`; edit mode swaps row 4 for the text input (label `Alias`, helper `Các alias cách nhau bằng dấu phẩy`) with primary `Lưu` and secondary `Hủy`; row 5 secondary button `Trạng thái git` that expands a monospace block (branch, clean/dirty, `git status --short` lines, last 5 commits, diff stat). Missing projects disable `Trạng thái git` with `title` = `Thư mục dự án không còn tồn tại`.
+- One card per project, `space-y-4`: row 1 `name_vi` (Heading) + profile badge + `thiếu thư mục` badge (rose) when missing; row 2 `id` and `path` (monospace, `break-all`, helper style) and `type`; row 3 the caption `Profile chỉ đổi trong projects_map.json` (helper); row 4 alias chips (`rounded-full bg-slate-100 px-2 py-1 text-sm text-slate-700 dark:bg-slate-700 dark:text-slate-200`, wrap freely) or `Chưa có alias` (helper) and the button `Sửa alias`; edit mode swaps row 4 for the text input (label `Alias`, helper `Các alias cách nhau bằng dấu phẩy`) with primary `Lưu alias` and secondary `Hủy sửa alias`; row 5 secondary button `Trạng thái git` that expands a monospace block (branch, clean/dirty, `git status --short` lines, last 5 commits, diff stat). Missing projects disable `Trạng thái git` with `title` = `Thư mục dự án không còn tồn tại`.
 - No control for profile, id, path or type anywhere.
 
 ---
 
 ## Interaction Contracts
 
-**Project picker (Giao việc, D-05, DASH-07).** ARIA combobox: the input has `role="combobox" aria-autocomplete="list" aria-expanded aria-controls="ab-suggest" aria-activedescendant`; the list is `<ul id="ab-suggest" role="listbox">` (`mt-2 max-h-64 overflow-y-auto rounded-xl bg-white ring-1 ring-slate-300 dark:bg-slate-800 dark:ring-slate-600`), options `<li role="option" id="ab-opt-N">` min height 40px. Keyboard: `ArrowDown` / `ArrowUp` move the highlight (indigo tint `bg-indigo-100 text-indigo-900 dark:bg-indigo-900/40 dark:text-indigo-100`), `Enter` chooses the highlighted option, `Escape` closes the list, `Tab` leaves. Mouse: click chooses. Missing projects render greyed (`opacity-60`), `aria-disabled="true"`, are skipped by the arrow keys and are not choosable. Typing after a choice clears the choice (the button disables again). The list shows `Đang tìm...` while a request is in flight longer than 200 ms and the empty copy when nothing matches. Only a listed option can be chosen; the typed text is never sent.
+**Project picker (Giao việc, D-05, DASH-07).** ARIA combobox: the input has `role="combobox" aria-autocomplete="list" aria-expanded aria-controls="ab-suggest" aria-activedescendant`; the list is `<ul id="ab-suggest" role="listbox">` (`mt-2 max-h-64 overflow-y-auto rounded-xl bg-white ring-1 ring-slate-300 dark:bg-slate-800 dark:ring-slate-600`), options `<li role="option" id="ab-opt-N">` with `min-h-12` (48px) and `px-4 py-2`. Keyboard: `ArrowDown` / `ArrowUp` move the highlight (indigo tint `bg-indigo-100 text-indigo-900 dark:bg-indigo-900/40 dark:text-indigo-100`), `Enter` chooses the highlighted option, `Escape` closes the list, `Tab` leaves. Mouse: click chooses. Missing projects render greyed (`opacity-60`), `aria-disabled="true"`, are skipped by the arrow keys and are not choosable. Typing after a choice clears the choice (the button disables again). The list shows `Đang tìm...` while a request is in flight longer than 200 ms and the empty copy when nothing matches. Only a listed option can be chosen; the typed text is never sent.
 
 **Stepper (D-23).** States, labels and glyphs as in the Color table; the three steps always render in the order Lead, Dev, QA; at most one step is "current" (the server's `current_step`). Buttons follow the server's `actions` order: the first enabled action is the primary button, every other action is secondary, Kill is destructive. A button that is disabled shows the server's reason in plain text under it; nothing is hidden. While an action request is in flight every action button is disabled and the clicked one shows `Đang giao...` (Kill: `Đang dừng...`).
 
@@ -249,8 +251,8 @@ Vertical order: header card, stepper card, (blocked / needs-fix callout), plan c
 **Dialogs (Kill, Chạy lại Lead, raw JSON).** One in-page dialog pattern: `role="dialog"` (`role="alertdialog"` for Kill and Chạy lại Lead) with `aria-modal="true"` and `aria-labelledby`; focus moves into the dialog on open (the safe button for confirmations, `Đóng` for JSON) and returns to the trigger on close; `Escape` closes; clicking the overlay closes the JSON viewer but not a confirmation. Background is not scrollable while open (`overflow-hidden` on `<body>` through a class toggled by JS).
 
 **Log pane (D-22).**
-- Container: `<div id="ab-log" role="log" aria-live="off" aria-label="Log realtime" tabindex="0" class="h-96 overflow-y-auto rounded-xl bg-slate-950 p-3 text-sm leading-normal lg:h-[32rem]">` (keyboard users can scroll it; screen readers are not flooded).
-- Row = a `<button type="button">` (`flex w-full items-start gap-3 rounded-md px-3 py-1 text-left hover:bg-slate-800 motion-safe:transition-colors` + a light focus outline `focus-visible:outline-2 focus-visible:outline-indigo-400`), columns: time (`w-20 shrink-0 font-mono text-slate-400`, `HH:MM:SS`), glyph (`w-6 shrink-0 text-center`), text (`min-w-0 flex-1 break-words`, colour per kind; tool, tool_result and the path/command parts are monospace). One row per event, same wording as the CLI line.
+- Container: `<div id="ab-log" role="log" aria-live="off" aria-label="Log realtime" tabindex="0" class="h-96 overflow-y-auto rounded-xl bg-slate-950 p-4 text-sm leading-normal lg:h-[32rem]">` (keyboard users can scroll it; screen readers are not flooded).
+- Row = a `<button type="button">` (`flex w-full items-start gap-2 rounded-md px-2 py-1 text-left hover:bg-slate-800 motion-safe:transition-colors` + a light focus outline `focus-visible:outline-2 focus-visible:outline-indigo-400`), columns: time (`w-20 shrink-0 font-mono text-slate-400`, `HH:MM:SS`), glyph (`w-6 shrink-0 text-center`), text (`min-w-0 flex-1 break-words`, colour per kind; tool, tool_result and the path/command parts are monospace). One row per event, same wording as the CLI line.
 - Follow behaviour: auto-scroll to the bottom while `follow`; scrolling more than 40 px above the bottom pauses it and shows the floating button `Về cuối (live)` (secondary recipe on the dark pane: `absolute bottom-4 right-6`, container wrapped in `relative`); reaching the bottom or pressing the button resumes. A paused pane keeps receiving rows silently.
 - `system/thinking_tokens` rows hidden by default; toggle button text `Hiện thinking_tokens (N đang ẩn)` / `Ẩn thinking_tokens`.
 - Retention: at most 5000 rows in memory (oldest dropped); when dropping starts the pane shows a first, non-interactive muted row `Đã ẩn các dòng cũ hơn — giữ 5000 dòng mới nhất`.
@@ -297,7 +299,7 @@ All strings are exact. `{x}` = a runtime value. Strings marked (server) come fro
 | Tổng quan | `Giao việc` (link-button to `#/assign`) |
 | Giao việc | `Giao việc`; in flight `Đang giao...`; after 202 `Đã giao việc — đang mở task...` |
 | Chi tiết task | `Chạy Dev` · `Chạy QA` · `Chạy lại Lead` · `Kill` |
-| Dự án | `Lưu` (edit), `Quét lại` (secondary), `Sửa alias`, `Hủy`, `Trạng thái git` |
+| Dự án | `Lưu alias` (edit), `Quét lại` (secondary), `Sửa alias`, `Hủy sửa alias`, `Trạng thái git` |
 
 ### Empty states
 
@@ -346,7 +348,7 @@ All strings are exact. `{x}` = a runtime value. Strings marked (server) come fro
 | Action | Confirmation |
 |--------|--------------|
 | Kill (a running run) | Alertdialog. Title `Kill run {run_id} ({role})?`. Body `Agent và mọi tiến trình con của nó sẽ bị dừng ngay. Thay đổi chưa commit trong thư mục dự án vẫn còn nguyên; task chuyển sang trạng thái killed.` Buttons: destructive `Kill run`, secondary `Giữ chạy tiếp` (initial focus). Result message from the server under the step. |
-| Chạy lại Lead (re-plan) | Alertdialog. Title `Chạy lại Lead cho task {slug}?`. Body `Lead sẽ lập lại .plan.md trên nhánh task/{slug} và commit '{slug}: plan'. Bản plan hiện tại vẫn còn trong lịch sử git.` Buttons: primary `Chạy lại Lead`, secondary `Hủy`. `[ASSUMED U3]` |
+| Chạy lại Lead (re-plan) | Alertdialog. Title `Chạy lại Lead cho task {slug}?`. Body `Lead sẽ lập lại .plan.md trên nhánh task/{slug} và commit '{slug}: plan'. Bản plan hiện tại vẫn còn trong lịch sử git.` Buttons: primary `Chạy lại Lead`, secondary `Giữ plan hiện tại` (initial focus). `[ASSUMED U3]` |
 | Chạy Dev / Chạy QA | No dialog: pressing the button is the review gate (D-01). Helper under the button when enabled: `Dev sẽ sửa code trên nhánh task/{slug}.` / `QA chỉ đọc diff và ghi .qa-report.md.` |
 | Lưu alias, Quét lại | No dialog (non-destructive; the CLI scan keeps hand edits). |
 | Edit `.plan.md` | Not offered anywhere (D-02). The note `Chỉ xem — sửa trong editor của bạn rồi commit '{slug}: plan'; dashboard tự nhận commit mới` is shown on the plan card. |
@@ -408,7 +410,7 @@ Plans are not edited by this file. Each row says what the plan currently encodes
 
 | # | Plan | Plan currently says | Contract says | Why | Level |
 |---|------|--------------------|---------------|-----|-------|
-| 1 | 05-08 notes | Card `p-5` (20px); badge `px-2.5 py-0.5 text-xs` (10px / 2px, 12px type) | Card `p-6`; badge `px-3 py-1 text-sm` | 20px, 10px, 2px are off the 4-multiple scale; 12px text is a fifth type size | Must |
+| 1 | 05-08 notes | Card `p-5` (20px); badge `px-2.5 py-0.5 text-xs` (10px / 2px, 12px type) | Card `p-6`; badge `px-2 py-1 text-sm` (8px / 4px); controls `min-h-12` (48px) | 20px, 10px, 2px are off the 4-multiple scale; 12px text is a fifth type size; 12px padding and a 40px min height are not on the declared scale | Must |
 | 2 | 05-08 notes | Buttons use `font-medium` (500) | Buttons `font-semibold` (600); only weights 400 and 600 exist | Two-weight rule | Must |
 | 3 | 05-08 notes | Primary button `hover:bg-indigo-500` | `hover:bg-indigo-700` | White on indigo-500 is 4.47:1 (AA fail); darker hover keeps >= 6:1 | Must |
 | 4 | 05-08 index.html | No `<html lang>`, no `color-scheme`, no `<body>` classes; page background / text colours unspecified | `<html lang="vi" class="scheme-light dark:scheme-dark">`, `<meta name="color-scheme" content="light dark">`, body classes from Class Recipes | Without body colours dark mode shows white text on white; native selects/scrollbars ignore the theme; screen readers need `lang="vi"` | Must |
@@ -429,7 +431,7 @@ Plans are not edited by this file. Each row says what the plan currently encodes
 | 19 | 05-10 task 1 | Kill uses `window.confirm('Dừng run N?')` | In-page `alertdialog` with the copy in Copywriting, safe default focus | Browser confirm buttons are not Vietnamese (browser locale), cannot explain consequences, are blocked in some headless runs | Should (fallback: `window.confirm` with the same body text, but not both) |
 | 20 | 05-10 task 1 | `Chạy lại Lead` runs immediately | Confirm dialog (re-plan overwrites `.plan.md` and adds a plan commit) | Hand-edited plans are replaced; `lead.rs` re-plan branch rewrites the file | Should |
 | 21 | 05-10 task 1 | Banner colour unspecified; "ring for the current step" | Banner colour by group; current step `ring-2 ring-indigo-600 dark:ring-indigo-400`; callouts for blocked / needs-fix between stepper and plan | D-03 asks to highlight those sections; the callout carries the CLI's next-step text | Should |
-| 22 | 05-10 task 2 | Log row is a clickable element (`@click="openRaw(r)"` on the row) | Each row is a `<button type="button">`; pane has `role="log" aria-live="off" tabindex="0"`; raw dialog is `role="dialog"` with focus management and Escape | Keyboard access to D-22 raw JSON; avoids a screen-reader flood | Must |
+| 22 | 05-10 task 2 | Log row is a clickable element (`@click="openRaw(r)"` on the row) | Each row is a `<button type="button">` (`gap-2 px-2 py-1`, pane `p-4`); pane has `role="log" aria-live="off" tabindex="0"`; raw dialog is `role="dialog"` with focus management and Escape | Keyboard access to D-22 raw JSON; avoids a screen-reader flood | Must |
 | 23 | 05-10 task 2 | Icons `▶ ✎ ↩ ✔ ⓘ ⚠` as bare characters | Append U+FE0E; `aria-hidden` glyph plus visible time and text; `system` text `text-slate-400` instead of slate-500 | Some platforms render these as colour emoji; slate-500 on slate-950 is 4.1:1 | Should |
 | 24 | 05-10 task 2 | `h-96` log pane | `h-96 lg:h-[32rem]`; `relative` wrapper for the floating `Về cuối (live)` button; retention marker row | Watching agents is the point of the screen (specifics of D-22) | Should |
 | 25 | 05-11 task 1 | `colStyle` / `barStyle` return objects (correct) but research Pattern 9 verified a string `:style` | Keep objects (this file endorses 05-08/05-11, not research Pattern 9's string form) | `style-src 'self'` blocks string styles on real browsers; a DOM dump can still show the attribute and mislead the smoke check | Confirm |
@@ -437,7 +439,7 @@ Plans are not edited by this file. Each row says what the plan currently encodes
 | 27 | 05-11 task 1 | Project bars unbounded and unsorted | Rows sorted by tokens descending; `Theo dự án` shows 10 + `Hiện tất cả` | Readability with many projects | Should |
 | 28 | all UI plans | Tailwind classes listed in notes only partially (headings, tables, dialogs, callouts, charts unspecified) | `## Class Recipes` is the class source of truth; any other size/weight class is forbidden | Executors would otherwise invent sizes and weights per screen | Must |
 
-Checks the planner should add (all grep-able): no `text-xs`, `text-3xl`, `font-medium`, `font-bold`, `p-5`, `px-2.5`, `py-0.5` in `agent-brain/assets/dashboard/{index.html,screens,js}`; `lang="vi"` present in `index.html`; every `<button` and `<a` in screens carries the FOCUS string or the nav/link recipe (or is inside a recipe that does).
+Checks the planner should add (all grep-able): no `text-xs`, `text-3xl`, `font-medium`, `font-bold`, `p-5`, `px-2.5`, `py-0.5`, `px-3`, `py-3`, `p-3`, `gap-3`, `min-h-10`, `h-3` in `agent-brain/assets/dashboard/{index.html,screens,js}`; `lang="vi"` present in `index.html`; every `<button` and `<a` in screens carries the FOCUS string or the nav/link recipe (or is inside a recipe that does).
 
 ---
 
