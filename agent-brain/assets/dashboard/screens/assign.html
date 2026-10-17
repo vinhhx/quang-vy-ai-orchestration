@@ -1,0 +1,73 @@
+<section data-screen="assign" x-data="assign" :data-loaded="loadedAttr" class="space-y-6">
+  <div class="flex flex-wrap items-center gap-4">
+    <h1 class="text-2xl font-semibold leading-[1.2]">Giao việc</h1>
+    <span role="status" :class="filterClass" x-show="filterChip" x-text="filterChip"></span>
+  </div>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 max-w-3xl space-y-6">
+    <div class="space-y-2">
+      <label for="ab-request" class="text-sm font-semibold leading-normal">Yêu cầu (tiếng Việt)</label>
+      <textarea id="ab-request" rows="5" maxlength="20000" placeholder="Ví dụ: thêm nút đăng xuất ở trang tài khoản" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 resize-y focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="request" @input="onRequestInput"></textarea>
+    </div>
+
+    <div class="space-y-2">
+      <label for="ab-project" class="text-sm font-semibold leading-normal">Dự án</label>
+      <input id="ab-project" type="text" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="ab-suggest" :aria-expanded="expandedAttr" :aria-activedescendant="activeId" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="query" @input="onQueryInput" @focus="onQueryFocus" @blur="onQueryBlur" @keydown="onQueryKey">
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Gõ tên, alias hoặc tên không dấu rồi chọn trong danh sách</p>
+      <ul id="ab-suggest" role="listbox" aria-label="Dự án" x-show="listVisible" class="mt-2 max-h-64 overflow-y-auto rounded-xl bg-white ring-1 ring-slate-300 dark:bg-slate-800 dark:ring-slate-600">
+        <template x-for="(item, i) in items" :key="item.id">
+          <li role="option" :id="'ab-opt-' + i" :data-index="i" :aria-selected="optionSelected(i)" :aria-disabled="optionDisabled(item)" @mousedown="onOptionDown" class="flex min-h-12 cursor-pointer flex-wrap items-center gap-2 px-4 py-2 motion-safe:transition-colors" :class="optionClass(item, i)">
+            <span x-text="optionText(item)"></span>
+            <span :class="profileClass(item.profile)" x-text="item.profile"></span>
+            <span x-show="item.missing" class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200">thiếu thư mục</span>
+          </li>
+        </template>
+      </ul>
+      <p class="mt-2 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" aria-live="polite" x-show="suggestStatus" x-text="suggestStatus"></p>
+    </div>
+
+    <div x-show="selected" class="flex flex-wrap items-center gap-2">
+      <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="chipText"></span>
+      <span :class="profileClass(selectedProfile)" x-text="selectedProfile"></span>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="profileNote"></p>
+    </div>
+
+    <div class="space-y-2">
+      <label for="ab-slug" class="text-sm font-semibold leading-normal">Tên task (slug)</label>
+      <input id="ab-slug" type="text" maxlength="48" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 font-mono focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="slug" @input="onSlugInput" @blur="onSlugBlur">
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Tạo từ yêu cầu như CLI, có thể sửa</p>
+    </div>
+
+    <div aria-live="polite" class="space-y-4" x-show="showPreflight">
+      <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100">Nhánh hiện tại: <span class="font-mono break-all" x-text="branchName"></span></p>
+      <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="planLine"></p>
+      <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200" x-show="warningText" x-text="warningText"></div>
+      <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2" x-show="hasRefusal">
+        <p class="text-base font-normal leading-normal" x-text="reasonHead"></p>
+        <div class="rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all whitespace-pre-wrap text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-show="hasDirty" x-text="dirtyText"></div>
+      </div>
+    </div>
+
+    <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="hasCandidates">
+      <p class="font-semibold leading-normal">Tên khớp nhiều dự án — chọn một:</p>
+      <template x-for="c in candidates" :key="c.id">
+        <button type="button" @click="chooseCandidate(c)" class="flex min-h-12 w-full flex-wrap items-center gap-2 rounded-xl px-4 py-2 text-left hover:bg-amber-100 dark:hover:bg-amber-900/40 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+          <span x-text="candidateText(c)"></span>
+          <span :class="profileClass(c.profile)" x-text="c.profile"></span>
+        </button>
+      </template>
+    </div>
+
+    <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 whitespace-pre-wrap break-words" x-show="error" x-text="error"></div>
+
+    <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2" x-show="jobFailed">
+      <p class="font-semibold leading-normal">Lead dừng sớm</p>
+      <div class="rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all whitespace-pre-wrap text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-text="jobOutputText"></div>
+    </div>
+
+    <div class="space-y-2">
+      <button type="button" aria-describedby="ab-start-reason" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="startDisabled" @click="submit" x-text="startLabel"></button>
+      <p id="ab-start-reason" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="startDisabled" x-text="disabledReason"></p>
+    </div>
+  </div>
+</section>
