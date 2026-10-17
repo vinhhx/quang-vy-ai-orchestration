@@ -769,6 +769,51 @@ mod tests {
     }
 
     #[test]
+    fn test_actions_open_after_timed_out_lead_offers_relead() {
+        let git_ready = GitFacts {
+            current_branch: Some("task/sua-app".to_string()),
+            dirty: vec![],
+            plan_exists: true,
+            plan_blockers: false,
+            plan_errors: vec![],
+            plan_commit: Some("abc".to_string()),
+            code_after_plan: true,
+        };
+
+        let task = dummy_task("open");
+
+        // timed_out lead -> exactly one action [relead], enabled
+        let timed_out_lead = dummy_run(1, "lead", "timed_out", None);
+        let facts_timeout = TaskFacts {
+            task: &task,
+            lead: Some(&timed_out_lead),
+            dev: None,
+            qa: None,
+            git: &git_ready,
+            busy: None,
+            now_ms: 2000,
+        };
+        let view_timeout = derive(&facts_timeout);
+        assert_eq!(view_timeout.actions.len(), 1);
+        assert_eq!(view_timeout.actions[0].id, "relead");
+        assert!(view_timeout.actions[0].enabled);
+
+        // succeeded lead -> no action (empty)
+        let succeeded_lead = dummy_run(1, "lead", "succeeded", None);
+        let facts_succeeded = TaskFacts {
+            task: &task,
+            lead: Some(&succeeded_lead),
+            dev: None,
+            qa: None,
+            git: &git_ready,
+            busy: None,
+            now_ms: 2000,
+        };
+        let view_succeeded = derive(&facts_succeeded);
+        assert!(view_succeeded.actions.is_empty());
+    }
+
+    #[test]
     fn test_action_reasons_and_first_match_wins() {
         let task = dummy_task("planned");
 
