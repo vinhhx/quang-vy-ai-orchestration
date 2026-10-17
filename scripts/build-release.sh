@@ -44,7 +44,20 @@ fi
 
 # 5. Copy test in isolated environment
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+SERVE_PID=""
+cleanup() {
+  if [[ -n "${SERVE_PID:-}" ]]; then
+    if [[ -d "/proc/$SERVE_PID" ]] && ! grep -q "State:[[:space:]]*Z" "/proc/$SERVE_PID/status" 2>/dev/null; then
+      kill -INT "$SERVE_PID" 2>/dev/null || true
+      sleep 0.2
+      if [[ -d "/proc/$SERVE_PID" ]] && ! grep -q "State:[[:space:]]*Z" "/proc/$SERVE_PID/status" 2>/dev/null; then
+        kill -KILL "$SERVE_PID" 2>/dev/null || true
+      fi
+    fi
+  fi
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
 
 mkdir -p "$TMP/bin" "$TMP/home"
 cp "$BIN" "$TMP/bin/agent-brain"
@@ -68,8 +81,93 @@ if [[ "$GUARD_STATUS" -ne 2 ]]; then
   exit 1
 fi
 
-# 6. Success output
+# 6. Dashboard smoke (P4-01)
+if ! command -v curl >/dev/null 2>&1; then
+  echo "Thiếu curl cho kiểm tra dashboard" >&2
+  exit 1
+fi
+
+env -i HOME="$TMP/home" PATH=/nonexistent "$TMP/bin/agent-brain" serve --port 0 >"$TMP/serve.out" 2>"$TMP/serve.err" &
+SERVE_PID=$!
+
+TOKEN_URL=""
+for _ in $(seq 1 50); do
+  if [[ -s "$TMP/serve.out" ]]; then
+    TOKEN_URL="$(grep -oE 'http://127\.0\.0\.1:[0-9]+/\?token=[0-9a-f]{64}' "$TMP/serve.out" | head -n 1 || true)"
+    if [[ -n "$TOKEN_URL" ]]; then
+      break
+    fi
+  fi
+  python3 -c 'import time; time.sleep(0.2)'
+done
+
+if [[ -z "$TOKEN_URL" ]]; then
+  cat "$TMP/serve.err" >&2 || true
+  kill -INT "$SERVE_PID" 2>/dev/null || true
+  echo "Lỗi: serve không in URL trong 10 giây" >&2
+  exit 1
+fi
+
+PORT="$(echo "$TOKEN_URL" | sed -E 's|http://127\.0\.0\.1:([0-9]+)/.*|\1|')"
+
+# GET /?token= trả về 303 và ghi cookie
+HTTP_303="$(curl -s -o /dev/null -w "%{http_code}" -c "$TMP/jar" "$TOKEN_URL" || true)"
+if [[ "$HTTP_303" != "303" ]]; then
+  echo "Lỗi: kiểm tra GET /?token= thất bại (mã HTTP: $HTTP_303, mong đợi 303)" >&2
+  kill -INT "$SERVE_PID" 2>/dev/null || true
+  exit 1
+fi
+
+# GET /app.css có cookie trả về 200 và banner tailwindcss v4.3.3
+CSS_CODE="$(curl -s -b "$TMP/jar" -o "$TMP/app.css" -w "%{http_code}" "http://127.0.0.1:$PORT/app.css" || true)"
+if [[ "$CSS_CODE" != "200" ]]; then
+  echo "Lỗi: kiểm tra GET /app.css có cookie thất bại (mã HTTP: $CSS_CODE, mong đợi 200)" >&2
+  kill -INT "$SERVE_PID" 2>/dev/null || true
+  exit 1
+fi
+FIRST_LINE="$(head -n 1 "$TMP/app.css" 2>/dev/null || true)"
+if ! echo "$FIRST_LINE" | grep -q 'tailwindcss v4\.3\.3'; then
+  echo "Lỗi: nội dung /app.css không chứa banner tailwindcss v4.3.3" >&2
+  kill -INT "$SERVE_PID" 2>/dev/null || true
+  exit 1
+fi
+
+# GET / không có cookie trả về 401
+UNAUTH_CODE="$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" || true)"
+if [[ "$UNAUTH_CODE" != "401" ]]; then
+  echo "Lỗi: kiểm tra GET / không có cookie thất bại (mã HTTP: $UNAUTH_CODE, mong đợi 401)" >&2
+  kill -INT "$SERVE_PID" 2>/dev/null || true
+  exit 1
+fi
+
+# Dừng serve bằng SIGINT và chờ thoát sạch
+kill -INT "$SERVE_PID"
+STOPPED=false
+for _ in $(seq 1 50); do
+  if [[ ! -d "/proc/$SERVE_PID" ]] || grep -q "State:[[:space:]]*Z" "/proc/$SERVE_PID/status" 2>/dev/null; then
+    STOPPED=true
+    break
+  fi
+  python3 -c 'import time; time.sleep(0.2)'
+done
+
+if [[ "$STOPPED" = false ]]; then
+  kill -KILL "$SERVE_PID" 2>/dev/null || true
+  echo "Lỗi: serve không dừng sạch sau Ctrl+C" >&2
+  exit 1
+fi
+
+SERVE_STATUS=0
+wait "$SERVE_PID" || SERVE_STATUS=$?
+SERVE_PID=""
+if [[ "$SERVE_STATUS" -ne 0 ]]; then
+  echo "Lỗi: serve không dừng sạch sau Ctrl+C (mã thoát: $SERVE_STATUS)" >&2
+  exit 1
+fi
+
+# 7. Success output
 SIZE="$(stat -c %s "$BIN")"
 SHA="$(sha256sum "$BIN" | awk '{print $1}')"
 echo "P2-09 OK (route $ROUTE): $BIN · $SIZE byte · sha256 $SHA"
+echo "P4-01 OK: dashboard chạy trong môi trường rỗng (env -i, PATH=/nonexistent) — / và /app.css qua token, 401 khi thiếu token"
 echo "agent-brain chạy được khi không có gì cài thêm (env -i, PATH=/nonexistent)"
