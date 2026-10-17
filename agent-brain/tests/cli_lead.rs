@@ -79,6 +79,12 @@ fn lead_extra_file_is_protocol_violation() {
     assert_eq!(head.trim(), base_commit.trim());
 
     assert!(repo.join("src/other.py").is_file());
+
+    let conn = sb.db();
+    let outcome: String = conn
+        .query_row("SELECT outcome FROM runs WHERE id = 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(outcome, "protocol_violation");
 }
 
 #[test]
