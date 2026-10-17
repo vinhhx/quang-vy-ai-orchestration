@@ -3,6 +3,7 @@
   "common_args": [
     "--strict-mcp-config"
   ],
+  "dashboard_port": 7437,
   "inspect_max_diff_bytes": 100000,
   "inspect_model": "sonnet",
   "kill_grace_secs": 3,

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const DEFAULT_CONFIG_JSON: &str = include_str!("../assets/config.default.json");
+pub const DEFAULT_DASHBOARD_PORT: u16 = 7437;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ProfileCfg {
@@ -24,6 +25,7 @@ pub struct Config {
     pub runs_dir: Option<String>,
     pub kill_grace_secs: u64,
     pub inspect_max_diff_bytes: usize,
+    pub dashboard_port: u16,
 }
 
 impl Config {
@@ -157,6 +159,18 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         .map(|n| n as usize)
         .unwrap_or(100_000);
 
+    let dashboard_port = match obj.get("dashboard_port") {
+        Some(val) => match val.as_u64() {
+            Some(n) if n <= 65535 => n as u16,
+            _ => {
+                return Err(BrainError::error(format!(
+                    "Cấu hình dashboard_port không hợp lệ: {val}"
+                )))
+            }
+        },
+        None => DEFAULT_DASHBOARD_PORT,
+    };
+
     let common_args = obj
         .get("common_args")
         .and_then(|a| a.as_array())
@@ -214,6 +228,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         runs_dir: runs_dir_opt,
         kill_grace_secs,
         inspect_max_diff_bytes,
+        dashboard_port,
     })
 }
 

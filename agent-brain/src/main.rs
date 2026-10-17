@@ -78,6 +78,12 @@ enum Commands {
         #[arg(long)]
         policy: Option<PathBuf>,
     },
+    /// Mở dashboard web (chỉ 127.0.0.1, có token)
+    Serve {
+        /// Cổng (mặc định: khóa dashboard_port hoặc 7437)
+        #[arg(long)]
+        port: Option<u16>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -132,6 +138,10 @@ fn main() {
         std::process::exit(code);
     }
 
+    if let Commands::Serve { port } = &cmd {
+        std::process::exit(agent_brain::dashboard::cmd_serve(*port));
+    }
+
     let mut ctx = match app::open_ctx() {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -146,6 +156,7 @@ fn main() {
 
     let result = match cmd {
         Commands::Guard { .. } => unreachable!(),
+        Commands::Serve { .. } => unreachable!(),
         Commands::Projects { subcommand } => match subcommand {
             ProjectsCommands::Scan { roots } => projects::cmd_scan(&roots),
             ProjectsCommands::Add { path, r#type } => projects::cmd_add(&path, r#type.as_deref()),

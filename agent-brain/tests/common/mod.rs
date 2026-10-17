@@ -1,6 +1,13 @@
+#![allow(dead_code)]
+
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -346,5 +353,515 @@ impl Sandbox {
 
     pub fn db(&self) -> rusqlite::Connection {
         rusqlite::Connection::open(&self.db_path).expect("open sqlite connection")
+    }
+
+    pub fn fake_claude_tree() -> PathBuf {
+        repo_root()
+            .join("tests")
+            .join("fakes")
+            .join("fake_claude_tree.py")
+            .canonicalize()
+            .expect("canonicalize fake_claude_tree.py")
+    }
+
+    pub fn serve(&self, extra_env: &[(&str, &str)]) -> Serve {
+        let n = SERVE_ID.fetch_add(1, Ordering::SeqCst);
+        let stderr_path = self.root.join(format!("serve-{n}.stderr.txt"));
+        let stderr_file = fs::File::create(&stderr_path).expect("create serve stderr file");
+
+        let mut all_env = extra_env.to_vec();
+        let sc_str = self.scenario_file.to_str().unwrap();
+        all_env.push(("FAKE_CLAUDE_SCENARIO", sc_str));
+
+        let mut cmd = self.command(&["serve", "--port", "0"], &all_env);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::from(stderr_file));
+
+        let mut child = cmd.spawn().expect("spawn agent-brain serve");
+        let child_stdout = child.stdout.take().expect("take serve stdout");
+
+        let stdout_buf = Arc::new(Mutex::new(String::new()));
+        let stdout_buf_clone = stdout_buf.clone();
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(child_stdout);
+            let mut line = String::new();
+            use std::io::BufRead;
+            while let Ok(n) = reader.read_line(&mut line) {
+                if n == 0 {
+                    break;
+                }
+                let mut guard = stdout_buf_clone.lock().unwrap();
+                guard.push_str(&line);
+                line.clear();
+            }
+        });
+
+        let mut matched = None;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(15) {
+            {
+                let guard = stdout_buf.lock().unwrap();
+                if let Some(pos) = guard.find("http://127.0.0.1:") {
+                    let after = &guard[pos + "http://127.0.0.1:".len()..];
+                    if let Some(slash_pos) = after.find("/?token=") {
+                        let port_str = &after[..slash_pos];
+                        let token_after = &after[slash_pos + "/?token=".len()..];
+                        if token_after.len() >= 64 {
+                            let token_candidate = &token_after[..64];
+                            if let Ok(port) = port_str.parse::<u16>() {
+                                if token_candidate.chars().all(|c| c.is_ascii_hexdigit()) {
+                                    matched = Some((port, token_candidate.to_string()));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let (port, token) = match matched {
+            Some(p) => p,
+            None => {
+                let err_content = fs::read_to_string(&stderr_path).unwrap_or_default();
+                panic!("Timeout waiting for serve to print URL. Stderr:\n{err_content}");
+            }
+        };
+
+        let handshake = http_raw(port, "GET", &format!("/?token={token}"), &[], b"");
+        assert_eq!(
+            handshake.status,
+            303,
+            "Handshake failed with status {}: {}",
+            handshake.status,
+            handshake.text()
+        );
+
+        let cookie = format!("agent_brain_token={token}");
+
+        Serve {
+            child,
+            port,
+            token,
+            cookie,
+            stdout: stdout_buf,
+            stderr_path,
+        }
+    }
+}
+
+static SERVE_ID: AtomicUsize = AtomicUsize::new(0);
+
+pub struct HttpResp {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+impl HttpResp {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        let lower = name.to_ascii_lowercase();
+        self.headers
+            .iter()
+            .find(|(k, _)| k == &lower)
+            .map(|(_, v)| v.as_str())
+    }
+
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.body).to_string()
+    }
+
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.body).expect("parse response body as JSON")
+    }
+}
+
+pub fn http_raw(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> HttpResp {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .unwrap_or_else(|e| panic!("Failed to connect to 127.0.0.1:{port}: {e}"));
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("set read timeout");
+    stream
+        .set_write_timeout(Some(Duration::from_secs(30)))
+        .expect("set write timeout");
+
+    let has_host = headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("host"));
+    let has_connection = headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("connection"));
+    let has_content_len = headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("content-length"));
+
+    let mut req_bytes = Vec::new();
+    req_bytes.extend_from_slice(format!("{method} {path} HTTP/1.1\r\n").as_bytes());
+
+    if !has_host {
+        req_bytes.extend_from_slice(format!("host: 127.0.0.1:{port}\r\n").as_bytes());
+    }
+    if !has_connection {
+        req_bytes.extend_from_slice(b"connection: close\r\n");
+    }
+    if !has_content_len && !body.is_empty() {
+        req_bytes.extend_from_slice(format!("content-length: {}\r\n", body.len()).as_bytes());
+    }
+    for (k, v) in headers {
+        req_bytes.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
+    }
+    req_bytes.extend_from_slice(b"\r\n");
+    req_bytes.extend_from_slice(body);
+
+    stream.write_all(&req_bytes).expect("write request");
+    stream.flush().expect("flush request");
+
+    let mut resp_bytes = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => resp_bytes.extend_from_slice(&buf[..n]),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break
+            }
+            Err(e) => panic!("read response error: {e}"),
+        }
+    }
+
+    parse_http_response(&resp_bytes)
+}
+
+fn parse_http_response(raw: &[u8]) -> HttpResp {
+    let header_end = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(raw.len());
+    let header_bytes = &raw[..header_end];
+    let body_bytes = if header_end + 4 <= raw.len() {
+        &raw[header_end + 4..]
+    } else {
+        b""
+    };
+
+    let header_str = String::from_utf8_lossy(header_bytes);
+    let mut lines = header_str.split("\r\n");
+    let status_line = lines.next().unwrap_or("");
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+
+    let mut headers = Vec::new();
+    let mut is_chunked = false;
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            let key = k.trim().to_ascii_lowercase();
+            let val = v.trim().to_string();
+            if key == "transfer-encoding" && val.to_ascii_lowercase().contains("chunked") {
+                is_chunked = true;
+            }
+            headers.push((key, val));
+        }
+    }
+
+    let final_body = if is_chunked {
+        dechunk(body_bytes)
+    } else {
+        body_bytes.to_vec()
+    };
+
+    HttpResp {
+        status,
+        headers,
+        body: final_body,
+    }
+}
+
+fn dechunk(mut input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let pos = match input.windows(2).position(|w| w == b"\r\n") {
+            Some(p) => p,
+            None => break,
+        };
+        let len_str = String::from_utf8_lossy(&input[..pos]);
+        let hex_part = len_str.split(';').next().unwrap_or("").trim();
+        let chunk_len = match usize::from_str_radix(hex_part, 16) {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if chunk_len == 0 {
+            break;
+        }
+        let data_start = pos + 2;
+        let data_end = data_start + chunk_len;
+        if data_end > input.len() {
+            out.extend_from_slice(&input[data_start..]);
+            break;
+        }
+        out.extend_from_slice(&input[data_start..data_end]);
+        input = if data_end + 2 <= input.len() {
+            &input[data_end + 2..]
+        } else {
+            &input[data_end..]
+        };
+    }
+    out
+}
+
+pub fn wait_until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if f() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+pub fn tree_procs(pidfile: &Path, timeout: Duration) -> Option<[agent_brain::procs::ProcId; 3]> {
+    let start_wait = Instant::now();
+    let mut fake_pid = None;
+    let mut bash_pid = None;
+    while start_wait.elapsed() < timeout {
+        if pidfile.is_file() {
+            if let Ok(c) = std::fs::read_to_string(pidfile) {
+                let parts: Vec<&str> = c.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let (Ok(f), Ok(b)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
+                        fake_pid = Some(f);
+                        bash_pid = Some(b);
+                        break;
+                    }
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let fake_pid = fake_pid?;
+    let bash_pid = bash_pid?;
+
+    let start_sleep = Instant::now();
+    let mut sleep_pid = None;
+    while start_sleep.elapsed() < Duration::from_secs(3) {
+        let descs = agent_brain::procs::descendants(bash_pid);
+        if let Some(d) = descs.first() {
+            sleep_pid = Some(d.pid);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let sleep_pid = sleep_pid?;
+
+    let fake_id = agent_brain::procs::proc_id(fake_pid)?;
+    let bash_id = agent_brain::procs::proc_id(bash_pid)?;
+    let sleep_id = agent_brain::procs::proc_id(sleep_pid)?;
+
+    Some([fake_id, bash_id, sleep_id])
+}
+
+pub struct ProcGuard(pub Vec<agent_brain::procs::ProcId>);
+
+impl Drop for ProcGuard {
+    fn drop(&mut self) {
+        for p in &self.0 {
+            if agent_brain::procs::alive(*p) {
+                agent_brain::procs::signal_proc(*p, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+pub struct Serve {
+    pub child: std::process::Child,
+    pub port: u16,
+    pub token: String,
+    pub cookie: String,
+    pub stdout: Arc<Mutex<String>>,
+    pub stderr_path: PathBuf,
+}
+
+impl Serve {
+    pub fn get(&self, path: &str) -> HttpResp {
+        self.request("GET", path, &[("Cookie", &self.cookie)], b"")
+    }
+
+    pub fn post_json(&self, path: &str, body: &serde_json::Value) -> HttpResp {
+        let bytes = serde_json::to_vec(body).expect("serialize post_json");
+        let origin = format!("http://127.0.0.1:{}", self.port);
+        self.request(
+            "POST",
+            path,
+            &[
+                ("Cookie", &self.cookie),
+                ("Origin", &origin),
+                ("Content-Type", "application/json"),
+            ],
+            &bytes,
+        )
+    }
+
+    pub fn put_json(&self, path: &str, body: &serde_json::Value) -> HttpResp {
+        let bytes = serde_json::to_vec(body).expect("serialize put_json");
+        let origin = format!("http://127.0.0.1:{}", self.port);
+        self.request(
+            "PUT",
+            path,
+            &[
+                ("Cookie", &self.cookie),
+                ("Origin", &origin),
+                ("Content-Type", "application/json"),
+            ],
+            &bytes,
+        )
+    }
+
+    pub fn request(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> HttpResp {
+        http_raw(self.port, method, path, headers, body)
+    }
+
+    pub fn sse(
+        &self,
+        path: &str,
+        last_event_id: Option<&str>,
+        until: &str,
+        timeout: Duration,
+    ) -> String {
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port))
+            .unwrap_or_else(|e| panic!("Failed to connect to 127.0.0.1:{}: {e}", self.port));
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .expect("set read timeout");
+
+        let mut req_str = format!(
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAccept: text/event-stream\r\nCookie: {}\r\n",
+            self.port, self.cookie
+        );
+        if let Some(lid) = last_event_id {
+            req_str.push_str(&format!("Last-Event-ID: {lid}\r\n"));
+        }
+        req_str.push_str("Connection: close\r\n\r\n");
+
+        stream
+            .write_all(req_str.as_bytes())
+            .expect("send sse request");
+        stream.flush().expect("flush sse request");
+
+        let deadline = Instant::now() + timeout;
+        let mut raw_buf = Vec::new();
+        let mut buf = [0u8; 1024];
+
+        while Instant::now() < deadline {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    raw_buf.extend_from_slice(&buf[..n]);
+                    if let Some(pos) = raw_buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let header_part = String::from_utf8_lossy(&raw_buf[..pos]);
+                        let status = header_part
+                            .lines()
+                            .next()
+                            .and_then(|l| l.split_whitespace().nth(1))
+                            .and_then(|s| s.parse::<u16>().ok())
+                            .unwrap_or(0);
+                        if status != 200 {
+                            continue;
+                        }
+                        let body_part = &raw_buf[pos + 4..];
+                        let decoded = String::from_utf8_lossy(&dechunk(body_part)).to_string();
+                        if decoded.contains(until) {
+                            return decoded;
+                        }
+                    }
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    if let Some(pos) = raw_buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let body_part = &raw_buf[pos + 4..];
+                        let decoded = String::from_utf8_lossy(&dechunk(body_part)).to_string();
+                        if decoded.contains(until) {
+                            return decoded;
+                        }
+                    }
+                }
+                Err(e) => panic!("read sse error: {e}"),
+            }
+        }
+
+        if let Some(pos) = raw_buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            let header_part = String::from_utf8_lossy(&raw_buf[..pos]);
+            let status = header_part
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(0);
+            if status != 200 {
+                return String::from_utf8_lossy(&raw_buf).to_string();
+            }
+            let body_part = &raw_buf[pos + 4..];
+            String::from_utf8_lossy(&dechunk(body_part)).to_string()
+        } else {
+            String::from_utf8_lossy(&raw_buf).to_string()
+        }
+    }
+
+    pub fn stop(&mut self, sig: i32, timeout: Duration) -> Option<i32> {
+        unsafe {
+            libc::kill(self.child.id() as i32, sig);
+        }
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            match self.child.try_wait() {
+                Ok(Some(status)) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        if let Some(code) = status.code() {
+                            return Some(code);
+                        } else if let Some(s) = status.signal() {
+                            return Some(128 + s);
+                        }
+                    }
+                    return status.code();
+                }
+                Ok(None) => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+}
+
+impl Drop for Serve {
+    fn drop(&mut self) {
+        if let Ok(None) = self.child.try_wait() {
+            unsafe {
+                libc::kill(self.child.id() as i32, libc::SIGKILL);
+            }
+            let _ = self.child.wait();
+        }
     }
 }
