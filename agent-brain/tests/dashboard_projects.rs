@@ -161,8 +161,8 @@ fn project_status_zero_token() {
     assert!(j["task"].is_null());
 
     let log = j["log"].as_array().expect("log array");
-    assert!(!log.is_empty(), "log should have initial commit");
-    assert!(log[0].as_str().unwrap().contains("initial"));
+    assert!(!log.is_empty(), "log should have init commit");
+    assert!(log[0].as_str().unwrap().contains("init"));
 
     // Check zero token: SQLite runs table is empty and fake-claude record file absent
     let conn = sb.db();

@@ -120,3 +120,81 @@ pub fn resolve(query: &str, projects: &[Project]) -> Result<Project, RoutingErro
         })
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SuggestRank {
+    Exact,
+    Prefix,
+    Contains,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Suggestion {
+    pub project: Project,
+    pub rank: SuggestRank,
+    pub matched: String,
+}
+
+pub fn suggest(query: &str, projects: &[Project]) -> Vec<Suggestion> {
+    let norm_q = normalize(query);
+    if norm_q.is_empty() {
+        let mut results: Vec<Suggestion> = projects
+            .iter()
+            .map(|p| Suggestion {
+                project: p.clone(),
+                rank: SuggestRank::Contains,
+                matched: p.name_vi.clone(),
+            })
+            .collect();
+        results.sort_by(|a, b| (a.rank, &a.project.id).cmp(&(b.rank, &b.project.id)));
+        return results;
+    }
+
+    let mut suggestions = Vec::new();
+
+    for p in projects {
+        let mut best: Option<(SuggestRank, String)> = None;
+
+        let check_field = |text: &str, best: &mut Option<(SuggestRank, String)>| {
+            let norm_field = normalize(text);
+            if norm_field.is_empty() {
+                return;
+            }
+            let rank = if norm_field == norm_q {
+                Some(SuggestRank::Exact)
+            } else if norm_field.starts_with(&norm_q) {
+                Some(SuggestRank::Prefix)
+            } else if norm_field.contains(&norm_q) {
+                Some(SuggestRank::Contains)
+            } else {
+                None
+            };
+
+            if let Some(r) = rank {
+                match best {
+                    None => *best = Some((r, text.to_string())),
+                    Some((best_r, _)) if r < *best_r => *best = Some((r, text.to_string())),
+                    _ => {}
+                }
+            }
+        };
+
+        check_field(&p.name_vi, &mut best);
+        check_field(&p.id, &mut best);
+        for alias in &p.aliases {
+            check_field(alias, &mut best);
+        }
+
+        if let Some((rank, matched)) = best {
+            suggestions.push(Suggestion {
+                project: p.clone(),
+                rank,
+                matched,
+            });
+        }
+    }
+
+    suggestions.sort_by(|a, b| (a.rank, &a.project.id).cmp(&(b.rank, &b.project.id)));
+    suggestions
+}
