@@ -280,3 +280,237 @@ fn shutdown_with_open_sse_is_prompt() {
     test_shutdown_with_signal(libc::SIGTERM);
     test_shutdown_with_signal(libc::SIGHUP);
 }
+
+#[test]
+fn dash01_url_line_and_shell() {
+    let sb = Sandbox::new();
+    let mut srv = sb.serve(&[]);
+    assert_ne!(srv.port, 0);
+
+    let stdout_content = srv.stdout.lock().unwrap().clone();
+    let url_regex = regex::Regex::new(
+        r"agent-brain dashboard: http://127\.0\.0\.1:(\d+)/\?token=([0-9a-f]{64})",
+    )
+    .expect("valid regex");
+    assert!(
+        url_regex.is_match(&stdout_content),
+        "stdout missing matching URL line, got:\n{stdout_content}"
+    );
+
+    let r_root = srv.get("/");
+    assert_eq!(r_root.status, 200);
+    assert!(r_root
+        .header("content-type")
+        .unwrap()
+        .starts_with("text/html"));
+
+    let r_css = srv.get("/app.css");
+    assert_eq!(r_css.status, 200);
+    assert!(r_css
+        .header("content-type")
+        .unwrap()
+        .starts_with("text/css"));
+    assert!(r_css.text().starts_with("/*! tailwindcss v4.3.3"));
+
+    let r_js = srv.get("/vendor/alpine.csp.min.js");
+    assert_eq!(r_js.status, 200);
+
+    let r_nope_js = srv.get("/nope.js");
+    assert_eq!(r_nope_js.status, 404);
+
+    let r_api_nope = srv.get("/api/nope");
+    assert_eq!(r_api_nope.status, 404);
+    assert!(r_api_nope.json().get("error").is_some());
+
+    let exit_code = srv.stop(libc::SIGINT, Duration::from_secs(5));
+    assert_eq!(exit_code, Some(0));
+}
+
+#[test]
+fn dash02_listens_on_loopback_only() {
+    let sb = Sandbox::new();
+    let mut srv = sb.serve(&[]);
+
+    let hex_port = format!("{:04X}", srv.port);
+    let tcp = std::fs::read_to_string("/proc/net/tcp").expect("read /proc/net/tcp");
+    let mut found_ipv4 = 0;
+    for line in tcp.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 4 {
+            let (addr, port) = parts[1].split_once(':').unwrap_or(("", ""));
+            if port.eq_ignore_ascii_case(&hex_port) && parts[3] == "0A" {
+                assert_eq!(addr, "0100007F", "must listen on 127.0.0.1 only");
+                found_ipv4 += 1;
+            }
+        }
+    }
+    assert_eq!(
+        found_ipv4, 1,
+        "expected exactly 1 IPv4 listen entry on port"
+    );
+
+    if let Ok(tcp6) = std::fs::read_to_string("/proc/net/tcp6") {
+        for line in tcp6.lines().skip(1) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let (_addr, port) = parts[1].split_once(':').unwrap_or(("", ""));
+                if port.eq_ignore_ascii_case(&hex_port) && parts[3] == "0A" {
+                    panic!("found IPv6 listen entry on port: {}", parts[1]);
+                }
+            }
+        }
+    }
+
+    let exit_code = srv.stop(libc::SIGINT, Duration::from_secs(5));
+    assert_eq!(exit_code, Some(0));
+}
+
+#[test]
+fn dash03_requests_without_token_are_refused() {
+    let sb = Sandbox::new();
+    let mut srv = sb.serve(&[]);
+
+    // 1. Without cookie -> 401
+    assert_eq!(srv.request("GET", "/", &[], b"").status, 401);
+    assert_eq!(srv.request("GET", "/app.css", &[], b"").status, 401);
+    assert_eq!(
+        srv.request("GET", "/api/runs/1/stream", &[], b"").status,
+        401
+    );
+
+    // 2. With wrong cookie -> 401
+    let bad_cookie = (
+        "Cookie",
+        "agent_brain_token=badtokenbadtokenbadtokenbadtokenbadtokenbadtokenbadtokenbadtoken1234",
+    );
+    assert_eq!(srv.request("GET", "/", &[bad_cookie], b"").status, 401);
+    assert_eq!(
+        srv.request("GET", "/app.css", &[bad_cookie], b"").status,
+        401
+    );
+    assert_eq!(
+        srv.request("GET", "/api/runs/1/stream", &[bad_cookie], b"")
+            .status,
+        401
+    );
+
+    // 3. /?token=<wrong> -> 401
+    let r_bad_token = srv.request(
+        "GET",
+        "/?token=badtokenbadtokenbadtokenbadtokenbadtokenbadtokenbadtokenbadtoken1234",
+        &[],
+        b"",
+    );
+    assert_eq!(r_bad_token.status, 401);
+
+    // 4. /?token=<good> -> 303 Location: / and Set-Cookie
+    let r_good_token = srv.request("GET", &format!("/?token={}", srv.token), &[], b"");
+    assert_eq!(r_good_token.status, 303);
+    assert_eq!(r_good_token.header("Location"), Some("/"));
+    let sc = r_good_token
+        .header("Set-Cookie")
+        .expect("Set-Cookie header");
+    assert!(sc.contains(&format!("agent_brain_token={}", srv.token)));
+    assert!(sc.contains("HttpOnly"));
+    assert!(sc.contains("SameSite=Strict"));
+    assert!(sc.contains("Path=/"));
+    assert!(!sc.contains("Max-Age"));
+
+    // 5. Host other than 127.0.0.1:<port> / localhost:<port> -> 421
+    let r_bad_host = srv.request(
+        "GET",
+        "/",
+        &[("Host", &format!("evil.example:{}", srv.port))],
+        b"",
+    );
+    assert_eq!(r_bad_host.status, 421);
+
+    // 6. POST /api/runs/1/kill
+    // with cookie and Origin: http://evil.example -> 403
+    let cookie_hdr = ("Cookie", srv.cookie.as_str());
+    let r_bad_orig = srv.request(
+        "POST",
+        "/api/runs/1/kill",
+        &[
+            cookie_hdr,
+            ("Origin", "http://evil.example"),
+            ("Content-Type", "application/json"),
+        ],
+        b"{}",
+    );
+    assert_eq!(r_bad_orig.status, 403);
+
+    // without Origin -> 403
+    let r_no_orig = srv.request(
+        "POST",
+        "/api/runs/1/kill",
+        &[cookie_hdr, ("Content-Type", "application/json")],
+        b"{}",
+    );
+    assert_eq!(r_no_orig.status, 403);
+
+    // with good Origin and Content-Type: text/plain -> 415
+    let good_origin = format!("http://127.0.0.1:{}", srv.port);
+    let r_bad_ct = srv.request(
+        "POST",
+        "/api/runs/1/kill",
+        &[
+            cookie_hdr,
+            ("Origin", &good_origin),
+            ("Content-Type", "text/plain"),
+        ],
+        b"{}",
+    );
+    assert_eq!(r_bad_ct.status, 415);
+
+    let exit_code = srv.stop(libc::SIGINT, Duration::from_secs(5));
+    assert_eq!(exit_code, Some(0));
+}
+
+#[test]
+fn dash03_security_headers() {
+    let sb = Sandbox::new();
+    let mut srv = sb.serve(&[]);
+
+    let r_root = srv.get("/");
+    assert_eq!(r_root.status, 200);
+    assert_eq!(
+        r_root.header("Content-Security-Policy"),
+        Some(agent_brain::dashboard::auth::CSP)
+    );
+    assert_eq!(r_root.header("X-Content-Type-Options"), Some("nosniff"));
+    assert_eq!(r_root.header("Referrer-Policy"), Some("no-referrer"));
+
+    let r_api = srv.get("/api/nope");
+    assert_eq!(r_api.status, 404);
+    assert_eq!(
+        r_api.header("Content-Security-Policy"),
+        Some(agent_brain::dashboard::auth::CSP)
+    );
+    assert_eq!(r_api.header("X-Content-Type-Options"), Some("nosniff"));
+    assert_eq!(r_api.header("Referrer-Policy"), Some("no-referrer"));
+    assert_eq!(r_api.header("Cache-Control"), Some("no-store"));
+
+    let exit_code = srv.stop(libc::SIGINT, Duration::from_secs(5));
+    assert_eq!(exit_code, Some(0));
+}
+
+#[test]
+fn dash03_new_token_each_start() {
+    let sb = Sandbox::new();
+    let mut srv1 = sb.serve(&[]);
+    let tok1 = srv1.token.clone();
+    let cookie1 = srv1.cookie.clone();
+    let exit1 = srv1.stop(libc::SIGINT, Duration::from_secs(5));
+    assert_eq!(exit1, Some(0));
+
+    let mut srv2 = sb.serve(&[]);
+    let tok2 = srv2.token.clone();
+    assert_ne!(tok1, tok2, "new start must issue a new token");
+
+    let r = srv2.request("GET", "/", &[("Cookie", &cookie1)], b"");
+    assert_eq!(r.status, 401, "old cookie must be refused by new server");
+
+    let exit2 = srv2.stop(libc::SIGINT, Duration::from_secs(5));
+    assert_eq!(exit2, Some(0));
+}

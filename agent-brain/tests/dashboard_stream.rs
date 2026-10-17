@@ -158,3 +158,207 @@ fn tracer_terminal_run_streams_live_through_gate() {
         "serve stderr should contain 'Đã dừng dashboard.', got:\n{srv_stderr}"
     );
 }
+
+#[test]
+fn dash05_resume_with_last_event_id() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("app", &[("src/main.rs", "fn main() {}")], None, None);
+    let p_entry = sb.project_entry(&repo, "app", "work");
+    sb.write_map(serde_json::json!([p_entry]), &[]);
+
+    let mut conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = sb.read_map();
+    let projs = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&mut conn, &projs).expect("sync_projects");
+    let proj_id = agent_brain::db::project_row_id(&conn, "app").expect("project_row_id");
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        proj_id,
+        "sua-app",
+        "sửa app",
+        "task/sua-app",
+        Some("main"),
+        None,
+    )
+    .expect("upsert_task");
+
+    let pid = std::process::id();
+    let pid_start = agent_brain::procs::proc_id(pid as i32)
+        .map(|p| p.start)
+        .unwrap_or(0);
+    let new_run = agent_brain::db::NewRun {
+        task_id: Some(task_id),
+        project_id: proj_id,
+        role: "lead".to_string(),
+        profile: "work".to_string(),
+        model: Some("opus".to_string()),
+        pid: pid as i64,
+        pgid: pid as i64,
+        pid_start: pid_start as i64,
+        base_commit: None,
+        run_dir: None,
+    };
+    let run_id = agent_brain::db::insert_run(&conn, &new_run).expect("insert_run");
+
+    for seq in 1..=6 {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{ "type": "text", "text": format!("step {seq}") }]
+            }
+        })
+        .to_string();
+        agent_brain::db::insert_event(
+            &conn,
+            run_id,
+            seq,
+            agent_brain::db::now_ms(),
+            "assistant",
+            &raw,
+        )
+        .expect("insert_event");
+    }
+    agent_brain::db::mark_status(&conn, run_id, "succeeded").expect("mark_status");
+
+    let mut srv = sb.serve(&[]);
+    let sse_text = srv.sse(
+        &format!("/api/runs/{run_id}/stream"),
+        Some("3"),
+        "event: end",
+        Duration::from_secs(10),
+    );
+
+    assert!(sse_text.contains("id: 4"), "missing id: 4");
+    assert!(sse_text.contains("id: 5"), "missing id: 5");
+    assert!(sse_text.contains("id: 6"), "missing id: 6");
+    assert!(sse_text.contains("event: end"), "missing event: end");
+
+    let id_lines: Vec<i64> = sse_text
+        .lines()
+        .filter_map(|l| {
+            if l.starts_with("id: ") {
+                l["id: ".len()..].parse::<i64>().ok()
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        id_lines,
+        vec![4, 5, 6],
+        "only ids > 3 should be received when resuming with Last-Event-ID: 3"
+    );
+
+    let exit_code = srv.stop(libc::SIGINT, Duration::from_secs(5));
+    assert_eq!(exit_code, Some(0));
+}
+
+#[test]
+fn d12_external_writer_rows_arrive_live() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("app", &[("src/main.rs", "fn main() {}")], None, None);
+    let p_entry = sb.project_entry(&repo, "app", "work");
+    sb.write_map(serde_json::json!([p_entry]), &[]);
+
+    let mut conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = sb.read_map();
+    let projs = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&mut conn, &projs).expect("sync_projects");
+    let proj_id = agent_brain::db::project_row_id(&conn, "app").expect("project_row_id");
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        proj_id,
+        "sua-app",
+        "sửa app",
+        "task/sua-app",
+        Some("main"),
+        None,
+    )
+    .expect("upsert_task");
+
+    let pid = std::process::id();
+    let pid_start = agent_brain::procs::proc_id(pid as i32)
+        .map(|p| p.start)
+        .unwrap_or(0);
+    let new_run = agent_brain::db::NewRun {
+        task_id: Some(task_id),
+        project_id: proj_id,
+        role: "lead".to_string(),
+        profile: "work".to_string(),
+        model: Some("opus".to_string()),
+        pid: pid as i64,
+        pgid: pid as i64,
+        pid_start: pid_start as i64,
+        base_commit: None,
+        run_dir: None,
+    };
+    let run_id = agent_brain::db::insert_run(&conn, &new_run).expect("insert_run");
+    drop(conn);
+
+    let mut srv = sb.serve(&[]);
+    let db_path = sb.db_path.clone();
+
+    let writer_thread = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        let conn = agent_brain::db::open(&db_path).expect("open db in writer");
+        for seq in 1..=3 {
+            let raw = serde_json::json!({
+                "type": "assistant",
+                "message": {
+                    "content": [{ "type": "text", "text": format!("external step {seq}") }]
+                }
+            })
+            .to_string();
+            agent_brain::db::insert_event(
+                &conn,
+                run_id,
+                seq,
+                agent_brain::db::now_ms(),
+                "assistant",
+                &raw,
+            )
+            .expect("insert event");
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        agent_brain::db::mark_status(&conn, run_id, "succeeded").expect("mark succeeded");
+    });
+
+    let sse_text = srv.sse(
+        &format!("/api/runs/{run_id}/stream"),
+        None,
+        "event: end",
+        Duration::from_secs(10),
+    );
+
+    writer_thread.join().expect("join writer thread");
+
+    let pos1 = sse_text.find("id: 1").expect("id: 1 present");
+    let pos2 = sse_text.find("id: 2").expect("id: 2 present");
+    let pos3 = sse_text.find("id: 3").expect("id: 3 present");
+    let pos_end = sse_text.find("event: end").expect("event: end present");
+
+    assert!(pos1 < pos2, "id: 1 must precede id: 2");
+    assert!(pos2 < pos3, "id: 2 must precede id: 3");
+    assert!(pos3 < pos_end, "id: 3 must precede event: end");
+
+    let exit_code = srv.stop(libc::SIGINT, Duration::from_secs(5));
+    assert_eq!(exit_code, Some(0));
+}
+
+#[test]
+fn sse_unknown_run_is_404() {
+    let sb = Sandbox::new();
+    let mut srv = sb.serve(&[]);
+
+    let resp = srv.get("/api/runs/999/stream");
+    assert_eq!(resp.status, 404);
+    let json = resp.json();
+    assert!(
+        json.get("error").is_some(),
+        "missing error key in 404 response: {:?}",
+        json
+    );
+
+    let exit_code = srv.stop(libc::SIGINT, Duration::from_secs(5));
+    assert_eq!(exit_code, Some(0));
+}
