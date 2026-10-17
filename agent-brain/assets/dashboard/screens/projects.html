@@ -1,0 +1,82 @@
+<section data-screen="projects" x-data="projects" :data-loaded="loadedAttr" class="space-y-6">
+  <div class="flex flex-wrap items-center gap-4">
+    <h1 class="text-2xl font-semibold leading-[1.2]">Dự án</h1>
+    <span role="status" :class="filterClass" x-show="filterChip" x-text="filterChip"></span>
+    <button type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="scanning" @click="rescan" x-text="rescanLabel">Quét lại</button>
+  </div>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Danh sách lấy từ projects_map.json</p>
+
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="stale">Không cập nhật được — đang thử lại...</p>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isLoading">Đang tải...</p>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="hasError">
+    <h2 class="text-xl font-semibold leading-[1.2]">Không tải được dữ liệu</h2>
+    <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="errorBody"></p>
+    <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="reload">Thử lại</button>
+  </div>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700" x-show="isEmpty">
+    <div class="space-y-4 py-12 text-center">
+      <h2 class="text-xl font-semibold leading-[1.2]">Chưa có dự án nào</h2>
+      <p class="text-base font-normal leading-normal text-slate-600 dark:text-slate-400">Bấm Quét lại (cần scan_roots) hoặc chạy agent-brain projects scan --root &lt;thư mục&gt; ở terminal.</p>
+    </div>
+  </div>
+
+  <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-1" x-show="hasDuplicates">
+    <template x-for="d in duplicateLines" :key="d">
+      <p class="text-sm font-normal leading-normal" x-text="d"></p>
+    </template>
+  </div>
+
+  <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 whitespace-pre-wrap break-words text-sm font-normal leading-normal" x-show="hasWarnings" x-text="warningText"></div>
+
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" aria-live="polite" x-show="message" x-text="message"></p>
+
+  <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal leading-normal whitespace-pre-wrap break-words" x-show="error" x-text="error"></div>
+
+  <div class="space-y-2" x-show="scanOut">
+    <p class="text-sm font-semibold leading-normal" x-text="scanTitle"></p>
+    <div class="rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all whitespace-pre-wrap text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-text="scanText"></div>
+  </div>
+
+  <div class="space-y-4">
+    <template x-for="p in projects" :key="p.id">
+      <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <h2 class="text-xl font-semibold leading-[1.2] break-words" x-text="p.name_vi"></h2>
+          <span :class="profileClass(p.profile)" x-text="p.profile"></span>
+          <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200" x-show="p.missing">thiếu thư mục</span>
+        </div>
+        <div class="flex flex-wrap gap-2 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
+          <span class="font-mono break-all" x-text="p.id"></span>
+          <span>·</span>
+          <span class="font-mono break-all" x-text="p.path"></span>
+          <span>·</span>
+          <span x-text="p.type"></span>
+        </div>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Profile chỉ đổi trong projects_map.json</p>
+        <div class="flex flex-wrap items-center gap-2" x-show="notEditing(p)">
+          <template x-for="a in p.aliases" :key="a">
+            <span class="rounded-full bg-slate-100 px-2 py-1 text-sm text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="a"></span>
+          </template>
+          <span class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noAliases(p)">Chưa có alias</span>
+          <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="startEdit(p)">Sửa alias</button>
+        </div>
+        <div class="space-y-2" x-show="isEditing(p)">
+          <label :for="aliasId(p)" class="text-sm font-semibold leading-normal">Alias</label>
+          <input type="text" :id="aliasId(p)" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="aliasText">
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Các alias cách nhau bằng dấu phẩy</p>
+          <div class="flex flex-wrap gap-2">
+            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="saving" @click="save" x-text="saveLabel">Lưu alias</button>
+            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="cancelEdit">Hủy sửa alias</button>
+          </div>
+        </div>
+        <div class="space-y-2">
+          <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="p.missing" :title="statusTitle(p)" @click="showStatus(p)">Trạng thái git</button>
+          <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal leading-normal whitespace-pre-wrap break-words" x-show="isStatusOpen(p) && statusError" x-text="statusError"></div>
+          <div class="rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all whitespace-pre-wrap text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-show="isStatusOpen(p) && status" x-text="statusText"></div>
+        </div>
+      </div>
+    </template>
+  </div>
+</section>
