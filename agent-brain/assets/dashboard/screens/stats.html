@@ -1,0 +1,113 @@
+<section data-screen="stats" x-data="stats" :data-loaded="loadedAttr" class="space-y-6">
+  <div class="flex flex-wrap items-center gap-4">
+    <h1 class="text-2xl font-semibold leading-[1.2]">Thống kê</h1>
+    <span role="status" :class="filterClass" x-show="filterChip" x-text="filterChip"></span>
+    <div class="ml-auto flex flex-wrap items-center gap-2">
+      <label for="ab-since" class="text-sm font-semibold leading-normal">Khoảng thời gian</label>
+      <select id="ab-since" x-model="since" @change="sinceChanged" class="w-auto min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+        <option value="7d">7 ngày</option>
+        <option value="30d">30 ngày</option>
+        <option value="">Tất cả</option>
+      </select>
+    </div>
+  </div>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Chi phí là giá trị tương đương theo API, không phải hóa đơn</p>
+
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="stale">Không cập nhật được — đang thử lại...</p>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isLoading">Đang tải...</p>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="hasError">
+    <h2 class="text-xl font-semibold leading-[1.2]">Không tải được dữ liệu</h2>
+    <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="errorBody"></p>
+    <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="reload">Thử lại</button>
+  </div>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700" x-show="isEmpty">
+    <div class="space-y-4 py-12 text-center">
+      <h2 class="text-xl font-semibold leading-[1.2]">Chưa có run nào trong khoảng này</h2>
+      <p class="text-base font-normal leading-normal text-slate-600 dark:text-slate-400">Chạy một task từ Giao việc hoặc agent-brain run, hoặc chọn khoảng thời gian dài hơn.</p>
+    </div>
+  </div>
+
+  <div class="space-y-6" x-show="hasData">
+    <div class="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+        <p class="text-sm font-semibold leading-normal">Số run</p>
+        <p class="text-2xl font-semibold leading-[1.2] break-words" x-text="totalRuns"></p>
+      </div>
+      <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+        <p class="text-sm font-semibold leading-normal">Token vào</p>
+        <p class="text-2xl font-semibold leading-[1.2] break-words" x-text="totalIn"></p>
+      </div>
+      <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+        <p class="text-sm font-semibold leading-normal">Token ra</p>
+        <p class="text-2xl font-semibold leading-[1.2] break-words" x-text="totalOut"></p>
+      </div>
+      <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+        <p class="text-sm font-semibold leading-normal">Cache đọc / ghi</p>
+        <p class="text-2xl font-semibold leading-[1.2] break-words" x-text="totalCache"></p>
+      </div>
+      <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+        <p class="text-sm font-semibold leading-normal">Chi phí ≈</p>
+        <p class="text-2xl font-semibold leading-[1.2] break-words" x-text="totalCost"></p>
+      </div>
+    </div>
+
+    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Theo ngày</h2>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="peakText"></p>
+      <div class="flex h-40 items-end gap-1">
+        <template x-for="d in days" :key="d.day">
+          <div role="img" class="flex h-full min-w-0 max-w-16 flex-1 flex-col justify-end" :title="rowTitle(d)" :aria-label="rowTitle(d)">
+            <div class="w-full rounded-t-md bg-indigo-500 dark:bg-indigo-400" :style="colStyle(d)"></div>
+          </div>
+        </template>
+      </div>
+      <div class="flex gap-1">
+        <template x-for="(d, i) in days" :key="d.day">
+          <span class="min-w-0 max-w-16 flex-1" :class="dayLabelClass(i)" x-text="dayLabel(d)"></span>
+        </template>
+      </div>
+    </div>
+
+    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Theo profile</h2>
+      <template x-for="r in profiles" :key="r.profile">
+        <div class="grid grid-cols-[8rem_1fr_auto] items-center gap-4" :title="barTitle(profileName(r), r)">
+          <span class="truncate leading-normal" :title="profileName(r)" x-text="profileName(r)"></span>
+          <div class="h-4 rounded-full bg-slate-100 dark:bg-slate-700">
+            <div class="h-4 rounded-full bg-indigo-500 dark:bg-indigo-400" :style="profileBar(r)"></div>
+          </div>
+          <span class="text-right text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="rowNumbers(r)"></span>
+        </div>
+      </template>
+    </div>
+
+    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Theo dự án</h2>
+      <template x-for="r in projects" :key="r.project">
+        <div class="grid grid-cols-[8rem_1fr_auto] items-center gap-4" :title="barTitle(projectName(r), r)">
+          <span class="truncate leading-normal" :title="projectName(r)" x-text="projectName(r)"></span>
+          <div class="h-4 rounded-full bg-slate-100 dark:bg-slate-700">
+            <div class="h-4 rounded-full bg-indigo-500 dark:bg-indigo-400" :style="projectBar(r)"></div>
+          </div>
+          <span class="text-right text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="rowNumbers(r)"></span>
+        </div>
+      </template>
+      <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasMoreProjects" @click="showAll">Hiện tất cả</button>
+    </div>
+
+    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Theo vai trò</h2>
+      <template x-for="r in roles" :key="r.role">
+        <div class="grid grid-cols-[8rem_1fr_auto] items-center gap-4" :title="barTitle(roleLabel(r), r)">
+          <span class="truncate leading-normal" :title="roleLabel(r)" x-text="roleLabel(r)"></span>
+          <div class="h-4 rounded-full bg-slate-100 dark:bg-slate-700">
+            <div class="h-4 rounded-full bg-indigo-500 dark:bg-indigo-400" :style="roleBar(r)"></div>
+          </div>
+          <span class="text-right text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="rowNumbers(r)"></span>
+        </div>
+      </template>
+    </div>
+  </div>
+</section>
