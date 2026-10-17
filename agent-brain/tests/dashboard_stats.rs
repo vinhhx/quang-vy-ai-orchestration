@@ -218,7 +218,8 @@ fn query_by_day_in_midnight() {
     insert_run(222, 0.22, t2);
 
     let tz = chrono::FixedOffset::east_opt(7 * 3600).expect("tz +07:00");
-    let days = agent_brain::stats::query_by_day_in(&conn, None, None, &tz).expect("query_by_day_in");
+    let days =
+        agent_brain::stats::query_by_day_in(&conn, None, None, &tz).expect("query_by_day_in");
 
     assert_eq!(days.len(), 2);
     assert_eq!(days[0].day, "2026-10-16");
@@ -238,8 +239,7 @@ fn query_by_day_and_profile_filters() {
     let conn = seed_stats_data(&sb);
 
     // query_by_day with profile Some("work") excludes personal runs
-    let work_days =
-        agent_brain::stats::query_by_day(&conn, Some("work"), None).expect("work days");
+    let work_days = agent_brain::stats::query_by_day(&conn, Some("work"), None).expect("work days");
     let total_work_runs: i64 = work_days.iter().map(|d| d.totals.runs).sum();
     assert_eq!(total_work_runs, 4);
 

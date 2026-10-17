@@ -28,6 +28,20 @@ pub struct RoleStats {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DayStats {
+    pub day: String,
+    #[serde(flatten)]
+    pub totals: Totals,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProfileStats {
+    pub profile: String,
+    #[serde(flatten)]
+    pub totals: Totals,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StatsFilter {
     pub profile: Option<String>,
     pub since: Option<String>,
@@ -174,6 +188,117 @@ pub fn query_report(
         by_project,
         by_role,
     })
+}
+
+pub fn day_key<Tz: chrono::TimeZone>(ms: i64, tz: &Tz) -> String {
+    match tz.timestamp_millis_opt(ms).single() {
+        Some(dt) => dt.date_naive().format("%Y-%m-%d").to_string(),
+        None => {
+            let dt =
+                chrono::DateTime::from_timestamp_millis(ms).unwrap_or(chrono::DateTime::UNIX_EPOCH);
+            dt.date_naive().format("%Y-%m-%d").to_string()
+        }
+    }
+}
+
+pub fn query_by_day_in<Tz: chrono::TimeZone>(
+    conn: &Connection,
+    profile: Option<&str>,
+    since_ms: Option<i64>,
+    tz: &Tz,
+) -> BrainResult<Vec<DayStats>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+            runs.started_at,
+            runs.input_tokens,
+            runs.output_tokens,
+            runs.cache_read_tokens,
+            runs.cache_write_tokens,
+            runs.cost_usd
+         FROM runs
+         WHERE (?1 IS NULL OR runs.profile = ?1)
+           AND (?2 IS NULL OR runs.started_at >= ?2)",
+    )?;
+
+    let mut map: std::collections::BTreeMap<String, Totals> = std::collections::BTreeMap::new();
+    let mut rows = stmt.query(params![profile, since_ms])?;
+    while let Some(r) = rows.next()? {
+        let started_at: i64 = r.get(0)?;
+        let in_tok: i64 = r.get(1)?;
+        let out_tok: i64 = r.get(2)?;
+        let cache_read: i64 = r.get(3)?;
+        let cache_write: i64 = r.get(4)?;
+        let cost: f64 = r.get(5)?;
+
+        let key = day_key(started_at, tz);
+        let entry = map.entry(key).or_insert(Totals {
+            runs: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost_usd: 0.0,
+        });
+        entry.runs += 1;
+        entry.input_tokens += in_tok;
+        entry.output_tokens += out_tok;
+        entry.cache_read_tokens += cache_read;
+        entry.cache_write_tokens += cache_write;
+        entry.cost_usd += cost;
+    }
+
+    Ok(map
+        .into_iter()
+        .map(|(day, totals)| DayStats { day, totals })
+        .collect())
+}
+
+pub fn query_by_day(
+    conn: &Connection,
+    profile: Option<&str>,
+    since_ms: Option<i64>,
+) -> BrainResult<Vec<DayStats>> {
+    query_by_day_in(conn, profile, since_ms, &chrono::Local)
+}
+
+pub fn query_by_profile(
+    conn: &Connection,
+    profile: Option<&str>,
+    since_ms: Option<i64>,
+) -> BrainResult<Vec<ProfileStats>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+            runs.profile,
+            COUNT(*),
+            COALESCE(SUM(runs.input_tokens), 0),
+            COALESCE(SUM(runs.output_tokens), 0),
+            COALESCE(SUM(runs.cache_read_tokens), 0),
+            COALESCE(SUM(runs.cache_write_tokens), 0),
+            COALESCE(SUM(runs.cost_usd), 0.0)
+         FROM runs
+         WHERE (?1 IS NULL OR runs.profile = ?1)
+           AND (?2 IS NULL OR runs.started_at >= ?2)
+         GROUP BY runs.profile
+         ORDER BY runs.profile",
+    )?;
+
+    let by_profile = stmt
+        .query_map(params![profile, since_ms], |r| {
+            Ok(ProfileStats {
+                profile: r.get(0)?,
+                totals: Totals {
+                    runs: r.get(1)?,
+                    input_tokens: r.get(2)?,
+                    output_tokens: r.get(3)?,
+                    cache_read_tokens: r.get(4)?,
+                    cache_write_tokens: r.get(5)?,
+                    cost_usd: r.get(6)?,
+                },
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(by_profile)
 }
 
 pub fn query_stats(
