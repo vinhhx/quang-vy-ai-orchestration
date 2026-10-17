@@ -271,3 +271,202 @@ Kết quả nghiệm thu sẽ được người dùng điền vào bảng tổng
      ```
 - **Kết quả mong đợi**: File chỉ xuất hiện dưới đường dẫn `~/.claude-orca/projects/...`, tuyệt đối không có file nào dưới `~/.claude/projects/...`.
 - **Ghi nhận**: Điền `Đạt` vào dòng `E-06` trong `protocol-log/nghiem-thu-p2.md`.
+
+---
+
+## 3. Nghiệm thu dashboard (Phase 5 / P4-01..P4-10)
+
+Quy trình nghiệm thu các chức năng của giao diện web nhúng `agent-brain serve`. Kết quả được người dùng ghi nhận vào bảng tổng hợp tại [`protocol-log/nghiem-thu-p4.md`](../protocol-log/nghiem-thu-p4.md).
+
+> [!CAUTION]
+> **Nhắc nhở an toàn tiến trình**: Các tiến trình agent con chỉ được dừng thông qua nút **Kill** trên giao diện dashboard, tổ hợp phím **Ctrl+C** trên terminal hoặc đóng cửa sổ terminal. Tuyệt đối không dùng các lệnh dừng tiến trình hàng loạt theo tên. Kiểm tra tiến trình bằng `ps -p` với danh sách PID cụ thể đã ghi nhận.
+
+---
+
+### P4-01: Chạy binary và mở dashboard
+- **Mục tiêu**: Mở được dashboard trong trình duyệt từ lệnh `agent-brain serve` mà không cần cài đặt thêm bất kỳ phần mềm hay runtime nào, tất cả 5 màn hình tải đầy đủ và đúng kiểu dáng.
+- **Tiền điều kiện**: Dự án `/mnt/data/IDE/du-an-nhap` ở nhánh `main` sạch sẽ.
+- **Lệnh thực hiện**:
+  ```bash
+  agent-brain serve
+  ```
+- **Quan sát & Kết quả mong đợi**:
+  1. Terminal in dòng thông báo khởi động kèm URL chứa token:
+     `agent-brain dashboard: http://127.0.0.1:7437/?token=TOKEN`
+  2. Mở URL trên trong trình duyệt: server tự chuyển hướng `303 See Other` về `/`, cấp cookie phiên `agent_brain_token` và hiển thị màn hình **Tổng quan** (`#/`).
+  3. Lần lượt bấm chuyển qua 4 màn hình còn lại trên thanh điều hướng:
+     - **Giao việc** (`#/assign`)
+     - **Chi tiết task** (`#/task/...`)
+     - **Thống kê** (`#/stats`)
+     - **Dự án** (`#/projects`)
+  4. Mọi màn hình tải nhanh chóng, hiển thị đúng stylesheet Tailwind CSS ngoại tuyến, không lỗi bố cục, không có thông báo vi phạm CSP trong bảng điều khiển (Console) của trình duyệt.
+- **Ghi nhận**: Điền `Đạt` vào dòng `P4-01` trong `protocol-log/nghiem-thu-p4.md`.
+- **Dọn dẹp**: Nhấn Ctrl+C trên terminal để dừng `serve`.
+
+---
+
+### P4-02: Truy cập từ máy khác trong mạng LAN
+- **Mục tiêu**: Đảm bảo dashboard chỉ lắng nghe cục bộ trên `127.0.0.1`, không thể truy cập từ thiết bị khác trong mạng LAN.
+- **Lệnh thực hiện**:
+  1. Khởi động dashboard trên máy chạy:
+     ```bash
+     agent-brain serve
+     ```
+  2. Kiểm tra cổng lắng nghe tại terminal:
+     ```bash
+     ss -ltnp | grep 7437
+     ```
+  3. Từ một máy tính khác trong cùng mạng LAN (hoặc dùng một terminal riêng thử kết nối tới IP LAN của máy này):
+     ```bash
+     curl -m 5 http://<IP LAN của máy này>:7437/
+     ```
+- **Kết quả mong đợi**:
+  - Lệnh `ss` chỉ hiển thị địa chỉ cục bộ `127.0.0.1:7437` (hoặc `127.0.0.1:PORT`), tuyệt đối không có `0.0.0.0:7437` hay `*:7437`.
+  - Lệnh `curl` từ máy ngoài thất bại với lỗi `Connection refused` hoặc quá thời gian chờ (timeout).
+- **Ghi nhận**: Điền `Đạt` vào dòng `P4-02` trong `protocol-log/nghiem-thu-p4.md`.
+- **Dọn dẹp**: Nhấn Ctrl+C để dừng `serve`.
+
+---
+
+### P4-03: Truy cập không có token
+- **Mục tiêu**: Xác thực cơ chế phòng vệ chặn truy cập khi thiếu token hoặc cookie phiên (mã 401).
+- **Lệnh thực hiện**:
+  1. Khởi động: `agent-brain serve`.
+  2. Mở một cửa sổ trình duyệt ẩn danh (Incognito/Private) và truy cập thẳng địa chỉ:
+     `http://127.0.0.1:7437/` (không truyền tham số `?token=`).
+  3. Dừng server trên terminal bằng Ctrl+C, sau đó khởi động lại bằng `agent-brain serve` (server sinh token mới ngẫu nhiên). Quay lại tab trình duyệt cũ đã từng đăng nhập thành công trước đó và bấm F5 tải lại trang.
+- **Kết quả mong đợi**:
+  - Tại bước 2: Trình duyệt nhận trang lỗi `401 Unauthorized` với thông điệp: "Thiếu hoặc sai token — mở URL có token in ở terminal chạy agent-brain serve".
+  - Tại bước 3: Tab cũ nhận mã 401 do cookie phiên từ lần chạy trước không còn hiệu lực.
+- **Ghi nhận**: Điền `Đạt` vào dòng `P4-03` trong `protocol-log/nghiem-thu-p4.md`.
+- **Dọn dẹp**: Dừng `serve` bằng Ctrl+C.
+
+---
+
+### P4-04: Giao việc từ UI
+- **Mục tiêu**: Kiểm tra quy trình giao việc bằng tiếng Việt từ giao diện web, theo dõi dòng sự kiện thời gian thực và chuyển tiếp các bước Lead → Dev → QA.
+- **Tiền điều kiện**: Repo `/mnt/data/IDE/du-an-nhap` ở nhánh `main` sạch sẽ.
+- **Lệnh thực hiện**:
+  1. Khởi động: `agent-brain serve`. Mở URL được cấp trên trình duyệt.
+  2. Chuyển sang màn hình **Giao việc** (`#/assign`).
+  3. Chọn dự án `dự án nháp` trong danh sách tìm kiếm gợi ý.
+  4. Nhập nội dung yêu cầu tiếng Việt:
+     `thêm hàm tính bình phương vào src/calc.py`
+  5. Bấm nút **Giao việc cho Lead**.
+  6. Giao diện tự động chuyển tới màn hình **Chi tiết task**:
+     - Quan sát hộp log hiển thị các sự kiện trực tiếp từ Claude qua SSE.
+     - Bước Lead hiển thị trạng thái `đang chạy`, sau khi hoàn thành chuyển sang `xong`.
+     - Xuất hiện biểu ngữ (banner) trạng thái `Chờ duyệt plan` và nội dung file kế hoạch `.plan.md` ở chế độ chỉ đọc.
+  7. Bấm nút **Chạy Dev**: Quan sát bước Dev chuyển sang `đang chạy`, sau khi thực hiện xong chuyển thành `dev_done`.
+  8. Bấm nút **Chạy QA**: Quan sát bước QA thực thi kiểm thử và chuyển thành Đạt (`qa_pass`).
+- **Kết quả mong đợi**: Pipeline hoàn thành đầy đủ 3 bước qua các thao tác bấm nút trên web, trạng thái cập nhật tự động theo thời gian thực.
+- **Ghi nhận**: Điền `Đạt` vào dòng `P4-04` trong `protocol-log/nghiem-thu-p4.md`.
+- **Dọn dẹp**:
+  ```bash
+  git -C /mnt/data/IDE/du-an-nhap checkout -f main
+  git -C /mnt/data/IDE/du-an-nhap branch -D task/them-ham-tinh-binh-phuong-vao-srccalcpy || true
+  ```
+
+---
+
+### P4-05: Reload trang giữa chừng
+- **Mục tiêu**: Đảm bảo khi tải lại trang web lúc task đang chạy, hệ thống đọc lại toàn bộ nhật ký sự kiện cũ từ SQLite và tiếp tục nhận các sự kiện mới qua kết nối SSE mà không bị gián đoạn.
+- **Lệnh thực hiện**:
+  1. Trong khi một bước của task đang chạy và log đang hiển thị trực tiếp (ví dụ khi Lead hoặc Dev đang xử lý ở P4-04), nhấn phím F5 hoặc nút Reload của trình duyệt.
+- **Kết quả mong đợi**: Trang web tải lại tức thì, toàn bộ các dòng sự kiện trước đó được nạp lại đầy đủ từ SQLite qua API `/api/runs/:id/events`, sau đó kết nối SSE tự động tái thiết lập và các dòng log mới tiếp tục hiển thị nối tiếp mượt mà.
+- **Ghi nhận**: Điền `Đạt` vào dòng `P4-05` trong `protocol-log/nghiem-thu-p4.md`.
+
+---
+
+### P4-06: Bấm Kill từ UI (cây tiến trình sleep 307)
+- **Mục tiêu**: Đảm bảo nút Kill trên giao diện ngắt sạch toàn bộ cây tiến trình con (Claude CLI, bash và lệnh con chạy nền), không để sót bất kỳ tiến trình mồ côi nào (tương tự kiểm thử P2-02).
+- **Chuẩn bị cấu hình wrapper**:
+  ```bash
+  python3 -c "import json, os; c = json.load(open('agent-brain/assets/config.default.json')); c['claude_bin'] = os.path.abspath('scripts/live/claude-allow-sleep.sh'); json.dump(c, open('/tmp/ab-live.json', 'w'), indent=2)"
+  ```
+- **Lệnh thực hiện (Ca 1 — Kill tác vụ khởi tạo từ UI)**:
+  1. Khởi động dashboard với cấu hình wrapper:
+     ```bash
+     AGENT_BRAIN_CONFIG=/tmp/ab-live.json agent-brain serve
+     ```
+  2. Mở dashboard trên trình duyệt, vào màn hình **Giao việc**, chọn `dự án nháp`, nhập yêu cầu giữ tiến trình:
+     `Trước khi làm gì khác, chạy đúng lệnh bash này ở foreground (KHÔNG dùng run_in_background) và chờ nó xong: python3 -c 'import time; time.sleep(307)'`
+     với tên slug `p406-kill`.
+  3. Bấm nút **Giao việc cho Lead**.
+  4. Khi thấy dòng sự kiện `tool Bash python3 -c 'import time; time.sleep(307)'` xuất hiện trên khung log của UI, mở một cửa sổ terminal khác và kiểm tra cây tiến trình:
+     ```bash
+     ps -eo pid,ppid,pgid,sid,args --forest | grep -A3 '[a]gent-brain'
+     ```
+     Ghi lại chính xác 3 PID: tiến trình `claude`, tiến trình `bash` và tiến trình `python3`.
+  5. Quay lại trình duyệt, nhấp nút **Kill** màu đỏ trên màn hình Chi tiết task.
+  6. Chờ 5 giây (`sleep 5`), sau đó kiểm tra lại các PID đã ghi nhận tại terminal:
+     ```bash
+     ps -p <claude>,<bash>,<python> -o pid,args
+     ```
+- **Lệnh thực hiện (Ca 2 — Kill tác vụ khởi tạo từ terminal thông qua UI)**:
+  1. Giữ dashboard đang chạy. Mở một terminal khác và khởi chạy task:
+     ```bash
+     AGENT_BRAIN_CONFIG=/tmp/ab-live.json agent-brain run lead "dự án nháp" "Trước khi làm gì khác, chạy đúng lệnh bash này ở foreground (KHÔNG dùng run_in_background) và chờ nó xong: python3 -c 'import time; time.sleep(307)'" --name p406-term-kill
+     ```
+  2. Trên giao diện dashboard, vào màn hình **Tổng quan** hoặc **Chi tiết task**, thấy task mới xuất hiện và đang chạy.
+  3. Ghi lại các PID của tác vụ này bằng `ps -eo pid,ppid,pgid,sid,args --forest`.
+  4. Bấm nút **Kill** trên giao diện dashboard.
+  5. Sau 5 giây, kiểm tra lại danh sách PID.
+- **Kết quả mong đợi**:
+  - Ở cả hai ca, lệnh `ps -p` chỉ in duy nhất dòng tiêu đề `PID ARGS`, toàn bộ các tiến trình liên quan đã được dọn sạch hoàn toàn.
+  - Trên giao diện UI, bước thực thi chuyển sang trạng thái `killed`.
+- **Ghi nhận**: Điền `Đạt` vào dòng `P4-06` trong `protocol-log/nghiem-thu-p4.md`.
+- **Dọn dẹp**:
+  ```bash
+  git -C /mnt/data/IDE/du-an-nhap checkout -f main
+  git -C /mnt/data/IDE/du-an-nhap branch -D task/p406-kill || true
+  git -C /mnt/data/IDE/du-an-nhap branch -D task/p406-term-kill || true
+  rm -f /mnt/data/IDE/du-an-nhap/.plan.md
+  ```
+
+---
+
+### P4-07: Tên dự án mơ hồ trên UI
+- **Mục tiêu**: Kiểm tra hàng rào chống mơ hồ (Ambiguity gate) trên giao diện Giao việc: không tự ý chạy khi có nhiều hơn một dự án trùng khớp.
+- **Chuẩn bị dữ liệu thử nghiệm**:
+  Mở file `~/.config/agent-brain/projects_map.json` và tạm thời thêm alias `"nháp"` vào một dự án thứ hai khác ngoài `dự án nháp`.
+- **Lệnh thực hiện**:
+  1. Mở màn hình **Giao việc** (`#/assign`).
+  2. Gõ chữ `"nháp"` vào ô tìm kiếm Dự án.
+- **Quan sát & Kết quả mong đợi**:
+  Hộp gợi ý xổ xuống hiển thị cả 2 ứng viên cùng có alias `"nháp"`. Hệ thống hiển thị cảnh báo mơ hồ và giữ nút giao việc ở trạng thái vô hiệu hóa. Tác vụ chỉ có thể được tạo khi người dùng nhấp chuột chọn đích danh một dự án trong danh sách.
+- **Ghi nhận**: Điền `Đạt` vào dòng `P4-07` trong `protocol-log/nghiem-thu-p4.md`.
+- **Dọn dẹp**: Xóa bỏ alias tạm thời trong `projects_map.json` để trả về trạng thái chuẩn.
+
+---
+
+### P4-08: Đổi profile
+- **Mục tiêu**: Kiểm tra cơ chế lọc tầm nhìn theo hồ sơ (`Tất cả`, `work`, `personal`) và tính bất biến của profile dự án khi giao việc mới.
+- **Lệnh thực hiện**:
+  1. Trên thanh điều hướng, lần lượt bấm chọn bộ lọc `Tất cả`, `work` và `personal`.
+  2. Quan sát danh sách task tại trang **Tổng quan**, số liệu tại trang **Thống kê** và danh sách gợi ý tại trang **Giao việc**.
+  3. Khi đang chọn bộ lọc `personal`, vào trang **Giao việc** và chọn `dự án nháp` (vốn có cấu hình `profile: "work"` trong `projects_map.json`), khởi tạo một task mới.
+- **Quan sát & Kết quả mong đợi**:
+  - Các màn hình chỉ hiển thị đúng các mục tương ứng với profile đã chọn.
+  - Task mới tạo cho `dự án nháp` vẫn được thực thi bằng profile `work` (biến `CLAUDE_CONFIG_DIR` không bị ép sang `~/.claude-orca`), minh chứng rằng bộ chọn trên UI chỉ là bộ lọc giao diện chứ không ghi đè profile cấu hình của dự án.
+- **Ghi nhận**: Điền `Đạt` vào dòng `P4-08` trong `protocol-log/nghiem-thu-p4.md`.
+
+---
+
+### P4-09: Tắt mạng internet
+- **Mục tiêu**: Đảm bảo toàn bộ tài nguyên của dashboard (HTML, CSS, JS) hoạt động 100% ngoại tuyến, không bị phụ thuộc vào kết nối internet.
+- **Lệnh thực hiện**:
+  1. Ngắt kết nối mạng (rút cáp mạng, tắt Wi-Fi hoặc chạy `nmcli networking off`).
+  2. Tải lại và chuyển đổi giữa tất cả các màn hình của dashboard (`#/`, `#/assign`, `#/task/...`, `#/stats`, `#/projects`).
+  3. Bật lại mạng (`nmcli networking on`).
+- **Quan sát & Kết quả mong đợi**:
+  Tất cả các màn hình, phông chữ, bảng màu Tailwind và biểu đồ thanh CSS hiển thị hoàn hảo, không có bất kỳ yêu cầu mạng nào bị thất bại hay giao diện bị vỡ kiểu dáng.
+- **Ghi nhận**: Điền `Đạt` vào dòng `P4-09` trong `protocol-log/nghiem-thu-p4.md`.
+
+---
+
+### P4-10: So sánh UI với thiết kế (nếu có Figma)
+- **Mục tiêu**: Đối chiếu với bản thiết kế Figma gốc.
+- **Kết quả**: Không áp dụng. Căn cứ theo quyết định thiết kế D-18, dự án không xây dựng bản thiết kế Figma trước, giao diện được phát triển theo đặc tả UI-SPEC trực tiếp.
+- **Ghi nhận**: Điền `Không áp dụng` vào dòng `P4-10` trong `protocol-log/nghiem-thu-p4.md` kèm ghi chú `D-18: chưa có thiết kế Figma`.
+

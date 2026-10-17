@@ -49,6 +49,7 @@ agent-brain --version
 | **kill** | `agent-brain kill TASK_ID` | Dừng an toàn một task đang chạy theo `TASK_ID` (dựa trên PID và thời điểm khởi tạo trong DB), gửi SIGINT và dọn sạch cây tiến trình con. |
 | **stats** | `agent-brain stats [--profile P] [--since Nm\|Nh\|Nd] [--json]` | Báo cáo thống kê lượt chạy, thời gian, số token tiêu thụ và chi phí tương đương từ SQLite. Hỗ trợ lọc theo profile và thời gian. |
 | **guard** | `agent-brain guard --policy FILE` | Hook nội bộ do Claude CLI gọi qua `--settings`: kiểm tra quyền đọc/ghi từng file theo policy allowlist của plan. |
+| **serve** | `agent-brain serve [--port N]` | Mở dashboard web trong chính binary, chỉ 127.0.0.1, có token. Cổng mặc định 7437, `--port 0` để hệ điều hành tự chọn. |
 
 ---
 
@@ -120,7 +121,8 @@ agent-brain --version
   },
   "runs_dir": null,
   "kill_grace_secs": 3,
-  "inspect_max_diff_bytes": 100000
+  "inspect_max_diff_bytes": 100000,
+  "dashboard_port": 7437
 }
 ```
 
@@ -134,6 +136,7 @@ agent-brain --version
 - `runs_dir`: Thư mục lưu log chi tiết từng run (mặc định `~/.local/share/agent-brain/runs/`).
 - `kill_grace_secs`: Thời gian chờ (mặc định `3` giây) giữa tín hiệu SIGINT ban đầu và tín hiệu SIGKILL cưỡng chế khi dừng tiến trình.
 - `inspect_max_diff_bytes`: Giới hạn dung lượng diff tối đa (100.000 byte) gửi cho Claude khi `inspect` (tránh tràn token).
+- `dashboard_port`: Cổng lắng nghe mặc định của dashboard web (mặc định `7437`). Thứ tự ưu tiên: cờ `--port` trên dòng lệnh > `dashboard_port` trong file cấu hình > cổng mặc định 7437; truyền `--port 0` để hệ điều hành tự chọn một cổng ngẫu nhiên chưa sử dụng.
 
 ---
 
@@ -211,8 +214,101 @@ cargo test --manifest-path agent-brain/Cargo.toml --offline --locked -- --test-t
 python3 -m unittest discover -s tests -t . -q
 ```
 
+Bao gồm các bài kiểm thử tự động cho lõi điều phối và dashboard:
+- `tests/dashboard_http.rs`: Kiểm tra handshake xác thực bằng token trên query param `/?token=TOKEN` (chuyển hướng 303 và cấp cookie), kiểm tra từ chối 401 khi thiếu cookie, chặn Host header lạ (421 Misdirected Request) và các route API JSON.
+- `tests/dashboard_assets.rs`: Kiểm tra các file tĩnh nhúng trong binary (HTML, CSS Tailwind đã build, JS Alpine) tải thành công với Content-Type phù hợp và trả về 404 cho đường dẫn không tồn tại.
+- `tests/dashboard_run.rs`, `tests/dashboard_pipeline.rs`: Kiểm tra vòng đời chạy và chuyển trạng thái của task Lead → Dev → QA từ dashboard.
+- `tests/dashboard_stream.rs`: Kiểm tra kênh truyền log sự kiện theo thời gian thực qua Server-Sent Events (SSE).
+- `tests/dashboard_kill.rs`: Kiểm tra endpoint `/api/runs/:id/kill` dừng an toàn tiến trình và dọn dẹp cây tiến trình.
+- `tests/dashboard_projects.rs`: Kiểm tra API danh sách dự án, cập nhật alias, quét repo và phát hiện tên trùng lặp.
+- `tests/dashboard_stats.rs`: Kiểm tra báo cáo thống kê token theo ngày, vai trò và profile qua API.
+
 ---
 
 ## 13. Giả định CLI Claude Code mở
 
 - **Giả định A1 (`--max-turns`)**: Cờ `--max-turns` không xuất hiện trong `claude --help` phiên bản 2.1.301 nhưng vẫn được CLI chấp nhận và xử lý giới hạn lượt ở chế độ non-interactive. Giả định này được đưa vào kiểm chứng thực tế trong tài liệu nghiệm thu `LIVE-CHECKS.md`.
+
+---
+
+## 14. Dashboard web (agent-brain serve)
+
+Lệnh `agent-brain serve [--port N]` khởi động giao diện web nội bộ được nhúng sẵn hoàn toàn bên trong binary, phục vụ việc theo dõi thời gian thực, giao việc, xem tiến trình pipeline và thống kê chi phí mà không cần cài đặt Node.js hay bất kỳ máy chủ ngoài nào.
+
+### Khởi động & Cơ chế chứng thực (Token & Cookie)
+- **Khởi động**: Chạy lệnh trên terminal:
+  ```bash
+  agent-brain serve
+  ```
+  Binary sẽ in URL chứa token truy cập một lần:
+  ```text
+  agent-brain dashboard: http://127.0.0.1:7437/?token=TOKEN
+  Mở URL trên trong trình duyệt. Nhấn Ctrl+C để dừng dashboard (các run do dashboard khởi chạy cũng dừng theo).
+  ```
+- **Mở đúng máy chủ `127.0.0.1`**: Luôn mở địa chỉ `http://127.0.0.1:PORT/?token=TOKEN` (cookie gắn với host cụ thể; không dùng `localhost`).
+- **Cơ chế token & session cookie**: Token ngẫu nhiên (32 byte hex = 64 ký tự từ `/dev/urandom`) được sinh mới mỗi lần chạy `serve` và **không bao giờ ghi xuống đĩa**. Khi trình duyệt gửi yêu cầu `GET /?token=TOKEN`, server xác thực và phản hồi `303 See Other` về `/` kèm cookie phiên `agent_brain_token` với cờ `HttpOnly; SameSite=Strict; Path=/`. Mọi yêu cầu tiếp theo xác thực qua cookie này. Truy cập không có cookie hoặc sai token bị từ chối `401 Unauthorized`.
+- **Đơn phiên (Single Instance)**: Chỉ cho phép một phiên bản `serve` chạy tại một thời điểm trên cùng thư mục dữ liệu (bảo vệ bằng file khóa `serve.lock` ghi PID và port). Khi khởi động phiên thứ hai, server từ chối ngay với thông báo nêu rõ PID và cổng đang chạy.
+- **Dừng an toàn & Giám sát tiến trình**: Nhấn Ctrl+C hoặc đóng cửa sổ terminal (SIGHUP) sẽ gửi tín hiệu SIGINT tới serve và chuyển tiếp tín hiệu dừng tới toàn bộ các run do dashboard khởi chạy. Cơ chế an toàn chống mồ côi `PDEATHSIG` đảm bảo các tiến trình agent con tự động dừng nếu server đột ngột gặp sự cố.
+- **Tương tác đa chiều với terminal**: Các run được khởi chạy từ terminal (ví dụ `agent-brain run lead`) sẽ tự động xuất hiện trực tiếp trên dashboard theo thời gian thực và người dùng có thể bấm nút **Kill** trên giao diện để dừng chúng an toàn.
+
+### Năm màn hình chức năng
+1. **Tổng quan (`#/`)**: Hiển thị bảng tóm tắt nhanh số lượng task theo từng nhóm trạng thái (đang chạy, chờ duyệt plan, cần chú ý, hoàn tất) và danh sách thẻ task gần đây. Hỗ trợ lọc nhanh theo profile (`Tất cả`, `work`, `personal`).
+2. **Giao việc (`#/assign`)**: Ô nhập yêu cầu bằng tiếng Việt, chọn dự án thông qua ô tìm kiếm tự động gợi ý (tự động đề xuất slug chuẩn hóa). Nếu tên nhập vào bị mơ hồ hoặc trùng khớp nhiều dự án, giao diện hiển thị danh sách để người dùng chọn thay vì tự động chạy.
+3. **Chi tiết task (`#/task/:id`)**:
+   - Thanh tiến trình pipeline trực quan qua 3 vai trò Lead → Dev → QA (stepper).
+   - Hiển thị nội dung kế hoạch `.plan.md` ở chế độ chỉ đọc (read-only). Người dùng chỉnh sửa plan trực tiếp bằng trình soạn thảo mã nguồn ngoài và commit với cú pháp `<slug>: plan`.
+   - Các nút hành động theo ngữ cảnh quy trình: `Chạy Dev` (khi plan đã sẵn sàng và commit sạch), `Chạy QA` (sau khi Dev hoàn thành), `Chạy lại Lead` (khi gặp Vướng mắc hoặc QA Cần sửa).
+   - Nút **Kill** dừng ngay tiến trình khi cần.
+   - Hộp log sự kiện trực tiếp qua Server-Sent Events (SSE) kèm tự động cuộn (auto-scroll) và nút chuyển chế độ xem dữ liệu thô (raw JSON).
+4. **Thống kê (`#/stats`)**: Biểu đồ thanh CSS trực quan thống kê lượng token và chi phí USD tương đương theo từng ngày (cột flex), theo từng vai trò (lead, dev, qa, inspect), theo từng dự án và theo hồ sơ profile.
+5. **Dự án (`#/projects`)**: Danh sách toàn bộ dự án đã đăng ký trong `projects_map.json`. Cho phép chỉnh sửa danh sách `aliases` (biệt danh) trực tiếp với kiểm tra trùng lặp và nút **Quét lại** (`agent-brain projects scan`) để tự động cập nhật danh mục repo.
+
+### Quy tắc điều phối & Hồ sơ (Pipeline & Profile Rules)
+- **Quy tắc pipeline**: Sau khi Lead chạy xong, task chuyển sang trạng thái `Chờ duyệt plan`. Các bước Dev và QA chỉ chạy khi người dùng chủ động bấm nút trên giao diện. Nội dung plan không chỉnh sửa trên web; nếu gặp `Vướng mắc` (dev:blocked) hoặc `Cần sửa` (qa:fix), giao diện cung cấp nút bấm để chạy lại Lead hoặc tiếp tục Dev sau khi người dùng sửa file và commit.
+- **Ràng buộc một run mỗi dự án**: Không cho phép khởi chạy song song hai tác vụ trên cùng một dự án. Nút chạy sẽ bị vô hiệu hóa kèm lý do thông báo nếu dự án đang bận.
+- **Ràng buộc tài khoản cá nhân (Personal Profile)**: Tuân thủ quy tắc E-06, toàn hệ thống chỉ cho phép tối đa 1 tác vụ chạy với profile `personal` tại một thời điểm để tránh xung đột `~/.claude-orca`.
+- **Bộ chuyển đổi Profile**: Bộ chọn profile trên giao diện (`Tất cả` / `work` / `personal`) chỉ có tác dụng lọc tầm nhìn (view filter) cho danh sách task, thống kê và bộ gợi ý dự án. Một task mới khi tạo sẽ luôn chạy dưới profile được cấu hình sẵn của dự án đó trong `projects_map.json`, giao diện không cho phép ghi đè profile khi giao việc.
+
+### Danh mục HTTP API
+Mọi route đều yêu cầu xác thực cookie phiên hợp lệ (trừ `GET /?token=TOKEN` cấp cookie):
+- `GET /api/tasks?profile=work|personal`: Danh sách task và trạng thái bận (`busy`) của các dự án.
+- `POST /api/tasks`: Tạo task mới và khởi chạy Lead (`{ "project": "...", "request": "...", "slug": "..." }`).
+- `GET /api/tasks/:id`: Chi tiết task, trạng thái các vai trò, nội dung plan, commit sha và cờ `plan_dirty`.
+- `POST /api/tasks/:id/lead`: Chạy lại bước Lead cho task.
+- `POST /api/tasks/:id/dev`: Khởi chạy bước Dev.
+- `POST /api/tasks/:id/qa`: Khởi chạy bước QA.
+- `GET /api/runs/:id/events`: Lấy danh sách toàn bộ sự kiện lịch sử của một run từ SQLite.
+- `GET /api/runs/:id/stream`: Luồng sự kiện thời gian thực Server-Sent Events (SSE).
+- `POST /api/runs/:id/kill`: Dừng an toàn run đang chạy theo mã `run_id`.
+- `GET /api/projects?profile=work|personal`: Danh mục dự án kèm mã hash `etag`.
+- `PUT /api/projects/:id`: Cập nhật aliases dự án (`{ "aliases": [...], "etag": "..." }`).
+- `POST /api/projects/scan`: Quét lại các thư mục dự án trên ổ đĩa.
+- `GET /api/projects/suggest?q=...&profile=...`: Gợi ý dự án xếp hạng theo độ khớp tên và alias.
+- `GET /api/projects/:id/status`: Đường dẫn nhanh kiểm tra trạng thái git của dự án.
+- `GET /api/stats?profile=...&since=...`: Báo cáo thống kê token và chi phí tương đương.
+- `GET /api/stats/days?profile=...&since=...`: Thống kê token nhóm theo từng ngày (Local timezone).
+- `GET /api/stats/profiles?since=...`: Thống kê phân bổ theo từng profile.
+- `GET /api/slug?text=...`: Chuẩn hóa văn bản thành slug hợp lệ (hỗ trợ tiếng Việt có dấu và chữ đ).
+
+### Tài nguyên tĩnh & Tái dựng CSS ngoại tuyến
+- Tất cả tài nguyên (HTML shell, các phân mảnh màn hình, thư viện Alpine CSP, mã JavaScript và stylesheet `app.css`) đều được nhúng trực tiếp vào binary qua `include_bytes!`. Khi binary xuất xưởng, máy đích không cần kết nối mạng hay cài đặt thêm file nào.
+- File stylesheet `agent-brain/assets/dashboard/app.css` được biên dịch sẵn và commit vào kho mã nguồn.
+- Lệnh phát triển tái dựng CSS (chỉ dùng khi phát triển giao diện):
+  ```bash
+  bash scripts/build-css.sh
+  ```
+  Sử dụng binary độc lập Tailwind v4 trong `agent-brain/tools/tailwindcss` (không cần Node hay npm). Cờ `--check` giúp kiểm tra tính đồng bộ của file CSS trong CI/CD.
+- Kiểm tra khói toàn diện dashboard:
+  ```bash
+  bash scripts/dashboard-smoke.sh
+  ```
+- Tham khảo thêm file `agent-brain/assets/dashboard/VENDOR.md` về nguồn gốc và cách thức đóng gói thư viện Alpine.js bản CSP.
+
+### Cảnh báo an toàn (Security Notes)
+- **Quyền hạn mức shell**: Token dashboard cấp toàn quyền thực thi mã nguồn và lệnh trên các thư mục dự án đã đăng ký. **Tuyệt đối không chia sẻ URL chứa token** cho người khác hoặc đưa vào nhật ký công khai.
+- **Không cách ly cổng cho cookie (Port Isolation)**: Theo tiêu chuẩn RFC 6265 §8.5, cookie không được cách ly theo số cổng trên cùng một tên miền. Do đó, nếu máy tính đang chạy một dịch vụ web nội bộ khác trên `127.0.0.1`, dịch vụ đó về mặt lý thuyết có thể nhận được cookie phiên của dashboard.
+- **Chỉ lắng nghe Loopback**: Dashboard chỉ mở trên giao diện cục bộ `127.0.0.1`. Các thiết bị khác trong mạng LAN hoàn toàn không thể kết nối tới server (được bảo vệ triệt để từ tầng socket bind).
+
+### Xử lý sự cố (Troubleshooting)
+- **Lỗi 401 Unauthorized**: Mở lại URL đầy đủ chứa `?token=TOKEN` được in ở terminal chạy `agent-brain serve` để làm mới cookie phiên trên trình duyệt.
+- **Cổng bị chiếm dụng (Address in use)**: Mặc định server sử dụng cổng `7437`. Nếu cổng đã bị ứng dụng khác chiếm dụng, chỉ định cổng khác bằng cờ `--port <cổng>` (hoặc cấu hình khóa `dashboard_port` trong file `config.json`), hoặc dùng `--port 0` để hệ thống tự cấp cổng còn trống.
