@@ -364,6 +364,7 @@ pub fn derive(f: &TaskFacts) -> TaskView {
                     Some(r) => {
                         r.status == "failed"
                             || r.status == "killed"
+                            || r.status == "timed_out"
                             || r.status == "lost"
                             || r.outcome.as_deref() == Some("protocol_violation")
                     }
