@@ -4,15 +4,15 @@ current_phase: 5
 current_phase_name: Embedded Dashboard
 status: executing
 stopped_at: Phase 5 UI-SPEC approved
-last_updated: "2026-10-17T08:17:47.144Z"
+last_updated: "2026-10-17T08:32:19.668Z"
 last_activity: 2026-10-17
 last_activity_desc: Phase 5 execution started
-state_head: fb2743262a9d8c3cc99fefe4ba53cd2be4ee289c
+state_head: efbf4725733f9180b0a44a6492fa33fe22864ad6
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 34
-  completed_plans: 26
+  completed_plans: 27
   percent: 50
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-15)
 ## Current Position
 
 Phase: 5 (Embedded Dashboard) — EXECUTING
-Plan: 6 of 13
+Plan: 7 of 13
 Status: Ready to execute
 Last activity: 2026-10-17 — Phase 5 execution started
 
@@ -80,6 +80,7 @@ None yet.
 
 ### Blockers/Concerns
 
+- [Phase 5 / 05-06 review] Test flaky có sẵn từ Phase 3: `contract_guard::guard_contract_cases` thỉnh thoảng panic `write stdin: BrokenPipe` (tests/contract_guard.rs:202) vì `agent-brain guard` thoát trước khi đọc hết stdin; chạy lại 8/8 Đạt. Sửa sau: bỏ qua EPIPE khi ghi stdin trong test hoặc cho `guard` đọc hết stdin.
 - [Phase 3 / 03-13] claude 2.1.301 chặn `sleep N` foreground trong Bash tool ("Blocked: standalone sleep") → P2-02/P2-03 dùng `python3 -c 'import time; time.sleep(307)'`, wrapper `scripts/live/claude-allow-sleep.sh` cho phép `Bash(python3 *)` (fix plan `.planning/fixes/03-13-live-sleep-method.plan.md`, agy, commits 65386f2, 87f8e71, 00443c9; đã review). Shell của Bash tool chạy trong PGID/SID riêng — kill phải quét theo PID đã ghi, không chỉ process group.
 - [Phase 3, mở cho phase sau] Ghi nhận nhỏ, chưa sửa: log `run` in nhiều dòng `system thinking_tokens` (nhiễu); claude tạo thư mục rỗng `~/.claude/session-env/<id>/` cho mỗi phiên kể cả `inspect` không lưu session.
 
