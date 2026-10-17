@@ -81,7 +81,7 @@ fn pipeline_lead_dev_qa_via_api() {
     assert!(sec_names.contains(&"Thay đổi"));
     assert!(sec_names.contains(&"Không được đụng tới"));
     assert!(sec_names.contains(&"Cách kiểm tra"));
-    assert!(sec_names.contains(&"Vướng mắc (Dev ghi vào đây nếu có)"));
+    assert!(sec_names.contains(&"Vướng mắc"));
 
     // Runs count stays 1 for 3 seconds (no auto-start of Dev)
     std::thread::sleep(Duration::from_secs(3));
@@ -162,7 +162,7 @@ Không có.
 #[test]
 fn pipeline_dev_blocked_shows_vuong_mac() {
     let sb = Sandbox::new();
-    let repo = setup_project(&sb, "work");
+    let _repo = setup_project(&sb, "work");
 
     let sc_lead = lead_scenario(&[("src/app.py", "1", "sửa app", "yêu cầu")]);
     std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_lead).unwrap()).unwrap();
@@ -181,16 +181,15 @@ fn pipeline_dev_blocked_shows_vuong_mac() {
     let job_id = resp.json()["job_id"].as_u64().unwrap();
     assert_eq!(wait_for_job(&srv, job_id)["exit_code"], 0);
 
-    // Dev appends a blocker to .plan.md
-    let orig_plan = std::fs::read_to_string(repo.join(".plan.md")).unwrap();
-    let blocked_plan = orig_plan.replace(
-        "## Vướng mắc (Dev ghi vào đây nếu có)",
-        "## Vướng mắc (Dev ghi vào đây nếu có)\nThiếu thư viện XYZ cần xử lý trước",
-    );
+    // Dev appends a blocker to .plan.md as in cli_dev p1_08
     let sc_dev = json!({
         "ops": [
-            {"op": "read", "path": ".plan.md"},
-            {"op": "write", "path": ".plan.md", "content": blocked_plan}
+            {
+                "op": "write",
+                "path": ".plan.md",
+                "content": "\nThiếu thư viện XYZ cần xử lý trước\n",
+                "append": true
+            }
         ]
     });
     std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_dev).unwrap()).unwrap();
@@ -199,7 +198,7 @@ fn pipeline_dev_blocked_shows_vuong_mac() {
     assert_eq!(resp_dev.status, 202);
     let job_id_dev = resp_dev.json()["job_id"].as_u64().unwrap();
     let job_dev = wait_for_job(&srv, job_id_dev);
-    assert_eq!(job_dev["exit_code"], 2); // EXIT_BLOCKED = 2
+    assert_eq!(job_dev["exit_code"], 4); // EXIT_BLOCKED = 4
 
     let t_resp = srv.get("/api/tasks/1");
     let task = t_resp.json();
@@ -211,7 +210,7 @@ fn pipeline_dev_blocked_shows_vuong_mac() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["name"] == "Vướng mắc (Dev ghi vào đây nếu có)")
+        .find(|s| s["name"] == "Vướng mắc")
         .unwrap();
     assert!(vm_sec["text"]
         .as_str()
@@ -447,11 +446,19 @@ fn relead_from_api_replans() {
     let job_id = resp.json()["job_id"].as_u64().unwrap();
     assert_eq!(wait_for_job(&srv, job_id)["exit_code"], 0);
 
-    // Relead
+    // Relead with modified plan
+    let sc_relead = lead_scenario(&[("src/app.py", "1", "sửa app lần 2", "yêu cầu mới")]);
+    std::fs::write(
+        &sb.scenario_file,
+        serde_json::to_string(&sc_relead).unwrap(),
+    )
+    .unwrap();
+
     let resp_relead = srv.post_json("/api/tasks/1/relead", &json!({}));
     assert_eq!(resp_relead.status, 202);
     let job_id_relead = resp_relead.json()["job_id"].as_u64().unwrap();
-    assert_eq!(wait_for_job(&srv, job_id_relead)["exit_code"], 0);
+    let job_relead = wait_for_job(&srv, job_id_relead);
+    assert_eq!(job_relead["exit_code"], 0);
 
     let lead_runs: i64 = sb
         .db()
