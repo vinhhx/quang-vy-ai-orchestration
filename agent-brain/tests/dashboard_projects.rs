@@ -203,3 +203,287 @@ fn project_status_zero_token() {
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
 }
+
+#[test]
+fn dash12_alias_edit_preserves_other_keys() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("proj-a", &[], None, None);
+
+    let entry = serde_json::json!({
+        "id": "proj-a",
+        "path": repo.to_string_lossy(),
+        "name_vi": "Dự án A",
+        "aliases": ["old-alias"],
+        "type": "code",
+        "profile": "work",
+        "repo": null,
+        "missing": false,
+        "note": "giữ nguyên"
+    });
+    sb.write_map(serde_json::json!([entry]), &[]);
+
+    let mut srv = sb.serve(&[]);
+
+    let r_list = srv.get("/api/projects");
+    assert_eq!(r_list.status, 200);
+    let current_etag = r_list.json()["etag"].as_str().unwrap().to_string();
+
+    let put_body = serde_json::json!({
+        "aliases": ["  Shop ", "shop", "", "cửa hàng"],
+        "etag": current_etag
+    });
+    let r_put = srv.put_json("/api/projects/proj-a", &put_body);
+    assert_eq!(r_put.status, 200);
+    let j_put = r_put.json();
+    assert!(j_put.get("warnings").is_some());
+
+    // Check file on disk:
+    let map_data = sb.read_map();
+    let projs = map_data["projects"].as_array().unwrap();
+    assert_eq!(projs.len(), 1);
+    let p0 = &projs[0];
+    let aliases: Vec<&str> = p0["aliases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(aliases, vec!["Shop", "cửa hàng"]);
+    assert_eq!(p0["note"], "giữ nguyên");
+    assert_eq!(p0["id"], "proj-a");
+    assert_eq!(p0["name_vi"], "Dự án A");
+    assert_eq!(p0["profile"], "work");
+    assert_eq!(p0["type"], "code");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(sb.map_path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    // Check SQLite: projects.aliases_json updated
+    let conn = sb.db();
+    let aliases_json: String = conn
+        .query_row(
+            "SELECT aliases_json FROM projects WHERE id = 'proj-a'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("query aliases_json");
+    assert!(aliases_json.contains("Shop"));
+    assert!(aliases_json.contains("cửa hàng"));
+
+    // GET /api/projects/suggest?q=cua hang finds the project
+    let r_sug = srv.get("/api/projects/suggest?q=cua hang");
+    assert_eq!(r_sug.status, 200);
+    let items = r_sug.json()["items"].as_array().unwrap().clone();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], "proj-a");
+    assert_eq!(items[0]["rank"], "exact");
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn dash12_alias_edit_conflict_409() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("proj-a", &[], None, None);
+    let entry = sb.project_entry(&repo, "proj-a", "work");
+    sb.write_map(serde_json::json!([entry]), &[]);
+
+    let mut srv = sb.serve(&[]);
+
+    let r_list = srv.get("/api/projects");
+    assert_eq!(r_list.status, 200);
+    let old_etag = r_list.json()["etag"].as_str().unwrap().to_string();
+
+    // Rewrite file on disk
+    let mut e_new = sb.project_entry(&repo, "proj-a", "work");
+    e_new["aliases"] = serde_json::json!(["hand-edited"]);
+    sb.write_map(serde_json::json!([e_new]), &[]);
+
+    // PUT with old_etag
+    let put_body = serde_json::json!({
+        "aliases": ["from-dashboard"],
+        "etag": old_etag
+    });
+    let r_put = srv.put_json("/api/projects/proj-a", &put_body);
+    assert_eq!(r_put.status, 409);
+    let j_put = r_put.json();
+    assert!(j_put["error"]
+        .as_str()
+        .unwrap()
+        .contains("thay đổi ở nơi khác"));
+    let fresh_projects = j_put["projects"].as_array().expect("fresh projects");
+    assert_eq!(fresh_projects.len(), 1);
+    assert_eq!(fresh_projects[0]["aliases"][0], "hand-edited");
+
+    // File still holds the hand edit
+    let map_data = sb.read_map();
+    assert_eq!(
+        map_data["projects"][0]["aliases"],
+        serde_json::json!(["hand-edited"])
+    );
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn dash12_duplicate_alias_warns_not_refuses() {
+    let sb = Sandbox::new();
+    let repo_a = sb.make_repo("proj-a", &[], None, None);
+    let repo_b = sb.make_repo("proj-b", &[], None, None);
+
+    let mut e_a = sb.project_entry(&repo_a, "proj-a", "work");
+    e_a["aliases"] = serde_json::json!(["shop"]);
+    let e_b = sb.project_entry(&repo_b, "proj-b", "work");
+    sb.write_map(serde_json::json!([e_a, e_b]), &[]);
+
+    let mut srv = sb.serve(&[]);
+
+    let r_list = srv.get("/api/projects");
+    assert_eq!(r_list.status, 200);
+    let etag = r_list.json()["etag"].as_str().unwrap().to_string();
+
+    let put_body = serde_json::json!({
+        "aliases": ["shop"],
+        "etag": etag
+    });
+    let r_put = srv.put_json("/api/projects/proj-b", &put_body);
+    assert_eq!(r_put.status, 200);
+    let j_put = r_put.json();
+    let warnings = j_put["warnings"].as_array().expect("warnings array");
+    let warn_str = warnings
+        .iter()
+        .filter_map(|w| w.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        warn_str.contains("tên/alias trùng \"shop\""),
+        "warnings should mention duplicate shop, got: {warn_str}"
+    );
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn d15_profile_not_editable() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("proj-a", &[], None, None);
+    let entry = sb.project_entry(&repo, "proj-a", "work");
+    sb.write_map(serde_json::json!([entry]), &[]);
+
+    let mut srv = sb.serve(&[]);
+
+    let r_list = srv.get("/api/projects");
+    assert_eq!(r_list.status, 200);
+    let etag = r_list.json()["etag"].as_str().unwrap().to_string();
+
+    // PUT body with extra "profile" field -> 422
+    let bad_body = serde_json::json!({
+        "aliases": ["alias1"],
+        "etag": etag,
+        "profile": "personal"
+    });
+    let r_bad = srv.put_json("/api/projects/proj-a", &bad_body);
+    assert_eq!(r_bad.status, 422);
+
+    // Profile remains work
+    let map_data = sb.read_map();
+    assert_eq!(map_data["projects"][0]["profile"], "work");
+
+    // PUT on unknown id -> 404
+    let not_found_body = serde_json::json!({
+        "aliases": ["alias1"],
+        "etag": etag
+    });
+    let r_404 = srv.put_json("/api/projects/unknown-proj", &not_found_body);
+    assert_eq!(r_404.status, 404);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn dash12_rescan_runs_cli_scan() {
+    let sb = Sandbox::new();
+    let repos_dir = sb.repos.clone();
+    sb.write_map(serde_json::json!([]), &[repos_dir.to_str().unwrap()]);
+
+    let mut srv = sb.serve(&[]);
+
+    // Create a new git repo in scan_roots after serve starts
+    let _repo_new = sb.make_repo("new-scanned-proj", &[], None, None);
+
+    let r_scan = srv.post_json("/api/projects/scan", &serde_json::json!({}));
+    assert_eq!(r_scan.status, 200);
+    let j_scan = r_scan.json();
+    assert_eq!(j_scan["exit_code"], 0);
+    let stdout = j_scan["stdout"].as_array().expect("stdout array");
+    let stdout_str = stdout
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        stdout_str.contains("Đã quét"),
+        "stdout should contain 'Đã quét', got: {stdout_str}"
+    );
+
+    // GET /api/projects now lists the new project
+    let r_projs = srv.get("/api/projects");
+    assert_eq!(r_projs.status, 200);
+    let j_projs = r_projs.json();
+    let projs = j_projs["projects"].as_array().expect("projects array");
+    assert!(
+        projs.iter().any(|p| p["id"] == "new-scanned-proj"),
+        "projects should include new-scanned-proj"
+    );
+
+    // SQLite has its row
+    let conn = sb.db();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM projects WHERE id = 'new-scanned-proj'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count project row");
+    assert_eq!(count, 1, "new-scanned-proj row must exist in SQLite");
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn dash12_rescan_without_roots_shows_cli_error() {
+    let sb = Sandbox::new();
+    sb.write_map(serde_json::json!([]), &[]);
+
+    let mut srv = sb.serve(&[]);
+
+    let r_scan = srv.post_json("/api/projects/scan", &serde_json::json!({}));
+    assert_eq!(r_scan.status, 200);
+    let j_scan = r_scan.json();
+    assert_eq!(j_scan["exit_code"], 1);
+    let stderr = j_scan["stderr"].as_array().expect("stderr array");
+    let stderr_str = stderr
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        stderr_str.contains("Chưa có scan_roots"),
+        "stderr should contain 'Chưa có scan_roots', got: {stderr_str}"
+    );
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
