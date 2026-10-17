@@ -38,7 +38,12 @@ fn dash04_assign_lead_from_api() {
             "name": "sua-app"
         }),
     );
-    assert_eq!(resp.status, 202, "POST /api/tasks response: {}", resp.text());
+    assert_eq!(
+        resp.status,
+        202,
+        "POST /api/tasks response: {}",
+        resp.text()
+    );
     let res_json = resp.json();
     let job_id = res_json["job_id"].as_u64().expect("job_id in 202 response");
     assert_eq!(res_json["project"], "web-ban-hang");
@@ -81,11 +86,9 @@ fn dash04_assign_lead_from_api() {
     assert_eq!(status, "succeeded");
 
     let other_runs: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM runs WHERE role != 'lead'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM runs WHERE role != 'lead'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(other_runs, 0);
 
@@ -98,8 +101,14 @@ fn dash04_assign_lead_from_api() {
         "event: end",
         Duration::from_secs(10),
     );
-    assert!(sse_out.contains("event: end"), "SSE did not contain event: end: {sse_out}");
-    assert!(sse_out.contains("succeeded"), "SSE did not contain succeeded: {sse_out}");
+    assert!(
+        sse_out.contains("event: end"),
+        "SSE did not contain event: end: {sse_out}"
+    );
+    assert!(
+        sse_out.contains("succeeded"),
+        "SSE did not contain succeeded: {sse_out}"
+    );
 
     let record_content = std::fs::read_to_string(&sb.record_file).unwrap();
     let record_line = record_content.lines().next().unwrap();

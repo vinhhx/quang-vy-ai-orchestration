@@ -1,5 +1,10 @@
+pub mod api_projects;
+pub mod api_runs;
+pub mod api_stats;
+pub mod api_tasks;
 pub mod assets;
 pub mod auth;
+pub mod jobs;
 pub mod lock;
 pub mod pump;
 pub mod sse;
@@ -23,6 +28,7 @@ pub struct AppState {
     pub exe: PathBuf,
     pub hints: broadcast::Sender<i64>,
     pub shutdown: watch::Receiver<bool>,
+    pub jobs: std::sync::Arc<jobs::JobManager>,
 }
 
 pub fn json_error(status: StatusCode, message: &str) -> Response {
@@ -53,6 +59,10 @@ where
 
 pub fn router(state: Arc<AppState>) -> axum::Router {
     axum::Router::new()
+        .merge(api_tasks::routes())
+        .merge(api_runs::routes())
+        .merge(api_projects::routes())
+        .merge(api_stats::routes())
         .route("/api/runs/{id}/stream", axum::routing::get(sse::stream))
         .fallback(assets::serve)
         .layer(axum::extract::DefaultBodyLimit::max(65536))
@@ -167,8 +177,10 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
     let pump_stop = Arc::new(AtomicBool::new(false));
     let _pump_handle = pump::spawn(db_p.clone(), hints_tx.clone(), pump_stop.clone());
 
+    let jobs = jobs::JobManager::new(exe.clone());
+
     let state = Arc::new(AppState {
-        cfg,
+        cfg: cfg.clone(),
         port: real_port,
         token: token.clone(),
         map_path: map_p,
@@ -176,6 +188,7 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
         exe,
         hints: hints_tx,
         shutdown: shutdown_rx,
+        jobs: jobs.clone(),
     });
 
     let app_router = router(state);
@@ -240,7 +253,31 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
         _ = signal_fut => {
             let _ = shutdown_tx.send(true);
             pump_stop.store(true, Ordering::SeqCst);
-            // Spot for plan 05-04: job manager shutdown goes here.
+
+            let jobs_clone = jobs.clone();
+            let grace = Duration::from_secs(cfg.kill_grace_secs + 5);
+            let shutdown_task = tokio::task::spawn_blocking(move || {
+                jobs_clone.shutdown(grace);
+            });
+
+            tokio::select! {
+                _ = shutdown_task => {},
+                _ = sigint.recv() => {
+                    jobs.kill_all_now();
+                    crate::term::emit("Dừng ngay (SIGKILL các run còn lại)");
+                    std::process::exit(130);
+                }
+                _ = sigterm.recv() => {
+                    jobs.kill_all_now();
+                    crate::term::emit("Dừng ngay (SIGKILL các run còn lại)");
+                    std::process::exit(130);
+                }
+                _ = sighup.recv() => {
+                    jobs.kill_all_now();
+                    crate::term::emit("Dừng ngay (SIGKILL các run còn lại)");
+                    std::process::exit(130);
+                }
+            }
 
             let _ = graceful_tx.send(());
 
