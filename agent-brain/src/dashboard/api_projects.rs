@@ -4,13 +4,20 @@ use crate::dashboard::{blocking, json_error, AppState};
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post, put};
+use axum::Json;
 use axum::Router;
 use std::hash::{DefaultHasher, Hasher};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub const SUGGEST_LIMIT: usize = 10;
+
+static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn write_mutex() -> &'static Mutex<()> {
+    WRITE_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 pub fn map_etag(path: &Path) -> String {
     let bytes = match std::fs::read(path) {
@@ -35,10 +42,23 @@ struct SuggestQuery {
     profile: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateAliasesBody {
+    pub aliases: Vec<String>,
+    pub etag: String,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ScanBody {}
+
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/projects", get(list_projects))
         .route("/api/projects/suggest", get(suggest_projects))
+        .route("/api/projects/scan", post(scan_projects))
+        .route("/api/projects/{id}", put(update_aliases))
         .route("/api/projects/{id}/status", get(project_status))
 }
 
@@ -108,7 +128,7 @@ async fn list_projects(
             "duplicates": duplicates,
         });
 
-        Ok(axum::Json(body).into_response())
+        Ok(Json(body).into_response())
     })
     .await;
 
@@ -153,7 +173,228 @@ async fn suggest_projects(
             })
             .collect();
 
-        Ok(axum::Json(serde_json::json!({ "items": items })).into_response())
+        Ok(Json(serde_json::json!({ "items": items })).into_response())
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+async fn update_aliases(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<UpdateAliasesBody>,
+) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if body.etag != current_etag {
+            let map = crate::projects::load_map(&st.map_path)?;
+            let scan_roots = map
+                .get("scan_roots")
+                .and_then(|r| r.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let raw_projects = map
+                .get("projects")
+                .and_then(|p| p.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let duplicates_raw = crate::projects::find_duplicates(&raw_projects);
+            let duplicates: Vec<serde_json::Value> = duplicates_raw
+                .into_iter()
+                .map(|(key, ids)| serde_json::json!({ "key": key, "ids": ids }))
+                .collect();
+            let projects = crate::projects::projects_of(&map);
+            let projects_json: Vec<serde_json::Value> = projects
+                .into_iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "id": p.id,
+                        "name_vi": p.name_vi,
+                        "aliases": p.aliases,
+                        "path": p.path,
+                        "type": p.kind,
+                        "profile": p.profile,
+                        "repo": p.repo,
+                        "missing": p.missing,
+                    })
+                })
+                .collect();
+
+            let conflict_body = serde_json::json!({
+                "error": "projects_map.json vừa thay đổi ở nơi khác — đã tải lại danh sách, hãy sửa lại",
+                "etag": current_etag,
+                "scan_roots": scan_roots,
+                "projects": projects_json,
+                "duplicates": duplicates,
+            });
+
+            return Ok((
+                StatusCode::CONFLICT,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "application/json; charset=utf-8",
+                )],
+                Json(conflict_body),
+            )
+                .into_response());
+        }
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+
+        let projects_arr = data
+            .get_mut("projects")
+            .and_then(|p| p.as_array_mut())
+            .ok_or_else(|| {
+                crate::error::BrainError::error("projects_map.json thiếu mảng 'projects'")
+            })?;
+
+        let project_entry = projects_arr
+            .iter_mut()
+            .find(|obj| obj.get("id").and_then(|v| v.as_str()) == Some(&id));
+
+        let project_obj = match project_entry {
+            Some(obj) => obj,
+            None => {
+                return Ok(json_error(
+                    StatusCode::NOT_FOUND,
+                    &format!("Không tìm thấy dự án {id}"),
+                ))
+            }
+        };
+
+        // Clean aliases: trim, drop empty, length <= 100, de-duplicate by normalize
+        let mut cleaned_aliases = Vec::new();
+        let mut seen_norm = std::collections::HashSet::new();
+
+        for a in body.aliases {
+            let trimmed = a.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.chars().count() > 100 {
+                return Ok(json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "Alias quá dài (tối đa 100 ký tự)",
+                ));
+            }
+            let norm = crate::routing::normalize(trimmed);
+            if seen_norm.insert(norm) {
+                cleaned_aliases.push(trimmed.to_string());
+            }
+        }
+
+        project_obj["aliases"] = serde_json::Value::Array(
+            cleaned_aliases
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        );
+
+        crate::projects::save_map(&st.map_path, &data)?;
+
+        if let Ok(conn) = crate::db::open(&st.db_path) {
+            crate::db::sync_projects(&conn, &crate::projects::projects_of(&data))?;
+        }
+
+        let new_etag = map_etag(&st.map_path);
+
+        let raw_projects = data
+            .get("projects")
+            .and_then(|p| p.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let duplicates_raw = crate::projects::find_duplicates(&raw_projects);
+        let mut warnings = Vec::new();
+        for (key, ids) in &duplicates_raw {
+            let ids_str = ids.join(", ");
+            warnings.push(format!("CẢNH BÁO: tên/alias trùng \"{key}\": {ids_str}"));
+        }
+        let duplicates: Vec<serde_json::Value> = duplicates_raw
+            .into_iter()
+            .map(|(key, ids)| serde_json::json!({ "key": key, "ids": ids }))
+            .collect();
+
+        let scan_roots = data
+            .get("scan_roots")
+            .and_then(|r| r.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let projects = crate::projects::projects_of(&data);
+        let projects_json: Vec<serde_json::Value> = projects
+            .into_iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.id,
+                    "name_vi": p.name_vi,
+                    "aliases": p.aliases,
+                    "path": p.path,
+                    "type": p.kind,
+                    "profile": p.profile,
+                    "repo": p.repo,
+                    "missing": p.missing,
+                })
+            })
+            .collect();
+
+        let body = serde_json::json!({
+            "etag": new_etag,
+            "scan_roots": scan_roots,
+            "projects": projects_json,
+            "duplicates": duplicates,
+            "warnings": warnings,
+        });
+
+        Ok(Json(body).into_response())
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+async fn scan_projects(State(st): State<Arc<AppState>>, _body: Option<Json<ScanBody>>) -> Response {
+    let res = blocking(move || {
+        let mut cmd = std::process::Command::new(&st.exe);
+        cmd.args(["projects", "scan"]);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let output = cmd
+            .output()
+            .map_err(|e| crate::error::BrainError::error(format!("Không chạy được scan: {e}")))?;
+
+        let exit_code = output.status.code().unwrap_or(1);
+        let stdout_lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|s| s.to_string())
+            .collect();
+        let stderr_lines: Vec<String> = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .map(|s| s.to_string())
+            .collect();
+
+        if let Ok(map) = crate::projects::load_map(&st.map_path) {
+            if let Ok(conn) = crate::db::open(&st.db_path) {
+                let _ = crate::db::sync_projects(&conn, &crate::projects::projects_of(&map));
+            }
+        }
+
+        let body = serde_json::json!({
+            "exit_code": exit_code,
+            "stdout": stdout_lines,
+            "stderr": stderr_lines,
+        });
+
+        Ok(Json(body).into_response())
     })
     .await;
 
@@ -269,7 +510,7 @@ async fn project_status(
             "task": task_json,
         });
 
-        Ok(axum::Json(body).into_response())
+        Ok(Json(body).into_response())
     })
     .await;
 

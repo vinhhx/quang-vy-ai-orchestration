@@ -269,7 +269,7 @@ fn dash12_alias_edit_preserves_other_keys() {
     let conn = sb.db();
     let aliases_json: String = conn
         .query_row(
-            "SELECT aliases_json FROM projects WHERE id = 'proj-a'",
+            "SELECT aliases_json FROM projects WHERE slug = 'proj-a'",
             [],
             |r| r.get(0),
         )
@@ -277,8 +277,8 @@ fn dash12_alias_edit_preserves_other_keys() {
     assert!(aliases_json.contains("Shop"));
     assert!(aliases_json.contains("cửa hàng"));
 
-    // GET /api/projects/suggest?q=cua hang finds the project
-    let r_sug = srv.get("/api/projects/suggest?q=cua hang");
+    // GET /api/projects/suggest?q=cua%20hang finds the project
+    let r_sug = srv.get("/api/projects/suggest?q=cua%20hang");
     assert_eq!(r_sug.status, 200);
     let items = r_sug.json()["items"].as_array().unwrap().clone();
     assert_eq!(items.len(), 1);
@@ -451,7 +451,7 @@ fn dash12_rescan_runs_cli_scan() {
     let conn = sb.db();
     let count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM projects WHERE id = 'new-scanned-proj'",
+            "SELECT COUNT(*) FROM projects WHERE slug = 'new-scanned-proj'",
             [],
             |row| row.get(0),
         )
