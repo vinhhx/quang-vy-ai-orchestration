@@ -17,6 +17,7 @@
       pipe: null,
       pipeError: '',
       pipeStale: false,
+      ledgerVisible: 20,
       _pipeSeq: 0,
       _pipeBusy: false,
       _pipeAgain: false,
@@ -381,11 +382,42 @@
 
       get ledgerGroups() {
         if (!this.pipe || !this.pipe.ledger || !this.pipe.ledger.groups) return [];
-        return this.pipe.ledger.groups;
+        var allRows = this.ledgerAllRows;
+        var cut = Math.max(0, allRows.length - this.ledgerVisible);
+        var groups = this.pipe.ledger.groups;
+        var flatIdx = 0;
+        var out = [];
+        for (var i = 0; i < groups.length; i++) {
+          var g = groups[i];
+          var visibleRows = [];
+          if (g.rows) {
+            for (var j = 0; j < g.rows.length; j++) {
+              if (flatIdx >= cut) {
+                visibleRows.push(g.rows[j]);
+              }
+              flatIdx++;
+            }
+          }
+          if (visibleRows.length > 0) {
+            out.push({
+              key: g.key,
+              kind: g.kind,
+              cycle: g.cycle,
+              header: g.header,
+              right: g.right,
+              rows: visibleRows,
+            });
+          }
+        }
+        return out;
       },
 
       get ledgerHasRows() {
         return this.ledgerAllRows.length > 0;
+      },
+
+      get ledgerHasMore() {
+        return this.ledgerAllRows.length > this.ledgerVisible;
       },
 
       get ledgerEmpty() {
@@ -1114,6 +1146,10 @@
         if (el && el.scrollIntoView) {
           el.scrollIntoView({ block: 'nearest' });
         }
+      },
+
+      showMoreRuns: function () {
+        this.ledgerVisible += 20;
       }
     };
   });

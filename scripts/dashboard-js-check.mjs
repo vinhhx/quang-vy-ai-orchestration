@@ -1083,6 +1083,155 @@ const sections = [
       check('no-runs showTotal === false', c.showTotal === false, `got ${c.showTotal}`);
     },
   },
+  {
+    name: 'ledger-paging',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      ctx.AB.route = { name: 'task', params: { id: '1' } };
+
+      const taskJsPath = path.join(
+        repoRoot,
+        'agent-brain/assets/dashboard/js/task.js'
+      );
+      const taskJsSrc = fs.readFileSync(taskJsPath, 'utf8');
+      vm.runInContext(taskJsSrc, ctx, { filename: 'task.js' });
+
+      const c = factories.task();
+      c.id = '1';
+
+      // 26 rows over 9 groups (roles cycling lead, dev, qa)
+      const groupRowCounts = [3, 4, 3, 3, 3, 3, 3, 2, 2]; // sum = 26
+      const roles = ['lead', 'dev', 'qa'];
+      let rowId = 1;
+      const groups26 = [];
+      for (let gIdx = 0; gIdx < groupRowCounts.length; gIdx++) {
+        const count = groupRowCounts[gIdx];
+        const role = roles[gIdx % 3];
+        const rows = [];
+        for (let r = 0; r < count; r++) {
+          rows.push({
+            run_id: rowId,
+            role,
+            round: r + 1,
+            label: `Vòng ${r + 1} · ${role}`,
+            state: 'xong',
+            verdict: 'xong',
+            turns: 3,
+            duration_ms: 30000,
+            cost_usd: 0.10,
+            running: false,
+            started_at: rowId * 60000,
+            ended_at: rowId * 60000 + 30000,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+          });
+          rowId++;
+        }
+        groups26.push({
+          key: `g-${gIdx}`,
+          kind: role === 'lead' ? 'plan' : (role === 'dev' ? 'build' : 'qa'),
+          cycle: Math.floor(gIdx / 3) + 1,
+          header: `Nhóm ${gIdx}`,
+          right: null,
+          rows,
+        });
+      }
+
+      c.pipe = {
+        ledger: {
+          groups: groups26,
+          total: {
+            runs: 26,
+            duration_ms: 780000,
+            cost_usd: 2.60,
+            cost_unknown: 0,
+          },
+        },
+      };
+
+      c.ledgerVisible = 20;
+
+      // Check: ledgerGroups holds exactly newest 20 rows
+      const visibleRows26 = [];
+      c.ledgerGroups.forEach(g => visibleRows26.push(...g.rows));
+      check('ledgerGroups holds exactly 20 rows', visibleRows26.length === 20, `got ${visibleRows26.length}`);
+      check('first visible row is run_id 7', visibleRows26[0] && visibleRows26[0].run_id === 7, `got ${visibleRows26[0]?.run_id}`);
+      check('last visible row is run_id 26', visibleRows26[19] && visibleRows26[19].run_id === 26, `got ${visibleRows26[19]?.run_id}`);
+
+      // Drops groups with no visible row (group 0 dropped)
+      check('first visible group is g-1', c.ledgerGroups[0] && c.ledgerGroups[0].key === 'g-1', `got ${c.ledgerGroups[0]?.key}`);
+      // Keeps partially visible group with only its visible rows (g-1 had 4 rows, only 1 kept)
+      check('partially visible group g-1 has 1 row', c.ledgerGroups[0] && c.ledgerGroups[0].rows.length === 1, `got ${c.ledgerGroups[0]?.rows?.length}`);
+      check('ledgerHasMore is true', c.ledgerHasMore === true);
+
+      // totalText never depends on window
+      check('totalText uses total (26 runs)', c.totalText === '26 lượt chạy claude · 13 phút · $2.60', `got "${c.totalText}"`);
+
+      // showMoreRuns() reveals all 26 rows
+      c.showMoreRuns();
+      check('after showMoreRuns ledgerVisible is 40', c.ledgerVisible === 40);
+      const allRevealed = [];
+      c.ledgerGroups.forEach(g => allRevealed.push(...g.rows));
+      check('all 26 rows visible', allRevealed.length === 26, `got ${allRevealed.length}`);
+      check('all 9 groups present', c.ledgerGroups.length === 9, `got ${c.ledgerGroups.length}`);
+      check('ledgerHasMore is false', c.ledgerHasMore === false);
+
+      // exactly 20 rows -> ledgerHasMore false
+      c.ledgerVisible = 20;
+      const groups20 = [
+        {
+          key: 'g20',
+          kind: 'plan',
+          cycle: 1,
+          header: 'Nhóm 20',
+          right: null,
+          rows: groups26[0].rows.concat(groups26[1].rows, groups26[2].rows, groups26[3].rows, groups26[4].rows, groups26[5].rows, groups26[6].rows).slice(0, 20),
+        },
+      ];
+      c.pipe = {
+        ledger: {
+          groups: groups20,
+          total: { runs: 20, duration_ms: 600000, cost_usd: 2.00, cost_unknown: 0 },
+        },
+      };
+      check('20 rows ledgerHasMore is false', c.ledgerHasMore === false);
+
+      // 21 rows -> ledgerHasMore true; one showMoreRuns() shows 21 rows
+      const groups21 = [
+        {
+          key: 'g21',
+          kind: 'plan',
+          cycle: 1,
+          header: 'Nhóm 21',
+          right: null,
+          rows: groups26[0].rows.concat(groups26[1].rows, groups26[2].rows, groups26[3].rows, groups26[4].rows, groups26[5].rows, groups26[6].rows, groups26[7].rows).slice(0, 21),
+        },
+      ];
+      c.pipe = {
+        ledger: {
+          groups: groups21,
+          total: { runs: 21, duration_ms: 630000, cost_usd: 2.10, cost_unknown: 0 },
+        },
+      };
+      check('21 rows ledgerHasMore is true', c.ledgerHasMore === true);
+      const rows21Before = [];
+      c.ledgerGroups.forEach(g => rows21Before.push(...g.rows));
+      check('21 rows initially shows 20', rows21Before.length === 20, `got ${rows21Before.length}`);
+
+      c.showMoreRuns();
+      check('21 rows after showMoreRuns ledgerHasMore is false', c.ledgerHasMore === false);
+      const rows21After = [];
+      c.ledgerGroups.forEach(g => rows21After.push(...g.rows));
+      check('21 rows after showMoreRuns shows 21', rows21After.length === 21, `got ${rows21After.length}`);
+    },
+  },
 ];
 
 async function main() {

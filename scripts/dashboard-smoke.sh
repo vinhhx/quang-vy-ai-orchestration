@@ -468,6 +468,43 @@ if [[ "$ENABLE_KEYS" == "true" ]]; then
     exit 1
   fi
 
+  python3 - "$AGENT_BRAIN_DB" <<'EOF'
+import sys, sqlite3
+db_path = sys.argv[1]
+conn = sqlite3.connect(db_path, timeout=5)
+cur = conn.cursor()
+cur.execute("SELECT project_id FROM tasks WHERE id = 1")
+row = cur.fetchone()
+if not row:
+    print("Lỗi seeding: Không tìm thấy task 1", file=sys.stderr)
+    sys.exit(1)
+project_id = row[0]
+
+cur.execute("SELECT MIN(started_at) FROM runs WHERE task_id = 1")
+row = cur.fetchone()
+min_start = row[0] if (row and row[0] is not None) else 1000000000000
+
+roles = ['lead', 'dev', 'qa']
+count = 0
+for i in range(25):
+    role = roles[i % 3]
+    started_at = min_start - (25 - i) * 60000
+    ended_at = started_at + 30000
+    outcome = 'qa:pass' if role == 'qa' else None
+    cur.execute("""
+        INSERT INTO runs (task_id, project_id, role, status, profile, usage_source, cost_usd, num_turns, started_at, ended_at, outcome)
+        VALUES (?, ?, ?, 'succeeded', 'work', 'result', 0.10, 3, ?, ?, ?)
+    """, (1, project_id, role, started_at, ended_at, outcome))
+    count += cur.rowcount
+
+conn.commit()
+conn.close()
+
+if count != 25:
+    print(f"Lỗi seeding: Số lượt chạy chèn vào là {count}, kỳ vọng 25", file=sys.stderr)
+    sys.exit(1)
+EOF
+
   "$CHROME_BIN" \
     --headless=new \
     --no-sandbox \
@@ -513,5 +550,5 @@ if [[ "$ENABLE_KEYS" == "true" ]]; then
   fi
 
   stop_chrome
-  echo "Keys OK: combobox, confirm-dialog, raw-dialog"
+  echo "Keys OK: combobox, confirm-dialog, raw-dialog, ledger"
 fi

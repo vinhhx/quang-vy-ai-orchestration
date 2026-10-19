@@ -50,6 +50,22 @@ async function pressKey(key, code, windowsVirtualKeyCode) {
   });
 }
 
+async function pressKeyText(key, code, windowsVirtualKeyCode, text) {
+  await cdp('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key,
+    code,
+    windowsVirtualKeyCode,
+    text,
+  });
+  await cdp('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key,
+    code,
+    windowsVirtualKeyCode,
+  });
+}
+
 async function insertText(text) {
   await cdp('Input.insertText', { text });
 }
@@ -268,6 +284,66 @@ async function main() {
     'dialog vẫn hiển thị sau khi bấm Escape'
   );
   console.log('OK raw-dialog');
+
+  // Check D, ledger paging + Enter selects a run
+  await waitFor(
+    'document.querySelectorAll("[data-ledger-row]").length === 20',
+    5000,
+    'ledger',
+    'Không tìm thấy đúng 20 phần tử [data-ledger-row] ban đầu'
+  );
+
+  const moreVisible = await evaluate(`
+    (() => {
+      const btn = document.querySelector("[data-ledger-more]");
+      if (!btn) return false;
+      const visible = !!(btn.offsetWidth || btn.offsetHeight || btn.getClientRects().length);
+      const text = btn.textContent.trim();
+      return visible && text === "Hiện thêm 20";
+    })()
+  `);
+  if (!moreVisible) {
+    throw new Error('LỖI ledger: nút [data-ledger-more] không hiển thị hoặc không có chữ "Hiện thêm 20"');
+  }
+
+  await evaluate('document.querySelector("[data-ledger-more]").focus()');
+  await pressKeyText('Enter', 'Enter', 13, '\r');
+
+  await waitFor(`
+    (() => {
+      const rows = document.querySelectorAll("[data-ledger-row]");
+      const btn = document.querySelector("[data-ledger-more]");
+      const btnHidden = !btn || !(btn.offsetWidth || btn.offsetHeight || btn.getClientRects().length);
+      return rows.length === 26 && btnHidden;
+    })()
+  `, 3000, 'ledger', 'Không hiển thị đủ 26 dòng hoặc nút Hiện thêm 20 chưa ẩn sau khi nhấn');
+
+  const firstRowRunId = await evaluate(`
+    (() => {
+      const row = document.querySelector("[data-ledger-row]");
+      if (!row) return null;
+      row.focus();
+      return row.getAttribute("data-run-id");
+    })()
+  `);
+  if (!firstRowRunId) {
+    throw new Error('LỖI ledger: không tìm thấy dòng ledger đầu tiên hoặc thiếu data-run-id');
+  }
+
+  await pressKeyText('Enter', 'Enter', 13, '\r');
+
+  await waitFor(`
+    (() => {
+      const row = document.querySelector("[data-ledger-row]");
+      const stream = document.getElementById("ab-stream-line");
+      if (!row || !stream) return false;
+      const isCurrent = row.getAttribute("aria-current") === "true";
+      const isActive = document.activeElement === row;
+      const streamHasId = stream.textContent.includes("run " + ${JSON.stringify(firstRowRunId)});
+      return isCurrent && isActive && streamHasId;
+    })()
+  `, 3000, 'ledger', `Dòng ${firstRowRunId} không có aria-current="true", chưa giữ focus hoặc #ab-stream-line không chứa run ${firstRowRunId}`);
+  console.log('OK ledger');
 
   ws.close();
 }

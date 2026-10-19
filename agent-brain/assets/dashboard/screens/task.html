@@ -252,7 +252,8 @@
         <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Lượt chạy hiện ở đây khi Lead, Dev hoặc QA bắt đầu.</p>
       </div>
 
-      <div data-ledger x-show="ledgerHasRows">
+      <div data-ledger x-show="ledgerHasRows" class="space-y-4">
+        <button type="button" data-ledger-more class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="ledgerHasMore" @click="showMoreRuns">Hiện thêm 20</button>
         <template x-for="g in ledgerGroups" :key="g.key">
           <section>
             <h3 class="flex flex-wrap items-baseline justify-between gap-2 border-t border-slate-200 px-4 py-2 text-sm font-semibold leading-normal dark:border-slate-700">
