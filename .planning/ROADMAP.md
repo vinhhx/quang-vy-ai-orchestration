@@ -220,7 +220,7 @@ Plans:
   5. Màn hình đạt ở 1024/768/480 px, sáng/tối, bàn phím; không đổi schema CSDL hay giao thức vai trò.
 
 **UI hint**: yes
-**Plans:** 2/5 plans executed
+**Plans:** 3/5 plans executed
 
 Plans:
 **Wave 1**
@@ -228,7 +228,7 @@ Plans:
 - [x] 05.1-02-PLAN.md — Shared status vocabulary (đang chạy blue, D-08 glyphs, state maps), formatters fmtClock/fmtMinutes/fmtUsd, focusLater fallback, node vm JS check
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 05.1-03-PLAN.md — Git-backed "Bạn" gate: plan-commit ancestry of Dev base_commit, single plan-commit lookup, run-order fallback
+- [x] 05.1-03-PLAN.md — Git-backed "Bạn" gate: plan-commit ancestry of Dev base_commit, single plan-commit lookup, run-order fallback
 - [ ] 05.1-04-PLAN.md — Task screen pipeline card: five stage cards, loop groups, chưa tự động chips, action strip, legend, live refetch, dialog focus return
 
 **Wave 3** *(blocked on Wave 2 completion)*
