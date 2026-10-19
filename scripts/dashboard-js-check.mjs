@@ -374,6 +374,326 @@ const sections = [
       );
     },
   },
+  {
+    name: 'task-cards',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      ctx.AB.route = { name: 'task', params: { id: '1' } };
+
+      const taskJsPath = path.join(
+        repoRoot,
+        'agent-brain/assets/dashboard/js/task.js'
+      );
+      const taskJsSrc = fs.readFileSync(taskJsPath, 'utf8');
+      vm.runInContext(taskJsSrc, ctx, { filename: 'task.js' });
+
+      check(
+        'task factory registered',
+        typeof factories.task === 'function',
+        'factories.task not found'
+      );
+      if (typeof factories.task !== 'function') return;
+
+      const T_LEAD = {
+        id: 1,
+        slug: 'sua-app',
+        status: 'planned',
+        current_step: 'dev',
+        group: 'waiting',
+        actions: [
+          { id: 'run_dev', label: 'Chạy Dev', enabled: true, reason: null },
+          { id: 'relead', label: 'Chạy lại Lead', enabled: true, reason: null },
+        ],
+        steps: [],
+        runs: [{ id: 1, role: 'lead', status: 'succeeded', outcome: null }],
+      };
+
+      const fixedMs = Date.now() - 600000;
+      const P_LEAD = {
+        task_id: 1,
+        cycle: 1,
+        current: 'ban',
+        cards: {
+          start: {
+            state: 'xong',
+            state_word: 'xong',
+            result: 'bạn đã giao',
+            at_ms: fixedMs - 420000,
+          },
+          plan: {
+            role: 'lead',
+            state: 'xong',
+            state_word: 'xong',
+            result: 'plan đã commit',
+            rounds: 1,
+            run_id: 1,
+            duration_ms: 420000,
+            cost_usd: 2.73,
+          },
+          ban: {
+            state: 'cho_ban',
+            state_word: 'chờ bạn',
+            result: 'chờ duyệt plan',
+            at_ms: fixedMs,
+          },
+          code: {
+            role: 'dev',
+            state: 'cho',
+            state_word: 'chưa bắt đầu',
+            result: 'chưa bắt đầu',
+            rounds: 0,
+            run_id: null,
+            duration_ms: null,
+            cost_usd: null,
+          },
+          qa: {
+            role: 'qa',
+            state: 'cho',
+            state_word: 'chưa bắt đầu',
+            result: 'chưa bắt đầu',
+            rounds: 0,
+            run_id: null,
+            duration_ms: null,
+            cost_usd: null,
+          },
+        },
+        ledger: { groups: [], total: { runs: 1, duration_ms: 420000, cost_usd: 2.73, cost_unknown: 0 } },
+      };
+
+      const P_EMPTY = {
+        task_id: 1,
+        cycle: null,
+        current: null,
+        cards: {
+          start: {
+            state: 'xong',
+            state_word: 'xong',
+            result: 'bạn đã giao',
+            at_ms: fixedMs,
+          },
+          plan: {
+            role: 'lead',
+            state: 'cho',
+            state_word: 'chưa bắt đầu',
+            result: 'chưa bắt đầu',
+            rounds: 0,
+            run_id: null,
+            duration_ms: null,
+            cost_usd: null,
+          },
+          ban: {
+            state: 'cho',
+            state_word: 'chưa bắt đầu',
+            result: 'chưa có plan',
+            at_ms: null,
+          },
+          code: {
+            role: 'dev',
+            state: 'cho',
+            state_word: 'chưa bắt đầu',
+            result: 'chưa bắt đầu',
+            rounds: 0,
+            run_id: null,
+            duration_ms: null,
+            cost_usd: null,
+          },
+          qa: {
+            role: 'qa',
+            state: 'cho',
+            state_word: 'chưa bắt đầu',
+            result: 'chưa bắt đầu',
+            rounds: 0,
+            run_id: null,
+            duration_ms: null,
+            cost_usd: null,
+          },
+        },
+        ledger: { groups: [], total: { runs: 0, duration_ms: null, cost_usd: null, cost_unknown: 0 } },
+      };
+
+      const T_KILLED = {
+        ...T_LEAD,
+        runs: [
+          { id: 1, role: 'lead', status: 'succeeded', outcome: null },
+          { id: 2, role: 'dev', status: 'killed', outcome: null },
+        ],
+      };
+
+      const P_KILLED = {
+        ...P_LEAD,
+        current: 'code',
+        cards: {
+          ...P_LEAD.cards,
+          ban: {
+            state: 'xong',
+            state_word: 'xong',
+            result: 'đã duyệt plan',
+            at_ms: fixedMs,
+          },
+          code: {
+            role: 'dev',
+            state: 'killed',
+            state_word: 'đã dừng',
+            result: 'đã dừng',
+            rounds: 1,
+            run_id: 2,
+            duration_ms: 120000,
+            cost_usd: null,
+          },
+        },
+      };
+
+      const c = factories.task();
+      c.task = T_LEAD;
+      c.pipe = P_LEAD;
+
+      // Checks: with P_LEAD
+      check('cardState(ban)', c.cardState('ban') === 'cho_ban', `got "${c.cardState('ban')}"`);
+      check('cardCurrentAttr(ban)', c.cardCurrentAttr('ban') === 'step', `got "${c.cardCurrentAttr('ban')}"`);
+      check('cardCurrentAttr(plan)', c.cardCurrentAttr('plan') === false, `got "${c.cardCurrentAttr('plan')}"`);
+      const banCls = c.cardClass('ban');
+      check('cardClass(ban) has ring-2 ring-indigo-600', banCls.includes('ring-2 ring-indigo-600'), `got "${banCls}"`);
+      check('cardClass(ban) has border-amber-300', banCls.includes('border-amber-300'), `got "${banCls}"`);
+      const codeCls = c.cardClass('code');
+      check('cardClass(code) has border-dashed border-slate-500', codeCls.includes('border-dashed border-slate-500'), `got "${codeCls}"`);
+      check('cardClass(code) has no ring-2', !codeCls.includes('ring-2'), `got "${codeCls}"`);
+      check('cardResult(plan)', c.cardResult('plan') === 'plan đã commit', `got "${c.cardResult('plan')}"`);
+      check('cardSr(plan)', c.cardSr('plan') === 'xong, ', `got "${c.cardSr('plan')}"`);
+      check('cardMinutes(plan)', c.cardMinutes('plan') === '7 phút', `got "${c.cardMinutes('plan')}"`);
+      check('cardCost(plan)', c.cardCost('plan') === '$2.73', `got "${c.cardCost('plan')}"`);
+      check('loopFooter(code)', c.loopFooter('code') === 'chưa chạy', `got "${c.loopFooter('code')}"`);
+      const planFooter = c.loopFooter('plan');
+      check('loopFooter(plan) ends with vòng 1', planFooter.endsWith(' vòng 1'), `got "${planFooter}"`);
+      check('loopFooter(plan) contains no /', !planFooter.includes('/'), `got "${planFooter}"`);
+      const banTime = c.cardTime('ban');
+      check('cardTime(ban) starts with từ ', banTime.startsWith('từ '), `got "${banTime}"`);
+
+      // with P_EMPTY
+      c.pipe = P_EMPTY;
+      for (const k of ['start', 'plan', 'ban', 'code', 'qa']) {
+        check(`P_EMPTY cardCurrentAttr(${k}) is false`, c.cardCurrentAttr(k) === false, `got "${c.cardCurrentAttr(k)}"`);
+      }
+
+      // strip with T_LEAD
+      c.pipe = P_LEAD;
+      check('stripCaption with T_LEAD', c.stripCaption === 'Bước hiện tại: Bạn', `got "${c.stripCaption}"`);
+      check('actionList length 2', c.actionList.length === 2, `got ${c.actionList.length}`);
+      check('actionId second is ab-act-relead', c.actionId(c.actionList[1]) === 'ab-act-relead', `got "${c.actionId(c.actionList[1])}"`);
+
+      // strip independent of /pipeline
+      c.pipe = null;
+      c.pipeError = 'x';
+      check('stripCaption with pipe=null', c.stripCaption === 'Bước hiện tại: Bạn', `got "${c.stripCaption}"`);
+      check('actionList length 2 with pipe=null', c.actionList.length === 2, `got ${c.actionList.length}`);
+      c.pipeError = '';
+
+      // killed Dev (caption follows the ring)
+      c.task = T_KILLED;
+      c.pipe = P_KILLED;
+      check('cardCurrentAttr(code) is step with P_KILLED', c.cardCurrentAttr('code') === 'step', `got "${c.cardCurrentAttr('code')}"`);
+      check('cardCurrentAttr(ban) is false with P_KILLED', c.cardCurrentAttr('ban') === false, `got "${c.cardCurrentAttr('ban')}"`);
+      check('stripCaption follows ring to Code', c.stripCaption === 'Bước hiện tại: Code', `got "${c.stripCaption}"`);
+
+      // with T_KILLED and pipe = null
+      c.pipe = null;
+      check('stripCaption fallback with T_KILLED is Bạn', c.stripCaption === 'Bước hiện tại: Bạn', `got "${c.stripCaption}"`);
+
+      // agreement check
+      for (const pair of [
+        { t: T_LEAD, p: P_LEAD },
+        { t: T_KILLED, p: P_KILLED },
+      ]) {
+        c.task = pair.t;
+        c.pipe = pair.p;
+        const allKeys = ['start', 'plan', 'ban', 'code', 'qa'];
+        const ringedKeys = allKeys.filter((k) => c.cardCurrentAttr(k) === 'step');
+        check(
+          'agreement: exactly one card is current',
+          ringedKeys.length === 1,
+          `ringed cards: ${ringedKeys.join(', ')}`
+        );
+        const ringedKey = ringedKeys[0];
+        const expectedTitle = c.stageTitles[ringedKey];
+        check(
+          `agreement: stripCaption matches card title "${expectedTitle}"`,
+          c.stripCaption === 'Bước hiện tại: ' + expectedTitle,
+          `got "${c.stripCaption}"`
+        );
+      }
+
+      // pipeState
+      c.pipe = null;
+      c.pipeError = '';
+      check('pipeState loading fresh', c.pipeState === 'loading', `got "${c.pipeState}"`);
+      c.pipe = P_LEAD;
+      check('pipeState ready with data', c.pipeState === 'ready', `got "${c.pipeState}"`);
+      c.pipe = null;
+      c.pipeError = 'x';
+      check('pipeState error with only pipeError', c.pipeState === 'error', `got "${c.pipeState}"`);
+      c.pipeError = '';
+
+      // loadPipeline stubbing
+      const apiCalls = [];
+      const deferredQueue = [];
+      ctx.AB.api = function (method, url) {
+        apiCalls.push({ method, url });
+        let resolve, reject;
+        const promise = new Promise((res, rej) => {
+          resolve = res;
+          reject = rej;
+        });
+        deferredQueue.push({ resolve, reject });
+        return promise;
+      };
+
+      const c2 = factories.task();
+      c2.id = '1';
+      c2.loadPipeline();
+      c2.loadPipeline();
+      check('two calls -> one request', apiCalls.length === 1, `got ${apiCalls.length}`);
+
+      const firstReq = deferredQueue.shift();
+      firstReq.resolve({ ok: true, status: 200, data: P_LEAD });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      check('resolving triggers exactly one trailing request', apiCalls.length === 2, `got ${apiCalls.length}`);
+      check('pipe set to P_LEAD', c2.pipe === P_LEAD, 'pipe not P_LEAD');
+
+      const secondReq = deferredQueue.shift();
+      secondReq.resolve({ ok: true, status: 200, data: P_EMPTY });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      check('resolving trailing leaves pipe === P_EMPTY', c2.pipe === P_EMPTY, 'pipe not P_EMPTY');
+
+      c2.loadPipeline();
+      check('third request made', apiCalls.length === 3, `got ${apiCalls.length}`);
+      const thirdReq = deferredQueue.shift();
+      thirdReq.resolve({ ok: false, status: 500, data: null });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      check('500 keeps pipe', c2.pipe === P_EMPTY, 'pipe wiped');
+      check('500 sets pipeStale', c2.pipeStale === true, `pipeStale is ${c2.pipeStale}`);
+
+      c2.pipeStale = false;
+      c2.loadPipeline();
+      check('fourth request made', apiCalls.length === 4, `got ${apiCalls.length}`);
+      const fourthReq = deferredQueue.shift();
+      c2._pipeSeq += 1;
+      fourthReq.resolve({ ok: true, status: 200, data: P_LEAD });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      check('stale response discarded: pipe unchanged', c2.pipe === P_EMPTY, 'pipe was overwritten by stale response');
+    },
+  },
 ];
 
 async function main() {

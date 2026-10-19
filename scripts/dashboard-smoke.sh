@@ -291,6 +291,96 @@ for s in "${SCREENS[@]}"; do
     fi
     exit 1
   fi
+
+  if [[ "$s" == "task" ]]; then
+    if ! python3 - "$DOM_OUT" <<'EOF'
+import sys
+from html.parser import HTMLParser
+
+class PipelineParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.template_depth = 0
+        self.data_pipeline = None
+        self.cards = {}
+        self.aria_current_cards = set()
+        self.button_ids = set()
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'template':
+            self.template_depth += 1
+            return
+        if self.template_depth > 0:
+            return
+
+        attr_dict = dict(attrs)
+        if 'data-pipeline' in attr_dict and self.data_pipeline is None:
+            self.data_pipeline = attr_dict['data-pipeline']
+
+        if 'data-card' in attr_dict:
+            card_key = attr_dict['data-card']
+            self.cards[card_key] = attr_dict.get('data-state')
+            if attr_dict.get('aria-current') == 'step':
+                self.aria_current_cards.add(card_key)
+
+        if tag == 'button' and 'id' in attr_dict:
+            self.button_ids.add(attr_dict['id'])
+
+    def handle_endtag(self, tag):
+        if tag == 'template':
+            if self.template_depth > 0:
+                self.template_depth -= 1
+
+parser = PipelineParser()
+with open(sys.argv[1], encoding='utf-8') as f:
+    parser.feed(f.read())
+
+if parser.data_pipeline != "ready":
+    print(f"Lỗi: data-pipeline không phải là 'ready' (nhận được: '{parser.data_pipeline}')", file=sys.stderr)
+    sys.exit(1)
+
+expected_cards = {'start', 'plan', 'ban', 'code', 'qa'}
+if set(parser.cards.keys()) != expected_cards:
+    print(f"Lỗi: Danh sách card không khớp. Kỳ vọng {expected_cards}, nhận được {set(parser.cards.keys())}", file=sys.stderr)
+    sys.exit(1)
+
+expected_states = {
+    'start': 'xong',
+    'plan': 'xong',
+    'ban': 'cho_ban',
+    'code': 'cho',
+    'qa': 'cho',
+}
+for k, expected_st in expected_states.items():
+    actual_st = parser.cards.get(k)
+    if actual_st != expected_st:
+        print(f"Lỗi: Card '{k}' có state '{actual_st}', kỳ vọng '{expected_st}'", file=sys.stderr)
+        sys.exit(1)
+
+if parser.aria_current_cards != {'ban'}:
+    print(f"Lỗi: Các card có aria-current='step' là {parser.aria_current_cards}, kỳ vọng {{'ban'}}", file=sys.stderr)
+    sys.exit(1)
+
+if 'ab-act-run_dev' not in parser.button_ids:
+    print(f"Lỗi: Thiếu nút ab-act-run_dev trong danh sách buttons: {parser.button_ids}", file=sys.stderr)
+    sys.exit(1)
+
+if 'ab-act-relead' not in parser.button_ids:
+    print(f"Lỗi: Thiếu nút ab-act-relead trong danh sách buttons: {parser.button_ids}", file=sys.stderr)
+    sys.exit(1)
+
+print("Pipeline DOM OK")
+EOF
+    then
+      echo "--- 40 dòng đầu của DOM ---" >&2
+      head -n 40 "$DOM_OUT" >&2 || true
+      echo "--- serve stderr ---" >&2
+      if [[ -f "$TMP/serve.err" ]]; then
+        cat "$TMP/serve.err" >&2
+      fi
+      exit 1
+    fi
+  fi
 done
 
 echo "Smoke OK: ${SCREENS[*]}"

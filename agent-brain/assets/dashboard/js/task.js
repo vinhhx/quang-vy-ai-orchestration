@@ -14,6 +14,22 @@
       lastFocus: null,
       runId: null,
 
+      pipe: null,
+      pipeError: '',
+      pipeStale: false,
+      _pipeSeq: 0,
+      _pipeBusy: false,
+      _pipeAgain: false,
+      _left: false,
+
+      stageTitles: {
+        start: 'Bắt đầu',
+        plan: 'Lên plan',
+        ban: 'Bạn',
+        code: 'Code',
+        qa: 'QA',
+      },
+
       // Live log state
       pinned: false,
       rows: [],
@@ -35,6 +51,9 @@
         });
 
         window.AB.onLeave(function () {
+          self._left = true;
+          self._pipeSeq += 1;
+          self._pipeAgain = false;
           if (self._es) {
             self._es.close();
             self._es = null;
@@ -45,6 +64,7 @@
       load: function () {
         var self = this;
         if (!this.id) return;
+        this.loadPipeline();
         window.AB.api('GET', '/api/tasks/' + this.id).then(function (res) {
           if (res.ok && res.data) {
             self.task = res.data;
@@ -82,6 +102,51 @@
               self.stale = true;
             }
           }
+        });
+      },
+
+      loadPipeline: function () {
+        var self = this;
+        if (!this.id || this._left || this.notFound) return;
+        if (this._pipeBusy) {
+          this._pipeAgain = true;
+          return;
+        }
+        this._pipeBusy = true;
+        function finish() {
+          self._pipeBusy = false;
+          if (self._pipeAgain) {
+            self._pipeAgain = false;
+            self.loadPipeline();
+          }
+        }
+        var seq = ++this._pipeSeq;
+        window.AB.api('GET', '/api/tasks/' + this.id + '/pipeline').then(function (res) {
+          if (seq === self._pipeSeq) {
+            if (res && res.ok && res.data) {
+              self.pipe = res.data;
+              self.pipeError = '';
+              self.pipeStale = false;
+            } else if (res && res.status === 404) {
+              // nothing (load() shows the not-found state)
+            } else {
+              if (self.pipe) {
+                self.pipeStale = true;
+              } else {
+                self.pipeError = window.AB.errorText(res);
+              }
+            }
+          }
+          finish();
+        }).catch(function (err) {
+          if (seq === self._pipeSeq) {
+            if (self.pipe) {
+              self.pipeStale = true;
+            } else {
+              self.pipeError = (err && err.message) ? err.message : 'Lỗi kết nối';
+            }
+          }
+          finish();
         });
       },
 
@@ -588,88 +653,142 @@
         return this.raw ? (this.raw.error || '') : '';
       },
 
-      step: function (role) {
-        if (!this.task || !this.task.steps) return null;
-        for (var i = 0; i < this.task.steps.length; i++) {
-          if (this.task.steps[i].role === role) return this.task.steps[i];
+      get pipeState() {
+        if (this.pipe) return 'ready';
+        if (this.pipeError) return 'error';
+        return 'loading';
+      },
+
+      card: function (key) {
+        return (this.pipe && this.pipe.cards) ? this.pipe.cards[key] || null : null;
+      },
+
+      cardState: function (key) {
+        var c = this.card(key);
+        if (c && c.state) return c.state;
+        return key === 'start' ? 'xong' : 'cho';
+      },
+
+      isCurrentCard: function (key) {
+        return Boolean(this.pipe && this.pipe.current === key);
+      },
+
+      cardCurrentAttr: function (key) {
+        return this.isCurrentCard(key) ? 'step' : false;
+      },
+
+      cardClass: function (key) {
+        var state = this.cardState(key);
+        var cls = 'flex h-full min-w-0 flex-col gap-1 rounded-xl border p-4 ' + window.AB.stateCard(state);
+        if (this.isCurrentCard(key)) {
+          cls += ' ring-2 ring-indigo-600 dark:ring-indigo-400';
         }
-        return null;
+        return cls;
       },
 
-      stepBadgeClass: function (role) {
-        var s = this.step(role);
-        return window.AB.stepClass(s ? s.state : 'cho');
+      cardGlyph: function (key) {
+        return window.AB.stepGlyph(this.cardState(key));
       },
 
-      stepGlyph: function (role) {
-        var s = this.step(role);
-        return window.AB.stepGlyph(s ? s.state : 'cho');
-      },
-
-      stepGlyphClass: function (role) {
-        var s = this.step(role);
-        return window.AB.stepGlyphClass(s ? s.state : 'cho');
-      },
-
-      stepLabel: function (role) {
-        var s = this.step(role);
-        return s ? s.label : 'chờ';
-      },
-
-      hasRun: function (role) {
-        var s = this.step(role);
-        return Boolean(s && s.run_id !== null && s.run_id !== undefined);
-      },
-
-      noRun: function (role) {
-        return !this.hasRun(role);
-      },
-
-      isCurrent: function (role) {
-        return Boolean(this.task && this.task.current_step === role && this.hasRuns);
-      },
-
-      stepRing: function (role) {
-        return this.isCurrent(role)
-          ? 'ring-2 ring-indigo-600 dark:ring-indigo-400'
-          : 'ring-1 ring-slate-200 dark:ring-slate-700';
-      },
-
-      stepCurrentAttr: function (role) {
-        return this.isCurrent(role) ? 'step' : false;
-      },
-
-      tokensText: function (role) {
-        var s = this.step(role);
-        if (!s || !window.AB.tokensKnown(s)) {
-          return 'Token: vào — · ra — · cache — / —';
+      cardGlyphClass: function (key) {
+        var state = this.cardState(key);
+        var cls = 'w-6 shrink-0 text-center ' + window.AB.stateText(state);
+        if (state === 'dang_chay') {
+          cls += ' motion-safe:animate-pulse';
         }
-        return 'Token: vào ' + window.AB.fmtNum(s.input_tokens) +
-          ' · ra ' + window.AB.fmtNum(s.output_tokens) +
-          ' · cache ' + window.AB.fmtNum(s.cache_read_tokens) +
-          ' / ' + window.AB.fmtNum(s.cache_write_tokens);
+        return cls;
       },
 
-      durationText: function (role) {
-        var s = this.step(role);
-        return 'Thời gian: ' + (s && s.duration_ms !== null && s.duration_ms !== undefined ? window.AB.fmtDuration(s.duration_ms) : '—');
+      cardSr: function (key) {
+        var c = this.card(key);
+        var w = (c && c.state_word) ? c.state_word : window.AB.stateWord(this.cardState(key));
+        return w + ', ';
       },
 
-      costText: function (role) {
-        var s = this.step(role);
-        if (!s || !window.AB.costKnown(s)) {
-          return 'Chi phí: —';
+      cardResult: function (key) {
+        var c = this.card(key);
+        if (c && c.result) return c.result;
+        if (key === 'start') return 'bạn đã giao';
+        if (key === 'ban') return 'chưa có plan';
+        return 'chưa bắt đầu';
+      },
+
+      cardHasRun: function (key) {
+        var c = this.card(key);
+        return Boolean(c && typeof c.rounds === 'number' && c.rounds > 0);
+      },
+
+      cardNoRun: function (key) {
+        return !this.cardHasRun(key);
+      },
+
+      cardMinutes: function (key) {
+        var c = this.card(key);
+        return window.AB.fmtMinutes(c ? c.duration_ms : null);
+      },
+
+      cardCost: function (key) {
+        var c = this.card(key);
+        return window.AB.fmtUsd(c ? c.cost_usd : null);
+      },
+
+      cardTime: function (key) {
+        var c = this.card(key);
+        if (!c || c.at_ms === null || c.at_ms === undefined) return '—';
+        if (key === 'start') {
+          return window.AB.fmtClock(c.at_ms);
         }
-        return 'Chi phí: ' + window.AB.fmtCost(s.cost_usd);
+        if (key === 'ban') {
+          if (c.state === 'cho_ban') {
+            return 'từ ' + window.AB.fmtClock(c.at_ms);
+          }
+          if (c.state === 'xong') {
+            return window.AB.fmtClock(c.at_ms);
+          }
+          return '—';
+        }
+        return '—';
       },
 
-      actionsFor: function (role) {
-        if (!this.task || this.task.current_step !== role || !this.task.actions) return [];
-        return this.task.actions;
+      loopFooter: function (key) {
+        var c = this.card(key);
+        if (!c || typeof c.rounds !== 'number' || c.rounds <= 0) return 'chưa chạy';
+        return '\u27F2\uFE0E vòng ' + c.rounds;
       },
 
-      hasActions: function (role) {
-        return this.actionsFor(role).length > 0;
+      get actionList() {
+        return (this.task && this.task.actions) ? this.task.actions : [];
+      },
+
+      get hasActionList() {
+        return this.actionList.length > 0;
+      },
+
+      actionId: function (a) {
+        return 'ab-act-' + (a ? a.id : '');
+      },
+
+      get stripCaption() {
+        var map = this.stageTitles || {
+          plan: 'Lên plan',
+          ban: 'Bạn',
+          code: 'Code',
+          qa: 'QA',
+        };
+        if (this.pipe && this.pipe.current && map[this.pipe.current]) {
+          return 'Bước hiện tại: ' + map[this.pipe.current];
+        }
+        var t = this.task;
+        var step = t ? t.current_step : null;
+        var title = 'Lên plan';
+        if (step === 'lead') {
+          title = 'Lên plan';
+        } else if (step === 'qa') {
+          title = 'QA';
+        } else if (step === 'dev') {
+          title = (t && t.status === 'planned') ? 'Bạn' : 'Code';
+        }
+        return 'Bước hiện tại: ' + title;
       },
 
       actionClass: function (a) {

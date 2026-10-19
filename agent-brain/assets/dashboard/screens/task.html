@@ -1,4 +1,4 @@
-<section data-screen="task" x-data="task" :data-loaded="loadedAttr" class="space-y-6">
+<section data-screen="task" x-data="task" :data-loaded="loadedAttr" :data-pipeline="pipeState" class="space-y-6">
   <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="stale">Không cập nhật được — đang thử lại...</p>
   <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isLoading">Đang tải...</p>
 
@@ -32,82 +32,136 @@
       </div>
     </div>
 
-    <!-- Stepper card -->
+    <!-- Pipeline card -->
     <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
-      <ol aria-label="Pipeline Lead, Dev, QA" class="flex flex-col gap-4 md:flex-row md:items-stretch">
-        <li class="min-w-0 flex-1 space-y-4 rounded-2xl p-6" :class="stepRing('lead')" :aria-current="stepCurrentAttr('lead')">
-          <h2 class="text-xl font-semibold leading-[1.2]">Lead</h2>
-          <div :class="stepBadgeClass('lead')">
-            <span aria-hidden="true" :class="stepGlyphClass('lead')" x-text="stepGlyph('lead')"></span>
-            <span x-text="stepLabel('lead')"></span>
-          </div>
-          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noRun('lead')">Chưa chạy</p>
-          <div class="space-y-1" x-show="hasRun('lead')">
-            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="tokensText('lead')"></p>
-            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="durationText('lead')"></p>
-            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="costText('lead')"></p>
-          </div>
-          <div class="flex flex-wrap gap-2" x-show="hasActions('lead')">
-            <template x-for="a in actionsFor('lead')" :key="a.id">
-              <div class="space-y-1">
-                <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
-                <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
-                <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="actionHelp(a)" x-text="actionHelp(a)"></p>
+      <h2 class="text-xl font-semibold leading-[1.2]">Pipeline</h2>
+
+      <div data-flow-region role="region" aria-label="Pipeline của task" tabindex="0" class="overflow-x-auto pb-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+        <ol data-flow aria-label="Pipeline: Bắt đầu, Lên plan, Bạn, Code, QA" class="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+          <!-- Bắt đầu -->
+          <li class="w-full sm:w-36 sm:shrink-0">
+            <div data-card="start" :data-state="cardState('start')" :class="cardClass('start')" :aria-current="cardCurrentAttr('start')">
+              <div class="flex items-center gap-1">
+                <span aria-hidden="true" :class="cardGlyphClass('start')" x-text="cardGlyph('start')"></span>
+                <p class="min-w-0 break-words text-base font-semibold leading-normal">Bắt đầu</p>
               </div>
-            </template>
-          </div>
-        </li>
-
-        <li aria-hidden="true" class="hidden items-center text-slate-400 md:flex">→</li>
-
-        <li class="min-w-0 flex-1 space-y-4 rounded-2xl p-6" :class="stepRing('dev')" :aria-current="stepCurrentAttr('dev')">
-          <h2 class="text-xl font-semibold leading-[1.2]">Dev</h2>
-          <div :class="stepBadgeClass('dev')">
-            <span aria-hidden="true" :class="stepGlyphClass('dev')" x-text="stepGlyph('dev')"></span>
-            <span x-text="stepLabel('dev')"></span>
-          </div>
-          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noRun('dev')">Chưa chạy</p>
-          <div class="space-y-1" x-show="hasRun('dev')">
-            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="tokensText('dev')"></p>
-            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="durationText('dev')"></p>
-            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="costText('dev')"></p>
-          </div>
-          <div class="flex flex-wrap gap-2" x-show="hasActions('dev')">
-            <template x-for="a in actionsFor('dev')" :key="a.id">
-              <div class="space-y-1">
-                <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
-                <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
-                <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="actionHelp(a)" x-text="actionHelp(a)"></p>
+              <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
+                <span class="sr-only" x-text="cardSr('start')"></span>
+                <span x-text="cardResult('start')"></span>
+              </p>
+              <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
+                <span x-text="cardTime('start')"></span>
               </div>
-            </template>
-          </div>
-        </li>
+            </div>
+          </li>
 
-        <li aria-hidden="true" class="hidden items-center text-slate-400 md:flex">→</li>
+          <li aria-hidden="true" class="hidden w-4 shrink-0 self-center text-center text-slate-600 dark:text-slate-400 sm:block">→</li>
 
-        <li class="min-w-0 flex-1 space-y-4 rounded-2xl p-6" :class="stepRing('qa')" :aria-current="stepCurrentAttr('qa')">
-          <h2 class="text-xl font-semibold leading-[1.2]">QA</h2>
-          <div :class="stepBadgeClass('qa')">
-            <span aria-hidden="true" :class="stepGlyphClass('qa')" x-text="stepGlyph('qa')"></span>
-            <span x-text="stepLabel('qa')"></span>
-          </div>
-          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noRun('qa')">Chưa chạy</p>
-          <div class="space-y-1" x-show="hasRun('qa')">
-            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="tokensText('qa')"></p>
-            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="durationText('qa')"></p>
-            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="costText('qa')"></p>
-          </div>
-          <div class="flex flex-wrap gap-2" x-show="hasActions('qa')">
-            <template x-for="a in actionsFor('qa')" :key="a.id">
-              <div class="space-y-1">
-                <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
-                <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
-                <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="actionHelp(a)" x-text="actionHelp(a)"></p>
+          <!-- Lên plan loop group -->
+          <li class="flex w-full flex-col gap-2 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200 dark:bg-slate-900/50 dark:ring-slate-700 sm:w-40 sm:shrink-0">
+            <div data-card="plan" :data-state="cardState('plan')" :class="cardClass('plan')" :aria-current="cardCurrentAttr('plan')">
+              <p class="font-mono text-sm font-normal uppercase leading-normal text-slate-600 dark:text-slate-400">lead</p>
+              <div class="flex items-center gap-1">
+                <span aria-hidden="true" :class="cardGlyphClass('plan')" x-text="cardGlyph('plan')"></span>
+                <p class="min-w-0 break-words text-base font-semibold leading-normal">Lên plan</p>
               </div>
-            </template>
-          </div>
-        </li>
-      </ol>
+              <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
+                <span class="sr-only" x-text="cardSr('plan')"></span>
+                <span x-text="cardResult('plan')"></span>
+              </p>
+              <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
+                <span x-show="cardHasRun('plan')" x-text="cardMinutes('plan')"></span>
+                <span aria-hidden="true" x-show="cardHasRun('plan')">·</span>
+                <span x-show="cardHasRun('plan')" x-text="cardCost('plan')"></span>
+                <span x-show="cardNoRun('plan')">—</span>
+              </div>
+            </div>
+            <p class="text-center font-mono text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="loopFooter('plan')"></p>
+          </li>
+
+          <li aria-hidden="true" class="hidden w-4 shrink-0 self-center text-center text-slate-600 dark:text-slate-400 sm:block">→</li>
+
+          <!-- Bạn -->
+          <li class="w-full sm:w-36 sm:shrink-0">
+            <div data-card="ban" :data-state="cardState('ban')" :class="cardClass('ban')" :aria-current="cardCurrentAttr('ban')" title="Cổng duyệt suy ra từ dữ liệu: Dev đã chạy trên bản plan hiện tại thì coi là đã duyệt.">
+              <div class="flex items-center gap-1">
+                <span aria-hidden="true" :class="cardGlyphClass('ban')" x-text="cardGlyph('ban')"></span>
+                <p class="min-w-0 break-words text-base font-semibold leading-normal">Bạn</p>
+              </div>
+              <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
+                <span class="sr-only" x-text="cardSr('ban')"></span>
+                <span x-text="cardResult('ban')"></span>
+              </p>
+              <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
+                <span x-text="cardTime('ban')"></span>
+              </div>
+            </div>
+          </li>
+
+          <li aria-hidden="true" class="hidden w-4 shrink-0 self-center text-center text-slate-600 dark:text-slate-400 sm:block">→</li>
+
+          <!-- Code loop group -->
+          <li class="flex w-full flex-col gap-2 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200 dark:bg-slate-900/50 dark:ring-slate-700 sm:w-40 sm:shrink-0">
+            <div data-card="code" :data-state="cardState('code')" :class="cardClass('code')" :aria-current="cardCurrentAttr('code')">
+              <p class="font-mono text-sm font-normal uppercase leading-normal text-slate-600 dark:text-slate-400">dev</p>
+              <div class="flex items-center gap-1">
+                <span aria-hidden="true" :class="cardGlyphClass('code')" x-text="cardGlyph('code')"></span>
+                <p class="min-w-0 break-words text-base font-semibold leading-normal">Code</p>
+              </div>
+              <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
+                <span class="sr-only" x-text="cardSr('code')"></span>
+                <span x-text="cardResult('code')"></span>
+              </p>
+              <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
+                <span x-show="cardHasRun('code')" x-text="cardMinutes('code')"></span>
+                <span aria-hidden="true" x-show="cardHasRun('code')">·</span>
+                <span x-show="cardHasRun('code')" x-text="cardCost('code')"></span>
+                <span x-show="cardNoRun('code')">—</span>
+              </div>
+            </div>
+            <p class="text-center font-mono text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="loopFooter('code')"></p>
+          </li>
+
+          <li aria-hidden="true" class="hidden w-4 shrink-0 self-center text-center text-slate-600 dark:text-slate-400 sm:block">→</li>
+
+          <!-- QA loop group -->
+          <li class="flex w-full flex-col gap-2 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200 dark:bg-slate-900/50 dark:ring-slate-700 sm:w-40 sm:shrink-0">
+            <div data-card="qa" :data-state="cardState('qa')" :class="cardClass('qa')" :aria-current="cardCurrentAttr('qa')">
+              <p class="font-mono text-sm font-normal uppercase leading-normal text-slate-600 dark:text-slate-400">qa</p>
+              <div class="flex items-center gap-1">
+                <span aria-hidden="true" :class="cardGlyphClass('qa')" x-text="cardGlyph('qa')"></span>
+                <p class="min-w-0 break-words text-base font-semibold leading-normal">QA</p>
+              </div>
+              <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
+                <span class="sr-only" x-text="cardSr('qa')"></span>
+                <span x-text="cardResult('qa')"></span>
+              </p>
+              <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
+                <span x-show="cardHasRun('qa')" x-text="cardMinutes('qa')"></span>
+                <span aria-hidden="true" x-show="cardHasRun('qa')">·</span>
+                <span x-show="cardHasRun('qa')" x-text="cardCost('qa')"></span>
+                <span x-show="cardNoRun('qa')">—</span>
+              </div>
+            </div>
+            <p class="text-center font-mono text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="loopFooter('qa')"></p>
+          </li>
+        </ol>
+      </div>
+
+      <!-- Action strip -->
+      <div class="space-y-4 border-t border-slate-200 pt-4 dark:border-slate-700" x-show="hasActionList">
+        <p class="text-sm font-semibold leading-normal" x-text="stripCaption"></p>
+        <div class="flex flex-wrap gap-2">
+          <template x-for="a in actionList" :key="a.id">
+            <div class="space-y-1">
+              <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
+              <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
+              <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="actionHelp(a)" x-text="actionHelp(a)"></p>
+            </div>
+          </template>
+        </div>
+      </div>
+
       <p aria-live="polite" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="messageText" x-text="messageText"></p>
       <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isDone" x-text="doneText"></p>
     </div>
