@@ -32,7 +32,7 @@
 
   <div class="grid gap-6 lg:grid-cols-2" x-show="hasTasks">
     <template x-for="g in groups" :key="g.key">
-      <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <div class="min-w-0 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
         <div class="flex flex-wrap items-center gap-2">
           <h2 class="text-xl font-semibold leading-[1.2]" x-text="g.title"></h2>
           <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="count(g)"></span>
