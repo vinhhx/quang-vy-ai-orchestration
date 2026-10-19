@@ -219,10 +219,19 @@ Plans:
   4. Khi một run đang chạy, thẻ và sổ cập nhật trực tiếp; Kill và các nút bước vẫn hoạt động như Phase 5.
   5. Màn hình đạt ở 1024/768/480 px, sáng/tối, bàn phím; không đổi schema CSDL hay giao thức vai trò.
 **UI hint**: yes
-**Plans:** 0 plans
+**Plans:** 5 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 05.1 to break down)
+**Wave 1**
+- [ ] 05.1-01-PLAN.md — Tracer: `GET /api/tasks/{id}/pipeline` (runs_for_task → pure pipeline::derive: cards, rounds, cycles, ledger, totals) + rule battery and brain.db flow tests
+- [ ] 05.1-02-PLAN.md — Shared status vocabulary (đang chạy blue, D-08 glyphs, state maps), formatters fmtClock/fmtMinutes/fmtUsd, focusLater fallback, node vm JS check
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 05.1-03-PLAN.md — Git-backed "Bạn" gate: plan-commit ancestry of Dev base_commit, single plan-commit lookup, run-order fallback
+- [ ] 05.1-04-PLAN.md — Task screen pipeline card: five stage cards, loop groups, chưa tự động chips, action strip, legend, live refetch, dialog focus return
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 05.1-05-PLAN.md — Run ledger (cycle headers, row → log, total, Hiện thêm 20), CDP keyboard + 1024/768/480 layout checks, app.css rebuild, phase gate
 
 ### Phase 6: Multi-engine & Media Branch
 
