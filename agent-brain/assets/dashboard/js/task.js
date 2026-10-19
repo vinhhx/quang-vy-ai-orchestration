@@ -11,7 +11,7 @@
       message: '',
       busyAction: '',
       dialog: null,
-      lastFocus: null,
+      lastFocusId: '',
       runId: null,
 
       pipe: null,
@@ -171,7 +171,8 @@
             if (this.task.runs[i].id === id) {
               this.streamRun = {
                 role: this.task.runs[i].role,
-                status: this.task.runs[i].status
+                status: this.task.runs[i].status,
+                outcome: this.task.runs[i].outcome || null
               };
               break;
             }
@@ -205,10 +206,15 @@
         es.addEventListener('status', function (e) {
           try {
             var s = JSON.parse(e.data);
+            var prev = self.streamRun;
             self.streamRun = {
               role: s.role,
-              status: s.status
+              status: s.status,
+              outcome: s.outcome || null
             };
+            if (prev && (prev.status !== s.status || prev.outcome !== (s.outcome || null))) {
+              self.loadPipeline();
+            }
           } catch (err) {}
         });
 
@@ -336,38 +342,27 @@
         return (this.task && this.task.banner) ? this.task.banner : '';
       },
 
-      get bannerClass() {
-        var base = 'inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold';
-        if (!this.task) return base + ' bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200';
+      get bannerState() {
+        if (!this.task) return 'cho';
         var g = this.task.group;
-        if (g === 'running' || g === 'waiting') {
-          return base + ' bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-200';
-        }
+        if (g === 'running') return 'dang_chay';
+        if (g === 'waiting') return 'cho_ban';
         if (g === 'attention') {
           if (this.task.status === 'blocked' || this.task.status === 'qa_fix') {
-            return base + ' bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200';
+            return 'vuong_mac';
           }
-          return base + ' bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200';
+          return 'loi';
         }
-        if (g === 'done') {
-          return base + ' bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200';
-        }
-        return base + ' bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200';
+        if (g === 'done') return 'xong';
+        return 'cho';
+      },
+
+      get bannerClass() {
+        return window.AB.stepClass(this.bannerState);
       },
 
       get bannerGlyph() {
-        if (!this.task) return '○\uFE0E';
-        var g = this.task.group;
-        if (g === 'running') return '◐\uFE0E';
-        if (g === 'waiting') return '○\uFE0E';
-        if (g === 'done') return '✓\uFE0E';
-        if (g === 'attention') {
-          if (this.task.status === 'blocked' || this.task.status === 'qa_fix') {
-            return '!\uFE0E';
-          }
-          return '✕\uFE0E';
-        }
-        return '○\uFE0E';
+        return window.AB.stepGlyph(this.bannerState);
       },
 
       get hasRuns() {
@@ -659,6 +654,43 @@
         return 'loading';
       },
 
+      get hasPipe() {
+        return Boolean(this.pipe);
+      },
+
+      get pipeLoading() {
+        return !this.pipe && !this.pipeError;
+      },
+
+      get pipeFailed() {
+        return !this.pipe && Boolean(this.pipeError);
+      },
+
+      get pipeErrorBody() {
+        return (this.pipeError || 'Lỗi không xác định') + '. Trang tự thử lại; nếu vẫn lỗi, kiểm tra terminal đang chạy agent-brain serve.';
+      },
+
+      get showStale() {
+        return Boolean(this.stale || this.pipeStale);
+      },
+
+      get placeholderGlyph() {
+        return window.AB.stepGlyph('chua_tu_dong');
+      },
+
+      reloadPipeline: function () {
+        this.pipeError = '';
+        this.loadPipeline();
+      },
+
+      legendGlyph: function (state) {
+        return window.AB.stepGlyph(state);
+      },
+
+      legendGlyphClass: function (state) {
+        return 'w-6 text-center ' + window.AB.stateText(state);
+      },
+
       card: function (key) {
         return (this.pipe && this.pipe.cards) ? this.pipe.cards[key] || null : null;
       },
@@ -842,7 +874,7 @@
 
       onAction: function (a) {
         if (a.id === 'kill' || a.id === 'relead') {
-          this.lastFocus = document.activeElement;
+          this.lastFocusId = this.actionId(a);
           this.dialog = a;
           window.AB.lockScroll(true);
           window.AB.focusLater('ab-dlg-cancel');
@@ -851,18 +883,21 @@
         }
       },
 
-      dialogCancel: function () {
+      closeDialog: function () {
+        var id = this.lastFocusId;
+        this.lastFocusId = '';
         this.dialog = null;
         window.AB.lockScroll(false);
-        if (this.lastFocus && this.lastFocus.focus) {
-          this.lastFocus.focus();
-        }
+        window.AB.focusLater(id || 'screen', 'screen');
+      },
+
+      dialogCancel: function () {
+        this.closeDialog();
       },
 
       dialogOk: function () {
         var act = this.dialog;
-        this.dialog = null;
-        window.AB.lockScroll(false);
+        this.closeDialog();
         if (act) {
           this.runAction(act);
         }

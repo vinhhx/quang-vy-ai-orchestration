@@ -221,6 +221,13 @@ async function main() {
     'alertdialog vẫn hiển thị sau khi bấm Escape'
   );
 
+  await waitFor(
+    'document.activeElement && document.activeElement.id === "ab-act-relead"',
+    1500,
+    'confirm-dialog',
+    'Focus không trở về nút Chạy lại Lead sau khi đóng dialog bằng Escape'
+  );
+
   const runsAfter = await evaluate(`
     fetch('/api/tasks/1')
       .then(r => r.json())

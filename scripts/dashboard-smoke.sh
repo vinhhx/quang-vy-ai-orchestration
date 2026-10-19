@@ -305,6 +305,9 @@ class PipelineParser(HTMLParser):
         self.cards = {}
         self.aria_current_cards = set()
         self.button_ids = set()
+        self.legend_items = []
+        self.chips = []
+        self.in_chip = False
 
     def handle_starttag(self, tag, attrs):
         if tag == 'template':
@@ -326,10 +329,27 @@ class PipelineParser(HTMLParser):
         if tag == 'button' and 'id' in attr_dict:
             self.button_ids.add(attr_dict['id'])
 
+        if 'data-legend-item' in attr_dict:
+            self.legend_items.append(tag)
+
+        if 'data-placeholder-chip' in attr_dict:
+            self.chips.append({
+                'tag': tag,
+                'has_tabindex': 'tabindex' in attr_dict,
+                'text': '',
+            })
+            self.in_chip = True
+
+    def handle_data(self, data):
+        if self.template_depth == 0 and self.in_chip:
+            self.chips[-1]['text'] += data
+
     def handle_endtag(self, tag):
         if tag == 'template':
             if self.template_depth > 0:
                 self.template_depth -= 1
+        if self.in_chip and tag == 'li':
+            self.in_chip = False
 
 parser = PipelineParser()
 with open(sys.argv[1], encoding='utf-8') as f:
@@ -368,6 +388,25 @@ if 'ab-act-run_dev' not in parser.button_ids:
 if 'ab-act-relead' not in parser.button_ids:
     print(f"Lỗi: Thiếu nút ab-act-relead trong danh sách buttons: {parser.button_ids}", file=sys.stderr)
     sys.exit(1)
+
+if len(parser.legend_items) != 7:
+    print(f"Lỗi: Số lượng data-legend-item là {len(parser.legend_items)}, kỳ vọng 7", file=sys.stderr)
+    sys.exit(1)
+
+if len(parser.chips) != 4:
+    print(f"Lỗi: Số lượng data-placeholder-chip là {len(parser.chips)}, kỳ vọng 4", file=sys.stderr)
+    sys.exit(1)
+
+for i, chip in enumerate(parser.chips):
+    if chip['tag'] in ('a', 'button'):
+        print(f"Lỗi: Chip thứ {i+1} có thẻ tương tác <{chip['tag']}>", file=sys.stderr)
+        sys.exit(1)
+    if chip['has_tabindex']:
+        print(f"Lỗi: Chip thứ {i+1} có thuộc tính tabindex", file=sys.stderr)
+        sys.exit(1)
+    if 'chưa tự động' not in chip['text']:
+        print(f"Lỗi: Chip thứ {i+1} không chứa 'chưa tự động' (nội dung: '{chip['text']}')", file=sys.stderr)
+        sys.exit(1)
 
 print("Pipeline DOM OK")
 EOF

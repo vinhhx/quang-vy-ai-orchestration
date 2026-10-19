@@ -694,6 +694,167 @@ const sections = [
       check('stale response discarded: pipe unchanged', c2.pipe === P_EMPTY, 'pipe was overwritten by stale response');
     },
   },
+  {
+    name: 'task-states',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      ctx.AB.route = { name: 'task', params: { id: '1' } };
+
+      const taskJsPath = path.join(
+        repoRoot,
+        'agent-brain/assets/dashboard/js/task.js'
+      );
+      const taskJsSrc = fs.readFileSync(taskJsPath, 'utf8');
+      vm.runInContext(taskJsSrc, ctx, { filename: 'task.js' });
+
+      const c = factories.task();
+      c.id = '1';
+
+      // Behavior 1: pipeLoading, pipeFailed, pipeErrorBody, showStale
+      c.pipe = null;
+      c.pipeError = '';
+      check('pipeLoading true fresh', c.pipeLoading === true, `got ${c.pipeLoading}`);
+      check('pipeFailed false fresh', c.pipeFailed === false, `got ${c.pipeFailed}`);
+
+      c.pipeError = 'Lỗi 500';
+      check('pipeLoading false on error', c.pipeLoading === false, `got ${c.pipeLoading}`);
+      check('pipeFailed true on error', c.pipeFailed === true, `got ${c.pipeFailed}`);
+      check(
+        'pipeErrorBody format',
+        c.pipeErrorBody === 'Lỗi 500. Trang tự thử lại; nếu vẫn lỗi, kiểm tra terminal đang chạy agent-brain serve.',
+        `got "${c.pipeErrorBody}"`
+      );
+
+      c.pipe = { cards: {} };
+      c.pipeError = '';
+      check('pipeLoading false with pipe', c.pipeLoading === false, `got ${c.pipeLoading}`);
+      check('pipeFailed false with pipe', c.pipeFailed === false, `got ${c.pipeFailed}`);
+
+      c.stale = false;
+      c.pipeStale = false;
+      check('showStale false when both fresh', c.showStale === false, `got ${c.showStale}`);
+      c.stale = true;
+      c.pipeStale = false;
+      check('showStale true when task stale', c.showStale === true, `got ${c.showStale}`);
+      c.stale = false;
+      c.pipeStale = true;
+      check('showStale true when pipe stale', c.showStale === true, `got ${c.showStale}`);
+      c.stale = false;
+      c.pipeStale = false;
+
+      // Behavior 2: bannerState, bannerClass, bannerGlyph
+      c.task = null;
+      check('bannerState null task -> cho', c.bannerState === 'cho', `got "${c.bannerState}"`);
+
+      c.task = { group: 'running', status: 'running' };
+      check('bannerState running -> dang_chay', c.bannerState === 'dang_chay', `got "${c.bannerState}"`);
+      check('bannerClass running blue', c.bannerClass === ctx.AB.stepClass('dang_chay'), `got "${c.bannerClass}"`);
+      check('bannerGlyph running', c.bannerGlyph === ctx.AB.stepGlyph('dang_chay'), `got "${c.bannerGlyph}"`);
+
+      c.task = { group: 'waiting', status: 'planned' };
+      check('bannerState waiting -> cho_ban', c.bannerState === 'cho_ban', `got "${c.bannerState}"`);
+      check('bannerClass waiting amber', c.bannerClass === ctx.AB.stepClass('cho_ban'), `got "${c.bannerClass}"`);
+      check('bannerGlyph waiting ●', c.bannerGlyph === ctx.AB.stepGlyph('cho_ban'), `got "${c.bannerGlyph}"`);
+
+      c.task = { group: 'attention', status: 'blocked' };
+      check('bannerState blocked -> vuong_mac', c.bannerState === 'vuong_mac', `got "${c.bannerState}"`);
+      check('bannerGlyph blocked !', c.bannerGlyph === ctx.AB.stepGlyph('vuong_mac'), `got "${c.bannerGlyph}"`);
+
+      c.task = { group: 'attention', status: 'qa_fix' };
+      check('bannerState qa_fix -> vuong_mac', c.bannerState === 'vuong_mac', `got "${c.bannerState}"`);
+
+      c.task = { group: 'attention', status: 'failed' };
+      check('bannerState failed -> loi', c.bannerState === 'loi', `got "${c.bannerState}"`);
+      check('bannerGlyph failed ■', c.bannerGlyph === ctx.AB.stepGlyph('loi'), `got "${c.bannerGlyph}"`);
+
+      c.task = { group: 'done', status: 'succeeded' };
+      check('bannerState done -> xong', c.bannerState === 'xong', `got "${c.bannerState}"`);
+      check('bannerGlyph done ✓', c.bannerGlyph === ctx.AB.stepGlyph('xong'), `got "${c.bannerGlyph}"`);
+
+      c.task = { group: 'unknown', status: 'unknown' };
+      check('bannerState unknown -> cho', c.bannerState === 'cho', `got "${c.bannerState}"`);
+
+      // Behavior 3: legend & placeholder
+      for (const st of ['xong', 'dang_chay', 'cho_ban', 'killed', 'cho', 'chua_tu_dong', 'vuong_mac']) {
+        check(`legendGlyph(${st})`, c.legendGlyph(st) === ctx.AB.stepGlyph(st), `got "${c.legendGlyph(st)}"`);
+        check(`legendGlyphClass(${st})`, c.legendGlyphClass(st) === 'w-6 text-center ' + ctx.AB.stateText(st), `got "${c.legendGlyphClass(st)}"`);
+      }
+      check('placeholderGlyph', c.placeholderGlyph === ctx.AB.stepGlyph('chua_tu_dong'), `got "${c.placeholderGlyph}"`);
+
+      // Behavior 4: SSE status refetch
+      c.task = {
+        id: 1,
+        runs: [{ id: 1, role: 'lead', status: 'running', outcome: null }],
+      };
+      let pipeLoads = 0;
+      c.loadPipeline = function () {
+        pipeLoads++;
+      };
+
+      const esInstancesBefore = ctx.EventSource.instances.length;
+      c.openStream(1);
+      const es = ctx.EventSource.instances[ctx.EventSource.instances.length - 1];
+      check('EventSource instantiated', Boolean(es && ctx.EventSource.instances.length > esInstancesBefore));
+
+      const statusHandlers = es.handlers['status'] || [];
+      check('status event handler registered', statusHandlers.length > 0);
+
+      if (statusHandlers.length > 0) {
+        // Same status & outcome -> no refetch
+        statusHandlers[0]({ data: JSON.stringify({ role: 'lead', status: 'running', outcome: null }) });
+        check('SSE status same status/outcome does not refetch', pipeLoads === 0, `pipeLoads=${pipeLoads}`);
+
+        // Status changed to succeeded -> refetch
+        statusHandlers[0]({ data: JSON.stringify({ role: 'lead', status: 'succeeded', outcome: null }) });
+        check('SSE status change refetches pipeline once', pipeLoads === 1, `pipeLoads=${pipeLoads}`);
+      }
+
+      // Behavior 5: Dialog focus return
+      const focusLaterCalls = [];
+      const lockScrollCalls = [];
+      ctx.AB.focusLater = function (id, fallback) {
+        focusLaterCalls.push({ id, fallback });
+      };
+      ctx.AB.lockScroll = function (lock) {
+        lockScrollCalls.push(lock);
+      };
+
+      let ranAction = null;
+      c.runAction = function (act) {
+        ranAction = act;
+      };
+
+      const releadAct = { id: 'relead', label: 'Chạy lại Lead' };
+      c.onAction(releadAct);
+      check('onAction(relead) stores lastFocusId', c.lastFocusId === 'ab-act-relead', `got "${c.lastFocusId}"`);
+      check('onAction(relead) sets dialog', c.dialog === releadAct);
+      check('onAction(relead) locks scroll', lockScrollCalls[lockScrollCalls.length - 1] === true);
+      check('onAction(relead) focuses ab-dlg-cancel', focusLaterCalls[focusLaterCalls.length - 1].id === 'ab-dlg-cancel');
+
+      // dialogCancel
+      c.dialogCancel();
+      check('dialogCancel clears lastFocusId', c.lastFocusId === '');
+      check('dialogCancel clears dialog', c.dialog === null);
+      check('dialogCancel unlocks scroll', lockScrollCalls[lockScrollCalls.length - 1] === false);
+      const cancelFocus = focusLaterCalls[focusLaterCalls.length - 1];
+      check('dialogCancel focuses ab-act-relead', cancelFocus.id === 'ab-act-relead' && cancelFocus.fallback === 'screen');
+
+      // onAction + dialogOk
+      c.onAction(releadAct);
+      c.dialogOk();
+      check('dialogOk clears lastFocusId', c.lastFocusId === '');
+      check('dialogOk clears dialog', c.dialog === null);
+      check('dialogOk unlocks scroll', lockScrollCalls[lockScrollCalls.length - 1] === false);
+      const okFocus = focusLaterCalls[focusLaterCalls.length - 1];
+      check('dialogOk focuses ab-act-relead', okFocus.id === 'ab-act-relead' && okFocus.fallback === 'screen');
+      check('dialogOk ran action', ranAction === releadAct);
+    },
+  },
 ];
 
 async function main() {

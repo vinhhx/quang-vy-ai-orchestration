@@ -1,5 +1,5 @@
 <section data-screen="task" x-data="task" :data-loaded="loadedAttr" :data-pipeline="pipeState" class="space-y-6">
-  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="stale">Không cập nhật được — đang thử lại...</p>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="showStale">Không cập nhật được — đang thử lại...</p>
   <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isLoading">Đang tải...</p>
 
   <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="hasError">
@@ -36,7 +36,15 @@
     <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
       <h2 class="text-xl font-semibold leading-[1.2]">Pipeline</h2>
 
-      <div data-flow-region role="region" aria-label="Pipeline của task" tabindex="0" class="overflow-x-auto pb-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="pipeLoading">Đang tải...</p>
+
+      <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2" x-show="pipeFailed">
+        <p class="font-semibold leading-normal">Không tải được pipeline</p>
+        <p class="text-base font-normal leading-normal" x-text="pipeErrorBody"></p>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="reloadPipeline">Thử lại</button>
+      </div>
+
+      <div data-flow-region role="region" aria-label="Pipeline của task" tabindex="0" class="overflow-x-auto pb-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasPipe">
         <ol data-flow aria-label="Pipeline: Bắt đầu, Lên plan, Bạn, Code, QA" class="flex flex-col gap-2 sm:flex-row sm:items-stretch">
           <!-- Bắt đầu -->
           <li class="w-full sm:w-36 sm:shrink-0">
@@ -148,6 +156,30 @@
         </ol>
       </div>
 
+      <!-- Placeholder row -->
+      <div class="space-y-2" x-show="hasPipe">
+        <p class="text-sm font-semibold leading-normal">Chưa tự động</p>
+        <ul class="flex flex-wrap gap-2">
+          <li data-placeholder-chip class="inline-flex items-center gap-2 rounded-xl border border-dashed border-slate-400 px-4 py-2 text-sm font-normal leading-normal text-slate-600 dark:border-slate-500 dark:text-slate-400">
+            <span aria-hidden="true" class="w-6 text-center" x-text="placeholderGlyph"></span>
+            <span>Review plan · chưa tự động</span>
+          </li>
+          <li data-placeholder-chip class="inline-flex items-center gap-2 rounded-xl border border-dashed border-slate-400 px-4 py-2 text-sm font-normal leading-normal text-slate-600 dark:border-slate-500 dark:text-slate-400">
+            <span aria-hidden="true" class="w-6 text-center" x-text="placeholderGlyph"></span>
+            <span>Review code · chưa tự động</span>
+          </li>
+          <li data-placeholder-chip class="inline-flex items-center gap-2 rounded-xl border border-dashed border-slate-400 px-4 py-2 text-sm font-normal leading-normal text-slate-600 dark:border-slate-500 dark:text-slate-400">
+            <span aria-hidden="true" class="w-6 text-center" x-text="placeholderGlyph"></span>
+            <span>Sửa · chưa tự động</span>
+          </li>
+          <li data-placeholder-chip class="inline-flex items-center gap-2 rounded-xl border border-dashed border-slate-400 px-4 py-2 text-sm font-normal leading-normal text-slate-600 dark:border-slate-500 dark:text-slate-400">
+            <span aria-hidden="true" class="w-6 text-center" x-text="placeholderGlyph"></span>
+            <span>PR nháp · chưa tự động</span>
+          </li>
+        </ul>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Các giai đoạn này chưa có trong giao thức hiện tại; dashboard không giả lập kết quả.</p>
+      </div>
+
       <!-- Action strip -->
       <div class="space-y-4 border-t border-slate-200 pt-4 dark:border-slate-700" x-show="hasActionList">
         <p class="text-sm font-semibold leading-normal" x-text="stripCaption"></p>
@@ -164,6 +196,38 @@
 
       <p aria-live="polite" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="messageText" x-text="messageText"></p>
       <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isDone" x-text="doneText"></p>
+
+      <!-- Legend -->
+      <ul aria-label="Chú thích trạng thái" class="flex flex-wrap gap-x-4 gap-y-1" x-show="hasPipe">
+        <li data-legend-item class="inline-flex items-center gap-1 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
+          <span aria-hidden="true" :class="legendGlyphClass('xong')" x-text="legendGlyph('xong')"></span>
+          <span>xong</span>
+        </li>
+        <li data-legend-item class="inline-flex items-center gap-1 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
+          <span aria-hidden="true" :class="legendGlyphClass('dang_chay')" x-text="legendGlyph('dang_chay')"></span>
+          <span>đang chạy</span>
+        </li>
+        <li data-legend-item class="inline-flex items-center gap-1 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
+          <span aria-hidden="true" :class="legendGlyphClass('cho_ban')" x-text="legendGlyph('cho_ban')"></span>
+          <span>chờ bạn</span>
+        </li>
+        <li data-legend-item class="inline-flex items-center gap-1 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
+          <span aria-hidden="true" :class="legendGlyphClass('killed')" x-text="legendGlyph('killed')"></span>
+          <span>đã dừng / lỗi</span>
+        </li>
+        <li data-legend-item class="inline-flex items-center gap-1 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
+          <span aria-hidden="true" :class="legendGlyphClass('cho')" x-text="legendGlyph('cho')"></span>
+          <span>chưa bắt đầu</span>
+        </li>
+        <li data-legend-item class="inline-flex items-center gap-1 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
+          <span aria-hidden="true" :class="legendGlyphClass('chua_tu_dong')" x-text="legendGlyph('chua_tu_dong')"></span>
+          <span>chưa tự động</span>
+        </li>
+        <li data-legend-item class="inline-flex items-center gap-1 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
+          <span aria-hidden="true" :class="legendGlyphClass('vuong_mac')" x-text="legendGlyph('vuong_mac')"></span>
+          <span>vướng mắc / cần sửa</span>
+        </li>
+      </ul>
     </div>
 
     <!-- D-03 callouts -->
