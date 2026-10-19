@@ -662,6 +662,20 @@ mod tests {
         }
     }
 
+    fn run(
+        id: i64,
+        role: &str,
+        status: &str,
+        outcome: Option<&str>,
+        started_at: i64,
+        ended_at: Option<i64>,
+    ) -> RunRow {
+        let mut r = dummy_run(id, role, status, outcome);
+        r.started_at = started_at;
+        r.ended_at = ended_at;
+        r
+    }
+
     #[test]
     fn test_derive_lead_only() {
         let task = dummy_task("planned");
@@ -684,5 +698,920 @@ mod tests {
         assert_eq!(view.ledger.groups[0].header, "Chu kỳ 1 · plan đầu tiên");
         assert_eq!(view.ledger.groups[0].right.as_deref(), Some("chờ bạn"));
         assert_eq!(view.ledger.total.runs, 1);
+    }
+
+    #[test]
+    fn test_round_numbers_per_role_task_wide() {
+        let task = dummy_task("planned");
+        let runs = vec![
+            run(1, "lead", "succeeded", None, 1000, Some(2000)),
+            run(2, "dev", "succeeded", None, 2000, Some(3000)),
+            run(3, "qa", "succeeded", None, 3000, Some(4000)),
+            run(4, "lead", "succeeded", None, 4000, Some(5000)),
+            run(5, "dev", "succeeded", None, 5000, Some(6000)),
+        ];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 10000,
+        };
+        let view = derive(&facts);
+        let all_rows: Vec<&LedgerRow> = view.ledger.groups.iter().flat_map(|g| &g.rows).collect();
+        assert_eq!(all_rows.len(), 5);
+        assert_eq!(all_rows[0].round, 1);
+        assert_eq!(all_rows[0].label, "Vòng 1 · plan");
+        assert_eq!(all_rows[1].round, 1);
+        assert_eq!(all_rows[1].label, "Vòng 1 · code");
+        assert_eq!(all_rows[2].round, 1);
+        assert_eq!(all_rows[2].label, "Vòng 1 · QA");
+        assert_eq!(all_rows[3].round, 2);
+        assert_eq!(all_rows[3].label, "Vòng 2 · plan");
+        assert_eq!(all_rows[4].round, 2);
+        assert_eq!(all_rows[4].label, "Vòng 2 · code");
+    }
+
+    #[test]
+    fn test_ties_ordered_by_id() {
+        let task = dummy_task("dev_done");
+        let runs = vec![
+            run(5, "dev", "succeeded", None, 1000, Some(2000)),
+            run(3, "dev", "succeeded", None, 1000, Some(2000)),
+        ];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 5000,
+        };
+        let view = derive(&facts);
+        let all_rows: Vec<&LedgerRow> = view.ledger.groups.iter().flat_map(|g| &g.rows).collect();
+        assert_eq!(all_rows.len(), 2);
+        assert_eq!(all_rows[0].run_id, 3);
+        assert_eq!(all_rows[1].run_id, 5);
+        assert_eq!(view.cards.code.run_id, Some(5));
+    }
+
+    #[test]
+    fn test_inspect_runs_excluded() {
+        let task = dummy_task("planned");
+        let runs = vec![
+            run(1, "inspect", "succeeded", None, 1000, Some(2000)),
+            run(2, "lead", "succeeded", None, 2000, Some(3000)),
+        ];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 5000,
+        };
+        let view = derive(&facts);
+        let all_rows: Vec<&LedgerRow> = view.ledger.groups.iter().flat_map(|g| &g.rows).collect();
+        assert_eq!(all_rows.len(), 1);
+        assert_eq!(all_rows[0].run_id, 2);
+        assert_eq!(view.ledger.total.runs, 1);
+        assert_eq!(view.cards.plan.rounds, 1);
+    }
+
+    #[test]
+    fn test_groups_and_cycles() {
+        let task = dummy_task("dev_done");
+        let runs = vec![
+            run(1, "lead", "succeeded", None, 1000, Some(2000)),
+            run(2, "lead", "succeeded", None, 2000, Some(3000)),
+            run(3, "dev", "succeeded", None, 3000, Some(4000)),
+            run(4, "qa", "succeeded", None, 4000, Some(5000)),
+            run(5, "dev", "succeeded", None, 5000, Some(6000)),
+            run(6, "qa", "succeeded", None, 6000, Some(7000)),
+            run(7, "lead", "succeeded", None, 7000, Some(8000)),
+            run(8, "dev", "succeeded", None, 8000, Some(9000)),
+        ];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 10000,
+        };
+        let view = derive(&facts);
+        assert_eq!(view.ledger.groups.len(), 7);
+        let kinds: Vec<&str> = view.ledger.groups.iter().map(|g| g.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["plan", "build", "qa", "build", "qa", "plan", "build"]
+        );
+        let cycles: Vec<i64> = view.ledger.groups.iter().map(|g| g.cycle).collect();
+        assert_eq!(cycles, vec![1, 1, 1, 1, 1, 2, 2]);
+        let headers: Vec<&str> = view
+            .ledger
+            .groups
+            .iter()
+            .map(|g| g.header.as_str())
+            .collect();
+        assert_eq!(
+            headers,
+            vec![
+                "Chu kỳ 1 · plan đầu tiên",
+                "Chu kỳ 1 · build",
+                "Chu kỳ 1 · QA",
+                "Chu kỳ 1 · build",
+                "Chu kỳ 1 · QA",
+                "Chu kỳ 2 · plan lại",
+                "Chu kỳ 2 · build",
+            ]
+        );
+        let keys: Vec<&str> = view.ledger.groups.iter().map(|g| g.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "c1-plan-1",
+                "c1-build-2",
+                "c1-qa-3",
+                "c1-build-4",
+                "c1-qa-5",
+                "c2-plan-6",
+                "c2-build-7",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_header_right() {
+        let task = dummy_task("planned");
+        // Plan followed by dev -> "bạn đã duyệt"
+        let runs_followed_by_dev = vec![
+            run(1, "lead", "succeeded", None, 1000, Some(2000)),
+            run(2, "dev", "succeeded", None, 3000, Some(4000)),
+        ];
+        let v1 = derive(&PipelineFacts {
+            task: &task,
+            runs: &runs_followed_by_dev,
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 5000,
+        });
+        assert_eq!(v1.ledger.groups[0].right.as_deref(), Some("bạn đã duyệt"));
+        assert_eq!(v1.ledger.groups[1].right, None);
+
+        // Last plan group whose last lead succeeded with no dev after -> "chờ bạn"
+        let runs_succeeded_last = vec![run(1, "lead", "succeeded", None, 1000, Some(2000))];
+        let v2 = derive(&PipelineFacts {
+            task: &task,
+            runs: &runs_succeeded_last,
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 5000,
+        });
+        assert_eq!(v2.ledger.groups[0].right.as_deref(), Some("chờ bạn"));
+
+        // Last plan group whose last lead failed -> null
+        let runs_failed_last = vec![run(1, "lead", "failed", None, 1000, Some(2000))];
+        let v3 = derive(&PipelineFacts {
+            task: &task,
+            runs: &runs_failed_last,
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 5000,
+        });
+        assert_eq!(v3.ledger.groups[0].right, None);
+
+        // QA group -> null
+        let runs_qa = vec![run(1, "qa", "succeeded", None, 1000, Some(2000))];
+        let v4 = derive(&PipelineFacts {
+            task: &task,
+            runs: &runs_qa,
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 5000,
+        });
+        assert_eq!(v4.ledger.groups[0].right, None);
+    }
+
+    #[test]
+    fn test_verdict_precedence() {
+        let task = dummy_task("open");
+        let runs = vec![
+            run(1, "dev", "running", Some("dev:blocked"), 1000, None),
+            run(2, "qa", "succeeded", Some("qa:pass"), 2000, Some(3000)),
+            run(3, "qa", "succeeded", Some("qa:fix"), 3000, Some(4000)),
+            run(4, "dev", "succeeded", Some("dev:blocked"), 4000, Some(5000)),
+            run(
+                5,
+                "lead",
+                "succeeded",
+                Some("protocol_violation"),
+                5000,
+                Some(6000),
+            ),
+            run(6, "dev", "killed", None, 6000, Some(7000)),
+            run(7, "lead", "failed", None, 7000, Some(8000)),
+            run(8, "lead", "timed_out", None, 8000, Some(9000)),
+            run(9, "lead", "lost", None, 9000, Some(10000)),
+            run(10, "lead", "succeeded", None, 10000, Some(11000)),
+        ];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 12000,
+        };
+        let view = derive(&facts);
+        let all_rows: Vec<&LedgerRow> = view.ledger.groups.iter().flat_map(|g| &g.rows).collect();
+        assert_eq!(all_rows[0].state, "dang_chay");
+        assert_eq!(all_rows[0].verdict, "đang chạy");
+        assert_eq!(all_rows[1].state, "dat");
+        assert_eq!(all_rows[1].verdict, "đạt");
+        assert_eq!(all_rows[2].state, "can_sua");
+        assert_eq!(all_rows[2].verdict, "cần sửa");
+        assert_eq!(all_rows[3].state, "vuong_mac");
+        assert_eq!(all_rows[3].verdict, "vướng mắc");
+        assert_eq!(all_rows[4].state, "vi_pham");
+        assert_eq!(all_rows[4].verdict, "vi phạm giao thức");
+        assert_eq!(all_rows[5].state, "killed");
+        assert_eq!(all_rows[5].verdict, "đã dừng");
+        assert_eq!(all_rows[6].state, "loi");
+        assert_eq!(all_rows[6].verdict, "lỗi");
+        assert_eq!(all_rows[7].state, "loi");
+        assert_eq!(all_rows[7].verdict, "lỗi");
+        assert_eq!(all_rows[8].state, "loi");
+        assert_eq!(all_rows[8].verdict, "lỗi");
+        assert_eq!(all_rows[9].state, "xong");
+        assert_eq!(all_rows[9].verdict, "xong");
+    }
+
+    #[test]
+    fn test_unknown_fields_are_null() {
+        let task = dummy_task("open");
+        let r_killed = run(1, "dev", "killed", None, 1000, Some(2000));
+        let r_partial = RunRow {
+            usage_source: "partial".to_string(),
+            ..run(2, "dev", "succeeded", None, 2000, Some(3000))
+        };
+        let r_no_turns = RunRow {
+            num_turns: None,
+            ..run(3, "dev", "succeeded", None, 3000, Some(4000))
+        };
+        let r_lost = run(4, "dev", "lost", None, 4000, None);
+        let r_running = run(5, "dev", "running", None, 10_000, None);
+
+        let runs = vec![r_killed, r_partial, r_no_turns, r_lost, r_running];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 100_000,
+        };
+        let view = derive(&facts);
+        let rows: Vec<&LedgerRow> = view.ledger.groups.iter().flat_map(|g| &g.rows).collect();
+        assert!(rows[0].cost_usd.is_none());
+        assert!(rows[1].cost_usd.is_none());
+        assert!(rows[2].turns.is_none());
+        assert!(rows[3].duration_ms.is_none());
+        assert_eq!(rows[4].duration_ms, Some(90_000));
+        assert!(rows[4].running);
+        assert!(rows[4].cost_usd.is_none());
+    }
+
+    #[test]
+    fn test_totals_sum_known_only() {
+        let task = dummy_task("open");
+        let r1 = RunRow {
+            cost_usd: 1.25,
+            usage_source: "result".to_string(),
+            ..run(1, "lead", "succeeded", None, 1000, Some(2000))
+        };
+        let r2 = RunRow {
+            cost_usd: 0.40,
+            ..run(2, "dev", "killed", None, 2000, Some(3000))
+        };
+        let r3 = RunRow {
+            cost_usd: 2.00,
+            usage_source: "result".to_string(),
+            ..run(3, "qa", "succeeded", None, 3000, Some(4000))
+        };
+        let runs = vec![r1, r2, r3];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 5000,
+        };
+        let v1 = derive(&facts);
+        assert_eq!(v1.ledger.total.runs, 3);
+        assert_eq!(v1.ledger.total.cost_usd, Some(3.25));
+        assert_eq!(v1.ledger.total.cost_unknown, 1);
+
+        // all-unknown
+        let r_unk = vec![run(1, "lead", "killed", None, 1000, Some(2000))];
+        let v2 = derive(&PipelineFacts {
+            task: &task,
+            runs: &r_unk,
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 5000,
+        });
+        assert_eq!(v2.ledger.total.cost_usd, None);
+
+        // no runs
+        let v3 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 5000,
+        });
+        assert_eq!(v3.ledger.total.runs, 0);
+        assert_eq!(v3.ledger.total.duration_ms, None);
+        assert_eq!(v3.ledger.total.cost_usd, None);
+        assert_eq!(v3.ledger.total.cost_unknown, 0);
+    }
+
+    #[test]
+    fn test_cards_after_relead() {
+        let task = dummy_task("planned");
+        let r1 = RunRow {
+            cost_usd: 0.50,
+            usage_source: "result".to_string(),
+            ..run(1, "lead", "succeeded", None, 1000, Some(2000))
+        };
+        let r2 = RunRow {
+            cost_usd: 1.00,
+            usage_source: "result".to_string(),
+            ..run(2, "dev", "succeeded", None, 3000, Some(5000))
+        };
+        let r3 = RunRow {
+            cost_usd: 0.25,
+            usage_source: "result".to_string(),
+            ..run(3, "qa", "succeeded", Some("qa:fix"), 6000, Some(7000))
+        };
+        let r4 = RunRow {
+            cost_usd: 0.75,
+            usage_source: "result".to_string(),
+            ..run(4, "lead", "succeeded", None, 8000, Some(9000))
+        };
+        let runs = vec![r1, r2, r3, r4];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 10000,
+        };
+        let view = derive(&facts);
+        assert_eq!(view.cycle, Some(2));
+        assert_eq!(view.cards.plan.state, "xong");
+        assert_eq!(view.cards.plan.rounds, 2);
+        assert_eq!(view.cards.plan.run_id, Some(4));
+
+        assert_eq!(view.cards.code.state, "cho");
+        assert_eq!(view.cards.code.state_word, "chưa bắt đầu");
+        assert_eq!(view.cards.code.result, "chưa bắt đầu");
+        assert_eq!(view.cards.code.rounds, 1);
+        assert_eq!(view.cards.code.duration_ms, Some(2000));
+        assert_eq!(view.cards.code.cost_usd, Some(1.00));
+
+        assert_eq!(view.cards.qa.state, "cho");
+        assert_eq!(view.cards.qa.rounds, 1);
+    }
+
+    #[test]
+    fn test_card_result_lines() {
+        let task = dummy_task("planned");
+
+        // Plan states
+        let v_cho = derive(&PipelineFacts {
+            task: &task,
+            runs: &[],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 1000,
+        });
+        assert_eq!(v_cho.cards.plan.result, "chưa bắt đầu");
+
+        let v_pc = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "lead", "running", None, 1000, None)],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 2000,
+        });
+        assert_eq!(v_pc.cards.plan.result, "đang lập plan");
+
+        let v_px = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "lead", "succeeded", None, 1000, Some(2000))],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 3000,
+        });
+        assert_eq!(v_px.cards.plan.result, "plan đã commit");
+
+        let v_pnc = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "lead", "succeeded", None, 1000, Some(2000))],
+            plan: &PlanFacts::NoCommit,
+            current_step: "dev",
+            now_ms: 3000,
+        });
+        assert_eq!(v_pnc.cards.plan.result, "xong");
+
+        let v_pk = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "lead", "killed", None, 1000, Some(2000))],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 3000,
+        });
+        assert_eq!(v_pk.cards.plan.result, "đã dừng");
+
+        let v_pl = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "lead", "failed", None, 1000, Some(2000))],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 3000,
+        });
+        assert_eq!(v_pl.cards.plan.result, "Lead lỗi");
+
+        let v_pv = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(
+                1,
+                "lead",
+                "succeeded",
+                Some("protocol_violation"),
+                1000,
+                Some(2000),
+            )],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 3000,
+        });
+        assert_eq!(v_pv.cards.plan.result, "vi phạm giao thức");
+
+        let v_pvm = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(
+                1,
+                "lead",
+                "succeeded",
+                Some("dev:blocked"),
+                1000,
+                Some(2000),
+            )],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 3000,
+        });
+        assert_eq!(v_pvm.cards.plan.result, "vướng mắc");
+
+        let v_pcs = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(
+                1,
+                "lead",
+                "succeeded",
+                Some("qa:fix"),
+                1000,
+                Some(2000),
+            )],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 3000,
+        });
+        assert_eq!(v_pcs.cards.plan.result, "cần sửa");
+
+        // Code states
+        assert_eq!(v_cho.cards.code.result, "chưa bắt đầu");
+
+        let v_cd = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "dev", "running", None, 1000, None)],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 2000,
+        });
+        assert_eq!(v_cd.cards.code.result, "đang code");
+
+        let r_t7 = RunRow {
+            num_turns: Some(7),
+            ..run(1, "dev", "succeeded", None, 1000, Some(2000))
+        };
+        let v_ct7 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[r_t7],
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 3000,
+        });
+        assert_eq!(v_ct7.cards.code.result, "7 lượt");
+
+        let r_tnone = RunRow {
+            num_turns: None,
+            ..run(1, "dev", "succeeded", None, 1000, Some(2000))
+        };
+        let v_ctn = derive(&PipelineFacts {
+            task: &task,
+            runs: &[r_tnone],
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 3000,
+        });
+        assert_eq!(v_ctn.cards.code.result, "xong");
+
+        let v_cvm = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(
+                1,
+                "dev",
+                "succeeded",
+                Some("dev:blocked"),
+                1000,
+                Some(2000),
+            )],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 3000,
+        });
+        assert_eq!(v_cvm.cards.code.result, "vướng mắc");
+
+        let v_ccs = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "dev", "succeeded", Some("qa:fix"), 1000, Some(2000))],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 3000,
+        });
+        assert_eq!(v_ccs.cards.code.result, "cần sửa");
+
+        let v_ck = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "dev", "killed", None, 1000, Some(2000))],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 3000,
+        });
+        assert_eq!(v_ck.cards.code.result, "đã dừng");
+
+        let v_cl = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "dev", "failed", None, 1000, Some(2000))],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 3000,
+        });
+        assert_eq!(v_cl.cards.code.result, "Dev lỗi");
+
+        let v_cv = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(
+                1,
+                "dev",
+                "succeeded",
+                Some("protocol_violation"),
+                1000,
+                Some(2000),
+            )],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 3000,
+        });
+        assert_eq!(v_cv.cards.code.result, "vi phạm giao thức");
+
+        // QA states
+        assert_eq!(v_cho.cards.qa.result, "chưa bắt đầu");
+
+        let v_qd = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "qa", "running", None, 1000, None)],
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 2000,
+        });
+        assert_eq!(v_qd.cards.qa.result, "đang kiểm tra");
+
+        let v_qp = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "qa", "succeeded", Some("qa:pass"), 1000, Some(2000))],
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 3000,
+        });
+        assert_eq!(v_qp.cards.qa.state, "xong");
+        assert_eq!(v_qp.cards.qa.result, "đạt");
+
+        let v_qx = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "qa", "succeeded", None, 1000, Some(2000))],
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 3000,
+        });
+        assert_eq!(v_qx.cards.qa.result, "xong");
+
+        let v_qcs = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "qa", "succeeded", Some("qa:fix"), 1000, Some(2000))],
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 3000,
+        });
+        assert_eq!(v_qcs.cards.qa.result, "cần sửa");
+
+        let v_qvm = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(
+                1,
+                "qa",
+                "succeeded",
+                Some("dev:blocked"),
+                1000,
+                Some(2000),
+            )],
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 3000,
+        });
+        assert_eq!(v_qvm.cards.qa.result, "vướng mắc");
+
+        let v_qk = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "qa", "killed", None, 1000, Some(2000))],
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 3000,
+        });
+        assert_eq!(v_qk.cards.qa.result, "đã dừng");
+
+        let v_ql = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(1, "qa", "failed", None, 1000, Some(2000))],
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 3000,
+        });
+        assert_eq!(v_ql.cards.qa.result, "QA lỗi");
+
+        let v_qv = derive(&PipelineFacts {
+            task: &task,
+            runs: &[run(
+                1,
+                "qa",
+                "succeeded",
+                Some("protocol_violation"),
+                1000,
+                Some(2000),
+            )],
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 3000,
+        });
+        assert_eq!(v_qv.cards.qa.result, "vi phạm giao thức");
+    }
+
+    #[test]
+    fn test_card_unknown_cost_is_null() {
+        let task = dummy_task("planned");
+        let r = run(1, "dev", "killed", None, 1000, Some(3000));
+        let view = derive(&PipelineFacts {
+            task: &task,
+            runs: &[r],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 5000,
+        });
+        assert!(view.cards.code.cost_usd.is_none());
+        assert_eq!(view.cards.code.duration_ms, Some(2000));
+    }
+
+    #[test]
+    fn test_no_runs() {
+        let task = dummy_task("open");
+        let view = derive(&PipelineFacts {
+            task: &task,
+            runs: &[],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 5000,
+        });
+        assert_eq!(view.cards.start.state, "xong");
+        assert_eq!(view.cards.start.result, "bạn đã giao");
+        assert_eq!(view.cards.start.at_ms, Some(task.created_at));
+
+        assert_eq!(view.cards.plan.state, "cho");
+        assert_eq!(view.cards.plan.state_word, "chưa bắt đầu");
+        assert_eq!(view.cards.plan.result, "chưa bắt đầu");
+        assert_eq!(view.cards.plan.rounds, 0);
+        assert!(view.cards.plan.duration_ms.is_none());
+        assert!(view.cards.plan.cost_usd.is_none());
+
+        assert_eq!(view.cards.code.state, "cho");
+        assert_eq!(view.cards.code.state_word, "chưa bắt đầu");
+        assert_eq!(view.cards.code.result, "chưa bắt đầu");
+        assert_eq!(view.cards.code.rounds, 0);
+        assert!(view.cards.code.duration_ms.is_none());
+        assert!(view.cards.code.cost_usd.is_none());
+
+        assert_eq!(view.cards.qa.state, "cho");
+        assert_eq!(view.cards.qa.state_word, "chưa bắt đầu");
+        assert_eq!(view.cards.qa.result, "chưa bắt đầu");
+        assert_eq!(view.cards.qa.rounds, 0);
+        assert!(view.cards.qa.duration_ms.is_none());
+        assert!(view.cards.qa.cost_usd.is_none());
+
+        assert_eq!(view.cards.ban.state, "cho");
+        assert_eq!(view.cards.ban.result, "chưa có plan");
+        assert!(view.cards.ban.at_ms.is_none());
+
+        assert!(view.current.is_none());
+        assert!(view.cycle.is_none());
+        assert!(view.ledger.groups.is_empty());
+    }
+
+    #[test]
+    fn test_gate_from_plan_facts() {
+        let task = dummy_task("planned");
+        let l_succ = run(1, "lead", "succeeded", None, 1000, Some(2000));
+        let d_run = run(2, "dev", "succeeded", None, 2500, Some(3500));
+
+        // Commit approved_by dev id -> xong đã duyệt plan at that run's started_at
+        let v1 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[l_succ.clone(), d_run.clone()],
+            plan: &PlanFacts::Commit {
+                sha: "abc".to_string(),
+                at_ms: Some(1500),
+                approved_by: Some(2),
+            },
+            current_step: "dev",
+            now_ms: 5000,
+        });
+        assert_eq!(v1.cards.ban.state, "xong");
+        assert_eq!(v1.cards.ban.result, "đã duyệt plan");
+        assert_eq!(v1.cards.ban.at_ms, Some(2500));
+
+        // Commit approved_by None at_ms Some(t) -> cho_ban at t
+        let v2 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[l_succ.clone()],
+            plan: &PlanFacts::Commit {
+                sha: "abc".to_string(),
+                at_ms: Some(1800),
+                approved_by: None,
+            },
+            current_step: "dev",
+            now_ms: 5000,
+        });
+        assert_eq!(v2.cards.ban.state, "cho_ban");
+        assert_eq!(v2.cards.ban.at_ms, Some(1800));
+
+        // Commit approved_by None at_ms None -> cho_ban at latest succeeded lead ended_at
+        let v3 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[l_succ.clone()],
+            plan: &PlanFacts::Commit {
+                sha: "abc".to_string(),
+                at_ms: None,
+                approved_by: None,
+            },
+            current_step: "dev",
+            now_ms: 5000,
+        });
+        assert_eq!(v3.cards.ban.state, "cho_ban");
+        assert_eq!(v3.cards.ban.at_ms, Some(2000));
+
+        // NoCommit -> cho chưa có plan
+        let v4 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[l_succ.clone()],
+            plan: &PlanFacts::NoCommit,
+            current_step: "dev",
+            now_ms: 5000,
+        });
+        assert_eq!(v4.cards.ban.state, "cho");
+        assert_eq!(v4.cards.ban.result, "chưa có plan");
+        assert!(v4.cards.ban.at_ms.is_none());
+
+        // Unknown + succeeded lead + later dev -> xong at dev started_at
+        let v5 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[l_succ.clone(), d_run.clone()],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 5000,
+        });
+        assert_eq!(v5.cards.ban.state, "xong");
+        assert_eq!(v5.cards.ban.at_ms, Some(2500));
+
+        // Unknown + succeeded lead only -> cho_ban at lead ended_at
+        let v6 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[l_succ.clone()],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 5000,
+        });
+        assert_eq!(v6.cards.ban.state, "cho_ban");
+        assert_eq!(v6.cards.ban.at_ms, Some(2000));
+
+        // Unknown + failed lead only -> cho
+        let l_fail = run(1, "lead", "failed", None, 1000, Some(2000));
+        let v7 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[l_fail],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 5000,
+        });
+        assert_eq!(v7.cards.ban.state, "cho");
+        assert_eq!(v7.cards.ban.result, "chưa có plan");
+        assert!(v7.cards.ban.at_ms.is_none());
+    }
+
+    #[test]
+    fn test_current_mapping() {
+        let task = dummy_task("planned");
+        let l_succ = run(1, "lead", "succeeded", None, 1000, Some(2000));
+
+        // no rows -> null
+        let v0 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 5000,
+        });
+        assert!(v0.current.is_none());
+
+        // current_step lead -> plan
+        let v1 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[l_succ.clone()],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 5000,
+        });
+        assert_eq!(v1.current.as_deref(), Some("plan"));
+
+        // current_step qa -> qa
+        let v2 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[l_succ.clone()],
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 5000,
+        });
+        assert_eq!(v2.current.as_deref(), Some("qa"));
+
+        // current_step dev with ban cho_ban -> ban
+        let v3 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[l_succ.clone()],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 5000,
+        });
+        assert_eq!(v3.cards.ban.state, "cho_ban");
+        assert_eq!(v3.current.as_deref(), Some("ban"));
+
+        // current_step dev with ban xong -> code
+        let d_succ = run(2, "dev", "succeeded", None, 2500, Some(3500));
+        let v4 = derive(&PipelineFacts {
+            task: &task,
+            runs: &[l_succ, d_succ],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 5000,
+        });
+        assert_eq!(v4.cards.ban.state, "xong");
+        assert_eq!(v4.current.as_deref(), Some("code"));
+    }
+
+    #[test]
+    fn test_derive_is_deterministic() {
+        let task = dummy_task("planned");
+        let runs = vec![
+            run(1, "lead", "succeeded", None, 1000, Some(2000)),
+            run(2, "dev", "succeeded", None, 3000, Some(4000)),
+        ];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 5000,
+        };
+        let v1 = derive(&facts);
+        let v2 = derive(&facts);
+        assert_eq!(v1, v2);
+        let j1 = serde_json::to_string(&v1).unwrap();
+        let j2 = serde_json::to_string(&v2).unwrap();
+        assert_eq!(j1, j2);
     }
 }

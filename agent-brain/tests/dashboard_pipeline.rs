@@ -638,3 +638,418 @@ fn pipe05_route_shape_auth_and_404() {
 
     assert_eq!(ledger["total"]["runs"], 1);
 }
+
+struct SeedRun {
+    role: &'static str,
+    status: &'static str,
+    outcome: Option<&'static str>,
+    started_at: i64,
+    ended_at: Option<i64>,
+    cost_usd: f64,
+    usage_source: &'static str,
+    num_turns: Option<i64>,
+    base_commit: Option<&'static str>,
+}
+
+fn seed_pipeline_task(sb: &Sandbox, branch: &str, runs: &[SeedRun]) -> (i64, Vec<i64>) {
+    let repo = setup_project(sb, "work");
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+
+    let project = agent_brain::projects::Project {
+        id: "web-ban-hang".to_string(),
+        path: repo.to_string_lossy().to_string(),
+        name_vi: "Web bán hàng".to_string(),
+        aliases: vec![],
+        kind: "code".to_string(),
+        profile: "work".to_string(),
+        repo: None,
+        missing: false,
+    };
+    agent_brain::db::sync_projects(&conn, &[project]).unwrap();
+    let pid = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "seed-task",
+        "Seed task",
+        branch,
+        Some("main"),
+        None,
+    )
+    .unwrap();
+
+    let mut run_ids = Vec::new();
+    for sr in runs {
+        let new_run = agent_brain::db::NewRun {
+            task_id: Some(task_id),
+            project_id: pid,
+            role: sr.role.to_string(),
+            profile: "work".to_string(),
+            model: Some("sonnet".to_string()),
+            pid: 1000,
+            pgid: 1000,
+            pid_start: 1000,
+            base_commit: sr.base_commit.map(|s| s.to_string()),
+            run_dir: None,
+        };
+        let r_id = agent_brain::db::insert_run(&conn, &new_run).unwrap();
+        let finish = agent_brain::db::RunFinish {
+            status: sr.status.to_string(),
+            exit_code: Some(0),
+            session_id: None,
+            usage: agent_brain::stream::Usage::default(),
+            usage_source: sr.usage_source.to_string(),
+            cost_usd: sr.cost_usd,
+            num_turns: sr.num_turns,
+            assistant_turns: sr.num_turns,
+            turns_before_first_edit: None,
+            reads_outside_plan: None,
+            permission_denials: 0,
+            error: None,
+        };
+        agent_brain::db::finish_run(&conn, r_id, &finish).unwrap();
+        conn.execute(
+            "UPDATE runs SET started_at = ?1, ended_at = ?2, outcome = ?3 WHERE id = ?4",
+            rusqlite::params![sr.started_at, sr.ended_at, sr.outcome, r_id],
+        )
+        .unwrap();
+        run_ids.push(r_id);
+    }
+
+    (task_id, run_ids)
+}
+
+#[test]
+fn pipe01_cards_rounds_and_cycles_match_db() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    // 1. Lead
+    let sc_lead = lead_scenario(&[("src/app.py", "1", "sửa app", "yêu cầu")]);
+    std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_lead).unwrap()).unwrap();
+    let srv = sb.serve(&[]);
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({
+            "project": "web-ban-hang",
+            "request": "sửa app",
+            "name": "sua-app"
+        }),
+    );
+    assert_eq!(resp.status, 202);
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(wait_for_job(&srv, job_id)["exit_code"], 0);
+
+    // 2. Dev
+    let sc_dev = json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "read", "path": "src/app.py"},
+            {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+            {"op": "git", "args": ["add", "src/app.py"]},
+            {"op": "git", "args": ["commit", "-m", "sua-app: sửa app"]}
+        ]
+    });
+    std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_dev).unwrap()).unwrap();
+    let resp_dev = srv.post_json("/api/tasks/1/dev", &json!({}));
+    assert_eq!(resp_dev.status, 202);
+    let job_id_dev = resp_dev.json()["job_id"].as_u64().unwrap();
+    assert_eq!(wait_for_job(&srv, job_id_dev)["exit_code"], 0);
+
+    // 3. QA with Cần sửa
+    let qa_report_content = "\
+# QA: sửa app
+
+## Đánh giá
+Chưa đạt chuẩn.
+
+## Kết quả kiểm tra
+Lỗi logic hàm app.
+
+## Kết luận
+Cần sửa
+
+## Đề xuất
+Sửa lại hàm app.
+";
+    let sc_qa = json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "write", "path": ".qa-report.md", "content": qa_report_content}
+        ]
+    });
+    std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_qa).unwrap()).unwrap();
+    let resp_qa = srv.post_json("/api/tasks/1/qa", &json!({}));
+    assert_eq!(resp_qa.status, 202);
+    let job_id_qa = resp_qa.json()["job_id"].as_u64().unwrap();
+    assert_eq!(wait_for_job(&srv, job_id_qa)["exit_code"], 0);
+
+    // 4. Relead
+    let sc_relead = lead_scenario(&[("src/app.py", "1", "sửa app lần 2", "yêu cầu mới")]);
+    std::fs::write(
+        &sb.scenario_file,
+        serde_json::to_string(&sc_relead).unwrap(),
+    )
+    .unwrap();
+    let resp_relead = srv.post_json("/api/tasks/1/relead", &json!({}));
+    assert_eq!(resp_relead.status, 202);
+    let job_id_relead = resp_relead.json()["job_id"].as_u64().unwrap();
+    assert_eq!(wait_for_job(&srv, job_id_relead)["exit_code"], 0);
+
+    // Seed costs for runs 1..=4: 1.25, 2.5, 0.75, 1.0
+    let db = sb.db();
+    db.execute("UPDATE runs SET cost_usd = 1.25 WHERE id = 1", [])
+        .unwrap();
+    db.execute("UPDATE runs SET cost_usd = 2.5 WHERE id = 2", [])
+        .unwrap();
+    db.execute("UPDATE runs SET cost_usd = 0.75 WHERE id = 3", [])
+        .unwrap();
+    db.execute("UPDATE runs SET cost_usd = 1.0 WHERE id = 4", [])
+        .unwrap();
+
+    let pipe_resp = srv.get("/api/tasks/1/pipeline");
+    assert_eq!(pipe_resp.status, 200);
+    let data = pipe_resp.json();
+
+    assert_eq!(data["cycle"], 2);
+
+    let groups = data["ledger"]["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 4);
+    let kinds: Vec<&str> = groups.iter().map(|g| g["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, vec!["plan", "build", "qa", "plan"]);
+
+    let headers: Vec<&str> = groups
+        .iter()
+        .map(|g| g["header"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        headers,
+        vec![
+            "Chu kỳ 1 · plan đầu tiên",
+            "Chu kỳ 1 · build",
+            "Chu kỳ 1 · QA",
+            "Chu kỳ 2 · plan lại",
+        ]
+    );
+
+    assert_eq!(groups[0]["right"], "bạn đã duyệt");
+    assert_eq!(groups[3]["right"], "chờ bạn");
+
+    let lead_runs: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM runs WHERE task_id = 1 AND role = 'lead'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(lead_runs, 2);
+    assert_eq!(data["cards"]["plan"]["rounds"], lead_runs);
+    assert_eq!(data["cards"]["plan"]["state"], "xong");
+
+    let (dev_started, dev_ended): (i64, i64) = db
+        .query_row(
+            "SELECT started_at, ended_at FROM runs WHERE id = 2",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(data["cards"]["code"]["state"], "cho");
+    assert_eq!(data["cards"]["code"]["rounds"], 1);
+    assert!((data["cards"]["code"]["cost_usd"].as_f64().unwrap() - 2.5).abs() < 1e-9);
+    assert_eq!(
+        data["cards"]["code"]["duration_ms"],
+        dev_ended - dev_started
+    );
+
+    assert_eq!(data["cards"]["qa"]["state"], "cho");
+    assert_eq!(data["cards"]["qa"]["rounds"], 1);
+
+    assert_eq!(data["cards"]["ban"]["state"], "cho_ban");
+    assert_eq!(data["current"], "ban");
+
+    let all_rows: Vec<&serde_json::Value> = groups
+        .iter()
+        .flat_map(|g| g["rows"].as_array().unwrap())
+        .collect();
+    assert_eq!(all_rows.len(), 4);
+    for row in &all_rows {
+        let r_id = row["run_id"].as_i64().unwrap();
+        let db_turns: i64 = db
+            .query_row(
+                "SELECT num_turns FROM runs WHERE id = ?1",
+                rusqlite::params![r_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(row["turns"], db_turns);
+    }
+
+    let total_runs: i64 = db
+        .query_row("SELECT COUNT(*) FROM runs WHERE task_id = 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(data["ledger"]["total"]["runs"], total_runs);
+    let total_cost = data["ledger"]["total"]["cost_usd"].as_f64().unwrap();
+    assert!((total_cost - 5.5).abs() < 1e-9);
+}
+
+#[test]
+fn pipe02_ledger_totals_match_db() {
+    let sb = Sandbox::new();
+    let t0 = 1_700_000_000_000i64;
+    let runs = vec![
+        SeedRun {
+            role: "lead",
+            status: "succeeded",
+            outcome: None,
+            started_at: t0,
+            ended_at: Some(t0 + 60_000),
+            cost_usd: 1.25,
+            usage_source: "result",
+            num_turns: Some(10),
+            base_commit: None,
+        },
+        SeedRun {
+            role: "dev",
+            status: "killed",
+            outcome: None,
+            started_at: t0 + 120_000,
+            ended_at: Some(t0 + 150_000),
+            cost_usd: 0.40,
+            usage_source: "partial",
+            num_turns: Some(5),
+            base_commit: None,
+        },
+        SeedRun {
+            role: "dev",
+            status: "succeeded",
+            outcome: None,
+            started_at: t0 + 200_000,
+            ended_at: Some(t0 + 500_000),
+            cost_usd: 2.00,
+            usage_source: "result",
+            num_turns: Some(20),
+            base_commit: None,
+        },
+        SeedRun {
+            role: "qa",
+            status: "succeeded",
+            outcome: Some("qa:fix"),
+            started_at: t0 + 600_000,
+            ended_at: Some(t0 + 660_000),
+            cost_usd: 0.50,
+            usage_source: "result",
+            num_turns: Some(8),
+            base_commit: None,
+        },
+        SeedRun {
+            role: "inspect",
+            status: "succeeded",
+            outcome: None,
+            started_at: t0 + 700_000,
+            ended_at: Some(t0 + 710_000),
+            cost_usd: 0.05,
+            usage_source: "result",
+            num_turns: Some(2),
+            base_commit: None,
+        },
+    ];
+
+    let (task_id, _run_ids) = seed_pipeline_task(&sb, "task/seed-task", &runs);
+    let srv = sb.serve(&[]);
+    let pipe_resp = srv.get(&format!("/api/tasks/{task_id}/pipeline"));
+    assert_eq!(pipe_resp.status, 200);
+    let data = pipe_resp.json();
+
+    let db = sb.db();
+    let mut stmt = db
+        .prepare(
+            "SELECT id FROM runs WHERE task_id = ?1 AND role IN ('lead','dev','qa') ORDER BY started_at, id",
+        )
+        .unwrap();
+    let db_ids: Vec<i64> = stmt
+        .query_map(rusqlite::params![task_id], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    let groups = data["ledger"]["groups"].as_array().unwrap();
+    let row_ids: Vec<i64> = groups
+        .iter()
+        .flat_map(|g| g["rows"].as_array().unwrap())
+        .map(|r| r["run_id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(row_ids, db_ids);
+
+    // Inspect run is absent
+    let inspect_id: i64 = db
+        .query_row(
+            "SELECT id FROM runs WHERE task_id = ?1 AND role = 'inspect'",
+            rusqlite::params![task_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!row_ids.contains(&inspect_id));
+
+    // total.runs == count of lead,dev,qa set (4)
+    assert_eq!(data["ledger"]["total"]["runs"], db_ids.len() as i64);
+    assert_eq!(data["ledger"]["total"]["runs"], 4);
+
+    let sum_cost: f64 = db
+        .query_row(
+            "SELECT SUM(cost_usd) FROM runs WHERE task_id = ?1 AND role IN ('lead','dev','qa') AND status <> 'killed' AND usage_source = 'result'",
+            rusqlite::params![task_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!((sum_cost - 3.75).abs() < 1e-9);
+    let total_cost = data["ledger"]["total"]["cost_usd"].as_f64().unwrap();
+    assert!((total_cost - sum_cost).abs() < 1e-9);
+
+    assert_eq!(data["ledger"]["total"]["cost_unknown"], 1);
+
+    // Killed row: cost null and verdict "đã dừng"
+    let all_rows: Vec<&serde_json::Value> = groups
+        .iter()
+        .flat_map(|g| g["rows"].as_array().unwrap())
+        .collect();
+    let killed_row = all_rows.iter().find(|r| r["state"] == "killed").unwrap();
+    assert!(killed_row["cost_usd"].is_null());
+    assert_eq!(killed_row["verdict"], "đã dừng");
+
+    // QA row verdict "cần sửa"
+    let qa_row = all_rows.iter().find(|r| r["role"] == "qa").unwrap();
+    assert_eq!(qa_row["verdict"], "cần sửa");
+
+    let total_dur: i64 = 60_000 + 30_000 + 300_000 + 60_000;
+    assert_eq!(data["ledger"]["total"]["duration_ms"], total_dur);
+}
+
+#[test]
+fn pipe05_refetch_is_idempotent() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    let sc_lead = lead_scenario(&[("src/app.py", "1", "sửa app", "yêu cầu")]);
+    std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_lead).unwrap()).unwrap();
+
+    let srv = sb.serve(&[]);
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({
+            "project": "web-ban-hang",
+            "request": "sửa app",
+            "name": "sua-app"
+        }),
+    );
+    assert_eq!(resp.status, 202);
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(wait_for_job(&srv, job_id)["exit_code"], 0);
+
+    let r1 = srv.get("/api/tasks/1/pipeline");
+    let r2 = srv.get("/api/tasks/1/pipeline");
+    assert_eq!(r1.status, 200);
+    assert_eq!(r2.status, 200);
+    assert_eq!(r1.text(), r2.text());
+}
