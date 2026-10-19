@@ -607,6 +607,34 @@ fn derive_role_card(
     }
 }
 
+pub fn approving_dev_run(
+    runs: &[RunRow],
+    plan_sha: &str,
+    plan_at_ms: Option<i64>,
+    is_ancestor: impl Fn(&str, &str) -> bool,
+) -> Option<i64> {
+    let mut dev_runs: Vec<&RunRow> = runs.iter().filter(|r| r.role == "dev").collect();
+    dev_runs.sort_by_key(|r| (r.started_at, r.id));
+
+    for r in dev_runs {
+        match r.base_commit.as_deref() {
+            Some(b) if !b.is_empty() => {
+                if is_ancestor(plan_sha, b) {
+                    return Some(r.id);
+                }
+            }
+            _ => {
+                if let Some(t) = plan_at_ms {
+                    if r.started_at >= t {
+                        return Some(r.id);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -106,6 +106,25 @@ pub fn head_sha(root: &Path) -> BrainResult<String> {
     Ok(out.trim().to_string())
 }
 
+fn is_hex_sha(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+pub fn is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> bool {
+    if !is_hex_sha(ancestor) || !is_hex_sha(descendant) {
+        return false;
+    }
+    git(root, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
+}
+
+pub fn commit_time_ms(root: &Path, sha: &str) -> Option<i64> {
+    if !is_hex_sha(sha) {
+        return None;
+    }
+    let out = git(root, &["show", "-s", "--format=%ct", sha]).ok()?;
+    out.trim().parse::<i64>().ok().map(|s| s * 1000)
+}
+
 pub fn branch_exists(root: &Path, name: &str) -> bool {
     let ref_name = format!("refs/heads/{name}");
     git(root, &["rev-parse", "--verify", &ref_name]).is_ok()

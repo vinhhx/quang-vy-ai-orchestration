@@ -761,6 +761,68 @@ async fn list_tasks(
     }
 }
 
+fn find_plan_commit(root: &Path, task: &TaskRow) -> Result<Option<String>, ()> {
+    if task.branch.is_empty() || task.branch.starts_with('-') {
+        return Err(());
+    }
+    let log_out =
+        crate::gitops::git(root, &["log", "--format=%H %s", &task.branch]).map_err(|_| ())?;
+    let expected_subj = format!("{}: plan", task.slug);
+    for line in log_out.lines() {
+        if let Some((sha, subj)) = line.split_once(' ') {
+            if subj.trim() == expected_subj {
+                return Ok(Some(sha.trim().to_string()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn plan_commit_of(root: &Path, task: &TaskRow) -> Option<String> {
+    find_plan_commit(root, task).ok().flatten()
+}
+
+fn plan_facts(
+    conn: &rusqlite::Connection,
+    st: &AppState,
+    task: &TaskRow,
+    runs: &[RunRow],
+) -> pipeline::PlanFacts {
+    let map = match crate::projects::load_map(&st.map_path) {
+        Ok(m) => m,
+        Err(_) => return pipeline::PlanFacts::Unknown,
+    };
+    let projects = crate::projects::projects_of(&map);
+    let project_slug: String = match conn.query_row(
+        "SELECT slug FROM projects WHERE id = ?1",
+        rusqlite::params![task.project_id],
+        |r| r.get(0),
+    ) {
+        Ok(s) => s,
+        Err(_) => return pipeline::PlanFacts::Unknown,
+    };
+    let project = match projects.into_iter().find(|p| p.id == project_slug) {
+        Some(p) => p,
+        None => return pipeline::PlanFacts::Unknown,
+    };
+    let root = PathBuf::from(&project.path);
+    match find_plan_commit(&root, task) {
+        Err(()) => pipeline::PlanFacts::Unknown,
+        Ok(None) => pipeline::PlanFacts::NoCommit,
+        Ok(Some(sha)) => {
+            let at = crate::gitops::commit_time_ms(&root, &sha);
+            let approved = pipeline::approving_dev_run(runs, &sha, at, |p, b| {
+                crate::gitops::is_ancestor(&root, p, b)
+            });
+            pipeline::PlanFacts::Commit {
+                sha,
+                at_ms: at,
+                approved_by: approved,
+            }
+        }
+    }
+}
+
 async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) -> Response {
     let res = blocking(move || {
         let conn = crate::db::open(&st.db_path)?;
@@ -815,23 +877,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             }
         };
 
-        let plan_commit = {
-            let expected_subj = format!("{}: plan", task.slug);
-            let mut commit = None;
-            if let Ok(log_out) =
-                crate::gitops::git(&proj_root, &["log", "--format=%H %s", &task.branch])
-            {
-                for line in log_out.lines() {
-                    if let Some((sha, subj)) = line.split_once(' ') {
-                        if subj.trim() == expected_subj {
-                            commit = Some(sha.trim().to_string());
-                            break;
-                        }
-                    }
-                }
-            }
-            commit
-        };
+        let plan_commit = plan_commit_of(&proj_root, &task);
 
         let code_after_plan = if is_on_branch {
             if let Some(ref pc) = plan_commit {
@@ -1050,7 +1096,7 @@ async fn get_pipeline(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i6
         };
 
         let runs = crate::db::runs_for_task(&conn, id)?;
-        let plan = pipeline::PlanFacts::Unknown;
+        let plan = plan_facts(&conn, &st, &task, &runs);
         let now = crate::db::now_ms();
         let latest = |role: &str| {
             runs.iter()
@@ -1161,23 +1207,7 @@ async fn post_task_action(
             }
         };
 
-        let plan_commit = {
-            let expected_subj = format!("{}: plan", task.slug);
-            let mut commit = None;
-            if let Ok(log_out) =
-                crate::gitops::git(&proj_root, &["log", "--format=%H %s", &task.branch])
-            {
-                for line in log_out.lines() {
-                    if let Some((sha, subj)) = line.split_once(' ') {
-                        if subj.trim() == expected_subj {
-                            commit = Some(sha.trim().to_string());
-                            break;
-                        }
-                    }
-                }
-            }
-            commit
-        };
+        let plan_commit = plan_commit_of(&proj_root, &task);
 
         let code_after_plan = if is_on_branch {
             if let Some(ref pc) = plan_commit {

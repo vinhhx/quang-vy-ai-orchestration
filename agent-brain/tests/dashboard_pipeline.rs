@@ -1053,3 +1053,102 @@ fn pipe05_refetch_is_idempotent() {
     assert_eq!(r2.status, 200);
     assert_eq!(r1.text(), r2.text());
 }
+
+#[test]
+fn pipe03_gate_follows_plan_commits() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+
+    let sc_lead = lead_scenario(&[("src/app.py", "1", "sửa app", "yêu cầu")]);
+    std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_lead).unwrap()).unwrap();
+
+    let srv = sb.serve(&[]);
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({
+            "project": "web-ban-hang",
+            "request": "sửa app",
+            "name": "sua-app"
+        }),
+    );
+    assert_eq!(resp.status, 202);
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(wait_for_job(&srv, job_id)["exit_code"], 0);
+
+    let head = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    let ct = sb
+        .git(&repo, &["show", "-s", "--format=%ct", &head])
+        .trim()
+        .parse::<i64>()
+        .unwrap();
+
+    let pipe_resp1 = srv.get("/api/tasks/1/pipeline");
+    assert_eq!(pipe_resp1.status, 200);
+    let p1 = pipe_resp1.json();
+    assert_eq!(p1["cards"]["ban"]["state"], "cho_ban");
+    assert_eq!(p1["cards"]["ban"]["result"], "chờ duyệt plan");
+    assert_eq!(p1["cards"]["ban"]["at_ms"], ct * 1000);
+    assert_eq!(p1["current"], "ban");
+
+    // Run Dev
+    let sc_dev = json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "read", "path": "src/app.py"},
+            {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+            {"op": "git", "args": ["add", "src/app.py"]},
+            {"op": "git", "args": ["commit", "-m", "sua-app: sửa app"]}
+        ]
+    });
+    std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_dev).unwrap()).unwrap();
+
+    let resp_dev = srv.post_json("/api/tasks/1/dev", &json!({}));
+    assert_eq!(resp_dev.status, 202);
+    let job_id_dev = resp_dev.json()["job_id"].as_u64().unwrap();
+    let job_dev = wait_for_job(&srv, job_id_dev);
+    assert_eq!(job_dev["exit_code"], 0);
+
+    let dev_started_at: i64 = sb
+        .db()
+        .query_row(
+            "SELECT started_at FROM runs WHERE task_id = 1 AND role = 'dev'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let pipe_resp2 = srv.get("/api/tasks/1/pipeline");
+    assert_eq!(pipe_resp2.status, 200);
+    let p2 = pipe_resp2.json();
+    assert_eq!(p2["cards"]["ban"]["state"], "xong");
+    assert_eq!(p2["cards"]["ban"]["result"], "đã duyệt plan");
+    assert_eq!(p2["cards"]["ban"]["at_ms"], dev_started_at);
+
+    // Append a line to .plan.md without committing
+    let mut plan_txt = std::fs::read_to_string(repo.join(".plan.md")).unwrap();
+    plan_txt.push_str("\n<!-- user edit -->\n");
+    std::fs::write(repo.join(".plan.md"), &plan_txt).unwrap();
+
+    let pipe_resp3 = srv.get("/api/tasks/1/pipeline");
+    assert_eq!(pipe_resp3.status, 200);
+    let p3 = pipe_resp3.json();
+    assert_eq!(p3["cards"]["ban"]["state"], "xong");
+
+    // Then git add .plan.md and git commit -m "sua-app: plan"
+    sb.git(&repo, &["add", ".plan.md"]);
+    sb.git(&repo, &["commit", "-m", "sua-app: plan"]);
+
+    let new_head = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    let new_ct = sb
+        .git(&repo, &["show", "-s", "--format=%ct", &new_head])
+        .trim()
+        .parse::<i64>()
+        .unwrap();
+
+    let pipe_resp4 = srv.get("/api/tasks/1/pipeline");
+    assert_eq!(pipe_resp4.status, 200);
+    let p4 = pipe_resp4.json();
+    assert_eq!(p4["cards"]["ban"]["state"], "cho_ban");
+    assert_eq!(p4["cards"]["ban"]["result"], "chờ duyệt plan");
+    assert_eq!(p4["cards"]["ban"]["at_ms"], new_ct * 1000);
+}
