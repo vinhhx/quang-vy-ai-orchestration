@@ -6,10 +6,18 @@ REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Screens to check
-if [[ $# -eq 0 ]]; then
+ENABLE_KEYS=false
+SCREENS=()
+for arg in "$@"; do
+  if [[ "$arg" == "--keys" ]]; then
+    ENABLE_KEYS=true
+  else
+    SCREENS+=("$arg")
+  fi
+done
+
+if [[ ${#SCREENS[@]} -eq 0 ]]; then
   SCREENS=("overview" "assign")
-else
-  SCREENS=("$@")
 fi
 
 BIN="${AB_BIN:-$REPO_ROOT/agent-brain/target/debug/agent-brain}"
@@ -37,9 +45,28 @@ fi
 
 TMP="$(mktemp -d)"
 SERVE_PID=""
+CHROME_PID=""
+
+stop_chrome() {
+  if [[ -n "$CHROME_PID" ]]; then
+    if kill -0 "$CHROME_PID" 2>/dev/null; then
+      kill -TERM "$CHROME_PID" 2>/dev/null || true
+      local count=0
+      while kill -0 "$CHROME_PID" 2>/dev/null && [[ $count -lt 50 ]]; do
+        sleep 0.1
+        count=$((count + 1))
+      done
+      if kill -0 "$CHROME_PID" 2>/dev/null; then
+        kill -KILL "$CHROME_PID" 2>/dev/null || true
+      fi
+    fi
+    CHROME_PID=""
+  fi
+}
 
 cleanup() {
   local exit_code=$?
+  stop_chrome
   if [[ -n "$SERVE_PID" ]]; then
     if kill -0 "$SERVE_PID" 2>/dev/null; then
       kill -INT "$SERVE_PID" 2>/dev/null || true
@@ -108,6 +135,16 @@ cat << EOF > "$TMP/xdg_config/agent-brain/projects_map.json"
       "repo": null,
       "profile": "work",
       "missing": false
+    },
+    {
+      "id": "web-ban-hang-cu",
+      "path": "$TMP/repos/khong-ton-tai",
+      "name_vi": "Web bán hàng cũ",
+      "aliases": ["shop-cu"],
+      "type": "code",
+      "repo": null,
+      "profile": "work",
+      "missing": true
     }
   ]
 }
@@ -257,3 +294,57 @@ for s in "${SCREENS[@]}"; do
 done
 
 echo "Smoke OK: ${SCREENS[*]}"
+
+if [[ "$ENABLE_KEYS" == "true" ]]; then
+  if ! node -e 'process.exit(typeof WebSocket==="function"?0:1)' 2>/dev/null; then
+    echo "Cần Node ≥ 22 (có WebSocket) cho --keys" >&2
+    exit 1
+  fi
+
+  "$CHROME_BIN" \
+    --headless=new \
+    --no-sandbox \
+    --disable-gpu \
+    --no-first-run \
+    --disable-background-networking \
+    --disable-component-update \
+    --disable-sync \
+    --remote-debugging-port=0 \
+    --user-data-dir="$TMP/chrome-keys" \
+    --window-size=1280,1000 \
+    about:blank >/dev/null 2>&1 &
+  CHROME_PID=$!
+
+  PORT=""
+  for i in {1..100}; do
+    if [[ -f "$TMP/chrome-keys/DevToolsActivePort" ]]; then
+      PORT="$(head -n 1 "$TMP/chrome-keys/DevToolsActivePort" | tr -d '\r\n')"
+      if [[ -n "$PORT" ]]; then
+        break
+      fi
+    fi
+    if ! kill -0 "$CHROME_PID" 2>/dev/null; then
+      echo "Lỗi: Chrome dừng sớm (PID $CHROME_PID)" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+
+  if [[ -z "$PORT" ]]; then
+    echo "Lỗi: Không tìm thấy DevToolsActivePort sau 10 giây" >&2
+    exit 1
+  fi
+
+  if ! node "$REPO_ROOT/scripts/dashboard-keys.mjs" "$PORT" "$URL" > "$TMP/keys.out" 2>&1; then
+    if [[ -f "$TMP/keys.out" ]]; then
+      cat "$TMP/keys.out" >&2
+    fi
+    if [[ -f "$TMP/serve.err" ]]; then
+      cat "$TMP/serve.err" >&2
+    fi
+    exit 1
+  fi
+
+  stop_chrome
+  echo "Keys OK: combobox, confirm-dialog, raw-dialog"
+fi
