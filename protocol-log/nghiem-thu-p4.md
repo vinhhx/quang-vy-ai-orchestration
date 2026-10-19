@@ -12,7 +12,7 @@
 | P4-06 | Bấm Kill | Run dừng, không còn tiến trình sót (như P2-02) |  |  |  |
 | P4-07 | Tên dự án mơ hồ trên UI | Hiện danh sách để chọn, không tự chạy |  |  |  |
 | P4-08 | Đổi profile | Thống kê và task mới theo đúng profile |  |  |  |
-| P4-09 | Tắt mạng internet | Giao diện vẫn hiển thị đúng style |  |  |  |
+| P4-09 | Tắt mạng internet | Giao diện vẫn hiển thị đúng style | Đạt | 2026-10-19 | Người dùng: tắt mạng, tải lại từng màn hình — style và font giữ nguyên. Rà soát giao diện (UI-SPEC): chấp nhận được, không yêu cầu sửa. |
 | P4-10 | So sánh UI với thiết kế (nếu có Figma) | Khớp theo checklist UI của bạn | Không áp dụng |  | D-18: chưa có thiết kế Figma |
 
 ## Kiểm tra giao diện (UI-SPEC, backstop)
