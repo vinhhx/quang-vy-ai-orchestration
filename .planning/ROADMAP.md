@@ -167,7 +167,7 @@ Plans:
   4. Bấm Kill trên UI thì run dừng và không còn tiến trình sót.
   5. Đổi profile thì thống kê và task mới theo đúng profile; màn hình Thống kê (token theo ngày/profile/dự án/vai trò) và màn hình Dự án (sửa alias, quét lại) hoạt động; nếu có thiết kế Figma thì UI khớp checklist UI của người dùng.
 
-**Plans**: 12/13 plans executed
+**Plans**: 13/13 plans executed
 **UI hint**: yes
 
 Plans:
@@ -204,7 +204,7 @@ Plans:
 - [x] 05-12-PLAN.md — Release smoke (serve from the static binary in env -i), README, LIVE-CHECKS P4, acceptance table
 
 **Wave 11** *(blocked on Wave 10 completion)*
-- [ ] 05-13-PLAN.md — Live acceptance P4-01..P4-10 with the real claude, browser, LAN and offline checks (user checkpoints)
+- [x] 05-13-PLAN.md — Live acceptance P4-01..P4-10 with the real claude, browser, LAN and offline checks (user checkpoints)
 
 ### Phase 6: Multi-engine & Media Branch
 
@@ -244,5 +244,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 2. Protocol MVP (Scripts) | 7/7 | Complete    | 2026-10-16 |
 | 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
-| 5. Embedded Dashboard | 12/13 | In Progress | - |
+| 5. Embedded Dashboard | 13/13 | In Progress | - |
 | 6. Multi-engine & Media Branch | 0/TBD | Not started | - |
