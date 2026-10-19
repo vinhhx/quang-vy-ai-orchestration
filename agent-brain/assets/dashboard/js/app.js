@@ -4,24 +4,72 @@
 
   var STEP_CLASSES = {
     cho: BADGE + ' bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200',
-    dang_chay: BADGE + ' bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-200',
+    dang_chay: BADGE + ' bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-200',
     xong: BADGE + ' bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
     vuong_mac: BADGE + ' bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200',
     can_sua: BADGE + ' bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200',
     killed: BADGE + ' bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200',
     loi: BADGE + ' bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200',
     vi_pham: BADGE + ' bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200',
+    cho_ban: BADGE + ' bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200',
+    dat: BADGE + ' bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
+    chua_tu_dong: BADGE + ' border border-dashed border-slate-400 text-slate-600 dark:border-slate-500 dark:text-slate-400',
   };
 
   var STEP_GLYPHS = {
-    cho: '○\uFE0E',
+    cho: '◌\uFE0E',
     dang_chay: '◐\uFE0E',
     xong: '✓\uFE0E',
     vuong_mac: '!\uFE0E',
     can_sua: '!\uFE0E',
     killed: '■\uFE0E',
-    loi: '✕\uFE0E',
-    vi_pham: '✕\uFE0E',
+    loi: '■\uFE0E',
+    vi_pham: '■\uFE0E',
+    cho_ban: '●\uFE0E',
+    dat: '✓\uFE0E',
+    chua_tu_dong: '◌\uFE0E',
+  };
+
+  var STATE_TEXT = {
+    xong: 'text-emerald-700 dark:text-emerald-300',
+    dat: 'text-emerald-700 dark:text-emerald-300',
+    dang_chay: 'text-blue-700 dark:text-blue-300',
+    cho_ban: 'text-amber-800 dark:text-amber-300',
+    vuong_mac: 'text-amber-800 dark:text-amber-300',
+    can_sua: 'text-amber-800 dark:text-amber-300',
+    killed: 'text-rose-700 dark:text-rose-300',
+    loi: 'text-rose-700 dark:text-rose-300',
+    vi_pham: 'text-rose-700 dark:text-rose-300',
+    cho: 'text-slate-600 dark:text-slate-400',
+    chua_tu_dong: 'text-slate-600 dark:text-slate-400',
+  };
+
+  var STATE_CARD = {
+    xong: 'border-emerald-300 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-900/20',
+    dat: 'border-emerald-300 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-900/20',
+    dang_chay: 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-900/20',
+    cho_ban: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
+    vuong_mac: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
+    can_sua: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
+    killed: 'border-rose-300 bg-rose-50 dark:border-rose-700 dark:bg-rose-900/20',
+    loi: 'border-rose-300 bg-rose-50 dark:border-rose-700 dark:bg-rose-900/20',
+    vi_pham: 'border-rose-300 bg-rose-50 dark:border-rose-700 dark:bg-rose-900/20',
+    cho: 'border-dashed border-slate-500 bg-white dark:border-slate-400 dark:bg-slate-800',
+    chua_tu_dong: 'border-dashed border-slate-400 bg-transparent dark:border-slate-500 dark:bg-transparent',
+  };
+
+  var STATE_WORDS = {
+    xong: 'xong',
+    dat: 'đạt',
+    dang_chay: 'đang chạy',
+    cho_ban: 'chờ bạn',
+    vuong_mac: 'vướng mắc',
+    can_sua: 'cần sửa',
+    killed: 'đã dừng',
+    loi: 'lỗi',
+    vi_pham: 'vi phạm giao thức',
+    cho: 'chưa bắt đầu',
+    chua_tu_dong: 'chưa tự động',
   };
 
   var PROFILE_CLASSES = {
@@ -168,6 +216,18 @@
         return 'w-6 text-center motion-safe:animate-pulse';
       }
       return 'w-6 text-center';
+    },
+
+    stateText: function (state) {
+      return STATE_TEXT[state] || STATE_TEXT.cho;
+    },
+
+    stateCard: function (state) {
+      return STATE_CARD[state] || STATE_CARD.cho;
+    },
+
+    stateWord: function (state) {
+      return STATE_WORDS[state] || STATE_WORDS.cho;
     },
 
     roleName: function (role) {
