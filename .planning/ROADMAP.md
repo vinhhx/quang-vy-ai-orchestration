@@ -220,7 +220,7 @@ Plans:
   5. Màn hình đạt ở 1024/768/480 px, sáng/tối, bàn phím; không đổi schema CSDL hay giao thức vai trò.
 
 **UI hint**: yes
-**Plans:** 3/5 plans executed
+**Plans:** 4/5 plans executed
 
 Plans:
 **Wave 1**
@@ -229,7 +229,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [x] 05.1-03-PLAN.md — Git-backed "Bạn" gate: plan-commit ancestry of Dev base_commit, single plan-commit lookup, run-order fallback
-- [ ] 05.1-04-PLAN.md — Task screen pipeline card: five stage cards, loop groups, chưa tự động chips, action strip, legend, live refetch, dialog focus return
+- [x] 05.1-04-PLAN.md — Task screen pipeline card: five stage cards, loop groups, chưa tự động chips, action strip, legend, live refetch, dialog focus return
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 05.1-05-PLAN.md — Run ledger (cycle headers, row → log, total, Hiện thêm 20), CDP keyboard + 1024/768/480 layout checks, app.css rebuild, phase gate
