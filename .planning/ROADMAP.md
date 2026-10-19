@@ -218,12 +218,13 @@ Plans:
   3. Thẻ "Bạn" chuyển "chờ bạn" → "đã duyệt" đúng lúc Dev chạy trên plan hiện tại; giai đoạn chưa có hiện "chưa tự động", không giả lập.
   4. Khi một run đang chạy, thẻ và sổ cập nhật trực tiếp; Kill và các nút bước vẫn hoạt động như Phase 5.
   5. Màn hình đạt ở 1024/768/480 px, sáng/tối, bàn phím; không đổi schema CSDL hay giao thức vai trò.
+
 **UI hint**: yes
-**Plans:** 5 plans
+**Plans:** 1/5 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 05.1-01-PLAN.md — Tracer: `GET /api/tasks/{id}/pipeline` (runs_for_task → pure pipeline::derive: cards, rounds, cycles, ledger, totals) + rule battery and brain.db flow tests
+- [x] 05.1-01-PLAN.md — Tracer: `GET /api/tasks/{id}/pipeline` (runs_for_task → pure pipeline::derive: cards, rounds, cycles, ledger, totals) + rule battery and brain.db flow tests
 - [ ] 05.1-02-PLAN.md — Shared status vocabulary (đang chạy blue, D-08 glyphs, state maps), formatters fmtClock/fmtMinutes/fmtUsd, focusLater fallback, node vm JS check
 
 **Wave 2** *(blocked on Wave 1 completion)*
