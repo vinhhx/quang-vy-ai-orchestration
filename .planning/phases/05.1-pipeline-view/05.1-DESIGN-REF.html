@@ -1,0 +1,580 @@
+<title>agent-brain Dashboard v2</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column for analysis; mockups break out to a wider, scrollable stage.
+   Palette follows the dashboard's own contract (05-UI-SPEC): slate neutrals, indigo accent,
+   emerald/amber/rose status, plus the new status tokens this design adds. */
+:root {
+  --bg: #f8fafc; --surface: #ffffff; --surface-2: #f1f5f9; --line: #e2e8f0; --line-2: #cbd5e1;
+  --fg: #0f172a; --muted: #475569; --faint: #64748b;
+  --accent: #4f46e5; --accent-fg: #4338ca; --accent-tint: #e0e7ff;
+  --st-done: #059669; --st-done-bg: #ecfdf5; --st-done-line: #6ee7b7;
+  --st-run: #2563eb; --st-run-bg: #eff6ff; --st-run-line: #93c5fd;
+  --st-wait: #b45309; --st-wait-bg: #fffbeb; --st-wait-line: #fcd34d;
+  --st-stop: #be123c; --st-stop-bg: #fff1f2; --st-stop-line: #fda4af;
+  --st-review: #a21caf; --st-review-bg: #fdf4ff;
+  --st-idle: #64748b;
+  --edge: #94a3b8; --edge-hot: #0891b2; --crit: #ca8a04;
+  --stage-bg: #f1f5f9; --node-bg: #ffffff; --group-bg: rgba(15,23,42,.025);
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0b1120; --surface: #111827; --surface-2: #1e293b; --line: #1e293b; --line-2: #334155;
+  --fg: #e2e8f0; --muted: #94a3b8; --faint: #8391a7;
+  --accent: #818cf8; --accent-fg: #a5b4fc; --accent-tint: rgba(99,102,241,.18);
+  --st-done: #34d399; --st-done-bg: rgba(16,185,129,.12); --st-done-line: rgba(52,211,153,.55);
+  --st-run: #60a5fa; --st-run-bg: rgba(59,130,246,.14); --st-run-line: rgba(96,165,250,.6);
+  --st-wait: #fbbf24; --st-wait-bg: rgba(245,158,11,.12); --st-wait-line: rgba(251,191,36,.55);
+  --st-stop: #fb7185; --st-stop-bg: rgba(244,63,94,.12); --st-stop-line: rgba(251,113,133,.55);
+  --st-review: #e879f9; --st-review-bg: rgba(217,70,239,.12);
+  --st-idle: #8391a7;
+  --edge: #475569; --edge-hot: #22d3ee; --crit: #facc15;
+  --stage-bg: #0f172a; --node-bg: #111c2e; --group-bg: rgba(148,163,184,.04);
+  color-scheme: dark;
+}}
+:root[data-theme="dark"] {
+  --bg: #0b1120; --surface: #111827; --surface-2: #1e293b; --line: #1e293b; --line-2: #334155;
+  --fg: #e2e8f0; --muted: #94a3b8; --faint: #8391a7;
+  --accent: #818cf8; --accent-fg: #a5b4fc; --accent-tint: rgba(99,102,241,.18);
+  --st-done: #34d399; --st-done-bg: rgba(16,185,129,.12); --st-done-line: rgba(52,211,153,.55);
+  --st-run: #60a5fa; --st-run-bg: rgba(59,130,246,.14); --st-run-line: rgba(96,165,250,.6);
+  --st-wait: #fbbf24; --st-wait-bg: rgba(245,158,11,.12); --st-wait-line: rgba(251,191,36,.55);
+  --st-stop: #fb7185; --st-stop-bg: rgba(244,63,94,.12); --st-stop-line: rgba(251,113,133,.55);
+  --st-review: #e879f9; --st-review-bg: rgba(217,70,239,.12);
+  --st-idle: #8391a7;
+  --edge: #475569; --edge-hot: #22d3ee; --crit: #facc15;
+  --stage-bg: #0f172a; --node-bg: #111c2e; --group-bg: rgba(148,163,184,.04);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-sans); font-size: 15px; line-height: 1.6; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 40px 80px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.prose { max-width: 70ch; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: clamp(28px, 4vw, 38px); font-weight: 700; letter-spacing: -.01em; }
+h2 { font-size: 23px; font-weight: 600; margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line); }
+h3 { font-size: 17px; font-weight: 600; margin-top: 28px; }
+p { margin: 10px 0; }
+.eyebrow { font: 600 12px/1 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent-fg); }
+.lede { font-size: 17px; color: var(--muted); max-width: 68ch; }
+code, .mono { font-family: var(--font-mono); font-size: .88em; }
+code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+a { color: var(--accent-fg); }
+ul, ol { padding-left: 20px; margin: 8px 0; }
+li { margin: 4px 0; }
+.tbl-wrap { overflow-x: auto; margin: 14px 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; background: var(--surface-2); }
+tr:last-child td { border-bottom: none; }
+.have { color: var(--st-done); font-weight: 600; }
+.part { color: var(--st-wait); font-weight: 600; }
+.miss { color: var(--st-stop); font-weight: 600; }
+.callout { border: 1px solid var(--line-2); border-radius: 8px; padding: 14px 16px; background: var(--surface); margin: 16px 0; }
+.callout b { display: block; margin-bottom: 4px; }
+.toc { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 0; padding: 0; list-style: none; }
+.toc a { display: inline-block; padding: 5px 11px; border: 1px solid var(--line-2); border-radius: 999px; text-decoration: none; color: var(--fg); font-size: 13.5px; }
+.toc a:hover { border-color: var(--accent); }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- Mockup stage ---------- */
+.stage { margin: 18px 0 8px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--stage-bg); overflow: hidden; }
+.stage-bar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--line); font: 500 12.5px var(--font-mono); color: var(--faint); background: var(--surface); }
+.stage-bar .dots { display: flex; gap: 5px; }
+.stage-bar .dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--line-2); display: block; }
+.stage-body { padding: 20px; overflow-x: auto; }
+.caption { font-size: 13.5px; color: var(--faint); margin: 6px 0 0; }
+
+/* Pipeline (image 1) */
+.ap-title { font: 600 12.5px var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; justify-content: space-between; }
+.ap-title .task { letter-spacing: 0; text-transform: none; color: var(--fg); font-family: var(--font-sans); font-size: 15px; }
+.flow { display: flex; align-items: center; gap: 10px; min-width: 1000px; }
+.arrow { color: var(--muted); font-size: 18px; flex: none; }
+.loop { border: 1px solid var(--line-2); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 8px; background: var(--group-bg); flex: none; }
+.loop-foot { text-align: center; font: 500 12.5px var(--font-mono); color: var(--muted); }
+.node { border: 1px solid var(--line-2); border-radius: 9px; padding: 8px 12px; background: var(--node-bg); width: 168px; flex: none; }
+.node .t { font-weight: 600; font-size: 15px; display: flex; gap: 6px; align-items: center; }
+.node .s { font-size: 13px; color: var(--muted); line-height: 1.4; }
+.node .m { font: 12.5px var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 2px; }
+.node .who { font: 500 11px var(--font-mono); color: var(--faint); letter-spacing: .04em; text-transform: uppercase; }
+.node.done { border-color: var(--st-done-line); background: var(--st-done-bg); }
+.node.done .t::before { content: "✓"; color: var(--st-done); }
+.node.run { border-color: var(--st-run-line); background: var(--st-run-bg); }
+.node.run .t::before { content: "◐"; color: var(--st-run); }
+.node.wait { border-color: var(--st-wait-line); background: var(--st-wait-bg); }
+.node.wait .t::before { content: "●"; color: var(--st-wait); }
+.node.stop { border-color: var(--st-stop-line); background: var(--st-stop-bg); }
+.node.stop .t::before { content: "■"; color: var(--st-stop); }
+.node.todo { border-style: dashed; }
+.node.todo .t::before { content: "◌"; color: var(--st-idle); }
+.node.manual { border-style: dashed; opacity: .78; }
+.node.manual .t::before { content: "◌"; color: var(--st-idle); }
+@media (prefers-reduced-motion: no-preference) { .node.run .t::before { animation: pulse 1.6s ease-in-out infinite; } }
+@keyframes pulse { 50% { opacity: .35; } }
+
+.ledger { margin-top: 22px; border-top: 1px solid var(--line-2); min-width: 640px; font-size: 14.5px; }
+.ledger .row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 16px; padding: 8px 2px; border-bottom: 1px solid var(--line); }
+.ledger .row > span:last-child { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ledger .head { font-weight: 600; }
+.ledger .head > span:last-child { color: var(--fg); }
+.ledger .lbl { color: var(--muted); }
+.ledger .total { font-weight: 700; border-bottom: none; }
+.ledger .total > span:last-child { color: var(--fg); }
+.v-revise { color: var(--st-run); font-weight: 600; }
+.v-ok { color: var(--st-done); font-weight: 600; }
+.v-pass { color: var(--fg); font-weight: 600; }
+.v-fail { color: var(--st-stop); font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 14px; font-size: 13.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.dot.done { background: var(--st-done); } .dot.run { background: var(--st-run); } .dot.wait { background: var(--st-wait); }
+.dot.stop { background: var(--st-stop); } .dot.review { background: var(--st-review); } .dot.ready { background: var(--st-done); }
+.dot.idle { border: 1.5px dashed var(--st-idle); }
+.newdata { border-bottom: 2px dotted var(--accent); }
+
+/* Board (image 2) */
+.bd-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; }
+.seg button { font: 500 13.5px var(--font-sans); padding: 6px 12px; border: 0; background: var(--surface); color: var(--fg); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.bd-tools select, .bd-tools input { font: 14px var(--font-sans); padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--surface); color: var(--fg); min-height: 34px; }
+.bd-tools input { flex: 1 1 160px; min-width: 0; }
+.bd-count { margin-left: auto; font: 13px var(--font-mono); color: var(--muted); }
+.bd-status { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 13.5px; color: var(--muted); margin-bottom: 16px; }
+.bd-status b { color: var(--fg); font-variant-numeric: tabular-nums; }
+.bd-status .seg button { padding: 3px 10px; font-size: 12.5px; }
+.crit-key { display: inline-flex; align-items: center; gap: 6px; }
+.crit-key i { width: 20px; height: 3px; background: var(--crit); display: inline-block; border-radius: 2px; }
+.board { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: 214px; gap: 34px; min-width: max-content; padding-bottom: 6px; }
+.board svg { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.wave h4 { margin: 0 0 10px; font-size: 14px; display: flex; justify-content: space-between; }
+.wave h4 span { font: 500 12.5px var(--font-mono); color: var(--muted); }
+.wave .col { display: flex; flex-direction: column; gap: 10px; }
+.item { position: relative; z-index: 1; text-align: left; width: 100%; border: 1px solid var(--line-2); border-left-width: 3px; border-radius: 7px; padding: 7px 9px; background: var(--node-bg); color: var(--fg); cursor: pointer; font: inherit; transition: opacity .15s; }
+.item .k { display: flex; justify-content: space-between; gap: 6px; align-items: center; font: 600 12.5px var(--font-mono); }
+.item .k em { font-style: normal; color: var(--faint); font-weight: 500; margin-left: 4px; }
+.item .st { font: 600 11px var(--font-mono); letter-spacing: .05em; text-transform: uppercase; white-space: nowrap; }
+.item .ti { font-size: 13.5px; line-height: 1.35; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.item[data-s="needs"] { border-left-color: var(--st-wait); } .item[data-s="needs"] .st { color: var(--st-wait); }
+.item[data-s="running"] { border-left-color: var(--st-run); } .item[data-s="running"] .st { color: var(--st-run); }
+.item[data-s="review"] { border-left-color: var(--st-review); } .item[data-s="review"] .st { color: var(--st-review); }
+.item[data-s="ready"] { border-left-color: var(--st-done); } .item[data-s="ready"] .st { color: var(--st-done); }
+.item[data-s="blocked"] { border-style: dashed; border-left-style: solid; border-left-color: var(--line-2); } .item[data-s="blocked"] .st { color: var(--faint); }
+.item[data-s="done"] { border-left-color: var(--st-done); opacity: .62; } .item[data-s="done"] .st { color: var(--st-done); }
+.item.crit { box-shadow: 0 0 0 1px var(--crit); }
+.board.focus .item { opacity: .28; }
+.board.focus .item.on { opacity: 1; }
+.board.focus .item.sel { box-shadow: 0 0 0 2px var(--edge-hot); }
+.board.hide-done .item[data-s="done"] { display: none; }
+.board.collapse-done .item[data-s="done"] .ti { display: none; }
+.edge { fill: none; stroke: var(--edge); stroke-width: 1.2; opacity: .45; }
+.edge.crit { stroke: var(--crit); stroke-width: 2.2; opacity: .95; }
+.edge.hot { stroke: var(--edge-hot); stroke-width: 2.2; opacity: 1; }
+.board.focus .edge:not(.hot) { opacity: .12; }
+
+/* Design-system reference */
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 14px 0; }
+.sw { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); font-size: 13px; }
+.sw div:first-child { height: 38px; }
+.sw div:last-child { padding: 6px 9px; line-height: 1.35; }
+.sw small { display: block; color: var(--faint); font-family: var(--font-mono); font-size: 11.5px; }
+.cmp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin: 14px 0; }
+.cmp-grid .node { width: auto; }
+.phase { display: grid; grid-template-columns: 52px minmax(0,1fr); gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.phase .n { font: 600 13px var(--font-mono); color: var(--accent-fg); padding-top: 2px; }
+.phase h3 { margin: 0 0 4px; }
+.phase p { margin: 4px 0; color: var(--muted); }
+.tagline { display: inline-block; font: 500 11.5px var(--font-mono); padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--muted); margin-right: 6px; }
+@media (max-width: 640px) { .phase { grid-template-columns: 1fr; gap: 2px; } body { font-size: 14.5px; } }
+</style>
+
+<div class="wrap">
+  <div class="eyebrow">QuangVy Orchestration · thiết kế đề xuất</div>
+  <h1 style="margin-top:10px">agent-brain Dashboard v2</h1>
+  <p class="lede">How to get from today's three-button task screen to the two views you showed: an autopilot pipeline with review loops and a cost ledger, and a dependency board laid out in waves. The analysis covers what the system already records, what has to change underneath, and the design system both views share.</p>
+  <ul class="toc">
+    <li><a href="#summary">Summary</a></li>
+    <li><a href="#pipeline">View 1 · Pipeline</a></li>
+    <li><a href="#board">View 2 · Board</a></li>
+    <li><a href="#gap">Gap analysis</a></li>
+    <li><a href="#system">System changes</a></li>
+    <li><a href="#ds">Design system</a></li>
+    <li><a href="#plan">Delivery plan</a></li>
+    <li><a href="#decide">Your decisions</a></li>
+  </ul>
+
+  <!-- ================= SUMMARY ================= -->
+  <h2 id="summary">Summary</h2>
+  <div class="prose">
+    <p>The two images are two different layers of the product, and they need very different amounts of work.</p>
+    <ul>
+      <li><b>View 1, the pipeline, is mostly a presentation change.</b> Each row in that ledger is one agent run, and <code>brain.db</code> already stores every run's role, outcome, turns, start and end time, and cost. Lead, Dev and QA reruns are already "rounds". What is missing is the extra stages (plan review, code review, fix, draft PR), the loop driver that runs them without a button press, and the structured verdicts ("1 blocking · 4 advisory").</li>
+      <li><b>View 2, the board, is a new layer above tasks.</b> Today one request becomes one task on one branch. The board needs work items that depend on each other, grouped by epic and milestone. Waves and the critical path are then computed from those dependencies. Nothing in the current schema holds this.</li>
+    </ul>
+    <p>The recommended order is: ship the pipeline view on today's data first, then add the autopilot loops, then the board. Each step is usable on its own, and all three keep the current rules: <code>127.0.0.1</code> plus token, kill only through <code>runner::cmd_kill</code>, one run per project, one <code>personal</code> run at a time.</p>
+  </div>
+
+  <!-- ================= VIEW 1 ================= -->
+  <h2 id="pipeline">View 1 · Task pipeline</h2>
+  <div class="prose">
+    <p>This replaces the stepper on <code>#/task/N</code>. Each stage is a card with its state, a one-line result, and time and cost. Stages that loop (plan with plan review, code with code review, QA with fix) sit in a group whose footer shows the round against its cap. The <b>Bạn</b> card is the approval gate: autopilot never runs past it without you. The ledger underneath lists every run in order, grouped by cycle, and ends with the task total.</p>
+  </div>
+  <div class="stage" role="figure" aria-label="Mockup of the task pipeline view">
+    <div class="stage-bar"><span class="dots"><i></i><i></i><i></i></span>127.0.0.1:7437/#/task/42</div>
+    <div class="stage-body">
+      <div class="ap-title"><span>Autopilot</span><span class="task">task 42 · <span class="mono">xuat-don-csv</span> · Web bán hàng</span></div>
+      <div class="flow">
+        <div class="node done"><div class="t">Bắt đầu</div><div class="s">bạn đã giao</div><div class="m">14:02</div></div>
+        <span class="arrow" aria-hidden="true">→</span>
+        <div class="loop">
+          <div class="node done"><div class="who">lead</div><div class="t">Lên plan</div><div class="s">2 vòng</div><div class="m">8 phút · $3.03</div></div>
+          <div class="node done"><div class="who">plan-review</div><div class="t">Review plan</div><div class="s">đã duyệt</div><div class="m">3 phút · $1.44</div></div>
+          <div class="loop-foot">⟲ vòng 2 / 3</div>
+        </div>
+        <span class="arrow" aria-hidden="true">→</span>
+        <div class="node done"><div class="t">Bạn</div><div class="s">đã duyệt plan</div><div class="m">14:13</div></div>
+        <span class="arrow" aria-hidden="true">→</span>
+        <div class="loop">
+          <div class="node done"><div class="who">dev</div><div class="t">Code</div><div class="s">47 lượt</div><div class="m">5 phút · $2.62</div></div>
+          <div class="node done"><div class="who">code-review</div><div class="t">Review code</div><div class="s">đạt · 7 góp ý</div><div class="m">10 phút · $3.92</div></div>
+          <div class="loop-foot">⟲ vòng 1 / 3</div>
+        </div>
+        <span class="arrow" aria-hidden="true">→</span>
+        <div class="loop">
+          <div class="node run"><div class="who">qa</div><div class="t">QA</div><div class="s">2 kiểm thử · đang chạy lần 2</div><div class="m">32 phút · $3.03</div></div>
+          <div class="node done"><div class="who">dev · fix</div><div class="t">Sửa</div><div class="s">1 lỗi đã sửa</div><div class="m">4 phút · $0.97</div></div>
+          <div class="loop-foot">⟲ vòng 2 / 3</div>
+        </div>
+        <span class="arrow" aria-hidden="true">→</span>
+        <div class="node manual"><div class="t">PR nháp</div><div class="s">chưa tự động</div><div class="m">bạn tự merge</div></div>
+      </div>
+
+      <div class="ledger" role="table" aria-label="Run ledger">
+        <div class="row head" role="row"><span>Chu kỳ 1 · plan đầu tiên</span><span>bạn đã duyệt</span></div>
+        <div class="row" role="row"><span class="lbl">Vòng 1 · plan</span><span>69 lượt · 7 phút · $2.73</span></div>
+        <div class="row" role="row"><span class="lbl">Vòng 1 · review plan: <span class="v-revise">sửa lại</span></span><span><span class="newdata">1 chặn · 4 góp ý</span> · 41 lượt · 2 phút · $1.32</span></div>
+        <div class="row" role="row"><span class="lbl">Vòng 2 · plan lại</span><span>1 lượt · 1 phút · $0.30</span></div>
+        <div class="row" role="row"><span class="lbl">Vòng 2 · review plan: <span class="v-ok">duyệt</span></span><span><span class="newdata">0 chặn · 0 góp ý</span> · 2 lượt · 1 phút · $0.12</span></div>
+        <div class="row head" role="row"><span>Build · sau khi bạn duyệt</span><span></span></div>
+        <div class="row" role="row"><span class="lbl">Vòng 1 · code</span><span>47 lượt · 5 phút · $2.62</span></div>
+        <div class="row" role="row"><span class="lbl">Vòng 1 · review code: <span class="v-pass">đạt</span></span><span><span class="newdata">0 chặn · 7 góp ý</span> · 43 lượt · 10 phút · $3.92</span></div>
+        <div class="row" role="row"><span class="lbl">QA · viết kiểm thử</span><span><span class="newdata">2 kiểm thử · 1 không tự động được</span> · 61 lượt · 22 phút · $2.03</span></div>
+        <div class="row" role="row"><span class="lbl">QA vòng 1 · chạy ×2: <span class="v-fail">thử lại</span></span><span><span class="newdata">1 lỗi</span> · 30 lượt · 9 phút · $0.97</span></div>
+        <div class="row" role="row"><span class="lbl">Sửa · vòng 1</span><span>18 lượt · 4 phút · $0.97</span></div>
+        <div class="row" role="row"><span class="lbl">QA vòng 2 · chạy ×2: <span class="v-revise">đang chạy</span></span><span>12 lượt · 1 phút · $0.03</span></div>
+        <div class="row total" role="row"><span>Tổng đến giờ</span><span>10 lượt chạy claude · 62 phút · $15.01</span></div>
+      </div>
+      <div class="legend">
+        <span><i class="dot done"></i>xong</span><span><i class="dot run"></i>đang chạy</span><span><i class="dot wait"></i>chờ bạn</span>
+        <span><i class="dot stop"></i>đã dừng</span><span><i class="dot idle"></i>chưa bắt đầu</span><span><i class="dot idle"></i>chưa tự động</span>
+      </div>
+    </div>
+  </div>
+  <p class="caption">Example data. <span class="newdata">Dotted underline</span>: values that need new structured output from the review and QA roles. Everything else (turns, minutes, cost, round order) comes from the existing <code>runs</code> table.</p>
+
+  <!-- ================= VIEW 2 ================= -->
+  <h2 id="board">View 2 · Work board</h2>
+  <div class="prose">
+    <p>A new screen, <code>#/board</code>. Items are laid out in waves: wave 0 has no dependencies, and each later wave depends only on earlier ones. Lines show dependencies; the yellow line is the critical path, the longest chain that decides when the epic can finish. Click an item to light up everything it waits on and everything waiting on it. The mockup below is live: try clicking <span class="mono">SHOP-07</span>, or use the done-items switch.</p>
+  </div>
+  <div class="stage" role="figure" aria-label="Interactive mockup of the work board">
+    <div class="stage-bar"><span class="dots"><i></i><i></i><i></i></span>127.0.0.1:7437/#/board</div>
+    <div class="stage-body">
+      <div class="bd-tools">
+        <span class="seg" role="group" aria-label="Group by"><button type="button" aria-pressed="true">Hạng mục</button><button type="button" aria-pressed="false">Epic</button></span>
+        <select id="bd-proj" aria-label="Project"><option>Mọi dự án</option><option>Web bán hàng</option></select>
+        <select id="bd-ms" aria-label="Milestone"><option>Mọi milestone</option><option>M0</option><option>M1</option><option>M2</option></select>
+        <select id="bd-epic" aria-label="Epic"><option>Mọi epic</option><option>Xuất báo cáo đơn hàng</option></select>
+        <input id="bd-find" type="search" placeholder="Tìm mã hoặc tên…" aria-label="Find items">
+        <span class="bd-count" id="bd-count"></span>
+      </div>
+      <div class="bd-status" id="bd-status"></div>
+      <div class="board" id="bd-board"><svg id="edges" aria-hidden="true"></svg></div>
+    </div>
+  </div>
+  <p class="caption">Example epic "Xuất báo cáo đơn hàng" for the Web bán hàng project. Waves and the critical path are computed in the page from the dependency list, the same way the dashboard would compute them.</p>
+
+  <!-- ================= GAP ================= -->
+  <h2 id="gap">Gap analysis</h2>
+  <p class="prose">What each element of the two views needs, and whether agent-brain has it today.</p>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th style="width:26%">Element</th><th style="width:12%">Today</th><th>Where it comes from / what is missing</th></tr></thead>
+    <tbody>
+      <tr><td>Turns, minutes, cost per run</td><td class="have">Have</td><td><code>runs.num_turns</code>, <code>started_at</code>/<code>ended_at</code>, <code>cost_usd</code>. Killed runs keep partial tokens (cost shown as —).</td></tr>
+      <tr><td>Rounds (rerun 1, 2, 3)</td><td class="have">Have</td><td>Ordered runs of the same role within a task. Today the UI shows only the latest run per role.</td></tr>
+      <tr><td>Task total ("16 claude runs · 64 min · $17.62")</td><td class="have">Have</td><td>Sum over the task's runs; same query family as <code>/api/stats</code>.</td></tr>
+      <tr><td>"You approved" gate</td><td class="part">Partial</td><td>Approval is implicit today (pressing Chạy Dev on a clean plan). Needs an explicit approval record with time, so the gate card and the cycle header can show it.</td></tr>
+      <tr><td>Plan review, Code review stages</td><td class="miss">Missing</td><td>New roles. Read-only like QA; write <code>.plan-review.md</code> / <code>.code-review.md</code> with a verdict and finding counts.</td></tr>
+      <tr><td>Verdict words (revise / approve / pass / retry)</td><td class="part">Partial</td><td><code>runs.outcome</code> exists (<code>qa:pass</code>, <code>qa:fix</code>, <code>dev:blocked</code>). Needs the new review outcomes.</td></tr>
+      <tr><td>"1 blocking · 4 advisory", "2 specs · 1 not automatable", "1 failing"</td><td class="miss">Missing</td><td>Structured counts from the review and QA reports. Store as JSON on the run (<code>runs.metrics_json</code>).</td></tr>
+      <tr><td>Fix stage</td><td class="part">Partial</td><td>Today a QA "Cần sửa" means you press Chạy lại Lead or Dev. Fix = a Dev run seeded with the QA report, marked <code>stage=fix</code>.</td></tr>
+      <tr><td>Loop with cap ("round 2 of 3")</td><td class="miss">Missing</td><td>A driver that reruns plan↔review, code↔review, QA↔fix until pass or cap, then stops and waits for you.</td></tr>
+      <tr><td>Draft PR</td><td class="miss">Missing</td><td>Push branch and <code>gh pr create --draft</code>. Outward-facing: off by default, per-project opt-in. Until then the card reads "chưa tự động".</td></tr>
+      <tr><td>Work items with keys, epic, milestone</td><td class="miss">Missing</td><td>New tables. An item becomes a task (branch) when it starts.</td></tr>
+      <tr><td>Dependencies, waves, critical path</td><td class="miss">Missing</td><td>New <code>item_deps</code> table; waves = longest-path level, computed at read time.</td></tr>
+      <tr><td>Board statuses (needs you, running, in review, ready, blocked, done)</td><td class="part">Partial</td><td>Derived: from the item's task state plus its dependencies. Running and done exist today.</td></tr>
+      <tr><td>Owner filter ("Anyone")</td><td class="part">Partial</td><td>Single-user product. Map the filter to engine or profile (work / personal), which already exists, rather than to people.</td></tr>
+    </tbody>
+  </table></div>
+
+  <!-- ================= SYSTEM ================= -->
+  <h2 id="system">System changes</h2>
+  <h3>1. Protocol: five stages instead of three</h3>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Stage</th><th>Role run</th><th>May write</th><th>Verdict and counts</th></tr></thead>
+    <tbody>
+      <tr><td>Plan</td><td><code>lead</code> (exists)</td><td><code>.plan.md</code></td><td>—</td></tr>
+      <tr><td>Plan review <span class="tagline">new</span></td><td><code>plan-review</code></td><td><code>.plan-review.md</code> only</td><td>approve / revise; blocking, advisory</td></tr>
+      <tr><td>You</td><td>gate (no run)</td><td>—</td><td>approved at, by click or <code>agent-brain approve TASK</code></td></tr>
+      <tr><td>Implement</td><td><code>dev</code> (exists)</td><td>files in the plan's Thay đổi table</td><td>done / blocked</td></tr>
+      <tr><td>Code review <span class="tagline">new</span></td><td><code>code-review</code></td><td><code>.code-review.md</code> only</td><td>pass / revise; blocking, advisory</td></tr>
+      <tr><td>Local QA</td><td><code>qa</code> (exists)</td><td><code>.qa-report.md</code> (+ test files if allowed)</td><td>pass / retry; specs, not automatable, failing</td></tr>
+      <tr><td>Fix <span class="tagline">new mode</span></td><td><code>dev</code> with <code>stage=fix</code></td><td>files in plan + files named in the QA report</td><td>done / blocked</td></tr>
+      <tr><td>Draft PR <span class="tagline">opt-in</span></td><td>no agent; git + gh</td><td>remote branch</td><td>PR number</td></tr>
+    </tbody>
+  </table></div>
+  <p class="prose">Each report starts with a small front-matter block (<code>verdict:</code>, <code>blocking:</code>, <code>advisory:</code>, …) so the runner can parse counts without reading prose. The <code>guard</code> hook already enforces "may write" lists; the new roles reuse it with one-file allowlists.</p>
+
+  <h3>2. Autopilot driver</h3>
+  <div class="prose">
+    <ul>
+      <li>A new command, <code>agent-brain auto TASK</code>, runs the stage machine: plan → plan review → (revise: replan) … until approve or the cap. It then <b>stops at the Bạn gate</b>. After you approve, it runs implement → code review → QA → fix in the same way, then the PR step if enabled.</li>
+      <li>The dashboard starts it like any other job (child process with PDEATHSIG, one per project). Kill on any card stops the driver and its current run through <code>runner::cmd_kill</code>.</li>
+      <li><b>Stop conditions:</b> round cap reached (default 3 per loop), task budget reached (minutes or $), a blocking verdict the loop cannot clear, a protocol violation (exit 3), or Dev "Vướng mắc". Each one leaves the task in <i>chờ bạn</i> with the reason on the card.</li>
+      <li>Manual mode stays: every stage can still be started by its own button or CLI command. Autopilot is per task, off by default until you trust it.</li>
+    </ul>
+  </div>
+
+  <h3>3. Data model (SQLite migration v2)</h3>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th style="width:28%">Change</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>runs.role</code> CHECK adds <code>plan-review</code>, <code>code-review</code></td><td>New roles.</td></tr>
+      <tr><td><code>runs.stage</code>, <code>runs.round</code></td><td>Which card and which round the run belongs to (fix vs implement both use <code>dev</code>).</td></tr>
+      <tr><td><code>runs.metrics_json</code></td><td>Parsed counts: blocking, advisory, specs, failing. Keeps the schema stable as reports evolve.</td></tr>
+      <tr><td><code>tasks.mode</code>, <code>tasks.approved_at</code>, <code>tasks.budget_*</code>, <code>tasks.cycle</code></td><td>Autopilot on/off, the gate, budget caps, and "Chu kỳ 2" when you send a task back to planning.</td></tr>
+      <tr><td><code>epics</code>(id, project_id, key_prefix, title, milestone_set)</td><td>Board grouping; key prefix gives <span class="mono">SHOP-07</span>.</td></tr>
+      <tr><td><code>items</code>(id, epic_id, key, title, milestone, size, task_id NULL)</td><td>One work item; becomes a task when started.</td></tr>
+      <tr><td><code>item_deps</code>(item_id, depends_on)</td><td>The graph. Cycles rejected on insert.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="prose">The SSE pump (<code>PRAGMA data_version</code>) needs no change: any write to these tables already wakes the screens.</p>
+
+  <h3>4. Where board items come from</h3>
+  <div class="prose">
+    <ol>
+      <li><b>Epic mode for Lead</b> (main path): <code>agent-brain run lead PROJECT "…" --epic</code> writes <code>.epic.md</code> with items, milestones and dependencies instead of one plan. You review it like a plan; approving it creates the items. Each item is then run as a normal task.</li>
+      <li><b>Import</b> (cheap first step): read an existing breakdown, for example this repo's own GSD <code>ROADMAP.md</code> and plan front matter (<code>wave</code>, <code>depends_on</code>), to get real data on the board before epic mode exists.</li>
+      <li><b>Manual:</b> add or edit items and dependencies on the board screen.</li>
+    </ol>
+  </div>
+
+  <h3>5. API additions</h3>
+  <div class="tbl-wrap"><table>
+    <tbody>
+      <tr><td><code>GET /api/tasks/{id}/pipeline</code></td><td>Stage cards, loop groups with round/cap, ledger rows, totals.</td></tr>
+      <tr><td><code>POST /api/tasks/{id}/approve</code>, <code>/auto</code>, <code>/auto/stop</code></td><td>Gate and autopilot control. Same Origin, Content-Type and busy-rule checks as today's actions.</td></tr>
+      <tr><td><code>GET /api/board?epic=&amp;milestone=&amp;profile=</code></td><td>Items with derived status, wave, and critical flag; edges.</td></tr>
+      <tr><td><code>POST /api/items</code>, <code>PUT /api/items/{id}</code>, <code>POST /api/items/{id}/start</code></td><td>Edit items and dependencies; start an item as a task.</td></tr>
+    </tbody>
+  </table></div>
+
+  <!-- ================= DESIGN SYSTEM ================= -->
+  <h2 id="ds">Design system</h2>
+  <div class="prose">
+    <p>Both views extend the existing dashboard contract in <code>05-UI-SPEC.md</code> rather than replacing it. Same stack (Tailwind v4 build, Alpine CSP, no CDN, offline), same slate neutrals and indigo accent, same light and dark themes, same Vietnamese copy. The changes are a fuller status vocabulary, three new components, and a denser board layout.</p>
+  </div>
+
+  <h3>Status vocabulary (one set for both views)</h3>
+  <p class="prose">Every status has a color, a glyph and a word, so it never depends on color alone. Colors map to existing Tailwind families; dark values are the 400 shades on slate-900.</p>
+  <div class="swatches">
+    <div class="sw"><div style="background:var(--st-done)"></div><div><b>✓ xong</b><small>emerald-600 / 400</small></div></div>
+    <div class="sw"><div style="background:var(--st-run)"></div><div><b>◐ đang chạy</b><small>blue-600 / 400 (was indigo)</small></div></div>
+    <div class="sw"><div style="background:var(--st-wait)"></div><div><b>● chờ bạn</b><small>amber-700 / 400</small></div></div>
+    <div class="sw"><div style="background:var(--st-stop)"></div><div><b>■ đã dừng / lỗi</b><small>rose-700 / 400</small></div></div>
+    <div class="sw"><div style="background:var(--st-review)"></div><div><b>◆ đang review</b><small>fuchsia-700 / 400</small></div></div>
+    <div class="sw"><div style="background:transparent;border-bottom:2px dashed var(--st-idle)"></div><div><b>◌ chưa bắt đầu</b><small>slate, dashed border</small></div></div>
+    <div class="sw"><div style="background:transparent;border-bottom:2px dashed var(--line-2)"></div><div><b>⟳ bị chặn</b><small>dashed, dimmed</small></div></div>
+    <div class="sw"><div style="background:var(--crit)"></div><div><b>critical path</b><small>yellow-600 / 400, lines only</small></div></div>
+  </div>
+  <div class="callout"><b>One change to the existing contract</b>Running moves from indigo to blue, so indigo stays reserved for actions and selection (as 05-UI-SPEC intends) and a running card never looks like a button. Fuchsia is used for review because violet is already the <code>personal</code> profile badge.</div>
+
+  <h3>Components</h3>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th style="width:20%">Component</th><th>Anatomy and rules</th></tr></thead>
+    <tbody>
+      <tr><td><b>Stage card</b></td><td>Role tag (mono, uppercase, 11px), title with status glyph, one result line, time · cost line (mono, tabular numbers). Tinted fill and border by status; dashed border for not started and not automated. Fixed width so loop groups line up. The current stage carries the Kill and next-step buttons below the flow, not inside cards.</td></tr>
+      <tr><td><b>Loop group</b></td><td>Faint fill, 12px radius, holds 2 stage cards stacked, footer "⟲ vòng N / cap". Turns amber with the reason when the cap is hit.</td></tr>
+      <tr><td><b>Gate card (Bạn)</b></td><td>A stage card with no role tag. In <i>chờ bạn</i> it shows two buttons: <i>Duyệt plan</i> (primary) and <i>Trả về Lead</i>.</td></tr>
+      <tr><td><b>Ledger</b></td><td>Two-column rows: label left, metrics right (tabular numbers, separated by " · "). Bold cycle header rows with their outcome on the right. The verdict word is the only colored text in a row. Bold total row. Clicking a row opens that run's log.</td></tr>
+      <tr><td><b>Legend</b></td><td>Dot + word for every status present on the screen; dashed ring for not started.</td></tr>
+      <tr><td><b>Board item</b></td><td>Mono key + milestone, status word top-right, title clamped to 1 line. 3px status stripe on the left; blocked items use a dashed border instead. Selected item: 2px cyan ring; unrelated items dim to 28%.</td></tr>
+      <tr><td><b>Wave column</b></td><td>Header "Wave N" with done / total. Fixed 214px width; the board scrolls sideways inside its own container.</td></tr>
+      <tr><td><b>Dependency edge</b></td><td>SVG curve from the right edge of the source to the left edge of the target. Default slate at 45%; cyan when part of the selected chain; yellow 2px on the critical path.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="cmp-grid">
+    <div class="node done"><div class="who">lead</div><div class="t">Lên plan</div><div class="s">2 vòng</div><div class="m">8 phút · $3.03</div></div>
+    <div class="node run"><div class="who">code-review</div><div class="t">Review code</div><div class="s">đang chạy</div><div class="m">3 phút · $0.81</div></div>
+    <div class="node wait"><div class="t">Bạn</div><div class="s">chờ duyệt plan</div><div class="m">từ 14:13</div></div>
+    <div class="node stop"><div class="who">qa</div><div class="t">QA</div><div class="s">hết 3 vòng · 1 lỗi</div><div class="m">41 phút · $4.10</div></div>
+    <div class="node todo"><div class="who">dev</div><div class="t">Code</div><div class="s">chưa bắt đầu</div><div class="m">—</div></div>
+  </div>
+
+  <h3>Layout and density</h3>
+  <div class="prose">
+    <ul>
+      <li>Task screen order: pipeline, ledger, then the existing plan / QA report / live log panes.</li>
+      <li>The pipeline scrolls sideways inside its own box below 1024px; under 640px it stacks vertically (as the stepper does today, with no arrows).</li>
+      <li>The board keeps the 05-UI-SPEC minimum text size (14px titles, 12.5px mono keys) and 48px touch targets for toolbar controls; cards themselves are dense, 2 lines.</li>
+      <li>The board defaults to dark-friendly contrast in both themes: edges are drawn under cards, never through text.</li>
+    </ul>
+  </div>
+
+  <!-- ================= PLAN ================= -->
+  <h2 id="plan">Delivery plan</h2>
+  <p class="prose">Each step is a GSD phase: Claude plans and reviews, agy executes, as the repo already works. Every step ships something usable.</p>
+  <div>
+    <div class="phase"><div class="n">A</div><div><h3>Pipeline view on today's data</h3><p>New stage cards, loop groups, ledger and totals on <code>#/task/N</code>, built only from existing runs. Lead/Dev/QA reruns appear as rounds; review, fix and PR cards show "chưa tự động". Adds <code>/api/tasks/{id}/pipeline</code> and the explicit approval gate.</p><p><span class="tagline">no protocol change</span><span class="tagline">small</span></p></div></div>
+    <div class="phase"><div class="n">B</div><div><h3>Review roles and autopilot</h3><p><code>plan-review</code> and <code>code-review</code> roles, fix mode, report front matter and <code>metrics_json</code>, migration v2, <code>agent-brain auto</code>, round caps and budgets. Pipeline cards come alive.</p><p><span class="tagline">protocol change</span><span class="tagline">largest</span><span class="tagline">live checks with real claude</span></p></div></div>
+    <div class="phase"><div class="n">C</div><div><h3>Work board</h3><p>Epic, item and dependency tables; import from a GSD roadmap first, then Lead epic mode; <code>#/board</code> with waves, edges, critical path, filters and focus.</p><p><span class="tagline">new layer</span><span class="tagline">medium</span></p></div></div>
+    <div class="phase"><div class="n">D</div><div><h3>Draft PR</h3><p>Opt-in per project: push the task branch and open a draft PR with the plan, review and QA summaries.</p><p><span class="tagline">outward-facing</span><span class="tagline">small</span></p></div></div>
+  </div>
+  <div class="callout"><b>Fit with the current roadmap</b>Phase 4 (token optimization) gets better data from A and B: per-stage cost is exactly what it needs to measure. Phase 6 (multi-engine) maps cleanly onto stages: each card can show its engine, for example review on a different model than Dev. Phase A can start now without waiting for Phase 4's two weeks of data.</div>
+
+  <!-- ================= DECISIONS ================= -->
+  <h2 id="decide">Your decisions</h2>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th style="width:30%">Question</th><th>Decided 19/10/2026</th></tr></thead>
+    <tbody>
+      <tr><td>How far may autopilot go without you?</td><td><b>Per-task workflow.</b> Each task can use its own workflow; a task without one runs the default workflow. Workflows are named templates you define once and pick when assigning a task (see below).</td></tr>
+      <tr><td>Round cap and budget defaults</td><td><b>3 rounds per loop; 60 minutes or $20 per task</b>, whichever comes first. Configurable in <code>config.json</code>, and a workflow can override them.</td></tr>
+      <tr><td>Draft PR</td><td><b>Later (Phase D), opt-in per project.</b> Never on <code>personal</code> projects without asking.</td></tr>
+      <tr><td>Board data source first</td><td><b>Import a GSD roadmap first</b>, then build Lead epic mode.</td></tr>
+      <tr><td>Where it sits in the roadmap</td><td><b>Phase A now as inserted Phase 5.1</b>; B (workflows + autopilot) and C (board) as new phases after it; Phase 4 keeps waiting on its data.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Workflow templates</h3>
+  <div class="prose">
+    <p>A workflow is a named list of stages, which ones loop, where the gates are, and the limits. Templates live in <code>~/.config/agent-brain/workflows.json</code>. Giao việc gets a <b>Quy trình</b> picker next to the project; the CLI takes <code>--workflow NAME</code>. No choice means <code>mac-dinh</code>. The pipeline view draws whatever stages the task's workflow lists, so a short workflow shows fewer cards.</p>
+  </div>
+  <pre style="overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font:13px/1.5 var(--font-mono)">{
+  "mac-dinh": {
+    "stages": ["plan", "plan-review", "gate:you", "implement", "code-review", "qa", "fix"],
+    "loops":  { "plan": "plan-review", "implement": "code-review", "qa": "fix" },
+    "max_rounds": 3, "budget_minutes": 60, "budget_usd": 20, "auto": true
+  },
+  "nhanh":     { "stages": ["plan", "gate:you", "implement", "qa"], "auto": false },
+  "chi-review":{ "stages": ["code-review"], "auto": true, "budget_usd": 5 }
+}</pre>
+  <div class="prose">
+    <ul>
+      <li>The task stores the workflow it started with (a copy), so editing a template never changes a running task.</li>
+      <li>Rules that no workflow can turn off: kill only through <code>runner::cmd_kill</code>, one run per project, one <code>personal</code> run at a time, the guard hook's write lists.</li>
+      <li><code>auto: false</code> keeps today's behaviour: every stage waits for your button.</li>
+      <li>Workflows are a Phase B feature. Phase A draws today's fixed Lead → Dev → QA as the default workflow.</li>
+    </ul>
+  </div>
+  <p class="caption" style="margin-top:24px">Prepared 19/10/2026 from the agent-brain 0.1.0 code, <code>brain.db</code> schema and 05-UI-SPEC. Mockup figures are examples.</p>
+</div>
+
+<script>
+(function () {
+  var S = { needs: "cần bạn", running: "đang chạy", review: "đang review", underway: "đang làm", ready: "sẵn sàng", blocked: "bị chặn", done: "xong" };
+  var items = [
+    ["SHOP-01","M0","Chốt định dạng CSV","done",[]],
+    ["SHOP-02","M0","Quy ước tên file và mã hoá","done",[]],
+    ["SHOP-03","M0","Chọn thư viện ghi CSV","needs",[]],
+    ["SHOP-04","M1","Truy vấn đơn hàng theo khoảng ngày","review",["SHOP-01"]],
+    ["SHOP-05","M1","Định dạng tiền tệ và ngày tháng","ready",["SHOP-01","SHOP-02"]],
+    ["SHOP-06","M1","Quyền xuất cho quản trị viên","running",[]],
+    ["SHOP-07","M1","Bộ ghi CSV theo luồng","blocked",["SHOP-03","SHOP-04"]],
+    ["SHOP-08","M1","API GET /admin/orders/export","blocked",["SHOP-07","SHOP-06"]],
+    ["SHOP-09","M2","Nút Xuất CSV ở trang đơn hàng","blocked",["SHOP-08"]],
+    ["SHOP-10","M2","Giới hạn 50.000 dòng và cảnh báo","blocked",["SHOP-07"]],
+    ["SHOP-11","M2","Kiểm thử dữ liệu tiếng Việt có dấu","blocked",["SHOP-05","SHOP-07"]],
+    ["SHOP-12","M2","Ghi nhật ký lượt xuất","blocked",["SHOP-08"]],
+    ["SHOP-13","M2","Kiểm thử đầu-cuối luồng xuất","blocked",["SHOP-09","SHOP-11"]],
+    ["SHOP-14","M2","Hướng dẫn sử dụng cho cửa hàng","blocked",["SHOP-09"]]
+  ];
+  var byKey = {}; items.forEach(function (it) { byKey[it[0]] = { key: it[0], ms: it[1], title: it[2], s: it[3], deps: it[4], out: [] }; });
+  Object.keys(byKey).forEach(function (k) { byKey[k].deps.forEach(function (d) { byKey[d].out.push(k); }); });
+  // wave = longest dependency path from a root
+  function wave(k) { var n = byKey[k]; if (n.w !== undefined) return n.w; n.w = 0; n.deps.forEach(function (d) { n.w = Math.max(n.w, wave(d) + 1); }); return n.w; }
+  Object.keys(byKey).forEach(wave);
+  // critical path: longest chain through unfinished items (unit size per item)
+  function longest(k) { var n = byKey[k]; if (n.L !== undefined) return n.L; var best = 0, nx = null; n.out.forEach(function (o) { var l = longest(o); if (l > best) { best = l; nx = o; } }); n.L = best + (n.s === "done" ? 0 : 1); n.next = nx; return n.L; }
+  var start = null, bestL = -1; Object.keys(byKey).forEach(function (k) { if (byKey[k].deps.length === 0 && longest(k) > bestL) { bestL = longest(k); start = k; } });
+  var crit = {}; for (var c = start; c; c = byKey[c].next) crit[c] = true;
+
+  var board = document.getElementById("bd-board"), svg = document.getElementById("edges");
+  var waves = []; Object.keys(byKey).forEach(function (k) { var n = byKey[k]; (waves[n.w] = waves[n.w] || []).push(n); });
+  waves.forEach(function (list, i) {
+    var col = document.createElement("div"); col.className = "wave";
+    var done = list.filter(function (n) { return n.s === "done"; }).length;
+    col.innerHTML = '<h4>Wave ' + i + ' <span>' + done + '/' + list.length + '</span></h4><div class="col"></div>';
+    list.forEach(function (n) {
+      var b = document.createElement("button"); b.type = "button"; b.className = "item" + (crit[n.key] ? " crit" : ""); b.dataset.s = n.s; b.dataset.k = n.key; b.id = "it-" + n.key;
+      b.setAttribute("aria-label", n.key + " " + n.title + ", " + S[n.s]);
+      b.innerHTML = '<div class="k"><span>' + n.key + '<em>' + n.ms + '</em></span><span class="st">' + (n.s === "blocked" ? "⟳ " : "") + S[n.s] + '</span></div><div class="ti">' + n.title + '</div>';
+      b.addEventListener("click", function () { select(n.key); });
+      col.querySelector(".col").appendChild(b); n.el = b;
+    });
+    board.appendChild(col);
+  });
+
+  var counts = {}; Object.keys(byKey).forEach(function (k) { counts[byKey[k].s] = (counts[byKey[k].s] || 0) + 1; });
+  var dots = { needs: "wait", running: "run", review: "review", ready: "ready", blocked: "idle", done: "done" };
+  var st = document.getElementById("bd-status");
+  ["needs","running","review","ready","blocked","done"].forEach(function (s) {
+    var sp = document.createElement("span"); sp.innerHTML = '<i class="dot ' + dots[s] + '"></i> ' + S[s] + ' <b>' + (counts[s] || 0) + '</b>'; sp.style.display = "inline-flex"; sp.style.alignItems = "center"; sp.style.gap = "6px"; st.appendChild(sp);
+  });
+  var seg = document.createElement("span"); seg.className = "seg"; seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "Done items");
+  [["show","Hiện"],["collapse","Thu gọn"],["hide","Ẩn"]].forEach(function (m, i) {
+    var b = document.createElement("button"); b.type = "button"; b.textContent = m[1]; b.setAttribute("aria-pressed", i === 0 ? "true" : "false");
+    b.addEventListener("click", function () { seg.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", "false"); }); b.setAttribute("aria-pressed", "true");
+      board.classList.toggle("collapse-done", m[0] === "collapse"); board.classList.toggle("hide-done", m[0] === "hide"); draw(); });
+    seg.appendChild(b);
+  });
+  st.appendChild(seg);
+  var ck = document.createElement("span"); ck.className = "crit-key"; ck.innerHTML = "<i></i> đường găng"; st.appendChild(ck);
+  document.getElementById("bd-count").textContent = items.length + " / " + items.length;
+
+  var sel = null;
+  function related(k) { var set = {}; set[k] = true;
+    (function up(x) { byKey[x].deps.forEach(function (d) { if (!set[d]) { set[d] = true; up(d); } }); })(k);
+    (function dn(x) { byKey[x].out.forEach(function (o) { if (!set[o]) { set[o] = true; dn(o); } }); })(k);
+    return set; }
+  function select(k) {
+    sel = (sel === k) ? null : k;
+    board.classList.toggle("focus", !!sel);
+    var rel = sel ? related(sel) : {};
+    Object.keys(byKey).forEach(function (x) { var el = byKey[x].el; el.classList.toggle("on", !!rel[x]); el.classList.toggle("sel", x === sel); el.setAttribute("aria-pressed", x === sel ? "true" : "false"); });
+    draw();
+  }
+  function draw() {
+    var r0 = board.getBoundingClientRect(); svg.setAttribute("width", board.scrollWidth); svg.setAttribute("height", board.scrollHeight);
+    var rel = sel ? related(sel) : {}; var html = "";
+    Object.keys(byKey).forEach(function (k) { var n = byKey[k];
+      n.deps.forEach(function (d) { var a = byKey[d].el, b = n.el; if (!a.offsetParent || !b.offsetParent) return;
+        var ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+        var x1 = ra.right - r0.left, y1 = ra.top + ra.height / 2 - r0.top, x2 = rb.left - r0.left, y2 = rb.top + rb.height / 2 - r0.top, mx = (x1 + x2) / 2;
+        var cls = "edge" + (crit[d] && crit[k] ? " crit" : "") + (sel && rel[d] && rel[k] ? " hot" : "");
+        html += '<path class="' + cls + '" d="M' + x1 + ' ' + y1 + ' C' + mx + ' ' + y1 + ' ' + mx + ' ' + y2 + ' ' + x2 + ' ' + y2 + '"/>'; }); });
+    svg.innerHTML = html;
+  }
+  var find = document.getElementById("bd-find");
+  find.addEventListener("input", function () { var q = find.value.trim().toLowerCase(); var shown = 0;
+    Object.keys(byKey).forEach(function (k) { var n = byKey[k]; var hit = !q || (n.key + " " + n.title).toLowerCase().indexOf(q) >= 0; n.el.style.opacity = hit ? "" : ".18"; if (hit) shown++; });
+    document.getElementById("bd-count").textContent = shown + " / " + items.length; });
+  window.addEventListener("resize", draw);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(draw);
+  draw();
+})();
+</script>
