@@ -31,6 +31,7 @@ Cổng qua phase (phase gates) nằm trong `ROADMAP.md` (mỗi phase có Success
 ### Validated
 
 - ✓ **Phase 1 — Kiểm chứng giả định** (SPK-01…10): 8 spike S1–S8 đã chạy thật, kết quả trong `spikes/spike-results.md` (S1–S4 Đạt, S5–S8 Một phần + follow-up); SPK-10 quyết định Work = `~/.claude`, Personal = `~/.claude-orca` — Phase 1
+- ✓ **Phase 5 — Dashboard nhúng** (DASH-01…12): `agent-brain serve` — Axum + SSE + Tailwind/Alpine CSP nhúng trong binary tĩnh, chỉ `127.0.0.1` + token mỗi lần khởi động, 5 màn hình (Tổng quan, Giao việc, Task, Thống kê, Dự án); nghiệm thu P4-01…P4-09 Đạt, P4-10 không áp dụng (không có Figma) — `protocol-log/nghiem-thu-p4.md` — Phase 5
 
 ### Active
 
@@ -39,7 +40,6 @@ Cổng qua phase (phase gates) nằm trong `ROADMAP.md` (mỗi phase có Success
 - [ ] **Phase 2 — Giao thức MVP bằng script** (ROUTE, ROLE, PROF-01): định tuyến dự án tiếng Việt + Fallback Ask, 3 vai trò Lead/Dev/QA, profile, 5 task thật
 - [ ] **Phase 3 — Lõi Rust CLI** (CLI, PROF-02, PROC, LOG, FAST, STAT, DIST): process group + kill sạch, bắt log stream-json, SQLite token, fast-path cấp 1–2, binary portable
 - [ ] **Phase 4 — Tối ưu session & token** (OPT): báo cáo token, `.gsd-summary.md`, `.handover.md`, giảm token/task đo được
-- [ ] **Phase 5 — Dashboard nhúng** (DASH): Axum + SSE + HTML/Tailwind/Alpine.js nhúng, localhost + token, 5 màn hình
 - [ ] **Phase 6 — Đa đội hình & nhánh Media** (ENG, MEDIA): routing engine theo `teams.json`, xử lý quota, nhánh video tách khỏi Git worktree
 
 ### Out of Scope
@@ -96,7 +96,7 @@ Không có ADR trong bộ tài liệu nạp, nên **không có quyết định n
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Giao thức trước, giao diện sau (nguồn 00-ROADMAP §1) | Giá trị nằm ở cách agent phối hợp; dashboard chỉ là lớp hiển thị | — Pending |
+| Giao thức trước, giao diện sau (nguồn 00-ROADMAP §1) | Giá trị nằm ở cách agent phối hợp; dashboard chỉ là lớp hiển thị | ✓ Good — Phase 5 dashboard chỉ gọi lại lệnh CLI có sẵn (`run`, `cmd_kill`, stats) |
 | Đo trước khi tối ưu (00-ROADMAP §1; Phase 3 spec) | Tránh tối ưu theo ước đoán; cần số liệu token thật | — Pending |
 | Kiểm chứng giả định sớm ở Phase 1 (00-ROADMAP §1) | Một giả định sai có thể hỏng cả phase phía sau | ✓ Good — Phase 1 phát hiện E-05 sai, cache bucket 1h (không phải ~5 phút), `--max-turns` không dùng được cho review diff, dsh không có stream-json |
 | Fallback Ask: khớp 0 hoặc >1 dự án thì dừng và hỏi, không bao giờ đoán (Phase 1 spec §3.2) | Tránh chạy nhầm repo (KPI = 0) | — Pending |
@@ -104,12 +104,12 @@ Không có ADR trong bộ tài liệu nạp, nên **không có quyết định n
 | Process group + SIGTERM/SIGKILL, giữ `kill_on_drop` làm lớp hai (Phase 2 spec §3.2) | `kill_on_drop` chỉ giết tiến trình con trực tiếp | — Pending (S4: ghi PID + con cháu, SIGTERM PID, chờ 5 s, quét sót; SIGKILL bỏ sót con) |
 | Làm phương án A (tóm tắt `.gsd`) trước, chỉ làm B (golden session + fork) nếu số liệu cho thấy đáng (Phase 3 spec §2.3) | Cache chỉ sống ~5 phút; fork không chắc tiết kiệm token | — Pending (S3: cache thực tế là bucket 1h, ấm ở 10 phút, nguội ở 65 phút; S2: `--fork-session` đọc cache của session cha) |
 | Ngưỡng độ dài session ban đầu 45.000 token, chỉnh theo số liệu (Phase 3 spec §2.4) | Context phình to làm tăng token | — Pending |
-| Nhúng UI vào binary, localhost + token (Phase 4 spec §3) | Không Node/CORS; bảo mật tối thiểu vì UI chạy được lệnh | — Pending |
+| Nhúng UI vào binary, localhost + token (Phase 4 spec §3) | Không Node/CORS; bảo mật tối thiểu vì UI chạy được lệnh | ✓ Good — Phase 5: binary tĩnh phục vụ UI không cần cài gì, CSS chạy offline; cookie không tách theo port là rủi ro chấp nhận AR-5-01 (cứng hoá: token qua header) |
 | Mỗi vai trò chạy được trên engine khác nhau vì chỉ trao đổi qua file (Phase 5 spec §2.1) | Đổi engine một vai trò không ảnh hưởng vai trò khác | — Pending |
 | Không tự chuyển engine ngầm khi hết quota; QA luôn chạy engine mạnh (Phase 5 spec §2.3, §6) | Chất lượng các engine khác nhau | — Pending |
 | Nhánh Media chạy ở thư mục riêng ngoài Git worktree, render là tiến trình riêng do runner quản lý (Phase 5 spec §2.4) | File video hàng GB làm nặng Orca/Git | — Pending |
 | Work = `~/.claude` (Team seat), Personal = `~/.claude-orca` (Pro) — SPK-10, người dùng miễn xác nhận chính sách công ty (Phase 1) | Hai profile tách biệt theo tài khoản; rủi ro tuân thủ đã chấp nhận (AR-1-01) | ✓ Accepted — S5 live test trên profile Personal chưa chạy |
-| Phân công: Claude phân tích/lập kế hoạch/review, Antigravity (`agy`) thực thi (CLAUDE.md, sau Phase 1) | Tách người lập kế hoạch và người làm; agy headless được (S7) | — Pending (quyền tool của agy chưa kiểm chứng) |
+| Phân công: Claude phân tích/lập kế hoạch/review, Antigravity (`agy`) thực thi (CLAUDE.md, sau Phase 1) | Tách người lập kế hoạch và người làm; agy headless được (S7) | ✓ Good — Phase 5: 13 plan + 4 fix plan qua agy với `--dangerously-skip-permissions` (người dùng duyệt cho Phase 5); review của Claude bắt được 2 lỗi UI khi chạy thật |
 
 ## Evolution
 
@@ -129,4 +129,4 @@ Tài liệu này tiến hóa theo vòng đời dự án.
 4. Cập nhật Context theo hiện trạng
 
 ---
-*Last updated: 2026-10-15 after Phase 1*
+*Last updated: 2026-10-19 after Phase 5*

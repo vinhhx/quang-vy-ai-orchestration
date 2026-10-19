@@ -95,18 +95,18 @@ Phase này người dùng tự chạy tay để hiểu hành vi CLI; agent có t
 
 ### Embedded Dashboard (GSD Phase 5 — nguồn Phase 4)
 
-- [ ] **DASH-01**: Chạy binary thì mở được dashboard, không cần cài thêm gì (UI HTML + Tailwind + Alpine.js nhúng trong binary, cùng origin với API). *(src: P4-01)*
-- [ ] **DASH-02**: Truy cập dashboard từ máy khác trong mạng LAN không được (server chỉ nghe `127.0.0.1`). *(src: P4-02)*
-- [ ] **DASH-03**: Truy cập không có token bị từ chối (token sinh khi khởi động và in ra terminal). *(src: P4-03)*
-- [ ] **DASH-04**: Giao việc từ UI (ô nhập yêu cầu tiếng Việt) thì log hiện realtime qua SSE và từng bước pipeline Lead → Dev → QA đổi trạng thái. *(src: P4-04)*
-- [ ] **DASH-05**: Reload trang giữa chừng một run thì vẫn thấy log cũ (đọc từ SQLite `events`) và tiếp tục nhận log mới; SSE tự kết nối lại và đọc bù từ SQLite. *(src: P4-05)*
-- [ ] **DASH-06**: Bấm Kill trên UI thì run dừng và không còn tiến trình sót (như PROC-01). *(src: P4-06)*
-- [ ] **DASH-07**: Tên dự án mơ hồ trên UI thì hiện danh sách để chọn, không tự chạy. *(src: P4-07)*
-- [ ] **DASH-08**: Đổi profile trên UI thì thống kê và task mới theo đúng profile. *(src: P4-08)*
-- [ ] **DASH-09**: Tắt internet thì giao diện vẫn hiển thị đúng style (CSS Tailwind build sẵn và nhúng). *(src: P4-09)*
-- [ ] **DASH-10**: Nếu có thiết kế (Figma), UI khớp theo checklist UI của người dùng; nếu chưa có thiết kế thì không áp dụng. *(src: P4-10)*
-- [ ] **DASH-11**: Màn hình Thống kê hiển thị token theo ngày, theo profile, theo dự án và theo vai trò; màn hình Tổng quan hiển thị task đang chạy / xong / lỗi. *(derived: 05-phase4 §4.1)*
-- [ ] **DASH-12**: Màn hình Dự án liệt kê dự án từ `projects_map.json`, cho sửa alias và có nút quét lại. *(derived: 05-phase4 §4.1)*
+- [x] **DASH-01**: Chạy binary thì mở được dashboard, không cần cài thêm gì (UI HTML + Tailwind + Alpine.js nhúng trong binary, cùng origin với API). *(src: P4-01)*
+- [x] **DASH-02**: Truy cập dashboard từ máy khác trong mạng LAN không được (server chỉ nghe `127.0.0.1`). *(src: P4-02)*
+- [x] **DASH-03**: Truy cập không có token bị từ chối (token sinh khi khởi động và in ra terminal). *(src: P4-03)*
+- [x] **DASH-04**: Giao việc từ UI (ô nhập yêu cầu tiếng Việt) thì log hiện realtime qua SSE và từng bước pipeline Lead → Dev → QA đổi trạng thái. *(src: P4-04)*
+- [x] **DASH-05**: Reload trang giữa chừng một run thì vẫn thấy log cũ (đọc từ SQLite `events`) và tiếp tục nhận log mới; SSE tự kết nối lại và đọc bù từ SQLite. *(src: P4-05)*
+- [x] **DASH-06**: Bấm Kill trên UI thì run dừng và không còn tiến trình sót (như PROC-01). *(src: P4-06)*
+- [x] **DASH-07**: Tên dự án mơ hồ trên UI thì hiện danh sách để chọn, không tự chạy. *(src: P4-07)*
+- [x] **DASH-08**: Đổi profile trên UI thì thống kê và task mới theo đúng profile. *(src: P4-08)*
+- [x] **DASH-09**: Tắt internet thì giao diện vẫn hiển thị đúng style (CSS Tailwind build sẵn và nhúng). *(src: P4-09)*
+- [x] **DASH-10**: Nếu có thiết kế (Figma), UI khớp theo checklist UI của người dùng; nếu chưa có thiết kế thì không áp dụng. *(src: P4-10)*
+- [x] **DASH-11**: Màn hình Thống kê hiển thị token theo ngày, theo profile, theo dự án và theo vai trò; màn hình Tổng quan hiển thị task đang chạy / xong / lỗi. *(derived: 05-phase4 §4.1)*
+- [x] **DASH-12**: Màn hình Dự án liệt kê dự án từ `projects_map.json`, cho sửa alias và có nút quét lại. *(derived: 05-phase4 §4.1)*
 
 ### Multi-engine Routing (GSD Phase 6 — nguồn Phase 5)
 
@@ -199,18 +199,18 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | OPT-05 | Phase 4 | Pending |
 | OPT-06 | Phase 4 | Pending |
 | OPT-07 | Phase 4 | Pending |
-| DASH-01 | Phase 5 | Pending |
-| DASH-02 | Phase 5 | Pending |
-| DASH-03 | Phase 5 | Pending |
-| DASH-04 | Phase 5 | Pending |
-| DASH-05 | Phase 5 | Pending |
-| DASH-06 | Phase 5 | Pending |
-| DASH-07 | Phase 5 | Pending |
-| DASH-08 | Phase 5 | Pending |
-| DASH-09 | Phase 5 | Pending |
-| DASH-10 | Phase 5 | Pending |
-| DASH-11 | Phase 5 | Pending |
-| DASH-12 | Phase 5 | Pending |
+| DASH-01 | Phase 5 | Complete |
+| DASH-02 | Phase 5 | Complete |
+| DASH-03 | Phase 5 | Complete |
+| DASH-04 | Phase 5 | Complete |
+| DASH-05 | Phase 5 | Complete |
+| DASH-06 | Phase 5 | Complete |
+| DASH-07 | Phase 5 | Complete |
+| DASH-08 | Phase 5 | Complete |
+| DASH-09 | Phase 5 | Complete |
+| DASH-10 | Phase 5 | Complete |
+| DASH-11 | Phase 5 | Complete |
+| DASH-12 | Phase 5 | Complete |
 | ENG-01 | Phase 6 | Pending |
 | ENG-02 | Phase 6 | Pending |
 | ENG-03 | Phase 6 | Pending |

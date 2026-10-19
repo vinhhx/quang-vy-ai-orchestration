@@ -27,7 +27,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Protocol MVP (Scripts)** - Chạy Lead → `.plan.md` → Dev → QA trên dự án thật chỉ bằng script và file cấu hình (completed 2026-10-16)
 - [x] **Phase 3: Rust CLI Core** - Binary `agent-brain` với kill sạch cây tiến trình, bắt log stream-json, token trong SQLite, fast-path (completed 2026-10-16)
 - [ ] **Phase 4: Session & Token Optimization** - Giảm token/task dựa trên số liệu `runs` thật (`.gsd-summary.md`, `.handover.md`)
-- [ ] **Phase 5: Embedded Dashboard** - Web UI + SSE trong cùng binary: xem log realtime, giao việc, kill, thống kê
+- [x] **Phase 5: Embedded Dashboard** - Web UI + SSE trong cùng binary: xem log realtime, giao việc, kill, thống kê (completed 2026-10-19)
 - [ ] **Phase 6: Multi-engine & Media Branch** - Mỗi vai trò một engine, xử lý hết quota không đổi ngầm, nhánh video tách khỏi Git worktree
 
 **Execution Order & Dependencies:**
@@ -167,7 +167,7 @@ Plans:
   4. Bấm Kill trên UI thì run dừng và không còn tiến trình sót.
   5. Đổi profile thì thống kê và task mới theo đúng profile; màn hình Thống kê (token theo ngày/profile/dự án/vai trò) và màn hình Dự án (sửa alias, quét lại) hoạt động; nếu có thiết kế Figma thì UI khớp checklist UI của người dùng.
 
-**Plans**: 13/13 plans executed
+**Plans**: 13/13 plans complete
 **UI hint**: yes
 
 Plans:
@@ -244,5 +244,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 2. Protocol MVP (Scripts) | 7/7 | Complete    | 2026-10-16 |
 | 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
-| 5. Embedded Dashboard | 13/13 | In Progress | - |
+| 5. Embedded Dashboard | 13/13 | Complete    | 2026-10-19 |
 | 6. Multi-engine & Media Branch | 0/TBD | Not started | - |

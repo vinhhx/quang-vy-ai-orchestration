@@ -26,7 +26,7 @@
     {
       "number": "5",
       "name": "Embedded Dashboard",
-      "status": "in_progress"
+      "status": "complete"
     },
     {
       "number": "6",
@@ -36,8 +36,8 @@
   ],
   "next": {
     "command": "/gsd:progress --next",
-    "label": "Advance to the next step (verify)",
-    "reason": "Phase 5 of 6 · 50% · ready to verify"
+    "label": "Advance to the next step (plan phase 4)",
+    "reason": "Phase 4 of 6 — needs a plan"
   },
-  "updated_at": "2026-10-19T03:50:18.294Z"
+  "updated_at": "2026-10-19T08:16:41.212Z"
 }

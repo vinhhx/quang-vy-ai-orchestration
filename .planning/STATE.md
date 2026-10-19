@@ -1,43 +1,43 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 5
-current_phase_name: Embedded Dashboard
-status: verifying
-stopped_at: Phase 5 waves 1-5 executed (05-01..05-07); paused before UI waves 6-11 to revise 05-08..05-11 against 05-UI-SPEC.md
-last_updated: "2026-10-19T03:50:18.262Z"
-last_activity: 2026-10-17
-last_activity_desc: Phase 5 execution started
-state_head: e5a778db8b62619fa034cfb0b6d95f55c16da590
+current_phase: 4
+current_phase_name: Session & Token Optimization
+status: planning
+stopped_at: Phase 5 complete, ready to plan Phase 4
+last_updated: "2026-10-19T08:16:41.170Z"
+last_activity: 2026-10-19
+last_activity_desc: Phase 5 complete, transitioned to Phase 4
+state_head: 09befeaf63f57c9f3ec650d5e8093fe56ab8ef0c
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 34
   completed_plans: 34
-  percent: 50
+  percent: 67
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-15)
+See: .planning/PROJECT.md (updated 2026-10-19)
 
 **Core value:** Giao việc cho nhiều AI agent bằng giao thức Lead → `.plan.md` → Dev → QA một cách đáng tin cậy: đúng dự án, đúng vai trò, kill sạch cây tiến trình, đo được token.
-**Current focus:** Phase 5 — Embedded Dashboard
+**Current focus:** Phase 4 — Session & Token Optimization (hoặc Phase 6; xem Blockers)
 
 ## Current Position
 
-Phase: 5 (Embedded Dashboard) — EXECUTING
-Plan: 13 of 13
-Status: Phase complete — ready for verification
-Last activity: 2026-10-17 — Phase 5 execution started
+Phase: 4 — Session & Token Optimization
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-19 — Phase 5 complete, transitioned to Phase 4
 
-Progress: [█████░░░░░] 50% (3/6 phases complete, 21/21 planned plans done)
+Progress: [███████░░░] 67% (4/6 phases complete, 34/34 planned plans done)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 21
+- Total plans completed: 34
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -48,6 +48,7 @@ Progress: [█████░░░░░] 50% (3/6 phases complete, 21/21 plann
 | 01 | 1 | - | - |
 | 2 | 7 | - | - |
 | 03 | 13 | - | - |
+| 5 | 13 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -72,6 +73,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Không có quyết đị
 - [Phase 01]: SPK-10: Work = ~/.claude (company Team seat), Personal = ~/.claude-orca (personal Pro); company policy unconfirmed and waived by user — User answered "SPK-10 alway accept ignore condition"; two-profile mapping accepted. Personal is ~/.claude-orca, not ~/.claude-personal. S5 live test deferred.
 - [Phase 01]: S4 kill method for Phase 3: record claude PID and descendants, SIGTERM claude PID, wait 5 s, sweep survivors (TERM then KILL after 2 s); SIGKILL orphans children — Verified clean in 3/3 runs (SIGTERM, SIGKILL+sweep, SIGTERM to PGID); kill -- -PGID did not leave survivors, contradicting E-05
 - [Phase 01]: S1/S8 command shapes: stream-json needs --verbose; FAST-02 uses embedded diff with --tools "" --no-session-persistence --max-turns 1 — Observed: stream-json without --verbose exits 1; --max-turns 1 on review git diff ends error_max_turns with no result text
+- [Phase 05]: Dashboard `agent-brain serve` chỉ nghe 127.0.0.1 + token mỗi lần khởi động; cookie không tách theo port là rủi ro chấp nhận AR-5-01 (CR-01 deferred)
+- [Phase 05]: Kill từ UI chỉ đi qua `runner::cmd_kill`; job con `agent-brain run` có PDEATHSIG; live update bằng pump `PRAGMA data_version`
+- [Phase 05]: agy chạy với `--dangerously-skip-permissions` (người dùng duyệt cho Phase 5); kiểm UI tự động bằng `scripts/dashboard-smoke.sh --keys` (Chrome headless + CDP)
 - [Phase 01]: S6/S7 engine facts for Phase 6: dsh headless is text-only and needs in-container kill; agy is headless with JSON but no turn limit — Observed in S6 (json_lines=0, container process survives client kill) and S7 (--max-turns rejected, exit 2)
 
 ### Pending Todos
@@ -91,7 +95,9 @@ None yet.
 - [Phase 4]: Cần ≥ 2 tuần dữ liệu `runs` thật từ binary Phase 3 trước khi bắt đầu; không đóng phase khi chưa có OPT-06.
 - [Phase 4]: Khoảng trống phạm vi — warm reuse `--resume` (fast-path cấp 3) bị hoãn từ Phase 2 nguồn sang Phase 3 nguồn mà không có công việc/test (FAST-03, đang ở v2); quyết định ở `/gsd-discuss-phase 4`.
 - [Phase 6]: Phụ thuộc mềm vào `.handover.md` của Phase 4 (ENG-03 chỉ cần `.plan.md`).
-- [Open — cần quyết định ngay]: Chọn Phase 4 (token), 5 (dashboard) hay 6 (routing) trước. Phase 4 cần ≥ 2 tuần dữ liệu `runs` thật (hiện có 12 run, từ 2026-10-16).
+- [Open — cần quyết định]: Phase 5 xong (2026-10-19). Còn Phase 4 (token) và 6 (routing). Phase 4 cần ≥ 2 tuần dữ liệu `runs` thật (dữ liệu từ 2026-10-16, đủ khoảng 2026-10-30) — nếu chưa đủ thì làm Phase 6 trước.
+- [Phase 5, follow-up không chặn]: 05-REVIEW-DISPOSITION.md còn 25 finding mở — backend WR-05 (kiểm personal-run không nguyên tử), WR-06, WR-11 (kill theo run hiện tại của task), WR-01 (`parse_since` tràn số), WR-13 (500 lộ lỗi nội bộ); frontend WR-03 (focus không trả về nút mở dialog), WR-04 (Enter combobox trong 200 ms), WR-09/10, mũi tên stepper tương phản thấp; WR-02 README liệt kê 4 route không tồn tại. Đề xuất 2 fix plan qua agy.
+- [Phase 5, mở]: P4-02 nửa khác máy chưa kết luận (LAN không vào được máy này); UI-04 cần kiểm lại khi Thống kê có > 14 ngày dữ liệu.
 - [Ops] `projects_map.json` có thêm dự án nháp `du-an-nhap-ca-nhan` (profile personal) cho E-06; 2 phiên claude interactive trên `~/.claude-orca` (loyalty, phu-gia) đã dừng — mở lại bằng `claude --resume d22b640e-d2bd-4d51-a6fb-e409b1c23c54` / `ce573fa2-07a1-4b39-806f-106ad36e947f`.
 - [Open]: Tham chiếu ngoài bộ nạp chưa có tài liệu: "bảng kiến trúc gốc" #1–#11, định dạng `.gsd`, pipeline kịch bản whiteboard, Orca, Paperclip (không có yêu cầu di chuyển).
 - [Open]: `.planning/config.json` chưa tồn tại khi tạo roadmap; đã giả định granularity "standard" và ID phase tuần tự (`sequential`).
@@ -107,6 +113,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-17T08:50:23.602Z
-Stopped at: Phase 5 waves 1-5 executed (05-01..05-07); paused before UI waves 6-11 to revise 05-08..05-11 against 05-UI-SPEC.md
-Resume file: .planning/phases/05-embedded-dashboard/05-UI-SPEC.md
+Last session: 2026-10-19
+Stopped at: Phase 5 complete, ready to plan Phase 4
+Resume file: None
