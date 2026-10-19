@@ -197,7 +197,7 @@
 
       pillLabel: function (t, role) {
         var s = this.step(t, role);
-        return window.AB.roleName(role) + ': ' + (s ? s.label : 'chờ');
+        return window.AB.roleName(role) + ': ' + (s ? window.AB.stepWord(s) : 'chờ');
       },
 
       profileClass: function (p) {

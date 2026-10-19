@@ -203,6 +203,39 @@
       return '≈ $' + Number(usd).toFixed(4);
     },
 
+    fmtClock: function (ms) {
+      if (ms === null || ms === undefined || isNaN(ms)) return '—';
+      var d = new Date(ms);
+      if (isNaN(d.getTime())) return '—';
+      var now = new Date();
+      var isToday = d.getFullYear() === now.getFullYear() &&
+                    d.getMonth() === now.getMonth() &&
+                    d.getDate() === now.getDate();
+      function pad(v) { return v < 10 ? '0' + v : String(v); }
+      if (isToday) {
+        return pad(d.getHours()) + ':' + pad(d.getMinutes());
+      }
+      return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    },
+
+    fmtMinutes: function (ms) {
+      if (ms === null || ms === undefined || isNaN(ms)) return '—';
+      if (ms > 0 && ms < 30000) return '< 1 phút';
+      return Math.round(Math.max(ms, 0) / 60000) + ' phút';
+    },
+
+    fmtUsd: function (usd) {
+      if (usd === null || usd === undefined || isNaN(usd)) return '—';
+      if (usd > 0 && usd < 0.005) return '< $0.01';
+      return '$' + Number(usd).toFixed(2);
+    },
+
+    stepWord: function (step) {
+      if (!step) return '';
+      if (step.state === 'killed') return 'đã dừng';
+      return step.label || '';
+    },
+
     stepClass: function (state) {
       return STEP_CLASSES[state] || STEP_CLASSES.cho;
     },
@@ -274,7 +307,7 @@
       }
     },
 
-    focusLater: function (id) {
+    focusLater: function (id, fallbackId) {
       var attempts = 0;
       var maxAttempts = 40;
       function tryFocus() {
@@ -288,6 +321,8 @@
         if (attempts < maxAttempts) {
           attempts += 1;
           setTimeout(tryFocus, 25);
+        } else if (typeof fallbackId === 'string' && fallbackId && fallbackId !== id) {
+          window.AB.focusLater(fallbackId);
         }
       }
       setTimeout(tryFocus, 0);
