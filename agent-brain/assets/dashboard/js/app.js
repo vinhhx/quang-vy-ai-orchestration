@@ -215,10 +215,22 @@
     },
 
     focusLater: function (id) {
-      setTimeout(function () {
+      var attempts = 0;
+      var maxAttempts = 40;
+      function tryFocus() {
         var el = document.getElementById(id);
-        if (el) el.focus();
-      }, 0);
+        if (el && el.offsetParent !== null) {
+          el.focus();
+          if (document.activeElement === el) {
+            return;
+          }
+        }
+        if (attempts < maxAttempts) {
+          attempts += 1;
+          setTimeout(tryFocus, 25);
+        }
+      }
+      setTimeout(tryFocus, 0);
     },
   };
 
