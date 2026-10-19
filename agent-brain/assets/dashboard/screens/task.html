@@ -241,6 +241,44 @@
       <p class="text-base font-normal leading-normal" x-text="qaFixBody"></p>
     </div>
 
+    <!-- Ledger card -->
+    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="showLedgerCard">
+      <h2 class="text-xl font-semibold leading-[1.2]">Sổ lượt chạy</h2>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Chi phí là giá trị tương đương theo API, không phải hóa đơn</p>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="pipeLoading">Đang tải...</p>
+
+      <div class="space-y-2" x-show="ledgerEmpty">
+        <p class="text-sm font-semibold leading-normal">Chưa có lượt chạy nào</p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Lượt chạy hiện ở đây khi Lead, Dev hoặc QA bắt đầu.</p>
+      </div>
+
+      <div data-ledger x-show="ledgerHasRows">
+        <template x-for="g in ledgerGroups" :key="g.key">
+          <section>
+            <h3 class="flex flex-wrap items-baseline justify-between gap-2 border-t border-slate-200 px-4 py-2 text-sm font-semibold leading-normal dark:border-slate-700">
+              <span x-text="g.header"></span>
+              <span x-show="groupHasRight(g)" x-text="groupRight(g)"></span>
+            </h3>
+            <template x-for="r in g.rows" :key="r.run_id">
+              <button type="button" data-ledger-row :data-run-id="r.run_id" class="flex min-h-12 w-full flex-col gap-1 rounded-xl px-4 py-2 text-left text-sm font-normal leading-normal hover:bg-slate-50 motion-safe:transition-colors dark:hover:bg-slate-700/50 sm:flex-row sm:items-center sm:justify-between sm:gap-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="ledgerRowClass(r)" :aria-current="ledgerRowCurrent(r)" :title="rowTitle(r)" @click="pickRun(r)">
+                <span class="min-w-0 break-words text-slate-600 dark:text-slate-400">
+                  <span x-text="r.label"></span>: <span aria-hidden="true" :class="rowGlyphClass(r)" x-text="rowGlyph(r)"></span>
+                  <span :class="rowVerdictClass(r)" x-text="r.verdict"></span>
+                  <span class="text-indigo-700 dark:text-indigo-300" x-show="isSelectedRow(r)"> Đang xem</span>
+                </span>
+                <span class="shrink-0 tabular-nums text-slate-600 dark:text-slate-400 sm:text-right" x-text="rowMetrics(r)"></span>
+              </button>
+            </template>
+          </section>
+        </template>
+        <p data-ledger-total class="flex flex-wrap items-baseline justify-between gap-2 border-t border-slate-200 px-4 py-2 text-base font-semibold leading-normal tabular-nums dark:border-slate-700" x-show="showTotal">
+          <span>Tổng đến giờ</span>
+          <span x-text="totalText"></span>
+        </p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="hasCostNote" x-text="costNote"></p>
+      </div>
+    </div>
+
     <!-- Plan card -->
     <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
       <h2 class="text-xl font-semibold leading-[1.2]">Kế hoạch (.plan.md)</h2>
@@ -316,10 +354,10 @@
     </div>
 
     <!-- Log card -->
-    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+    <div id="ab-log-card" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
       <h2 class="text-xl font-semibold leading-[1.2]">Log realtime</h2>
       <div class="flex flex-wrap items-center gap-4">
-        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400"><span x-text="streamLine"></span><span x-show="streamLine"> · </span><span x-text="streamState"></span></p>
+        <p id="ab-stream-line" aria-live="polite" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400"><span x-text="streamLine"></span><span x-show="streamLine"> · </span><span x-text="streamState"></span></p>
         <button type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="toggleThinking" x-text="thinkingLabel"></button>
       </div>
       <div class="relative">
@@ -336,46 +374,6 @@
           </template>
         </div>
         <button type="button" x-show="showJump" @click="jumpLive" class="absolute bottom-4 right-6 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-slate-800 px-4 py-2 text-base font-semibold text-slate-100 ring-1 ring-slate-600 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400">Về cuối (live)</button>
-      </div>
-    </div>
-
-    <!-- Runs card -->
-    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
-      <h2 class="text-xl font-semibold leading-[1.2]">Lịch sử run</h2>
-      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noRuns">Chưa có run nào.</p>
-      <div class="overflow-x-auto" x-show="hasRuns">
-        <table class="w-full text-left text-sm">
-          <thead>
-            <tr>
-              <th class="py-2 pr-4 font-semibold">Run</th>
-              <th class="py-2 pr-4 font-semibold">Vai trò</th>
-              <th class="py-2 pr-4 font-semibold">Trạng thái</th>
-              <th class="py-2 pr-4 font-semibold">Kết quả</th>
-              <th class="py-2 pr-4 font-semibold">Token</th>
-              <th class="py-2 pr-4 font-semibold">Chi phí</th>
-              <th class="py-2 pr-4 font-semibold">Bắt đầu</th>
-              <th class="py-2 pr-4 font-semibold">Thời gian</th>
-              <th class="py-2 pr-4 font-semibold"><span class="sr-only">Log</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            <template x-for="r in runs" :key="r.id">
-              <tr class="border-t border-slate-200 dark:border-slate-700" :class="runRowClass(r)">
-                <td class="py-2 pr-4 align-top" x-text="r.id"></td>
-                <td class="py-2 pr-4 align-top" x-text="runRole(r)"></td>
-                <td class="py-2 pr-4 align-top font-mono" x-text="r.status"></td>
-                <td class="py-2 pr-4 align-top font-mono" x-text="r.outcome || '—'"></td>
-                <td class="py-2 pr-4 align-top" x-text="runTokens(r)"></td>
-                <td class="py-2 pr-4 align-top" x-text="runCost(r)"></td>
-                <td class="py-2 pr-4 align-top" x-text="runStart(r)"></td>
-                <td class="py-2 pr-4 align-top" x-text="runDuration(r)"></td>
-                <td class="py-2 pr-4 align-top">
-                  <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isViewing(r)" @click="selectRun(r.id)" x-text="runButtonText(r)"></button>
-                </td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
       </div>
     </div>
   </div>

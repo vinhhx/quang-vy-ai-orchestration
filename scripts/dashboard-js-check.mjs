@@ -855,6 +855,234 @@ const sections = [
       check('dialogOk ran action', ranAction === releadAct);
     },
   },
+  {
+    name: 'ledger',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      ctx.AB.route = { name: 'task', params: { id: '1' } };
+
+      const taskJsPath = path.join(
+        repoRoot,
+        'agent-brain/assets/dashboard/js/task.js'
+      );
+      const taskJsSrc = fs.readFileSync(taskJsPath, 'utf8');
+      vm.runInContext(taskJsSrc, ctx, { filename: 'task.js' });
+
+      const c = factories.task();
+      c.id = '1';
+
+      const r1 = {
+        run_id: 1,
+        role: 'lead',
+        round: 1,
+        label: 'Vòng 1 · plan',
+        state: 'xong',
+        verdict: 'xong',
+        turns: 69,
+        duration_ms: 420000,
+        cost_usd: 2.73,
+        running: false,
+        started_at: 1000,
+        ended_at: 421000,
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_read_tokens: 20,
+        cache_write_tokens: 10,
+      };
+
+      const r2 = {
+        run_id: 2,
+        role: 'dev',
+        round: 1,
+        label: 'Vòng 1 · code',
+        state: 'killed',
+        verdict: 'đã dừng',
+        turns: null,
+        duration_ms: 30000,
+        cost_usd: null,
+        running: false,
+        started_at: 422000,
+        ended_at: 452000,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+      };
+
+      const r3 = {
+        run_id: 3,
+        role: 'dev',
+        round: 2,
+        label: 'Vòng 2 · code',
+        state: 'xong',
+        verdict: 'xong',
+        turns: 15,
+        duration_ms: 60000,
+        cost_usd: 0.50,
+        running: false,
+        started_at: 453000,
+        ended_at: 513000,
+        input_tokens: 20,
+        output_tokens: 20,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+      };
+
+      const r4 = {
+        run_id: 4,
+        role: 'qa',
+        round: 1,
+        label: 'Vòng 1 · QA',
+        state: 'can_sua',
+        verdict: 'cần sửa',
+        turns: 5,
+        duration_ms: 210000,
+        cost_usd: 0.52,
+        running: false,
+        started_at: 514000,
+        ended_at: 724000,
+        input_tokens: 30,
+        output_tokens: 30,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+      };
+
+      const P_LEDGER = {
+        task_id: 1,
+        cycle: 1,
+        current: 'qa',
+        cards: {},
+        ledger: {
+          groups: [
+            {
+              key: 'c1-plan-1',
+              kind: 'plan',
+              cycle: 1,
+              header: 'Chu kỳ 1 · plan đầu tiên',
+              right: 'bạn đã duyệt',
+              rows: [r1],
+            },
+            {
+              key: 'c1-build-1',
+              kind: 'build',
+              cycle: 1,
+              header: 'Chu kỳ 1 · build',
+              right: null,
+              rows: [r2, r3],
+            },
+            {
+              key: 'c1-qa-1',
+              kind: 'qa',
+              cycle: 1,
+              header: 'Chu kỳ 1 · QA',
+              right: null,
+              rows: [r4],
+            },
+          ],
+          total: {
+            runs: 4,
+            duration_ms: 720000,
+            cost_usd: 3.75,
+            cost_unknown: 1,
+          },
+        },
+      };
+
+      c.pipe = P_LEDGER;
+
+      check('ledgerGroups.length === 3', c.ledgerGroups.length === 3, `got ${c.ledgerGroups.length}`);
+      check('ledgerGroups[0] has 1 row', c.ledgerGroups[0] && c.ledgerGroups[0].rows.length === 1);
+      check('ledgerGroups[1] has 2 rows', c.ledgerGroups[1] && c.ledgerGroups[1].rows.length === 2);
+      check('ledgerGroups[2] has 1 row', c.ledgerGroups[2] && c.ledgerGroups[2].rows.length === 1);
+
+      check(
+        'totalText matches',
+        c.totalText === '4 lượt chạy claude · 12 phút · $3.75',
+        `got "${c.totalText}"`
+      );
+
+      check(
+        'costNote with cost_unknown: 1',
+        c.costNote === 'Chưa tính chi phí của 1 run bị dừng hoặc chưa có kết quả.',
+        `got "${c.costNote}"`
+      );
+
+      c.pipe.ledger.total.cost_unknown = 0;
+      check(
+        'costNote with cost_unknown: 0 is empty',
+        c.costNote === '',
+        `got "${c.costNote}"`
+      );
+      c.pipe.ledger.total.cost_unknown = 1;
+
+      check(
+        'rowMetrics(r1)',
+        c.rowMetrics(r1) === '69 lượt · 7 phút · $2.73',
+        `got "${c.rowMetrics(r1)}"`
+      );
+
+      const rRunning = { turns: null, duration_ms: 60000, cost_usd: null, state: 'dang_chay' };
+      check(
+        'rowMetrics(running)',
+        c.rowMetrics(rRunning) === '— · 1 phút · —',
+        `got "${c.rowMetrics(rRunning)}"`
+      );
+
+      check(
+        'rowTitle(r1) contains vào 100',
+        c.rowTitle(r1).includes('vào 100'),
+        `got "${c.rowTitle(r1)}"`
+      );
+
+      check(
+        'rowTitle zero-token contains vào — · ra — · cache — / —',
+        c.rowTitle(r2).includes('vào — · ra — · cache — / —'),
+        `got "${c.rowTitle(r2)}"`
+      );
+
+      check(
+        'rowVerdictClass(r2) contains text-rose-700',
+        c.rowVerdictClass(r2).includes('text-rose-700'),
+        `got "${c.rowVerdictClass(r2)}"`
+      );
+
+      c.runId = 2;
+      check('ledgerRowCurrent(r2) === "true"', c.ledgerRowCurrent(r2) === 'true', `got "${c.ledgerRowCurrent(r2)}"`);
+      check('ledgerRowCurrent(r1) === false', c.ledgerRowCurrent(r1) === false, `got "${c.ledgerRowCurrent(r1)}"`);
+      check('ledgerRowClass(r2) contains bg-indigo-50', c.ledgerRowClass(r2).includes('bg-indigo-50'), `got "${c.ledgerRowClass(r2)}"`);
+
+      let recorded = null;
+      ctx.document.getElementById = function (id) {
+        if (id === 'ab-log-card') {
+          return {
+            scrollIntoView(o) {
+              recorded = o;
+            },
+          };
+        }
+        return null;
+      };
+
+      c.pickRun(r3);
+      check('pickRun(r3) sets runId === 3', c.runId === 3, `got ${c.runId}`);
+      check('pickRun(r3) sets pinned === true', c.pinned === true, `got ${c.pinned}`);
+      check('pickRun(r3) records { block: "nearest" }', recorded && recorded.block === 'nearest', `got ${JSON.stringify(recorded)}`);
+
+      c.pipe = {
+        ledger: {
+          groups: [],
+          total: { runs: 0, duration_ms: null, cost_usd: null, cost_unknown: 0 },
+        },
+      };
+      check('no-runs ledgerEmpty === true', c.ledgerEmpty === true, `got ${c.ledgerEmpty}`);
+      check('no-runs showTotal === false', c.showTotal === false, `got ${c.showTotal}`);
+    },
+  },
 ];
 
 async function main() {

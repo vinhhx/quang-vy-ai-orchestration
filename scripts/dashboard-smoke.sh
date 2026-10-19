@@ -308,6 +308,10 @@ class PipelineParser(HTMLParser):
         self.legend_items = []
         self.chips = []
         self.in_chip = False
+        self.ledger_rows = []
+        self.in_ledger_total = False
+        self.ledger_total_text = ''
+        self.full_text = ''
 
     def handle_starttag(self, tag, attrs):
         if tag == 'template':
@@ -340,9 +344,19 @@ class PipelineParser(HTMLParser):
             })
             self.in_chip = True
 
+        if 'data-ledger-row' in attr_dict:
+            self.ledger_rows.append(attr_dict)
+
+        if 'data-ledger-total' in attr_dict:
+            self.in_ledger_total = True
+
     def handle_data(self, data):
-        if self.template_depth == 0 and self.in_chip:
-            self.chips[-1]['text'] += data
+        if self.template_depth == 0:
+            self.full_text += data
+            if self.in_chip:
+                self.chips[-1]['text'] += data
+            if self.in_ledger_total:
+                self.ledger_total_text += data
 
     def handle_endtag(self, tag):
         if tag == 'template':
@@ -350,6 +364,8 @@ class PipelineParser(HTMLParser):
                 self.template_depth -= 1
         if self.in_chip and tag == 'li':
             self.in_chip = False
+        if self.in_ledger_total and tag == 'p':
+            self.in_ledger_total = False
 
 parser = PipelineParser()
 with open(sys.argv[1], encoding='utf-8') as f:
@@ -409,6 +425,28 @@ for i, chip in enumerate(parser.chips):
         sys.exit(1)
 
 print("Pipeline DOM OK")
+
+if len(parser.ledger_rows) != 1:
+    print(f"Lỗi: Số lượng data-ledger-row là {len(parser.ledger_rows)}, kỳ vọng 1", file=sys.stderr)
+    sys.exit(1)
+
+if parser.ledger_rows[0].get('aria-current') != 'true':
+    print(f"Lỗi: data-ledger-row có aria-current='{parser.ledger_rows[0].get('aria-current')}', kỳ vọng 'true'", file=sys.stderr)
+    sys.exit(1)
+
+if '1 lượt chạy claude' not in parser.ledger_total_text:
+    print(f"Lỗi: data-ledger-total không chứa '1 lượt chạy claude' (nội dung: '{parser.ledger_total_text}')", file=sys.stderr)
+    sys.exit(1)
+
+if 'Sổ lượt chạy' not in parser.full_text:
+    print("Lỗi: DOM không chứa 'Sổ lượt chạy'", file=sys.stderr)
+    sys.exit(1)
+
+if 'Chu kỳ 1 · plan đầu tiên' not in parser.full_text:
+    print("Lỗi: DOM không chứa 'Chu kỳ 1 · plan đầu tiên'", file=sys.stderr)
+    sys.exit(1)
+
+print("Ledger DOM OK")
 EOF
     then
       echo "--- 40 dòng đầu của DOM ---" >&2

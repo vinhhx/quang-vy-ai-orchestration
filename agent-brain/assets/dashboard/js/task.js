@@ -365,12 +365,58 @@
         return window.AB.stepGlyph(this.bannerState);
       },
 
-      get hasRuns() {
-        return Boolean(this.task && this.task.runs && this.task.runs.length > 0);
+      get ledgerAllRows() {
+        if (!this.pipe || !this.pipe.ledger || !this.pipe.ledger.groups) return [];
+        var all = [];
+        var groups = this.pipe.ledger.groups;
+        for (var i = 0; i < groups.length; i++) {
+          if (groups[i].rows) {
+            for (var j = 0; j < groups[i].rows.length; j++) {
+              all.push(groups[i].rows[j]);
+            }
+          }
+        }
+        return all;
       },
 
-      get noRuns() {
-        return Boolean(this.task && (!this.task.runs || this.task.runs.length === 0));
+      get ledgerGroups() {
+        if (!this.pipe || !this.pipe.ledger || !this.pipe.ledger.groups) return [];
+        return this.pipe.ledger.groups;
+      },
+
+      get ledgerHasRows() {
+        return this.ledgerAllRows.length > 0;
+      },
+
+      get ledgerEmpty() {
+        return Boolean(this.pipe && this.ledgerAllRows.length === 0);
+      },
+
+      get showLedgerCard() {
+        return !this.pipeFailed;
+      },
+
+      get showTotal() {
+        return this.ledgerHasRows;
+      },
+
+      get totalText() {
+        var total = (this.pipe && this.pipe.ledger && this.pipe.ledger.total) ? this.pipe.ledger.total : null;
+        if (!total) return '';
+        return total.runs + ' lượt chạy claude · ' + window.AB.fmtMinutes(total.duration_ms) + ' · ' + window.AB.fmtUsd(total.cost_usd);
+      },
+
+      get costNote() {
+        var total = (this.pipe && this.pipe.ledger && this.pipe.ledger.total) ? this.pipe.ledger.total : null;
+        var k = total ? total.cost_unknown : 0;
+        if (k && k >= 1) {
+          return 'Chưa tính chi phí của ' + k + ' run bị dừng hoặc chưa có kết quả.';
+        }
+        return '';
+      },
+
+      get hasCostNote() {
+        return Boolean(this.costNote);
       },
 
       get isBlocked() {
@@ -504,9 +550,6 @@
         return this.isQaFix ? 'ring-2 ring-amber-500 dark:ring-amber-400' : 'ring-1 ring-slate-200 dark:ring-slate-700';
       },
 
-      get runs() {
-        return (this.task && this.task.runs) ? this.task.runs : [];
-      },
 
       get messageText() {
         return this.message;
@@ -1009,41 +1052,68 @@
         }
       },
 
-      runRole: function (r) {
-        return window.AB.roleName(r.role);
+      groupRight: function (g) {
+        return (g && g.right) ? g.right : '';
       },
 
-      runTokens: function (r) {
-        if (!window.AB.tokensKnown(r)) return '—';
-        return 'vào ' + window.AB.fmtNum(r.input_tokens) + ' · ra ' + window.AB.fmtNum(r.output_tokens);
+      groupHasRight: function (g) {
+        return Boolean(g && g.right);
       },
 
-      runCost: function (r) {
-        if (!window.AB.costKnown(r)) return '—';
-        return window.AB.fmtCost(r.cost_usd);
+      rowGlyph: function (r) {
+        return window.AB.stepGlyph(r ? r.state : 'cho');
       },
 
-      runStart: function (r) {
-        return window.AB.fmtTime(r.started_at);
+      rowGlyphClass: function (r) {
+        var state = r ? r.state : 'cho';
+        var cls = 'inline-block w-6 text-center ' + window.AB.stateText(state);
+        if (state === 'dang_chay') {
+          cls += ' motion-safe:animate-pulse';
+        }
+        return cls;
       },
 
-      runDuration: function (r) {
-        if (r.ended_at === null || r.ended_at === undefined) return '—';
-        return window.AB.fmtDuration(r.ended_at - r.started_at);
+      rowVerdictClass: function (r) {
+        var state = r ? r.state : 'cho';
+        return 'font-semibold ' + window.AB.stateText(state);
       },
 
-      isViewing: function (r) {
-        return r.id === this.runId;
+      rowMetrics: function (r) {
+        if (!r) return '— · — · —';
+        var turns = (r.turns !== null && r.turns !== undefined) ? (r.turns + ' lượt') : '—';
+        return turns + ' · ' + window.AB.fmtMinutes(r.duration_ms) + ' · ' + window.AB.fmtUsd(r.cost_usd);
       },
 
-      runRowClass: function (r) {
-        return this.isViewing(r)
-          ? 'bg-indigo-100 text-indigo-900 dark:bg-indigo-900/40 dark:text-indigo-100'
+      rowTitle: function (r) {
+        if (!r) return '— · vào — · ra — · cache — / —';
+        var dur = window.AB.fmtDuration(r.duration_ms);
+        var tokens = window.AB.tokensKnown(r)
+          ? ('vào ' + window.AB.fmtNum(r.input_tokens) + ' · ra ' + window.AB.fmtNum(r.output_tokens) + ' · cache ' + window.AB.fmtNum(r.cache_read_tokens) + ' / ' + window.AB.fmtNum(r.cache_write_tokens))
+          : 'vào — · ra — · cache — / —';
+        return dur + ' · ' + tokens;
+      },
+
+      isSelectedRow: function (r) {
+        return Boolean(r && r.run_id === this.runId);
+      },
+
+      ledgerRowCurrent: function (r) {
+        return this.isSelectedRow(r) ? 'true' : false;
+      },
+
+      ledgerRowClass: function (r) {
+        return this.isSelectedRow(r)
+          ? 'bg-indigo-50 ring-2 ring-indigo-600 dark:bg-indigo-900/20 dark:ring-indigo-400'
           : '';
       },
 
-      runButtonText: function (r) {
-        return this.isViewing(r) ? 'Đang xem' : 'Xem log';
+      pickRun: function (r) {
+        if (!r) return;
+        this.selectRun(r.run_id);
+        var el = document.getElementById('ab-log-card');
+        if (el && el.scrollIntoView) {
+          el.scrollIntoView({ block: 'nearest' });
+        }
       }
     };
   });
