@@ -345,6 +345,86 @@ async function main() {
   `, 3000, 'ledger', `Dòng ${firstRowRunId} không có aria-current="true", chưa giữ focus hoặc #ab-stream-line không chứa run ${firstRowRunId}`);
   console.log('OK ledger');
 
+  // Check E, layout at 1024 / 768 / 480 px
+  for (const width of [1024, 768, 480]) {
+    await cdp('Emulation.setDeviceMetricsOverride', {
+      width,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await new Promise(r => setTimeout(r, 400));
+
+    const info = await evaluate(`
+      (() => {
+        const root = document.documentElement;
+        const pageOverflow = root.scrollWidth > root.clientWidth;
+        const flowEl = document.querySelector('[data-flow]');
+        const regionEl = document.querySelector('[data-flow-region]');
+        const rowEl = document.querySelector('[data-ledger-row]');
+
+        const flowDir = flowEl ? getComputedStyle(flowEl).flexDirection : null;
+        const regionScrolls = regionEl ? regionEl.scrollWidth > regionEl.clientWidth : false;
+        const rowDir = rowEl ? getComputedStyle(rowEl).flexDirection : null;
+
+        let widest = '';
+        let maxRight = 0;
+        const all = document.querySelectorAll('*');
+        for (let i = 0; i < all.length; i++) {
+          const el = all[i];
+          const rect = el.getBoundingClientRect();
+          if (rect.right > maxRight) {
+            maxRight = rect.right;
+            const tag = el.tagName.toLowerCase();
+            const id = el.id ? '#' + el.id : '';
+            const cls = el.className && typeof el.className === 'string'
+              ? '.' + el.className.trim().split(/\\s+/).slice(0, 3).join('.')
+              : '';
+            widest = tag + id + cls;
+          }
+        }
+
+        return {
+          pageOverflow,
+          flowDir,
+          regionScrolls,
+          rowDir,
+          widest,
+        };
+      })()
+    `);
+
+    if (info.pageOverflow) {
+      throw new Error(`LỖI layout: \${width}px trang bị tràn ngang (phần tử rộng nhất: \${info.widest})`);
+    }
+
+    if (width === 1024) {
+      if (info.flowDir !== 'row') {
+        throw new Error(`LỖI layout: 1024px flowDir là "${info.flowDir}", kỳ vọng "row"`);
+      }
+      if (info.regionScrolls !== false) {
+        throw new Error(`LỖI layout: 1024px regionScrolls là ${info.regionScrolls}, kỳ vọng false`);
+      }
+      if (info.rowDir !== 'row') {
+        throw new Error(`LỖI layout: 1024px rowDir là "${info.rowDir}", kỳ vọng "row"`);
+      }
+    } else if (width === 768) {
+      if (info.flowDir !== 'row') {
+        throw new Error(`LỖI layout: 768px flowDir là "${info.flowDir}", kỳ vọng "row"`);
+      }
+    } else if (width === 480) {
+      if (info.flowDir !== 'column') {
+        throw new Error(`LỖI layout: 480px flowDir là "${info.flowDir}", kỳ vọng "column"`);
+      }
+      if (info.rowDir !== 'column') {
+        throw new Error(`LỖI layout: 480px rowDir là "${info.rowDir}", kỳ vọng "column"`);
+      }
+    }
+  }
+
+  await cdp('Emulation.clearDeviceMetricsOverride');
+  console.log('OK layout');
+
   ws.close();
 }
 

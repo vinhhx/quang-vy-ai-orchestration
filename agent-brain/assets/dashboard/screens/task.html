@@ -44,7 +44,7 @@
         <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="reloadPipeline">Thử lại</button>
       </div>
 
-      <div data-flow-region role="region" aria-label="Pipeline của task" tabindex="0" class="overflow-x-auto pb-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasPipe">
+      <div data-flow-region role="region" aria-label="Pipeline của task" tabindex="0" class="relative overflow-x-auto pb-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasPipe">
         <ol data-flow aria-label="Pipeline: Bắt đầu, Lên plan, Bạn, Code, QA" class="flex flex-col gap-2 sm:flex-row sm:items-stretch">
           <!-- Bắt đầu -->
           <li class="w-full sm:w-36 sm:shrink-0">
