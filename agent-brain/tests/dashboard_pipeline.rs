@@ -1152,3 +1152,255 @@ fn pipe03_gate_follows_plan_commits() {
     assert_eq!(p4["cards"]["ban"]["result"], "chờ duyệt plan");
     assert_eq!(p4["cards"]["ban"]["at_ms"], new_ct * 1000);
 }
+
+#[test]
+fn pipe03_unknown_git_waits_for_dev() {
+    let sb = Sandbox::new();
+    let t0 = 1_700_000_000_000i64;
+    let runs = vec![SeedRun {
+        role: "lead",
+        status: "succeeded",
+        outcome: None,
+        started_at: t0,
+        ended_at: Some(t0 + 60_000),
+        cost_usd: 1.0,
+        usage_source: "result",
+        num_turns: Some(5),
+        base_commit: None,
+    }];
+    let (task_id, _) = seed_pipeline_task(&sb, "task/khong-co-nhanh", &runs);
+    let srv = sb.serve(&[]);
+    let resp = srv.get(&format!("/api/tasks/{task_id}/pipeline"));
+    assert_eq!(resp.status, 200);
+    let data = resp.json();
+    assert_eq!(data["cards"]["ban"]["state"], "cho_ban");
+    assert_eq!(data["cards"]["ban"]["result"], "chờ duyệt plan");
+    assert_eq!(data["cards"]["ban"]["at_ms"], t0 + 60_000);
+}
+
+#[test]
+fn pipe03_unknown_git_approved_by_later_dev() {
+    let sb = Sandbox::new();
+    let t0 = 1_700_000_000_000i64;
+    let runs = vec![
+        SeedRun {
+            role: "lead",
+            status: "succeeded",
+            outcome: None,
+            started_at: t0,
+            ended_at: Some(t0 + 60_000),
+            cost_usd: 1.0,
+            usage_source: "result",
+            num_turns: Some(5),
+            base_commit: None,
+        },
+        SeedRun {
+            role: "dev",
+            status: "succeeded",
+            outcome: None,
+            started_at: t0 + 120_000,
+            ended_at: Some(t0 + 180_000),
+            cost_usd: 1.5,
+            usage_source: "result",
+            num_turns: Some(10),
+            base_commit: None,
+        },
+    ];
+    let (task_id, _) = seed_pipeline_task(&sb, "task/khong-co-nhanh", &runs);
+    let srv = sb.serve(&[]);
+    let resp = srv.get(&format!("/api/tasks/{task_id}/pipeline"));
+    assert_eq!(resp.status, 200);
+    let data = resp.json();
+    assert_eq!(data["cards"]["ban"]["state"], "xong");
+    assert_eq!(data["cards"]["ban"]["result"], "đã duyệt plan");
+    assert_eq!(data["cards"]["ban"]["at_ms"], t0 + 120_000);
+}
+
+#[test]
+fn pipe03_no_plan_commit_on_branch() {
+    let sb = Sandbox::new();
+    let t0 = 1_700_000_000_000i64;
+    let runs = vec![SeedRun {
+        role: "lead",
+        status: "succeeded",
+        outcome: None,
+        started_at: t0,
+        ended_at: Some(t0 + 60_000),
+        cost_usd: 1.0,
+        usage_source: "result",
+        num_turns: Some(5),
+        base_commit: None,
+    }];
+    let (task_id, _) = seed_pipeline_task(&sb, "main", &runs);
+    let srv = sb.serve(&[]);
+    let resp = srv.get(&format!("/api/tasks/{task_id}/pipeline"));
+    assert_eq!(resp.status, 200);
+    let data = resp.json();
+    assert_eq!(data["cards"]["ban"]["state"], "cho");
+    assert_eq!(data["cards"]["ban"]["result"], "chưa có plan");
+    assert_eq!(data["cards"]["plan"]["result"], "xong");
+}
+
+#[test]
+fn pipe03_gate_after_relead_and_second_dev() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+
+    // 1. Lead
+    let sc_lead = lead_scenario(&[("src/app.py", "1", "sửa app", "yêu cầu")]);
+    std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_lead).unwrap()).unwrap();
+
+    let srv = sb.serve(&[]);
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({
+            "project": "web-ban-hang",
+            "request": "sửa app",
+            "name": "sua-app"
+        }),
+    );
+    assert_eq!(resp.status, 202);
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(wait_for_job(&srv, job_id)["exit_code"], 0);
+
+    // 2. Dev
+    let sc_dev = json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "read", "path": "src/app.py"},
+            {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+            {"op": "git", "args": ["add", "src/app.py"]},
+            {"op": "git", "args": ["commit", "-m", "sua-app: sửa app"]}
+        ]
+    });
+    std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_dev).unwrap()).unwrap();
+    let resp_dev = srv.post_json("/api/tasks/1/dev", &json!({}));
+    assert_eq!(resp_dev.status, 202);
+    let job_id_dev = resp_dev.json()["job_id"].as_u64().unwrap();
+    assert_eq!(wait_for_job(&srv, job_id_dev)["exit_code"], 0);
+
+    // 3. QA with Cần sửa
+    let qa_report_content = "\
+# QA: sửa app
+
+## Đánh giá
+Chưa đạt chuẩn.
+
+## Kết quả kiểm tra
+Lỗi logic hàm app.
+
+## Kết luận
+Cần sửa
+
+## Đề xuất
+Sửa lại hàm app.
+";
+    let sc_qa = json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "write", "path": ".qa-report.md", "content": qa_report_content}
+        ]
+    });
+    std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_qa).unwrap()).unwrap();
+    let resp_qa = srv.post_json("/api/tasks/1/qa", &json!({}));
+    assert_eq!(resp_qa.status, 202);
+    let job_id_qa = resp_qa.json()["job_id"].as_u64().unwrap();
+    assert_eq!(wait_for_job(&srv, job_id_qa)["exit_code"], 0);
+
+    // 4. Re-Lead
+    let sc_relead = lead_scenario(&[("src/app.py", "1", "sửa app lần 2", "yêu cầu mới")]);
+    std::fs::write(
+        &sb.scenario_file,
+        serde_json::to_string(&sc_relead).unwrap(),
+    )
+    .unwrap();
+    let resp_relead = srv.post_json("/api/tasks/1/relead", &json!({}));
+    assert_eq!(resp_relead.status, 202);
+    let job_id_relead = resp_relead.json()["job_id"].as_u64().unwrap();
+    assert_eq!(wait_for_job(&srv, job_id_relead)["exit_code"], 0);
+
+    let head_relead = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    let ct_relead = sb
+        .git(&repo, &["show", "-s", "--format=%ct", &head_relead])
+        .trim()
+        .parse::<i64>()
+        .unwrap();
+
+    let pipe_relead = srv.get("/api/tasks/1/pipeline").json();
+    assert_eq!(pipe_relead["cycle"], 2);
+    assert_eq!(pipe_relead["cards"]["ban"]["state"], "cho_ban");
+    assert_eq!(pipe_relead["cards"]["ban"]["result"], "chờ duyệt plan");
+    assert_eq!(pipe_relead["cards"]["ban"]["at_ms"], ct_relead * 1000);
+
+    // 5. Second Dev
+    let sc_dev2 = json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "read", "path": "src/app.py"},
+            {"op": "write", "path": "src/app.py", "content": "def app():\n    return 3\n"},
+            {"op": "git", "args": ["add", "src/app.py"]},
+            {"op": "git", "args": ["commit", "-m", "sua-app: sửa app lần 2"]}
+        ]
+    });
+    std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_dev2).unwrap()).unwrap();
+    let resp_dev2 = srv.post_json("/api/tasks/1/dev", &json!({}));
+    assert_eq!(
+        resp_dev2.status,
+        202,
+        "POST /api/tasks/1/dev returned {}: {}",
+        resp_dev2.status,
+        resp_dev2
+            .json()
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+    );
+    let job_id_dev2 = resp_dev2.json()["job_id"].as_u64().unwrap();
+    assert_eq!(wait_for_job(&srv, job_id_dev2)["exit_code"], 0);
+
+    let second_dev_started_at: i64 = sb
+        .db()
+        .query_row(
+            "SELECT started_at FROM runs WHERE task_id = 1 AND role = 'dev' ORDER BY started_at DESC, id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let pipe_dev2 = srv.get("/api/tasks/1/pipeline").json();
+    assert_eq!(pipe_dev2["cards"]["ban"]["state"], "xong");
+    assert_eq!(pipe_dev2["cards"]["ban"]["result"], "đã duyệt plan");
+    assert_eq!(pipe_dev2["cards"]["ban"]["at_ms"], second_dev_started_at);
+    assert_eq!(pipe_dev2["cards"]["code"]["state"], "xong");
+    assert_eq!(pipe_dev2["cards"]["code"]["rounds"], 2);
+}
+
+#[test]
+fn pipe03_is_ancestor_cases() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("anc", &[("a.txt", "1\n")], None, None);
+    let c1 = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+
+    std::fs::write(repo.join("a.txt"), "2\n").unwrap();
+    sb.git(&repo, &["add", "a.txt"]);
+    sb.git(&repo, &["commit", "-m", "second"]);
+    let c2 = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+
+    assert!(agent_brain::gitops::is_ancestor(&repo, &c1, &c2));
+    assert!(agent_brain::gitops::is_ancestor(&repo, &c1, &c1));
+    assert!(!agent_brain::gitops::is_ancestor(&repo, &c2, &c1));
+    assert!(!agent_brain::gitops::is_ancestor(&repo, "zz", &c1));
+    assert!(!agent_brain::gitops::is_ancestor(&repo, "--all", &c2));
+    assert!(!agent_brain::gitops::is_ancestor(&repo, "", &c2));
+
+    let ct1 = sb
+        .git(&repo, &["show", "-s", "--format=%ct", &c1])
+        .trim()
+        .parse::<i64>()
+        .unwrap();
+    assert_eq!(
+        agent_brain::gitops::commit_time_ms(&repo, &c1),
+        Some(ct1 * 1000)
+    );
+    assert_eq!(agent_brain::gitops::commit_time_ms(&repo, "-x"), None);
+}

@@ -1642,4 +1642,106 @@ mod tests {
         let j2 = serde_json::to_string(&v2).unwrap();
         assert_eq!(j1, j2);
     }
+
+    #[test]
+    fn test_approving_equal_base() {
+        let dev = RunRow {
+            base_commit: Some("aaa1".to_string()),
+            ..run(42, "dev", "succeeded", None, 1000, Some(2000))
+        };
+        let runs = vec![dev];
+        let res = approving_dev_run(&runs, "aaa1", None, |p, b| p == b);
+        assert_eq!(res, Some(42));
+    }
+
+    #[test]
+    fn test_approving_descendant_base() {
+        let dev = RunRow {
+            base_commit: Some("bbb2".to_string()),
+            ..run(42, "dev", "succeeded", None, 1000, Some(2000))
+        };
+        let runs = vec![dev];
+        let res = approving_dev_run(&runs, "aaa1", None, |p, b| p == "aaa1" && b == "bbb2");
+        assert_eq!(res, Some(42));
+    }
+
+    #[test]
+    fn test_approving_unrelated_base() {
+        let dev = RunRow {
+            base_commit: Some("ccc3".to_string()),
+            ..run(42, "dev", "succeeded", None, 1000, Some(2000))
+        };
+        let runs = vec![dev];
+        let res = approving_dev_run(&runs, "aaa1", None, |_p, _b| false);
+        assert_eq!(res, None);
+    }
+
+    #[test]
+    fn test_approving_null_base_uses_time() {
+        let dev = RunRow {
+            base_commit: None,
+            ..run(42, "dev", "succeeded", None, 1000, Some(2000))
+        };
+        let runs = vec![dev];
+        // started_at >= plan_at -> Some
+        assert_eq!(
+            approving_dev_run(&runs, "aaa1", Some(1000), |_p, _b| false),
+            Some(42)
+        );
+        assert_eq!(
+            approving_dev_run(&runs, "aaa1", Some(900), |_p, _b| false),
+            Some(42)
+        );
+        // started_at < plan_at -> None
+        assert_eq!(
+            approving_dev_run(&runs, "aaa1", Some(1001), |_p, _b| false),
+            None
+        );
+        // plan_at None -> None
+        assert_eq!(approving_dev_run(&runs, "aaa1", None, |_p, _b| false), None);
+    }
+
+    #[test]
+    fn test_approving_first_match_in_start_order() {
+        let dev2 = RunRow {
+            base_commit: Some("bbb2".to_string()),
+            ..run(10, "dev", "succeeded", None, 2000, Some(3000))
+        };
+        let dev1 = RunRow {
+            base_commit: Some("bbb2".to_string()),
+            ..run(20, "dev", "succeeded", None, 1000, Some(2000))
+        };
+        // given out of order [dev2, dev1]
+        let runs = vec![dev2, dev1];
+        let res = approving_dev_run(&runs, "aaa1", None, |_p, _b| true);
+        assert_eq!(res, Some(20));
+
+        // tie on started_at: earlier id wins
+        let dev_b = RunRow {
+            base_commit: Some("bbb2".to_string()),
+            ..run(15, "dev", "succeeded", None, 1000, Some(2000))
+        };
+        let dev_a = RunRow {
+            base_commit: Some("bbb2".to_string()),
+            ..run(7, "dev", "succeeded", None, 1000, Some(2000))
+        };
+        let runs_tie = vec![dev_b, dev_a];
+        let res_tie = approving_dev_run(&runs_tie, "aaa1", None, |_p, _b| true);
+        assert_eq!(res_tie, Some(7));
+    }
+
+    #[test]
+    fn test_approving_ignores_lead_and_qa() {
+        let lead = RunRow {
+            base_commit: Some("aaa1".to_string()),
+            ..run(1, "lead", "succeeded", None, 1000, Some(2000))
+        };
+        let qa = RunRow {
+            base_commit: Some("aaa1".to_string()),
+            ..run(2, "qa", "succeeded", None, 2000, Some(3000))
+        };
+        let runs = vec![lead, qa];
+        let res = approving_dev_run(&runs, "aaa1", None, |p, b| p == b);
+        assert_eq!(res, None);
+    }
 }
