@@ -5,7 +5,7 @@ titles: json
 findings:
   - id: CR-01
     severity: critical
-    disposition: open
+    disposition: deferred
     title: "The session cookie is the only credential and is not port-isolated, so any other local service can steal it and drive agents"
   - id: WR-01
     severity: warning
@@ -116,7 +116,7 @@ recorded: 2026-10-19T04:45:54.888Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| CR-01 | critical | open | - |
+| CR-01 | critical | deferred | Accepted risk AR-5-01 / T-5-11 (05-SECURITY.md, user-approved 05-02): cookies are not port-isolated (RFC 6265 §8.5); a hostile same-user local process already has the user's privileges. Hardening (token in a header, not a cookie) is a follow-up candidate |
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
 | WR-03 | warning | open | - |
