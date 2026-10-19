@@ -206,6 +206,24 @@ Plans:
 **Wave 11** *(blocked on Wave 10 completion)*
 - [x] 05-13-PLAN.md — Live acceptance P4-01..P4-10 with the real claude, browser, LAN and offline checks (user checkpoints)
 
+### Phase 05.1: Pipeline View (INSERTED)
+
+**Goal**: Màn hình Chi tiết task hiển thị pipeline kiểu "Autopilot" — thẻ giai đoạn có vòng, thời gian, chi phí, cổng duyệt "Bạn" và sổ lượt chạy kèm tổng — dựng hoàn toàn từ dữ liệu run hiện có (bước A của Dashboard v2).
+**Source**: Thiết kế Dashboard v2 (https://claude.ai/artifact/KdMc5CMNSMg4G5T9jLjFRK), quyết định người dùng 2026-10-19
+**Depends on**: Phase 5
+**Requirements**: PIPE-01, PIPE-02, PIPE-03, PIPE-04, PIPE-05
+**Success Criteria** (what must be TRUE):
+  1. Mở một task đã chạy Lead → Dev → QA (kể cả có chạy lại) thì thấy các thẻ giai đoạn đúng trạng thái, đúng số vòng, thời gian và chi phí khớp `brain.db`.
+  2. Sổ lượt chạy liệt kê đủ mọi run của task theo thứ tự với lượt · phút · $, và dòng tổng bằng tổng các run.
+  3. Thẻ "Bạn" chuyển "chờ bạn" → "đã duyệt" đúng lúc Dev chạy trên plan hiện tại; giai đoạn chưa có hiện "chưa tự động", không giả lập.
+  4. Khi một run đang chạy, thẻ và sổ cập nhật trực tiếp; Kill và các nút bước vẫn hoạt động như Phase 5.
+  5. Màn hình đạt ở 1024/768/480 px, sáng/tối, bàn phím; không đổi schema CSDL hay giao thức vai trò.
+**UI hint**: yes
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 05.1 to break down)
+
 ### Phase 6: Multi-engine & Media Branch
 
 **Goal**: Mỗi vai trò (Lead/Dev/QA) chạy được bằng engine khác nhau và đổi được giữa các task khi hết quota (không đổi ngầm), và sản xuất video chạy ở nhánh riêng tách khỏi Git worktree nhưng vẫn điều phối chung một nơi.

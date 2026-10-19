@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 4
-current_phase_name: Session & Token Optimization
-status: planning
+current_phase: "05.1"
+current_phase_name: Pipeline View
+status: Ready to plan (UI-SPEC next)
 stopped_at: Phase 5 complete, ready to plan Phase 4
-last_updated: "2026-10-19T08:16:41.170Z"
+last_updated: "2026-10-19T09:02:43.086Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 5 complete, transitioned to Phase 4
-state_head: 09befeaf63f57c9f3ec650d5e8093fe56ab8ef0c
+state_head: 820f92e07799d6fffa2167e5ede1ae00e8470e02
 progress:
-  total_phases: 6
+  total_phases: 7
   completed_phases: 4
   total_plans: 34
   completed_plans: 34
-  percent: 67
+  percent: 57
 ---
 
 # Project State
@@ -27,12 +27,12 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 
 ## Current Position
 
-Phase: 4 — Session & Token Optimization
+Phase: 05.1 — Pipeline View (INSERTED)
 Plan: Not started
-Status: Ready to plan
+Status: Ready to plan (UI-SPEC next)
 Last activity: 2026-10-19 — Phase 5 complete, transitioned to Phase 4
 
-Progress: [███████░░░] 67% (4/6 phases complete, 34/34 planned plans done)
+Progress: [██████░░░░] 57% (4/6 phases complete, 34/34 planned plans done)
 
 ## Performance Metrics
 
@@ -101,6 +101,10 @@ None yet.
 - [Ops] `projects_map.json` có thêm dự án nháp `du-an-nhap-ca-nhan` (profile personal) cho E-06; 2 phiên claude interactive trên `~/.claude-orca` (loyalty, phu-gia) đã dừng — mở lại bằng `claude --resume d22b640e-d2bd-4d51-a6fb-e409b1c23c54` / `ce573fa2-07a1-4b39-806f-106ad36e947f`.
 - [Open]: Tham chiếu ngoài bộ nạp chưa có tài liệu: "bảng kiến trúc gốc" #1–#11, định dạng `.gsd`, pipeline kịch bản whiteboard, Orca, Paperclip (không có yêu cầu di chuyển).
 - [Open]: `.planning/config.json` chưa tồn tại khi tạo roadmap; đã giả định granularity "standard" và ID phase tuần tự (`sequential`).
+
+### Roadmap Evolution
+
+- Phase 05.1 inserted after Phase 5: Pipeline View — Dashboard v2 step A (autopilot-style task pipeline + run ledger from existing data)
 
 ## Deferred Items
 
