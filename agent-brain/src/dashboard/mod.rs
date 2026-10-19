@@ -6,6 +6,7 @@ pub mod assets;
 pub mod auth;
 pub mod jobs;
 pub mod lock;
+pub mod pipeline;
 pub mod pump;
 pub mod sse;
 pub mod taskstate;

@@ -3,6 +3,7 @@
 
 use crate::config::Config;
 use crate::dashboard::jobs::{JobManager, JobView};
+use crate::dashboard::pipeline;
 use crate::dashboard::taskstate::{self, GitFacts, TaskFacts};
 use crate::dashboard::{blocking, json_error, AppState};
 use crate::db::{RunRow, TaskRow};
@@ -429,6 +430,7 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
     axum::Router::new()
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/{id}", get(get_task))
+        .route("/api/tasks/{id}/pipeline", get(get_pipeline))
         .route("/api/tasks/{id}/dev", post(post_task_dev))
         .route("/api/tasks/{id}/qa", post(post_task_qa))
         .route("/api/tasks/{id}/relead", post(post_task_relead))
@@ -1031,6 +1033,69 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
     match res {
         Ok(resp) => resp,
         Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+async fn get_pipeline(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) -> Response {
+    let res = blocking(move || {
+        let conn = crate::db::open(&st.db_path)?;
+        let task = match crate::db::get_task(&conn, id)? {
+            Some(t) => t,
+            None => {
+                return Ok(json_error(
+                    StatusCode::NOT_FOUND,
+                    &format!("Không tìm thấy task {id}"),
+                ));
+            }
+        };
+
+        let runs = crate::db::runs_for_task(&conn, id)?;
+        let plan = pipeline::PlanFacts::Unknown;
+        let now = crate::db::now_ms();
+        let latest = |role: &str| {
+            runs.iter()
+                .filter(|r| r.role == role)
+                .max_by_key(|r| (r.started_at, r.id))
+        };
+        let facts = TaskFacts {
+            task: &task,
+            lead: latest("lead"),
+            dev: latest("dev"),
+            qa: latest("qa"),
+            git: &GitFacts::default(),
+            busy: None,
+            now_ms: now,
+        };
+        let current_step = taskstate::derive(&facts).current_step;
+        let view = pipeline::derive(&pipeline::PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &plan,
+            current_step: &current_step,
+            now_ms: now,
+        });
+
+        Ok((
+            StatusCode::OK,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "application/json; charset=utf-8",
+            )],
+            Json(view),
+        )
+            .into_response())
+    })
+    .await;
+
+    match res {
+        Ok(resp) => resp,
+        Err(e) => {
+            crate::term::emit(&format!("Lỗi GET /api/tasks/{id}/pipeline: {}", e.message));
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Lỗi nội bộ khi đọc pipeline của task {id}"),
+            )
+        }
     }
 }
 

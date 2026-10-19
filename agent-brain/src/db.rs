@@ -515,6 +515,17 @@ pub fn latest_run_for_task(conn: &Connection, task_id: i64) -> BrainResult<Optio
     }
 }
 
+pub fn runs_for_task(conn: &Connection, task_id: i64) -> BrainResult<Vec<RunRow>> {
+    let sql = format!(
+        "SELECT {RUN_COLUMNS} FROM runs WHERE task_id = ?1 ORDER BY started_at ASC, id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let runs = stmt
+        .query_map(params![task_id], row_to_run)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(runs)
+}
+
 pub fn count_runs(conn: &Connection) -> BrainResult<i64> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))?;
     Ok(count)

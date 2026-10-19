@@ -541,3 +541,100 @@ fn unknown_task_is_404() {
     let r_dev = srv.post_json("/api/tasks/999/dev", &json!({}));
     assert_eq!(r_dev.status, 404);
 }
+
+#[test]
+fn pipe05_route_shape_auth_and_404() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    let sc_lead = lead_scenario(&[("src/app.py", "1", "sửa app", "yêu cầu")]);
+    std::fs::write(&sb.scenario_file, serde_json::to_string(&sc_lead).unwrap()).unwrap();
+
+    let srv = sb.serve(&[]);
+
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({
+            "project": "web-ban-hang",
+            "request": "sửa app",
+            "name": "sua-app"
+        }),
+    );
+    assert_eq!(resp.status, 202);
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0);
+
+    // Request without cookie -> 401
+    assert_eq!(
+        srv.request("GET", "/api/tasks/1/pipeline", &[], b"").status,
+        401
+    );
+
+    // Unknown task -> 404
+    let r_404 = srv.get("/api/tasks/999/pipeline");
+    assert_eq!(r_404.status, 404);
+    assert_eq!(r_404.json()["error"], "Không tìm thấy task 999");
+
+    // 200 for task 1
+    let r_200 = srv.get("/api/tasks/1/pipeline");
+    assert_eq!(r_200.status, 200);
+    let val = r_200.json();
+    let obj = val.as_object().unwrap();
+
+    let mut keys: Vec<String> = obj.keys().cloned().collect();
+    keys.sort();
+    assert_eq!(keys, vec!["cards", "current", "cycle", "ledger", "task_id"]);
+
+    let cards = obj["cards"].as_object().unwrap();
+    let mut card_keys: Vec<String> = cards.keys().cloned().collect();
+    card_keys.sort();
+    assert_eq!(card_keys, vec!["ban", "code", "plan", "qa", "start"]);
+
+    let ledger = obj["ledger"].as_object().unwrap();
+    let mut ledger_keys: Vec<String> = ledger.keys().cloned().collect();
+    ledger_keys.sort();
+    assert_eq!(ledger_keys, vec!["groups", "total"]);
+
+    assert_eq!(cards["start"]["state"], "xong");
+    assert_eq!(cards["start"]["result"], "bạn đã giao");
+    let created_at: i64 = sb
+        .db()
+        .query_row("SELECT created_at FROM tasks WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(cards["start"]["at_ms"], created_at);
+
+    assert_eq!(cards["plan"]["state"], "xong");
+    assert_eq!(cards["plan"]["rounds"], 1);
+    assert_eq!(cards["plan"]["run_id"], 1);
+
+    assert_eq!(cards["ban"]["state"], "cho_ban");
+    assert_eq!(cards["ban"]["result"], "chờ duyệt plan");
+
+    assert_eq!(cards["code"]["state"], "cho");
+    assert_eq!(cards["code"]["rounds"], 0);
+    assert!(cards["code"]["duration_ms"].is_null());
+    assert!(cards["code"]["cost_usd"].is_null());
+
+    assert_eq!(val["current"], "ban");
+    assert_eq!(val["cycle"], 1);
+
+    let groups = ledger["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0]["header"], "Chu kỳ 1 · plan đầu tiên");
+    assert_eq!(groups[0]["right"], "chờ bạn");
+
+    let rows = groups[0]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["label"], "Vòng 1 · plan");
+    assert_eq!(rows[0]["verdict"], "xong");
+    let num_turns: i64 = sb
+        .db()
+        .query_row("SELECT num_turns FROM runs WHERE id = 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows[0]["turns"], num_turns);
+
+    assert_eq!(ledger["total"]["runs"], 1);
+}
