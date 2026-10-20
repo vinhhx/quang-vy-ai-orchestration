@@ -158,6 +158,14 @@ pub fn diff_names(root: &Path, a: &str, b: &str) -> BrainResult<BTreeSet<String>
     Ok(set)
 }
 
+pub fn diff_code_names(root: &Path, a: &str, b: &str) -> BrainResult<BTreeSet<String>> {
+    let mut names = diff_names(root, a, b)?;
+    for proto in crate::stream::PROTOCOL_FILES {
+        names.remove(*proto);
+    }
+    Ok(names)
+}
+
 pub fn find_commit_by_subject(root: &Path, subject: &str) -> BrainResult<Option<String>> {
     let out = git(root, &["log", "--format=%H %s", "HEAD"])?;
     for line in out.lines() {
@@ -190,4 +198,84 @@ pub fn commit_subjects(root: &Path, a: &str, b: &str) -> BrainResult<Vec<(String
         res.push((sha.to_string(), subj.to_string()));
     }
     Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir.path())
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        dir
+    }
+
+    fn commit(root: &Path, files: &[(&str, &str)], msg: &str) -> String {
+        for (rel, content) in files {
+            let p = root.join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&p, content).unwrap();
+        }
+        let status = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                msg,
+            ])
+            .current_dir(root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        head_sha(root).unwrap()
+    }
+
+    #[test]
+    fn diff_code_names_excludes_reports() {
+        let dir = repo();
+        let root = dir.path();
+        let a = commit(root, &[("src/a.py", "x = 1\n")], "init");
+        let b = commit(root, &[(".plan-review.md", "# review\n")], "review");
+        let diff_ab = diff_code_names(root, &a, &b).unwrap();
+        assert!(diff_ab.is_empty(), "diff_ab was: {:?}", diff_ab);
+
+        let c = commit(
+            root,
+            &[
+                ("src/a.py", "x = 2\n"),
+                (".code-review.md", "# code review\n"),
+            ],
+            "code changes",
+        );
+        let diff_bc = diff_code_names(root, &b, &c).unwrap();
+        let mut expected = BTreeSet::new();
+        expected.insert("src/a.py".to_string());
+        assert_eq!(diff_bc, expected);
+    }
 }

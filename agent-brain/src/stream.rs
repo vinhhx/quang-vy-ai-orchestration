@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
-const PROTOCOL_FILES: &[&str] = &[".plan.md", ".qa-report.md"];
+#[rustfmt::skip]
+pub const PROTOCOL_FILES: &[&str] = &[".plan.md", ".qa-report.md", ".plan-review.md", ".code-review.md"];
 
-fn is_protocol_file(p: &str) -> bool {
+pub fn is_protocol_file(p: &str) -> bool {
     let basename = p.rsplit('/').next().unwrap_or(p);
     PROTOCOL_FILES.contains(&p) || PROTOCOL_FILES.contains(&basename)
 }
