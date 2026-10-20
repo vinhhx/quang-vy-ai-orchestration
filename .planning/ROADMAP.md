@@ -248,7 +248,7 @@ Plans:
   5. Dashboard hiện thẻ review/sửa thật (vòng N / giới hạn, số chặn/góp ý), nút duyệt plan, bật/tắt autopilot; CSDL cũ nâng cấp lên schema mới không mất dữ liệu.
 
 **UI hint**: yes
-**Plans:** 11/20 plans executed
+**Plans:** 12/20 plans executed
 
 Plans:
 **Wave 1**
@@ -273,7 +273,7 @@ Plans:
 - [x] 05.2-10-PLAN.md — Pipeline flow derivation: real review/fix cards, footers with cap, gate view and notes, budget, staged ledger (05.1 WR-02/WR-03)
 
 **Wave 6** *(blocked on Wave 5 completion)*
-- [ ] 05.2-11-PLAN.md — Autopilot driver `agent-brain auto` / `auto --start` / `approve` (claim, child stages, stops, signals, kill flag)
+- [x] 05.2-11-PLAN.md — Autopilot driver `agent-brain auto` / `auto --start` / `approve` (claim, child stages, stops, signals, kill flag)
 
 **Wave 7** *(blocked on Wave 6 completion)*
 - [ ] 05.2-12-PLAN.md — Kill stops the autopilot through runner::cmd_kill; kill mid-loop and in the gap leave no process
