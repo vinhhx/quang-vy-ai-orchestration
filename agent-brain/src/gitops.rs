@@ -166,6 +166,17 @@ pub fn diff_code_names(root: &Path, a: &str, b: &str) -> BrainResult<BTreeSet<St
     Ok(names)
 }
 
+pub fn is_tracked(root: &Path, rel: &str) -> bool {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["ls-files", "--error-unmatch", "--", rel]);
+    cmd.current_dir(root);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    match cmd.status() {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    }
+}
+
 pub fn find_commit_by_subject(root: &Path, subject: &str) -> BrainResult<Option<String>> {
     let out = git(root, &["log", "--format=%H %s", "HEAD"])?;
     for line in out.lines() {
@@ -254,6 +265,18 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         head_sha(root).unwrap()
+    }
+
+    #[test]
+    fn is_tracked_cases() {
+        let dir = repo();
+        let root = dir.path();
+        commit(root, &[("src/tracked.py", "print(1)\n")], "add tracked");
+        std::fs::write(root.join("untracked.txt"), "hello").unwrap();
+
+        assert!(is_tracked(root, "src/tracked.py"));
+        assert!(!is_tracked(root, "untracked.txt"));
+        assert!(!is_tracked(root, "missing.txt"));
     }
 
     #[test]

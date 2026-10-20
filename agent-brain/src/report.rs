@@ -204,6 +204,114 @@ pub fn qa_metrics(c: &QaCounts) -> serde_json::Value {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct NamedFiles {
+    pub files: Vec<String>,
+    pub rejected: Vec<(String, String)>,
+}
+
+pub fn named_files(report_text: &str, root: &std::path::Path) -> NamedFiles {
+    let fm_opt = front_matter(report_text);
+    let mut raw_candidates: Vec<String> = Vec::new();
+
+    if let Some(ref fm) = fm_opt {
+        if let Some(files_str) = fm.get("files") {
+            if let Ok(files_list) = serde_json::from_str::<Vec<String>>(files_str) {
+                raw_candidates.extend(files_list);
+            }
+        }
+    }
+
+    let body_text = if let Some(ref fm) = fm_opt {
+        let mut lines = report_text.lines();
+        for _ in 0..fm.end_line {
+            lines.next();
+        }
+        lines.collect::<Vec<_>>().join("\n")
+    } else {
+        report_text.to_string()
+    };
+
+    static BACKTICK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let backtick_re = BACKTICK_RE.get_or_init(|| regex::Regex::new(r"`([^`\n]+)`").unwrap());
+
+    static SUFFIX_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let suffix_re = SUFFIX_RE.get_or_init(|| regex::Regex::new(r":\d+(?:-\d+)?$").unwrap());
+
+    const KNOWN_EXTS: &[&str] = &[
+        ".rs", ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".json", ".toml", ".yaml",
+        ".yml", ".md", ".html", ".css", ".scss", ".sh", ".go", ".java", ".kt", ".swift", ".c",
+        ".h", ".cc", ".cpp", ".hpp", ".rb", ".php", ".sql", ".txt", ".vue", ".svelte", ".xml",
+        ".ini", ".cfg",
+    ];
+
+    for caps in backtick_re.captures_iter(&body_text) {
+        let token = caps[1].trim();
+        let stripped = suffix_re.replace(token, "");
+        let s = stripped.trim();
+        if !s.contains(char::is_whitespace)
+            && (s.contains('/') || KNOWN_EXTS.iter().any(|ext| s.ends_with(ext)))
+        {
+            raw_candidates.push(s.to_string());
+        }
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates = Vec::new();
+    for raw in raw_candidates {
+        let norm = crate::planfile::normalize_plan_path(&raw);
+        if norm.is_empty() {
+            continue;
+        }
+        if seen.insert(norm.clone()) {
+            candidates.push(norm);
+        }
+    }
+
+    let mut files = Vec::new();
+    let mut rejected = Vec::new();
+
+    for f in candidates {
+        // 1. planfile::path_error
+        if let Some(err) = crate::planfile::path_error(&f, Some(root)) {
+            rejected.push((f, err));
+            continue;
+        }
+
+        // 2. sensitive
+        let basename = f.rsplit('/').next().unwrap_or(&f);
+        let is_sensitive = basename.starts_with(".env")
+            || basename.ends_with(".pem")
+            || basename.ends_with(".key")
+            || basename.starts_with("id_rsa")
+            || basename.starts_with("id_ed25519")
+            || f == ".claude"
+            || f.starts_with(".claude/")
+            || f.contains("/.claude/");
+
+        if is_sensitive {
+            rejected.push((f.clone(), format!("sensitive:{f}")));
+            continue;
+        }
+
+        // 3. untracked
+        let p = root.join(&f);
+        if std::fs::symlink_metadata(&p).is_ok() && !crate::gitops::is_tracked(root, &f) {
+            rejected.push((f.clone(), format!("untracked:{f}")));
+            continue;
+        }
+
+        // 4. cap
+        if files.len() < MAX_NAMED_FILES {
+            files.push(f);
+        } else {
+            rejected.push((f.clone(), format!("too_many:{f}")));
+        }
+    }
+
+    NamedFiles { files, rejected }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,5 +522,164 @@ mod tests {
         assert_eq!(metrics["verdict"].as_str(), Some("revise"));
         assert_eq!(metrics["blocking"].as_i64(), Some(1));
         assert_eq!(metrics["advisory"].as_i64(), Some(4));
+    }
+
+    fn test_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir.path())
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        dir
+    }
+
+    fn test_commit(root: &std::path::Path, files: &[(&str, &str)], msg: &str) {
+        for (rel, content) in files {
+            let p = root.join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&p, content).unwrap();
+        }
+        let status = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                msg,
+            ])
+            .current_dir(root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+
+    #[test]
+    fn named_files_union_and_suffix() {
+        let dir = test_repo();
+        let root = dir.path();
+        test_commit(root, &[("src/a.py", "# a"), ("src/b.py", "# b")], "init");
+
+        let report = "---\nverdict: revise\nblocking: 1\nadvisory: 0\nfiles: [\"src/a.py\"]\n---\nSửa `src/b.py:12` và `tests/t_b.py`; xem `ghi chú dài`\n";
+        let nf = named_files(report, root);
+        assert_eq!(
+            nf.files,
+            vec![
+                "src/a.py".to_string(),
+                "src/b.py".to_string(),
+                "tests/t_b.py".to_string()
+            ]
+        );
+        assert!(nf.rejected.is_empty(), "rejected was: {:?}", nf.rejected);
+    }
+
+    #[test]
+    fn named_files_rejections() {
+        let dir = test_repo();
+        let root = dir.path();
+        test_commit(root, &[("src/main.rs", "// main")], "init");
+
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_file = outside_dir.path().join("x.py");
+        std::fs::write(&outside_file, "print(1)").unwrap();
+
+        #[cfg(unix)]
+        {
+            let symlink_path = root.join("out");
+            std::os::unix::fs::symlink(outside_dir.path(), &symlink_path).unwrap();
+            let status = std::process::Command::new("git")
+                .args(["add", "out"])
+                .current_dir(root)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+
+        std::fs::write(root.join("secret.txt"), "shhh").unwrap();
+
+        let report = r#"---
+verdict: revise
+blocking: 1
+advisory: 0
+files: ["/etc/passwd", "~/x", "../x.py", ".git/config", ".plan.md", "src/*.py", ".env", "config/.env.local", "keys/server.pem", "deploy.key", "id_rsa", "id_ed25519.pub", ".claude/settings.json", "secret.txt", "out/x.py"]
+---
+# Report
+"#;
+        let nf = named_files(report, root);
+        assert!(
+            nf.files.is_empty(),
+            "files should be empty but was: {:?}",
+            nf.files
+        );
+
+        let rejected_codes: Vec<String> = nf.rejected.into_iter().map(|(_, r)| r).collect();
+        assert!(rejected_codes
+            .iter()
+            .any(|c| c.starts_with("absolute_path:")));
+        assert!(rejected_codes.iter().any(|c| c.starts_with("home_path:")));
+        assert!(rejected_codes
+            .iter()
+            .any(|c| c.starts_with("parent_traversal:")));
+        assert!(rejected_codes.iter().any(|c| c.starts_with("git_dir:")));
+        assert!(rejected_codes
+            .iter()
+            .any(|c| c.starts_with("protocol_file:")));
+        assert!(rejected_codes.iter().any(|c| c.starts_with("glob_path:")));
+
+        let sensitive_count = rejected_codes
+            .iter()
+            .filter(|c| c.starts_with("sensitive:"))
+            .count();
+        assert_eq!(
+            sensitive_count, 7,
+            "expected 7 sensitive rejections, got: {:?}",
+            rejected_codes
+        );
+
+        assert!(rejected_codes.iter().any(|c| c.starts_with("untracked:")));
+        assert!(rejected_codes
+            .iter()
+            .any(|c| c.starts_with("outside_root:")));
+    }
+
+    #[test]
+    fn named_files_cap() {
+        let dir = test_repo();
+        let root = dir.path();
+
+        let candidates: Vec<String> = (0..25).map(|i| format!("src/f{i}.py")).collect();
+        let files_json = serde_json::to_string(&candidates).unwrap();
+        let report =
+            format!("---\nverdict: revise\nblocking: 1\nadvisory: 0\nfiles: {files_json}\n---\n");
+
+        let nf = named_files(&report, root);
+        assert_eq!(nf.files.len(), 20);
+        assert_eq!(nf.files, candidates[..20]);
+        assert_eq!(nf.rejected.len(), 5);
+        for (f, reason) in &nf.rejected {
+            assert!(
+                reason.starts_with("too_many:"),
+                "expected too_many, got {reason}"
+            );
+            assert!(f.starts_with("src/f"));
+        }
     }
 }

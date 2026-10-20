@@ -394,6 +394,44 @@ pub fn parse_plan(text: &str) -> Plan {
     }
 }
 
+pub fn path_error(f: &str, root: Option<&std::path::Path>) -> Option<String> {
+    if f.is_empty() {
+        return None;
+    }
+    if f.starts_with('/') {
+        Some(format!("absolute_path:{f}"))
+    } else if f == "~" || f.starts_with("~/") {
+        Some(format!("home_path:{f}"))
+    } else if f == ".." || f.starts_with("../") || f.contains("/../") || f.ends_with("/..") {
+        Some(format!("parent_traversal:{f}"))
+    } else if f == ".git" || f.starts_with(".git/") || f.contains("/.git/") || f.ends_with("/.git")
+    {
+        Some(format!("git_dir:{f}"))
+    } else if crate::stream::PROTOCOL_FILES
+        .iter()
+        .any(|proto| f == *proto || f.ends_with(&format!("/{proto}")))
+    {
+        Some(format!("protocol_file:{f}"))
+    } else if normalize_plan_path(f) == "." {
+        Some(format!("not_a_file:{f}"))
+    } else if f
+        .chars()
+        .any(|c| c == '*' || c == '?' || c == '[' || c == ']')
+    {
+        Some(format!("glob_path:{f}"))
+    } else if let Some(root_path) = root {
+        let root_resolved = realpath_nonstrict(root_path);
+        let target_resolved = realpath_nonstrict(&root_path.join(f));
+        if target_resolved.strip_prefix(&root_resolved).is_err() {
+            Some(format!("outside_root:{f}"))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 pub fn validate_plan(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String> {
     let mut errors = Vec::new();
 
@@ -466,38 +504,13 @@ pub fn validate_plan(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String>
         if f.is_empty() {
             continue;
         }
-        if f.starts_with('/') {
-            errors.push(format!("absolute_path:{f}"));
-        } else if f == "~" || f.starts_with("~/") {
-            errors.push(format!("home_path:{f}"));
-        } else if f == ".." || f.starts_with("../") || f.contains("/../") || f.ends_with("/..") {
-            errors.push(format!("parent_traversal:{f}"));
-        } else if f == ".git"
-            || f.starts_with(".git/")
-            || f.contains("/.git/")
-            || f.ends_with("/.git")
-        {
-            errors.push(format!("git_dir:{f}"));
-        } else if f == ".plan.md"
-            || f == ".qa-report.md"
-            || f.ends_with("/.plan.md")
-            || f.ends_with("/.qa-report.md")
-        {
-            errors.push(format!("protocol_file:{f}"));
-        } else if normalize_plan_path(f) == "." {
-            errors.push(format!("not_a_file:{f}"));
-        } else if f
-            .chars()
-            .any(|c| c == '*' || c == '?' || c == '[' || c == ']')
-        {
-            errors.push(format!("glob_path:{f}"));
-        } else if let Some(root_path) = root {
-            let root_resolved = realpath_nonstrict(root_path);
-            let target_resolved = realpath_nonstrict(&root_path.join(f));
-            if target_resolved.strip_prefix(&root_resolved).is_err() {
+        if let Some(err) = path_error(f, root) {
+            if err.starts_with("outside_root:") {
                 if seen_outside_root.insert(f.clone()) {
-                    errors.push(format!("outside_root:{f}"));
+                    errors.push(err);
                 }
+            } else {
+                errors.push(err);
             }
         }
     }
@@ -589,6 +602,57 @@ pub fn parse_qa_verdict(text: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_error_codes() {
+        assert_eq!(
+            path_error("/etc/x", None),
+            Some("absolute_path:/etc/x".to_string())
+        );
+        assert_eq!(path_error("~/x", None), Some("home_path:~/x".to_string()));
+        assert_eq!(
+            path_error("../x", None),
+            Some("parent_traversal:../x".to_string())
+        );
+        assert_eq!(
+            path_error("a/../../x", None),
+            Some("parent_traversal:a/../../x".to_string())
+        );
+        assert_eq!(
+            path_error(".git/config", None),
+            Some("git_dir:.git/config".to_string())
+        );
+        assert_eq!(
+            path_error(".plan-review.md", None),
+            Some("protocol_file:.plan-review.md".to_string())
+        );
+        assert_eq!(
+            path_error("sub/.code-review.md", None),
+            Some("protocol_file:sub/.code-review.md".to_string())
+        );
+        assert_eq!(path_error(".", None), Some("not_a_file:.".to_string()));
+        assert_eq!(
+            path_error("src/*.py", None),
+            Some("glob_path:src/*.py".to_string())
+        );
+
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        let outside_file = dir2.path().join("outside.py");
+        std::fs::write(&outside_file, "print(1)").unwrap();
+
+        #[cfg(unix)]
+        {
+            let symlink_path = dir1.path().join("out_symlink");
+            std::os::unix::fs::symlink(dir2.path(), &symlink_path).unwrap();
+            assert_eq!(
+                path_error("out_symlink/outside.py", Some(dir1.path())),
+                Some("outside_root:out_symlink/outside.py".to_string())
+            );
+        }
+
+        assert_eq!(path_error("src/app.py", Some(dir1.path())), None);
+    }
 
     #[test]
     fn test_posix_normpath_cases() {
