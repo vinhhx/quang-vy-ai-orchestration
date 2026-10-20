@@ -16,6 +16,33 @@ pub const LEAD_ALLOWED_TOOLS: [&str; 9] = [
 pub const LEAD_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
 pub const MAX_NOTE_CHARS: usize = 500;
 
+/// IN-02 / CONTEXT O7: round của một Lead chạy tay (không có `--round`) = round hiệu lực
+/// mà `effective_rounds` tính cho run mới khi thêm nó vào cuối các run của task.
+fn manual_round(conn: &rusqlite::Connection, task_id: i64) -> BrainResult<i64> {
+    use crate::autopilot::decide::{effective_rounds, RunFact, Stage};
+
+    let rows = crate::db::runs_for_task(conn, task_id)?;
+    let mut facts: Vec<RunFact> = rows
+        .iter()
+        .filter(|r| r.role != "inspect")
+        .map(RunFact::from_row)
+        .collect();
+    facts.sort_by_key(|r| (r.started_at, r.id));
+    let next_id = rows.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+    facts.push(RunFact {
+        id: next_id,
+        role: "lead".to_string(),
+        stage: Some(Stage::Plan),
+        fix_for: None,
+        round: None,
+        status: "running".to_string(),
+        outcome: None,
+        kill_requested: false,
+        started_at: crate::db::now_ms(),
+    });
+    Ok(effective_rounds(&facts).last().copied().unwrap_or(1))
+}
+
 pub fn cmd_lead(
     ctx: &mut Ctx,
     project: &str,
@@ -277,9 +304,13 @@ pub fn cmd_lead(
         run_dir: None,
     };
 
+    let round = match opts.round {
+        Some(r) => r,
+        None => manual_round(&ctx.conn, task_id)?,
+    };
     let stage = crate::roles::RunStage {
         stage: Some("plan".to_string()),
-        round: opts.round,
+        round: Some(round),
         metrics: note.map(|n| serde_json::json!({ "note": n })),
     };
     let role_run = crate::roles::execute_role_staged(ctx, &proj, &proj_path, plan, stage)?;

@@ -165,3 +165,110 @@ fn valid_plan_unchanged() {
     let status = sb.git(&repo, &["status", "--porcelain"]);
     assert_eq!(status.trim(), "");
 }
+
+// ---------------------------------------------------------------------------
+// IN-02: manual Lead runs store their round
+// ---------------------------------------------------------------------------
+
+#[test]
+fn manual_first_lead_stores_round_1() {
+    let sb = Sandbox::new();
+    setup_project(&sb, "work");
+
+    let out = run_lead(&sb, &[], valid_lead_entry());
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+
+    let leads = lead_runs(&sb);
+    assert_eq!(leads.len(), 1, "lead runs: {leads:?}");
+    assert_eq!(leads[0].2.as_deref(), Some("plan"));
+    assert_eq!(leads[0].3, Some(1));
+}
+
+#[test]
+fn manual_replan_stores_round_2() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+
+    let first = run_lead(&sb, &[], valid_lead_entry());
+    assert_eq!(first.code, 0, "stderr: {}", first.stderr);
+    let branch = sb.git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(branch.trim(), "task/sua-app");
+
+    let second = run_lead(&sb, &["--note", "thêm"], valid_lead_entry());
+    assert_eq!(
+        second.code, 0,
+        "stderr: {}\nstdout: {}",
+        second.stderr, second.stdout
+    );
+
+    let leads = lead_runs(&sb);
+    assert_eq!(leads.len(), 2, "lead runs: {leads:?}");
+    assert_eq!(leads[0].3, Some(1));
+    assert_eq!(leads[1].2.as_deref(), Some("plan"));
+    assert_eq!(leads[1].3, Some(2));
+}
+
+#[test]
+fn manual_lead_after_qa_new_cycle() {
+    let sb = Sandbox::new();
+    setup_project(&sb, "work");
+
+    let first = run_lead(&sb, &[], valid_lead_entry());
+    assert_eq!(first.code, 0, "stderr: {}", first.stderr);
+
+    {
+        let conn = sb.db();
+        let (task_id, project_id, profile, started_at): (i64, i64, String, i64) = conn
+            .query_row(
+                "SELECT task_id, project_id, profile, started_at FROM runs WHERE role = 'lead'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO runs (task_id, project_id, role, profile, status, outcome, started_at, ended_at, stage, round)
+             VALUES (?1, ?2, 'dev', ?3, 'succeeded', NULL, ?4, ?4, 'implement', 1)",
+            rusqlite::params![task_id, project_id, profile, started_at + 1],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO runs (task_id, project_id, role, profile, status, outcome, started_at, ended_at, stage, round)
+             VALUES (?1, ?2, 'qa', ?3, 'succeeded', 'qa:fix', ?4, ?4, 'qa', 1)",
+            rusqlite::params![task_id, project_id, profile, started_at + 2],
+        )
+        .unwrap();
+    }
+
+    let again = run_lead(&sb, &["--note", "lại"], valid_lead_entry());
+    assert_eq!(
+        again.code, 0,
+        "stderr: {}\nstdout: {}",
+        again.stderr, again.stdout
+    );
+
+    let leads = lead_runs(&sb);
+    assert_eq!(leads.len(), 2, "lead runs: {leads:?}");
+    assert_eq!(leads[1].2.as_deref(), Some("plan"));
+    assert_eq!(leads[1].3, Some(1), "new cycle restarts at round 1");
+}
+
+#[test]
+fn explicit_round_wins() {
+    let sb = Sandbox::new();
+    setup_project(&sb, "work");
+
+    let out = run_lead(&sb, &["--round", "5"], valid_lead_entry());
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+
+    let leads = lead_runs(&sb);
+    assert_eq!(leads.len(), 1, "lead runs: {leads:?}");
+    assert_eq!(leads[0].3, Some(5));
+}
