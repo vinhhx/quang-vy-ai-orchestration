@@ -148,6 +148,30 @@ fn run_loi(detail: String, sr: Option<&StageRun>) -> StopInfo {
     }
 }
 
+/// Nhánh đang checkout không phải nhánh của task → StopInfo `run lỗi` (CR-01):
+/// mọi vai trò suy ra task từ HEAD, nên chạy bước trên nhánh khác là làm việc của task khác.
+fn branch_stop(
+    root: &std::path::Path,
+    task: &crate::db::TaskRow,
+    sr: &StageRun,
+) -> Option<StopInfo> {
+    let cur = crate::gitops::current_branch(root);
+    if cur.as_deref() == Some(task.branch.as_str()) {
+        return None;
+    }
+    Some(run_loi(
+        branch_mismatch_text(&task.branch, cur.as_deref()),
+        Some(sr),
+    ))
+}
+
+fn branch_mismatch_text(branch: &str, cur: Option<&str>) -> String {
+    format!(
+        "Không ở nhánh task '{branch}' (nhánh hiện tại: '{}') — không đoán",
+        cur.unwrap_or("None")
+    )
+}
+
 /// Chạy `agent-brain <args>` làm tiến trình con (PDEATHSIG, stdout kế thừa, stderr chép lại).
 fn spawn_stage(ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainResult<ChildOutcome> {
     use std::os::unix::process::CommandExt;
@@ -342,6 +366,10 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
 
         match decide::decide(&wf, &facts) {
             Decision::Run(sr) => {
+                // Trước mọi bước: đúng nhánh task, nếu không thì dừng, không đoán (CR-01).
+                if let Some(info) = branch_stop(&root, &task, &sr) {
+                    return Ok(stop_with(ctx, task_id, &task.slug, aj, info));
+                }
                 if crate::pricing::exhausted(&facts.budget_usage, &facts.budget_limits)
                     && aj.bypass_stages > 0
                 {
@@ -627,13 +655,22 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
         .and_then(Workflow::from_snapshot)
         .map(|w| w.auto)
         .unwrap_or(false);
-    let cont = wf_auto && !no_continue;
+    // Autopilot đã tắt cho task (`ended`): duyệt chỉ ghi nhận, không chạy tiếp (D-15 sửa đổi).
+    let ended = auto.auto_state.as_deref() == Some("ended");
+    let cont = wf_auto && !no_continue && !ended;
     if cont {
-        // Kiểm tra bận trước khi ghi, để một lần từ chối không để lại nửa chừng.
+        // Kiểm tra bận và nhánh trước khi ghi, để một lần từ chối không để lại nửa chừng.
         if let Some(reason) =
             claim::project_busy_reason(&ctx.conn, &proj_slug, &profile, Some(task_id))?
         {
             return Err(BrainError::error(reason));
+        }
+        let cur = crate::gitops::current_branch(&root);
+        if cur.as_deref() != Some(task.branch.as_str()) {
+            return Err(BrainError::error(format!(
+                "{}. Duyệt mà không chạy tiếp: agent-brain approve {task_id} --no-continue",
+                branch_mismatch_text(&task.branch, cur.as_deref())
+            )));
         }
     }
 
@@ -644,6 +681,11 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
         view::fmt_hhmm(at)
     ));
     if !cont {
+        if wf_auto && !no_continue && ended {
+            crate::term::emit(&format!(
+                "Autopilot đã tắt cho task {task_id} — chỉ ghi nhận duyệt. Bật lại: agent-brain auto {task_id}"
+            ));
+        }
         return Ok(EXIT_OK);
     }
 
