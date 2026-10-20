@@ -24,7 +24,7 @@ enum Commands {
         #[command(subcommand)]
         subcommand: ProjectsCommands,
     },
-    /// Chạy tác vụ theo vai trò (lead, dev, qa)
+    /// Chạy tác vụ theo vai trò (lead, dev, qa, plan-review, code-review)
     Run {
         /// Vai trò thực thi
         role: roles::Role,
@@ -41,6 +41,9 @@ enum Commands {
         /// In chi tiết các bước thực hiện
         #[arg(long, short)]
         verbose: bool,
+        /// Vòng lặp (ẩn)
+        #[arg(long, hide = true)]
+        round: Option<i64>,
     },
     /// Trạng thái nhanh của dự án
     Status {
@@ -168,15 +171,16 @@ fn main() {
             name,
             dry_run,
             verbose,
-        } => roles::cmd_run(
-            &mut ctx,
-            role,
-            &project,
-            request.as_deref(),
-            name.as_deref(),
-            dry_run,
-            verbose,
-        ),
+            round,
+        } => {
+            let opts = roles::RunOpts {
+                name,
+                dry_run,
+                verbose,
+                round,
+            };
+            roles::cmd_run(&mut ctx, role, &project, request.as_deref(), &opts)
+        }
         Commands::Status { project } => fastpath::cmd_status(&mut ctx, &project),
         Commands::Inspect { project, verbose } => {
             fastpath::cmd_inspect(&mut ctx, &project, verbose)

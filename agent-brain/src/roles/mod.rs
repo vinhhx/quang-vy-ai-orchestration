@@ -1,6 +1,7 @@
 pub mod dev;
 pub mod lead;
 pub mod qa;
+pub mod review;
 
 use crate::app::Ctx;
 use crate::config::Config;
@@ -16,6 +17,8 @@ pub enum Role {
     Lead,
     Dev,
     Qa,
+    PlanReview,
+    CodeReview,
 }
 
 impl Role {
@@ -24,6 +27,8 @@ impl Role {
             Role::Lead => "lead",
             Role::Dev => "dev",
             Role::Qa => "qa",
+            Role::PlanReview => "plan-review",
+            Role::CodeReview => "code-review",
         }
     }
 }
@@ -31,12 +36,16 @@ impl Role {
 pub const LEAD_PROMPT: &str = include_str!("../../assets/prompts/lead.md");
 pub const DEV_PROMPT: &str = include_str!("../../assets/prompts/dev.md");
 pub const QA_PROMPT: &str = include_str!("../../assets/prompts/qa.md");
+pub const PLAN_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/plan-review.md");
+pub const CODE_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/code-review.md");
 
 pub fn prompt_for(role: Role) -> &'static str {
     match role {
         Role::Lead => LEAD_PROMPT,
         Role::Dev => DEV_PROMPT,
         Role::Qa => QA_PROMPT,
+        Role::PlanReview => PLAN_REVIEW_PROMPT,
+        Role::CodeReview => CODE_REVIEW_PROMPT,
     }
 }
 
@@ -220,11 +229,36 @@ pub struct RoleRun {
     pub run_dir: PathBuf,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RunStage {
+    pub stage: Option<String>,
+    pub round: Option<i64>,
+    pub metrics: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RunOpts {
+    pub name: Option<String>,
+    pub dry_run: bool,
+    pub verbose: bool,
+    pub round: Option<i64>,
+}
+
 pub fn execute_role(
     ctx: &mut Ctx,
     project: &Project,
     root: &Path,
     plan: RunPlan,
+) -> BrainResult<RoleRun> {
+    execute_role_staged(ctx, project, root, plan, RunStage::default())
+}
+
+pub fn execute_role_staged(
+    ctx: &mut Ctx,
+    project: &Project,
+    root: &Path,
+    plan: RunPlan,
+    stage: RunStage,
 ) -> BrainResult<RoleRun> {
     let running = crate::db::running_runs(&ctx.conn)?;
     for r in running {
@@ -295,6 +329,7 @@ pub fn execute_role(
     struct Observer<'a> {
         ctx: &'a Ctx,
         plan: &'a RunPlan,
+        stage: &'a RunStage,
         project_id: &'a str,
         profile: &'a str,
         run_dir: &'a Path,
@@ -320,6 +355,17 @@ pub fn execute_role(
             };
             let run_id = crate::db::insert_run(&self.ctx.conn, &new_run)?;
             self.run_id = Some(run_id);
+            if self.stage.stage.is_some() || self.stage.round.is_some() {
+                crate::db::set_run_stage_round(
+                    &self.ctx.conn,
+                    run_id,
+                    self.stage.stage.as_deref(),
+                    self.stage.round,
+                )?;
+            }
+            if let Some(ref m) = self.stage.metrics {
+                crate::db::merge_run_metrics(&self.ctx.conn, run_id, m)?;
+            }
             if let Some(tid) = self.plan.task_id {
                 crate::term::emit(&format!("task {tid}, run {run_id}"));
             } else {
@@ -371,6 +417,7 @@ pub fn execute_role(
     let mut obs = Observer {
         ctx,
         plan: &plan,
+        stage: &stage,
         project_id: &project.id,
         profile: &project.profile,
         run_dir: &run_dir,
@@ -429,10 +476,14 @@ pub fn cmd_run(
     role: Role,
     project: &str,
     request: Option<&str>,
-    name: Option<&str>,
-    dry_run: bool,
-    verbose: bool,
+    opts: &RunOpts,
 ) -> BrainResult<i32> {
+    if let Some(r) = opts.round {
+        if r < 1 {
+            return Err(BrainError::error("--round phải là số nguyên từ 1 trở lên"));
+        }
+    }
+
     match role {
         Role::Lead => {
             let req = match request {
@@ -443,7 +494,14 @@ pub fn cmd_run(
                     ));
                 }
             };
-            lead::cmd_lead(ctx, project, req, name, dry_run, verbose)
+            lead::cmd_lead(
+                ctx,
+                project,
+                req,
+                opts.name.as_deref(),
+                opts.dry_run,
+                opts.verbose,
+            )
         }
         Role::Dev => {
             if let Some(r) = request {
@@ -453,7 +511,7 @@ pub fn cmd_run(
                     );
                 }
             }
-            dev::cmd_dev(ctx, project, dry_run, verbose)
+            dev::cmd_dev(ctx, project, opts.dry_run, opts.verbose)
         }
         Role::Qa => {
             if let Some(r) = request {
@@ -463,7 +521,29 @@ pub fn cmd_run(
                     );
                 }
             }
-            qa::cmd_qa(ctx, project, dry_run, verbose)
+            qa::cmd_qa(ctx, project, opts.dry_run, opts.verbose)
+        }
+        Role::PlanReview => {
+            if let Some(r) = request {
+                if !r.trim().is_empty() {
+                    crate::term::emit(&format!(
+                        "Bỏ qua <yêu cầu> cho vai trò {}: vai trò này chỉ đọc .plan.md / git diff",
+                        role.as_str()
+                    ));
+                }
+            }
+            review::cmd_review(ctx, project, crate::report::ReviewKind::Plan, opts)
+        }
+        Role::CodeReview => {
+            if let Some(r) = request {
+                if !r.trim().is_empty() {
+                    crate::term::emit(&format!(
+                        "Bỏ qua <yêu cầu> cho vai trò {}: vai trò này chỉ đọc .plan.md / git diff",
+                        role.as_str()
+                    ));
+                }
+            }
+            review::cmd_review(ctx, project, crate::report::ReviewKind::Code, opts)
         }
     }
 }
