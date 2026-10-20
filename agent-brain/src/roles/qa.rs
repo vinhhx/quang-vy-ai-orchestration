@@ -74,7 +74,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         )));
     }
 
-    let plan_commit = crate::gitops::find_commit_by_subject(&proj_path, &format!("{task}: plan"))?;
+    let plan_commit = crate::roles::plan_commit_for(&ctx.conn, &proj.id, &proj_path, &task)?;
     let plan_commit = match plan_commit {
         Some(c) => c,
         None => {

@@ -217,3 +217,98 @@ fn role_guard_ignores_unset_env() {
     assert_ok(&res, "plan-review without the autopilot env");
     assert_eq!(run_count(&sb), before + 1);
 }
+
+// ---------------------------------------------------------------------------
+// Task 2: plan_commit_for (IN-09)
+// ---------------------------------------------------------------------------
+
+/// Nhánh task/sua-app làm tay: `.plan.md` (meta task sua-app, base_commit = HEAD lúc tạo nhánh)
+/// và một thay đổi code. `plan_subject` là subject của commit chứa cả hai.
+fn manual_branch(sb: &Sandbox, repo: &std::path::Path, plan_subject: &str) -> String {
+    sb.git(repo, &["checkout", "-b", "task/sua-app"]);
+    let base = sb.git(repo, &["rev-parse", "HEAD"]).trim().to_string();
+    let meta = json!({
+        "task": "sua-app",
+        "branch": "task/sua-app",
+        "base_branch": "main",
+        "base_commit": base,
+        "request": "sửa app",
+        "created_at": "2026-10-21T00:00:00+00:00",
+    });
+    let text = protocol::plan_text(
+        "sửa app",
+        &[("src/app.py", "app()", "trả về 2", "demo")],
+        "python3 -m unittest",
+        "",
+    );
+    let text = agent_brain::planfile::set_meta(&text, &meta);
+    std::fs::write(repo.join(".plan.md"), text).unwrap();
+    std::fs::write(repo.join("src/app.py"), "def app():\n    return 2\n").unwrap();
+    sb.git(repo, &["add", ".plan.md", "src/app.py"]);
+    sb.git(repo, &["commit", "-m", plan_subject]);
+    base
+}
+
+fn insert_task_row(sb: &Sandbox, base: &str) {
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = sb.read_map();
+    let projs = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projs).expect("sync_projects");
+    let p = agent_brain::db::project_row_id(&conn, "web-ban-hang").expect("project_row_id");
+    agent_brain::db::upsert_task(
+        &conn,
+        p,
+        "sua-app",
+        "sửa app",
+        "task/sua-app",
+        Some("main"),
+        Some(base),
+    )
+    .expect("upsert_task");
+}
+
+#[test]
+fn reused_slug_old_plan_commit_ignored() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+    // Task cũ cùng slug đã merge vào main.
+    sb.git(&repo, &["commit", "--allow-empty", "-m", "sua-app: plan"]);
+    let base = manual_branch(&sb, &repo, "sua-app: nháp");
+    insert_task_row(&sb, &base);
+
+    for (role, scenario) in [("code-review", code_review_entry()), ("qa", qa_entry())] {
+        let res = sb.run(&["run", role, "--", "web-ban-hang"], Some(scenario));
+        assert_eq!(res.code, 1, "{role}: stderr: {}", res.stderr);
+        assert!(
+            res.stderr
+                .contains("Không tìm thấy commit 'sua-app: plan' trên nhánh hiện tại"),
+            "{role}: stderr: {}",
+            res.stderr
+        );
+        assert_eq!(run_count(&sb), 0, "{role}: no run row");
+    }
+}
+
+#[test]
+fn plan_commit_for_legacy_fallback() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+    // Nhánh cũ chưa có hàng task trong DB: tìm commit plan theo subject như trước.
+    manual_branch(&sb, &repo, "sua-app: plan");
+    let plan = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    std::fs::write(repo.join("src/app.py"), "def app():\n    return 3\n").unwrap();
+    sb.git(&repo, &["add", "src/app.py"]);
+    sb.git(&repo, &["commit", "-m", "sua-app: sửa app"]);
+
+    let res = sb.run(&["run", "qa", "--", "web-ban-hang"], Some(qa_entry()));
+    assert_ok(&res, "qa on a legacy branch");
+    let base: Option<String> = sb
+        .db()
+        .query_row(
+            "SELECT base_commit FROM runs WHERE role = 'qa' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(base.as_deref(), Some(plan.as_str()));
+}

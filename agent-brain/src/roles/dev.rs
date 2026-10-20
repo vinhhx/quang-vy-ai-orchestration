@@ -265,7 +265,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
             if let Some(auto) = crate::db::task_auto(&ctx.conn, tid)? {
                 if auto.workflow_json.is_some() {
                     if let Some(pc) =
-                        crate::gitops::find_commit_by_subject(&proj_path, &format!("{task}: plan"))?
+                        crate::roles::plan_commit_for(&ctx.conn, &proj.id, &proj_path, &task)?
                     {
                         if auto.approved_commit.as_deref() != Some(pc.as_str()) {
                             crate::db::set_task_approval(&ctx.conn, tid, crate::db::now_ms(), &pc)?;

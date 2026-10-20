@@ -285,6 +285,36 @@ pub fn autopilot_task_guard(
     Ok(())
 }
 
+/// Commit `{slug}: plan` của task đang checkout (IN-09). Có hàng task cho nhánh hiện tại →
+/// `plan_commit_on_branch` giới hạn bởi base_commit và `refs/heads/` (giống driver và dashboard),
+/// nên commit plan cũ của một task trùng slug đã merge không còn khớp. Không có hàng task
+/// (plan cũ chưa vào DB) → quét subject trên HEAD như trước.
+pub fn plan_commit_for(
+    conn: &rusqlite::Connection,
+    project_slug: &str,
+    root: &Path,
+    task_slug: &str,
+) -> BrainResult<Option<String>> {
+    if let Some(branch) = crate::gitops::current_branch(root) {
+        let row = match crate::db::project_row_id(conn, project_slug) {
+            Ok(pid) => crate::db::find_task_by_branch(conn, pid, &branch)?,
+            Err(_) => None,
+        };
+        if let Some(row) = row {
+            return crate::gitops::plan_commit_on_branch(
+                root,
+                &row.branch,
+                &row.slug,
+                row.base_commit.as_deref(),
+            )
+            .map_err(|_| {
+                BrainError::error(format!("Không đọc được lịch sử git của nhánh {branch}"))
+            });
+        }
+    }
+    crate::gitops::find_commit_by_subject(root, &format!("{task_slug}: plan"))
+}
+
 pub struct RunPlan {
     pub role: String,
     pub model: String,
