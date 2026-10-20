@@ -753,6 +753,10 @@ fn implicit_approval() {
         })
         .unwrap();
 
+    // Lead now snapshots the workflow (05.2-09); clear it to simulate a legacy task.
+    conn.execute("UPDATE tasks SET workflow_json = NULL WHERE id = ?1", [tid])
+        .unwrap();
+
     // 1. Task with workflow_json NULL keeps both NULL
     let sc_dev1 = serde_json::json!({
         "ops": [
