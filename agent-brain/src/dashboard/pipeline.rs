@@ -471,7 +471,7 @@ fn derive_inner(f: &PipelineFacts, staged: bool) -> PipelineView {
                 let is_last_plan_group = raw_groups.iter().skip(i + 1).all(|g| g.kind != "plan");
                 let last_run = valid_runs[last_idx];
                 let dev_after = valid_runs[(last_idx + 1)..].iter().any(|r| r.role == "dev");
-                if is_last_plan_group && last_run.status == "succeeded" && !dev_after {
+                if is_last_plan_group && lead_ok(last_run) && !dev_after {
                     Some("chờ bạn".to_string())
                 } else {
                     None
@@ -1208,6 +1208,10 @@ pub fn derive_response(f: &PipelineFacts, x: &FlowFacts) -> PipelineResponse {
     }
 }
 
+fn lead_ok(r: &RunRow) -> bool {
+    taskstate::step_state(Some(r)).0 == "xong"
+}
+
 fn derive_ban_card(f: &PipelineFacts, valid_runs: &[&RunRow]) -> PointCard {
     match f.plan {
         PlanFacts::Commit {
@@ -1233,8 +1237,9 @@ fn derive_ban_card(f: &PipelineFacts, valid_runs: &[&RunRow]) -> PointCard {
         } => {
             let latest_succeeded_lead = valid_runs
                 .iter()
-                .filter(|r| r.role == "lead" && r.status == "succeeded")
-                .last();
+                .rev()
+                .find(|r| r.role == "lead" && lead_ok(r))
+                .copied();
             let card_at_ms = at_ms.or_else(|| latest_succeeded_lead.and_then(|r| r.ended_at));
             PointCard {
                 state: "cho_ban".to_string(),
@@ -1252,8 +1257,9 @@ fn derive_ban_card(f: &PipelineFacts, valid_runs: &[&RunRow]) -> PointCard {
         PlanFacts::Unknown => {
             let latest_succeeded_lead = valid_runs
                 .iter()
-                .filter(|r| r.role == "lead" && r.status == "succeeded")
-                .last();
+                .rev()
+                .find(|r| r.role == "lead" && lead_ok(r))
+                .copied();
             if let Some(lead) = latest_succeeded_lead {
                 let l_end = lead.ended_at.unwrap_or(lead.started_at);
                 let first_dev = valid_runs
@@ -1420,32 +1426,42 @@ fn derive_role_card(
     }
 }
 
+pub fn approving_dev_run_checked(
+    runs: &[RunRow],
+    plan_sha: &str,
+    plan_at_ms: Option<i64>,
+    ancestry: impl Fn(&str, &str) -> Option<bool>,
+) -> Result<Option<i64>, ()> {
+    let mut dev_runs: Vec<&RunRow> = runs.iter().filter(|r| r.role == "dev").collect();
+    dev_runs.sort_by_key(|r| (r.started_at, r.id));
+
+    for r in dev_runs {
+        match r.base_commit.as_deref() {
+            Some(b) if !b.is_empty() => match ancestry(plan_sha, b) {
+                Some(true) => return Ok(Some(r.id)),
+                Some(false) => {}
+                None => return Err(()),
+            },
+            _ => {
+                if let Some(t) = plan_at_ms {
+                    if r.started_at >= t {
+                        return Ok(Some(r.id));
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 pub fn approving_dev_run(
     runs: &[RunRow],
     plan_sha: &str,
     plan_at_ms: Option<i64>,
     is_ancestor: impl Fn(&str, &str) -> bool,
 ) -> Option<i64> {
-    let mut dev_runs: Vec<&RunRow> = runs.iter().filter(|r| r.role == "dev").collect();
-    dev_runs.sort_by_key(|r| (r.started_at, r.id));
-
-    for r in dev_runs {
-        match r.base_commit.as_deref() {
-            Some(b) if !b.is_empty() => {
-                if is_ancestor(plan_sha, b) {
-                    return Some(r.id);
-                }
-            }
-            _ => {
-                if let Some(t) = plan_at_ms {
-                    if r.started_at >= t {
-                        return Some(r.id);
-                    }
-                }
-            }
-        }
-    }
-    None
+    approving_dev_run_checked(runs, plan_sha, plan_at_ms, |a, d| Some(is_ancestor(a, d)))
+        .unwrap_or(None)
 }
 
 #[cfg(test)]
@@ -4070,5 +4086,215 @@ mod tests {
         assert_eq!(all_rows[2].kind, "QA");
         assert_eq!(all_rows[2].counts, None);
         assert_eq!(all_rows[2].label, "Vòng 1 · QA");
+    }
+
+    #[test]
+    fn test_wr03_violating_lead_does_not_wait() {
+        let task = dummy_task("planned");
+        // Violating lead: status succeeded + outcome protocol_violation
+        let violating_lead = run(
+            1,
+            "lead",
+            "succeeded",
+            Some("protocol_violation"),
+            1000,
+            Some(2000),
+        );
+        let facts_violating = PipelineFacts {
+            task: &task,
+            runs: &[violating_lead],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 3000,
+        };
+        let view_violating = derive(&facts_violating);
+        assert_eq!(view_violating.ledger.groups[0].right, None);
+        assert_eq!(view_violating.cards.ban.state, "cho");
+        assert_eq!(view_violating.cards.ban.result, "chưa có plan");
+
+        // Clean lead: status succeeded + outcome None
+        let clean_lead = run(1, "lead", "succeeded", None, 1000, Some(2000));
+        let facts_clean = PipelineFacts {
+            task: &task,
+            runs: &[clean_lead],
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 3000,
+        };
+        let view_clean = derive(&facts_clean);
+        assert_eq!(
+            view_clean.ledger.groups[0].right.as_deref(),
+            Some("chờ bạn")
+        );
+        assert_eq!(view_clean.cards.ban.state, "cho_ban");
+        assert_eq!(view_clean.cards.ban.result, "chờ duyệt plan");
+    }
+
+    #[test]
+    fn test_wr02_checked() {
+        let dev = RunRow {
+            base_commit: Some("bbb2".to_string()),
+            ..run(42, "dev", "succeeded", None, 1000, Some(2000))
+        };
+        let runs = vec![dev];
+
+        // ancestry returns Some(true) -> Ok(Some(42))
+        assert_eq!(
+            approving_dev_run_checked(&runs, "aaa1", None, |_p, _b| Some(true)),
+            Ok(Some(42))
+        );
+
+        // ancestry returns Some(false) -> Ok(None)
+        assert_eq!(
+            approving_dev_run_checked(&runs, "aaa1", None, |_p, _b| Some(false)),
+            Ok(None)
+        );
+
+        // ancestry returns None -> Err(())
+        assert_eq!(
+            approving_dev_run_checked(&runs, "aaa1", None, |_p, _b| None),
+            Err(())
+        );
+
+        // approving_dev_run (bool) still returns Some(42) / None
+        assert_eq!(
+            approving_dev_run(&runs, "aaa1", None, |_p, _b| true),
+            Some(42)
+        );
+        assert_eq!(approving_dev_run(&runs, "aaa1", None, |_p, _b| false), None);
+    }
+
+    #[test]
+    fn test_review_never_starts_cycle() {
+        let task = dummy_task("dev_done");
+        let wf = test_mac_dinh();
+
+        // staged runs L, D, Q, PR (plan-review after QA)
+        let runs1 = vec![
+            staged_run(
+                1,
+                "lead",
+                Some("plan"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                1000,
+            ),
+            staged_run(
+                2,
+                "dev",
+                Some("implement"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                2000,
+            ),
+            staged_run(
+                3,
+                "qa",
+                Some("qa"),
+                Some(1),
+                "succeeded",
+                Some("qa:pass"),
+                None,
+                3000,
+            ),
+            staged_run(
+                4,
+                "plan-review",
+                Some("plan-review"),
+                Some(2),
+                "succeeded",
+                Some("review:approve"),
+                None,
+                4000,
+            ),
+        ];
+        let facts1 = PipelineFacts {
+            task: &task,
+            runs: &runs1,
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 5000,
+        };
+        let flow1 = FlowFacts {
+            workflow: Some(&wf),
+            ..Default::default()
+        };
+        let resp1 = derive_response(&facts1, &flow1);
+        let pr_group = resp1
+            .base
+            .ledger
+            .groups
+            .iter()
+            .find(|g| g.rows.iter().any(|r| r.run_id == 4))
+            .unwrap();
+        assert_eq!(pr_group.cycle, 1);
+
+        // L, D, Q, L -> the second L starts cycle 2
+        let runs2 = vec![
+            staged_run(
+                1,
+                "lead",
+                Some("plan"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                1000,
+            ),
+            staged_run(
+                2,
+                "dev",
+                Some("implement"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                2000,
+            ),
+            staged_run(
+                3,
+                "qa",
+                Some("qa"),
+                Some(1),
+                "succeeded",
+                Some("qa:pass"),
+                None,
+                3000,
+            ),
+            staged_run(
+                4,
+                "lead",
+                Some("plan"),
+                Some(2),
+                "succeeded",
+                None,
+                None,
+                4000,
+            ),
+        ];
+        let facts2 = PipelineFacts {
+            task: &task,
+            runs: &runs2,
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 5000,
+        };
+        let flow2 = FlowFacts {
+            workflow: Some(&wf),
+            ..Default::default()
+        };
+        let resp2 = derive_response(&facts2, &flow2);
+        let second_lead_group = resp2
+            .base
+            .ledger
+            .groups
+            .iter()
+            .find(|g| g.rows.iter().any(|r| r.run_id == 4))
+            .unwrap();
+        assert_eq!(second_lead_group.cycle, 2);
     }
 }
