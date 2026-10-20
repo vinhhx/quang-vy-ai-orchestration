@@ -248,7 +248,7 @@ Plans:
   5. Dashboard hiện thẻ review/sửa thật (vòng N / giới hạn, số chặn/góp ý), nút duyệt plan, bật/tắt autopilot; CSDL cũ nâng cấp lên schema mới không mất dữ liệu.
 
 **UI hint**: yes
-**Plans:** 5/20 plans executed
+**Plans:** 6/20 plans executed
 
 Plans:
 **Wave 1**
@@ -261,7 +261,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [x] 05.2-05-PLAN.md — Review roles `run plan-review|code-review` (guarded report-only writes, D-06 verdicts, staged run recording)
-- [ ] 05.2-06-PLAN.md — Autopilot pure core: decide() rules (loops, caps, gate, budget, stops, resume) and stop wording
+- [x] 05.2-06-PLAN.md — Autopilot pure core: decide() rules (loops, caps, gate, budget, stops, resume) and stop wording
 - [ ] 05.2-13-PLAN.md — GET /api/workflows and per-project workflow on project JSON
 
 **Wave 4** *(blocked on Wave 3 completion)*
