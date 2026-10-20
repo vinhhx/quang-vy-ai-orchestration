@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
 pub const GUARD_MATCHER: &str = "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob|Bash";
+pub const BASH_MATCHER: &str = "Bash";
 pub const WRITE_TOOLS: [&str; 4] = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
 pub const READ_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
 
@@ -297,13 +298,105 @@ pub fn bash_command_check(command: &str) -> Result<(), String> {
     git_policy_check(&words[1..])
 }
 
+/// The only git global option allowed before the subcommand, besides `-P`.
+const GIT_GLOBAL_LONG_ALLOWED: &str = "no-pager";
+
+/// The union of the git subcommands in the roles' allowedTools.
+const GIT_SUBCOMMANDS: [&str; 6] = ["diff", "log", "show", "status", "add", "commit"];
+
+/// Long options of diff / log / show that write a file, run an external
+/// program or read files outside the repository.
+const GIT_DIFF_FORBIDDEN: &[&str] = &["output", "ext-diff", "textconv", "no-index"];
+/// Long options of commit that read the message from a file.
+const GIT_COMMIT_FORBIDDEN: &[&str] = &["file", "template", "pathspec-from-file"];
+/// Long options of add that add ignored files or read pathspecs from a file.
+const GIT_ADD_FORBIDDEN: &[&str] = &["force", "pathspec-from-file"];
+/// Exact long option names that share a prefix with a forbidden name but
+/// are harmless.
+const GIT_LONG_EXACT_ALLOWED: &[&str] = &["text", "no-ext-diff", "no-textconv"];
+
+fn git_forbidden_err(sub: &str, opt: &str) -> String {
+    format!("git {sub} {opt} ghi file hoặc chạy chương trình ngoài — không được phép")
+}
+
+/// The git option policy (W-1) on the words after `git`.
 fn git_policy_check(args: &[ShellWord]) -> Result<(), String> {
-    for w in args {
-        let t = w.text.as_str();
-        if t == "--output" || t.starts_with("--output=") {
-            return Err(format!(
-                "git {t} ghi file hoặc chạy chương trình ngoài — không được phép"
-            ));
+    let mut i = 0;
+    while i < args.len() && args[i].text.starts_with('-') {
+        let opt = args[i].text.as_str();
+        let allowed = opt == "-P" || opt.strip_prefix("--") == Some(GIT_GLOBAL_LONG_ALLOWED);
+        if !allowed {
+            return Err(format!("tùy chọn toàn cục của git {opt} không được phép"));
+        }
+        i += 1;
+    }
+    let sub = args.get(i).map(|w| w.text.as_str()).unwrap_or("");
+    if !GIT_SUBCOMMANDS.contains(&sub) {
+        return Err(format!(
+            "git {sub} không nằm trong danh sách được phép (diff, log, show, status, add, commit)"
+        ));
+    }
+    let forbidden_long: &[&str] = match sub {
+        "diff" | "log" | "show" => GIT_DIFF_FORBIDDEN,
+        "commit" => GIT_COMMIT_FORBIDDEN,
+        "add" => GIT_ADD_FORBIDDEN,
+        _ => &[],
+    };
+
+    let rest = &args[i + 1..];
+    let mut j = 0;
+    while j < rest.len() {
+        let word = rest[j].text.as_str();
+        j += 1;
+        if word == "--" {
+            // pathspec separator: keep scanning (a later option-like
+            // pathspec is refused too, which is safe)
+            continue;
+        }
+        if let Some(long) = word.strip_prefix("--") {
+            let name = long.split('=').next().unwrap_or("");
+            if name.is_empty() || GIT_LONG_EXACT_ALLOWED.contains(&name) {
+                continue;
+            }
+            // git accepts every unambiguous abbreviation of a long option,
+            // so any non-empty prefix of a forbidden name counts.
+            if forbidden_long.iter().any(|f| f.starts_with(name)) {
+                return Err(git_forbidden_err(sub, word));
+            }
+            continue;
+        }
+        let Some(cluster) = word.strip_prefix('-') else {
+            continue;
+        };
+        if cluster.is_empty() {
+            continue;
+        }
+        match sub {
+            "commit" => {
+                for (k, ch) in cluster.char_indices() {
+                    match ch {
+                        'F' | 't' => return Err(git_forbidden_err(sub, word)),
+                        'm' => {
+                            // the rest of the cluster is the message; when
+                            // `m` ends the cluster the next word is
+                            if k + ch.len_utf8() == cluster.len() {
+                                j += 1;
+                            }
+                            break;
+                        }
+                        // these take an attached value: stop the scan
+                        // (the next word is still checked)
+                        'c' | 'C' | 'u' | 'S' => break,
+                        _ => {}
+                    }
+                }
+            }
+            "add" => {
+                if cluster.contains('f') {
+                    return Err(git_forbidden_err(sub, word));
+                }
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -486,6 +579,24 @@ pub fn write_hook_settings(
     write_allow: &[PathBuf],
     exe: &Path,
 ) -> BrainResult<PathBuf> {
+    write_hook_settings_with_matcher(run_dir, root, read_allow, write_allow, exe, GUARD_MATCHER)
+}
+
+/// Settings whose only PreToolUse matcher is `Bash`: the git policy for a
+/// role that has no write guard (Lead, QA). File tools stay with claude's
+/// own allow rules.
+pub fn write_bash_hook_settings(run_dir: &Path, root: &Path, exe: &Path) -> BrainResult<PathBuf> {
+    write_hook_settings_with_matcher(run_dir, root, None, &[], exe, BASH_MATCHER)
+}
+
+fn write_hook_settings_with_matcher(
+    run_dir: &Path,
+    root: &Path,
+    read_allow: Option<&[PathBuf]>,
+    write_allow: &[PathBuf],
+    exe: &Path,
+    matcher: &str,
+) -> BrainResult<PathBuf> {
     std::fs::create_dir_all(run_dir)?;
     #[cfg(unix)]
     {
@@ -534,7 +645,7 @@ pub fn write_hook_settings(
         "hooks": {
             "PreToolUse": [
                 {
-                    "matcher": GUARD_MATCHER,
+                    "matcher": matcher,
                     "hooks": [
                         {
                             "type": "command",
@@ -795,5 +906,102 @@ mod tests {
         );
         let err = bash_command_check("git log && id").unwrap_err();
         assert!(err.contains("toán tử shell (&)"), "{err}");
+    }
+
+    #[test]
+    fn bash_git_option_table() {
+        let allowed = [
+            "git status --porcelain",
+            "git diff abc123..HEAD -- . ':(exclude).plan.md'",
+            "git --no-pager diff",
+            "git -P log",
+            "git log -c",
+            "git log --oneline",
+            "git log --output-indicator-new=+",
+            "git diff --text",
+            "git diff --no-ext-diff --no-textconv",
+            "git add src/app.py",
+            "git add -A",
+            "git commit -m \"sua-app: sửa app\"",
+            "git commit -m -Fix-me",
+            "git commit -mF",
+            "git commit -am \"x\"",
+            "git commit --fixup=HEAD",
+            // extra
+            "git --no-pager -P log --format='%H %s' -5",
+            "git log --format='%H %s' -5",
+            "git show HEAD:.plan-review.md",
+            "git commit -m --file=/x",
+            "git commit -C HEAD",
+            "git diff --stat",
+            "git add -u",
+        ];
+        let refused = [
+            "git diff --output=/tmp/x",
+            "git diff --output /tmp/x",
+            "git log --outp=/tmp/x",
+            "git log --o=/tmp/x",
+            "git diff '--output=x'",
+            "git diff \\-\\-output=x",
+            "git show --ext-diff HEAD",
+            "git show --ext HEAD",
+            "git log -p --textconv",
+            "git log --textc",
+            "git diff --no-index a b",
+            "git diff --no-i a b",
+            "git -c core.pager=sh log",
+            "git -C /etc log",
+            "git --git-dir=/x log",
+            "git --work-tree=/x status",
+            "git --exec-path=/x log",
+            "git --config-env=a=b log",
+            "git push",
+            "git config core.pager sh",
+            "git commit -F /etc/passwd",
+            "git commit --file=/x",
+            "git commit --fil=/x",
+            "git commit -aF /x",
+            "git commit -Fm x",
+            "git commit -t /x",
+            "git commit --template=/x",
+            "git commit --te=/x",
+            "git add -f .env",
+            "git add --force .env",
+            "git add --f .env",
+            "git add -fA",
+            "git add --pathspec-from-file=/x",
+            // extra
+            "git",
+            "git --no-pager",
+            "git -p log",
+            "git --paginate log",
+            "git --no-pager=x diff",
+            "git --o diff",
+            "git log -- --output=x",
+            "git diff --no- a b",
+            "git show --t HEAD",
+            "git commit -um -F /x",
+            "git commit -m -- -F /x",
+            "git commit -C -F /x",
+            "git commit --message x -F /x",
+            "git commit --pathspec-from-file=/x",
+            "git add -Af .env",
+            "git add --pathspec-f=/x",
+            "git Diff",
+        ];
+        check_table(&allowed, &refused);
+
+        assert_eq!(
+            bash_command_check("git push").unwrap_err(),
+            "git push không nằm trong danh sách được phép (diff, log, show, status, add, commit)"
+        );
+        assert_eq!(
+            bash_command_check("git -c a=b log").unwrap_err(),
+            "tùy chọn toàn cục của git -c không được phép"
+        );
+        assert_eq!(
+            bash_command_check("git diff --ext-diff").unwrap_err(),
+            "git diff --ext-diff ghi file hoặc chạy chương trình ngoài — không được phép"
+        );
     }
 }

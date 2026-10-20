@@ -320,3 +320,113 @@ fn dev_heredoc_commit_falls_back_to_brain_commit() {
         .count();
     assert_eq!(bash_blocks, 3, "guard log: {lines:?}");
 }
+
+/// `write_bash_hook_settings` in a tempdir; returns (tempdir, run_dir, settings json).
+fn bash_hook_settings() -> (tempfile::TempDir, PathBuf, serde_json::Value) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = tmp.path().canonicalize().expect("canonicalize");
+    let root = base.join("root");
+    std::fs::create_dir_all(&root).expect("create root");
+    let run_dir = base.join("run dir 'q'");
+    let settings_path =
+        agent_brain::guard::write_bash_hook_settings(&run_dir, &root, &common::bin())
+            .expect("write_bash_hook_settings");
+    assert_eq!(settings_path, run_dir.join("settings.json"));
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    (tmp, run_dir, settings)
+}
+
+fn single_hook(settings: &serde_json::Value) -> (String, String) {
+    let hooks = settings["hooks"]["PreToolUse"]
+        .as_array()
+        .expect("PreToolUse array");
+    assert_eq!(hooks.len(), 1, "{settings}");
+    let inner = hooks[0]["hooks"].as_array().expect("inner hooks");
+    assert_eq!(inner.len(), 1);
+    assert_eq!(inner[0]["type"], "command");
+    (
+        hooks[0]["matcher"].as_str().unwrap().to_string(),
+        inner[0]["command"].as_str().unwrap().to_string(),
+    )
+}
+
+#[test]
+fn bash_hook_settings_shape() {
+    let (_tmp, run_dir, settings) = bash_hook_settings();
+    let (matcher, command) = single_hook(&settings);
+    assert_eq!(matcher, "Bash");
+    assert_eq!(matcher, agent_brain::guard::BASH_MATCHER);
+
+    let policy_path = run_dir.join("policy.json");
+    let expected_cmd = format!(
+        "{} guard --policy {}",
+        agent_brain::guard::sh_quote(&common::bin().canonicalize().unwrap().to_string_lossy()),
+        agent_brain::guard::sh_quote(&policy_path.to_string_lossy()),
+    );
+    assert_eq!(command, expected_cmd);
+
+    let policy: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&policy_path).unwrap()).unwrap();
+    assert!(policy["read_allow"].is_null(), "{policy}");
+    assert_eq!(policy["write_allow"], serde_json::json!([]));
+    assert_eq!(
+        policy["log"].as_str(),
+        Some(run_dir.join("guard.jsonl").to_string_lossy().as_ref())
+    );
+
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&run_dir).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+}
+
+#[test]
+fn bash_hook_blocks_only_bash() {
+    let (_tmp, run_dir, settings) = bash_hook_settings();
+    let (matcher, command) = single_hook(&settings);
+    // claude sends only Bash calls to this hook: Write / Read never match
+    let re = regex::Regex::new(&format!("^(?:{matcher})$")).unwrap();
+    assert!(re.is_match("Bash"));
+    for tool in [
+        "Read",
+        "Edit",
+        "Write",
+        "MultiEdit",
+        "NotebookEdit",
+        "Grep",
+        "Glob",
+    ] {
+        assert!(!re.is_match(tool), "{tool} matched {matcher}");
+    }
+
+    // the hook command, run as claude runs it
+    let run_hook = |cmd_line: &str| -> Option<i32> {
+        let payload = bash_payload(&run_dir, cmd_line);
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn hook");
+        {
+            use std::io::Write;
+            let mut stdin = child.stdin.take().unwrap();
+            stdin
+                .write_all(serde_json::to_string(&payload).unwrap().as_bytes())
+                .unwrap();
+        }
+        child.wait_with_output().unwrap().status.code()
+    };
+    assert_eq!(run_hook("git log --output=x"), Some(2));
+    assert_eq!(run_hook("git log --oneline"), Some(0));
+    assert!(!run_dir.join("x").exists());
+
+    let lines = guard_log_lines(&run_dir);
+    let decisions: Vec<&str> = lines
+        .iter()
+        .map(|l| l["decision"].as_str().unwrap())
+        .collect();
+    assert_eq!(decisions, vec!["block", "allow"]);
+}
