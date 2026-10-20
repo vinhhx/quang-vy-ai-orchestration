@@ -188,8 +188,9 @@ fn spawn_stage(ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainRes
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::piped());
 
-    // Con ở cùng nhóm tiến trình với driver (Ctrl+C ở terminal tới cả hai);
-    // driver chết thì con nhận SIGTERM (PR_SET_PDEATHSIG), không chạy mồ côi.
+    // Con ở cùng nhóm tiến trình với driver: Ctrl+C ở terminal tới cả hai; driver
+    // chuyển SIGTERM để con dừng êm, không dừng cưỡng bức (WR-01).
+    // Driver chết thì con nhận SIGTERM (PR_SET_PDEATHSIG), không chạy mồ côi.
     let driver_pid = unsafe { libc::getpid() };
     unsafe {
         cmd.pre_exec(move || {
@@ -229,8 +230,10 @@ fn spawn_stage(ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainRes
         first
     });
 
-    // Chờ con: tín hiệu tới driver → chuyển một SIGINT cho con rồi chờ nó tự dừng
-    // (con dừng claude của nó); cờ kill trên task → runner::cmd_kill một lần (D-04).
+    // Chờ con: tín hiệu tới driver → chuyển một SIGTERM cho con rồi chờ nó tự dừng
+    // (con dừng claude của nó). Ctrl+C ở terminal tới cả hai; driver chuyển SIGTERM
+    // để con dừng êm, không dừng cưỡng bức — SIGINT thứ hai sẽ thành SIGKILL ở runner
+    // (WR-01). Cờ kill trên task → runner::cmd_kill một lần (D-04).
     let child_pid = child.id() as libc::pid_t;
     let mut forwarded = false;
     let mut kill_done = false;
@@ -240,7 +243,7 @@ fn spawn_stage(ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainRes
         }
         if signaled() && !forwarded {
             unsafe {
-                libc::kill(child_pid, libc::SIGINT);
+                libc::kill(child_pid, libc::SIGTERM);
             }
             forwarded = true;
         }

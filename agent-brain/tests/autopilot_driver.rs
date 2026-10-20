@@ -309,3 +309,195 @@ fn approve_prints_once() {
         res.stderr
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 2: WR-01 — Ctrl+C ở terminal vẫn dừng êm
+// ---------------------------------------------------------------------------
+
+/// Driver do test sinh ra: Drop dừng đúng tiến trình đã ghi (Child) và các
+/// tiến trình con đã ghi pid + start time, không bao giờ tìm theo tên.
+struct ChildGuard {
+    child: std::process::Child,
+    procs: Vec<agent_brain::procs::ProcId>,
+}
+
+impl ChildGuard {
+    fn pid(&self) -> i32 {
+        self.child.id() as i32
+    }
+
+    fn wait_exit(&mut self, timeout: std::time::Duration) -> Option<i32> {
+        use std::os::unix::process::ExitStatusExt;
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if let Ok(Some(st)) = self.child.try_wait() {
+                return Some(st.code().unwrap_or_else(|| 128 + st.signal().unwrap_or(0)));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        None
+    }
+
+    /// Ghi lại các tiến trình con hiện có của driver (agent-brain run, fake claude).
+    fn record_descendants(&mut self) {
+        let pid = self.pid();
+        for p in agent_brain::procs::descendants(pid) {
+            if !self.procs.contains(&p) {
+                self.procs.push(p);
+            }
+        }
+    }
+
+    fn alive_recorded(&self) -> Vec<agent_brain::procs::ProcId> {
+        self.procs
+            .iter()
+            .copied()
+            .filter(|p| agent_brain::procs::alive(*p))
+            .collect()
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Ok(None) = self.child.try_wait() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        for p in &self.procs {
+            if agent_brain::procs::alive(*p) {
+                agent_brain::procs::signal_proc(*p, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+fn driver_stderr(sb: &Sandbox) -> String {
+    std::fs::read_to_string(sb.root.join("driver.stderr.txt")).unwrap_or_default()
+}
+
+/// Chờ một run `running` của vai trò; trả (run id, ProcId của claude giả).
+fn wait_running_run(sb: &Sandbox, role: &str) -> (i64, agent_brain::procs::ProcId) {
+    let mut found = None;
+    let ok = common::wait_until(std::time::Duration::from_secs(15), || {
+        let conn = sb.db();
+        let row: rusqlite::Result<(i64, i64, i64)> = conn.query_row(
+            "SELECT id, pid, pid_start FROM runs WHERE status = 'running' AND role = ?1",
+            [role],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        );
+        if let Ok((id, pid, start)) = row {
+            found = Some((
+                id,
+                agent_brain::procs::ProcId {
+                    pid: pid as i32,
+                    start: start as u64,
+                },
+            ));
+            true
+        } else {
+            false
+        }
+    });
+    assert!(ok, "no running {role} run: {}", driver_stderr(sb));
+    found.unwrap()
+}
+
+fn run_status(sb: &Sandbox, run_id: i64) -> String {
+    sb.db()
+        .query_row("SELECT status FROM runs WHERE id = ?1", [run_id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+fn approved_gate(sb: &Sandbox) {
+    flow_to_gate(sb);
+    let res = sb.run(&["approve", "1", "--no-continue"], None);
+    assert_ok(&res, "approve --no-continue");
+}
+
+fn slow_dev_roles(sleep: f64) -> Value {
+    let mut dev = dev_impl_entry();
+    dev["sleep"] = json!(sleep);
+    json!({
+        "dev": [dev],
+        "code-review": [code_review_entry("pass", 0, &[])],
+        "qa": [qa_entry("Đạt")],
+    })
+}
+
+#[test]
+fn group_sigint_stays_graceful() {
+    let sb = Sandbox::new();
+    approved_gate(&sb);
+    group_sigint_case(&sb);
+}
+
+/// Claude giả bỏ qua SIGTERM: run dừng trọn thời gian grace, nên SIGINT thứ hai
+/// (nếu driver còn chuyển SIGINT) chắc chắn tới runner trong lúc đang dừng.
+#[test]
+fn group_sigint_stays_graceful_slow_stop() {
+    let sb = Sandbox::new();
+    approved_gate(&sb);
+    let fake = sb.root.join("claude-cham-dung.py");
+    std::fs::write(
+        &fake,
+        "#!/usr/bin/env python3\n\
+         import json, signal, sys, time\n\
+         signal.signal(signal.SIGTERM, signal.SIG_IGN)\n\
+         sys.stdout.write(json.dumps({\"type\": \"system\", \"subtype\": \"init\", \"session_id\": \"s\", \"model\": \"fake\"}) + \"\\n\")\n\
+         sys.stdout.flush()\n\
+         end = time.time() + 30\n\
+         while time.time() < end:\n    time.sleep(0.1)\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    sb.write_config(json!({
+        "claude_bin": fake.to_str().unwrap(),
+        "kill_grace_secs": 2,
+    }));
+    group_sigint_case(&sb);
+}
+
+fn group_sigint_case(sb: &Sandbox) {
+    use std::os::unix::process::CommandExt;
+
+    sb.write_scenario(by_role(slow_dev_roles(30.0)));
+    let out = std::fs::File::create(sb.root.join("driver.stdout.txt")).unwrap();
+    let err = std::fs::File::create(sb.root.join("driver.stderr.txt")).unwrap();
+    let mut cmd = sb.command(&["auto", "1"], &[]);
+    // Driver và con của nó thành một nhóm mới, như một job ở terminal.
+    cmd.process_group(0);
+    cmd.stdout(std::process::Stdio::from(out));
+    cmd.stderr(std::process::Stdio::from(err));
+    let mut driver = ChildGuard {
+        child: cmd.spawn().expect("spawn driver"),
+        procs: Vec::new(),
+    };
+
+    let (dev_run, claude) = wait_running_run(sb, "dev");
+    driver.procs.push(claude);
+    driver.record_descendants();
+    assert!(driver.procs.len() >= 2, "recorded: {:?}", driver.procs);
+
+    // Ctrl+C ở terminal: SIGINT tới cả nhóm test đã tạo (không bao giờ nhóm của test).
+    let pgid = driver.pid();
+    assert_ne!(pgid, unsafe { libc::getpgrp() });
+    unsafe {
+        libc::kill(-pgid, libc::SIGINT);
+    }
+
+    let code = driver.wait_exit(std::time::Duration::from_secs(20));
+    assert_eq!(code, Some(130), "stderr: {}", driver_stderr(sb));
+    assert_eq!(run_status(sb, dev_run), "killed");
+    let stderr = driver_stderr(sb);
+    assert!(stderr.contains("Đang dừng run"), "stderr: {stderr}");
+    assert!(!stderr.contains("Dừng ngay (SIGKILL)"), "stderr: {stderr}");
+    let gone = common::wait_until(std::time::Duration::from_secs(5), || {
+        driver.alive_recorded().is_empty()
+    });
+    assert!(gone, "alive: {:?}", driver.alive_recorded());
+}
