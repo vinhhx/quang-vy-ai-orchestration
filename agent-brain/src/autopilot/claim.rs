@@ -4,10 +4,11 @@
 //! `procs::alive`, nên một driver đã chết để lại hàng `running` vẫn nhận lại được.
 
 use crate::autopilot::decide::{AutoJson, Replan, StopReason};
-use crate::db::{DriverRow, RunRow, TaskAuto};
+use crate::db::{DriverRow, RunRow, TaskAuto, TaskRow};
 use crate::error::{BrainError, BrainResult};
 use crate::procs::ProcId;
 use rusqlite::Connection;
+use std::path::Path;
 
 fn proc_of(pid: Option<i64>, start: Option<i64>) -> Option<ProcId> {
     match (pid, start) {
@@ -233,4 +234,72 @@ pub fn task_project(conn: &Connection, task_id: i64) -> BrainResult<Option<(Stri
     } else {
         Ok(None)
     }
+}
+
+/// Kiểm tra trước khi ghi duyệt plan; Ok = sha của commit plan hiện tại.
+pub fn approve_check(conn: &Connection, task: &TaskRow, root: &Path) -> Result<String, String> {
+    let db_err = |e: BrainError| e.message;
+    let auto = crate::db::task_auto(conn, task.id)
+        .map_err(db_err)?
+        .unwrap_or_default();
+    if auto.workflow_json.is_none() {
+        return Err(
+            "Task tạo trước Phase 5.2 — không có cổng duyệt để ghi; bấm Chạy Dev để duyệt như trước."
+                .to_string(),
+        );
+    }
+    if driver_alive(&auto) {
+        return Err("Autopilot đang chạy task này — chờ autopilot dừng".to_string());
+    }
+    if let Some(r) = crate::db::running_run_for_task(conn, task.id).map_err(db_err)? {
+        if run_alive(&r) {
+            return Err("Đang có run chạy — chờ run xong hoặc bấm Kill".to_string());
+        }
+    }
+    let plan_commit = match crate::gitops::plan_commit_on_branch(
+        root,
+        &task.branch,
+        &task.slug,
+        task.base_commit.as_deref(),
+    ) {
+        Err(()) => {
+            return Err(format!(
+                "Không đọc được lịch sử git của nhánh {}",
+                task.branch
+            ))
+        }
+        Ok(None) => {
+            return Err(format!(
+                "Chưa có commit '{}: plan' trên nhánh {}",
+                task.slug, task.branch
+            ))
+        }
+        Ok(Some(pc)) => pc,
+    };
+    if crate::gitops::current_branch(root).as_deref() == Some(task.branch.as_str()) {
+        let dirty = crate::gitops::changed_paths(root).map_err(db_err)?;
+        if dirty.contains(".plan.md") {
+            return Err(format!(
+                "Plan có thay đổi chưa commit — commit với message '{}: plan' rồi duyệt",
+                task.slug
+            ));
+        }
+    }
+    if auto.approved_commit.as_deref() == Some(plan_commit.as_str()) {
+        let at = auto
+            .approved_at
+            .map(crate::autopilot::view::fmt_hhmm)
+            .unwrap_or_else(|| "--:--".to_string());
+        return Err(format!(
+            "Plan hiện tại đã được duyệt lúc {at} — không duyệt lại"
+        ));
+    }
+    Ok(plan_commit)
+}
+
+/// Ghi duyệt plan cho commit hiện tại; trả thời điểm (ms) đã ghi.
+pub fn approve_record(conn: &Connection, task_id: i64, plan_commit: &str) -> BrainResult<i64> {
+    let now = crate::db::now_ms();
+    crate::db::set_task_approval(conn, task_id, now, plan_commit)?;
+    Ok(now)
 }

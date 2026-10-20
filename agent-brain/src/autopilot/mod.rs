@@ -534,7 +534,60 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
     drive(ctx, task_id, true)
 }
 
-/// `agent-brain approve` — ghi duyệt plan (Task 2 của plan 05.2-11).
-pub fn cmd_approve(_ctx: &mut Ctx, _task_id: i64, _no_continue: bool) -> BrainResult<i32> {
-    Err(BrainError::not_available("approve"))
+/// `agent-brain approve` — ghi duyệt plan cho commit plan hiện tại; với quy trình
+/// `auto: true` driver chạy tiếp ngay trong tiến trình này (trừ khi `--no-continue`).
+pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResult<i32> {
+    let task = crate::db::get_task(&ctx.conn, task_id)?
+        .ok_or_else(|| BrainError::error(format!("Không tìm thấy task {task_id}")))?;
+    let (proj_slug, profile) = claim::task_project(&ctx.conn, task_id)?
+        .ok_or_else(|| BrainError::error(format!("Không tìm thấy dự án của task {task_id}")))?;
+    let project = ctx
+        .projects
+        .iter()
+        .find(|p| p.id == proj_slug)
+        .cloned()
+        .ok_or_else(|| {
+            BrainError::error(format!(
+                "Dự án '{proj_slug}' không còn trong projects_map.json"
+            ))
+        })?;
+    let root = crate::projects::require_runnable(&project, &ctx.cfg)?;
+
+    let plan_commit = claim::approve_check(&ctx.conn, &task, &root).map_err(BrainError::error)?;
+
+    let auto = crate::db::task_auto(&ctx.conn, task_id)?.unwrap_or_default();
+    let wf_auto = auto
+        .workflow_json
+        .as_deref()
+        .and_then(Workflow::from_snapshot)
+        .map(|w| w.auto)
+        .unwrap_or(false);
+    let cont = wf_auto && !no_continue;
+    if cont {
+        // Kiểm tra bận trước khi ghi, để một lần từ chối không để lại nửa chừng.
+        if let Some(reason) =
+            claim::project_busy_reason(&ctx.conn, &proj_slug, &profile, Some(task_id))?
+        {
+            return Err(BrainError::error(reason));
+        }
+    }
+
+    let at = claim::approve_record(&ctx.conn, task_id, &plan_commit)?;
+    let sha7: String = plan_commit.chars().take(7).collect();
+    crate::term::emit(&format!(
+        "Đã duyệt plan {sha7} lúc {} (task {task_id}).",
+        view::fmt_hhmm(at)
+    ));
+    if !cont {
+        return Ok(EXIT_OK);
+    }
+
+    claim::claim(
+        &mut ctx.conn,
+        task_id,
+        &proj_slug,
+        &profile,
+        &ClaimOpts::default(),
+    )?;
+    drive(ctx, task_id, true)
 }
