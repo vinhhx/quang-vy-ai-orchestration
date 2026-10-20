@@ -180,6 +180,18 @@ const sections = [
           card: 'border-dashed border-slate-400 bg-transparent dark:border-slate-500 dark:bg-transparent',
           word: 'chưa tự động',
         },
+        duyet: {
+          codePoint: 0x2713,
+          text: 'text-emerald-700 dark:text-emerald-300',
+          card: 'border-emerald-300 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-900/20',
+          word: 'duyệt',
+        },
+        sua_lai: {
+          codePoint: 0x0021,
+          text: 'text-amber-800 dark:text-amber-300',
+          card: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
+          word: 'sửa lại',
+        },
       };
 
       const states = Object.keys(expected);
@@ -240,6 +252,16 @@ const sections = [
         AB.stateCard('chua_tu_dong')
       );
 
+      // 05.2 vocabulary: duyet reuses xong, sua_lai reuses can_sua
+      check('stateCard(duyet) == stateCard(xong)', AB.stateCard('duyet') === AB.stateCard('xong'), `got "${AB.stateCard('duyet')}"`);
+      check('stepClass(duyet) == stepClass(xong)', AB.stepClass('duyet') === AB.stepClass('xong'), `got "${AB.stepClass('duyet')}"`);
+      check('stateText(sua_lai) == stateText(can_sua)', AB.stateText('sua_lai') === AB.stateText('can_sua'), `got "${AB.stateText('sua_lai')}"`);
+      check('stepClass(sua_lai) == stepClass(can_sua)', AB.stepClass('sua_lai') === AB.stepClass('can_sua'), `got "${AB.stepClass('sua_lai')}"`);
+      check('stepGlyph(sua_lai) == stepGlyph(can_sua)', AB.stepGlyph('sua_lai') === AB.stepGlyph('can_sua'), `got "${AB.stepGlyph('sua_lai')}"`);
+      check('roleName(plan-review)', AB.roleName('plan-review') === 'Review plan', `got "${AB.roleName('plan-review')}"`);
+      check('roleName(code-review)', AB.roleName('code-review') === 'Review code', `got "${AB.roleName('code-review')}"`);
+      check('roleName(lead) unchanged', AB.roleName('lead') === 'Lead', `got "${AB.roleName('lead')}"`);
+
       const unknown = 'khong-co';
       check(
         'stateText unknown falls back to cho',
@@ -294,6 +316,16 @@ const sections = [
       check('stepWord(killed)', AB.stepWord({ state: 'killed', label: 'killed' }) === 'đã dừng', `got "${AB.stepWord({ state: 'killed', label: 'killed' })}"`);
       check('stepWord(xong)', AB.stepWord({ state: 'xong', label: 'xong' }) === 'xong', `got "${AB.stepWord({ state: 'xong', label: 'xong' })}"`);
       check('stepWord(vuong_mac)', AB.stepWord({ state: 'vuong_mac', label: 'Vướng mắc' }) === 'Vướng mắc', `got "${AB.stepWord({ state: 'vuong_mac', label: 'Vướng mắc' })}"`);
+
+      // countParts: order blocking, advisory, specs, not_automatable, failing; unknown omitted, known 0 shown
+      const cp1 = AB.countParts({ blocking: 0, advisory: 4, specs: null, failing: null, not_automatable: null });
+      check('countParts review', JSON.stringify(cp1) === JSON.stringify(['0 chặn', '4 góp ý']), `got ${JSON.stringify(cp1)}`);
+      const cp2 = AB.countParts({ specs: 3, failing: 1, not_automatable: 2 });
+      check('countParts qa', JSON.stringify(cp2) === JSON.stringify(['3 kiểm thử', '2 không tự động được', '1 lỗi']), `got ${JSON.stringify(cp2)}`);
+      const cp3 = AB.countParts(null);
+      check('countParts(null)', Array.isArray(cp3) && cp3.length === 0, `got ${JSON.stringify(cp3)}`);
+      const cp4 = AB.countParts({ blocking: 2 });
+      check('countParts undefined omitted', JSON.stringify(cp4) === JSON.stringify(['2 chặn']), `got ${JSON.stringify(cp4)}`);
     },
   },
   {
@@ -414,218 +446,252 @@ const sections = [
       };
 
       const fixedMs = Date.now() - 600000;
-      const P_LEAD = {
-        task_id: 1,
-        cycle: 1,
-        current: 'ban',
-        cards: {
-          start: {
-            state: 'xong',
-            state_word: 'xong',
-            result: 'bạn đã giao',
-            at_ms: fixedMs - 420000,
+
+      function flowCard(key, title, tag, state, extra) {
+        return {
+          key,
+          title,
+          tag,
+          state,
+          state_word: ctx.AB.stateWord(state),
+          result: state === 'cho' ? 'chưa bắt đầu' : 'xong',
+          counts: null,
+          duration_ms: null,
+          cost_usd: null,
+          has_run: state !== 'cho',
+          run_id: null,
+          ...(extra || {}),
+        };
+      }
+
+      function basePipe(groups, gate, currentCard) {
+        return {
+          task_id: 1,
+          cycle: 1,
+          current: null,
+          cards: {
+            start: { state: 'xong', state_word: 'xong', result: 'bạn đã giao', at_ms: fixedMs - 420000 },
           },
-          plan: {
-            role: 'lead',
-            state: 'xong',
-            state_word: 'xong',
-            result: 'plan đã commit',
-            rounds: 1,
-            run_id: 1,
-            duration_ms: 420000,
-            cost_usd: 2.73,
-          },
-          ban: {
-            state: 'cho_ban',
-            state_word: 'chờ bạn',
-            result: 'chờ duyệt plan',
-            at_ms: fixedMs,
-          },
-          code: {
-            role: 'dev',
-            state: 'cho',
-            state_word: 'chưa bắt đầu',
-            result: 'chưa bắt đầu',
-            rounds: 0,
-            run_id: null,
-            duration_ms: null,
-            cost_usd: null,
-          },
-          qa: {
-            role: 'qa',
-            state: 'cho',
-            state_word: 'chưa bắt đầu',
-            result: 'chưa bắt đầu',
-            rounds: 0,
-            run_id: null,
-            duration_ms: null,
-            cost_usd: null,
-          },
-        },
-        ledger: { groups: [], total: { runs: 1, duration_ms: 420000, cost_usd: 2.73, cost_unknown: 0 } },
+          ledger: { groups: [], total: { runs: 1, duration_ms: 420000, cost_usd: 2.73, cost_unknown: 0 } },
+          workflow: { name: 'mac-dinh', summary: 'plan ⇄ review → Bạn → code ⇄ review → QA ⇄ sửa', auto: true, max_rounds: 3, budget_minutes: 60, budget_usd: 20, limits: '3 vòng · 60 phút · $20', loops: ['plan', 'build', 'qa'], stages: [] },
+          groups,
+          gate,
+          current_card: currentCard,
+          budget: null,
+        };
+      }
+
+      const GATE_WAIT = {
+        present: true,
+        state: 'cho_ban',
+        state_word: 'chờ bạn',
+        result: 'chờ duyệt plan',
+        at_ms: fixedMs,
+        note_kind: 'auto_waiting',
+        note: 'Autopilot dừng ở đây để bạn duyệt plan. Duyệt plan rồi autopilot tự chạy Code, Review code, QA và Sửa, tối đa 3 vòng mỗi bước, trong 60 phút hoặc $20.',
+        derived: false,
       };
 
-      const P_EMPTY = {
-        task_id: 1,
-        cycle: null,
-        current: null,
-        cards: {
-          start: {
-            state: 'xong',
-            state_word: 'xong',
-            result: 'bạn đã giao',
-            at_ms: fixedMs,
+      // mac-dinh pipeline: plan [plan xong, plan_review sua_lai {1, 4}] round 2 cap 3; build and qa not run
+      const P_LEAD = basePipe(
+        [
+          {
+            key: 'plan',
+            cards: [
+              flowCard('plan', 'Lên plan', 'lead', 'xong', { result: 'plan đã commit', duration_ms: 420000, cost_usd: 2.73, run_id: 1 }),
+              flowCard('plan_review', 'Review plan', 'plan-review', 'sua_lai', {
+                result: 'sửa lại',
+                counts: { blocking: 1, advisory: 4, specs: null, failing: null, not_automatable: null },
+                duration_ms: 120000,
+                cost_usd: 1.32,
+                run_id: 2,
+              }),
+            ],
+            round: 2,
+            cap: 3,
+            stopped: false,
+            stop_word: null,
           },
-          plan: {
-            role: 'lead',
-            state: 'cho',
-            state_word: 'chưa bắt đầu',
-            result: 'chưa bắt đầu',
-            rounds: 0,
-            run_id: null,
-            duration_ms: null,
-            cost_usd: null,
+          {
+            key: 'build',
+            cards: [flowCard('code', 'Code', 'dev', 'cho'), flowCard('code_review', 'Review code', 'code-review', 'cho')],
+            round: null,
+            cap: 3,
+            stopped: false,
+            stop_word: null,
           },
-          ban: {
-            state: 'cho',
-            state_word: 'chưa bắt đầu',
-            result: 'chưa có plan',
-            at_ms: null,
+          {
+            key: 'qa',
+            cards: [flowCard('qa', 'QA', 'qa', 'cho'), flowCard('fix', 'Sửa', 'dev · fix', 'cho')],
+            round: null,
+            cap: 3,
+            stopped: false,
+            stop_word: null,
           },
-          code: {
-            role: 'dev',
-            state: 'cho',
-            state_word: 'chưa bắt đầu',
-            result: 'chưa bắt đầu',
-            rounds: 0,
-            run_id: null,
-            duration_ms: null,
-            cost_usd: null,
-          },
-          qa: {
-            role: 'qa',
-            state: 'cho',
-            state_word: 'chưa bắt đầu',
-            result: 'chưa bắt đầu',
-            rounds: 0,
-            run_id: null,
-            duration_ms: null,
-            cost_usd: null,
-          },
-        },
-        ledger: { groups: [], total: { runs: 0, duration_ms: null, cost_usd: null, cost_unknown: 0 } },
-      };
-
-      const T_KILLED = {
-        ...T_LEAD,
-        runs: [
-          { id: 1, role: 'lead', status: 'succeeded', outcome: null },
-          { id: 2, role: 'dev', status: 'killed', outcome: null },
         ],
-      };
+        GATE_WAIT,
+        'ban'
+      );
+      P_LEAD.current = 'ban';
 
-      const P_KILLED = {
-        ...P_LEAD,
-        current: 'code',
-        cards: {
-          ...P_LEAD.cards,
-          ban: {
-            state: 'xong',
-            state_word: 'xong',
-            result: 'đã duyệt plan',
-            at_ms: fixedMs,
-          },
-          code: {
-            role: 'dev',
-            state: 'killed',
-            state_word: 'đã dừng',
-            result: 'đã dừng',
-            rounds: 1,
-            run_id: 2,
-            duration_ms: 120000,
-            cost_usd: null,
-          },
-        },
-      };
+      // Task with no runs: every card chưa bắt đầu, footers chưa chạy, no ring
+      const P_EMPTY = basePipe(
+        [
+          { key: 'plan', cards: [flowCard('plan', 'Lên plan', 'lead', 'cho'), flowCard('plan_review', 'Review plan', 'plan-review', 'cho')], round: null, cap: 3, stopped: false, stop_word: null },
+          { key: 'build', cards: [flowCard('code', 'Code', 'dev', 'cho'), flowCard('code_review', 'Review code', 'code-review', 'cho')], round: null, cap: 3, stopped: false, stop_word: null },
+          { key: 'qa', cards: [flowCard('qa', 'QA', 'qa', 'cho'), flowCard('fix', 'Sửa', 'dev · fix', 'cho')], round: null, cap: 3, stopped: false, stop_word: null },
+        ],
+        { present: true, state: 'cho', state_word: 'chưa bắt đầu', result: 'chưa có plan', at_ms: null, note_kind: 'not_open', note: 'Cổng này mở khi plan đã commit và review plan xong.', derived: false },
+        null
+      );
+      P_EMPTY.cycle = null;
+      P_EMPTY.ledger = { groups: [], total: { runs: 0, duration_ms: null, cost_usd: null, cost_unknown: 0 } };
+
+      // nhanh: single-card groups, no cap
+      const P_NHANH = basePipe(
+        [
+          { key: 'plan', cards: [flowCard('plan', 'Lên plan', 'lead', 'xong', { duration_ms: 60000, cost_usd: 0.5 })], round: 1, cap: null, stopped: false, stop_word: null },
+          { key: 'build', cards: [flowCard('code', 'Code', 'dev', 'cho')], round: null, cap: null, stopped: false, stop_word: null },
+          { key: 'qa', cards: [flowCard('qa', 'QA', 'qa', 'cho')], round: null, cap: null, stopped: false, stop_word: null },
+        ],
+        GATE_WAIT,
+        'ban'
+      );
+
+      // build loop stopped after a grant: round 4 / cap 3, stopped hết vòng, current card code_review
+      const P_STOPPED = basePipe(
+        [
+          { key: 'plan', cards: [flowCard('plan', 'Lên plan', 'lead', 'xong'), flowCard('plan_review', 'Review plan', 'plan-review', 'duyet', { result: 'duyệt', counts: { blocking: 0, advisory: 2, specs: null, failing: null, not_automatable: null } })], round: 1, cap: 3, stopped: false, stop_word: null },
+          { key: 'build', cards: [flowCard('code', 'Code', 'dev', 'xong'), flowCard('code_review', 'Review code', 'code-review', 'sua_lai', { result: 'sửa lại', counts: { blocking: 2, advisory: 1, specs: null, failing: null, not_automatable: null } })], round: 4, cap: 3, stopped: true, stop_word: 'hết vòng' },
+          { key: 'qa', cards: [flowCard('qa', 'QA', 'qa', 'cho'), flowCard('fix', 'Sửa', 'dev · fix', 'cho')], round: null, cap: 3, stopped: false, stop_word: null },
+        ],
+        { present: true, state: 'xong', state_word: 'xong', result: 'đã duyệt plan', at_ms: fixedMs, note_kind: 'approved_explicit', note: null, derived: false },
+        'code_review'
+      );
 
       const c = factories.task();
       c.task = T_LEAD;
       c.pipe = P_LEAD;
 
-      // Checks: with P_LEAD
-      check('cardState(ban)', c.cardState('ban') === 'cho_ban', `got "${c.cardState('ban')}"`);
-      check('cardCurrentAttr(ban)', c.cardCurrentAttr('ban') === 'step', `got "${c.cardCurrentAttr('ban')}"`);
-      check('cardCurrentAttr(plan)', c.cardCurrentAttr('plan') === false, `got "${c.cardCurrentAttr('plan')}"`);
-      const banCls = c.cardClass('ban');
-      check('cardClass(ban) has ring-2 ring-indigo-600', banCls.includes('ring-2 ring-indigo-600'), `got "${banCls}"`);
-      check('cardClass(ban) has border-amber-300', banCls.includes('border-amber-300'), `got "${banCls}"`);
-      const codeCls = c.cardClass('code');
-      check('cardClass(code) has border-dashed border-slate-500', codeCls.includes('border-dashed border-slate-500'), `got "${codeCls}"`);
-      check('cardClass(code) has no ring-2', !codeCls.includes('ring-2'), `got "${codeCls}"`);
-      check('cardResult(plan)', c.cardResult('plan') === 'plan đã commit', `got "${c.cardResult('plan')}"`);
-      check('cardSr(plan)', c.cardSr('plan') === 'xong, ', `got "${c.cardSr('plan')}"`);
-      check('cardMinutes(plan)', c.cardMinutes('plan') === '7 phút', `got "${c.cardMinutes('plan')}"`);
-      check('cardCost(plan)', c.cardCost('plan') === '$2.73', `got "${c.cardCost('plan')}"`);
-      check('loopFooter(code)', c.loopFooter('code') === 'chưa chạy', `got "${c.loopFooter('code')}"`);
-      const planFooter = c.loopFooter('plan');
-      check('loopFooter(plan) ends with vòng 1', planFooter.endsWith(' vòng 1'), `got "${planFooter}"`);
-      check('loopFooter(plan) contains no /', !planFooter.includes('/'), `got "${planFooter}"`);
-      const banTime = c.cardTime('ban');
-      check('cardTime(ban) starts with từ ', banTime.startsWith('từ '), `got "${banTime}"`);
+      // groups and cards from the payload
+      check('hasGroup(plan)', c.hasGroup('plan') === true, `got ${c.hasGroup('plan')}`);
+      check('hasGroup(nope) false', c.hasGroup('nope') === false, `got ${c.hasGroup('nope')}`);
+      const planKeys = c.groupCards('plan').map((x) => x.key);
+      check('groupCards(plan) keys', JSON.stringify(planKeys) === JSON.stringify(['plan', 'plan_review']), `got ${JSON.stringify(planKeys)}`);
+      check('groupCards(nope) empty', c.groupCards('nope').length === 0, `got ${c.groupCards('nope').length}`);
+      check('groupFooter(plan)', c.groupFooter('plan') === '\u27F2\uFE0E vòng 2 / 3', `got "${c.groupFooter('plan')}"`);
+      check('groupFooter(build) chưa chạy', c.groupFooter('build') === 'chưa chạy', `got "${c.groupFooter('build')}"`);
+      check('groupFooter(nope) chưa chạy', c.groupFooter('nope') === 'chưa chạy', `got "${c.groupFooter('nope')}"`);
 
-      // with P_EMPTY
-      c.pipe = P_EMPTY;
-      for (const k of ['start', 'plan', 'ban', 'code', 'qa']) {
-        check(`P_EMPTY cardCurrentAttr(${k}) is false`, c.cardCurrentAttr(k) === false, `got "${c.cardCurrentAttr(k)}"`);
+      const planCard = c.groupCards('plan')[0];
+      const reviewCard = c.groupCards('plan')[1];
+      const codeCard = c.groupCards('build')[0];
+      check('flowCardCurrent(plan) false', c.flowCardCurrent(planCard) === false, `got "${c.flowCardCurrent(planCard)}"`);
+      check('gateCurrent() step', c.gateCurrent() === 'step', `got "${c.gateCurrent()}"`);
+      check(
+        'flowAriaLabel mac-dinh',
+        c.flowAriaLabel === 'Pipeline: Bắt đầu, Lên plan, Review plan, Bạn, Code, Review code, QA, Sửa',
+        `got "${c.flowAriaLabel}"`
+      );
+      check('flowCardClass(review) has border-amber-300', c.flowCardClass(reviewCard).includes('border-amber-300'), `got "${c.flowCardClass(reviewCard)}"`);
+      check('flowCardClass(review) has no ring-2', !c.flowCardClass(reviewCard).includes('ring-2'), `got "${c.flowCardClass(reviewCard)}"`);
+      check('flowCardClass(code) dashed', c.flowCardClass(codeCard).includes('border-dashed border-slate-500'), `got "${c.flowCardClass(codeCard)}"`);
+      check('gateClass has ring-2 ring-indigo-600', c.gateClass.includes('ring-2 ring-indigo-600'), `got "${c.gateClass}"`);
+      check('gateClass has border-amber-300', c.gateClass.includes('border-amber-300'), `got "${c.gateClass}"`);
+      check('flowCardSr(review)', c.flowCardSr(reviewCard) === 'sửa lại, ', `got "${c.flowCardSr(reviewCard)}"`);
+      check('flowCardResult(review)', c.flowCardResult(reviewCard) === 'sửa lại', `got "${c.flowCardResult(reviewCard)}"`);
+      check('flowCardGlyph(review) !', c.flowCardGlyph(reviewCard) === ctx.AB.stepGlyph('sua_lai'), `got "${c.flowCardGlyph(reviewCard)}"`);
+      const rc = c.flowCardCounts(reviewCard);
+      check('flowCardCounts(review)', JSON.stringify(rc) === JSON.stringify(['1 chặn', '4 góp ý']), `got ${JSON.stringify(rc)}`);
+      check('flowCardHasCounts(review)', c.flowCardHasCounts(reviewCard) === true);
+      check('flowCardHasCounts(plan) false', c.flowCardHasCounts(planCard) === false);
+      check('countSep(0) false', c.countSep(0) === false);
+      check('countSep(1) true', c.countSep(1) === true);
+      check('flowCardMetrics(plan)', c.flowCardMetrics(planCard) === '7 phút · $2.73', `got "${c.flowCardMetrics(planCard)}"`);
+      check('flowCardMetrics(code) —', c.flowCardMetrics(codeCard) === '—', `got "${c.flowCardMetrics(codeCard)}"`);
+      check('groupFrameClass(plan) normal', c.groupFrameClass('plan') === 'ring-1 ring-slate-200 dark:ring-slate-700', `got "${c.groupFrameClass('plan')}"`);
+      check('groupStopped(plan) false', c.groupStopped('plan') === false);
+      check('groupStopWord(plan) empty', c.groupStopWord('plan') === '', `got "${c.groupStopWord('plan')}"`);
+
+      // Bạn card
+      check('gatePresent', c.gatePresent === true);
+      check('gateState cho_ban', c.gateState === 'cho_ban', `got "${c.gateState}"`);
+      check('gateResult', c.gateResult === 'chờ duyệt plan', `got "${c.gateResult}"`);
+      check('gateSr', c.gateSr === 'chờ bạn, ', `got "${c.gateSr}"`);
+      check('gateTime starts with từ ', c.gateTime.startsWith('từ '), `got "${c.gateTime}"`);
+      check('gateNote visible text', c.gateNote.startsWith('Autopilot dừng ở đây để bạn duyệt plan.'), `got "${c.gateNote}"`);
+      check('gateDerivedTitle false when explicit', c.gateDerivedTitle === false, `got "${c.gateDerivedTitle}"`);
+      check('start card not current', c.cardCurrentAttr('start') === false);
+      check('cardState(start) xong', c.cardState('start') === 'xong', `got "${c.cardState('start')}"`);
+      check('cardResult(start)', c.cardResult('start') === 'bạn đã giao', `got "${c.cardResult('start')}"`);
+
+      // exactly one current card, from current_card
+      function ringed(comp) {
+        const keys = [];
+        for (const g of comp.flowGroups) {
+          for (const card of g.cards) {
+            if (comp.flowCardCurrent(card) === 'step') keys.push(card.key);
+          }
+        }
+        if (comp.gateCurrent() === 'step') keys.push('ban');
+        if (comp.cardCurrentAttr('start') === 'step') keys.push('start');
+        return keys;
       }
+      check('P_LEAD exactly one ring on ban', JSON.stringify(ringed(c)) === JSON.stringify(['ban']), `got ${JSON.stringify(ringed(c))}`);
 
-      // strip with T_LEAD
+      // empty task: no ring, every footer chưa chạy, Bạn chưa có plan
+      c.pipe = P_EMPTY;
+      check('P_EMPTY no ring', ringed(c).length === 0, `got ${JSON.stringify(ringed(c))}`);
+      for (const k of ['plan', 'build', 'qa']) {
+        check(`P_EMPTY groupFooter(${k})`, c.groupFooter(k) === 'chưa chạy', `got "${c.groupFooter(k)}"`);
+      }
+      check('P_EMPTY gateResult', c.gateResult === 'chưa có plan', `got "${c.gateResult}"`);
+      check('P_EMPTY gateTime —', c.gateTime === '—', `got "${c.gateTime}"`);
+
+      // nhanh: footer without cap; single-card groups
+      c.pipe = P_NHANH;
+      check('P_NHANH groupFooter(plan)', c.groupFooter('plan') === '\u27F2\uFE0E vòng 1', `got "${c.groupFooter('plan')}"`);
+      check('P_NHANH flowAriaLabel', c.flowAriaLabel === 'Pipeline: Bắt đầu, Lên plan, Bạn, Code, QA', `got "${c.flowAriaLabel}"`);
+
+      // stopped build group after a grant
+      c.pipe = P_STOPPED;
+      check('P_STOPPED groupFooter(build) 4 / 3', c.groupFooter('build') === '\u27F2\uFE0E vòng 4 / 3', `got "${c.groupFooter('build')}"`);
+      check('P_STOPPED groupFrameClass(build) amber', c.groupFrameClass('build').includes('ring-2 ring-amber-500'), `got "${c.groupFrameClass('build')}"`);
+      check('P_STOPPED groupFrameClass(plan) normal', c.groupFrameClass('plan').includes('ring-1 ring-slate-200'), `got "${c.groupFrameClass('plan')}"`);
+      check('P_STOPPED groupStopped(build)', c.groupStopped('build') === true);
+      check('P_STOPPED groupStopWord(build)', c.groupStopWord('build') === 'hết vòng', `got "${c.groupStopWord('build')}"`);
+      check('P_STOPPED ring on code_review', JSON.stringify(ringed(c)) === JSON.stringify(['code_review']), `got ${JSON.stringify(ringed(c))}`);
+      const pr = c.groupCards('plan')[1];
+      check('P_STOPPED duyet card class emerald', c.flowCardClass(pr).includes('border-emerald-300'), `got "${c.flowCardClass(pr)}"`);
+      check('P_STOPPED duyet counts known zero', JSON.stringify(c.flowCardCounts(pr)) === JSON.stringify(['0 chặn', '2 góp ý']), `got ${JSON.stringify(c.flowCardCounts(pr))}`);
+      check('P_STOPPED gateTime is a clock', /^\d\d:\d\d$/.test(c.gateTime), `got "${c.gateTime}"`);
+      check('P_STOPPED gateNote hidden', c.gateNote === '', `got "${c.gateNote}"`);
+
+      // legacy derived gate keeps the 05.1 title
+      c.pipe = basePipe(
+        P_NHANH.groups,
+        { present: true, state: 'xong', state_word: 'xong', result: 'đã duyệt plan', at_ms: fixedMs, note_kind: 'derived', note: 'Cổng duyệt suy ra từ dữ liệu: Dev đã chạy trên bản plan hiện tại thì coi là đã duyệt.', derived: true },
+        'code'
+      );
+      check('derived gate title', c.gateDerivedTitle === 'Cổng duyệt suy ra từ dữ liệu: Dev đã chạy trên bản plan hiện tại thì coi là đã duyệt.', `got "${c.gateDerivedTitle}"`);
+
+      // no pipeline: nothing drawn, nothing fabricated
+      c.pipe = null;
+      check('pipe=null flowGroups empty', c.flowGroups.length === 0);
+      check('pipe=null gatePresent false', c.gatePresent === false);
+      check('pipe=null gateNote empty', c.gateNote === '');
+      check('pipe=null no ring', ringed(c).length === 0);
+
+      // strip independent of /pipeline
       c.pipe = P_LEAD;
       check('stripCaption with T_LEAD', c.stripCaption === 'Bước hiện tại: Bạn', `got "${c.stripCaption}"`);
       check('actionList length 2', c.actionList.length === 2, `got ${c.actionList.length}`);
       check('actionId second is ab-act-relead', c.actionId(c.actionList[1]) === 'ab-act-relead', `got "${c.actionId(c.actionList[1])}"`);
-
-      // strip independent of /pipeline
       c.pipe = null;
       c.pipeError = 'x';
       check('stripCaption with pipe=null', c.stripCaption === 'Bước hiện tại: Bạn', `got "${c.stripCaption}"`);
       check('actionList length 2 with pipe=null', c.actionList.length === 2, `got ${c.actionList.length}`);
       c.pipeError = '';
-
-      // killed Dev (caption follows the ring)
-      c.task = T_KILLED;
-      c.pipe = P_KILLED;
-      check('cardCurrentAttr(code) is step with P_KILLED', c.cardCurrentAttr('code') === 'step', `got "${c.cardCurrentAttr('code')}"`);
-      check('cardCurrentAttr(ban) is false with P_KILLED', c.cardCurrentAttr('ban') === false, `got "${c.cardCurrentAttr('ban')}"`);
-      check('stripCaption follows ring to Code', c.stripCaption === 'Bước hiện tại: Code', `got "${c.stripCaption}"`);
-
-      // with T_KILLED and pipe = null
-      c.pipe = null;
-      check('stripCaption fallback with T_KILLED is Bạn', c.stripCaption === 'Bước hiện tại: Bạn', `got "${c.stripCaption}"`);
-
-      // agreement check
-      for (const pair of [
-        { t: T_LEAD, p: P_LEAD },
-        { t: T_KILLED, p: P_KILLED },
-      ]) {
-        c.task = pair.t;
-        c.pipe = pair.p;
-        const allKeys = ['start', 'plan', 'ban', 'code', 'qa'];
-        const ringedKeys = allKeys.filter((k) => c.cardCurrentAttr(k) === 'step');
-        check(
-          'agreement: exactly one card is current',
-          ringedKeys.length === 1,
-          `ringed cards: ${ringedKeys.join(', ')}`
-        );
-        const ringedKey = ringedKeys[0];
-        const expectedTitle = c.stageTitles[ringedKey];
-        check(
-          `agreement: stripCaption matches card title "${expectedTitle}"`,
-          c.stripCaption === 'Bước hiện tại: ' + expectedTitle,
-          `got "${c.stripCaption}"`
-        );
-      }
-
       // pipeState
       c.pipe = null;
       c.pipeError = '';

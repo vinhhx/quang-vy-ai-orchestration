@@ -13,6 +13,8 @@
     vi_pham: BADGE + ' bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200',
     cho_ban: BADGE + ' bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200',
     dat: BADGE + ' bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
+    duyet: BADGE + ' bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
+    sua_lai: BADGE + ' bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200',
     chua_tu_dong: BADGE + ' border border-dashed border-slate-400 text-slate-600 dark:border-slate-500 dark:text-slate-400',
   };
 
@@ -27,16 +29,20 @@
     vi_pham: '■\uFE0E',
     cho_ban: '●\uFE0E',
     dat: '✓\uFE0E',
+    duyet: '✓\uFE0E',
+    sua_lai: '!\uFE0E',
     chua_tu_dong: '◌\uFE0E',
   };
 
   var STATE_TEXT = {
     xong: 'text-emerald-700 dark:text-emerald-300',
     dat: 'text-emerald-700 dark:text-emerald-300',
+    duyet: 'text-emerald-700 dark:text-emerald-300',
     dang_chay: 'text-blue-700 dark:text-blue-300',
     cho_ban: 'text-amber-800 dark:text-amber-300',
     vuong_mac: 'text-amber-800 dark:text-amber-300',
     can_sua: 'text-amber-800 dark:text-amber-300',
+    sua_lai: 'text-amber-800 dark:text-amber-300',
     killed: 'text-rose-700 dark:text-rose-300',
     loi: 'text-rose-700 dark:text-rose-300',
     vi_pham: 'text-rose-700 dark:text-rose-300',
@@ -47,10 +53,12 @@
   var STATE_CARD = {
     xong: 'border-emerald-300 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-900/20',
     dat: 'border-emerald-300 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-900/20',
+    duyet: 'border-emerald-300 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-900/20',
     dang_chay: 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-900/20',
     cho_ban: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
     vuong_mac: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
     can_sua: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
+    sua_lai: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
     killed: 'border-rose-300 bg-rose-50 dark:border-rose-700 dark:bg-rose-900/20',
     loi: 'border-rose-300 bg-rose-50 dark:border-rose-700 dark:bg-rose-900/20',
     vi_pham: 'border-rose-300 bg-rose-50 dark:border-rose-700 dark:bg-rose-900/20',
@@ -61,10 +69,12 @@
   var STATE_WORDS = {
     xong: 'xong',
     dat: 'đạt',
+    duyet: 'duyệt',
     dang_chay: 'đang chạy',
     cho_ban: 'chờ bạn',
     vuong_mac: 'vướng mắc',
     can_sua: 'cần sửa',
+    sua_lai: 'sửa lại',
     killed: 'đã dừng',
     loi: 'lỗi',
     vi_pham: 'vi phạm giao thức',
@@ -267,7 +277,23 @@
       if (role === 'lead') return 'Lead';
       if (role === 'dev') return 'Dev';
       if (role === 'qa') return 'QA';
+      if (role === 'plan-review') return 'Review plan';
+      if (role === 'code-review') return 'Review code';
       return role;
+    },
+
+    countParts: function (counts) {
+      if (!counts) return [];
+      var parts = [];
+      function known(v) {
+        return v !== null && v !== undefined && !isNaN(v);
+      }
+      if (known(counts.blocking)) parts.push(counts.blocking + ' chặn');
+      if (known(counts.advisory)) parts.push(counts.advisory + ' góp ý');
+      if (known(counts.specs)) parts.push(counts.specs + ' kiểm thử');
+      if (known(counts.not_automatable)) parts.push(counts.not_automatable + ' không tự động được');
+      if (known(counts.failing)) parts.push(counts.failing + ' lỗi');
+      return parts;
     },
 
     profileClass: function (p) {

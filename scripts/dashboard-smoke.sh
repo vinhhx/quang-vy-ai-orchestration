@@ -221,6 +221,36 @@ EOF
 # Run lead to plan task 1
 "$BIN" run lead -- web-ban-hang "sửa app" >/dev/null 2>&1
 
+# Task 1 (default mac-dinh workflow): one Review plan run that approved the
+# plan, and autopilot paused at the Bạn gate.
+python3 - "$AGENT_BRAIN_DB" <<'PYEOF'
+import sys, sqlite3
+conn = sqlite3.connect(sys.argv[1], timeout=5)
+cur = conn.cursor()
+cur.execute("SELECT project_id, workflow_json FROM tasks WHERE id = 1")
+row = cur.fetchone()
+if not row:
+    print("Lỗi seeding: Không tìm thấy task 1", file=sys.stderr)
+    sys.exit(1)
+project_id, workflow_json = row
+if not workflow_json:
+    print("Lỗi seeding: task 1 không có workflow_json", file=sys.stderr)
+    sys.exit(1)
+cur.execute("SELECT MAX(COALESCE(ended_at, started_at)) FROM runs WHERE task_id = 1")
+lead_end = cur.fetchone()[0]
+started_at = lead_end + 1000
+ended_at = started_at + 90000
+cur.execute("""
+    INSERT INTO runs (task_id, project_id, role, status, profile, outcome, usage_source, cost_usd,
+                      num_turns, started_at, ended_at, stage, round, metrics_json)
+    VALUES (?, ?, 'plan-review', 'succeeded', 'work', 'review:approve', 'result', 0.4,
+            6, ?, ?, 'plan-review', 1, '{"verdict":"approve","blocking":0,"advisory":2}')
+""", (1, project_id, started_at, ended_at))
+cur.execute("UPDATE tasks SET auto_state = 'gate' WHERE id = 1")
+conn.commit()
+conn.close()
+PYEOF
+
 # Start serve
 "$BIN" serve --port 0 > "$TMP/serve.out" 2> "$TMP/serve.err" &
 SERVE_PID=$!
@@ -375,7 +405,7 @@ if parser.data_pipeline != "ready":
     print(f"Lỗi: data-pipeline không phải là 'ready' (nhận được: '{parser.data_pipeline}')", file=sys.stderr)
     sys.exit(1)
 
-expected_cards = {'start', 'plan', 'ban', 'code', 'qa'}
+expected_cards = {'start', 'plan', 'plan_review', 'ban', 'code', 'code_review', 'qa', 'fix'}
 if set(parser.cards.keys()) != expected_cards:
     print(f"Lỗi: Danh sách card không khớp. Kỳ vọng {expected_cards}, nhận được {set(parser.cards.keys())}", file=sys.stderr)
     sys.exit(1)
@@ -383,9 +413,12 @@ if set(parser.cards.keys()) != expected_cards:
 expected_states = {
     'start': 'xong',
     'plan': 'xong',
+    'plan_review': 'duyet',
     'ban': 'cho_ban',
     'code': 'cho',
+    'code_review': 'cho',
     'qa': 'cho',
+    'fix': 'cho',
 }
 for k, expected_st in expected_states.items():
     actual_st = parser.cards.get(k)
@@ -395,6 +428,10 @@ for k, expected_st in expected_states.items():
 
 if parser.aria_current_cards != {'ban'}:
     print(f"Lỗi: Các card có aria-current='step' là {parser.aria_current_cards}, kỳ vọng {{'ban'}}", file=sys.stderr)
+    sys.exit(1)
+
+if 'Autopilot dừng ở đây để bạn duyệt plan.' not in parser.full_text:
+    print("Lỗi: DOM không chứa ghi chú cổng 'Autopilot dừng ở đây để bạn duyệt plan.'", file=sys.stderr)
     sys.exit(1)
 
 if 'ab-act-run_dev' not in parser.button_ids:
@@ -426,16 +463,17 @@ for i, chip in enumerate(parser.chips):
 
 print("Pipeline DOM OK")
 
-if len(parser.ledger_rows) != 1:
-    print(f"Lỗi: Số lượng data-ledger-row là {len(parser.ledger_rows)}, kỳ vọng 1", file=sys.stderr)
+if len(parser.ledger_rows) != 2:
+    print(f"Lỗi: Số lượng data-ledger-row là {len(parser.ledger_rows)}, kỳ vọng 2", file=sys.stderr)
     sys.exit(1)
 
-if parser.ledger_rows[0].get('aria-current') != 'true':
-    print(f"Lỗi: data-ledger-row có aria-current='{parser.ledger_rows[0].get('aria-current')}', kỳ vọng 'true'", file=sys.stderr)
+selected_rows = [r for r in parser.ledger_rows if r.get('aria-current') == 'true']
+if len(selected_rows) != 1:
+    print(f"Lỗi: Số data-ledger-row có aria-current='true' là {len(selected_rows)}, kỳ vọng 1", file=sys.stderr)
     sys.exit(1)
 
-if '1 lượt chạy claude' not in parser.ledger_total_text:
-    print(f"Lỗi: data-ledger-total không chứa '1 lượt chạy claude' (nội dung: '{parser.ledger_total_text}')", file=sys.stderr)
+if '2 lượt chạy claude' not in parser.ledger_total_text:
+    print(f"Lỗi: data-ledger-total không chứa '2 lượt chạy claude' (nội dung: '{parser.ledger_total_text}')", file=sys.stderr)
     sys.exit(1)
 
 if 'Sổ lượt chạy' not in parser.full_text:

@@ -770,27 +770,19 @@
         return (this.pipe && this.pipe.cards) ? this.pipe.cards[key] || null : null;
       },
 
+      // Bắt đầu card (05.1 point card, always xong once the task exists)
       cardState: function (key) {
         var c = this.card(key);
         if (c && c.state) return c.state;
         return key === 'start' ? 'xong' : 'cho';
       },
 
-      isCurrentCard: function (key) {
-        return Boolean(this.pipe && this.pipe.current === key);
+      cardClass: function (key) {
+        return 'flex h-full min-w-0 flex-col gap-1 rounded-xl border p-4 ' + window.AB.stateCard(this.cardState(key));
       },
 
       cardCurrentAttr: function (key) {
-        return this.isCurrentCard(key) ? 'step' : false;
-      },
-
-      cardClass: function (key) {
-        var state = this.cardState(key);
-        var cls = 'flex h-full min-w-0 flex-col gap-1 rounded-xl border p-4 ' + window.AB.stateCard(state);
-        if (this.isCurrentCard(key)) {
-          cls += ' ring-2 ring-indigo-600 dark:ring-indigo-400';
-        }
-        return cls;
+        return this.isCurrentKey(key) ? 'step' : false;
       },
 
       cardGlyph: function (key) {
@@ -798,12 +790,7 @@
       },
 
       cardGlyphClass: function (key) {
-        var state = this.cardState(key);
-        var cls = 'w-6 shrink-0 text-center ' + window.AB.stateText(state);
-        if (state === 'dang_chay') {
-          cls += ' motion-safe:animate-pulse';
-        }
-        return cls;
+        return this.stateGlyphClass(this.cardState(key));
       },
 
       cardSr: function (key) {
@@ -815,54 +802,198 @@
       cardResult: function (key) {
         var c = this.card(key);
         if (c && c.result) return c.result;
-        if (key === 'start') return 'bạn đã giao';
-        if (key === 'ban') return 'chưa có plan';
-        return 'chưa bắt đầu';
-      },
-
-      cardHasRun: function (key) {
-        var c = this.card(key);
-        return Boolean(c && typeof c.rounds === 'number' && c.rounds > 0);
-      },
-
-      cardNoRun: function (key) {
-        return !this.cardHasRun(key);
-      },
-
-      cardMinutes: function (key) {
-        var c = this.card(key);
-        return window.AB.fmtMinutes(c ? c.duration_ms : null);
-      },
-
-      cardCost: function (key) {
-        var c = this.card(key);
-        return window.AB.fmtUsd(c ? c.cost_usd : null);
+        return key === 'start' ? 'bạn đã giao' : '—';
       },
 
       cardTime: function (key) {
         var c = this.card(key);
         if (!c || c.at_ms === null || c.at_ms === undefined) return '—';
-        if (key === 'start') {
-          return window.AB.fmtClock(c.at_ms);
+        return window.AB.fmtClock(c.at_ms);
+      },
+
+      stateGlyphClass: function (state) {
+        var cls = 'w-6 shrink-0 text-center ' + window.AB.stateText(state);
+        if (state === 'dang_chay') {
+          cls += ' motion-safe:animate-pulse';
         }
-        if (key === 'ban') {
-          if (c.state === 'cho_ban') {
-            return 'từ ' + window.AB.fmtClock(c.at_ms);
-          }
-          if (c.state === 'xong') {
-            return window.AB.fmtClock(c.at_ms);
-          }
-          return '—';
+        return cls;
+      },
+
+      // Data-driven flow (05.2): groups and cards come from the pipeline payload.
+      get flowGroups() {
+        return (this.pipe && this.pipe.groups) ? this.pipe.groups : [];
+      },
+
+      flowGroup: function (key) {
+        var gs = this.flowGroups;
+        for (var i = 0; i < gs.length; i++) {
+          if (gs[i] && gs[i].key === key) return gs[i];
         }
+        return null;
+      },
+
+      hasGroup: function (key) {
+        return Boolean(this.flowGroup(key));
+      },
+
+      groupCards: function (key) {
+        var g = this.flowGroup(key);
+        return (g && g.cards) ? g.cards : [];
+      },
+
+      isCurrentKey: function (key) {
+        return Boolean(this.pipe && this.pipe.current_card && this.pipe.current_card === key);
+      },
+
+      flowCardState: function (c) {
+        return (c && c.state) ? c.state : 'cho';
+      },
+
+      flowCardClass: function (c) {
+        var cls = 'flex h-full min-w-0 flex-col gap-1 rounded-xl border p-4 ' + window.AB.stateCard(this.flowCardState(c));
+        if (c && this.isCurrentKey(c.key)) {
+          cls += ' ring-2 ring-indigo-600 dark:ring-indigo-400';
+        }
+        return cls;
+      },
+
+      flowCardCurrent: function (c) {
+        return (c && this.isCurrentKey(c.key)) ? 'step' : false;
+      },
+
+      flowCardGlyph: function (c) {
+        return window.AB.stepGlyph(this.flowCardState(c));
+      },
+
+      flowCardGlyphClass: function (c) {
+        return this.stateGlyphClass(this.flowCardState(c));
+      },
+
+      flowCardSr: function (c) {
+        var w = (c && c.state_word) ? c.state_word : window.AB.stateWord(this.flowCardState(c));
+        return w + ', ';
+      },
+
+      flowCardResult: function (c) {
+        return (c && c.result) ? c.result : '—';
+      },
+
+      flowCardCounts: function (c) {
+        return window.AB.countParts(c ? c.counts : null);
+      },
+
+      flowCardHasCounts: function (c) {
+        return this.flowCardCounts(c).length > 0;
+      },
+
+      countSep: function (i) {
+        return i > 0;
+      },
+
+      flowCardMetrics: function (c) {
+        if (!c || !c.has_run) return '—';
+        return window.AB.fmtMinutes(c.duration_ms) + ' · ' + window.AB.fmtUsd(c.cost_usd);
+      },
+
+      groupStopped: function (key) {
+        var g = this.flowGroup(key);
+        return Boolean(g && g.stopped);
+      },
+
+      groupFrameClass: function (key) {
+        return this.groupStopped(key)
+          ? 'ring-2 ring-amber-500 dark:ring-amber-400'
+          : 'ring-1 ring-slate-200 dark:ring-slate-700';
+      },
+
+      groupFooter: function (key) {
+        var g = this.flowGroup(key);
+        if (!g || typeof g.round !== 'number') return 'chưa chạy';
+        var text = '⟲︎ vòng ' + g.round;
+        if (typeof g.cap === 'number') {
+          text += ' / ' + g.cap;
+        }
+        return text;
+      },
+
+      groupStopWord: function (key) {
+        var g = this.flowGroup(key);
+        return (g && g.stopped && g.stop_word) ? g.stop_word : '';
+      },
+
+      // Bạn card (the gate)
+      get gate() {
+        return (this.pipe && this.pipe.gate) ? this.pipe.gate : null;
+      },
+
+      get gatePresent() {
+        return Boolean(this.gate && this.gate.present);
+      },
+
+      get gateState() {
+        return (this.gate && this.gate.state) ? this.gate.state : 'cho';
+      },
+
+      get gateClass() {
+        var cls = 'flex h-full min-w-0 flex-col gap-1 rounded-xl border p-4 ' + window.AB.stateCard(this.gateState);
+        if (this.isCurrentKey('ban')) {
+          cls += ' ring-2 ring-indigo-600 dark:ring-indigo-400';
+        }
+        return cls;
+      },
+
+      get gateGlyph() {
+        return window.AB.stepGlyph(this.gateState);
+      },
+
+      get gateGlyphClass() {
+        return this.stateGlyphClass(this.gateState);
+      },
+
+      get gateSr() {
+        var w = (this.gate && this.gate.state_word) ? this.gate.state_word : window.AB.stateWord(this.gateState);
+        return w + ', ';
+      },
+
+      get gateResult() {
+        return (this.gate && this.gate.result) ? this.gate.result : '—';
+      },
+
+      get gateTime() {
+        var g = this.gate;
+        if (!g || g.at_ms === null || g.at_ms === undefined) return '—';
+        if (g.state === 'cho_ban') return 'từ ' + window.AB.fmtClock(g.at_ms);
+        if (g.state === 'xong') return window.AB.fmtClock(g.at_ms);
         return '—';
       },
 
-      loopFooter: function (key) {
-        var c = this.card(key);
-        if (!c || typeof c.rounds !== 'number' || c.rounds <= 0) return 'chưa chạy';
-        return '\u27F2\uFE0E vòng ' + c.rounds;
+      gateCurrent: function () {
+        return this.isCurrentKey('ban') ? 'step' : false;
       },
 
+      get gateNote() {
+        return (this.gate && this.gate.note) ? this.gate.note : '';
+      },
+
+      get gateDerivedTitle() {
+        return (this.gate && this.gate.derived && this.gate.note) ? this.gate.note : false;
+      },
+
+      get flowAriaLabel() {
+        var titles = [this.stageTitles.start];
+        var self = this;
+        function add(key) {
+          var cs = self.groupCards(key);
+          for (var i = 0; i < cs.length; i++) {
+            if (cs[i] && cs[i].title) titles.push(cs[i].title);
+          }
+        }
+        add('plan');
+        if (this.gatePresent) titles.push(this.stageTitles.ban);
+        add('build');
+        add('qa');
+        return 'Pipeline: ' + titles.join(', ');
+      },
       get actionList() {
         return (this.task && this.task.actions) ? this.task.actions : [];
       },

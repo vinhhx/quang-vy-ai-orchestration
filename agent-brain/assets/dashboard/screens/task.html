@@ -45,13 +45,13 @@
       </div>
 
       <div data-flow-region role="region" aria-label="Pipeline của task" tabindex="0" class="relative overflow-x-auto pb-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasPipe">
-        <ol data-flow aria-label="Pipeline: Bắt đầu, Lên plan, Bạn, Code, QA" class="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+        <ol data-flow :aria-label="flowAriaLabel" class="flex flex-col gap-2 sm:flex-row sm:items-stretch">
           <!-- Bắt đầu -->
           <li class="w-full sm:w-36 sm:shrink-0">
             <div data-card="start" :data-state="cardState('start')" :class="cardClass('start')" :aria-current="cardCurrentAttr('start')">
               <div class="flex items-center gap-1">
                 <span aria-hidden="true" :class="cardGlyphClass('start')" x-text="cardGlyph('start')"></span>
-                <p class="min-w-0 break-words text-base font-semibold leading-normal">Bắt đầu</p>
+                <h3 class="min-w-0 break-words text-base font-semibold leading-normal">Bắt đầu</h3>
               </div>
               <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
                 <span class="sr-only" x-text="cardSr('start')"></span>
@@ -63,98 +63,115 @@
             </div>
           </li>
 
-          <li aria-hidden="true" class="hidden w-4 shrink-0 self-center text-center text-slate-600 dark:text-slate-400 sm:block">→</li>
+          <li aria-hidden="true" class="hidden w-4 shrink-0 self-center text-center text-slate-600 dark:text-slate-400 sm:block" x-show="hasGroup('plan')">→</li>
 
-          <!-- Lên plan loop group -->
-          <li class="flex w-full flex-col gap-2 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200 dark:bg-slate-900/50 dark:ring-slate-700 sm:w-40 sm:shrink-0">
-            <div data-card="plan" :data-state="cardState('plan')" :class="cardClass('plan')" :aria-current="cardCurrentAttr('plan')">
-              <p class="font-mono text-sm font-normal uppercase leading-normal text-slate-600 dark:text-slate-400">lead</p>
-              <div class="flex items-center gap-1">
-                <span aria-hidden="true" :class="cardGlyphClass('plan')" x-text="cardGlyph('plan')"></span>
-                <p class="min-w-0 break-words text-base font-semibold leading-normal">Lên plan</p>
+          <!-- plan loop group: Lên plan + Review plan -->
+          <li data-group="plan" class="flex w-full flex-col gap-2 rounded-2xl bg-slate-50 p-2 dark:bg-slate-900/50 sm:w-40 sm:shrink-0" :class="groupFrameClass('plan')" x-show="hasGroup('plan')">
+            <template x-for="c in groupCards('plan')" :key="c.key">
+              <div :data-card="c.key" :data-state="c.state" :class="flowCardClass(c)" :aria-current="flowCardCurrent(c)">
+                <p class="font-mono text-sm font-normal uppercase leading-normal text-slate-600 dark:text-slate-400" x-text="c.tag"></p>
+                <div class="flex items-center gap-1">
+                  <span aria-hidden="true" :class="flowCardGlyphClass(c)" x-text="flowCardGlyph(c)"></span>
+                  <h3 class="min-w-0 break-words text-base font-semibold leading-normal" x-text="c.title"></h3>
+                </div>
+                <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
+                  <span class="sr-only" x-text="flowCardSr(c)"></span>
+                  <span x-text="flowCardResult(c)"></span>
+                </p>
+                <div data-card-counts class="flex flex-wrap gap-x-2 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="flowCardHasCounts(c)">
+                  <template x-for="(p, i) in flowCardCounts(c)" :key="p">
+                    <span class="break-words"><span aria-hidden="true" x-show="countSep(i)">· </span><span x-text="p"></span></span>
+                  </template>
+                </div>
+                <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
+                  <span x-text="flowCardMetrics(c)"></span>
+                </div>
               </div>
-              <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
-                <span class="sr-only" x-text="cardSr('plan')"></span>
-                <span x-text="cardResult('plan')"></span>
-              </p>
-              <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
-                <span x-show="cardHasRun('plan')" x-text="cardMinutes('plan')"></span>
-                <span aria-hidden="true" x-show="cardHasRun('plan')">·</span>
-                <span x-show="cardHasRun('plan')" x-text="cardCost('plan')"></span>
-                <span x-show="cardNoRun('plan')">—</span>
-              </div>
-            </div>
-            <p class="text-center font-mono text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="loopFooter('plan')"></p>
+            </template>
+            <p data-group-footer class="text-center font-mono text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="groupFooter('plan')"></p>
+            <p data-group-footer class="text-center text-sm font-semibold leading-normal text-amber-800 dark:text-amber-300" x-show="groupStopped('plan')" x-text="groupStopWord('plan')"></p>
           </li>
 
-          <li aria-hidden="true" class="hidden w-4 shrink-0 self-center text-center text-slate-600 dark:text-slate-400 sm:block">→</li>
+          <li aria-hidden="true" class="hidden w-4 shrink-0 self-center text-center text-slate-600 dark:text-slate-400 sm:block" x-show="gatePresent">→</li>
 
-          <!-- Bạn -->
-          <li class="w-full sm:w-36 sm:shrink-0">
-            <div data-card="ban" :data-state="cardState('ban')" :class="cardClass('ban')" :aria-current="cardCurrentAttr('ban')" title="Cổng duyệt suy ra từ dữ liệu: Dev đã chạy trên bản plan hiện tại thì coi là đã duyệt.">
+          <!-- Bạn (the gate) -->
+          <li class="w-full sm:w-36 sm:shrink-0" x-show="gatePresent">
+            <div data-card="ban" :data-state="gateState" :class="gateClass" :aria-current="gateCurrent()" :title="gateDerivedTitle">
               <div class="flex items-center gap-1">
-                <span aria-hidden="true" :class="cardGlyphClass('ban')" x-text="cardGlyph('ban')"></span>
-                <p class="min-w-0 break-words text-base font-semibold leading-normal">Bạn</p>
+                <span aria-hidden="true" :class="gateGlyphClass" x-text="gateGlyph"></span>
+                <h3 class="min-w-0 break-words text-base font-semibold leading-normal">Bạn</h3>
               </div>
               <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
-                <span class="sr-only" x-text="cardSr('ban')"></span>
-                <span x-text="cardResult('ban')"></span>
+                <span class="sr-only" x-text="gateSr"></span>
+                <span x-text="gateResult"></span>
               </p>
               <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
-                <span x-text="cardTime('ban')"></span>
+                <span x-text="gateTime"></span>
               </div>
             </div>
           </li>
 
-          <li aria-hidden="true" class="hidden w-4 shrink-0 self-center text-center text-slate-600 dark:text-slate-400 sm:block">→</li>
+          <li aria-hidden="true" class="hidden w-4 shrink-0 self-center text-center text-slate-600 dark:text-slate-400 sm:block" x-show="hasGroup('build')">→</li>
 
-          <!-- Code loop group -->
-          <li class="flex w-full flex-col gap-2 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200 dark:bg-slate-900/50 dark:ring-slate-700 sm:w-40 sm:shrink-0">
-            <div data-card="code" :data-state="cardState('code')" :class="cardClass('code')" :aria-current="cardCurrentAttr('code')">
-              <p class="font-mono text-sm font-normal uppercase leading-normal text-slate-600 dark:text-slate-400">dev</p>
-              <div class="flex items-center gap-1">
-                <span aria-hidden="true" :class="cardGlyphClass('code')" x-text="cardGlyph('code')"></span>
-                <p class="min-w-0 break-words text-base font-semibold leading-normal">Code</p>
+          <!-- build loop group: Code + Review code -->
+          <li data-group="build" class="flex w-full flex-col gap-2 rounded-2xl bg-slate-50 p-2 dark:bg-slate-900/50 sm:w-40 sm:shrink-0" :class="groupFrameClass('build')" x-show="hasGroup('build')">
+            <template x-for="c in groupCards('build')" :key="c.key">
+              <div :data-card="c.key" :data-state="c.state" :class="flowCardClass(c)" :aria-current="flowCardCurrent(c)">
+                <p class="font-mono text-sm font-normal uppercase leading-normal text-slate-600 dark:text-slate-400" x-text="c.tag"></p>
+                <div class="flex items-center gap-1">
+                  <span aria-hidden="true" :class="flowCardGlyphClass(c)" x-text="flowCardGlyph(c)"></span>
+                  <h3 class="min-w-0 break-words text-base font-semibold leading-normal" x-text="c.title"></h3>
+                </div>
+                <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
+                  <span class="sr-only" x-text="flowCardSr(c)"></span>
+                  <span x-text="flowCardResult(c)"></span>
+                </p>
+                <div data-card-counts class="flex flex-wrap gap-x-2 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="flowCardHasCounts(c)">
+                  <template x-for="(p, i) in flowCardCounts(c)" :key="p">
+                    <span class="break-words"><span aria-hidden="true" x-show="countSep(i)">· </span><span x-text="p"></span></span>
+                  </template>
+                </div>
+                <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
+                  <span x-text="flowCardMetrics(c)"></span>
+                </div>
               </div>
-              <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
-                <span class="sr-only" x-text="cardSr('code')"></span>
-                <span x-text="cardResult('code')"></span>
-              </p>
-              <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
-                <span x-show="cardHasRun('code')" x-text="cardMinutes('code')"></span>
-                <span aria-hidden="true" x-show="cardHasRun('code')">·</span>
-                <span x-show="cardHasRun('code')" x-text="cardCost('code')"></span>
-                <span x-show="cardNoRun('code')">—</span>
-              </div>
-            </div>
-            <p class="text-center font-mono text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="loopFooter('code')"></p>
+            </template>
+            <p data-group-footer class="text-center font-mono text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="groupFooter('build')"></p>
+            <p data-group-footer class="text-center text-sm font-semibold leading-normal text-amber-800 dark:text-amber-300" x-show="groupStopped('build')" x-text="groupStopWord('build')"></p>
           </li>
 
-          <li aria-hidden="true" class="hidden w-4 shrink-0 self-center text-center text-slate-600 dark:text-slate-400 sm:block">→</li>
+          <li aria-hidden="true" class="hidden w-4 shrink-0 self-center text-center text-slate-600 dark:text-slate-400 sm:block" x-show="hasGroup('qa')">→</li>
 
-          <!-- QA loop group -->
-          <li class="flex w-full flex-col gap-2 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200 dark:bg-slate-900/50 dark:ring-slate-700 sm:w-40 sm:shrink-0">
-            <div data-card="qa" :data-state="cardState('qa')" :class="cardClass('qa')" :aria-current="cardCurrentAttr('qa')">
-              <p class="font-mono text-sm font-normal uppercase leading-normal text-slate-600 dark:text-slate-400">qa</p>
-              <div class="flex items-center gap-1">
-                <span aria-hidden="true" :class="cardGlyphClass('qa')" x-text="cardGlyph('qa')"></span>
-                <p class="min-w-0 break-words text-base font-semibold leading-normal">QA</p>
+          <!-- qa loop group: QA + Sửa -->
+          <li data-group="qa" class="flex w-full flex-col gap-2 rounded-2xl bg-slate-50 p-2 dark:bg-slate-900/50 sm:w-40 sm:shrink-0" :class="groupFrameClass('qa')" x-show="hasGroup('qa')">
+            <template x-for="c in groupCards('qa')" :key="c.key">
+              <div :data-card="c.key" :data-state="c.state" :class="flowCardClass(c)" :aria-current="flowCardCurrent(c)">
+                <p class="font-mono text-sm font-normal uppercase leading-normal text-slate-600 dark:text-slate-400" x-text="c.tag"></p>
+                <div class="flex items-center gap-1">
+                  <span aria-hidden="true" :class="flowCardGlyphClass(c)" x-text="flowCardGlyph(c)"></span>
+                  <h3 class="min-w-0 break-words text-base font-semibold leading-normal" x-text="c.title"></h3>
+                </div>
+                <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
+                  <span class="sr-only" x-text="flowCardSr(c)"></span>
+                  <span x-text="flowCardResult(c)"></span>
+                </p>
+                <div data-card-counts class="flex flex-wrap gap-x-2 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="flowCardHasCounts(c)">
+                  <template x-for="(p, i) in flowCardCounts(c)" :key="p">
+                    <span class="break-words"><span aria-hidden="true" x-show="countSep(i)">· </span><span x-text="p"></span></span>
+                  </template>
+                </div>
+                <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
+                  <span x-text="flowCardMetrics(c)"></span>
+                </div>
               </div>
-              <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
-                <span class="sr-only" x-text="cardSr('qa')"></span>
-                <span x-text="cardResult('qa')"></span>
-              </p>
-              <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
-                <span x-show="cardHasRun('qa')" x-text="cardMinutes('qa')"></span>
-                <span aria-hidden="true" x-show="cardHasRun('qa')">·</span>
-                <span x-show="cardHasRun('qa')" x-text="cardCost('qa')"></span>
-                <span x-show="cardNoRun('qa')">—</span>
-              </div>
-            </div>
-            <p class="text-center font-mono text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="loopFooter('qa')"></p>
+            </template>
+            <p data-group-footer class="text-center font-mono text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="groupFooter('qa')"></p>
+            <p data-group-footer class="text-center text-sm font-semibold leading-normal text-amber-800 dark:text-amber-300" x-show="groupStopped('qa')" x-text="groupStopWord('qa')"></p>
           </li>
         </ol>
       </div>
+
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="gateNote" x-text="gateNote"></p>
 
       <!-- Placeholder row -->
       <div class="space-y-2" x-show="hasPipe">
