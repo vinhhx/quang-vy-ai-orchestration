@@ -1558,3 +1558,162 @@ fn gate_checks_on_new_routes() {
     }
     assert_eq!(srv.get("/api/jobs/1").status, 404);
 }
+
+// ---------------------------------------------------------------------------
+// Plan 05.2-15 Task 3: serve terminal line, serve shutdown and Kill during autopilot
+// ---------------------------------------------------------------------------
+
+fn read_serve_stderr(srv: &common::Serve) -> String {
+    std::fs::read_to_string(&srv.stderr_path).unwrap_or_default()
+}
+
+#[test]
+fn serve_echoes_autopilot_lines() {
+    let sb = Sandbox::new();
+    let _repo = setup_auto_project(&sb, "work");
+    sb.write_scenario(auto_scenario());
+    let srv = sb.serve(&[]);
+    let job_id = giao_viec_to_gate(&sb, &srv);
+    assert_eq!(job_id, 1);
+
+    let want = "[job 1] Autopilot dừng ở bước duyệt plan (task 1)";
+    let ok = wait_until(Duration::from_secs(5), || {
+        read_serve_stderr(&srv).contains(want)
+    });
+    assert!(ok, "serve stderr: {}", read_serve_stderr(&srv));
+}
+
+/// Task 1 theo quy trình `nhanh`, plan đã duyệt (CLI), chưa có run Dev.
+fn approved_nhanh_task(sb: &Sandbox) {
+    setup_project(sb, "work");
+    run_lead(sb, "web-ban-hang", "sua-app", "sửa app");
+    let res = sb.run(&["approve", "1", "--no-continue"], None);
+    assert_ok(&res, "approve 1 --no-continue");
+}
+
+/// Serve với claude giả dạng cây (bash → sleep 317, dừng hợp tác khi bị ngắt).
+fn tree_serve(sb: &Sandbox) -> (common::Serve, PathBuf) {
+    sb.write_config(json!({
+        "claude_bin": Sandbox::fake_claude_tree().to_str().unwrap(),
+        "kill_grace_secs": 1,
+    }));
+    let pidfile = sb.root.join("tree.pid");
+    let srv = sb.serve(&[
+        ("FAKE_TREE_PIDFILE", pidfile.to_str().unwrap()),
+        ("FAKE_TREE_MODE", "coop"),
+        ("FAKE_TREE_SLEEP", "317"),
+    ]);
+    (srv, pidfile)
+}
+
+/// Bật autopilot từ dashboard và chờ cây claude giả + run dev đang chạy.
+/// Trả (job id, run id, các tiến trình đã ghi: driver, con của nó, cây claude giả).
+fn start_tree_autopilot(
+    sb: &Sandbox,
+    srv: &common::Serve,
+    pidfile: &Path,
+) -> (u64, i64, common::ProcGuard) {
+    let resp = srv.post_json("/api/tasks/1/auto", &json!({}));
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    let job = srv.get(&format!("/api/jobs/{job_id}")).json();
+    assert_eq!(job["role"], "auto");
+    let driver_pid = job["pid"].as_i64().unwrap() as i32;
+    let mut guard = common::ProcGuard(Vec::new());
+    if let Some(p) = agent_brain::procs::proc_id(driver_pid) {
+        guard.0.push(p);
+    }
+
+    let tree = common::tree_procs(pidfile, Duration::from_secs(15));
+    let tree = match tree {
+        Some(t) => t,
+        None => panic!("fake claude tree did not start: {}", read_serve_stderr(srv)),
+    };
+    guard.0.extend(tree);
+    let dev_run = wait_running_dev(sb);
+    for p in agent_brain::procs::descendants(driver_pid) {
+        if !guard.0.contains(&p) {
+            guard.0.push(p);
+        }
+    }
+    (job_id, dev_run, guard)
+}
+
+fn alive_of(guard: &common::ProcGuard) -> Vec<agent_brain::procs::ProcId> {
+    guard
+        .0
+        .iter()
+        .copied()
+        .filter(|p| agent_brain::procs::alive(*p))
+        .collect()
+}
+
+#[test]
+fn serve_shutdown_interrupts_driver() {
+    let sb = Sandbox::new();
+    approved_nhanh_task(&sb);
+    let (mut srv, pidfile) = tree_serve(&sb);
+    let (_job_id, dev_run, guard) = start_tree_autopilot(&sb, &srv, &pidfile);
+    assert!(guard.0.len() >= 4, "recorded: {:?}", guard.0);
+
+    let code = srv.stop(libc::SIGINT, Duration::from_secs(30));
+    assert!(code.is_some(), "serve did not exit");
+
+    let gone = wait_until(Duration::from_secs(15), || alive_of(&guard).is_empty());
+    assert!(gone, "alive after serve stop: {:?}", alive_of(&guard));
+
+    let killed = wait_until(Duration::from_secs(5), || {
+        run_status(&sb, dev_run) == "killed"
+    });
+    assert!(
+        killed,
+        "dev run status: {} — serve stderr: {}",
+        run_status(&sb, dev_run),
+        read_serve_stderr(&srv)
+    );
+    assert_eq!(
+        task_auto_state(&sb, 1).as_deref(),
+        Some("interrupted"),
+        "serve stderr: {}",
+        read_serve_stderr(&srv)
+    );
+    let running: i64 = sb
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM runs WHERE status = 'running'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(running, 0);
+
+    // Serve mới: autopilot hiện `lost` và Bật autopilot chạy tiếp được.
+    let mut srv2 = sb.serve(&[]);
+    let t = srv2.get("/api/tasks/1").json();
+    assert_eq!(t["auto"]["state"], "lost", "{}", t["auto"]);
+    let start = control(&t, "auto_start");
+    assert_eq!(start["enabled"], true, "{start}");
+    assert!(srv2.stop(libc::SIGINT, Duration::from_secs(10)).is_some());
+}
+
+#[test]
+fn dashboard_kill_stops_autopilot() {
+    let sb = Sandbox::new();
+    approved_nhanh_task(&sb);
+    let (mut srv, pidfile) = tree_serve(&sb);
+    let (job_id, dev_run, guard) = start_tree_autopilot(&sb, &srv, &pidfile);
+
+    let resp = srv.post_json(&format!("/api/runs/{dev_run}/kill"), &json!({}));
+    assert_eq!(resp.status, 200, "{}", resp.text());
+
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 4, "{job}");
+    assert_eq!(run_status(&sb, dev_run), "killed");
+    let stop = task_auto_json(&sb, 1)["stop"].clone();
+    assert_eq!(stop["reason"], "dung_boi_ban", "{stop}");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("stopped"));
+
+    let gone = wait_until(Duration::from_secs(15), || alive_of(&guard).is_empty());
+    assert!(gone, "alive after kill: {:?}", alive_of(&guard));
+    assert!(srv.stop(libc::SIGINT, Duration::from_secs(10)).is_some());
+}

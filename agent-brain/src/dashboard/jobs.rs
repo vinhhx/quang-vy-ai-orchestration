@@ -224,15 +224,24 @@ impl JobManager {
         let ring_out = output_ring.clone();
         let ring_err = output_ring.clone();
 
+        // D-20: dòng `Autopilot …` của job cũng hiện ở terminal của serve.
         let t_out = std::thread::spawn(move || {
             if let Some(stdout) = child_stdout {
                 let reader = std::io::BufReader::new(stdout);
                 for line in reader.lines().map_while(Result::ok) {
-                    let mut b = ring_out.lock().unwrap();
-                    if b.len() >= OUTPUT_LINES {
-                        b.pop_front();
+                    let echo = line
+                        .starts_with("Autopilot ")
+                        .then(|| format!("[job {job_id}] {line}"));
+                    {
+                        let mut b = ring_out.lock().unwrap();
+                        if b.len() >= OUTPUT_LINES {
+                            b.pop_front();
+                        }
+                        b.push_back(line);
                     }
-                    b.push_back(line);
+                    if let Some(e) = echo {
+                        crate::term::emit(&e);
+                    }
                 }
             }
         });
@@ -241,11 +250,19 @@ impl JobManager {
             if let Some(stderr) = child_stderr {
                 let reader = std::io::BufReader::new(stderr);
                 for line in reader.lines().map_while(Result::ok) {
-                    let mut b = ring_err.lock().unwrap();
-                    if b.len() >= OUTPUT_LINES {
-                        b.pop_front();
+                    let echo = line
+                        .starts_with("Autopilot ")
+                        .then(|| format!("[job {job_id}] {line}"));
+                    {
+                        let mut b = ring_err.lock().unwrap();
+                        if b.len() >= OUTPUT_LINES {
+                            b.pop_front();
+                        }
+                        b.push_back(line);
                     }
-                    b.push_back(line);
+                    if let Some(e) = echo {
+                        crate::term::emit(&e);
+                    }
                 }
             }
         });
