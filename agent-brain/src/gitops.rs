@@ -106,15 +106,79 @@ pub fn head_sha(root: &Path) -> BrainResult<String> {
     Ok(out.trim().to_string())
 }
 
-fn is_hex_sha(s: &str) -> bool {
+pub fn is_hex_sha(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-pub fn is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> bool {
+pub fn ancestry(root: &Path, ancestor: &str, descendant: &str) -> Option<bool> {
     if !is_hex_sha(ancestor) || !is_hex_sha(descendant) {
-        return false;
+        return None;
     }
-    git(root, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["merge-base", "--is-ancestor", ancestor, descendant]);
+    cmd.current_dir(root);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+
+    let status = cmd.status().ok()?;
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
+pub fn is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> bool {
+    ancestry(root, ancestor, descendant) == Some(true)
+}
+
+pub fn plan_commit_on_branch(
+    root: &Path,
+    branch: &str,
+    slug: &str,
+    base_commit: Option<&str>,
+) -> Result<Option<String>, ()> {
+    if branch.is_empty() || branch.starts_with('-') {
+        return Err(());
+    }
+
+    let ref_name = format!("refs/heads/{branch}");
+    let mut args = vec!["log", "--format=%H %s"];
+    let range;
+    if let Some(base) = base_commit.filter(|b| is_hex_sha(b)) {
+        range = format!("{base}..{ref_name}");
+        args.push(&range);
+    } else {
+        args.push(&ref_name);
+    }
+    args.push("--");
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(&args);
+    cmd.current_dir(root);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+
+    let output = cmd.output().map_err(|_| ())?;
+    if !output.status.success() {
+        return Err(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected_subj = format!("{slug}: plan");
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((sha, subj)) = trimmed.split_once(' ') {
+            if subj.trim() == expected_subj {
+                return Ok(Some(sha.trim().to_string()));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 pub fn commit_time_ms(root: &Path, sha: &str) -> Option<i64> {
@@ -277,6 +341,120 @@ mod tests {
         assert!(is_tracked(root, "src/tracked.py"));
         assert!(!is_tracked(root, "untracked.txt"));
         assert!(!is_tracked(root, "missing.txt"));
+    }
+
+    #[test]
+    fn ancestry_tri_state() {
+        let dir = repo();
+        let root = dir.path();
+        let a = commit(root, &[("a.txt", "1")], "commit a");
+        let b = commit(root, &[("b.txt", "1")], "commit b");
+
+        assert_eq!(ancestry(root, &a, &b), Some(true));
+        assert_eq!(ancestry(root, &b, &a), Some(false));
+
+        let bogus_sha = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(ancestry(root, &a, bogus_sha), None);
+        assert_eq!(ancestry(root, "-x", &b), None);
+        assert_eq!(ancestry(root, "zz", &b), None);
+
+        assert!(is_ancestor(root, &a, &b));
+        assert!(!is_ancestor(root, &b, &a));
+        assert!(!is_ancestor(root, "-x", &b));
+    }
+
+    #[test]
+    fn plan_commit_bounded_to_branch() {
+        let dir = repo();
+        let root = dir.path();
+
+        let _old_plan = commit(root, &[("old.txt", "1")], "x: plan");
+        let base = commit(root, &[("init2.txt", "1")], "init 2");
+
+        let status = std::process::Command::new("git")
+            .args(["checkout", "-b", "task/x", &base])
+            .current_dir(root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        assert_eq!(
+            plan_commit_on_branch(root, "task/x", "x", Some(&base)),
+            Ok(None)
+        );
+
+        let p1 = commit(root, &[("plan.txt", "1")], "x: plan");
+        assert_eq!(
+            plan_commit_on_branch(root, "task/x", "x", Some(&base)),
+            Ok(Some(p1))
+        );
+
+        let p2 = commit(root, &[("plan.txt", "2")], "x: plan");
+        assert_eq!(
+            plan_commit_on_branch(root, "task/x", "x", Some(&base)),
+            Ok(Some(p2.clone()))
+        );
+
+        commit(root, &[("rev.txt", "1")], "x: plan-review");
+        assert_eq!(
+            plan_commit_on_branch(root, "task/x", "x", Some(&base)),
+            Ok(Some(p2))
+        );
+    }
+
+    #[test]
+    fn plan_commit_ignores_tag_and_paths() {
+        let dir = repo();
+        let root = dir.path();
+
+        let old_plan = commit(root, &[("old.txt", "1")], "x: plan");
+        let base = commit(root, &[("init2.txt", "1")], "init 2");
+
+        let status = std::process::Command::new("git")
+            .args(["checkout", "-b", "task/x", &base])
+            .current_dir(root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let p = commit(root, &[("plan.txt", "1")], "x: plan");
+
+        // create tag named task/x on old commit
+        let tag_status = std::process::Command::new("git")
+            .args(["tag", "task/x", &old_plan])
+            .current_dir(root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .unwrap();
+        assert!(tag_status.success());
+
+        // create file named task
+        std::fs::write(root.join("task"), "ambiguous").unwrap();
+
+        assert_eq!(
+            plan_commit_on_branch(root, "task/x", "x", Some(&base)),
+            Ok(Some(p.clone()))
+        );
+
+        // base_commit None searches whole branch
+        assert_eq!(
+            plan_commit_on_branch(root, "task/x", "x", None),
+            Ok(Some(p))
+        );
+    }
+
+    #[test]
+    fn plan_commit_refuses_dash() {
+        let dir = repo();
+        let root = dir.path();
+        assert_eq!(plan_commit_on_branch(root, "-x", "x", None), Err(()));
+        assert_eq!(plan_commit_on_branch(root, "", "x", None), Err(()));
+        assert_eq!(
+            plan_commit_on_branch(root, "nonexistent", "x", None),
+            Err(())
+        );
     }
 
     #[test]
