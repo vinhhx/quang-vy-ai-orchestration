@@ -846,3 +846,245 @@ fn create_task_body_fields() {
         .unwrap();
     assert_eq!(title, request);
 }
+
+// ---------------------------------------------------------------------------
+// Plan 05.2-15 Task 1: Duyệt plan from the dashboard
+// ---------------------------------------------------------------------------
+
+fn dev_impl_entry() -> Value {
+    json!({"ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "read", "path": "src/app.py"},
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+        {"op": "git", "args": ["add", "src/app.py"]},
+        {"op": "git", "args": ["commit", "-m", "sua-app: sửa app"]}
+    ]})
+}
+
+fn code_review_entry(verdict: &str, blocking: i64) -> Value {
+    json!({"ops": [{
+        "op": "write",
+        "path": ".code-review.md",
+        "content": review_report(verdict, blocking, 1),
+    }]})
+}
+
+fn qa_entry(verdict: &str) -> Value {
+    let report = format!(
+        "# QA: sửa app\n## Thay đổi có khớp plan không (từng mục)\n- src/app.py: đã xem.\n## Sửa ngoài plan (nếu có)\nKhông.\n## Rủi ro\nKhông.\n## Kết luận\n{verdict}\n"
+    );
+    json!({"ops": [{"op": "write", "path": ".qa-report.md", "content": report}]})
+}
+
+/// Sha của commit `sua-app: plan` mới nhất trên nhánh hiện tại.
+fn plan_sha(sb: &Sandbox, repo: &Path) -> String {
+    let log = sb.git(repo, &["log", "--format=%H %s"]);
+    log.lines()
+        .find_map(|l| {
+            let (sha, subj) = l.split_once(' ')?;
+            (subj == "sua-app: plan").then(|| sha.to_string())
+        })
+        .expect("plan commit")
+}
+
+fn approved_commit(sb: &Sandbox, task_id: i64) -> Option<String> {
+    sb.db()
+        .query_row(
+            "SELECT approved_commit FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+fn task_status(sb: &Sandbox, task_id: i64) -> String {
+    sb.db()
+        .query_row("SELECT status FROM tasks WHERE id = ?1", [task_id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+fn run_count(sb: &Sandbox) -> i64 {
+    sb.db()
+        .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
+        .unwrap()
+}
+
+fn run_roles(sb: &Sandbox) -> Vec<String> {
+    let conn = sb.db();
+    let mut stmt = conn.prepare("SELECT role FROM runs ORDER BY id").unwrap();
+    let roles = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<String>, _>>()
+        .unwrap();
+    roles
+}
+
+/// Mọi bước của mac-dinh: plan, review plan duyệt, dev, review code đạt, QA đạt.
+fn full_flow_scenario() -> Value {
+    by_role(json!({
+        "lead": [lead_plan_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 1)],
+        "dev": [dev_impl_entry()],
+        "code-review": [code_review_entry("pass", 0)],
+        "qa": [qa_entry("Đạt")],
+    }))
+}
+
+/// Giao việc mac-dinh từ dashboard (`sua-app`) và chờ job dừng ở cổng duyệt plan.
+fn giao_viec_to_gate(sb: &Sandbox, srv: &common::Serve) -> u64 {
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "web-ban-hang", "request": "sửa app", "name": "sua-app"}),
+    );
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    let job = wait_for_job(srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+    assert_eq!(task_auto_state(sb, 1).as_deref(), Some("gate"));
+    job_id
+}
+
+#[test]
+fn approve_endpoint_flow() {
+    let sb = Sandbox::new();
+    let repo = setup_auto_project(&sb, "work");
+    sb.write_scenario(full_flow_scenario());
+
+    let srv = sb.serve(&[]);
+    giao_viec_to_gate(&sb, &srv);
+
+    let t = srv.get("/api/tasks/1").json();
+    let rev = t["rev"].as_str().unwrap().to_string();
+    assert_eq!(control(&t, "approve")["enabled"], true);
+
+    let resp = srv.post_json("/api/tasks/1/approve", &json!({ "rev": rev }));
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    let body = resp.json();
+    let sha = plan_sha(&sb, &repo);
+    assert_eq!(body["plan_commit"], sha.as_str(), "{body}");
+    assert!(body["approved_at"].as_i64().unwrap() > 0, "{body}");
+    let job_id = body["job_id"]
+        .as_u64()
+        .expect("job_id for an auto workflow");
+    assert_eq!(job_role(&srv, job_id), "auto");
+
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("done"));
+    assert_eq!(task_status(&sb, 1), "qa_pass");
+    assert_eq!(approved_commit(&sb, 1), Some(sha));
+    assert_eq!(
+        run_roles(&sb),
+        vec!["lead", "plan-review", "dev", "code-review", "qa"]
+    );
+}
+
+#[test]
+fn approve_manual_workflow_no_job() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+    run_lead(&sb, "web-ban-hang", "sua-app", "sửa app");
+    let runs_before = run_count(&sb);
+
+    let srv = sb.serve(&[]);
+    let t = srv.get("/api/tasks/1").json();
+    assert_eq!(t["workflow"]["name"], "nhanh");
+    assert_eq!(control(&t, "approve")["enabled"], true);
+
+    let resp = srv.post_json("/api/tasks/1/approve", &json!({}));
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    let body = resp.json();
+    assert!(body["job_id"].is_null(), "{body}");
+    assert_eq!(body["plan_commit"], plan_sha(&sb, &repo).as_str());
+
+    let p = srv.get("/api/tasks/1/pipeline").json();
+    assert_eq!(p["gate"]["state"], "xong", "{}", p["gate"]);
+    assert_eq!(p["gate"]["note_kind"], "approved_explicit");
+    assert_eq!(run_count(&sb), runs_before, "no new run");
+    assert_eq!(srv.get("/api/jobs/1").status, 404, "no job started");
+}
+
+#[test]
+fn approve_duplicate() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    run_lead(&sb, "web-ban-hang", "sua-app", "sửa app");
+
+    let srv = sb.serve(&[]);
+    let first = srv.post_json("/api/tasks/1/approve", &json!({}));
+    assert_eq!(first.status, 200, "{}", first.text());
+    let commit = approved_commit(&sb, 1);
+    assert!(commit.is_some());
+
+    let again = srv.post_json("/api/tasks/1/approve", &json!({}));
+    assert_eq!(again.status, 409, "{}", again.text());
+    let body = again.json();
+    assert_eq!(body["kind"], "duplicate", "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Plan hiện tại đã được duyệt lúc"),
+        "{body}"
+    );
+    assert_eq!(approved_commit(&sb, 1), commit);
+    assert_eq!(srv.get("/api/jobs/1").status, 404, "no job started");
+}
+
+#[test]
+fn approve_refused_reasons() {
+    // 1. .plan.md sửa tay chưa commit -> nút tắt, 409 not_allowed với lý do của server.
+    let sb = Sandbox::new();
+    let repo = auto_to_gate(&sb);
+    let plan_path = repo.join(".plan.md");
+    let mut text = std::fs::read_to_string(&plan_path).unwrap();
+    text.push_str("\n<!-- sửa tay -->\n");
+    std::fs::write(&plan_path, text).unwrap();
+
+    let srv = sb.serve(&[]);
+    let resp = srv.post_json("/api/tasks/1/approve", &json!({}));
+    assert_eq!(resp.status, 409, "{}", resp.text());
+    let body = resp.json();
+    assert_eq!(body["kind"], "not_allowed", "{body}");
+    assert_eq!(
+        body["error"],
+        "Plan có thay đổi chưa commit — commit với message 'sua-app: plan' rồi duyệt"
+    );
+    assert_eq!(approved_commit(&sb, 1), None);
+    assert_eq!(srv.get("/api/jobs/1").status, 404);
+    drop(srv);
+
+    // 2. Cổng chưa mở (review plan yêu cầu sửa, Lead chưa chạy lại) -> 409 not_allowed.
+    let sb = Sandbox::new();
+    let _repo = setup_auto_project(&sb, "work");
+    run_lead(&sb, "web-ban-hang", "sua-app", "sửa app");
+    let res = sb.run(
+        &["run", "plan-review", "--", "web-ban-hang"],
+        Some(plan_review_entry("revise", 1, 0)),
+    );
+    assert_ok(&res, "run plan-review");
+
+    let srv = sb.serve(&[]);
+    let t = srv.get("/api/tasks/1").json();
+    assert!(
+        !t["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == "approve"),
+        "{}",
+        t["controls"]
+    );
+    let resp = srv.post_json("/api/tasks/1/approve", &json!({}));
+    assert_eq!(resp.status, 409, "{}", resp.text());
+    let body = resp.json();
+    assert_eq!(body["kind"], "not_allowed", "{body}");
+    assert_eq!(
+        body["error"],
+        "Hành động không áp dụng cho trạng thái hiện tại"
+    );
+    assert_eq!(approved_commit(&sb, 1), None);
+}
