@@ -1586,10 +1586,22 @@
         return 'font-semibold ' + window.AB.stateText(state);
       },
 
+      // Counts first (review / QA, unknown counts omitted), then the 05.1 figures.
       rowMetrics: function (r) {
         if (!r) return '— · — · —';
         var turns = (r.turns !== null && r.turns !== undefined) ? (r.turns + ' lượt') : '—';
-        return turns + ' · ' + window.AB.fmtMinutes(r.duration_ms) + ' · ' + window.AB.fmtUsd(r.cost_usd);
+        var figures = turns + ' · ' + window.AB.fmtMinutes(r.duration_ms) + ' · ' + window.AB.fmtUsd(r.cost_usd);
+        var counts = window.AB.countParts(r.counts);
+        return counts.length > 0 ? counts.join(' · ') + ' · ' + figures : figures;
+      },
+
+      // Visible token line, only for the selected row (05.1-UI-REVIEW fix 2).
+      tokenLineFor: function (r) {
+        if (!this.isSelectedRow(r)) return '';
+        if (!window.AB.tokensKnown(r)) return 'Token: vào — · ra — · cache — / —';
+        var AB = window.AB;
+        return 'Token: vào ' + AB.fmtNum(r.input_tokens) + ' · ra ' + AB.fmtNum(r.output_tokens) +
+          ' · cache ' + AB.fmtNum(r.cache_read_tokens) + ' / ' + AB.fmtNum(r.cache_write_tokens);
       },
 
       rowTitle: function (r) {

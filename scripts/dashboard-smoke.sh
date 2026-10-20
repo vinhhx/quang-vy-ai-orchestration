@@ -466,6 +466,8 @@ class PipelineParser(HTMLParser):
         self.banner_buttons = set()
         self.strip_buttons = set()
         self.textareas = {}
+        self.ledger_text = ''
+        self.token_lines = []
         self.depth = 0
         self.captures = []
         self.current_card = None
@@ -529,6 +531,11 @@ class PipelineParser(HTMLParser):
                 self.captures.append((self.depth, 'banner', len(self.banners) - 1))
             if 'data-action-strip' in attr_dict:
                 self.captures.append((self.depth, 'strip', None))
+            if 'data-ledger' in attr_dict:
+                self.captures.append((self.depth, 'ledger', None))
+            if 'data-token-line' in attr_dict:
+                self.token_lines.append({'style': attr_dict.get('style') or '', 'text': ''})
+                self.captures.append((self.depth, 'token', len(self.token_lines) - 1))
 
         if 'data-legend-item' in attr_dict:
             self.legend_items.append(tag)
@@ -570,6 +577,10 @@ class PipelineParser(HTMLParser):
                     self.budget_text += data
                 elif kind == 'banner':
                     self.banners[ref]['text'] += data
+                elif kind == 'ledger':
+                    self.ledger_text += data
+                elif kind == 'token':
+                    self.token_lines[ref]['text'] += data
             if self.in_chip:
                 self.chips[-1]['text'] += data
             if self.in_ledger_total:
@@ -674,6 +685,16 @@ if screen == 'task-stop':
             fail(f"Thiếu nút {bid} trong banner dừng (nút trong banner: {parser.banner_buttons})")
     if 'ab-act-relead' in parser.strip_buttons:
         fail("ab-act-relead không được nằm cả trong dải hành động khi banner dừng hiện")
+    # Ledger: server labels, counts first, one visible token line (selected row).
+    if 'Vòng 3 · review code' not in parser.ledger_text:
+        fail(f"Sổ lượt chạy không chứa 'Vòng 3 · review code'")
+    if '2 chặn · 1 góp ý' not in parser.ledger_text:
+        fail(f"Sổ lượt chạy không chứa '2 chặn · 1 góp ý'")
+    visible_tokens = [t for t in parser.token_lines if 'display: none' not in t['style']]
+    if len(visible_tokens) != 1:
+        fail(f"Số data-token-line hiển thị là {len(visible_tokens)}, kỳ vọng 1 (tổng {len(parser.token_lines)})")
+    if 'Token: vào' not in visible_tokens[0]['text']:
+        fail(f"data-token-line không chứa 'Token: vào' (nội dung: '{visible_tokens[0]['text']}')")
     print("Stop DOM OK")
     sys.exit(0)
 

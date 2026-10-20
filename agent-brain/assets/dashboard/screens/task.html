@@ -312,14 +312,17 @@
               <span x-show="groupHasRight(g)" x-text="groupRight(g)"></span>
             </h3>
             <template x-for="r in g.rows" :key="r.run_id">
-              <button type="button" data-ledger-row :data-run-id="r.run_id" class="flex min-h-12 w-full flex-col gap-1 rounded-xl px-4 py-2 text-left text-sm font-normal leading-normal hover:bg-slate-50 motion-safe:transition-colors dark:hover:bg-slate-700/50 sm:flex-row sm:items-center sm:justify-between sm:gap-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="ledgerRowClass(r)" :aria-current="ledgerRowCurrent(r)" :title="rowTitle(r)" @click="pickRun(r)">
-                <span class="min-w-0 break-words text-slate-600 dark:text-slate-400">
-                  <span x-text="r.label"></span>: <span aria-hidden="true" :class="rowGlyphClass(r)" x-text="rowGlyph(r)"></span>
-                  <span :class="rowVerdictClass(r)" x-text="r.verdict"></span>
-                  <span class="text-indigo-700 dark:text-indigo-300" x-show="isSelectedRow(r)"> Đang xem</span>
-                </span>
-                <span class="shrink-0 tabular-nums text-slate-600 dark:text-slate-400 sm:text-right" x-text="rowMetrics(r)"></span>
-              </button>
+              <div>
+                <button type="button" data-ledger-row :data-run-id="r.run_id" class="flex min-h-12 w-full flex-col gap-1 rounded-xl px-4 py-2 text-left text-sm font-normal leading-normal hover:bg-slate-50 motion-safe:transition-colors dark:hover:bg-slate-700/50 sm:flex-row sm:items-center sm:justify-between sm:gap-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="ledgerRowClass(r)" :aria-current="ledgerRowCurrent(r)" :title="rowTitle(r)" @click="pickRun(r)">
+                  <span class="min-w-0 break-words text-slate-600 dark:text-slate-400">
+                    <span x-text="r.label"></span>: <span aria-hidden="true" :class="rowGlyphClass(r)" x-text="rowGlyph(r)"></span>
+                    <span :class="rowVerdictClass(r)" x-text="r.verdict"></span>
+                    <span class="text-indigo-700 dark:text-indigo-300" x-show="isSelectedRow(r)"> Đang xem</span>
+                  </span>
+                  <span class="shrink-0 tabular-nums text-slate-600 dark:text-slate-400 sm:text-right" x-text="rowMetrics(r)"></span>
+                </button>
+                <p data-token-line class="px-4 text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400" x-show="isSelectedRow(r)" x-text="tokenLineFor(r)"></p>
+              </div>
             </template>
           </section>
         </template>

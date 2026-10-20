@@ -1739,6 +1739,25 @@ const sections = [
       check('pickRun(r3) sets pinned === true', c.pinned === true, `got ${c.pinned}`);
       check('pickRun(r3) records { block: "nearest" }', recorded && recorded.block === 'nearest', `got ${JSON.stringify(recorded)}`);
 
+      // 05.2 counts first, then the 05.1 figures
+      const rReview = { run_id: 21, role: 'plan-review', label: 'Vòng 1 · review plan', state: 'sua_lai', verdict: 'sửa lại', counts: { blocking: 1, advisory: 4 }, turns: 41, duration_ms: 120000, cost_usd: 1.32, input_tokens: 1200, output_tokens: 300, cache_read_tokens: 50000, cache_write_tokens: 4000 };
+      check('rowMetrics review counts first', c.rowMetrics(rReview) === '1 chặn · 4 góp ý · 41 lượt · 2 phút · $1.32', `got "${c.rowMetrics(rReview)}"`);
+      const rQa = { run_id: 22, role: 'qa', counts: { specs: 3, failing: 1, not_automatable: null }, turns: 5, duration_ms: 60000, cost_usd: 0.5 };
+      check('rowMetrics QA counts', c.rowMetrics(rQa).startsWith('3 kiểm thử · 1 lỗi · '), `got "${c.rowMetrics(rQa)}"`);
+      check('rowMetrics QA unknown count omitted', !c.rowMetrics(rQa).includes('không tự động được'), `got "${c.rowMetrics(rQa)}"`);
+      check('rowMetrics known zero shown', c.rowMetrics({ ...rReview, counts: { blocking: 0, advisory: null } }).startsWith('0 chặn · 41 lượt'), `got "${c.rowMetrics({ ...rReview, counts: { blocking: 0, advisory: null } })}"`);
+      check('rowMetrics without counts keeps the 05.1 string', c.rowMetrics({ ...r1, counts: null }) === '69 lượt · 7 phút · $2.73', `got "${c.rowMetrics({ ...r1, counts: null })}"`);
+
+      // token line under the selected row only
+      c.runId = 21;
+      check('tokenLineFor selected row', c.tokenLineFor(rReview) === 'Token: vào 1.200 · ra 300 · cache 50.000 / 4.000', `got "${c.tokenLineFor(rReview)}"`);
+      check('tokenLineFor uses AB.fmtNum', c.tokenLineFor(rReview) === 'Token: vào ' + ctx.AB.fmtNum(1200) + ' · ra ' + ctx.AB.fmtNum(300) + ' · cache ' + ctx.AB.fmtNum(50000) + ' / ' + ctx.AB.fmtNum(4000));
+      check('tokenLineFor non-selected row empty', c.tokenLineFor(r1) === '', `got "${c.tokenLineFor(r1)}"`);
+      c.runId = 2;
+      check('tokenLineFor unknown tokens', c.tokenLineFor(r2) === 'Token: vào — · ra — · cache — / —', `got "${c.tokenLineFor(r2)}"`);
+      check('tokenLineFor(null) empty', c.tokenLineFor(null) === '');
+      check('rowTitle tooltip kept', c.rowTitle(rReview).includes('vào 1.200'), `got "${c.rowTitle(rReview)}"`);
+
       c.pipe = {
         ledger: {
           groups: [],
