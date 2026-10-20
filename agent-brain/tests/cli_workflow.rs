@@ -319,3 +319,469 @@ fn snapshot_survives_file_edit() {
     assert!((wf.budget_usd - 0.05).abs() < 1e-6);
     assert_eq!(wf.name, "chi-phi-thap");
 }
+
+#[test]
+fn review_replan_edits_in_place() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+    let sc_lead = lead_scenario(&[("src/app.py", "1-5", "sửa app", "yêu cầu")]);
+    let out_lead = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+        ],
+        Some(sc_lead),
+    );
+    assert_eq!(out_lead.code, 0);
+    let lead_sha = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+
+    let review_report = "\
+---
+verdict: revise
+blocking: 1
+advisory: 1
+files: []
+---
+# Review plan
+## Mục chặn (blocking)
+- thiếu kiểm thử
+## Góp ý (advisory)
+";
+    let sc_rev = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".plan-review.md",
+                "content": review_report,
+            }
+        ]
+    });
+    let out_rev = sb.run(
+        &["run", "plan-review", "web-ban-hang", "--round", "1"],
+        Some(sc_rev),
+    );
+    assert_eq!(out_rev.code, 0);
+    let rev_sha = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+
+    let sc_relead = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".plan.md",
+                "content": "\n<!-- sửa theo review -->\n",
+                "append": true
+            }
+        ]
+    });
+    let out_relead = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+            "--review",
+            "--round",
+            "2",
+        ],
+        Some(sc_relead),
+    );
+    assert_eq!(
+        out_relead.code, 0,
+        "stderr: {}\nstdout: {}",
+        out_relead.stderr, out_relead.stdout
+    );
+
+    let new_head = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    assert_ne!(new_head, rev_sha);
+    assert_ne!(new_head, lead_sha);
+
+    let head_subj = sb.git(&repo, &["log", "-1", "--format=%s"]);
+    assert_eq!(head_subj.trim(), "sua-app: plan");
+
+    let plan_content = std::fs::read_to_string(repo.join(".plan.md")).unwrap();
+    assert!(plan_content.contains("src/app.py"));
+    assert!(
+        plan_content.ends_with("<!-- sửa theo review -->\n")
+            || plan_content
+                .trim_end()
+                .ends_with("<!-- sửa theo review -->")
+    );
+
+    let recs = sb.records();
+    let last_rec = recs.last().unwrap();
+    let argv: Vec<String> = last_rec["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    let p_idx = argv.iter().position(|x| x == "-p").unwrap();
+    let p_msg = &argv[p_idx + 1];
+    assert!(p_msg.contains(".plan-review.md"));
+    assert!(p_msg.contains("mục chặn"));
+
+    let conn = sb.db();
+    let (stage, round): (Option<String>, Option<i64>) = conn
+        .query_row(
+            "SELECT stage, round FROM runs WHERE task_id = 1 ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stage.as_deref(), Some("plan"));
+    assert_eq!(round, Some(2));
+}
+
+#[test]
+fn review_requires_revise_report() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+
+    // On main branch (not task branch)
+    let out = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+            "--review",
+        ],
+        None,
+    );
+    assert_eq!(out.code, 1);
+    assert!(out
+        .stderr
+        .contains("--review chỉ dùng khi đang ở nhánh task/sua-app"));
+
+    // Now lead on task branch
+    let sc_lead = lead_scenario(&[("src/app.py", "1-5", "sửa app", "yêu cầu")]);
+    let out_lead = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+        ],
+        Some(sc_lead),
+    );
+    assert_eq!(out_lead.code, 0);
+
+    // On task branch, but no .plan-review.md
+    let out2 = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+            "--review",
+        ],
+        None,
+    );
+    assert_eq!(out2.code, 1);
+    assert!(out2
+        .stderr
+        .contains("--review cần .plan-review.md có verdict revise"));
+
+    // Write an approve report
+    let approve_report =
+        "---\nverdict: approve\nblocking: 0\nadvisory: 0\nfiles: []\n---\n# Review plan\n";
+    std::fs::write(repo.join(".plan-review.md"), approve_report).unwrap();
+    let out3 = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+            "--review",
+        ],
+        None,
+    );
+    assert_eq!(out3.code, 1);
+    assert!(out3
+        .stderr
+        .contains("--review cần .plan-review.md có verdict revise"));
+}
+
+#[test]
+fn note_stored_and_passed() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+    let sc_lead = lead_scenario(&[("src/app.py", "1-5", "sửa app", "yêu cầu")]);
+    let out_lead = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+        ],
+        Some(sc_lead),
+    );
+    assert_eq!(out_lead.code, 0);
+
+    let sc_relead = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".plan.md",
+                "content": "\n<!-- note update -->\n",
+                "append": true
+            }
+        ]
+    });
+    let out = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+            "--note=-tách bước 2",
+        ],
+        Some(sc_relead),
+    );
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+
+    let conn = sb.db();
+    let metrics_json: Option<String> = conn
+        .query_row(
+            "SELECT metrics_json FROM runs WHERE task_id = 1 ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let metrics: serde_json::Value =
+        serde_json::from_str(&metrics_json.expect("metrics_json present")).unwrap();
+    assert_eq!(metrics["note"], "-tách bước 2");
+
+    let recs = sb.records();
+    let last_rec = recs.last().unwrap();
+    let argv: Vec<String> = last_rec["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    let p_idx = argv.iter().position(|x| x == "-p").unwrap();
+    let p_msg = &argv[p_idx + 1];
+    assert!(p_msg.contains("Ghi chú của người dùng: -tách bước 2"));
+
+    let plan_content = std::fs::read_to_string(repo.join(".plan.md")).unwrap();
+    assert!(plan_content.contains("src/app.py"));
+}
+
+#[test]
+fn note_limits() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    // 501 characters note
+    let long_note = "a".repeat(501);
+    let out = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            &format!("--note={long_note}"),
+        ],
+        None,
+    );
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.contains("Ghi chú quá dài (tối đa 500 ký tự)"));
+
+    let conn = sb.db();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+
+    // Note of only spaces
+    let scenario = lead_scenario(&[("src/app.py", "1-5", "sửa app", "yêu cầu")]);
+    let out2 = sb.run(
+        &["run", "lead", "web-ban-hang", "sửa app", "--note=   "],
+        Some(scenario),
+    );
+    assert_eq!(
+        out2.code, 0,
+        "stderr: {}\nstdout: {}",
+        out2.stderr, out2.stdout
+    );
+    let metrics_json: Option<String> = conn
+        .query_row("SELECT metrics_json FROM runs WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(metrics_json.is_none());
+}
+
+#[test]
+fn plain_relead_uses_skeleton() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+    let sc1 = lead_scenario(&[("src/app.py", "1-5", "sửa app", "bước 1")]);
+    let out1 = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+        ],
+        Some(sc1),
+    );
+    assert_eq!(out1.code, 0);
+
+    let sc2 = lead_scenario(&[("src/app.py", "1-10", "sửa app lần 2", "bước 2")]);
+    let out2 = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+        ],
+        Some(sc2),
+    );
+    assert_eq!(out2.code, 0);
+
+    let plan_content = std::fs::read_to_string(repo.join(".plan.md")).unwrap();
+    assert!(plan_content.contains("bước 2"));
+    assert!(!plan_content.contains("bước 1"));
+}
+
+#[test]
+fn approval_cleared_after_lead() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    let sc1 = lead_scenario(&[("src/app.py", "1-5", "sửa app", "bước 1")]);
+    let out1 = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+        ],
+        Some(sc1),
+    );
+    assert_eq!(out1.code, 0);
+
+    let conn = sb.db();
+    agent_brain::db::set_task_approval(&conn, 1, 1234567890, "commit-sha").unwrap();
+    let auto_before = agent_brain::db::task_auto(&conn, 1).unwrap().unwrap();
+    assert!(auto_before.approved_at.is_some());
+    assert!(auto_before.approved_commit.is_some());
+
+    let sc2 = lead_scenario(&[("src/app.py", "1-5", "sửa app", "bước 2")]);
+    let out2 = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+        ],
+        Some(sc2),
+    );
+    assert_eq!(out2.code, 0);
+
+    let auto_after = agent_brain::db::task_auto(&conn, 1).unwrap().unwrap();
+    assert!(auto_after.approved_at.is_none());
+    assert!(auto_after.approved_commit.is_none());
+}
+
+#[test]
+fn lead_unchanged_plan_no_commit() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+    let sc1 = lead_scenario(&[("src/app.py", "1-5", "sửa app", "bước 1")]);
+    let out1 = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+        ],
+        Some(sc1),
+    );
+    assert_eq!(out1.code, 0);
+    let head1 = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+
+    let conn = sb.db();
+    agent_brain::db::set_task_approval(&conn, 1, 9999999, &head1).unwrap();
+
+    // Scenario that does NOT write .plan.md
+    let sc_noop = serde_json::json!({
+        "ops": [
+            { "op": "read", "path": ".plan.md" }
+        ]
+    });
+    let out2 = sb.run(
+        &[
+            "run",
+            "lead",
+            "web-ban-hang",
+            "sửa app",
+            "--name",
+            "sua-app",
+            "--note=xem lại thôi",
+        ],
+        Some(sc_noop),
+    );
+    assert_eq!(out2.code, 0);
+    assert!(out2
+        .stdout
+        .contains("Lead không sửa .plan.md — giữ nguyên commit plan hiện tại."));
+
+    let head2 = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    assert_eq!(head1, head2);
+
+    let auto_after = agent_brain::db::task_auto(&conn, 1).unwrap().unwrap();
+    assert_eq!(auto_after.approved_at, Some(9999999));
+    assert_eq!(auto_after.approved_commit.as_deref(), Some(head1.as_str()));
+}
+
+#[test]
+fn flags_only_for_lead() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    let out_dev = sb.run(&["run", "dev", "web-ban-hang", "--review"], None);
+    assert_eq!(out_dev.code, 1);
+    assert!(out_dev
+        .stderr
+        .contains("--review, --note và --workflow chỉ dùng với vai trò lead"));
+
+    let out_qa = sb.run(&["run", "qa", "web-ban-hang", "--workflow", "nhanh"], None);
+    assert_eq!(out_qa.code, 1);
+    assert!(out_qa
+        .stderr
+        .contains("--review, --note và --workflow chỉ dùng với vai trò lead"));
+}

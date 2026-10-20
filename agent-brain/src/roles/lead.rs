@@ -14,6 +14,7 @@ pub const LEAD_ALLOWED_TOOLS: [&str; 9] = [
 ];
 
 pub const LEAD_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
+pub const MAX_NOTE_CHARS: usize = 500;
 
 pub fn cmd_lead(
     ctx: &mut Ctx,
@@ -21,6 +22,17 @@ pub fn cmd_lead(
     request: &str,
     opts: &crate::roles::RunOpts,
 ) -> BrainResult<i32> {
+    let note = opts
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(n) = note {
+        if n.chars().count() > MAX_NOTE_CHARS {
+            return Err(BrainError::error("Ghi chú quá dài (tối đa 500 ký tự)"));
+        }
+    }
+
     let proj = crate::projects::select_project(project, &ctx.map)?;
     let proj_path = crate::projects::require_runnable(&proj, &ctx.cfg)?;
 
@@ -41,14 +53,63 @@ pub fn cmd_lead(
         opts.workflow.as_deref(),
         crate::projects::workflow_of(&ctx.map, &proj.id).as_deref(),
     )?;
-    if let Some(ref note) = resolved.note {
-        crate::term::emit(note);
+    if let Some(ref note_msg) = resolved.note {
+        crate::term::emit(note_msg);
     }
 
-    let user_input = format!(
-        "Yêu cầu: {}\nTask: {}\nFile .plan.md ở gốc dự án đã có sẵn khung (skeleton). Giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo). Ghi kế hoạch vào .plan.md theo đúng mẫu.",
-        request, task_slug
-    );
+    let curr_branch = crate::gitops::current_branch(&proj_path);
+    let is_replan = curr_branch.as_deref() == Some(&branch);
+
+    if opts.review {
+        if !is_replan {
+            return Err(BrainError::error(format!(
+                "--review chỉ dùng khi đang ở nhánh {branch}"
+            )));
+        }
+        let review_file = proj_path.join(crate::report::PLAN_REVIEW_FILE);
+        let valid_revise = if review_file.is_file() {
+            if let Ok(text) = std::fs::read_to_string(&review_file) {
+                crate::report::parse_review(&text, crate::report::ReviewKind::Plan)
+                    .map(|r| r.verdict == "revise")
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !valid_revise {
+            return Err(BrainError::error(
+                "--review cần .plan-review.md có verdict revise (chạy agent-brain run plan-review trước)",
+            ));
+        }
+    }
+
+    let plan_path = proj_path.join(".plan.md");
+    let keep_plan = is_replan && (opts.review || note.is_some()) && plan_path.is_file();
+
+    let user_input = if keep_plan {
+        let mut s = format!(
+            "Yêu cầu: {}\nTask: {}\nFile .plan.md ở gốc dự án là bản plan hiện tại; sửa trực tiếp trên bản này, giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo).",
+            request, task_slug
+        );
+        if opts.review {
+            s.push_str("\nBáo cáo review plan: .plan-review.md (verdict revise). Sửa .plan.md để xử lý mọi mục chặn trong báo cáo.");
+        }
+        if let Some(n) = note {
+            s.push_str(&format!("\nGhi chú của người dùng: {n}"));
+        }
+        s
+    } else {
+        let mut s = format!(
+            "Yêu cầu: {}\nTask: {}\nFile .plan.md ở gốc dự án đã có sẵn khung (skeleton). Giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo). Ghi kế hoạch vào .plan.md theo đúng mẫu.",
+            request, task_slug
+        );
+        if let Some(n) = note {
+            s.push_str(&format!("\nGhi chú của người dùng: {n}"));
+        }
+        s
+    };
 
     let abs_plan_rules = crate::roles::abs_rules(&proj_path, &[".plan.md"], &["Write", "Edit"]);
     let mut allowed = LEAD_ALLOWED_TOOLS
@@ -105,10 +166,7 @@ pub fn cmd_lead(
         )));
     }
 
-    let curr_branch = crate::gitops::current_branch(&proj_path);
-    let is_replan = curr_branch.as_deref() == Some(&branch);
     let (base_branch, base_commit, created_at) = if is_replan {
-        let plan_path = proj_path.join(".plan.md");
         let mut ex_meta = None;
         if plan_path.is_file() {
             if let Ok(text) = std::fs::read_to_string(&plan_path) {
@@ -166,9 +224,17 @@ pub fn cmd_lead(
         crate::gitops::create_branch(&proj_path, &branch)?;
     }
 
-    let plan_path = proj_path.join(".plan.md");
-    let skeleton = crate::planfile::render_plan_skeleton(request, &meta);
-    std::fs::write(&plan_path, skeleton)?;
+    if keep_plan {
+        let text = std::fs::read_to_string(&plan_path)?;
+        let curr_m = crate::planfile::read_meta(&text);
+        if curr_m.as_ref() != Some(&meta) {
+            let updated = crate::planfile::set_meta(&text, &meta);
+            std::fs::write(&plan_path, updated)?;
+        }
+    } else {
+        let skeleton = crate::planfile::render_plan_skeleton(request, &meta);
+        std::fs::write(&plan_path, skeleton)?;
+    }
 
     let proj_row_id = crate::db::project_row_id(&ctx.conn, &proj.id)?;
     let task_id = crate::db::upsert_task(
@@ -211,7 +277,12 @@ pub fn cmd_lead(
         run_dir: None,
     };
 
-    let role_run = crate::roles::execute_role(ctx, &proj, &proj_path, plan)?;
+    let stage = crate::roles::RunStage {
+        stage: Some("plan".to_string()),
+        round: opts.round,
+        metrics: note.map(|n| serde_json::json!({ "note": n })),
+    };
+    let role_run = crate::roles::execute_role_staged(ctx, &proj, &proj_path, plan, stage)?;
 
     match role_run.outcome.status {
         crate::runner::RunStatus::TimedOut => {
@@ -278,7 +349,15 @@ pub fn cmd_lead(
         return Err(BrainError::error(err_msg));
     }
 
+    let changed = crate::gitops::changed_paths(&proj_path)?;
+    if !changed.contains(".plan.md") {
+        crate::term::emit_out("Lead không sửa .plan.md — giữ nguyên commit plan hiện tại.");
+        crate::db::set_task_status(&ctx.conn, task_id, "planned")?;
+        return Ok(crate::error::EXIT_OK);
+    }
+
     crate::gitops::commit_paths(&proj_path, &[".plan.md"], &format!("{task_slug}: plan"))?;
+    crate::db::clear_task_approval(&ctx.conn, task_id)?;
     crate::db::set_task_status(&ctx.conn, task_id, "planned")?;
     crate::term::emit_out(&plan_path.to_string_lossy());
     Ok(crate::error::EXIT_OK)
