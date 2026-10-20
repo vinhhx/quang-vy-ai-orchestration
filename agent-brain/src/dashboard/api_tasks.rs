@@ -1,14 +1,17 @@
 //! Task endpoints: giao việc, preflight guards, busy rules, resolve gate,
 //! task list/detail, derived steps and dev/qa/relead starts.
 
+use crate::autopilot::claim;
+use crate::autopilot::decide::{self, AutoJson, GateState};
 use crate::config::Config;
 use crate::dashboard::jobs::{JobManager, JobView};
 use crate::dashboard::pipeline;
-use crate::dashboard::taskstate::{self, GitFacts, TaskFacts};
+use crate::dashboard::taskstate::{self, AutoFacts, GitFacts, TaskFacts, TaskView};
 use crate::dashboard::{blocking, json_error, AppState};
-use crate::db::{RunRow, TaskRow};
+use crate::db::{RunRow, TaskAuto, TaskRow};
 use crate::error::BrainResult;
 use crate::projects::Project;
+use crate::workflows::Workflow;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -708,63 +711,249 @@ async fn list_tasks(
     }
 }
 
-fn find_plan_commit(root: &Path, task: &TaskRow) -> Result<Option<String>, ()> {
-    if task.branch.is_empty() || task.branch.starts_with('-') {
-        return Err(());
-    }
-    let log_out =
-        crate::gitops::git(root, &["log", "--format=%H %s", &task.branch]).map_err(|_| ())?;
-    let expected_subj = format!("{}: plan", task.slug);
-    for line in log_out.lines() {
-        if let Some((sha, subj)) = line.split_once(' ') {
-            if subj.trim() == expected_subj {
-                return Ok(Some(sha.trim().to_string()));
-            }
-        }
-    }
-    Ok(None)
+/// Mọi dữ kiện của một task mà màn hình task và các nút hành động cùng dùng:
+/// git, plan, busy, autopilot, view suy ra và `rev`.
+pub struct TaskState {
+    pub task: TaskRow,
+    pub project: Project,
+    pub root: PathBuf,
+    pub git: GitFacts,
+    pub plan_text: Option<String>,
+    pub plan_source: Option<&'static str>,
+    pub plan_dirty: bool,
+    pub busy: Option<String>,
+    pub auto: TaskAuto,
+    pub aj: AutoJson,
+    pub workflow: Option<Workflow>,
+    pub driver_alive: bool,
+    pub runs: Vec<RunRow>,
+    pub gate: Option<GateState>,
+    pub view: TaskView,
+    pub rev: String,
 }
 
-fn plan_commit_of(root: &Path, task: &TaskRow) -> Option<String> {
-    find_plan_commit(root, task).ok().flatten()
-}
-
-fn plan_facts(
-    conn: &rusqlite::Connection,
-    st: &AppState,
+/// Token đổi khi trạng thái task, run mới nhất, autopilot, cờ dừng, duyệt hoặc commit plan đổi.
+pub fn task_rev(
     task: &TaskRow,
-    runs: &[RunRow],
-) -> pipeline::PlanFacts {
-    let map = match crate::projects::load_map(&st.map_path) {
-        Ok(m) => m,
-        Err(_) => return pipeline::PlanFacts::Unknown,
+    auto: &TaskAuto,
+    latest: Option<&RunRow>,
+    plan_commit: Option<&str>,
+) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    task.status.hash(&mut h);
+    latest.map(|r| r.id).hash(&mut h);
+    latest.map(|r| r.status.as_str()).hash(&mut h);
+    auto.auto_state.hash(&mut h);
+    auto.auto_stop_at.hash(&mut h);
+    auto.approved_commit.hash(&mut h);
+    plan_commit.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+fn latest_of<'a>(runs: &'a [RunRow], role: &str) -> Option<&'a RunRow> {
+    runs.iter()
+        .filter(|r| r.role == role)
+        .max_by_key(|r| (r.started_at, r.id))
+}
+
+fn running_of(runs: &[RunRow]) -> Option<&RunRow> {
+    runs.iter()
+        .filter(|r| r.status == "running")
+        .max_by_key(|r| (r.started_at, r.id))
+}
+
+/// Đọc toàn bộ trạng thái task (Err(Response) = 404 JSON cho task / dự án không có).
+pub fn load_task_state(
+    st: &AppState,
+    conn: &rusqlite::Connection,
+    task_id: i64,
+) -> BrainResult<Result<TaskState, Response>> {
+    let task = match crate::db::get_task(conn, task_id)? {
+        Some(t) => t,
+        None => {
+            return Ok(Err(json_error(
+                StatusCode::NOT_FOUND,
+                &format!("Không tìm thấy task {task_id}"),
+            )));
+        }
     };
+
+    let map = crate::projects::load_map(&st.map_path)?;
     let projects = crate::projects::projects_of(&map);
-    let project_slug: String = match conn.query_row(
+    let project_slug: String = conn.query_row(
         "SELECT slug FROM projects WHERE id = ?1",
         rusqlite::params![task.project_id],
         |r| r.get(0),
-    ) {
-        Ok(s) => s,
-        Err(_) => return pipeline::PlanFacts::Unknown,
-    };
+    )?;
     let project = match projects.into_iter().find(|p| p.id == project_slug) {
         Some(p) => p,
-        None => return pipeline::PlanFacts::Unknown,
+        None => {
+            return Ok(Err(json_error(
+                StatusCode::NOT_FOUND,
+                &format!("Không tìm thấy dự án {project_slug}"),
+            )));
+        }
     };
+
     let root = PathBuf::from(&project.path);
-    match find_plan_commit(&root, task) {
+    let current_branch = crate::gitops::current_branch(&root);
+    let is_on_branch = current_branch.as_deref() == Some(task.branch.as_str());
+    let dirty_set = crate::gitops::changed_paths(&root).unwrap_or_default();
+    let mut dirty: Vec<String> = dirty_set.into_iter().collect();
+    dirty.sort();
+    let plan_dirty = is_on_branch && dirty.iter().any(|p| p == ".plan.md");
+
+    let (plan_text, plan_source) = if is_on_branch {
+        let p_path = root.join(".plan.md");
+        if p_path.is_file() {
+            (std::fs::read_to_string(&p_path).ok(), Some("worktree"))
+        } else {
+            (None, None)
+        }
+    } else {
+        let show_arg = format!("{}:.plan.md", task.branch);
+        match crate::gitops::git(&root, &["show", &show_arg]) {
+            Ok(text) => (Some(text), Some("branch")),
+            Err(_) => (None, None),
+        }
+    };
+
+    // 05.1 WR-01: chỉ tìm commit plan trên nhánh task, giới hạn từ base_commit.
+    let plan_commit = crate::gitops::plan_commit_on_branch(
+        &root,
+        &task.branch,
+        &task.slug,
+        task.base_commit.as_deref(),
+    )
+    .ok()
+    .flatten();
+
+    // RESEARCH Pitfall 6: commit báo cáo review không tính là thay đổi code.
+    let code_after_plan = match (is_on_branch, plan_commit.as_deref()) {
+        (true, Some(pc)) => match crate::gitops::diff_code_names(&root, pc, "HEAD") {
+            Ok(diff) => !diff.is_empty(),
+            Err(_) => false,
+        },
+        _ => false,
+    };
+
+    let (plan_exists, plan_blockers, plan_errors) = if let Some(ref text) = plan_text {
+        let plan = crate::planfile::parse_plan(text);
+        let blockers = crate::planfile::has_blockers(&plan);
+        let errors = if plan_source == Some("worktree") {
+            crate::planfile::validate_plan(&plan, Some(&root))
+        } else {
+            Vec::new()
+        };
+        (true, blockers, errors)
+    } else {
+        (false, false, Vec::new())
+    };
+
+    let git = GitFacts {
+        current_branch,
+        dirty,
+        plan_exists,
+        plan_blockers,
+        plan_errors,
+        plan_commit,
+        code_after_plan,
+    };
+
+    let busy = busy_reason_for_task(conn, &st.jobs, &project, task.id, &task.branch)?;
+
+    let auto = crate::db::task_auto(conn, task.id)?.unwrap_or_default();
+    let aj = AutoJson::parse(auto.auto_json.as_deref());
+    let workflow = auto
+        .workflow_json
+        .as_deref()
+        .and_then(Workflow::from_snapshot);
+    let driver_alive = claim::driver_alive(&auto);
+    let runs = crate::db::runs_for_task(conn, task.id)?;
+    let now = crate::db::now_ms();
+
+    let gate = workflow.as_ref().map(|wf| {
+        let facts = decide::build_facts(
+            wf,
+            &runs,
+            &auto,
+            &aj,
+            git.plan_commit.as_deref(),
+            &st.cfg.pricing,
+            now,
+            false,
+        );
+        decide::gate_state(wf, &facts)
+    });
+
+    let view = {
+        let facts = TaskFacts {
+            task: &task,
+            lead: latest_of(&runs, "lead"),
+            dev: latest_of(&runs, "dev"),
+            qa: latest_of(&runs, "qa"),
+            git: &git,
+            busy: busy.clone(),
+            now_ms: now,
+        };
+        let auto_facts = AutoFacts {
+            workflow: workflow.as_ref(),
+            auto: Some(&auto),
+            auto_json: Some(&aj),
+            driver_alive,
+            running: running_of(&runs),
+            gate,
+            plan_dirty,
+        };
+        taskstate::derive_with(&facts, &auto_facts)
+    };
+
+    let latest = runs.iter().max_by_key(|r| (r.started_at, r.id));
+    let rev = task_rev(&task, &auto, latest, git.plan_commit.as_deref());
+
+    Ok(Ok(TaskState {
+        task,
+        project,
+        root,
+        git,
+        plan_text,
+        plan_source,
+        plan_dirty,
+        busy,
+        auto,
+        aj,
+        workflow,
+        driver_alive,
+        runs,
+        gate,
+        view,
+        rev,
+    }))
+}
+
+/// PlanFacts cho cổng duyệt suy ra (task trước 5.2) và thẻ `ban` của 05.1.
+fn plan_facts(root: &Path, task: &TaskRow, runs: &[RunRow]) -> pipeline::PlanFacts {
+    match crate::gitops::plan_commit_on_branch(
+        root,
+        &task.branch,
+        &task.slug,
+        task.base_commit.as_deref(),
+    ) {
         Err(()) => pipeline::PlanFacts::Unknown,
         Ok(None) => pipeline::PlanFacts::NoCommit,
         Ok(Some(sha)) => {
-            let at = crate::gitops::commit_time_ms(&root, &sha);
-            let approved = pipeline::approving_dev_run(runs, &sha, at, |p, b| {
-                crate::gitops::is_ancestor(&root, p, b)
-            });
-            pipeline::PlanFacts::Commit {
-                sha,
-                at_ms: at,
-                approved_by: approved,
+            let at = crate::gitops::commit_time_ms(root, &sha);
+            // 05.1 WR-02: lỗi git khi xét tổ tiên -> Unknown, không coi là "chưa duyệt".
+            match pipeline::approving_dev_run_checked(runs, &sha, at, |a, d| {
+                crate::gitops::ancestry(root, a, d)
+            }) {
+                Ok(approved) => pipeline::PlanFacts::Commit {
+                    sha,
+                    at_ms: at,
+                    approved_by: approved,
+                },
+                Err(()) => pipeline::PlanFacts::Unknown,
             }
         }
     }
@@ -773,85 +962,17 @@ fn plan_facts(
 async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) -> Response {
     let res = blocking(move || {
         let conn = crate::db::open(&st.db_path)?;
-        let task = match crate::db::get_task(&conn, id)? {
-            Some(t) => t,
-            None => {
-                return Ok(json_error(
-                    StatusCode::NOT_FOUND,
-                    &format!("Không tìm thấy task {id}"),
-                ));
-            }
+        let state = match load_task_state(&st, &conn, id)? {
+            Ok(s) => s,
+            Err(resp) => return Ok(resp),
         };
+        let task = &state.task;
+        let project = &state.project;
+        let proj_root = &state.root;
+        let is_on_branch = state.git.current_branch.as_deref() == Some(task.branch.as_str());
 
-        let map = crate::projects::load_map(&st.map_path)?;
-        let projects = crate::projects::projects_of(&map);
-        let project_slug: String = conn.query_row(
-            "SELECT slug FROM projects WHERE id = ?1",
-            rusqlite::params![task.project_id],
-            |r| r.get(0),
-        )?;
-        let project = match projects.into_iter().find(|p| p.id == project_slug) {
-            Some(p) => p,
-            None => {
-                return Ok(json_error(
-                    StatusCode::NOT_FOUND,
-                    &format!("Không tìm thấy dự án {project_slug}"),
-                ));
-            }
-        };
-
-        let proj_root = PathBuf::from(&project.path);
-        let current_branch = crate::gitops::current_branch(&proj_root);
-        let is_on_branch = current_branch.as_deref() == Some(&task.branch);
-        let dirty_set = crate::gitops::changed_paths(&proj_root).unwrap_or_default();
-        let mut dirty: Vec<String> = dirty_set.into_iter().collect();
-        dirty.sort();
-
-        let plan_dirty = is_on_branch && dirty.iter().any(|p| p == ".plan.md");
-
-        let (plan_text, plan_source) = if is_on_branch {
-            let p_path = proj_root.join(".plan.md");
-            if p_path.is_file() {
-                (std::fs::read_to_string(&p_path).ok(), Some("worktree"))
-            } else {
-                (None, None)
-            }
-        } else {
-            let show_arg = format!("{}:.plan.md", task.branch);
-            match crate::gitops::git(&proj_root, &["show", &show_arg]) {
-                Ok(text) => (Some(text), Some("branch")),
-                Err(_) => (None, None),
-            }
-        };
-
-        let plan_commit = plan_commit_of(&proj_root, &task);
-
-        let code_after_plan = if is_on_branch {
-            if let Some(ref pc) = plan_commit {
-                match crate::gitops::diff_names(&proj_root, pc, "HEAD") {
-                    Ok(mut diff) => {
-                        diff.remove(".plan.md");
-                        diff.remove(".qa-report.md");
-                        !diff.is_empty()
-                    }
-                    Err(_) => false,
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        let (plan_obj, plan_exists, plan_blockers, plan_errors) = if let Some(ref text) = plan_text
-        {
+        let plan_obj = if let Some(ref text) = state.plan_text {
             let plan = crate::planfile::parse_plan(text);
-            let blockers = crate::planfile::has_blockers(&plan);
-            let errors = if plan_source == Some("worktree") {
-                crate::planfile::validate_plan(&plan, Some(&proj_root))
-            } else {
-                Vec::new()
-            };
             let sections: Vec<serde_json::Value> = crate::planfile::PLAN_SECTIONS
                 .iter()
                 .map(|name| {
@@ -874,20 +995,19 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
                 })
                 .collect();
 
-            let obj = serde_json::json!({
+            Some(serde_json::json!({
                 "path": ".plan.md",
-                "source": plan_source.unwrap(),
-                "commit": plan_commit,
-                "dirty": plan_dirty,
+                "source": state.plan_source.unwrap_or("worktree"),
+                "commit": state.git.plan_commit,
+                "dirty": state.plan_dirty,
                 "title": plan.title,
                 "sections": sections,
                 "changes": changes,
-                "blockers": blockers,
-                "errors": errors,
-            });
-            (Some(obj), true, blockers, errors)
+                "blockers": state.git.plan_blockers,
+                "errors": state.git.plan_errors,
+            }))
         } else {
-            (None, false, false, Vec::new())
+            None
         };
 
         let (qa_text, qa_source) = if is_on_branch {
@@ -899,7 +1019,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             }
         } else {
             let show_arg = format!("{}:.qa-report.md", task.branch);
-            match crate::gitops::git(&proj_root, &["show", &show_arg]) {
+            match crate::gitops::git(proj_root, &["show", &show_arg]) {
                 Ok(text) => (Some(text), Some("branch")),
                 Err(_) => (None, None),
             }
@@ -918,7 +1038,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
                 .collect();
             Some(serde_json::json!({
                 "path": ".qa-report.md",
-                "source": qa_source.unwrap(),
+                "source": qa_source.unwrap_or("worktree"),
                 "verdict": verdict,
                 "sections": sections,
             }))
@@ -926,34 +1046,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             None
         };
 
-        let git_facts = GitFacts {
-            current_branch,
-            dirty,
-            plan_exists,
-            plan_blockers,
-            plan_errors,
-            plan_commit,
-            code_after_plan,
-        };
-
-        let busy_reason_str =
-            busy_reason_for_task(&conn, &st.jobs, &project, task.id, &task.branch)?;
-
-        let lead_run = crate::db::latest_run_for_task_role(&conn, task.id, "lead")?;
-        let dev_run = crate::db::latest_run_for_task_role(&conn, task.id, "dev")?;
-        let qa_run = crate::db::latest_run_for_task_role(&conn, task.id, "qa")?;
-
-        let facts = TaskFacts {
-            task: &task,
-            lead: lead_run.as_ref(),
-            dev: dev_run.as_ref(),
-            qa: qa_run.as_ref(),
-            git: &git_facts,
-            busy: busy_reason_str,
-            now_ms: crate::db::now_ms(),
-        };
-
-        let view = taskstate::derive(&facts);
+        let view = &state.view;
 
         let mut runs_stmt = conn.prepare(
             "SELECT id, role, status, outcome, input_tokens, output_tokens,
@@ -1032,41 +1125,76 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
 async fn get_pipeline(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) -> Response {
     let res = blocking(move || {
         let conn = crate::db::open(&st.db_path)?;
-        let task = match crate::db::get_task(&conn, id)? {
-            Some(t) => t,
-            None => {
-                return Ok(json_error(
-                    StatusCode::NOT_FOUND,
-                    &format!("Không tìm thấy task {id}"),
-                ));
-            }
+        let state = match load_task_state(&st, &conn, id)? {
+            Ok(s) => s,
+            Err(resp) => return Ok(resp),
         };
 
-        let runs = crate::db::runs_for_task(&conn, id)?;
-        let plan = plan_facts(&conn, &st, &task, &runs);
+        let plan = plan_facts(&state.root, &state.task, &state.runs);
         let now = crate::db::now_ms();
-        let latest = |role: &str| {
-            runs.iter()
-                .filter(|r| r.role == role)
-                .max_by_key(|r| (r.started_at, r.id))
-        };
-        let facts = TaskFacts {
-            task: &task,
-            lead: latest("lead"),
-            dev: latest("dev"),
-            qa: latest("qa"),
-            git: &GitFacts::default(),
+        let running = running_of(&state.runs);
+        let task_facts = TaskFacts {
+            task: &state.task,
+            lead: latest_of(&state.runs, "lead"),
+            dev: latest_of(&state.runs, "dev"),
+            qa: latest_of(&state.runs, "qa"),
+            git: &state.git,
             busy: None,
             now_ms: now,
         };
-        let current_step = taskstate::derive(&facts).current_step;
-        let view = pipeline::derive(&pipeline::PipelineFacts {
-            task: &task,
-            runs: &runs,
+        // 05.1 IN-05: một định nghĩa "bước hiện tại".
+        let current_step = taskstate::current_step_of(&task_facts, running);
+        let facts = pipeline::PipelineFacts {
+            task: &state.task,
+            runs: &state.runs,
             plan: &plan,
             current_step: &current_step,
             now_ms: now,
-        });
+        };
+
+        let plan_commit_at = state
+            .git
+            .plan_commit
+            .as_deref()
+            .and_then(|sha| crate::gitops::commit_time_ms(&state.root, sha));
+
+        let next_card = match state.workflow.as_ref() {
+            Some(wf) if state.driver_alive && running.is_none() => {
+                let dfacts = decide::build_facts(
+                    wf,
+                    &state.runs,
+                    &state.auto,
+                    &state.aj,
+                    state.git.plan_commit.as_deref(),
+                    &st.cfg.pricing,
+                    now,
+                    false,
+                );
+                match decide::decide(wf, &dfacts) {
+                    decide::Decision::Run(sr) => Some(sr.card_key().to_string()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+
+        let budget = state
+            .workflow
+            .as_ref()
+            .map(|_| crate::pricing::budget_usage(&state.runs, &st.cfg.pricing, now));
+
+        let flow = pipeline::FlowFacts {
+            workflow: state.workflow.as_ref(),
+            auto: Some(&state.auto),
+            auto_json: Some(&state.aj),
+            gate: state.gate,
+            plan_commit_at,
+            driver_alive: state.driver_alive,
+            next_card,
+            budget,
+        };
+
+        let view = pipeline::derive_response(&facts, &flow);
 
         Ok((
             StatusCode::OK,
@@ -1100,124 +1228,17 @@ async fn post_task_action(
 ) -> Response {
     let res = blocking(move || {
         let conn = crate::db::open(&st.db_path)?;
-        let task = match crate::db::get_task(&conn, task_id)? {
-            Some(t) => t,
-            None => {
-                return Ok((
-                    StatusCode::NOT_FOUND,
-                    [(
-                        axum::http::header::CONTENT_TYPE,
-                        "application/json; charset=utf-8",
-                    )],
-                    Json(serde_json::json!({ "error": format!("Không tìm thấy task {task_id}") })),
-                )
-                    .into_response());
-            }
+        let state = match load_task_state(&st, &conn, task_id)? {
+            Ok(s) => s,
+            Err(resp) => return Ok(resp),
         };
+        let task = &state.task;
+        let project = &state.project;
+        let busy_reason_str = state.busy.clone();
 
-        let map = crate::projects::load_map(&st.map_path)?;
-        let projects = crate::projects::projects_of(&map);
-        let project_slug: String = conn.query_row(
-            "SELECT slug FROM projects WHERE id = ?1",
-            rusqlite::params![task.project_id],
-            |r| r.get(0),
-        )?;
-        let project = match projects.into_iter().find(|p| p.id == project_slug) {
-            Some(p) => p,
-            None => {
-                return Ok(json_error(
-                    StatusCode::NOT_FOUND,
-                    &format!("Không tìm thấy dự án {project_slug}"),
-                ));
-            }
-        };
-
-        let proj_root = PathBuf::from(&project.path);
-        let current_branch = crate::gitops::current_branch(&proj_root);
-        let is_on_branch = current_branch.as_deref() == Some(&task.branch);
-        let dirty_set = crate::gitops::changed_paths(&proj_root).unwrap_or_default();
-        let mut dirty: Vec<String> = dirty_set.into_iter().collect();
-        dirty.sort();
-
-        let (plan_text, plan_source) = if is_on_branch {
-            let p_path = proj_root.join(".plan.md");
-            if p_path.is_file() {
-                (std::fs::read_to_string(&p_path).ok(), Some("worktree"))
-            } else {
-                (None, None)
-            }
-        } else {
-            let show_arg = format!("{}:.plan.md", task.branch);
-            match crate::gitops::git(&proj_root, &["show", &show_arg]) {
-                Ok(text) => (Some(text), Some("branch")),
-                Err(_) => (None, None),
-            }
-        };
-
-        let plan_commit = plan_commit_of(&proj_root, &task);
-
-        let code_after_plan = if is_on_branch {
-            if let Some(ref pc) = plan_commit {
-                match crate::gitops::diff_names(&proj_root, pc, "HEAD") {
-                    Ok(mut diff) => {
-                        diff.remove(".plan.md");
-                        diff.remove(".qa-report.md");
-                        !diff.is_empty()
-                    }
-                    Err(_) => false,
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        let (plan_exists, plan_blockers, plan_errors) = if let Some(ref text) = plan_text {
-            let plan = crate::planfile::parse_plan(text);
-            let blockers = crate::planfile::has_blockers(&plan);
-            let errors = if plan_source == Some("worktree") {
-                crate::planfile::validate_plan(&plan, Some(&proj_root))
-            } else {
-                Vec::new()
-            };
-            (true, blockers, errors)
-        } else {
-            (false, false, Vec::new())
-        };
-
-        let git_facts = GitFacts {
-            current_branch,
-            dirty,
-            plan_exists,
-            plan_blockers,
-            plan_errors,
-            plan_commit,
-            code_after_plan,
-        };
-
-        let busy_reason_str =
-            busy_reason_for_task(&conn, &st.jobs, &project, task.id, &task.branch)?;
-
-        let lead_run = crate::db::latest_run_for_task_role(&conn, task.id, "lead")?;
-        let dev_run = crate::db::latest_run_for_task_role(&conn, task.id, "dev")?;
-        let qa_run = crate::db::latest_run_for_task_role(&conn, task.id, "qa")?;
-
-        let facts = TaskFacts {
-            task: &task,
-            lead: lead_run.as_ref(),
-            dev: dev_run.as_ref(),
-            qa: qa_run.as_ref(),
-            git: &git_facts,
-            busy: busy_reason_str.clone(),
-            now_ms: crate::db::now_ms(),
-        };
-
-        let view = taskstate::derive(&facts);
-
-        let target_action = view.actions.into_iter().find(|a| a.id == action_id);
+        let target_action = state.view.actions.iter().find(|a| a.id == action_id);
         let action = match target_action {
-            Some(a) => a,
+            Some(a) => a.clone(),
             None => {
                 return Ok((
                     StatusCode::CONFLICT,
@@ -1251,7 +1272,6 @@ async fn post_task_action(
             )
                 .into_response());
         }
-
         let args = match role {
             "dev" => vec![
                 "run".to_string(),

@@ -584,7 +584,21 @@ fn pipe05_route_shape_auth_and_404() {
 
     let mut keys: Vec<String> = obj.keys().cloned().collect();
     keys.sort();
-    assert_eq!(keys, vec!["cards", "current", "cycle", "ledger", "task_id"]);
+    assert_eq!(
+        keys,
+        vec![
+            "budget",
+            "cards",
+            "current",
+            "current_card",
+            "cycle",
+            "gate",
+            "groups",
+            "ledger",
+            "task_id",
+            "workflow"
+        ]
+    );
 
     let cards = obj["cards"].as_object().unwrap();
     let mut card_keys: Vec<String> = cards.keys().cloned().collect();
