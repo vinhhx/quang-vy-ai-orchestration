@@ -1,6 +1,7 @@
 //! agent-brain: lõi điều phối Lead → .plan.md → Dev → QA (Phase 3).
 
 pub mod app;
+pub mod autopilot;
 pub mod config;
 pub mod dashboard;
 pub mod db;
