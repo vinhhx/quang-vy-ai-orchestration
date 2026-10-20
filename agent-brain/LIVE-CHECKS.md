@@ -470,3 +470,249 @@ Quy trình nghiệm thu các chức năng của giao diện web nhúng `agent-br
 - **Kết quả**: Không áp dụng. Căn cứ theo quyết định thiết kế D-18, dự án không xây dựng bản thiết kế Figma trước, giao diện được phát triển theo đặc tả UI-SPEC trực tiếp.
 - **Ghi nhận**: Điền `Không áp dụng` vào dòng `P4-10` trong `protocol-log/nghiem-thu-p4.md` kèm ghi chú `D-18: chưa có thiết kế Figma`.
 
+---
+
+## 4. Nghiệm thu Phase 5.2 (AUTO-07)
+
+Nghiệm thu quy trình (workflow) và autopilot với `claude` thật trên dự án nháp `/mnt/data/IDE/du-an-nhap` (profile `work`). Mọi ca chạy trong một môi trường cô lập: binary release dựng từ repo này, một bản sao của `brain.db` thật, thư mục cấu hình và dữ liệu riêng, dashboard ở cổng 7438. `brain.db` thật, `~/.config/agent-brain` và `agent-brain serve` đang chạy của bạn không bị đụng tới. Kết quả ghi vào bảng tổng hợp [`protocol-log/nghiem-thu-p5-2.md`](../protocol-log/nghiem-thu-p5-2.md).
+
+Chi phí dự kiến (giá tương đương API): P5.2-01 khoảng $2–5, P5.2-02 một lượt Lead (khoảng $0.1–0.3), P5.2-03 một lượt Lead và một phần Review plan.
+
+> [!CAUTION]
+> **An toàn tiến trình và tài khoản**:
+> - Chỉ dừng tiến trình bằng `$AB kill <task_id>`, Ctrl+C trong terminal của chính tiến trình đó, hoặc `kill -INT <PID>` với PID đã ghi lại. Không dùng `pkill`, `killall` hay bất kỳ lệnh dừng tiến trình theo tên nào.
+> - `ps` chỉ dùng để đọc (`ps -eo ... --forest`, `ps -p <PID,...>`, `ps --ppid <PID>`, `ps -g <PGID>`).
+> - Không chạy task nào trên profile `personal` khi `~/.claude-orca` đang được dùng. Mọi ca dưới đây chạy trên `du-an-nhap` (profile `work`).
+> - Không dùng cổng của dashboard thật; dashboard của đợt nghiệm thu này chạy ở `--port 7438`. Không giao việc cho `du-an-nhap` từ dashboard thật trong lúc nghiệm thu (dashboard thật không thấy bản sao DB nên không chặn được việc chạy chồng).
+
+---
+
+### P5.2-00: Chuẩn bị môi trường cô lập
+- **Mục tiêu**: Dựng binary release, sao chép `brain.db` thật sang một thư mục nháp, tạo cấu hình riêng có hai quy trình nghiệm thu, và chứng minh bản nâng cấp schema v1 → v2 giữ nguyên dữ liệu thật.
+- **Tiền điều kiện**:
+  - `/mnt/data/IDE/du-an-nhap` đang ở nhánh `main` và sạch (`git -C /mnt/data/IDE/du-an-nhap status --short --branch` chỉ in `## main`).
+  - Trong `~/.config/agent-brain/projects_map.json`, dự án `du-an-nhap` trỏ tới `/mnt/data/IDE/du-an-nhap` với `profile: "work"`.
+  - `claude --version` chạy được với tài khoản `work` (`~/.claude`).
+- **Chuẩn bị**:
+  1. Dựng binary và tạo thư mục nháp (chạy từ gốc repo):
+     ```bash
+     cd /mnt/data/IDE/QuangVy-Orchestration
+     cargo build --release --manifest-path agent-brain/Cargo.toml --offline --locked
+     AB="$PWD/agent-brain/target/release/agent-brain"
+     LIVE="$(mktemp -d /tmp/p52-live.XXXXXX)"
+     mkdir -p "$LIVE/xdg/agent-brain" "$LIVE/data"
+     ```
+  2. Sao chép `brain.db` thật bằng API backup của SQLite (không dùng `cp`: `serve` của bạn có thể đang ghi). `mode=rw` không tạo file mới nếu đường dẫn sai:
+     ```bash
+     python3 - "$HOME/.local/share/agent-brain/brain.db" "$LIVE/brain.db" <<'EOF'
+     import sqlite3, sys
+     src = sqlite3.connect(f"file:{sys.argv[1]}?mode=rw", uri=True, timeout=10)
+     dst = sqlite3.connect(sys.argv[2])
+     src.backup(dst)
+     dst.close()
+     src.close()
+     print("backup xong:", sys.argv[2])
+     EOF
+     chmod 600 "$LIVE/brain.db"
+     ```
+  3. Ghi file môi trường dùng chung cho mọi terminal của đợt nghiệm thu (`XDG_DATA_HOME` riêng để thư mục `runs/` và `serve.lock` nằm trong `$LIVE`; `q` đọc bản sao DB, `counts` đếm số dòng):
+     ```bash
+     cat > "$LIVE/env.sh" <<EOF
+     export LIVE="$LIVE"
+     export AB="$AB"
+     export AGENT_BRAIN_DB="$LIVE/brain.db"
+     export XDG_CONFIG_HOME="$LIVE/xdg"
+     export XDG_DATA_HOME="$LIVE/data"
+     unset AGENT_BRAIN_CONFIG
+     q() { python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1], timeout=10); [print(*r, sep=" | ") for r in c.execute(sys.argv[2], [int(a) if a.isdigit() else a for a in sys.argv[3:]])]' "\$AGENT_BRAIN_DB" "\$@"; }
+     counts() { q "PRAGMA user_version"; for t in projects tasks runs events; do q "SELECT '\$t', COUNT(*) FROM \$t"; done; }
+     EOF
+     source "$LIVE/env.sh"
+     ```
+     Mỗi terminal mới của đợt nghiệm thu chạy `source <đường dẫn $LIVE>/env.sh` trước tiên.
+  4. Chép danh mục dự án (và `config.json` nếu bạn có) sang cấu hình riêng, rồi ghi `workflows.json` của đợt nghiệm thu:
+     ```bash
+     cp ~/.config/agent-brain/projects_map.json "$XDG_CONFIG_HOME/agent-brain/projects_map.json"
+     if [ -f ~/.config/agent-brain/config.json ]; then cp ~/.config/agent-brain/config.json "$XDG_CONFIG_HOME/agent-brain/config.json"; fi
+     cat > "$XDG_CONFIG_HOME/agent-brain/workflows.json" <<'EOF'
+     {
+       "p52-full": {
+         "stages": ["plan", "plan-review", "gate:you", "implement", "code-review", "qa", "fix"],
+         "loops": { "plan": "plan-review", "implement": "code-review", "qa": "fix" },
+         "budget_usd": 5,
+         "auto": true
+       },
+       "chi-phi-thap": {
+         "stages": ["plan", "plan-review", "gate:you", "implement", "qa"],
+         "budget_usd": 0.05,
+         "auto": true
+       }
+     }
+     EOF
+     ```
+     `p52-full` là `mac-dinh` với ngân sách $5; `chi-phi-thap` có ngân sách $0.05 để dừng sau bước đầu tiên. Cả hai đều `auto: true`.
+- **Lệnh thực hiện** (nâng cấp schema trên dữ liệu thật; `stats --json` phải là lệnh đầu tiên của binary mới mở bản sao):
+  ```bash
+  counts                       # trước: user_version 1 và số dòng projects / tasks / runs / events
+  "$AB" stats --json > "$LIVE/stats.json"; echo "exit=$?"
+  counts                       # sau
+  git -C /mnt/data/IDE/du-an-nhap status --short --branch
+  "$AB" status du-an-nhap      # đường dẫn nhanh, 0 token
+  ```
+- **Kết quả mong đợi**:
+  1. `stats --json` thoát `0`.
+  2. `user_version` đổi từ `1` sang `2`. Nếu bản sao đã là `2` (DB thật đã được binary mới nâng cấp trước đó), ghi chú điều này: phép thử nâng cấp trên dữ liệu thật không áp dụng.
+  3. Số dòng `tasks`, `runs`, `events` trước và sau **bằng nhau**. `projects` bằng hoặc lớn hơn (binary đồng bộ bảng `projects` từ `projects_map.json` mỗi lần mở).
+  4. `du-an-nhap` ở nhánh `main`, sạch; `status` in đúng đường dẫn `/mnt/data/IDE/du-an-nhap`.
+- **Ghi nhận**: Điền mục `Môi trường (P5.2-00)` ở đầu `protocol-log/nghiem-thu-p5-2.md`: commit của repo, `claude --version`, `user_version` và số dòng trước / sau.
+- **Dọn dẹp**: Không. Giữ terminal này (đã `source env.sh`) cho các ca sau.
+
+---
+
+### P5.2-01: mac-dinh tới QA đạt với ít nhất một vòng sửa lại plan
+- **Mục tiêu**: Chạy trọn vòng của quy trình đầy đủ với `claude` thật: Review plan yêu cầu sửa lại ít nhất một lần, Lead sửa plan theo báo cáo, autopilot dừng ở cổng duyệt, bạn duyệt, rồi Code → Review code → QA đạt. Ghi chính xác id run, vai trò, giai đoạn, vòng, kết luận và chi phí (AUTO-07).
+- **Tiền điều kiện**: P5.2-00 xong; `du-an-nhap` ở `main`, sạch.
+- **Lệnh thực hiện**:
+  1. Tạo task bằng Lead chạy tay với quy trình `p52-full`:
+     ```bash
+     git -C /mnt/data/IDE/du-an-nhap checkout main
+     "$AB" run lead --workflow p52-full --name p52-loop -- du-an-nhap "Thêm hàm giai_thua(n) và test cho nó"; echo "exit=$?"
+     ID=$(q "SELECT id FROM tasks WHERE branch = 'task/p52-loop' ORDER BY id DESC LIMIT 1"); echo "task $ID"
+     q "SELECT json_extract(workflow_json, '\$.name') FROM tasks WHERE id = ?" "$ID"    # p52-full
+     ```
+  2. Cài một lỗi rõ ràng vào plan: mở `/mnt/data/IDE/du-an-nhap/.plan.md` bằng editor, thêm vào bảng `## Thay đổi` một dòng nêu file không tồn tại, ví dụ:
+     `| 9 | src/khong_ton_tai.py | toàn bộ | gọi giai_thua từ file này | cần cho yêu cầu |`
+     rồi commit với đúng message plan:
+     ```bash
+     git -C /mnt/data/IDE/du-an-nhap add .plan.md
+     git -C /mnt/data/IDE/du-an-nhap commit -m "p52-loop: plan"
+     ```
+  3. Bật autopilot cho task (bắt đầu từ Review plan):
+     ```bash
+     "$AB" auto "$ID"; echo "exit=$?"
+     ```
+  4. Khi autopilot dừng ở cổng duyệt, làm kiểm tra giao diện UI52-03 của P5.2-04 (nút ở thẻ Bạn), rồi duyệt plan từ terminal (không bấm nút trên dashboard):
+     ```bash
+     "$AB" approve "$ID"; echo "exit=$?"
+     ```
+  5. Đọc kết quả từ bản sao DB:
+     ```bash
+     q "SELECT id, role, stage, round, outcome, cost_usd, usage_source FROM runs WHERE task_id = ? ORDER BY id" "$ID"
+     q "SELECT auto_state, approved_commit FROM tasks WHERE id = ?" "$ID"
+     git -C /mnt/data/IDE/du-an-nhap log --oneline main..task/p52-loop
+     ```
+- **Kết quả mong đợi**:
+  1. Bước 1 thoát `0`; task lưu quy trình `p52-full`. (`claude` vẫn dùng tài khoản `work` ở `~/.claude`; các biến `XDG_*` chỉ đổi chỗ `agent-brain` đọc cấu hình và ghi dữ liệu. Nếu Lead báo chưa đăng nhập, dừng đợt nghiệm thu và ghi lại.)
+  2. Bước 3 in lần lượt `Autopilot · task N · plan-review vòng 1`, `Autopilot · task N · plan vòng 2`, `Autopilot · task N · plan-review vòng 2` (có thể thêm vòng, tối đa 3), rồi `Autopilot dừng ở bước duyệt plan (task N) — duyệt: agent-brain approve N` và `exit=0`. Plan vòng 2 không còn dòng `src/khong_ton_tai.py`.
+  3. Bước 4 in `Đã duyệt plan <sha7> lúc HH:MM (task N).`, rồi `implement vòng 1`, `code-review vòng 1` (thêm `fix` / `code-review` nếu Review code yêu cầu sửa), `qa vòng 1`, và kết thúc bằng `Autopilot xong: QA đạt (task N)`, `exit=0`.
+  4. Bảng run có ít nhất: `lead · plan · 1`, `plan-review · plan-review · 1 · review:revise`, `lead · plan · 2`, `plan-review · plan-review · 2 · review:approve`, `dev · implement · 1`, `code-review · code-review · 1 · review:pass` (hoặc `review:revise` kèm `dev · fix` và một lần review sau), `qa · qa · 1 · qa:pass`; `usage_source` là `result` và `cost_usd` lớn hơn 0 cho mọi run. `auto_state = done`.
+  5. Nhánh có các commit `p52-loop: plan` và các commit báo cáo review / QA.
+  - Nếu Review plan duyệt ngay bản plan có lỗi (không có vòng sửa lại): đây là ghi chú của nghiệm thu, không phải lỗi phần mềm. Về `main`, lặp lại từ bước 1 với `--name p52-loop2` và một lỗi nặng hơn (thêm cả dòng xóa `src/calc.py`, trái với yêu cầu), rồi ghi cả hai lần vào Ghi chú.
+  - Nếu autopilot dừng vì lý do khác (ví dụ `hết ngân sách`), ghi nguyên văn dòng `Autopilot dừng · …`; được chạy tiếp một lần bằng `"$AB" auto "$ID" --more-round` và ghi lại điều đó.
+- **Ghi nhận**: Dòng `P5.2-01`: dán nguyên văn kết quả câu SQL ở bước 5 (id run, vai trò, giai đoạn, vòng, kết luận, `cost_usd`, `usage_source`) và tổng chi phí; không làm tròn hay tóm tắt lại số.
+- **Dọn dẹp**: Chưa xóa nhánh (xem mục Dọn dẹp cuối phần này). Chuyển về `main` trước ca sau: `git -C /mnt/data/IDE/du-an-nhap checkout main`.
+
+---
+
+### P5.2-02: Dừng do ngân sách
+- **Mục tiêu**: Autopilot dừng với `hết ngân sách` ngay sau run đầu tiên khi tổng chi phí vượt giới hạn của quy trình, và không bắt đầu bước nào nữa (biên của AUTO-07).
+- **Tiền điều kiện**: P5.2-00 xong; `du-an-nhap` ở `main`, sạch.
+- **Lệnh thực hiện**:
+  ```bash
+  git -C /mnt/data/IDE/du-an-nhap checkout main
+  "$AB" auto --start --workflow chi-phi-thap --name p52-budget -- du-an-nhap "Thêm docstring cho hàm tinh_tong"; echo "exit=$?"
+  ID2=$(q "SELECT id FROM tasks WHERE branch = 'task/p52-budget' ORDER BY id DESC LIMIT 1"); echo "task $ID2"
+  q "SELECT auto_state, json_extract(auto_json, '\$.stop.reason') FROM tasks WHERE id = ?" "$ID2"
+  q "SELECT id, role, stage, round, outcome, cost_usd, usage_source FROM runs WHERE task_id = ? ORDER BY id" "$ID2"
+  q "SELECT COUNT(*) FROM runs WHERE task_id = ? AND role = 'plan-review'" "$ID2"
+  ```
+- **Kết quả mong đợi**:
+  1. Terminal in `Autopilot · task mới p52-budget · plan vòng 1`, log của Lead, rồi đúng một dòng `Autopilot dừng · hết ngân sách: Đã dùng M / 60 phút · $X / $0.05. Run đang chạy đã xong; autopilot không bắt đầu bước nào nữa. (task N)` và `exit=4`.
+  2. `auto_state = stopped`, `auto_json.stop.reason = het_ngan_sach`.
+  3. Đúng một run (`lead · plan · 1`), không có run `plan-review` (đếm được `0`).
+  - Nếu Lead tốn dưới $0.05 (ví dụ `config.json` của bạn đặt Lead dùng model rẻ) thì autopilot chạy thêm bước rồi mới dừng: ghi lại chi phí thật của Lead và bước dừng.
+- **Ghi nhận**: Dòng `P5.2-02`: dòng terminal nguyên văn, mã thoát, kết quả ba câu SQL.
+- **Dọn dẹp**: `git -C /mnt/data/IDE/du-an-nhap checkout main` (xóa nhánh ở mục Dọn dẹp cuối).
+
+---
+
+### P5.2-03: Kill giữa vòng lặp
+- **Mục tiêu**: `agent-brain kill` trong lúc Review plan đang chạy dừng cả run lẫn autopilot, không sót tiến trình nào, và task dừng với lý do `dừng bởi bạn`.
+- **Tiền điều kiện**: P5.2-00 xong; `du-an-nhap` ở `main`, sạch.
+- **Lệnh thực hiện**:
+  1. Terminal 1 (đã `source env.sh`):
+     ```bash
+     git -C /mnt/data/IDE/du-an-nhap checkout main
+     "$AB" auto --start --workflow p52-full --name p52-kill -- du-an-nhap "Thêm dòng chữ “ẾCH ỘP ỮNG HỘ” vào cuối README"; echo "exit=$?"
+     ```
+  2. Terminal 2 (`source <đường dẫn $LIVE>/env.sh`): lặp lại câu sau cho tới khi có một dòng (Review plan đang chạy, sau bước Lead):
+     ```bash
+     q "SELECT t.id, t.auto_pid, r.id, r.pid, r.pgid FROM runs r JOIN tasks t ON t.id = r.task_id WHERE t.branch = 'task/p52-kill' AND r.role = 'plan-review' AND r.status = 'running'"
+     ```
+     Ghi lại: `ID3` (task), `DRIVER` (`auto_pid`, tiến trình `agent-brain auto`), `RUN` (id run), `CLAUDE` (`pid` của run) và `PGID`.
+  3. Ghi lại cây tiến trình, chỉ đọc:
+     ```bash
+     ps -o pid,ppid,pgid,args --ppid "$DRIVER"      # tiến trình con agent-brain run plan-review (CHILD)
+     ps -o pid,ppid,pgid,args -g "$PGID"            # claude và các tiến trình con của nó
+     ps -eo pid,ppid,pgid,args --forest             # đối chiếu cây dưới DRIVER
+     ```
+     Ghi đủ danh sách PID: `DRIVER`, `CHILD`, `CLAUDE` và mọi tiến trình con của `CLAUDE` thấy được.
+  4. Dừng task:
+     ```bash
+     "$AB" kill "$ID3"; echo "exit=$?"
+     ```
+  5. Chờ 5 giây (ví dụ `python3 -c 'import time; time.sleep(5)'`), rồi kiểm tra đúng các PID đã ghi và trạng thái trong DB:
+     ```bash
+     ps -p "<DRIVER>,<CHILD>,<CLAUDE>,<các PID con khác>" -o pid,args
+     q "SELECT id, role, status FROM runs WHERE id = ?" "$RUN"
+     q "SELECT auto_state, json_extract(auto_json, '\$.stop.reason') FROM tasks WHERE id = ?" "$ID3"
+     q "SELECT COUNT(*) FROM runs WHERE status = 'running'"
+     ```
+- **Kết quả mong đợi**:
+  1. Lệnh kill in `Đang dừng task N (run R, pid P)...`, `Đã dừng task N (run R) sau … ms` và `Autopilot của task N cũng dừng với lý do "dừng bởi bạn".`, thoát `0`.
+  2. Terminal 1 in `Autopilot dừng · dừng bởi bạn: Bạn đã dừng autopilot lúc HH:MM. (task N)` và `exit=4`.
+  3. `ps -p` chỉ in dòng tiêu đề `PID ARGS`.
+  4. Run Review plan có `status = killed` (không phải `lost`); `auto_state = stopped`, lý do `dung_boi_ban`; không còn run nào `running` (đếm được `0`).
+- **Ghi nhận**: Dòng `P5.2-03`: danh sách PID đã ghi, kết quả `ps -p` sau 5 giây, ba câu SQL, hai dòng terminal.
+- **Dọn dẹp**: `git -C /mnt/data/IDE/du-an-nhap checkout -f main` (xóa nhánh ở mục Dọn dẹp cuối).
+
+---
+
+### P5.2-04: Giao diện (UI backstop)
+- **Mục tiêu**: Kiểm tra bằng mắt sáu mục backstop của `05.2-UI-SPEC.md` (UI Considerations) trên dữ liệu thật của ba task nghiệm thu, ở 1024 / 768 / 480 px, giao diện sáng và tối.
+- **Tiền điều kiện**: Môi trường P5.2-00. Nên mở dashboard ngay sau P5.2-00 và giữ suốt P5.2-01..03: UI52-03 cần lúc task `p52-loop` đang chờ ở cổng duyệt (bước 4 của P5.2-01), huy hiệu `Autopilot` màu xanh cần lúc autopilot đang chạy.
+- **Lệnh thực hiện**:
+  1. Terminal riêng (`source <đường dẫn $LIVE>/env.sh`), mở dashboard của bản sao ở cổng 7438 và ghi lại PID:
+     ```bash
+     "$AB" serve --port 7438 > "$LIVE/serve.out" 2>&1 &
+     SERVE_PID=$!; echo "serve pid $SERVE_PID"
+     cat "$LIVE/serve.out"     # agent-brain dashboard: http://127.0.0.1:7438/?token=TOKEN
+     ```
+     Mở URL đó trong Chrome. Đổi bề rộng bằng DevTools (Ctrl+Shift+M, nhập 1024, 768, 480); đổi sáng / tối bằng nút **Giao diện**. Chỉ xem: không bấm Giao việc, Duyệt plan, Trả về Lead hay các nút autopilot trên dashboard này.
+  2. Kiểm tra từng mục (task: `p52-loop`, `p52-budget`, `p52-kill`):
+     - **UI52-01** (flow ở 1024 / 768 px, task `p52-loop`): luồng Bắt đầu → plan ⇄ review → Bạn → code ⇄ review → QA ⇄ sửa nằm trên một hàng; ở 768 px luồng cuộn ngang bên trong vùng `Pipeline của task`, còn trang không cuộn ngang.
+     - **UI52-02** (flow ở 480 px): các nhóm xếp dọc, mỗi nhóm hai thẻ; chân nhóm (`⟲ vòng N / 3`) và nút thẻ Bạn xuống dòng, trang không tràn ngang.
+     - **UI52-03** (nút thẻ Bạn trong 112 px, 1024 px, lúc `p52-loop` chờ duyệt): `Duyệt plan` và `Trả về Lead` hiện đủ chữ (có thể xuống hai dòng, không bị cắt). Trong Console: `(b => b.scrollWidth <= b.clientWidth)(document.getElementById('ab-act-return_lead'))` trả `true`.
+     - **UI52-04** (hàng tiêu đề Pipeline và huy hiệu autopilot ở 480 px): hàng `Pipeline` + huy hiệu + nút Bật / Dừng autopilot xuống dòng, chữ huy hiệu hiện đủ (xem trên `p52-loop` lúc đang chạy và trên `p52-budget` đã dừng).
+     - **UI52-05** (độ tương phản sáng / tối): khung `ring-2` màu hổ phách của nhóm dừng và chữ lý do ở chân nhóm (`p52-budget`: `hết ngân sách`, `p52-kill`: `dừng bởi bạn`), huy hiệu `Autopilot` xanh nhấp nháy (task đang chạy và `◐ Autopilot` ở Tổng quan), màu nền của lựa chọn đang chọn trong ô Quy trình ở Giao việc (chọn thử `p52-full`, không bấm Giao việc): đọc rõ ở cả hai giao diện.
+     - **UI52-06** (dấu tiếng Việt `Ế Ộ Ữ`): tiêu đề `p52-kill` ở Tổng quan và Chi tiết task, các dòng kết quả của thẻ và huy hiệu: dấu ở dòng trên cùng và dòng cuối không bị cắt, ở 1024 và 480 px.
+  3. Dừng dashboard: `kill -INT "$SERVE_PID"` (hoặc Ctrl+C nếu chạy ở foreground). Chạy `ps -p "$SERVE_PID" -o pid,args`: chỉ còn dòng tiêu đề.
+- **Kết quả mong đợi**: Cả sáu mục đạt; trang không tràn ngang ở mọi bề rộng; mọi lý do dừng hiện bằng chữ, không chỉ bằng màu.
+- **Ghi nhận**: Bảng `Kiểm tra giao diện` trong `protocol-log/nghiem-thu-p5-2.md`, dòng `UI52-01` … `UI52-06` (ghi bề rộng, giao diện sáng / tối và task đã xem).
+- **Dọn dẹp**: Dashboard 7438 đã dừng ở bước 3.
+
+---
+
+### Dọn dẹp
+1. Đưa repo nháp về `main` và xóa **đúng** các nhánh đợt này đã tạo:
+   ```bash
+   git -C /mnt/data/IDE/du-an-nhap checkout -f main
+   git -C /mnt/data/IDE/du-an-nhap branch -D task/p52-loop
+   git -C /mnt/data/IDE/du-an-nhap branch -D task/p52-budget
+   git -C /mnt/data/IDE/du-an-nhap branch -D task/p52-kill
+   git -C /mnt/data/IDE/du-an-nhap status --short
+   ```
+   Nếu đã lặp P5.2-01 thì xóa thêm `task/p52-loop2`. `status --short` phải không in gì; nếu còn file giao thức chưa theo dõi do đợt này tạo (`.plan.md`, `.plan-review.md`, `.code-review.md`, `.qa-report.md`) thì xóa đúng các file đó.
+2. Kiểm tra không còn tiến trình của đợt nghiệm thu: `ps -p` với mọi PID đã ghi (driver, dashboard 7438) chỉ in dòng tiêu đề.
+3. Giữ `$LIVE` (bản sao DB, log run, `stats.json`) cho tới khi đã ghi xong `protocol-log/nghiem-thu-p5-2.md`; sau đó xóa vì nó chứa bản sao dữ liệu thật: `rm -rf "$LIVE"`.
+4. Không lệnh nào trong phần này ghi vào `~/.local/share/agent-brain` hay `~/.config/agent-brain`; `brain.db` thật chỉ được nâng cấp khi bạn cài binary mới.
