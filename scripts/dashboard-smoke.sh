@@ -246,10 +246,118 @@ cur.execute("""
     VALUES (?, ?, 'plan-review', 'succeeded', 'work', 'review:approve', 'result', 0.4,
             6, ?, ?, 'plan-review', 1, '{"verdict":"approve","blocking":0,"advisory":2}')
 """, (1, project_id, started_at, ended_at))
+review_run_id = cur.lastrowid
+# The Review plan run gets log lines (copied from the Lead run) so the log
+# card and the raw-JSON keys check have rows for the newest run.
+cur.execute("SELECT id FROM runs WHERE task_id = 1 AND role = 'lead' ORDER BY id LIMIT 1")
+lead_run_id = cur.fetchone()[0]
+cur.execute("""
+    INSERT INTO events (run_id, seq, ts, kind, raw_json)
+    SELECT ?, seq, ? + seq, kind, raw_json FROM events WHERE run_id = ? ORDER BY seq
+""", (review_run_id, started_at, lead_run_id))
+if cur.rowcount < 1:
+    print("Lỗi seeding: Lead run của task 1 không có dòng log nào", file=sys.stderr)
+    sys.exit(1)
 cur.execute("UPDATE tasks SET auto_state = 'gate' WHERE id = 1")
 conn.commit()
 conn.close()
 PYEOF
+
+# Task 2 (dung-lai): autopilot stopped in the build loop — Review code still
+# asks for changes after 3 / 3 rounds (hết vòng). `run lead` checks out
+# task/dung-lai from the current HEAD (task/sua-app); the fake Lead writes a
+# different plan so the plan commit is not empty.
+cat << 'EOF' > "$TMP/fake_claude_scenario_stop.json"
+{
+  "ops": [
+    {
+      "op": "read",
+      "path": "src/app.py"
+    },
+    {
+      "op": "write",
+      "path": ".plan.md",
+      "content": "# Plan: Dừng lại\n## Mục tiêu\nThực hiện Dừng lại\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/app.py | app | trả về 2 | yêu cầu |\n## Không được đụng tới\n\n## Cách kiểm tra\npython3 -m unittest\n## Vướng mắc (Dev ghi vào đây nếu có)\n\n",
+      "keep_meta": true
+    }
+  ]
+}
+EOF
+
+FAKE_CLAUDE_SCENARIO="$TMP/fake_claude_scenario_stop.json" \
+  "$BIN" run lead --name dung-lai -- web-ban-hang "dừng lại" >/dev/null 2>&1
+
+PLAN2_COMMIT="$(git -C "$REPO_DIR" log --format=%H -1 --grep='^dung-lai: plan$' task/dung-lai)"
+if [[ -z "$PLAN2_COMMIT" ]]; then
+  echo "Lỗi seeding: không tìm thấy commit 'dung-lai: plan' trên task/dung-lai" >&2
+  exit 1
+fi
+
+python3 - "$AGENT_BRAIN_DB" "$PLAN2_COMMIT" <<'PYEOF'
+import sys, sqlite3, json
+db_path, plan_commit = sys.argv[1], sys.argv[2]
+conn = sqlite3.connect(db_path, timeout=5)
+cur = conn.cursor()
+cur.execute("SELECT id, project_id, workflow_json FROM tasks WHERE slug = 'dung-lai'")
+row = cur.fetchone()
+if not row:
+    print("Lỗi seeding: Không tìm thấy task dung-lai", file=sys.stderr)
+    sys.exit(1)
+task_id, project_id, workflow_json = row
+if task_id != 2 or not workflow_json:
+    print(f"Lỗi seeding: task dung-lai có id {task_id} (kỳ vọng 2) hoặc thiếu workflow_json", file=sys.stderr)
+    sys.exit(1)
+cur.execute("SELECT MAX(COALESCE(ended_at, started_at)) FROM runs WHERE task_id = ?", (task_id,))
+t = cur.fetchone()[0] + 1000
+MIN = 60000
+
+# role, stage, round, outcome, metrics_json, usage_source, cost_usd, input / output tokens, num_turns, minutes
+rows = [
+    ('plan-review', 'plan-review', 1, 'review:approve', '{"verdict":"approve","blocking":0,"advisory":1}', 'result', 0.5, 0, 0, 5, 3),
+    ('dev', 'implement', 1, None, None, 'result', 5.0, 0, 0, 12, 6),
+    ('code-review', 'code-review', 1, 'review:revise', '{"verdict":"revise","blocking":1,"advisory":3}', 'result', 1.5, 0, 0, 8, 3),
+    ('dev', 'fix', 2, None, '{"fix_for":"code_review"}', 'result', 4.0, 0, 0, 9, 5),
+    ('code-review', 'code-review', 2, 'review:revise', '{"verdict":"revise","blocking":1,"advisory":0}', 'result', 1.5, 0, 0, 7, 3),
+    # partial usage: cost is estimated from tokens (sonnet: 0.5M in + 0.2M out = $3.00)
+    ('dev', 'fix', 3, None, '{"fix_for":"code_review"}', 'partial', 0.0, 500000, 200000, None, 4),
+    ('code-review', 'code-review', 3, 'review:revise', '{"verdict":"revise","blocking":2,"advisory":1}', 'result', 1.5, 0, 0, 7, 3),
+]
+approved_at = None
+for role, stage, rnd, outcome, metrics, usage, cost, tin, tout, turns, minutes in rows:
+    started_at = t
+    ended_at = t + minutes * MIN
+    cur.execute("""
+        INSERT INTO runs (task_id, project_id, role, status, profile, model, outcome, usage_source, cost_usd,
+                          input_tokens, output_tokens, num_turns, started_at, ended_at, stage, round, metrics_json)
+        VALUES (?, ?, ?, 'succeeded', 'work', 'sonnet', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (task_id, project_id, role, outcome, usage, cost, tin, tout, turns, started_at, ended_at, stage, rnd, metrics))
+    t = ended_at + 1000
+    if stage == 'plan-review':
+        # Bạn approved the plan right after Review plan.
+        approved_at = t
+        t += 30000
+
+stop = {
+    "stop": {
+        "reason": "het_vong",
+        "loop_name": "build",
+        "stage": "code-review",
+        "round": 3,
+        "cap": 3,
+        "at_ms": t,
+    }
+}
+cur.execute(
+    "UPDATE tasks SET approved_at = ?, approved_commit = ?, auto_state = 'stopped', auto_json = ? WHERE id = ?",
+    (approved_at, plan_commit, json.dumps(stop), task_id),
+)
+conn.commit()
+conn.close()
+PYEOF
+
+# Task 1 stays the checked-out task (its actions, e.g. Chạy lại Lead for the
+# keys confirm-dialog check, need its branch checked out).
+git -C "$REPO_DIR" checkout task/sua-app >/dev/null 2>&1
 
 # Start serve
 "$BIN" serve --port 0 > "$TMP/serve.out" 2> "$TMP/serve.err" &
@@ -284,10 +392,13 @@ if [[ -z "$URL" ]]; then
 fi
 
 for s in "${SCREENS[@]}"; do
+  # data-screen of the rendered screen (task-stop is the task screen of task 2)
+  SCREEN_NAME="$s"
   case "$s" in
     overview) HASH="#/" ;;
     assign) HASH="#/assign" ;;
     task) HASH="#/task/1" ;;
+    task-stop) HASH="#/task/2"; SCREEN_NAME="task" ;;
     stats) HASH="#/stats" ;;
     projects) HASH="#/projects" ;;
     *)
@@ -311,8 +422,8 @@ for s in "${SCREENS[@]}"; do
     --virtual-time-budget=6000 \
     --dump-dom "$TARGET_URL" > "$DOM_OUT" 2>/dev/null || true
 
-  if ! grep -q "data-screen=\"$s\"" "$DOM_OUT" || ! grep -q 'data-loaded="yes"' "$DOM_OUT"; then
-    echo "Lỗi: Màn hình $s không render thành công (thiếu data-screen=\"$s\" hoặc data-loaded=\"yes\")" >&2
+  if ! grep -q "data-screen=\"$SCREEN_NAME\"" "$DOM_OUT" || ! grep -q 'data-loaded="yes"' "$DOM_OUT"; then
+    echo "Lỗi: Màn hình $s không render thành công (thiếu data-screen=\"$SCREEN_NAME\" hoặc data-loaded=\"yes\")" >&2
     echo "--- 40 dòng đầu của DOM ---" >&2
     head -n 40 "$DOM_OUT" >&2 || true
     echo "--- serve stderr ---" >&2
@@ -322,8 +433,8 @@ for s in "${SCREENS[@]}"; do
     exit 1
   fi
 
-  if [[ "$s" == "task" ]]; then
-    if ! python3 - "$DOM_OUT" <<'EOF'
+  if [[ "$s" == "task" || "$s" == "task-stop" ]]; then
+    if ! python3 - "$DOM_OUT" "$s" <<'EOF'
 import sys
 from html.parser import HTMLParser
 
@@ -335,6 +446,8 @@ class PipelineParser(HTMLParser):
         self.template_depth = 0
         self.data_pipeline = None
         self.cards = {}
+        self.card_texts = {}
+        self.card_counts = {}
         self.aria_current_cards = set()
         self.button_ids = set()
         self.legend_items = []
@@ -345,8 +458,13 @@ class PipelineParser(HTMLParser):
         self.ledger_total_text = ''
         self.full_text = ''
         self.badges = []
-        self.badge_depth = 0
+        self.groups = {}
+        self.group_footers = {}
+        self.budget_text = ''
         self.depth = 0
+        self.captures = []
+        self.current_card = None
+        self.current_group = None
 
     def handle_starttag(self, tag, attrs):
         if tag == 'template':
@@ -370,9 +488,25 @@ class PipelineParser(HTMLParser):
 
         if tag not in VOID_TAGS:
             self.depth += 1
-            if 'data-auto-badge' in attr_dict and self.badge_depth == 0:
+            # Record the text of marked elements (nested captures allowed).
+            if 'data-auto-badge' in attr_dict:
                 self.badges.append({'role': attr_dict.get('role'), 'text': ''})
-                self.badge_depth = self.depth
+                self.captures.append((self.depth, 'badge', len(self.badges) - 1))
+            if 'data-group' in attr_dict:
+                key = attr_dict['data-group']
+                self.groups[key] = attr_dict.get('class', '')
+                self.group_footers.setdefault(key, '')
+                self.captures.append((self.depth, 'group', key))
+            if 'data-group-footer' in attr_dict:
+                self.captures.append((self.depth, 'footer', None))
+            if 'data-card' in attr_dict:
+                key = attr_dict['data-card']
+                self.card_texts[key] = ''
+                self.captures.append((self.depth, 'card', key))
+            if 'data-card-counts' in attr_dict:
+                self.captures.append((self.depth, 'counts', None))
+            if 'data-budget' in attr_dict:
+                self.captures.append((self.depth, 'budget', None))
 
         if 'data-legend-item' in attr_dict:
             self.legend_items.append(tag)
@@ -394,8 +528,24 @@ class PipelineParser(HTMLParser):
     def handle_data(self, data):
         if self.template_depth == 0:
             self.full_text += data
-            if self.badge_depth:
-                self.badges[-1]['text'] += data
+            group = None
+            card = None
+            for _, kind, ref in self.captures:
+                if kind == 'group':
+                    group = ref
+                elif kind == 'card':
+                    card = ref
+            for _, kind, ref in self.captures:
+                if kind == 'badge':
+                    self.badges[ref]['text'] += data
+                elif kind == 'card':
+                    self.card_texts[ref] += data
+                elif kind == 'footer' and group is not None:
+                    self.group_footers[group] += data
+                elif kind == 'counts' and card is not None:
+                    self.card_counts[card] = self.card_counts.get(card, '') + data
+                elif kind == 'budget':
+                    self.budget_text += data
             if self.in_chip:
                 self.chips[-1]['text'] += data
             if self.in_ledger_total:
@@ -409,8 +559,8 @@ class PipelineParser(HTMLParser):
         if self.template_depth > 0:
             return
         if tag not in VOID_TAGS:
-            if self.badge_depth and self.depth == self.badge_depth:
-                self.badge_depth = 0
+            while self.captures and self.captures[-1][0] >= self.depth:
+                self.captures.pop()
             self.depth -= 1
         if self.in_chip and tag == 'li':
             self.in_chip = False
@@ -420,10 +570,71 @@ class PipelineParser(HTMLParser):
 parser = PipelineParser()
 with open(sys.argv[1], encoding='utf-8') as f:
     parser.feed(f.read())
+screen = sys.argv[2]
 
 if parser.data_pipeline != "ready":
     print(f"Lỗi: data-pipeline không phải là 'ready' (nhận được: '{parser.data_pipeline}')", file=sys.stderr)
     sys.exit(1)
+
+def fail(msg):
+    print(f"Lỗi ({screen}): {msg}", file=sys.stderr)
+    sys.exit(1)
+
+if screen == 'task-stop':
+    # Task 2: autopilot stopped in the build loop after 3 / 3 rounds (hết vòng).
+    expected_cards = {'start', 'plan', 'plan_review', 'ban', 'code', 'code_review', 'qa', 'fix'}
+    if set(parser.cards.keys()) != expected_cards:
+        fail(f"Danh sách card không khớp. Kỳ vọng {expected_cards}, nhận được {set(parser.cards.keys())}")
+    if set(parser.groups.keys()) != {'plan', 'build', 'qa'}:
+        fail(f"Danh sách data-group là {set(parser.groups.keys())}, kỳ vọng {{'plan', 'build', 'qa'}}")
+    build_cls = parser.groups['build']
+    if 'ring-2' not in build_cls or 'ring-amber-500' not in build_cls:
+        fail(f"Khung nhóm build không có ring-2 ring-amber-500 (class: '{build_cls}')")
+    for key in ('plan', 'qa'):
+        if 'ring-amber-500' in parser.groups[key] or 'ring-1' not in parser.groups[key]:
+            fail(f"Khung nhóm {key} phải là ring-1 thường (class: '{parser.groups[key]}')")
+    build_footer = parser.group_footers.get('build', '')
+    if '⟲' not in build_footer or 'vòng 3 / 3' not in build_footer:
+        fail(f"Chân nhóm build không chứa '⟲ vòng 3 / 3' (nội dung: '{build_footer}')")
+    if 'hết vòng' not in build_footer:
+        fail(f"Chân nhóm build không chứa 'hết vòng' (nội dung: '{build_footer}')")
+    if 'chưa chạy' not in parser.group_footers.get('qa', ''):
+        fail(f"Chân nhóm qa không chứa 'chưa chạy' (nội dung: '{parser.group_footers.get('qa', '')}')")
+    if 'hết vòng' in parser.group_footers.get('plan', ''):
+        fail("Chân nhóm plan không được có lý do dừng")
+    expected_states = {
+        'plan_review': 'duyet',
+        'ban': 'xong',
+        'code': 'xong',
+        'code_review': 'sua_lai',
+        'qa': 'cho',
+        'fix': 'cho',
+    }
+    for k, st in expected_states.items():
+        if parser.cards.get(k) != st:
+            fail(f"Card '{k}' có state '{parser.cards.get(k)}', kỳ vọng '{st}'")
+    if '2 chặn' not in parser.card_counts.get('code_review', ''):
+        fail(f"Card code_review không có '2 chặn' (counts: '{parser.card_counts.get('code_review', '')}')")
+    if '1 góp ý' not in parser.card_counts.get('code_review', ''):
+        fail(f"Card code_review không có '1 góp ý' (counts: '{parser.card_counts.get('code_review', '')}')")
+    if '0 chặn' not in parser.card_counts.get('plan_review', ''):
+        fail(f"Card plan_review không có '0 chặn' (counts: '{parser.card_counts.get('plan_review', '')}')")
+    if 'code' in parser.card_counts and parser.card_counts['code'].strip():
+        fail(f"Card code không được có dòng counts (nội dung: '{parser.card_counts['code']}')")
+    if parser.aria_current_cards != {'code_review'}:
+        fail(f"Các card có aria-current='step' là {parser.aria_current_cards}, kỳ vọng {{'code_review'}}")
+    if len(parser.badges) != 1 or 'Autopilot: chờ bạn · hết vòng' not in parser.badges[0]['text']:
+        fail(f"Huy hiệu autopilot không phải 'Autopilot: chờ bạn · hết vòng' ({parser.badges})")
+    if 'Ngân sách:' not in parser.budget_text or '≈ $' not in parser.budget_text:
+        fail(f"Dòng ngân sách thiếu 'Ngân sách:' hoặc '≈ $' (nội dung: '{parser.budget_text}')")
+    if 'sắp hết' not in parser.budget_text and 'đã hết' not in parser.budget_text:
+        fail(f"Dòng ngân sách thiếu 'sắp hết' / 'đã hết' (nội dung: '{parser.budget_text}')")
+    if 'Gồm chi phí ước tính từ token cho 1 run' not in parser.full_text:
+        fail("DOM không chứa ghi chú ước tính 'Gồm chi phí ước tính từ token cho 1 run'")
+    if 'Quy trình: mac-dinh ·' not in parser.full_text:
+        fail("Dòng quy trình không phải 'Quy trình: mac-dinh · …'")
+    print("Stop DOM OK")
+    sys.exit(0)
 
 expected_cards = {'start', 'plan', 'plan_review', 'ban', 'code', 'code_review', 'qa', 'fix'}
 if set(parser.cards.keys()) != expected_cards:
@@ -576,9 +787,10 @@ min_start = row[0] if (row and row[0] is not None) else 1000000000000
 
 roles = ['lead', 'dev', 'qa']
 count = 0
-for i in range(25):
+# 24 runs + the lead and Review plan runs of the fixture = 26 ledger rows
+for i in range(24):
     role = roles[i % 3]
-    started_at = min_start - (25 - i) * 60000
+    started_at = min_start - (24 - i) * 60000
     ended_at = started_at + 30000
     outcome = 'qa:pass' if role == 'qa' else None
     cur.execute("""
@@ -590,8 +802,8 @@ for i in range(25):
 conn.commit()
 conn.close()
 
-if count != 25:
-    print(f"Lỗi seeding: Số lượt chạy chèn vào là {count}, kỳ vọng 25", file=sys.stderr)
+if count != 24:
+    print(f"Lỗi seeding: Số lượt chạy chèn vào là {count}, kỳ vọng 24", file=sys.stderr)
     sys.exit(1)
 EOF
 
