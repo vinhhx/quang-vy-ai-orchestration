@@ -302,59 +302,6 @@ pub fn busy_reason_for_task(
     Ok(None)
 }
 
-fn latest_run_per_role(
-    conn: &rusqlite::Connection,
-    task_id: i64,
-    role: &str,
-) -> BrainResult<Option<RunRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, task_id, project_id, role, engine, profile, model, session_id, pid, pgid, pid_start,
-                status, outcome, exit_code, kill_requested_at, started_at, ended_at, input_tokens,
-                output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, num_turns,
-                assistant_turns, turns_before_first_edit, reads_outside_plan, permission_denials,
-                usage_source, base_commit, run_dir, error
-         FROM runs WHERE task_id = ?1 AND role = ?2 ORDER BY started_at DESC, id DESC LIMIT 1",
-    )?;
-    let mut rows = stmt.query(rusqlite::params![task_id, role])?;
-    if let Some(r) = rows.next()? {
-        Ok(Some(RunRow {
-            id: r.get(0)?,
-            task_id: r.get(1)?,
-            project_id: r.get(2)?,
-            role: r.get(3)?,
-            engine: r.get(4)?,
-            profile: r.get(5)?,
-            model: r.get(6)?,
-            session_id: r.get(7)?,
-            pid: r.get(8)?,
-            pgid: r.get(9)?,
-            pid_start: r.get(10)?,
-            status: r.get(11)?,
-            outcome: r.get(12)?,
-            exit_code: r.get(13)?,
-            kill_requested_at: r.get(14)?,
-            started_at: r.get(15)?,
-            ended_at: r.get(16)?,
-            input_tokens: r.get(17)?,
-            output_tokens: r.get(18)?,
-            cache_read_tokens: r.get(19)?,
-            cache_write_tokens: r.get(20)?,
-            cost_usd: r.get(21)?,
-            num_turns: r.get(22)?,
-            assistant_turns: r.get(23)?,
-            turns_before_first_edit: r.get(24)?,
-            reads_outside_plan: r.get(25)?,
-            permission_denials: r.get(26)?,
-            usage_source: r.get(27)?,
-            base_commit: r.get(28)?,
-            run_dir: r.get(29)?,
-            error: r.get(30)?,
-        }))
-    } else {
-        Ok(None)
-    }
-}
-
 pub fn lead_preflight(
     conn: &rusqlite::Connection,
     jobs: &JobManager,
@@ -679,9 +626,9 @@ async fn list_tasks(
             let proj_name: String = r.get(11)?;
             let proj_profile: String = r.get(12)?;
 
-            let lead_run = latest_run_per_role(&conn, task.id, "lead")?;
-            let dev_run = latest_run_per_role(&conn, task.id, "dev")?;
-            let qa_run = latest_run_per_role(&conn, task.id, "qa")?;
+            let lead_run = crate::db::latest_run_for_task_role(&conn, task.id, "lead")?;
+            let dev_run = crate::db::latest_run_for_task_role(&conn, task.id, "dev")?;
+            let qa_run = crate::db::latest_run_for_task_role(&conn, task.id, "qa")?;
 
             let facts = TaskFacts {
                 task: &task,
@@ -992,9 +939,9 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
         let busy_reason_str =
             busy_reason_for_task(&conn, &st.jobs, &project, task.id, &task.branch)?;
 
-        let lead_run = latest_run_per_role(&conn, task.id, "lead")?;
-        let dev_run = latest_run_per_role(&conn, task.id, "dev")?;
-        let qa_run = latest_run_per_role(&conn, task.id, "qa")?;
+        let lead_run = crate::db::latest_run_for_task_role(&conn, task.id, "lead")?;
+        let dev_run = crate::db::latest_run_for_task_role(&conn, task.id, "dev")?;
+        let qa_run = crate::db::latest_run_for_task_role(&conn, task.id, "qa")?;
 
         let facts = TaskFacts {
             task: &task,
@@ -1252,9 +1199,9 @@ async fn post_task_action(
         let busy_reason_str =
             busy_reason_for_task(&conn, &st.jobs, &project, task.id, &task.branch)?;
 
-        let lead_run = latest_run_per_role(&conn, task.id, "lead")?;
-        let dev_run = latest_run_per_role(&conn, task.id, "dev")?;
-        let qa_run = latest_run_per_role(&conn, task.id, "qa")?;
+        let lead_run = crate::db::latest_run_for_task_role(&conn, task.id, "lead")?;
+        let dev_run = crate::db::latest_run_for_task_role(&conn, task.id, "dev")?;
+        let qa_run = crate::db::latest_run_for_task_role(&conn, task.id, "qa")?;
 
         let facts = TaskFacts {
             task: &task,

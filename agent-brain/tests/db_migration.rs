@@ -441,3 +441,320 @@ fn concurrent_open_of_v1_both_succeed() {
         .unwrap();
     assert_eq!(ev_count, 24);
 }
+
+#[test]
+fn helpers_round_trip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    let conn = agent_brain::db::open(&db_path).unwrap();
+
+    let p = agent_brain::projects::Project {
+        id: "test-proj".to_string(),
+        path: "/path/test".to_string(),
+        name_vi: "Test".to_string(),
+        aliases: vec![],
+        kind: "code".to_string(),
+        profile: "work".to_string(),
+        repo: None,
+        missing: false,
+    };
+    agent_brain::db::sync_projects(&conn, &[p]).unwrap();
+    let proj_id = agent_brain::db::project_row_id(&conn, "test-proj").unwrap();
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        proj_id,
+        "task-1",
+        "Task 1",
+        "task/1",
+        Some("main"),
+        Some("base1"),
+    )
+    .unwrap();
+    let new_run = agent_brain::db::NewRun {
+        task_id: Some(task_id),
+        project_id: proj_id,
+        role: "lead".to_string(),
+        profile: "work".to_string(),
+        model: None,
+        pid: 0,
+        pgid: 0,
+        pid_start: 0,
+        base_commit: None,
+        run_dir: None,
+    };
+    let run_id = agent_brain::db::insert_run(&conn, &new_run).unwrap();
+
+    agent_brain::db::set_run_stage_round(&conn, run_id, Some("plan-review"), Some(2)).unwrap();
+    let run = agent_brain::db::get_run(&conn, run_id).unwrap().unwrap();
+    assert_eq!(run.stage.as_deref(), Some("plan-review"));
+    assert_eq!(run.round, Some(2));
+
+    agent_brain::db::set_run_stage_round(&conn, run_id, None, None).unwrap();
+    let run = agent_brain::db::get_run(&conn, run_id).unwrap().unwrap();
+    assert_eq!(run.stage, None);
+    assert_eq!(run.round, None);
+}
+
+#[test]
+fn merge_metrics_integers_and_nulls() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    let conn = agent_brain::db::open(&db_path).unwrap();
+
+    let p = agent_brain::projects::Project {
+        id: "test-proj".to_string(),
+        path: "/path/test".to_string(),
+        name_vi: "Test".to_string(),
+        aliases: vec![],
+        kind: "code".to_string(),
+        profile: "work".to_string(),
+        repo: None,
+        missing: false,
+    };
+    agent_brain::db::sync_projects(&conn, &[p]).unwrap();
+    let proj_id = agent_brain::db::project_row_id(&conn, "test-proj").unwrap();
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        proj_id,
+        "task-1",
+        "Task 1",
+        "task/1",
+        Some("main"),
+        Some("base1"),
+    )
+    .unwrap();
+    let new_run = agent_brain::db::NewRun {
+        task_id: Some(task_id),
+        project_id: proj_id,
+        role: "lead".to_string(),
+        profile: "work".to_string(),
+        model: None,
+        pid: 0,
+        pgid: 0,
+        pid_start: 0,
+        base_commit: None,
+        run_dir: None,
+    };
+    let run_id = agent_brain::db::insert_run(&conn, &new_run).unwrap();
+
+    // non-object patch returns Err
+    let non_obj = serde_json::json!("not-an-object");
+    assert!(agent_brain::db::merge_run_metrics(&conn, run_id, &non_obj).is_err());
+
+    let patch1 = serde_json::json!({
+        "verdict": "revise",
+        "blocking": 1,
+        "advisory": 4
+    });
+    agent_brain::db::merge_run_metrics(&conn, run_id, &patch1).unwrap();
+
+    let patch2 = serde_json::json!({
+        "advisory": null,
+        "note": "x"
+    });
+    agent_brain::db::merge_run_metrics(&conn, run_id, &patch2).unwrap();
+
+    let run = agent_brain::db::get_run(&conn, run_id).unwrap().unwrap();
+    let metrics_raw = run.metrics_json.expect("metrics_json present");
+    let parsed: serde_json::Value = serde_json::from_str(&metrics_raw).unwrap();
+
+    assert_eq!(
+        parsed,
+        serde_json::json!({
+            "verdict": "revise",
+            "blocking": 1,
+            "advisory": null,
+            "note": "x"
+        })
+    );
+
+    let blocking_val = parsed.get("blocking").unwrap();
+    assert_eq!(blocking_val.as_i64(), Some(1));
+    assert!(!blocking_val.is_f64());
+    assert!(parsed.get("advisory").unwrap().is_null());
+}
+
+#[test]
+fn task_auto_defaults_and_setters() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    let conn = agent_brain::db::open(&db_path).unwrap();
+
+    let p = agent_brain::projects::Project {
+        id: "test-proj".to_string(),
+        path: "/path/test".to_string(),
+        name_vi: "Test".to_string(),
+        aliases: vec![],
+        kind: "code".to_string(),
+        profile: "work".to_string(),
+        repo: None,
+        missing: false,
+    };
+    agent_brain::db::sync_projects(&conn, &[p]).unwrap();
+    let proj_id = agent_brain::db::project_row_id(&conn, "test-proj").unwrap();
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        proj_id,
+        "task-1",
+        "Task 1",
+        "task/1",
+        Some("main"),
+        Some("base1"),
+    )
+    .unwrap();
+
+    // task_auto on new task is Some(TaskAuto::default())
+    let auto = agent_brain::db::task_auto(&conn, task_id).unwrap();
+    assert_eq!(auto, Some(agent_brain::db::TaskAuto::default()));
+
+    // set_task_workflow_if_null returns true first, false second, value unchanged
+    let first =
+        agent_brain::db::set_task_workflow_if_null(&conn, task_id, "{\"name\":\"a\"}").unwrap();
+    assert!(first);
+    let second =
+        agent_brain::db::set_task_workflow_if_null(&conn, task_id, "{\"name\":\"b\"}").unwrap();
+    assert!(!second);
+    let auto = agent_brain::db::task_auto(&conn, task_id).unwrap().unwrap();
+    assert_eq!(auto.workflow_json.as_deref(), Some("{\"name\":\"a\"}"));
+
+    // set_task_approval and clear_task_approval
+    agent_brain::db::set_task_approval(&conn, task_id, 123, "abc").unwrap();
+    let auto = agent_brain::db::task_auto(&conn, task_id).unwrap().unwrap();
+    assert_eq!(auto.approved_at, Some(123));
+    assert_eq!(auto.approved_commit.as_deref(), Some("abc"));
+    agent_brain::db::clear_task_approval(&conn, task_id).unwrap();
+    let auto = agent_brain::db::task_auto(&conn, task_id).unwrap().unwrap();
+    assert_eq!(auto.approved_at, None);
+    assert_eq!(auto.approved_commit, None);
+
+    // set_auto_state sets auto_state and updates tasks.updated_at
+    let old_task = agent_brain::db::get_task(&conn, task_id).unwrap().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    agent_brain::db::set_auto_state(&conn, task_id, Some("running")).unwrap();
+    let auto = agent_brain::db::task_auto(&conn, task_id).unwrap().unwrap();
+    assert_eq!(auto.auto_state.as_deref(), Some("running"));
+    let new_task = agent_brain::db::get_task(&conn, task_id).unwrap().unwrap();
+    assert!(new_task.updated_at >= old_task.updated_at);
+
+    // set_auto_driver
+    agent_brain::db::set_auto_driver(&conn, task_id, Some(42), Some(7)).unwrap();
+    let auto = agent_brain::db::task_auto(&conn, task_id).unwrap().unwrap();
+    assert_eq!(auto.auto_pid, Some(42));
+    assert_eq!(auto.auto_pid_start, Some(7));
+
+    // request_auto_stop and clear_auto_stop
+    agent_brain::db::request_auto_stop(&conn, task_id, "soft").unwrap();
+    let auto = agent_brain::db::task_auto(&conn, task_id).unwrap().unwrap();
+    assert_eq!(auto.auto_stop_kind.as_deref(), Some("soft"));
+    assert!(auto.auto_stop_at.is_some());
+    agent_brain::db::clear_auto_stop(&conn, task_id).unwrap();
+    let auto = agent_brain::db::task_auto(&conn, task_id).unwrap().unwrap();
+    assert_eq!(auto.auto_stop_kind, None);
+    assert_eq!(auto.auto_stop_at, None);
+
+    // set_auto_json round-trips
+    agent_brain::db::set_auto_json(&conn, task_id, Some("{}")).unwrap();
+    let auto = agent_brain::db::task_auto(&conn, task_id).unwrap().unwrap();
+    assert_eq!(auto.auto_json.as_deref(), Some("{}"));
+
+    // task_auto(999) -> None
+    assert_eq!(agent_brain::db::task_auto(&conn, 999).unwrap(), None);
+}
+
+#[test]
+fn latest_run_for_task_role_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    let conn = agent_brain::db::open(&db_path).unwrap();
+
+    let p = agent_brain::projects::Project {
+        id: "test-proj".to_string(),
+        path: "/path/test".to_string(),
+        name_vi: "Test".to_string(),
+        aliases: vec![],
+        kind: "code".to_string(),
+        profile: "work".to_string(),
+        repo: None,
+        missing: false,
+    };
+    agent_brain::db::sync_projects(&conn, &[p]).unwrap();
+    let proj_id = agent_brain::db::project_row_id(&conn, "test-proj").unwrap();
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        proj_id,
+        "task-1",
+        "Task 1",
+        "task/1",
+        Some("main"),
+        Some("base1"),
+    )
+    .unwrap();
+
+    // Insert runs with plain SQL to specify IDs 3 and 5, with equal started_at
+    conn.execute(
+        "INSERT INTO runs (id, task_id, project_id, role, profile, status, started_at)
+         VALUES (3, ?1, ?2, 'lead', 'work', 'succeeded', 5000)",
+        rusqlite::params![task_id, proj_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO runs (id, task_id, project_id, role, profile, status, started_at)
+         VALUES (5, ?1, ?2, 'lead', 'work', 'succeeded', 5000)",
+        rusqlite::params![task_id, proj_id],
+    )
+    .unwrap();
+
+    let lead_run = agent_brain::db::latest_run_for_task_role(&conn, task_id, "lead")
+        .unwrap()
+        .expect("lead run found");
+    assert_eq!(lead_run.id, 5);
+
+    let qa_run = agent_brain::db::latest_run_for_task_role(&conn, task_id, "qa").unwrap();
+    assert!(qa_run.is_none());
+}
+
+#[test]
+fn auto_driver_rows_lists_running_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    let conn = agent_brain::db::open(&db_path).unwrap();
+
+    let p = agent_brain::projects::Project {
+        id: "proj-alpha".to_string(),
+        path: "/path/alpha".to_string(),
+        name_vi: "Alpha".to_string(),
+        aliases: vec![],
+        kind: "code".to_string(),
+        profile: "work".to_string(),
+        repo: None,
+        missing: false,
+    };
+    agent_brain::db::sync_projects(&conn, &[p]).unwrap();
+    let proj_id = agent_brain::db::project_row_id(&conn, "proj-alpha").unwrap();
+
+    let t1 =
+        agent_brain::db::upsert_task(&conn, proj_id, "t1", "T1", "task/t1", None, None).unwrap();
+    let t2 =
+        agent_brain::db::upsert_task(&conn, proj_id, "t2", "T2", "task/t2", None, None).unwrap();
+    let _t3 =
+        agent_brain::db::upsert_task(&conn, proj_id, "t3", "T3", "task/t3", None, None).unwrap();
+
+    agent_brain::db::set_auto_state(&conn, t1, Some("running")).unwrap();
+    agent_brain::db::set_auto_driver(&conn, t1, Some(100), Some(200)).unwrap();
+
+    agent_brain::db::set_auto_state(&conn, t2, Some("stopped")).unwrap();
+    // t3 has auto_state NULL
+
+    let drivers = agent_brain::db::auto_driver_rows(&conn).unwrap();
+    assert_eq!(drivers.len(), 1);
+    assert_eq!(
+        drivers[0],
+        agent_brain::db::DriverRow {
+            task_id: t1,
+            project_slug: "proj-alpha".to_string(),
+            profile: "work".to_string(),
+            auto_pid: Some(100),
+            auto_pid_start: Some(200),
+        }
+    );
+}

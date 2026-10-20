@@ -687,6 +687,9 @@ mod tests {
             base_commit: None,
             run_dir: None,
             error: None,
+            stage: None,
+            round: None,
+            metrics_json: None,
         }
     }
 

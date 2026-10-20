@@ -221,6 +221,24 @@ pub struct TaskRow {
     pub updated_at: i64,
 }
 
+pub const TASK_COLUMNS: &str =
+    "id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at";
+
+fn task_from_row(r: &rusqlite::Row) -> rusqlite::Result<TaskRow> {
+    Ok(TaskRow {
+        id: r.get(0)?,
+        project_id: r.get(1)?,
+        slug: r.get(2)?,
+        title: r.get(3)?,
+        branch: r.get(4)?,
+        base_branch: r.get(5)?,
+        base_commit: r.get(6)?,
+        status: r.get(7)?,
+        created_at: r.get(8)?,
+        updated_at: r.get(9)?,
+    })
+}
+
 pub fn upsert_task(
     conn: &Connection,
     project_id: i64,
@@ -251,24 +269,11 @@ pub fn upsert_task(
 }
 
 pub fn get_task(conn: &Connection, id: i64) -> BrainResult<Option<TaskRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at
-         FROM tasks WHERE id = ?1",
-    )?;
+    let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params![id])?;
     if let Some(r) = rows.next()? {
-        Ok(Some(TaskRow {
-            id: r.get(0)?,
-            project_id: r.get(1)?,
-            slug: r.get(2)?,
-            title: r.get(3)?,
-            branch: r.get(4)?,
-            base_branch: r.get(5)?,
-            base_commit: r.get(6)?,
-            status: r.get(7)?,
-            created_at: r.get(8)?,
-            updated_at: r.get(9)?,
-        }))
+        Ok(Some(task_from_row(r)?))
     } else {
         Ok(None)
     }
@@ -279,24 +284,11 @@ pub fn find_task_by_branch(
     project_id: i64,
     branch: &str,
 ) -> BrainResult<Option<TaskRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at
-         FROM tasks WHERE project_id = ?1 AND branch = ?2",
-    )?;
+    let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1 AND branch = ?2");
+    let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params![project_id, branch])?;
     if let Some(r) = rows.next()? {
-        Ok(Some(TaskRow {
-            id: r.get(0)?,
-            project_id: r.get(1)?,
-            slug: r.get(2)?,
-            title: r.get(3)?,
-            branch: r.get(4)?,
-            base_branch: r.get(5)?,
-            base_commit: r.get(6)?,
-            status: r.get(7)?,
-            created_at: r.get(8)?,
-            updated_at: r.get(9)?,
-        }))
+        Ok(Some(task_from_row(r)?))
     } else {
         Ok(None)
     }
@@ -489,6 +481,9 @@ pub struct RunRow {
     pub base_commit: Option<String>,
     pub run_dir: Option<String>,
     pub error: Option<String>,
+    pub stage: Option<String>,
+    pub round: Option<i64>,
+    pub metrics_json: Option<String>,
 }
 
 fn row_to_run(r: &rusqlite::Row) -> rusqlite::Result<RunRow> {
@@ -524,13 +519,16 @@ fn row_to_run(r: &rusqlite::Row) -> rusqlite::Result<RunRow> {
         base_commit: r.get(28)?,
         run_dir: r.get(29)?,
         error: r.get(30)?,
+        stage: r.get(31)?,
+        round: r.get(32)?,
+        metrics_json: r.get(33)?,
     })
 }
 
 const RUN_COLUMNS: &str = "id, task_id, project_id, role, engine, profile, model, session_id, pid, pgid, pid_start,
   status, outcome, exit_code, kill_requested_at, started_at, ended_at, input_tokens, output_tokens,
   cache_read_tokens, cache_write_tokens, cost_usd, num_turns, assistant_turns, turns_before_first_edit,
-  reads_outside_plan, permission_denials, usage_source, base_commit, run_dir, error";
+  reads_outside_plan, permission_denials, usage_source, base_commit, run_dir, error, stage, round, metrics_json";
 
 pub fn get_run(conn: &Connection, id: i64) -> BrainResult<Option<RunRow>> {
     let sql = format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1");
@@ -590,4 +588,209 @@ pub fn runs_for_task(conn: &Connection, task_id: i64) -> BrainResult<Vec<RunRow>
 pub fn count_runs(conn: &Connection) -> BrainResult<i64> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))?;
     Ok(count)
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TaskAuto {
+    pub workflow_json: Option<String>,
+    pub approved_at: Option<i64>,
+    pub approved_commit: Option<String>,
+    pub auto_state: Option<String>,
+    pub auto_pid: Option<i64>,
+    pub auto_pid_start: Option<i64>,
+    pub auto_stop_at: Option<i64>,
+    pub auto_stop_kind: Option<String>,
+    pub auto_json: Option<String>,
+}
+
+pub fn task_auto(conn: &Connection, task_id: i64) -> BrainResult<Option<TaskAuto>> {
+    let mut stmt = conn.prepare(
+        "SELECT workflow_json, approved_at, approved_commit, auto_state, auto_pid, auto_pid_start, auto_stop_at, auto_stop_kind, auto_json
+         FROM tasks WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query(params![task_id])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(TaskAuto {
+            workflow_json: r.get(0)?,
+            approved_at: r.get(1)?,
+            approved_commit: r.get(2)?,
+            auto_state: r.get(3)?,
+            auto_pid: r.get(4)?,
+            auto_pid_start: r.get(5)?,
+            auto_stop_at: r.get(6)?,
+            auto_stop_kind: r.get(7)?,
+            auto_json: r.get(8)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn set_task_workflow_if_null(conn: &Connection, task_id: i64, json: &str) -> BrainResult<bool> {
+    let changes = conn.execute(
+        "UPDATE tasks SET workflow_json = ?1 WHERE id = ?2 AND workflow_json IS NULL",
+        params![json, task_id],
+    )?;
+    Ok(changes == 1)
+}
+
+pub fn set_task_approval(
+    conn: &Connection,
+    task_id: i64,
+    at_ms: i64,
+    commit: &str,
+) -> BrainResult<()> {
+    conn.execute(
+        "UPDATE tasks SET approved_at = ?1, approved_commit = ?2 WHERE id = ?3",
+        params![at_ms, commit, task_id],
+    )?;
+    Ok(())
+}
+
+pub fn clear_task_approval(conn: &Connection, task_id: i64) -> BrainResult<()> {
+    conn.execute(
+        "UPDATE tasks SET approved_at = NULL, approved_commit = NULL WHERE id = ?1",
+        params![task_id],
+    )?;
+    Ok(())
+}
+
+pub fn set_auto_state(conn: &Connection, task_id: i64, state: Option<&str>) -> BrainResult<()> {
+    let now = now_ms();
+    conn.execute(
+        "UPDATE tasks SET auto_state = ?1, updated_at = ?2 WHERE id = ?3",
+        params![state, now, task_id],
+    )?;
+    Ok(())
+}
+
+pub fn set_auto_driver(
+    conn: &Connection,
+    task_id: i64,
+    pid: Option<i64>,
+    pid_start: Option<i64>,
+) -> BrainResult<()> {
+    conn.execute(
+        "UPDATE tasks SET auto_pid = ?1, auto_pid_start = ?2 WHERE id = ?3",
+        params![pid, pid_start, task_id],
+    )?;
+    Ok(())
+}
+
+pub fn set_auto_json(conn: &Connection, task_id: i64, json: Option<&str>) -> BrainResult<()> {
+    conn.execute(
+        "UPDATE tasks SET auto_json = ?1 WHERE id = ?2",
+        params![json, task_id],
+    )?;
+    Ok(())
+}
+
+pub fn request_auto_stop(conn: &Connection, task_id: i64, kind: &str) -> BrainResult<()> {
+    let now = now_ms();
+    conn.execute(
+        "UPDATE tasks SET auto_stop_at = ?1, auto_stop_kind = ?2 WHERE id = ?3",
+        params![now, kind, task_id],
+    )?;
+    Ok(())
+}
+
+pub fn clear_auto_stop(conn: &Connection, task_id: i64) -> BrainResult<()> {
+    conn.execute(
+        "UPDATE tasks SET auto_stop_at = NULL, auto_stop_kind = NULL WHERE id = ?1",
+        params![task_id],
+    )?;
+    Ok(())
+}
+
+pub fn set_run_stage_round(
+    conn: &Connection,
+    run_id: i64,
+    stage: Option<&str>,
+    round: Option<i64>,
+) -> BrainResult<()> {
+    conn.execute(
+        "UPDATE runs SET stage = ?1, round = ?2 WHERE id = ?3",
+        params![stage, round, run_id],
+    )?;
+    Ok(())
+}
+
+pub fn merge_run_metrics(
+    conn: &Connection,
+    run_id: i64,
+    patch: &serde_json::Value,
+) -> BrainResult<()> {
+    let patch_obj = match patch.as_object() {
+        Some(obj) => obj,
+        None => return Err(BrainError::error("metrics patch phải là JSON object")),
+    };
+    let raw: Option<String> = conn.query_row(
+        "SELECT metrics_json FROM runs WHERE id = ?1",
+        params![run_id],
+        |r| r.get(0),
+    )?;
+    let mut base = match raw {
+        Some(s) => match serde_json::from_str::<serde_json::Value>(&s) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        },
+        None => serde_json::Map::new(),
+    };
+    for (k, v) in patch_obj {
+        base.insert(k.clone(), v.clone());
+    }
+    let merged_str = serde_json::to_string(&serde_json::Value::Object(base))
+        .map_err(|e| BrainError::error(format!("Lỗi serialize metrics JSON: {e}")))?;
+    conn.execute(
+        "UPDATE runs SET metrics_json = ?1 WHERE id = ?2",
+        params![merged_str, run_id],
+    )?;
+    Ok(())
+}
+
+pub fn latest_run_for_task_role(
+    conn: &Connection,
+    task_id: i64,
+    role: &str,
+) -> BrainResult<Option<RunRow>> {
+    let sql = format!(
+        "SELECT {RUN_COLUMNS} FROM runs WHERE task_id = ?1 AND role = ?2 ORDER BY started_at DESC, id DESC LIMIT 1"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params![task_id, role])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(row_to_run(r)?))
+    } else {
+        Ok(None)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DriverRow {
+    pub task_id: i64,
+    pub project_slug: String,
+    pub profile: String,
+    pub auto_pid: Option<i64>,
+    pub auto_pid_start: Option<i64>,
+}
+
+pub fn auto_driver_rows(conn: &Connection) -> BrainResult<Vec<DriverRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT tasks.id, projects.slug, projects.profile, tasks.auto_pid, tasks.auto_pid_start
+         FROM tasks JOIN projects ON tasks.project_id = projects.id
+         WHERE tasks.auto_state = 'running'
+         ORDER BY tasks.id",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(DriverRow {
+                task_id: r.get(0)?,
+                project_slug: r.get(1)?,
+                profile: r.get(2)?,
+                auto_pid: r.get(3)?,
+                auto_pid_start: r.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
