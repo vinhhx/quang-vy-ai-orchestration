@@ -972,6 +972,35 @@ if screen == 'assign':
     print("Assign DOM OK")
     sys.exit(0)
 
+if screen == 'projects':
+    for needle in ('Quy trình', 'Lấy từ workflows.json và 2 quy trình có sẵn.', 'mac-dinh', 'nhanh',
+                   'Quy trình mặc định: mac-dinh', 'Profile và quy trình mặc định chỉ đổi trong projects_map.json'):
+        if needle not in full_text:
+            fail(f"Màn hình Dự án không chứa '{needle}'")
+    if 'Profile chỉ đổi trong projects_map.json' in full_text:
+        fail("Màn hình Dự án còn chú thích cũ 'Profile chỉ đổi trong projects_map.json'")
+    cards = root.find(lambda n: 'data-workflow-card' in n.attrs)
+    if len(cards) != 1:
+        fail(f"Số phần tử data-workflow-card là {len(cards)}, kỳ vọng 1")
+    card = cards[0]
+    if card.hidden():
+        fail("Card Quy trình đang bị ẩn")
+    buttons = [b for b in card.find(lambda n: n.tag == 'button') if not b.hidden() and b.text().strip() == 'Đọc lại']
+    if len(buttons) < 1:
+        fail("Card Quy trình không có nút 'Đọc lại' đang hiện")
+    items = [i for i in card.find(lambda n: 'data-workflow-item' in n.attrs) if not i.hidden()]
+    names = [' '.join(i.text().split()) for i in items]
+    if len(items) < 2 or not names[0].startswith('mac-dinh') or not names[1].startswith('nhanh'):
+        fail(f"Danh sách quy trình không bắt đầu bằng mac-dinh, nhanh (nhận được: {names})")
+    if 'có sẵn' not in names[0] or '3 vòng · 60 phút · $20' not in names[0]:
+        fail(f"Mục mac-dinh thiếu chip 'có sẵn' hoặc giới hạn (nội dung: '{names[0]}')")
+    if 'Mặc định của: Web bán hàng' not in names[0]:
+        fail(f"Mục mac-dinh thiếu 'Mặc định của: Web bán hàng' (nội dung: '{names[0]}')")
+    if 'Không tải được quy trình' in card.text():
+        fail("Card Quy trình hiện callout lỗi tải")
+    print("Projects DOM OK")
+    sys.exit(0)
+
 print(f"Không có kiểm tra DOM cho {screen}")
 EOF
     then

@@ -556,6 +556,127 @@ const sections = [
     },
   },
   {
+    name: 'projects-workflows',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      const projectsJsPath = path.join(
+        repoRoot,
+        'agent-brain/assets/dashboard/js/projects.js'
+      );
+      const projectsJsSrc = fs.readFileSync(projectsJsPath, 'utf8');
+      vm.runInContext(projectsJsSrc, ctx, { filename: 'projects.js' });
+
+      check(
+        'projects factory registered',
+        typeof factories.projects === 'function',
+        'factories.projects not found'
+      );
+      if (typeof factories.projects !== 'function') return;
+
+      const WF_LIST = [
+        { name: 'mac-dinh', source: 'builtin', summary: 'plan ⇄︎ review → Bạn → code ⇄︎ review → QA ⇄︎ sửa', auto: true, limits: '3 vòng · 60 phút · $20', default_for: [] },
+        { name: 'nhanh', source: 'override', summary: 'plan → Bạn → code → QA', auto: true, limits: '60 phút · $20', default_for: ['Web bán hàng'] },
+        { name: 'chi-phi-thap', source: 'file', summary: 'plan → Bạn → code → QA', auto: false, limits: '30 phút · $5', default_for: [] },
+      ];
+      let resolveNext = null;
+      let wfResponse = {
+        ok: true,
+        status: 200,
+        data: {
+          workflows: WF_LIST,
+          errors: [],
+          project_defaults: {
+            'web-ban-hang': { workflow: 'nhanh', effective: 'nhanh', note: null },
+            'web-ban-hang-cu': { workflow: null, effective: 'mac-dinh', note: null },
+          },
+        },
+      };
+      const calls = [];
+      const savedApi = ctx.AB.api;
+      ctx.AB.api = function (method, url) {
+        calls.push(method + ' ' + url);
+        if (method === 'GET' && url === '/api/workflows') {
+          if (resolveNext) {
+            const gate = resolveNext;
+            resolveNext = null;
+            return gate.then(() => wfResponse);
+          }
+          return Promise.resolve(wfResponse);
+        }
+        return Promise.resolve({ ok: false, status: 404, data: null });
+      };
+
+      try {
+        const c = factories.projects();
+        check('projects: workflowsLoading starts true', c.workflowsLoading === true, `got ${c.workflowsLoading}`);
+        check('projects: line before the list loads uses p.workflow', c.projectWorkflowLine({ id: 'x', workflow: 'nhanh' }) === 'Quy trình mặc định: nhanh', `got "${c.projectWorkflowLine({ id: 'x', workflow: 'nhanh' })}"`);
+        check('projects: line before the list loads defaults to mac-dinh', c.projectWorkflowLine({ id: 'x', workflow: null }) === 'Quy trình mặc định: mac-dinh', `got "${c.projectWorkflowLine({ id: 'x', workflow: null })}"`);
+
+        await c.loadWorkflows();
+        check('projects: loadWorkflows fills workflowList', c.workflowList.length === 3 && c.workflowList[1].name === 'nhanh', `got ${c.workflowList.length}`);
+        check('projects: hasWorkflowList', c.hasWorkflowList === true);
+        check('projects: workflowsLoading false after load', c.workflowsLoading === false);
+        check('projects: GET /api/workflows only (read-only)', calls.every((x) => x === 'GET /api/workflows'), `got ${JSON.stringify(calls)}`);
+
+        check('projects: builtin chips', JSON.stringify(c.itemChips(WF_LIST[0])) === JSON.stringify(['có sẵn', 'autopilot']), `got ${JSON.stringify(c.itemChips(WF_LIST[0]))}`);
+        check('projects: override chips', JSON.stringify(c.itemChips(WF_LIST[1])) === JSON.stringify(['ghi đè quy trình có sẵn', 'autopilot']), `got ${JSON.stringify(c.itemChips(WF_LIST[1]))}`);
+        check('projects: file chips', JSON.stringify(c.itemChips(WF_LIST[2])) === JSON.stringify(['từ workflows.json', 'chạy tay']), `got ${JSON.stringify(c.itemChips(WF_LIST[2]))}`);
+        check('projects: defaultForLine with projects', c.defaultForLine(WF_LIST[1]) === 'Mặc định của: Web bán hàng', `got "${c.defaultForLine(WF_LIST[1])}"`);
+        check('projects: defaultForLine empty', c.defaultForLine(WF_LIST[0]) === '', `got "${c.defaultForLine(WF_LIST[0])}"`);
+        check('projects: defaultForLine two projects', c.defaultForLine({ default_for: ['A', 'B'] }) === 'Mặc định của: A, B', `got "${c.defaultForLine({ default_for: ['A', 'B'] })}"`);
+
+        const lineWeb = c.projectWorkflowLine({ id: 'web-ban-hang', workflow: 'nhanh' });
+        check('projects: projectWorkflowLine uses project_defaults effective', lineWeb === 'Quy trình mặc định: nhanh', `got "${lineWeb}"`);
+        const lineCu = c.projectWorkflowLine({ id: 'web-ban-hang-cu', workflow: null });
+        check('projects: projectWorkflowLine without a default', lineCu === 'Quy trình mặc định: mac-dinh', `got "${lineCu}"`);
+        const lineNew = c.projectWorkflowLine({ id: 'moi', workflow: null });
+        check('projects: projectWorkflowLine for a project missing from project_defaults', lineNew === 'Quy trình mặc định: mac-dinh', `got "${lineNew}"`);
+
+        check('projects: reloadLabel idle', c.reloadLabel === 'Đọc lại', `got "${c.reloadLabel}"`);
+        let release;
+        resolveNext = new Promise((r) => { release = r; });
+        const pending = c.reloadWorkflows();
+        check('projects: reloadWorkflows sets the in-flight label', c.reloadLabel === 'Đang đọc...', `got "${c.reloadLabel}"`);
+        check('projects: reloadingWorkflows true while in flight', c.reloadingWorkflows === true);
+        release();
+        await pending;
+        check('projects: reloadLabel back to idle', c.reloadLabel === 'Đọc lại' && c.reloadingWorkflows === false, `got "${c.reloadLabel}"`);
+
+        // workflows.json errors: 12 lines → 10 + remainder, built-ins still listed
+        const errs = [];
+        for (let i = 1; i <= 12; i++) errs.push(`Dòng ${i}: lỗi ${i}`);
+        wfResponse = { ok: true, status: 200, data: { workflows: WF_LIST.slice(0, 2), errors: errs, project_defaults: {} } };
+        await c.reloadWorkflows();
+        check('projects: hasWorkflowErrors', c.hasWorkflowErrors === true);
+        check('projects: workflowErrorLines 11 lines', c.workflowErrorLines.length === 11, `got ${c.workflowErrorLines.length}`);
+        check('projects: workflowErrorLines remainder', c.workflowErrorLines[10] === '… và 2 lỗi khác', `got "${c.workflowErrorLines[10]}"`);
+        check('projects: built-ins listed with errors', c.workflowList.length === 2, `got ${c.workflowList.length}`);
+
+        // fetch failure → rose callout body
+        wfResponse = { ok: false, status: 500, data: { error: 'Lỗi nội bộ khi đọc danh sách quy trình' } };
+        const c2 = factories.projects();
+        await c2.loadWorkflows();
+        check('projects: failed fetch sets workflowLoadError', c2.workflowLoadError === 'Lỗi nội bộ khi đọc danh sách quy trình', `got "${c2.workflowLoadError}"`);
+        check('projects: hasWorkflowLoadError', c2.hasWorkflowLoadError === true);
+        check('projects: rose callout body', c2.workflowErrorBody === 'Lỗi nội bộ khi đọc danh sách quy trình. Bấm Đọc lại để thử lại.', `got "${c2.workflowErrorBody}"`);
+        check('projects: not pending after a failure', c2.workflowsPending === false);
+        wfResponse = { ok: false, status: 0, data: null };
+        await c2.reloadWorkflows();
+        check('projects: offline body', c2.workflowErrorBody === 'Mất kết nối tới agent-brain serve. Bấm Đọc lại để thử lại.', `got "${c2.workflowErrorBody}"`);
+        wfResponse = { ok: true, status: 200, data: { workflows: WF_LIST, errors: [], project_defaults: {} } };
+        await c2.reloadWorkflows();
+        check('projects: Đọc lại clears the error', c2.workflowLoadError === '' && c2.hasWorkflowLoadError === false && c2.workflowList.length === 3, `got "${c2.workflowLoadError}"`);
+      } finally {
+        ctx.AB.api = savedApi;
+      }
+    },
+  },
+  {
     name: 'task-cards',
     async run(ctx) {
       const factories = {};

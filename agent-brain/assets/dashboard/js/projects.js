@@ -20,10 +20,17 @@
       loadError: '',
       stale: false,
       profile: window.AB.profile(),
+      workflowList: [],
+      workflowErrors: [],
+      projectDefaults: {},
+      workflowsLoading: true,
+      workflowLoadError: '',
+      reloadingWorkflows: false,
 
       init: function () {
         var self = this;
         this.load();
+        this.loadWorkflows();
 
         var profileHandler = function (e) {
           self.profile = (e.detail && e.detail.profile) ? e.detail.profile : window.AB.profile();
@@ -55,6 +62,62 @@
             }
           }
         });
+      },
+
+      // Read-only: GET /api/workflows (workflows are edited in workflows.json only, D-23).
+      loadWorkflows: function () {
+        var self = this;
+        return window.AB.api('GET', '/api/workflows').then(function (res) {
+          self.workflowsLoading = false;
+          if (res && res.ok && res.data && Array.isArray(res.data.workflows)) {
+            self.workflowList = res.data.workflows;
+            self.workflowErrors = Array.isArray(res.data.errors) ? res.data.errors : [];
+            self.projectDefaults = (res.data.project_defaults && typeof res.data.project_defaults === 'object') ? res.data.project_defaults : {};
+            self.workflowLoadError = '';
+          } else {
+            self.workflowLoadError = window.AB.errorText(res);
+          }
+        });
+      },
+
+      reloadWorkflows: function () {
+        var self = this;
+        if (this.reloadingWorkflows) return Promise.resolve();
+        this.reloadingWorkflows = true;
+        return this.loadWorkflows().then(function () {
+          self.reloadingWorkflows = false;
+        });
+      },
+
+      itemChips: function (w) {
+        if (!w) return [];
+        var chips = [];
+        if (w.source === 'builtin') {
+          chips.push('có sẵn');
+        } else if (w.source === 'override') {
+          chips.push('ghi đè quy trình có sẵn');
+        } else {
+          chips.push('từ workflows.json');
+        }
+        chips.push(w.auto ? 'autopilot' : 'chạy tay');
+        return chips;
+      },
+
+      defaultForLine: function (w) {
+        if (!w || !w.default_for || w.default_for.length === 0) return '';
+        return 'Mặc định của: ' + w.default_for.join(', ');
+      },
+
+      projectWorkflowLine: function (p) {
+        var name = '';
+        if (p && this.workflowList.length > 0 && this.projectDefaults) {
+          var d = this.projectDefaults[p.id];
+          if (d && d.effective) name = d.effective;
+        }
+        if (!name) {
+          name = (p && p.workflow) ? p.workflow : 'mac-dinh';
+        }
+        return 'Quy trình mặc định: ' + name;
       },
 
       reload: function () {
@@ -278,6 +341,39 @@
           lines.push('Task ' + s.task.id + ' · ' + s.task.branch + ' · trạng thái ' + s.task.status);
         }
         return lines.join('\n');
+      },
+
+      get hasWorkflowList() {
+        return Boolean(this.workflowList && this.workflowList.length > 0);
+      },
+
+      get hasWorkflowErrors() {
+        return Boolean(this.workflowErrors && this.workflowErrors.length > 0);
+      },
+
+      get workflowErrorLines() {
+        var errs = this.workflowErrors || [];
+        var lines = errs.slice(0, 10);
+        if (errs.length > 10) {
+          lines.push('… và ' + (errs.length - 10) + ' lỗi khác');
+        }
+        return lines;
+      },
+
+      get hasWorkflowLoadError() {
+        return Boolean(this.workflowLoadError);
+      },
+
+      get workflowErrorBody() {
+        return this.workflowLoadError ? this.workflowLoadError + '. Bấm Đọc lại để thử lại.' : '';
+      },
+
+      get workflowsPending() {
+        return this.workflowsLoading && !this.workflowLoadError;
+      },
+
+      get reloadLabel() {
+        return this.reloadingWorkflows ? 'Đang đọc...' : 'Đọc lại';
       },
 
       get saveLabel() {

@@ -54,7 +54,8 @@
           <span>·</span>
           <span x-text="p.type"></span>
         </div>
-        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Profile chỉ đổi trong projects_map.json</p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="projectWorkflowLine(p)"></p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Profile và quy trình mặc định chỉ đổi trong projects_map.json</p>
         <div class="flex flex-wrap items-center gap-2" x-show="notEditing(p)">
           <template x-for="a in p.aliases" :key="a">
             <span class="rounded-full bg-slate-100 px-2 py-1 text-sm text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="a"></span>
@@ -78,5 +79,44 @@
         </div>
       </div>
     </template>
+  </div>
+
+  <div data-workflow-card class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+    <div class="flex flex-wrap items-center gap-2">
+      <h2 class="text-xl font-semibold leading-[1.2]">Quy trình</h2>
+      <button type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="reloadingWorkflows" @click="reloadWorkflows" x-text="reloadLabel">Đọc lại</button>
+    </div>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Lấy từ workflows.json và 2 quy trình có sẵn. Sửa file trong editor rồi bấm Đọc lại; dashboard chỉ xem.</p>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="workflowsPending">Đang tải quy trình...</p>
+
+    <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2" x-show="hasWorkflowLoadError">
+      <p class="font-semibold leading-normal">Không tải được quy trình</p>
+      <p class="text-base font-normal leading-normal break-words" x-text="workflowErrorBody"></p>
+      <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="reloadingWorkflows" @click="reloadWorkflows" x-text="reloadLabel">Đọc lại</button>
+    </div>
+
+    <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="hasWorkflowErrors">
+      <p class="font-semibold leading-normal">workflows.json có lỗi</p>
+      <template x-for="(line, i) in workflowErrorLines" :key="i">
+        <p class="text-sm font-normal leading-normal break-words" x-text="line"></p>
+      </template>
+      <p class="text-sm font-normal leading-normal">Đang dùng 2 quy trình có sẵn (mac-dinh, nhanh) cho đến khi bạn sửa xong file.</p>
+    </div>
+
+    <ul class="space-y-4" x-show="hasWorkflowList">
+      <template x-for="w in workflowList" :key="w.name">
+        <li data-workflow-item class="rounded-xl p-4 ring-1 ring-slate-200 dark:ring-slate-700 space-y-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-mono text-base font-semibold leading-normal break-all" x-text="w.name"></span>
+            <template x-for="c in itemChips(w)" :key="c">
+              <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="c"></span>
+            </template>
+          </div>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="w.summary"></p>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="w.limits"></p>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="defaultForLine(w)" x-text="defaultForLine(w)"></p>
+        </li>
+      </template>
+    </ul>
   </div>
 </section>
