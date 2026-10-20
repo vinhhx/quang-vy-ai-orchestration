@@ -220,7 +220,7 @@ Plans:
   5. Màn hình đạt ở 1024/768/480 px, sáng/tối, bàn phím; không đổi schema CSDL hay giao thức vai trò.
 
 **UI hint**: yes
-**Plans:** 5/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 **Wave 1**

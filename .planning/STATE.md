@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
-current_phase: "05.1"
-current_phase_name: Pipeline View
-status: verifying
-stopped_at: Phase 05.1 UI-SPEC approved
-last_updated: "2026-10-19T16:22:10.397Z"
-last_activity: 2026-10-19
-last_activity_desc: Phase 05.1 execution started
-state_head: 45e9e7e5889515c6d9dfee9e153c79bd93cdf0e1
+current_phase: 4
+current_phase_name: Session & Token Optimization
+status: planning
+stopped_at: Phase 05.1 complete, ready to plan Phase 4
+last_updated: "2026-10-20T01:24:14.494Z"
+last_activity: 2026-10-20
+last_activity_desc: Phase 05.1 complete, transitioned to Phase 4
+state_head: bfa675c34e214de2e2838cf3b23ba0e9ca1643f4
 progress:
   total_phases: 7
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 39
   completed_plans: 39
-  percent: 57
+  percent: 71
 ---
 
 # Project State
@@ -23,21 +23,21 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-19)
 
 **Core value:** Giao việc cho nhiều AI agent bằng giao thức Lead → `.plan.md` → Dev → QA một cách đáng tin cậy: đúng dự án, đúng vai trò, kill sạch cây tiến trình, đo được token.
-**Current focus:** Phase 05.1 — Pipeline View
+**Current focus:** Phase 4 — Session & Token Optimization (cần ~2 tuần dữ liệu runs, khoảng 2026-10-30) hoặc Dashboard v2 bước B (review roles + workflow templates + autopilot) / Phase 6
 
 ## Current Position
 
-Phase: 05.1 (Pipeline View) — EXECUTING
-Plan: 5 of 5
-Status: Phase complete — ready for verification
-Last activity: 2026-10-19 — Phase 05.1 execution started
+Phase: 4 — Session & Token Optimization
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-20 — Phase 05.1 complete, transitioned to Phase 4
 
-Progress: [██████░░░░] 57% (4/6 phases complete, 34/34 planned plans done)
+Progress: [███████░░░] 71% (5/7 phases complete, 39/39 planned plans done)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 34
+- Total plans completed: 39
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -49,6 +49,7 @@ Progress: [██████░░░░] 57% (4/6 phases complete, 34/34 plann
 | 2 | 7 | - | - |
 | 03 | 13 | - | - |
 | 5 | 13 | - | - |
+| 05.1 | 5 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -96,6 +97,8 @@ None yet.
 - [Phase 4]: Khoảng trống phạm vi — warm reuse `--resume` (fast-path cấp 3) bị hoãn từ Phase 2 nguồn sang Phase 3 nguồn mà không có công việc/test (FAST-03, đang ở v2); quyết định ở `/gsd-discuss-phase 4`.
 - [Phase 6]: Phụ thuộc mềm vào `.handover.md` của Phase 4 (ENG-03 chỉ cần `.plan.md`).
 - [Open — cần quyết định]: Phase 5 xong (2026-10-19). Còn Phase 4 (token) và 6 (routing). Phase 4 cần ≥ 2 tuần dữ liệu `runs` thật (dữ liệu từ 2026-10-16, đủ khoảng 2026-10-30) — nếu chưa đủ thì làm Phase 6 trước.
+- [Phase 5.1, follow-up không chặn]: 05.1-REVIEW-DISPOSITION.md còn 11 finding mở — WR-03 (Lead `succeeded` + outcome protocol_violation vẫn cho gate/header `chờ bạn` khi git không đọc được), WR-02 (`is_ancestor` coi lỗi git là "không phải tổ tiên" → gate lật 1 lần poll), WR-01 (`find_plan_commit` quét toàn lịch sử mỗi poll, nên giới hạn `{base_commit}..refs/heads/{branch} --`), WR-04 (`_pipeBusy` treo nếu request pipeline không trả về), WR-05 (thông báo lỗi Check E in `${width}` literal); UI-REVIEW: lý do cổng "Bạn" và số token chỉ có ở tooltip. Ưu tiên WR-03, WR-02 → một fix plan qua agy.
+- [Ops 2026-10-20]: binary ~/.local/bin/agent-brain = Phase 5.1 (sha256 5eecd55c…); bản Phase 5 sao lưu trong scratchpad phiên; `agent-brain serve` mới chạy PID 1730799 trên 127.0.0.1:7437 (khởi động lại từ phiên Claude, serve cũ PID 519283 đã dừng bằng SIGINT).
 - [Phase 5, follow-up không chặn]: 05-REVIEW-DISPOSITION.md còn 25 finding mở — backend WR-05 (kiểm personal-run không nguyên tử), WR-06, WR-11 (kill theo run hiện tại của task), WR-01 (`parse_since` tràn số), WR-13 (500 lộ lỗi nội bộ); frontend WR-03 (focus không trả về nút mở dialog), WR-04 (Enter combobox trong 200 ms), WR-09/10, mũi tên stepper tương phản thấp; WR-02 README liệt kê 4 route không tồn tại. Đề xuất 2 fix plan qua agy.
 - [Phase 5, mở]: P4-02 nửa khác máy chưa kết luận (LAN không vào được máy này); UI-04 cần kiểm lại khi Thống kê có > 14 ngày dữ liệu.
 - [Ops] `projects_map.json` có thêm dự án nháp `du-an-nhap-ca-nhan` (profile personal) cho E-06; 2 phiên claude interactive trên `~/.claude-orca` (loyalty, phu-gia) đã dừng — mở lại bằng `claude --resume d22b640e-d2bd-4d51-a6fb-e409b1c23c54` / `ce573fa2-07a1-4b39-806f-106ad36e947f`.
@@ -117,6 +120,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-19T10:05:25.893Z
-Stopped at: Phase 05.1 UI-SPEC approved
-Resume file: .planning/phases/05.1-pipeline-view/05.1-UI-SPEC.md
+Last session: 2026-10-20
+Stopped at: Phase 05.1 complete, ready to plan Phase 4
+Resume file: None

@@ -112,11 +112,11 @@ Phase này người dùng tự chạy tay để hiểu hành vi CLI; agent có t
 
 Thiết kế: https://claude.ai/artifact/KdMc5CMNSMg4G5T9jLjFRK (quyết định của người dùng 2026-10-19). Chỉ dùng dữ liệu `runs`/`tasks` đã có — không đổi giao thức, không migration CSDL.
 
-- [ ] **PIPE-01**: Màn hình Chi tiết task thay stepper bằng pipeline thẻ giai đoạn (Bắt đầu → Lên plan → Bạn → Code → QA): mỗi thẻ có trạng thái (ký hiệu + chữ + màu), một dòng kết quả, thời gian và chi phí; lần chạy lại cùng vai trò hiện là vòng ("vòng N"). *(derived: Dashboard v2 View 1)*
-- [ ] **PIPE-02**: Sổ lượt chạy dưới pipeline liệt kê mọi run của task theo thứ tự, nhóm theo chu kỳ (plan / build / QA), mỗi dòng có nhãn vòng + vai trò, từ kết quả (verdict), số lượt, phút, chi phí; dòng cuối "Tổng đến giờ" = số run claude · phút · $; bấm một dòng mở log của run đó. *(derived: Dashboard v2 View 1)*
-- [ ] **PIPE-03**: Thẻ "Bạn" thể hiện cổng duyệt plan suy ra từ dữ liệu có sẵn: "chờ bạn" khi plan đã commit và chưa có Dev trên plan đó, "đã duyệt" kèm giờ khi Dev đã chạy trên commit plan hiện tại. *(derived: Dashboard v2 View 1)*
-- [ ] **PIPE-04**: Bộ từ vựng trạng thái chung (xong, đang chạy, chờ bạn, đã dừng, chưa bắt đầu, chưa tự động) có chú thích; "đang chạy" dùng màu xanh dương (indigo chỉ còn cho hành động/lựa chọn); giai đoạn chưa có (review plan, review code, sửa, PR nháp) không giả lập mà hiện "chưa tự động". *(derived: Dashboard v2 design system)*
-- [ ] **PIPE-05**: Pipeline và sổ lượt chạy cập nhật trực tiếp qua SSE như các màn hình khác; giữ nguyên nút Kill / Chạy Dev / Chạy QA / Chạy lại Lead và các quy tắc bận; hoạt động ở 1024/768/480 px (dưới 640 px xếp dọc), cả giao diện sáng/tối, dùng được bằng bàn phím; dữ liệu đến từ `GET /api/tasks/{id}/pipeline`. *(derived: Dashboard v2 View 1)*
+- [x] **PIPE-01**: Màn hình Chi tiết task thay stepper bằng pipeline thẻ giai đoạn (Bắt đầu → Lên plan → Bạn → Code → QA): mỗi thẻ có trạng thái (ký hiệu + chữ + màu), một dòng kết quả, thời gian và chi phí; lần chạy lại cùng vai trò hiện là vòng ("vòng N"). *(derived: Dashboard v2 View 1)*
+- [x] **PIPE-02**: Sổ lượt chạy dưới pipeline liệt kê mọi run của task theo thứ tự, nhóm theo chu kỳ (plan / build / QA), mỗi dòng có nhãn vòng + vai trò, từ kết quả (verdict), số lượt, phút, chi phí; dòng cuối "Tổng đến giờ" = số run claude · phút · $; bấm một dòng mở log của run đó. *(derived: Dashboard v2 View 1)*
+- [x] **PIPE-03**: Thẻ "Bạn" thể hiện cổng duyệt plan suy ra từ dữ liệu có sẵn: "chờ bạn" khi plan đã commit và chưa có Dev trên plan đó, "đã duyệt" kèm giờ khi Dev đã chạy trên commit plan hiện tại. *(derived: Dashboard v2 View 1)*
+- [x] **PIPE-04**: Bộ từ vựng trạng thái chung (xong, đang chạy, chờ bạn, đã dừng, chưa bắt đầu, chưa tự động) có chú thích; "đang chạy" dùng màu xanh dương (indigo chỉ còn cho hành động/lựa chọn); giai đoạn chưa có (review plan, review code, sửa, PR nháp) không giả lập mà hiện "chưa tự động". *(derived: Dashboard v2 design system)*
+- [x] **PIPE-05**: Pipeline và sổ lượt chạy cập nhật trực tiếp qua SSE như các màn hình khác; giữ nguyên nút Kill / Chạy Dev / Chạy QA / Chạy lại Lead và các quy tắc bận; hoạt động ở 1024/768/480 px (dưới 640 px xếp dọc), cả giao diện sáng/tối, dùng được bằng bàn phím; dữ liệu đến từ `GET /api/tasks/{id}/pipeline`. *(derived: Dashboard v2 View 1)*
 
 ### Multi-engine Routing (GSD Phase 6 — nguồn Phase 5)
 
@@ -221,11 +221,11 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | DASH-10 | Phase 5 | Complete |
 | DASH-11 | Phase 5 | Complete |
 | DASH-12 | Phase 5 | Complete |
-| PIPE-01 | Phase 5.1 | Pending |
-| PIPE-02 | Phase 5.1 | Pending |
-| PIPE-03 | Phase 5.1 | Pending |
-| PIPE-04 | Phase 5.1 | Pending |
-| PIPE-05 | Phase 5.1 | Pending |
+| PIPE-01 | Phase 5.1 | Complete |
+| PIPE-02 | Phase 5.1 | Complete |
+| PIPE-03 | Phase 5.1 | Complete |
+| PIPE-04 | Phase 5.1 | Complete |
+| PIPE-05 | Phase 5.1 | Complete |
 | ENG-01 | Phase 6 | Pending |
 | ENG-02 | Phase 6 | Pending |
 | ENG-03 | Phase 6 | Pending |

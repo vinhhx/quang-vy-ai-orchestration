@@ -32,6 +32,7 @@ Cổng qua phase (phase gates) nằm trong `ROADMAP.md` (mỗi phase có Success
 
 - ✓ **Phase 1 — Kiểm chứng giả định** (SPK-01…10): 8 spike S1–S8 đã chạy thật, kết quả trong `spikes/spike-results.md` (S1–S4 Đạt, S5–S8 Một phần + follow-up); SPK-10 quyết định Work = `~/.claude`, Personal = `~/.claude-orca` — Phase 1
 - ✓ **Phase 5 — Dashboard nhúng** (DASH-01…12): `agent-brain serve` — Axum + SSE + Tailwind/Alpine CSP nhúng trong binary tĩnh, chỉ `127.0.0.1` + token mỗi lần khởi động, 5 màn hình (Tổng quan, Giao việc, Task, Thống kê, Dự án); nghiệm thu P4-01…P4-09 Đạt, P4-10 không áp dụng (không có Figma) — `protocol-log/nghiem-thu-p4.md` — Phase 5
+- ✓ **Phase 5.1 — Pipeline View** (PIPE-01…05): màn Chi tiết task kiểu "Autopilot" — thẻ giai đoạn có vòng, thời gian, chi phí, cổng "Bạn" suy ra từ git, sổ lượt chạy theo chu kỳ kèm tổng và phân trang; dựng từ dữ liệu runs có sẵn, không đổi schema/giao thức (bước A của Dashboard v2) — Phase 5.1
 
 ### Active
 
@@ -129,4 +130,4 @@ Tài liệu này tiến hóa theo vòng đời dự án.
 4. Cập nhật Context theo hiện trạng
 
 ---
-*Last updated: 2026-10-19 after Phase 5*
+*Last updated: 2026-10-20 after Phase 5.1*
