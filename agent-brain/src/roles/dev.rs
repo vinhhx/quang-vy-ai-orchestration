@@ -80,6 +80,9 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         )));
     }
 
+    // Con của autopilot chỉ chạy trên nhánh của đúng task autopilot (CR-01).
+    crate::roles::autopilot_task_guard(&ctx.conn, &proj.id, &proj_path)?;
+
     let dirty = crate::gitops::changed_paths(&proj_path)?;
     if !dirty.is_empty() {
         let mut sorted_dirty: Vec<String> = dirty.into_iter().collect();

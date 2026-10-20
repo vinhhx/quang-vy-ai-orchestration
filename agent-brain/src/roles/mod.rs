@@ -246,6 +246,45 @@ pub fn new_run_dir(cfg: &Config, project_id: &str, task: &str, role: &str) -> Br
     Ok(target)
 }
 
+/// Con của driver autopilot (mang AGENT_BRAIN_AUTOPILOT_TASK) chỉ được chạy trên nhánh
+/// của đúng task đó (CR-01, D-03, D-15). Không có biến → không kiểm tra, không đọc DB.
+/// Chỉ đọc DB (`find_task_by_branch`), không gọi `tasks::current_task` (hàm đó có thể thêm hàng task).
+pub fn autopilot_task_guard(
+    conn: &rusqlite::Connection,
+    project_slug: &str,
+    root: &Path,
+) -> BrainResult<()> {
+    let raw = match std::env::var(crate::autopilot::AUTOPILOT_TASK_ENV) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(());
+    }
+    let want: i64 = value.parse().map_err(|_| {
+        BrainError::error(format!(
+            "Biến AGENT_BRAIN_AUTOPILOT_TASK không hợp lệ: {value}"
+        ))
+    })?;
+
+    let cur = crate::gitops::current_branch(root);
+    let found = match &cur {
+        Some(branch) => match crate::db::project_row_id(conn, project_slug) {
+            Ok(pid) => crate::db::find_task_by_branch(conn, pid, branch)?.map(|t| t.id),
+            Err(_) => None,
+        },
+        None => None,
+    };
+    if found != Some(want) {
+        let cur_display = cur.as_deref().unwrap_or("None");
+        return Err(BrainError::error(format!(
+            "Nhánh hiện tại '{cur_display}' không phải nhánh của task autopilot {want} — dừng, không chạy"
+        )));
+    }
+    Ok(())
+}
+
 pub struct RunPlan {
     pub role: String,
     pub model: String,

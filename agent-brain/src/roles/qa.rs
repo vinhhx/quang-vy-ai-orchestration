@@ -56,6 +56,9 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         )));
     }
 
+    // Con của autopilot chỉ chạy trên nhánh của đúng task autopilot (CR-01).
+    crate::roles::autopilot_task_guard(&ctx.conn, &proj.id, &proj_path)?;
+
     let mut dirty = crate::gitops::changed_paths(&proj_path)?;
     dirty.remove(".qa-report.md");
     if !dirty.is_empty() {
