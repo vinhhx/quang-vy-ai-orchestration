@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>agent-brain — Hướng dẫn sử dụng</title>
+<style>
+  @page {
+    size: A4;
+    margin: 18mm 16mm 18mm 16mm;
+    @bottom-right { content: "Trang " counter(page) " / " counter(pages); font: 8.5pt "Noto Sans", sans-serif; color: #64748b; }
+    @bottom-left { content: "agent-brain 0.1.0 — Hướng dẫn sử dụng"; font: 8.5pt "Noto Sans", sans-serif; color: #64748b; }
+  }
+  @page :first { @bottom-right { content: none; } @bottom-left { content: none; } }
+  :root { --ink:#0f172a; --muted:#475569; --line:#cbd5e1; --soft:#f1f5f9; --accent:#4338ca; --warn:#b45309; --bad:#b91c1c; --ok:#047857; }
+  * { box-sizing: border-box; }
+  body { font-family: "Noto Sans", "DejaVu Sans", sans-serif; font-size: 10pt; line-height: 1.5; color: var(--ink); margin: 0; }
+  h1, h2, h3 { line-height: 1.25; color: var(--ink); }
+  h2 { font-size: 15pt; margin: 0 0 8pt; padding-bottom: 4pt; border-bottom: 2px solid var(--accent); break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 14pt 0 5pt; break-after: avoid; }
+  p { margin: 0 0 6pt; }
+  ul, ol { margin: 0 0 7pt; padding-left: 16pt; }
+  li { margin-bottom: 2.5pt; }
+  code, pre, .mono { font-family: "Noto Sans Mono", "DejaVu Sans Mono", monospace; font-size: 8.8pt; }
+  code { background: var(--soft); padding: 0 3pt; border-radius: 3px; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 7pt 9pt; border-radius: 5px; white-space: pre-wrap; word-break: break-word; margin: 4pt 0 8pt; break-inside: avoid; }
+  pre .c { color: #94a3b8; }
+  table { width: 100%; border-collapse: collapse; margin: 4pt 0 9pt; font-size: 9pt; break-inside: auto; }
+  th, td { border: 1px solid var(--line); padding: 3.5pt 5pt; text-align: left; vertical-align: top; }
+  th { background: var(--soft); font-weight: 600; }
+  tr { break-inside: avoid; }
+  section { break-before: page; }
+  .note, .warn, .tip { border-left: 4px solid var(--accent); background: #eef2ff; padding: 6pt 9pt; margin: 6pt 0 9pt; border-radius: 0 4px 4px 0; break-inside: avoid; }
+  .warn { border-color: var(--warn); background: #fffbeb; }
+  .tip { border-color: var(--ok); background: #ecfdf5; }
+  .note b:first-child, .warn b:first-child, .tip b:first-child { display: block; margin-bottom: 2pt; }
+
+  /* Cover */
+  .cover { height: 255mm; display: flex; flex-direction: column; justify-content: space-between; }
+  .cover .top { margin-top: 40mm; }
+  .cover .kicker { color: var(--accent); font-weight: 600; letter-spacing: .08em; text-transform: uppercase; font-size: 10pt; }
+  .cover h1 { font-size: 34pt; margin: 6pt 0 4pt; }
+  .cover .sub { font-size: 14pt; color: var(--muted); margin-bottom: 18pt; }
+  .cover .flow { display: flex; gap: 6pt; align-items: center; font-weight: 600; font-size: 11pt; margin-top: 10pt; }
+  .cover .flow span.step { border: 2px solid var(--accent); color: var(--accent); border-radius: 6px; padding: 4pt 10pt; }
+  .cover .meta { font-size: 9.5pt; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8pt; }
+  .cover .meta table { font-size: 9.5pt; width: auto; }
+  .cover .meta td { border: none; padding: 1pt 12pt 1pt 0; }
+
+  /* TOC */
+  .toc ol { list-style: none; padding: 0; counter-reset: t; }
+  .toc li { counter-increment: t; display: flex; gap: 6pt; padding: 3pt 0; border-bottom: 1px dotted var(--line); }
+  .toc li::before { content: counter(t) "."; width: 18pt; color: var(--accent); font-weight: 600; }
+  .toc a { color: var(--ink); text-decoration: none; }
+
+  .pipeline { display: flex; gap: 0; margin: 8pt 0 10pt; break-inside: avoid; }
+  .pipeline div { flex: 1; border: 1px solid var(--line); padding: 6pt; font-size: 8.8pt; background: #fff; }
+  .pipeline div + div { border-left: none; }
+  .pipeline b { display: block; color: var(--accent); font-size: 9.5pt; margin-bottom: 2pt; }
+  .tag { display: inline-block; font-size: 8pt; font-weight: 600; padding: 0 5pt; border-radius: 3px; background: var(--soft); border: 1px solid var(--line); }
+  .sev-b { color: var(--bad); } .sev-m { color: var(--warn); }
+  .small { font-size: 8.8pt; color: var(--muted); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<!-- ========== COVER ========== -->
+<div class="cover">
+  <div class="top">
+    <div class="kicker">QuangVy Orchestration</div>
+    <h1>agent-brain</h1>
+    <div class="sub">Hướng dẫn sử dụng — CLI và Dashboard web</div>
+    <p style="max-width:140mm">Một file binary duy nhất để giao việc cho AI agent theo giao thức Lead → <code>.plan.md</code> → Dev → QA: đúng dự án, đúng vai trò, kill sạch cây tiến trình, đo được token. Tài liệu này dành cho người dùng hằng ngày và cho việc review, báo lỗi, đề xuất nâng cấp.</p>
+    <div class="flow"><span class="step">Lead</span>→<span class="step">Duyệt plan</span>→<span class="step">Dev</span>→<span class="step">QA</span>→<span class="step">Bạn merge</span></div>
+  </div>
+  <div class="meta">
+    <table>
+      <tr><td>Phiên bản phần mềm</td><td><b>agent-brain 0.1.0</b> (binary tĩnh musl, Linux x86_64)</td></tr>
+      <tr><td>Phạm vi</td><td>Phase 1–3 (giao thức, lõi CLI) và Phase 5 (Dashboard nhúng)</td></tr>
+      <tr><td>Ngày</td><td>19/10/2026</td></tr>
+      <tr><td>Mã nguồn</td><td>github.com/vinhhx/quang-vy-ai-orchestration</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ========== TOC ========== -->
+<section class="toc">
+  <h2>Mục lục</h2>
+  <ol>
+    <li><a href="#s1">Tổng quan: agent-brain làm gì</a></li>
+    <li><a href="#s2">Cài đặt và kiểm tra</a></li>
+    <li><a href="#s3">Chuẩn bị: dự án, profile, cấu hình</a></li>
+    <li><a href="#s4">Quy trình chuẩn bằng CLI: Lead → Dev → QA</a></li>
+    <li><a href="#s5">Lệnh nhanh, dừng tiến trình và thống kê</a></li>
+    <li><a href="#s6">Dashboard web: khởi động và đăng nhập</a></li>
+    <li><a href="#s7">Dashboard: năm màn hình</a></li>
+    <li><a href="#s8">Dữ liệu, file và an toàn</a></li>
+    <li><a href="#s9">Xử lý sự cố</a></li>
+    <li><a href="#s10">Hạn chế đã biết (trước khi báo lỗi)</a></li>
+    <li><a href="#s11">Review, báo lỗi và đề xuất nâng cấp</a></li>
+    <li><a href="#s12">Phụ lục: mã thoát, khóa cấu hình, HTTP API</a></li>
+  </ol>
+  <div class="note"><b>Quy ước trong tài liệu</b>
+    <code>PROJECT</code> là tên, id hoặc alias dự án (gõ tiếng Việt có dấu hoặc không dấu đều được). <code>~</code> là thư mục home của bạn. Lệnh in trong khung tối là lệnh gõ ở terminal.</div>
+</section>
+
+<!-- ========== 1 ========== -->
+<section id="s1">
+  <h2>1. Tổng quan: agent-brain làm gì</h2>
+  <p><b>agent-brain</b> là bộ điều phối nhẹ, chạy bằng <b>một file binary</b>, dùng để giao việc cho AI agent (hiện tại là Claude Code CLI) trên các dự án của bạn. Nó thay thế bộ script Python <code>brain</code> cũ và dùng chung danh mục dự án với bộ script đó.</p>
+  <h3>Giao thức ba vai trò</h3>
+  <div class="pipeline">
+    <div><b>1. Lead</b>Đọc yêu cầu, tạo nhánh <code>task/&lt;slug&gt;</code>, viết <code>.plan.md</code> và commit <code>&lt;slug&gt;: plan</code>. Chỉ được ghi <code>.plan.md</code>.</div>
+    <div><b>2. Bạn duyệt plan</b>Đọc, sửa nếu cần bằng editor của bạn, commit lại. Không có bước nào tự chạy tiếp.</div>
+    <div><b>3. Dev</b>Sửa đúng các file trong bảng <i>Thay đổi</i> của plan. Sửa file ngoài danh sách là vi phạm giao thức (mã thoát 3).</div>
+    <div><b>4. QA</b>Kiểm tra <code>git diff</code> từ commit plan đến HEAD, ghi <code>.qa-report.md</code>: <i>Đạt</i> hoặc <i>Cần sửa</i>. Không sửa code.</div>
+  </div>
+  <p>Sau khi QA <b>Đạt</b>, bạn tự review và merge nhánh <code>task/&lt;slug&gt;</code>. agent-brain không tự merge.</p>
+  <h3>Những đảm bảo chính</h3>
+  <ul>
+    <li><b>Đúng dự án (Fallback Ask):</b> tên dự án khớp 0 hoặc nhiều hơn 1 dự án thì dừng và in danh sách để bạn chọn (mã thoát 2). Không bao giờ đoán.</li>
+    <li><b>Kill sạch:</b> mỗi lần chạy agent nằm trong process group riêng; <code>kill</code> dừng cả cây tiến trình con, kiểm tra PID chưa bị tái sử dụng trước khi gửi tín hiệu.</li>
+    <li><b>Đo được token:</b> mọi sự kiện stream-json được lưu vào SQLite; <code>stats</code> và màn hình Thống kê tổng hợp token và chi phí tương đương.</li>
+    <li><b>Hai tài khoản tách biệt:</b> profile <code>work</code> (<code>~/.claude</code>) và <code>personal</code> (<code>~/.claude-orca</code>), gán theo dự án.</li>
+  </ul>
+  <h3>Hai cách dùng</h3>
+  <table>
+    <tr><th style="width:22%">Cách</th><th>Khi nào dùng</th></tr>
+    <tr><td><b>CLI</b> (<code>agent-brain run …</code>)</td><td>Làm việc trong terminal, script hóa, chạy trên máy không có trình duyệt.</td></tr>
+    <tr><td><b>Dashboard</b> (<code>agent-brain serve</code>)</td><td>Xem task và log trực tiếp, giao việc, bấm Kill, xem thống kê, sửa alias dự án. Chạy ngay trong binary, chỉ trên <code>127.0.0.1</code>.</td></tr>
+  </table>
+  <p>Hai cách dùng chung một cơ sở dữ liệu: run khởi chạy ở terminal hiện lên dashboard ngay, và có thể Kill từ dashboard.</p>
+</section>
+
+<!-- ========== 2 ========== -->
+<section id="s2">
+  <h2>2. Cài đặt và kiểm tra</h2>
+  <h3>Yêu cầu</h3>
+  <ul>
+    <li>Linux x86_64. Binary là file tĩnh, không cần thư viện hay runtime nào khác.</li>
+    <li><b>Claude Code CLI</b> (<code>claude</code>) đã đăng nhập cho profile bạn dùng. Cho profile <code>personal</code>: đăng nhập với <code>CLAUDE_CONFIG_DIR=~/.claude-orca</code>.</li>
+    <li><b>git</b> trong <code>PATH</code>.</li>
+    <li>Trình duyệt bất kỳ (chỉ cần cho dashboard).</li>
+  </ul>
+  <h3>Cài binary</h3>
+  <pre><span class="c"># Build từ mã nguồn (offline, khóa phiên bản)</span>
+bash scripts/build-release.sh
+
+<span class="c"># Cài vào ~/.local/bin (thư mục này phải có trong PATH)</span>
+install -m 755 agent-brain/target/x86_64-unknown-linux-musl/release/agent-brain ~/.local/bin/agent-brain
+
+<span class="c"># Kiểm tra</span>
+agent-brain --version        <span class="c"># agent-brain 0.1.0</span>
+agent-brain --help</pre>
+  <p>Nếu máy không có <code>musl-gcc</code>, script build tự chuyển sang <code>gcc</code> và in cảnh báo; kết quả vẫn là binary tĩnh.</p>
+  <h3>Danh sách lệnh</h3>
+  <table>
+    <tr><th style="width:24%">Lệnh</th><th>Việc làm</th></tr>
+    <tr><td><code>projects scan</code></td><td>Quét thư mục gốc (độ sâu 1) tìm repo git, cập nhật danh mục. Giữ nguyên phần bạn đã sửa tay.</td></tr>
+    <tr><td><code>projects add</code></td><td>Thêm thủ công một dự án (<code>--type code|media</code>).</td></tr>
+    <tr><td><code>run lead|dev|qa</code></td><td>Chạy một vai trò của giao thức.</td></tr>
+    <tr><td><code>status</code></td><td>Trạng thái git và run gần nhất. 0 token.</td></tr>
+    <tr><td><code>inspect</code></td><td>Nhờ Claude đọc nhanh diff chưa commit (1 lượt, không lưu session).</td></tr>
+    <tr><td><code>kill</code></td><td>Dừng task đang chạy và cả cây tiến trình con.</td></tr>
+    <tr><td><code>stats</code></td><td>Thống kê token và chi phí tương đương.</td></tr>
+    <tr><td><code>serve</code></td><td>Mở dashboard web.</td></tr>
+    <tr><td><code>guard</code></td><td>Hook nội bộ do Claude CLI gọi để chặn ghi file ngoài plan. Bạn không cần gọi trực tiếp.</td></tr>
+  </table>
+</section>
+
+<!-- ========== 3 ========== -->
+<section id="s3">
+  <h2>3. Chuẩn bị: dự án, profile, cấu hình</h2>
+  <h3>3.1 Danh mục dự án</h3>
+  <p>File: <code>~/.config/agent-brain/projects_map.json</code>. Cách nhanh nhất là quét thư mục chứa các repo:</p>
+  <pre>agent-brain projects scan --root ~/code --root ~/work
+agent-brain projects add ~/code/kenh-video --type media</pre>
+  <p>Mỗi dự án có dạng:</p>
+  <pre>{
+  "id": "web-ban-hang",
+  "path": "/duong/dan/toi/repo",
+  "name_vi": "Web bán hàng",
+  "aliases": ["shop"],
+  "type": "code",
+  "repo": null,
+  "profile": "work",
+  "missing": false
+}</pre>
+  <table>
+    <tr><th style="width:18%">Trường</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>id</code></td><td>Định danh duy nhất (slug).</td></tr>
+    <tr><td><code>name_vi</code>, <code>aliases</code></td><td>Tên và biệt danh để gọi dự án. Có thể gõ có dấu hoặc không dấu. Sửa alias được trên dashboard (màn hình Dự án).</td></tr>
+    <tr><td><code>profile</code></td><td><b>Bắt buộc</b>: <code>work</code> hoặc <code>personal</code>. Dự án có <code>profile: ""</code> sẽ bị từ chối chạy agent.</td></tr>
+    <tr><td><code>missing</code></td><td><code>true</code> khi thư mục không còn trên đĩa; dự án này bị bỏ qua khi chọn.</td></tr>
+  </table>
+  <h3>3.2 Profile tài khoản</h3>
+  <table>
+    <tr><th style="width:15%">Profile</th><th>Thư mục cấu hình Claude</th><th>Ghi chú</th></tr>
+    <tr><td><code>work</code></td><td><code>~/.claude</code> (mặc định)</td><td>Tài khoản công việc.</td></tr>
+    <tr><td><code>personal</code></td><td><code>~/.claude-orca</code></td><td><b>Tối đa 1 run cùng lúc</b> trên toàn hệ thống (quy tắc E-06), vì thư mục này có thể dùng chung với phiên Claude bạn đang mở.</td></tr>
+  </table>
+  <p>Khi chạy agent, agent-brain bỏ đặt <code>ANTHROPIC_API_KEY</code>, <code>ANTHROPIC_AUTH_TOKEN</code>, <code>ANTHROPIC_BASE_URL</code> để agent luôn dùng đúng tài khoản đã đăng nhập của profile.</p>
+  <div class="warn"><b>Không ghi đè profile khi giao việc</b>Profile luôn lấy từ dự án. Muốn đổi tài khoản cho một dự án, sửa trường <code>profile</code> trong <code>projects_map.json</code> (dashboard không cho sửa trường này).</div>
+  <h3>3.3 File cấu hình (tùy chọn)</h3>
+  <p>File <code>~/.config/agent-brain/config.json</code>. Không có file thì dùng mặc định nhúng sẵn. Các khóa hay chỉnh:</p>
+  <table>
+    <tr><th style="width:26%">Khóa</th><th style="width:22%">Mặc định</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>models</code></td><td>lead: opus, dev/qa: sonnet</td><td>Model theo vai trò.</td></tr>
+    <tr><td><code>timeout_seconds</code></td><td>lead/dev 1800, qa 1200, inspect 300</td><td>Thời gian chạy tối đa (giây); quá hạn thì run kết thúc <code>timed_out</code>.</td></tr>
+    <tr><td><code>kill_grace_secs</code></td><td>3</td><td>Chờ giữa SIGINT và SIGKILL khi dừng.</td></tr>
+    <tr><td><code>dashboard_port</code></td><td>7437</td><td>Cổng dashboard.</td></tr>
+    <tr><td><code>claude_bin</code></td><td><code>claude</code></td><td>Đường dẫn Claude CLI.</td></tr>
+  </table>
+  <p>Biến môi trường: <code>AGENT_BRAIN_CONFIG</code> (file cấu hình khác), <code>AGENT_BRAIN_DB</code> (database khác, tiện để thử nghiệm cách ly). Danh sách đầy đủ ở Phụ lục.</p>
+</section>
+
+<!-- ========== 4 ========== -->
+<section id="s4">
+  <h2>4. Quy trình chuẩn bằng CLI: Lead → Dev → QA</h2>
+  <h3>Bước 1 — Lead viết plan</h3>
+  <pre>agent-brain run lead "web bán hàng" "Thêm nút xuất đơn hàng ra CSV ở trang quản trị"
+<span class="c"># tùy chọn: --name xuat-csv   (đặt slug cho task)
+#           --dry-run         (chạy thử, không sinh tác vụ)
+#           --verbose         (in chi tiết)</span></pre>
+  <p>Kết quả: nhánh <code>task/&lt;slug&gt;</code>, file <code>.plan.md</code> ở gốc repo và commit <code>&lt;slug&gt;: plan</code>. Terminal in cặp <b>task N, run M</b> — ghi lại số task để dùng khi kill hoặc báo lỗi.</p>
+  <p>Nếu tên dự án mơ hồ, lệnh dừng với mã 2 và in danh sách dự án khớp. Gõ lại với id chính xác.</p>
+  <h3>Bước 2 — Bạn duyệt plan</h3>
+  <ul>
+    <li>Mở <code>.plan.md</code> trên nhánh task. Kiểm tra bảng <b>Thay đổi</b>: Dev chỉ được sửa các file liệt kê ở đây.</li>
+    <li>Nếu cần sửa plan: sửa bằng editor của bạn rồi <b>commit</b>. Plan có thay đổi chưa commit sẽ chặn bước Dev trên dashboard.</li>
+  </ul>
+  <h3>Bước 3 — Dev thực hiện</h3>
+  <pre>agent-brain run dev "web bán hàng"</pre>
+  <p>Dev làm việc trên nhánh task hiện tại và chỉ được ghi các file trong plan (hook <code>guard</code> chặn ghi ngoài danh sách). Có hai kết thúc bất thường:</p>
+  <ul>
+    <li><b>Vướng mắc</b> (mã thoát 4): Dev thiếu thông tin, ghi mục <i>Vướng mắc</i> vào <code>.plan.md</code> và dừng an toàn. Bạn bổ sung plan, commit, rồi chạy lại Dev (hoặc chạy lại Lead).</li>
+    <li><b>Vi phạm giao thức</b> (mã thoát 3): có file ngoài plan bị sửa. Xem lại diff trước khi làm tiếp.</li>
+  </ul>
+  <h3>Bước 4 — QA kiểm tra</h3>
+  <pre>agent-brain run qa "web bán hàng"</pre>
+  <p>QA đọc <code>git diff</code> từ commit plan đến HEAD (bỏ qua <code>.plan.md</code>, <code>.qa-report.md</code>) và ghi <code>.qa-report.md</code>:</p>
+  <ul>
+    <li><b>Đạt</b> → bạn review và merge nhánh.</li>
+    <li><b>Cần sửa</b> → chạy lại Dev theo báo cáo, hoặc chạy lại Lead để làm lại plan.</li>
+  </ul>
+  <div class="tip"><b>Mẹo</b>Trước khi chạy QA, dùng <code>agent-brain status PROJECT</code> (0 token) để xem nhánh và diffstat, hoặc <code>agent-brain inspect PROJECT</code> để nhờ Claude đọc nhanh diff chưa commit.</div>
+  <h3>Quy tắc chạy song song</h3>
+  <ul>
+    <li>Mỗi dự án chỉ có <b>một run</b> tại một thời điểm.</li>
+    <li>Profile <code>personal</code> chỉ có <b>một run</b> trên toàn hệ thống.</li>
+    <li>Các dự án <code>work</code> khác nhau có thể chạy song song.</li>
+  </ul>
+</section>
+
+<!-- ========== 5 ========== -->
+<section id="s5">
+  <h2>5. Lệnh nhanh, dừng tiến trình và thống kê</h2>
+  <h3>status — 0 token</h3>
+  <pre>agent-brain status "web bán hàng"</pre>
+  <p>Không gọi Claude. Hiển thị trạng thái git, nhánh hiện tại, diffstat và run gần nhất trong database.</p>
+  <h3>inspect — đọc nhanh diff</h3>
+  <pre>agent-brain inspect "web bán hàng" [--verbose]</pre>
+  <p>Gọi Claude đúng 1 lượt, không công cụ, không lưu session. Diff lớn hơn <code>inspect_max_diff_bytes</code> (100.000 byte) được cắt gọn và có thông báo.</p>
+  <h3>kill — dừng task</h3>
+  <pre>agent-brain kill 12        <span class="c"># 12 là TASK_ID</span></pre>
+  <ol>
+    <li>Đọc PID và thời điểm khởi tạo của run từ database, đối chiếu với <code>/proc</code>. Nếu PID đã bị hệ điều hành tái sử dụng, <b>không</b> gửi tín hiệu.</li>
+    <li>Gửi SIGINT tới cả process group, chờ <code>kill_grace_secs</code>, rồi SIGKILL những tiến trình còn sót.</li>
+    <li>Run được ghi <code>killed</code>; terminal đang chạy run đó thoát với mã 130.</li>
+  </ol>
+  <p>Ở terminal đang chạy: <b>Ctrl+C một lần</b> = dừng mềm; <b>Ctrl+C hai lần nhanh</b> = dừng ngay (dưới 1 giây). Đóng cửa sổ terminal cũng dừng cả cây tiến trình.</p>
+  <p>Trạng thái kết thúc bất thường của run: <code>killed</code> (bị dừng có chủ đích), <code>timed_out</code> (quá thời gian), <code>lost</code> (tiến trình biến mất bất thường).</p>
+  <h3>stats — token và chi phí</h3>
+  <pre>agent-brain stats
+agent-brain stats --since 7d --profile work
+agent-brain stats --since 24h --json      <span class="c"># JSON: total, by_project, by_role</span></pre>
+  <p><code>--since</code> nhận <code>Nm</code>, <code>Nh</code>, <code>Nd</code> (phút, giờ, ngày). Chi phí là <b>ước tính tương đương USD</b> theo bảng giá chuẩn của từng model (input, output, cache read, cache creation) — không phải hóa đơn thật.</p>
+</section>
+
+<!-- ========== 6 ========== -->
+<section id="s6">
+  <h2>6. Dashboard web: khởi động và đăng nhập</h2>
+  <h3>Khởi động</h3>
+  <pre>agent-brain serve              <span class="c"># cổng 7437</span>
+agent-brain serve --port 8123  <span class="c"># cổng khác; --port 0 = hệ điều hành tự chọn</span></pre>
+  <p>Terminal in một URL có token, dạng:</p>
+  <pre>agent-brain dashboard: http://127.0.0.1:7437/?token=&lt;64 ký tự hex&gt;</pre>
+  <ol>
+    <li>Mở <b>đúng URL đó</b> trong trình duyệt (dùng <code>127.0.0.1</code>, không dùng <code>localhost</code>).</li>
+    <li>Server đổi token thành cookie phiên và chuyển bạn về <code>/</code>; thanh địa chỉ không còn token.</li>
+    <li>Giữ terminal mở. <b>Ctrl+C</b> dừng dashboard — các run do dashboard khởi chạy cũng dừng theo.</li>
+  </ol>
+  <h3>Đặc điểm cần biết</h3>
+  <ul>
+    <li><b>Token mới mỗi lần khởi động</b>, không ghi xuống đĩa. Khởi động lại <code>serve</code> thì cookie cũ hết hiệu lực — mở URL mới.</li>
+    <li><b>Chỉ một <code>serve</code></b> tại một thời điểm. Chạy cái thứ hai sẽ bị từ chối kèm PID và cổng của cái đang chạy.</li>
+    <li><b>Chỉ nghe <code>127.0.0.1</code></b>: máy khác trong mạng LAN không vào được. Đây là chủ ý vì dashboard chạy được lệnh trên máy bạn.</li>
+    <li><b>Chạy offline hoàn toàn</b>: CSS, JavaScript, font đều nằm trong binary.</li>
+  </ul>
+  <div class="warn"><b>Không chia sẻ URL có token</b>Ai có token đều điều khiển được agent trên các dự án của bạn. Không dán URL vào chat, issue, log hay ảnh chụp màn hình.</div>
+  <h3>Bố cục chung</h3>
+  <ul>
+    <li><b>Thanh trên:</b> 5 mục điều hướng (Tổng quan, Giao việc, Thống kê, Dự án; Chi tiết task mở từ thẻ task), bộ lọc profile (<b>Tất cả / work / personal</b>) và nút đổi giao diện sáng/tối.</li>
+    <li><b>Bộ lọc profile chỉ lọc những gì bạn thấy</b> (task, thống kê, gợi ý dự án). Nó không đổi tài khoản chạy task.</li>
+    <li>Dữ liệu tự cập nhật trực tiếp. Mất kết nối thì hiện thông báo <i>"Không cập nhật được — đang thử lại..."</i> và tự kết nối lại.</li>
+    <li>Dùng được bằng bàn phím: Tab giữa các điều khiển, Escape đóng hộp thoại.</li>
+  </ul>
+</section>
+
+<!-- ========== 7 ========== -->
+<section id="s7">
+  <h2>7. Dashboard: năm màn hình</h2>
+  <h3>7.1 Tổng quan <span class="tag">#/</span></h3>
+  <p>Task chia thành 4 nhóm: <b>Đang chạy</b>, <b>Chờ bạn</b> (ví dụ chờ duyệt plan), <b>Lỗi / cần xử lý</b> (Vướng mắc, Cần sửa, killed, timed_out…), <b>Xong</b>. Bấm thẻ task để mở Chi tiết. Dùng <i>Hiện thêm 10</i> để xem task cũ hơn.</p>
+  <h3>7.2 Giao việc <span class="tag">#/assign</span></h3>
+  <ol>
+    <li><b>Dự án:</b> gõ tên, alias hoặc tên không dấu rồi <b>chọn trong danh sách gợi ý</b> (chuột, hoặc ↑/↓ rồi Enter). Dự án <i>thiếu thư mục</i> hiện mờ và không chọn được.</li>
+    <li><b>Yêu cầu (tiếng Việt):</b> mô tả việc cần làm.</li>
+    <li><b>Tên task (slug):</b> tự tạo từ yêu cầu giống CLI; sửa được.</li>
+    <li>Kiểm tra khung thông tin (dự án, nhánh hiện tại, profile) rồi bấm <b>Giao việc</b> để chạy Lead.</li>
+  </ol>
+  <p>Nếu tên khớp nhiều dự án, màn hình hiện <i>"Tên khớp nhiều dự án — chọn một"</i> và nút Giao việc bị khóa cho tới khi bạn chọn. Nút bị khóa luôn kèm lý do (dự án đang bận, đã có run personal…).</p>
+  <h3>7.3 Chi tiết task <span class="tag">#/task/N</span></h3>
+  <ul>
+    <li><b>Stepper Lead → Dev → QA</b> cho biết bước hiện tại và kết quả từng bước.</li>
+    <li><b>Plan</b> và <b>báo cáo QA</b> hiển thị chỉ đọc. Sửa plan bằng editor của bạn rồi commit.</li>
+    <li><b>Nút hành động theo ngữ cảnh:</b> <i>Chạy Dev</i> (plan sẵn sàng và đã commit sạch), <i>Chạy QA</i> (Dev xong), <i>Chạy lại Lead</i> (Vướng mắc hoặc Cần sửa). Mỗi bước chỉ chạy khi bạn bấm — không có gì tự chạy tiếp.</li>
+    <li><b>Kill run:</b> hiện khi có run đang chạy. Hộp xác nhận mặc định chọn nút an toàn (<i>Giữ chạy tiếp</i>); <i>Chạy lại Lead</i> cũng có xác nhận (<i>Giữ plan hiện tại</i>).</li>
+    <li><b>Log trực tiếp:</b> tự cuộn theo dòng mới. Cuộn lên để tạm dừng, bấm <i>Về cuối (live)</i> để theo lại. Bấm một dòng log để xem JSON thô của sự kiện. Tải lại trang giữa chừng vẫn giữ log cũ và nhận tiếp log mới.</li>
+    <li>Run bị kill hiển thị chi phí <code>—</code> (không đủ dữ liệu để tính), kèm số token đã ghi được.</li>
+  </ul>
+  <h3>7.4 Thống kê <span class="tag">#/stats</span></h3>
+  <p>Biểu đồ token và chi phí tương đương theo ngày, theo vai trò (lead, dev, qa, inspect), theo dự án và theo profile. Cùng số liệu với <code>agent-brain stats</code>; theo bộ lọc profile ở thanh trên.</p>
+  <h3>7.5 Dự án <span class="tag">#/projects</span></h3>
+  <ul>
+    <li>Danh sách dự án trong <code>projects_map.json</code>, dự án mất thư mục được đánh dấu.</li>
+    <li><b>Sửa alias</b> rồi bấm <i>Lưu alias</i>. Alias trùng với dự án khác bị từ chối. Nếu danh mục vừa bị sửa ở nơi khác trong lúc bạn đang sửa, thay đổi của bạn không ghi đè: dashboard báo lỗi, tải lại dữ liệu mới, và bạn nhập lại alias.</li>
+    <li><b>Quét lại</b> = <code>agent-brain projects scan</code>.</li>
+    <li>Không sửa được profile, id, đường dẫn hay loại dự án trên web (sửa trong file).</li>
+  </ul>
+</section>
+
+<!-- ========== 8 ========== -->
+<section id="s8">
+  <h2>8. Dữ liệu, file và an toàn</h2>
+  <h3>Vị trí file</h3>
+  <table>
+    <tr><th style="width:42%">Đường dẫn</th><th>Nội dung</th></tr>
+    <tr><td><code>~/.config/agent-brain/projects_map.json</code></td><td>Danh mục dự án.</td></tr>
+    <tr><td><code>~/.config/agent-brain/config.json</code></td><td>Cấu hình (tùy chọn).</td></tr>
+    <tr><td><code>~/.local/share/agent-brain/brain.db</code></td><td>SQLite: task, run, sự kiện, token. Quyền <code>0600</code>.</td></tr>
+    <tr><td><code>~/.local/share/agent-brain/runs/</code></td><td>Log chi tiết từng run. Quyền thư mục <code>0700</code>.</td></tr>
+    <tr><td><code>serve.lock</code> (thư mục dữ liệu)</td><td>Khóa một-dashboard: PID, cổng, giờ khởi động. Không chứa token.</td></tr>
+    <tr><td><code>.plan.md</code>, <code>.qa-report.md</code> (gốc repo)</td><td>Plan của Lead và báo cáo của QA, trên nhánh task.</td></tr>
+  </table>
+  <p>Mọi dòng stream-json thô từ Claude được lưu nguyên vẹn (cột <code>raw_json</code> của bảng <code>events</code>) để kiểm tra lại bất cứ lúc nào.</p>
+  <h3>Nguyên tắc an toàn</h3>
+  <ul>
+    <li>Token dashboard tương đương quyền chạy lệnh trên máy bạn — giữ kín (xem mục 6).</li>
+    <li><b>Rủi ro đã chấp nhận:</b> cookie không tách theo cổng (RFC 6265). Một dịch vụ web khác đang chạy trên <code>127.0.0.1</code> về lý thuyết có thể nhận được cookie dashboard. Khi không dùng dashboard, hãy tắt <code>serve</code>; khi đang chạy, tránh mở trang của dịch vụ cục bộ lạ trên cùng trình duyệt.</li>
+    <li>Agent không được gán API key: các biến <code>ANTHROPIC_*</code> bị bỏ đặt, agent dùng tài khoản đăng nhập của profile.</li>
+    <li>Không dừng tiến trình agent bằng <code>pkill</code>/<code>killall</code>; dùng <code>agent-brain kill</code> hoặc nút Kill để dọn sạch cây tiến trình và cập nhật database.</li>
+  </ul>
+</section>
+
+<!-- ========== 9 ========== -->
+<section id="s9">
+  <h2>9. Xử lý sự cố</h2>
+  <table>
+    <tr><th style="width:32%">Hiện tượng</th><th>Cách xử lý</th></tr>
+    <tr><td>Dashboard báo <b>401</b> / phiên hết hạn</td><td>Mở lại URL đầy đủ có <code>?token=</code> đang in ở terminal <code>serve</code>. Sau khi khởi động lại serve, token cũ không dùng được nữa.</td></tr>
+    <tr><td><b>421</b> hoặc không đăng nhập được qua <code>localhost</code></td><td>Dùng đúng <code>http://127.0.0.1:PORT/…</code>.</td></tr>
+    <tr><td><code>serve</code> báo đã có dashboard khác chạy</td><td>Dùng dashboard đó (PID và cổng được in ra), hoặc dừng nó bằng Ctrl+C ở terminal của nó.</td></tr>
+    <tr><td>Cổng bị chiếm (<i>Address in use</i>)</td><td><code>--port &lt;cổng&gt;</code>, <code>--port 0</code>, hoặc khóa <code>dashboard_port</code>.</td></tr>
+    <tr><td>Máy khác trong LAN không vào được</td><td>Đúng thiết kế: dashboard chỉ nghe <code>127.0.0.1</code>.</td></tr>
+    <tr><td>Mã thoát <b>2</b> khi chạy lệnh</td><td>Tên dự án mơ hồ — dùng id trong danh sách được in ra.</td></tr>
+    <tr><td>Mã thoát <b>1</b>, "Không tìm thấy .plan.md"</td><td>Chạy Lead trước, hoặc chuyển sang đúng nhánh <code>task/&lt;slug&gt;</code>.</td></tr>
+    <tr><td>Dự án bị từ chối vì profile rỗng</td><td>Đặt <code>"profile": "work"</code> hoặc <code>"personal"</code> trong <code>projects_map.json</code>.</td></tr>
+    <tr><td>Nút Chạy Dev/QA bị khóa</td><td>Đọc lý do hiện cạnh nút: dự án đang bận, đã có run personal, plan chưa commit…</td></tr>
+    <tr><td>Run treo lâu</td><td>Bấm Kill (hoặc <code>agent-brain kill TASK_ID</code>). Run tự dừng khi quá <code>timeout_seconds</code>.</td></tr>
+    <tr><td>Dữ liệu dashboard không cập nhật</td><td>Thấy thông báo "đang thử lại" thì chờ; vẫn không được thì tải lại trang (F5).</td></tr>
+  </table>
+</section>
+
+<!-- ========== 10 ========== -->
+<section id="s10">
+  <h2>10. Hạn chế đã biết (trước khi báo lỗi)</h2>
+  <p>Các mục dưới đây đã được ghi nhận ở lần review Phase 5 (file <code>.planning/phases/05-embedded-dashboard/05-REVIEW.md</code> và <code>05-UI-REVIEW.md</code>) và đang chờ sửa. Nếu bạn gặp đúng hiện tượng này, chỉ cần ghi thêm bằng chứng/ảnh hưởng thực tế, không cần báo mới.</p>
+  <table>
+    <tr><th style="width:9%">Mã</th><th style="width:44%">Hiện tượng bạn có thể thấy</th><th>Ghi chú</th></tr>
+    <tr><td>WR-03</td><td>Đóng hộp thoại (Kill, Chạy lại Lead, JSON thô) xong, focus bàn phím không quay về nút đã mở nó.</td><td>Ảnh hưởng người dùng bàn phím.</td></tr>
+    <tr><td>WR-04</td><td>Giao việc: gõ tên rồi nhấn Enter quá nhanh (&lt; 0,2 giây) có thể chọn từ danh sách gợi ý cũ.</td><td>Luôn kiểm tra dự án trong khung thông tin trước khi bấm Giao việc.</td></tr>
+    <tr><td>WR-05</td><td>Hai lần giao việc cho hai dự án <code>personal</code> gần như cùng lúc có thể cùng được nhận.</td><td>Lớp chạy <code>run</code> kiểm tra lại; vẫn nên tránh.</td></tr>
+    <tr><td>WR-06</td><td>Hai dự án có nhánh task trùng tên có thể làm sai trạng thái "đang chạy".</td><td>Hiếm.</td></tr>
+    <tr><td>WR-11</td><td>Kill đúng lúc run đổi bước có thể dừng run mới của cùng task.</td><td>Cửa sổ vài mili giây.</td></tr>
+    <tr><td>WR-09/10</td><td>Chuyển màn hình hoặc mở JSON thô liên tục quá nhanh: phản hồi cũ có thể ghi đè màn hình mới.</td><td>Tải lại trang là hết.</td></tr>
+    <tr><td>WR-01</td><td>Giá trị <code>--since</code> cực lớn có thể cho kết quả sai.</td><td>Dùng giá trị hợp lý (ví dụ <code>90d</code>).</td></tr>
+    <tr><td>WR-13</td><td>Lỗi 500 của API có thể hiện thông báo kỹ thuật kèm đường dẫn nội bộ.</td><td>Xóa đường dẫn riêng tư trước khi dán vào issue.</td></tr>
+    <tr><td>WR-02</td><td>Mục "Danh mục HTTP API" trong <code>agent-brain/README.md</code> liệt kê sai vài route.</td><td>Danh sách đúng ở Phụ lục C.</td></tr>
+    <tr><td>UI</td><td>Mũi tên <code>→</code> giữa các bước trong stepper hơi mờ ở giao diện sáng.</td><td>Thẩm mỹ.</td></tr>
+    <tr><td>UI-04</td><td>Nhãn ngày trên biểu đồ Thống kê chưa được kiểm với dữ liệu &gt; 14 ngày.</td><td>Báo nếu thấy chữ chồng nhau.</td></tr>
+  </table>
+  <p class="small">Chưa có: chạy engine khác ngoài Claude (Phase 6), tối ưu token bằng tóm tắt/handover (Phase 4), chỉnh plan trên web (chủ ý không làm).</p>
+</section>
+
+<!-- ========== 11 ========== -->
+<section id="s11">
+  <h2>11. Review, báo lỗi và đề xuất nâng cấp</h2>
+  <h3>11.1 Gợi ý review theo từng phần</h3>
+  <table>
+    <tr><th style="width:26%">Phần</th><th>Những điều nên thử</th></tr>
+    <tr><td>Giao việc &amp; định tuyến</td><td>Tên có dấu/không dấu, alias, tên khớp nhiều dự án, dự án mất thư mục.</td></tr>
+    <tr><td>Chất lượng plan</td><td>Plan có đủ bảng Thay đổi? Dev có làm đúng phạm vi? Có lần nào Vướng mắc vô lý?</td></tr>
+    <tr><td>QA</td><td>Báo cáo có bắt được lỗi thật? Có lần "Đạt" sai?</td></tr>
+    <tr><td>Kill &amp; độ bền</td><td>Kill giữa chừng, Ctrl+C, đóng terminal, tắt dashboard khi đang chạy; sau đó kiểm tra không còn tiến trình <code>claude</code> sót.</td></tr>
+    <tr><td>Dashboard</td><td>Log trực tiếp, tải lại trang giữa chừng, giao diện sáng/tối, màn hình hẹp (điện thoại, 480–768 px), dùng toàn bàn phím.</td></tr>
+    <tr><td>Token &amp; chi phí</td><td>Số liệu Thống kê khớp với cảm nhận? Vai trò nào tốn nhất? (Dữ liệu này là đầu vào cho Phase 4.)</td></tr>
+  </table>
+  <h3>11.2 Thu thập thông tin trước khi báo</h3>
+  <pre>agent-brain --version
+agent-brain status PROJECT                <span class="c"># trạng thái repo, run gần nhất</span>
+agent-brain stats --since 24h --json      <span class="c"># nếu liên quan token/chi phí</span>
+claude --version                          <span class="c"># phiên bản Claude CLI</span></pre>
+  <ul>
+    <li><b>Số task và số run</b> (in ở terminal, hoặc trên URL <code>#/task/N</code> của dashboard).</li>
+    <li>Mã thoát của lệnh: <code>echo $?</code> ngay sau khi lệnh kết thúc.</li>
+    <li>Log của run trong <code>~/.local/share/agent-brain/runs/</code> và phần stderr của terminal <code>serve</code> nếu lỗi ở dashboard.</li>
+    <li>Ảnh chụp màn hình (đã che token) và kích thước cửa sổ trình duyệt nếu là lỗi giao diện.</li>
+  </ul>
+  <div class="warn"><b>Trước khi gửi: xóa thông tin nhạy cảm</b>Không đưa token dashboard (<code>?token=…</code>), cookie, API key, nội dung mã nguồn riêng của khách hàng hay đường dẫn home đầy đủ vào issue.</div>
+  <h3>11.3 Mẫu báo lỗi</h3>
+  <pre>Tiêu đề: [dashboard|cli|plan|qa|kill|stats] Mô tả ngắn
+
+Phiên bản: agent-brain 0.1.0, claude x.y.z, trình duyệt …
+Profile: work | personal      Task/Run: task 12, run 31
+Mức độ: chặn | nặng | nhẹ | thẩm mỹ
+
+Các bước tái hiện:
+1. …
+2. …
+
+Kết quả mong đợi: …
+Kết quả thực tế: …  (mã thoát, thông báo lỗi)
+Bằng chứng: log/ảnh (đã che token)
+Liên quan hạn chế đã biết? (WR-xx / không)</pre>
+  <h3>11.4 Mẫu đề xuất nâng cấp</h3>
+  <pre>Tiêu đề: [đề xuất] …
+Vấn đề hiện tại (đau ở đâu, bao lâu gặp một lần): …
+Đề xuất: …
+Lợi ích đo được (thời gian, token, số lần thao tác): …
+Phạm vi: CLI | dashboard | giao thức | cấu hình
+Ưu tiên của bạn: cao | vừa | thấp</pre>
+  <h3>11.5 Mức độ</h3>
+  <table>
+    <tr><th style="width:16%">Mức</th><th>Khi nào</th></tr>
+    <tr><td class="sev-b"><b>Chặn</b></td><td>Không chạy được Lead/Dev/QA, chạy nhầm dự án, mất dữ liệu, tiến trình sót sau Kill.</td></tr>
+    <tr><td class="sev-m"><b>Nặng</b></td><td>Sai trạng thái, sai số liệu, chức năng không làm đúng nhưng có cách vòng.</td></tr>
+    <tr><td><b>Nhẹ</b></td><td>Chậm, khó dùng, thông báo khó hiểu.</td></tr>
+    <tr><td><b>Thẩm mỹ</b></td><td>Màu, chữ, khoảng cách, căn chỉnh.</td></tr>
+  </table>
+  <h3>11.6 Gửi ở đâu</h3>
+  <p>Tạo issue trên kho mã <b>github.com/vinhhx/quang-vy-ai-orchestration</b> (tab Issues), hoặc gửi trực tiếp cho người phụ trách dự án. Mỗi lỗi một issue giúp lập kế hoạch sửa (fix plan) dễ hơn.</p>
+</section>
+
+<!-- ========== 12 ========== -->
+<section id="s12">
+  <h2>12. Phụ lục</h2>
+  <h3>A. Mã thoát</h3>
+  <table>
+    <tr><th style="width:10%">Mã</th><th style="width:22%">Tên</th><th>Ý nghĩa</th></tr>
+    <tr><td>0</td><td>EXIT_OK</td><td>Thành công (kể cả QA kết luận Đạt hoặc Cần sửa hợp lệ).</td></tr>
+    <tr><td>1</td><td>EXIT_ERROR</td><td>Lỗi thực thi, cấu hình sai, thiếu file, điều kiện git không thỏa.</td></tr>
+    <tr><td>2</td><td>EXIT_ROUTING</td><td>Tên dự án khớp 0 hoặc nhiều hơn 1 dự án (Fallback Ask).</td></tr>
+    <tr><td>3</td><td>EXIT_PROTOCOL</td><td>Vi phạm giao thức: sửa file ngoài danh sách của plan.</td></tr>
+    <tr><td>4</td><td>EXIT_BLOCKED</td><td>Dev gặp Vướng mắc, đã ghi vào <code>.plan.md</code> và dừng an toàn.</td></tr>
+    <tr><td>130</td><td>EXIT_INTERRUPTED</td><td>Dừng bởi Ctrl+C hoặc <code>agent-brain kill</code>.</td></tr>
+  </table>
+  <h3>B. Khóa cấu hình đầy đủ</h3>
+  <table>
+    <tr><th style="width:28%">Khóa</th><th style="width:28%">Mặc định</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>claude_bin</code></td><td><code>"claude"</code></td><td>Lệnh Claude CLI.</td></tr>
+    <tr><td><code>models</code></td><td>lead opus, dev sonnet, qa sonnet</td><td>Model theo vai trò.</td></tr>
+    <tr><td><code>inspect_model</code></td><td><code>"sonnet"</code></td><td>Model cho <code>inspect</code>.</td></tr>
+    <tr><td><code>profiles</code></td><td>work, personal</td><td><code>claude_config_dir</code> và các biến môi trường bị bỏ đặt cho từng profile.</td></tr>
+    <tr><td><code>common_args</code></td><td><code>["--strict-mcp-config"]</code></td><td>Đối số chung cho Claude CLI.</td></tr>
+    <tr><td><code>max_turns</code></td><td>null (không giới hạn)</td><td>Giới hạn lượt theo vai trò.</td></tr>
+    <tr><td><code>timeout_seconds</code></td><td>1800 / 1800 / 1200 / 300</td><td>lead / dev / qa / inspect.</td></tr>
+    <tr><td><code>runs_dir</code></td><td>null → <code>~/.local/share/agent-brain/runs/</code></td><td>Thư mục log run.</td></tr>
+    <tr><td><code>kill_grace_secs</code></td><td>3</td><td>Chờ giữa SIGINT và SIGKILL.</td></tr>
+    <tr><td><code>inspect_max_diff_bytes</code></td><td>100000</td><td>Giới hạn diff gửi cho <code>inspect</code>.</td></tr>
+    <tr><td><code>dashboard_port</code></td><td>7437</td><td>Ưu tiên: <code>--port</code> &gt; khóa này &gt; 7437.</td></tr>
+  </table>
+  <h3>C. HTTP API của dashboard</h3>
+  <p class="small">Mọi route cần cookie phiên (trừ <code>GET /?token=…</code> dùng để lấy cookie). Lệnh ghi (POST/PUT) còn kiểm tra Origin và Content-Type. Dành cho người phát triển; người dùng thường không cần gọi trực tiếp.</p>
+  <table>
+    <tr><th style="width:44%">Route</th><th>Việc làm</th></tr>
+    <tr><td><code>GET /api/tasks</code></td><td>Danh sách task, trạng thái bận của dự án (lọc <code>?profile=</code>).</td></tr>
+    <tr><td><code>POST /api/tasks</code></td><td>Tạo task và chạy Lead. Body: <code>project</code>, <code>request</code>, <code>name</code>.</td></tr>
+    <tr><td><code>GET /api/tasks/{id}</code></td><td>Chi tiết task: các bước, plan, báo cáo QA, nút được phép.</td></tr>
+    <tr><td><code>POST /api/tasks/{id}/dev|qa|relead</code></td><td>Chạy Dev, QA, hoặc chạy lại Lead.</td></tr>
+    <tr><td><code>GET /api/preflight</code></td><td>Kiểm tra trước khi giao việc (dự án, nhánh, profile, lý do khóa).</td></tr>
+    <tr><td><code>GET /api/jobs/{id}</code></td><td>Trạng thái job do dashboard khởi chạy.</td></tr>
+    <tr><td><code>GET /api/runs/{id}</code></td><td>Thông tin và sự kiện của run.</td></tr>
+    <tr><td><code>GET /api/runs/{id}/stream</code></td><td>Log trực tiếp (Server-Sent Events).</td></tr>
+    <tr><td><code>GET /api/runs/{id}/events/{seq}/raw</code></td><td>JSON thô của một sự kiện.</td></tr>
+    <tr><td><code>POST /api/runs/{id}/kill</code></td><td>Dừng run (qua cùng cơ chế với <code>agent-brain kill</code>).</td></tr>
+    <tr><td><code>GET /api/projects</code></td><td>Danh mục dự án kèm <code>etag</code>.</td></tr>
+    <tr><td><code>PUT /api/projects/{id}</code></td><td>Sửa alias. Body: <code>aliases</code>, <code>etag</code>.</td></tr>
+    <tr><td><code>POST /api/projects/scan</code></td><td>Quét lại thư mục dự án.</td></tr>
+    <tr><td><code>GET /api/projects/suggest?q=…</code></td><td>Gợi ý dự án theo độ khớp tên/alias.</td></tr>
+    <tr><td><code>GET /api/projects/{id}/status</code></td><td>Trạng thái git nhanh (giống <code>status</code>).</td></tr>
+    <tr><td><code>GET /api/stats?profile=…&amp;since=…</code></td><td>Thống kê token và chi phí.</td></tr>
+    <tr><td><code>GET /api/slug?text=…</code></td><td>Tạo slug từ văn bản tiếng Việt.</td></tr>
+  </table>
+</section>
+
+</body>
+</html>
