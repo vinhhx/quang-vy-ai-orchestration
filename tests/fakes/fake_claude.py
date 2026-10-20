@@ -69,6 +69,52 @@ def main() -> None:
         except Exception as e:
             sys.stderr.write(f"Lỗi đọc FAKE_CLAUDE_SCENARIO: {e}\n")
 
+    if isinstance(scenario, dict) and "by_role" in scenario:
+        system_prompt = ""
+        if "--append-system-prompt" in sys.argv:
+            sp_idx = sys.argv.index("--append-system-prompt")
+            if sp_idx + 1 < len(sys.argv):
+                system_prompt = sys.argv[sp_idx + 1]
+        first_line = system_prompt.splitlines()[0] if system_prompt.splitlines() else ""
+        if first_line.startswith("Bạn là Plan Reviewer"):
+            role = "plan-review"
+        elif first_line.startswith("Bạn là Code Reviewer"):
+            role = "code-review"
+        elif first_line.startswith("Bạn là Lead"):
+            role = "lead"
+        elif first_line.startswith("Bạn là QA"):
+            role = "qa"
+        elif first_line.startswith("Bạn là Dev"):
+            role = "dev"
+        else:
+            role = "unknown"
+
+        state_path = scenario_path + ".state.json"
+        state = {}
+        if os.path.isfile(state_path):
+            try:
+                with open(state_path, "r", encoding="utf-8") as sf:
+                    state = json.load(sf)
+            except Exception:
+                state = {}
+
+        role_queue = scenario.get("by_role", {}).get(role, [])
+        if role_queue:
+            idx = state.get(role, 0)
+            entry_idx = min(idx, len(role_queue) - 1)
+            chosen_entry = role_queue[entry_idx]
+        else:
+            chosen_entry = {}
+
+        state[role] = state.get(role, 0) + 1
+        try:
+            with open(state_path, "w", encoding="utf-8") as sf:
+                json.dump(state, sf)
+        except Exception:
+            pass
+
+        scenario = chosen_entry
+
     if "stderr" in scenario:
         sys.stderr.write(scenario["stderr"])
         sys.stderr.flush()
@@ -286,19 +332,31 @@ def main() -> None:
             sys.stdout.write(json.dumps(ev) + "\n")
             sys.stdout.flush()
 
+        total_cost = scenario.get("result_cost", 0)
+        res_tokens = scenario.get("result_tokens")
+        if isinstance(res_tokens, dict):
+            usage = {
+                "input_tokens": res_tokens.get("input", 10),
+                "output_tokens": res_tokens.get("output", 5),
+                "cache_read_input_tokens": res_tokens.get("cache_read", 0),
+                "cache_creation_input_tokens": res_tokens.get("cache_write", 0),
+            }
+        else:
+            usage = {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            }
+
         result_event = {
             "type": "result",
             "subtype": "success",
             "is_error": False,
             "num_turns": len(ops) + 1,
             "session_id": "fake-session",
-            "total_cost_usd": 0,
-            "usage": {
-                "input_tokens": 10,
-                "output_tokens": 5,
-                "cache_read_input_tokens": 0,
-                "cache_creation_input_tokens": 0,
-            },
+            "total_cost_usd": total_cost,
+            "usage": usage,
             "permission_denials": [],
         }
         sys.stdout.write(json.dumps(result_event) + "\n")

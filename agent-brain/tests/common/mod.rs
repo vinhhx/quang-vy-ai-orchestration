@@ -224,8 +224,32 @@ impl Sandbox {
             "type": "code",
             "repo": serde_json::Value::Null,
             "profile": profile,
-            "missing": false
+            "missing": false,
+            // existing dashboard tests post /api/tasks without a workflow and must keep the manual flow; a test that needs the server default removes the key
+            "workflow": "nhanh"
         })
+    }
+
+    pub fn workflows_path(&self) -> PathBuf {
+        self.xdg_config.join("agent-brain").join("workflows.json")
+    }
+
+    pub fn write_workflows(&self, data: serde_json::Value) {
+        let wf_path = self.workflows_path();
+        if let Some(p) = wf_path.parent() {
+            fs::create_dir_all(p).expect("create workflows dir");
+        }
+        fs::write(wf_path, serde_json::to_string_pretty(&data).unwrap()).expect("write workflows");
+    }
+
+    pub fn queue_state_path(&self) -> PathBuf {
+        PathBuf::from(format!("{}.state.json", self.scenario_file.display()))
+    }
+
+    pub fn write_scenario(&self, sc: serde_json::Value) {
+        fs::write(&self.scenario_file, serde_json::to_string(&sc).unwrap())
+            .expect("write scenario");
+        let _ = fs::remove_file(self.queue_state_path());
     }
 
     pub fn write_map(&self, projects: serde_json::Value, scan_roots: &[&str]) {
@@ -290,8 +314,10 @@ impl Sandbox {
         if let Some(sc) = scenario {
             fs::write(&self.scenario_file, serde_json::to_string(&sc).unwrap())
                 .expect("write scenario");
+            let _ = fs::remove_file(self.queue_state_path());
         } else {
             let _ = fs::remove_file(&self.scenario_file);
+            let _ = fs::remove_file(self.queue_state_path());
         }
 
         let mut cmd = self.command(args, extra_env);
@@ -312,8 +338,10 @@ impl Sandbox {
         if let Some(sc) = scenario {
             fs::write(&self.scenario_file, serde_json::to_string(&sc).unwrap())
                 .expect("write scenario");
+            let _ = fs::remove_file(self.queue_state_path());
         } else {
             let _ = fs::remove_file(&self.scenario_file);
+            let _ = fs::remove_file(self.queue_state_path());
         }
 
         self.command(args, extra_env)
