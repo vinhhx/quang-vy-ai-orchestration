@@ -248,9 +248,21 @@ Plans:
   5. Dashboard hiện thẻ review/sửa thật (vòng N / giới hạn, số chặn/góp ý), nút duyệt plan, bật/tắt autopilot; CSDL cũ nâng cấp lên schema mới không mất dữ liệu.
 
 **UI hint**: yes
-**Plans:** 20/20 plans executed
+**Plans:** 25/31 plans executed
 
 Plans:
+- [x] 05.2-21-PLAN.md
+- [x] 05.2-22-PLAN.md
+- [x] 05.2-23-PLAN.md
+- [x] 05.2-24-PLAN.md
+- [ ] 05.2-25-PLAN.md
+- [x] 05.2-26-PLAN.md
+- [ ] 05.2-27-PLAN.md
+- [ ] 05.2-28-PLAN.md
+- [ ] 05.2-29-PLAN.md
+- [ ] 05.2-30-PLAN.md
+- [ ] 05.2-31-PLAN.md
+
 **Wave 1**
 - [x] 05.2-01-PLAN.md — Tracer: schema v2 (runs rebuild with FK-safe runner, tasks columns incl. approved_commit) proven on a v1 DB with events; v2 data helpers; module stubs
 - [x] 05.2-02-PLAN.md — Config defaults (review models/timeouts, autopilot limits, price table) and test harness (fake claude per-role queue, Sandbox workflow helpers)
