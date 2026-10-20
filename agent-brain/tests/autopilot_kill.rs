@@ -267,6 +267,60 @@ fn kill_mid_run_stops_driver_and_tree() {
     assert_eq!(running_count(&sb), 0);
 }
 
+/// Kill khi driver còn sống: driver thấy cờ kill nhưng không được ghi `lost` đè lên
+/// `killed` mà tiến trình run vừa ghi. Lặp 3 lần (Sandbox mới mỗi lần) để chạm cuộc đua.
+#[test]
+fn kill_mid_run_records_killed_not_lost() {
+    for round in 1..=3 {
+        let sb = Sandbox::new();
+        approved_nhanh_task(&sb);
+
+        let (mut driver, tree) = spawn_tree_driver(&sb);
+        let dev_run = wait_running_dev(&sb);
+        driver.record_descendants();
+
+        let kill = sb.run(&["kill", "1"], None);
+        assert_eq!(kill.code, 0, "round {round}: kill failed: {}", kill.stderr);
+
+        let code = driver.wait_exit(Duration::from_secs(15));
+        assert!(
+            code.is_some(),
+            "round {round}: driver still running: {}",
+            driver_stderr(&sb)
+        );
+
+        let gone = common::wait_until(Duration::from_secs(15), || {
+            tree.iter().all(|p| !agent_brain::procs::alive(*p))
+        });
+        assert!(
+            gone,
+            "round {round}: tree survived: {:?}",
+            driver.alive_recorded()
+        );
+        let all_gone = common::wait_until(Duration::from_secs(5), || {
+            driver.alive_recorded().is_empty()
+        });
+        assert!(
+            all_gone,
+            "round {round}: alive: {:?}",
+            driver.alive_recorded()
+        );
+
+        assert_eq!(
+            run_status(&sb, dev_run),
+            "killed",
+            "round {round}: driver stderr: {}",
+            driver_stderr(&sb)
+        );
+        let stop = auto_json(&sb)["stop"].clone();
+        assert_eq!(
+            stop["reason"], "dung_boi_ban",
+            "round {round}: auto_json: {stop}"
+        );
+        assert_eq!(running_count(&sb), 0, "round {round}");
+    }
+}
+
 /// Driver giả còn sống: một tiến trình python3 ngủ (không dùng `sleep N`), ghi
 /// (pid, start) của nó vào auto_pid / auto_pid_start với auto_state `running`.
 fn fake_live_driver(sb: &Sandbox) -> (KillGuard, ProcId) {
