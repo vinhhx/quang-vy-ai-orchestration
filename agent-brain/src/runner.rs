@@ -58,10 +58,25 @@ pub fn cmd_kill(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
         return Err(BrainError::error(format!("Không tìm thấy task {task_id}")));
     }
 
+    // D-04 / AUTO-05: Kill cũng dừng autopilot còn sống của task — ghi cờ dừng loại
+    // `kill` trước, driver thấy cờ và dừng với lý do `dừng bởi bạn` (không gửi tín hiệu cho driver).
+    let driver = crate::db::task_auto(&ctx.conn, task_id)?
+        .map(|a| crate::autopilot::claim::driver_alive(&a))
+        .unwrap_or(false);
+    if driver {
+        crate::db::request_auto_stop(&ctx.conn, task_id, "kill")?;
+    }
+
     let running = crate::db::running_run_for_task(&ctx.conn, task_id)?;
     let run = match running {
         Some(r) => r,
         None => {
+            if driver {
+                crate::term::emit(&format!(
+                    "Đã yêu cầu autopilot dừng (task {task_id}) — không có run đang chạy; autopilot dừng trước bước tiếp theo."
+                ));
+                return Ok(0);
+            }
             let latest = crate::db::latest_run_for_task(&ctx.conn, task_id)?;
             let msg = match latest {
                 Some(r) => format!(
@@ -128,6 +143,11 @@ pub fn cmd_kill(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
             run.id,
             report.elapsed.as_millis()
         ));
+        if driver {
+            crate::term::emit(&format!(
+                "Autopilot của task {task_id} cũng dừng với lý do \"dừng bởi bạn\"."
+            ));
+        }
         Ok(0)
     } else {
         let pids: Vec<String> = report.survivors.iter().map(|p| p.pid.to_string()).collect();
