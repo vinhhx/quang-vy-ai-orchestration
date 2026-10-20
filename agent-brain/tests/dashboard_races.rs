@@ -292,3 +292,69 @@ fn return_clears_approval_after_start() {
 
     srv.stop(libc::SIGTERM, Duration::from_secs(10));
 }
+
+// ---------------------------------------------------------------------------
+// Task 3: W-3 — thân 500 cố định trên các route của task
+// ---------------------------------------------------------------------------
+
+#[test]
+fn internal_error_body_is_fixed() {
+    let sb = Sandbox::new();
+    let _repo = auto_to_gate(&sb);
+    let mut srv = sb.serve(&[]);
+    let first = srv.get("/api/tasks/1");
+    assert_eq!(first.status, 200, "{}", first.text());
+
+    // Mọi lần `db::open` mới đều lỗi: đường dẫn DB giờ là một thư mục.
+    let db_path = sb.db_path.clone();
+    for suffix in ["", "-wal", "-shm"] {
+        let mut p = db_path.clone().into_os_string();
+        p.push(suffix);
+        let _ = std::fs::remove_file(PathBuf::from(p));
+    }
+    std::fs::create_dir(&db_path).unwrap();
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let resp = srv.post_json("/api/tasks/1/approve", &json!({}));
+    assert_eq!(resp.status, 500, "{}", resp.text());
+    let text = resp.text();
+    assert_eq!(
+        resp.json()["error"],
+        "Lỗi nội bộ khi xử lý nút điều khiển của task — xem terminal đang chạy agent-brain serve",
+        "{text}"
+    );
+    assert!(!text.contains(&db_str), "DB path leaked: {text}");
+    assert!(!text.contains("brain.db"), "DB file leaked: {text}");
+    assert!(
+        !text.to_lowercase().contains("database"),
+        "sqlite error leaked: {text}"
+    );
+
+    let resp = srv.get("/api/tasks/1");
+    assert_eq!(resp.status, 500, "{}", resp.text());
+    let text = resp.text();
+    assert_eq!(
+        resp.json()["error"],
+        "Lỗi nội bộ khi đọc task — xem terminal đang chạy agent-brain serve",
+        "{text}"
+    );
+    assert!(!text.contains(&db_str), "DB path leaked: {text}");
+    assert!(!text.to_lowercase().contains("database"), "{text}");
+
+    // Chi tiết nằm ở terminal của serve.
+    let mut stderr = String::new();
+    let ok = wait_until(Duration::from_secs(5), || {
+        stderr = std::fs::read_to_string(&srv.stderr_path).unwrap_or_default();
+        stderr.contains("Lỗi nội bộ (xử lý nút điều khiển của task):")
+            && stderr.contains("Lỗi nội bộ (đọc task):")
+    });
+    assert!(ok, "serve stderr lacks the detail: {stderr}");
+    let prefix = "Lỗi nội bộ (xử lý nút điều khiển của task): ";
+    let detail = stderr
+        .lines()
+        .find_map(|l| l.split_once(prefix).map(|(_, d)| d.trim().to_string()))
+        .unwrap_or_default();
+    assert!(!detail.is_empty(), "no detail after the prefix: {stderr}");
+
+    srv.stop(libc::SIGTERM, Duration::from_secs(10));
+}

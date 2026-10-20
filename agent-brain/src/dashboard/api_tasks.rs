@@ -489,7 +489,7 @@ async fn get_preflight(
 
     match res {
         Ok(resp) => resp,
-        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+        Err(e) => internal_error("kiểm tra trước khi giao việc", &e),
     }
 }
 
@@ -662,7 +662,7 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
 
     match res {
         Ok(resp) => resp,
-        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+        Err(e) => internal_error("giao việc", &e),
     }
 }
 
@@ -814,7 +814,7 @@ async fn list_tasks(
 
     match res {
         Ok(resp) => resp,
-        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+        Err(e) => internal_error("đọc danh sách task", &e),
     }
 }
 
@@ -1241,7 +1241,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
 
     match res {
         Ok(resp) => resp,
-        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+        Err(e) => internal_error("đọc task", &e),
     }
 }
 
@@ -1483,7 +1483,7 @@ async fn post_task_action(
 
     match res {
         Ok(resp) => resp,
-        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+        Err(e) => internal_error("chạy hành động của task", &e),
     }
 }
 
@@ -1509,6 +1509,16 @@ async fn post_task_relead(
     Json(_body): Json<ActionBody>,
 ) -> Response {
     post_task_action(st, task_id, "relead", "lead").await
+}
+
+/// Lỗi 500 với thân cố định (W-3): chi tiết (đường dẫn, lỗi SQLite) chỉ in ra
+/// terminal đang chạy `agent-brain serve`, không gửi về trình duyệt.
+fn internal_error(what: &str, e: &crate::error::BrainError) -> Response {
+    crate::term::emit(&format!("Lỗi nội bộ ({what}): {}", e.message));
+    json_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        &format!("Lỗi nội bộ khi {what} — xem terminal đang chạy agent-brain serve"),
+    )
 }
 
 fn json_resp(status: StatusCode, body: serde_json::Value) -> Response {
@@ -1757,7 +1767,7 @@ async fn post_control(
 
     match res {
         Ok(resp) => resp,
-        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+        Err(e) => internal_error("xử lý nút điều khiển của task", &e),
     }
 }
 
@@ -1860,6 +1870,6 @@ async fn get_job(State(st): State<Arc<AppState>>, AxumPath(job_id): AxumPath<u64
 
     match res {
         Ok(resp) => resp,
-        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+        Err(e) => internal_error("đọc job", &e),
     }
 }
