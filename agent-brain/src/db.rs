@@ -28,7 +28,36 @@ CREATE INDEX runs_task ON runs(task_id);
 CREATE INDEX runs_running ON runs(status) WHERE status = 'running';
 CREATE TABLE events (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
   seq INTEGER NOT NULL, ts INTEGER NOT NULL, kind TEXT NOT NULL, raw_json TEXT NOT NULL, UNIQUE(run_id, seq));"#,
+    r#"CREATE TABLE runs_new (id INTEGER PRIMARY KEY, task_id INTEGER REFERENCES tasks(id), project_id INTEGER NOT NULL REFERENCES projects(id),
+  role TEXT NOT NULL CHECK (role IN ('lead','dev','qa','inspect','plan-review','code-review')), engine TEXT NOT NULL DEFAULT 'claude', profile TEXT NOT NULL,
+  model TEXT, session_id TEXT, pid INTEGER, pgid INTEGER, pid_start INTEGER,
+  status TEXT NOT NULL CHECK (status IN ('running','succeeded','failed','timed_out','killed','lost')),
+  outcome TEXT, exit_code INTEGER, kill_requested_at INTEGER, started_at INTEGER NOT NULL, ended_at INTEGER,
+  input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL NOT NULL DEFAULT 0, num_turns INTEGER, assistant_turns INTEGER, turns_before_first_edit INTEGER,
+  reads_outside_plan INTEGER, permission_denials INTEGER NOT NULL DEFAULT 0,
+  usage_source TEXT NOT NULL DEFAULT 'none' CHECK (usage_source IN ('result','partial','none')),
+  base_commit TEXT, run_dir TEXT, error TEXT, stage TEXT, round INTEGER, metrics_json TEXT);
+INSERT INTO runs_new (id, task_id, project_id, role, engine, profile, model, session_id, pid, pgid, pid_start, status, outcome, exit_code, kill_requested_at, started_at, ended_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, num_turns, assistant_turns, turns_before_first_edit, reads_outside_plan, permission_denials, usage_source, base_commit, run_dir, error)
+  SELECT id, task_id, project_id, role, engine, profile, model, session_id, pid, pgid, pid_start, status, outcome, exit_code, kill_requested_at, started_at, ended_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, num_turns, assistant_turns, turns_before_first_edit, reads_outside_plan, permission_denials, usage_source, base_commit, run_dir, error FROM runs;
+DROP TABLE runs;
+ALTER TABLE runs_new RENAME TO runs;
+CREATE INDEX runs_started ON runs(started_at);
+CREATE INDEX runs_task ON runs(task_id);
+CREATE INDEX runs_running ON runs(status) WHERE status = 'running';
+ALTER TABLE tasks ADD COLUMN workflow_json TEXT;
+ALTER TABLE tasks ADD COLUMN approved_at INTEGER;
+ALTER TABLE tasks ADD COLUMN approved_commit TEXT;
+ALTER TABLE tasks ADD COLUMN auto_state TEXT;
+ALTER TABLE tasks ADD COLUMN auto_pid INTEGER;
+ALTER TABLE tasks ADD COLUMN auto_pid_start INTEGER;
+ALTER TABLE tasks ADD COLUMN auto_stop_at INTEGER;
+ALTER TABLE tasks ADD COLUMN auto_stop_kind TEXT;
+ALTER TABLE tasks ADD COLUMN auto_json TEXT;"#,
 ];
+
+pub const SCHEMA_VERSION: i64 = 2;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -91,19 +120,51 @@ pub fn open(path: &Path) -> BrainResult<Connection> {
 
     let mut conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_millis(5000))?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "synchronous", "NORMAL")?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
 
-    // Check PRAGMA user_version to determine migrations to apply
     let current_version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    for (i, sql) in MIGRATIONS.iter().enumerate().skip(current_version as usize) {
-        let tx = conn.transaction()?;
-        tx.execute_batch(sql)?;
-        let new_ver = (i + 1) as i64;
-        tx.pragma_update(None, "user_version", new_ver)?;
+    if current_version > MIGRATIONS.len() as i64 {
+        return Err(BrainError::error(format!(
+            "CSDL {} có phiên bản {current_version}, mới hơn bản agent-brain này (hỗ trợ tới {}) — hãy cài agent-brain mới hơn.",
+            path.display(),
+            MIGRATIONS.len()
+        )));
+    }
+
+    let start = std::time::Instant::now();
+    loop {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => break,
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.extended_code == rusqlite::ffi::SQLITE_BUSY
+                    && start.elapsed() < Duration::from_millis(5000) =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+
+    if (current_version as usize) < MIGRATIONS.len() {
+        conn.pragma_update(None, "foreign_keys", "OFF")?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let ver_inside: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        for (i, sql) in MIGRATIONS.iter().enumerate().skip(ver_inside as usize) {
+            tx.execute_batch(sql)?;
+            tx.pragma_update(None, "user_version", (i + 1) as i64)?;
+        }
+        let bad: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })?;
+        if bad > 0 {
+            return Err(BrainError::error(
+                "Nâng cấp CSDL thất bại: vi phạm khóa ngoại sau khi dựng lại bảng runs",
+            ));
+        }
         tx.commit()?;
     }
+
+    conn.pragma_update(None, "foreign_keys", "ON")?;
 
     Ok(conn)
 }
