@@ -248,7 +248,7 @@ Plans:
   5. Dashboard hiện thẻ review/sửa thật (vòng N / giới hạn, số chặn/góp ý), nút duyệt plan, bật/tắt autopilot; CSDL cũ nâng cấp lên schema mới không mất dữ liệu.
 
 **UI hint**: yes
-**Plans:** 19/20 plans executed
+**Plans:** 20/20 plans executed
 
 Plans:
 **Wave 1**
@@ -295,7 +295,7 @@ Plans:
 - [x] 05.2-19-PLAN.md — Keyboard/layout checks, app.css rebuild, README, LIVE-CHECKS Phase 5.2 procedure, results template (05.1 WR-05)
 
 **Wave 13** *(blocked on Wave 12 completion)*
-- [ ] 05.2-20-PLAN.md — AUTO-07 live checks with the real claude in an isolated environment (user go/no-go checkpoint)
+- [x] 05.2-20-PLAN.md — AUTO-07 live checks with the real claude in an isolated environment (user go/no-go checkpoint)
 
 ### Phase 05.3: Telegram Notifications and Actions (INSERTED)
 
