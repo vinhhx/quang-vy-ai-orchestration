@@ -248,7 +248,7 @@ Plans:
   5. Dashboard hiện thẻ review/sửa thật (vòng N / giới hạn, số chặn/góp ý), nút duyệt plan, bật/tắt autopilot; CSDL cũ nâng cấp lên schema mới không mất dữ liệu.
 
 **UI hint**: yes
-**Plans:** 3/20 plans executed
+**Plans:** 4/20 plans executed
 
 Plans:
 **Wave 1**
@@ -257,7 +257,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [x] 05.2-03-PLAN.md — Workflows (built-ins, workflows.json validation with Vietnamese key/line errors, resolution, snapshot) and pricing/budget arithmetic
-- [ ] 05.2-04-PLAN.md — Report front matter parser, named files for fix mode, shared protocol-file list, tri-state ancestry and bounded plan-commit lookup (05.1 WR-01/WR-02 helpers)
+- [x] 05.2-04-PLAN.md — Report front matter parser, named files for fix mode, shared protocol-file list, tri-state ancestry and bounded plan-commit lookup (05.1 WR-01/WR-02 helpers)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 05.2-05-PLAN.md — Review roles `run plan-review|code-review` (guarded report-only writes, D-06 verdicts, staged run recording)
