@@ -1654,22 +1654,23 @@ async fn post_control(
                     Ok(pc) => pc,
                     Err(reason) => return Ok(conflict(&reason, "not_allowed")),
                 };
+                // Duyệt trước khi ghi, để hoàn lại khi autopilot không bắt đầu được.
+                let prev = match (
+                    state.auto.approved_at,
+                    state.auto.approved_commit.as_deref(),
+                ) {
+                    (Some(at), Some(c)) => Some((at, c)),
+                    _ => None,
+                };
                 let approved_at = claim::approve_record(&conn, task_id, &plan_commit)?;
                 let job_id = if wf_auto {
                     let spec = task_job(&state, "auto", vec!["auto".to_string(), id_str]);
                     match start_job(&st, spec) {
                         Ok(j) => Some(j),
                         Err(resp) => {
-                            // Không để lại duyệt nửa chừng khi autopilot không bắt đầu được.
-                            match (
-                                state.auto.approved_at,
-                                state.auto.approved_commit.as_deref(),
-                            ) {
-                                (Some(at), Some(c)) => {
-                                    crate::db::set_task_approval(&conn, task_id, at, c)?
-                                }
-                                _ => crate::db::clear_task_approval(&conn, task_id)?,
-                            }
+                            // Không để lại duyệt nửa chừng khi autopilot không bắt đầu được;
+                            // chỉ hoàn lại khi duyệt vẫn là của yêu cầu này (WR-04).
+                            claim::revert_approval(&conn, task_id, &plan_commit, prev)?;
                             return Ok(resp);
                         }
                     }
@@ -1686,8 +1687,8 @@ async fn post_control(
                 ))
             }
             "return_lead" => {
-                // D-17 / D-30: bỏ duyệt rồi lập lại plan (ghi chú là một phần tử argv).
-                crate::db::clear_task_approval(&conn, task_id)?;
+                // D-17 / D-30: lập lại plan (ghi chú là một phần tử argv); bỏ duyệt
+                // chỉ sau khi job đã bắt đầu — job bị từ chối thì giữ nguyên duyệt (WR-04).
                 let (role, args) = if wf_auto {
                     let mut a = vec!["auto".to_string(), id_str, "--replan".to_string()];
                     if let Some(n) = note.as_deref() {
@@ -1710,10 +1711,13 @@ async fn post_control(
                     ("lead", a)
                 };
                 match start_job(&st, task_job(&state, role, args)) {
-                    Ok(job_id) => Ok(json_resp(
-                        StatusCode::ACCEPTED,
-                        serde_json::json!({ "job_id": job_id }),
-                    )),
+                    Ok(job_id) => {
+                        crate::db::clear_task_approval(&conn, task_id)?;
+                        Ok(json_resp(
+                            StatusCode::ACCEPTED,
+                            serde_json::json!({ "job_id": job_id }),
+                        ))
+                    }
                     Err(resp) => Ok(resp),
                 }
             }

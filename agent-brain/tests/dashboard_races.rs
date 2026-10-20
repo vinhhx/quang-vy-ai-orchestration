@@ -204,3 +204,91 @@ fn auto_end_ok_then_duplicate() {
 
     srv.stop(libc::SIGTERM, Duration::from_secs(10));
 }
+
+// ---------------------------------------------------------------------------
+// Task 2: Trả về Lead bỏ duyệt sau khi job đã bắt đầu
+// ---------------------------------------------------------------------------
+
+fn approved_commit(sb: &Sandbox, task_id: i64) -> Option<String> {
+    sb.db()
+        .query_row(
+            "SELECT approved_commit FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+fn run_metrics(sb: &Sandbox, run_id: i64) -> Value {
+    let m: Option<String> = sb
+        .db()
+        .query_row(
+            "SELECT metrics_json FROM runs WHERE id = ?1",
+            [run_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&m.unwrap_or_else(|| "{}".to_string())).unwrap()
+}
+
+fn lead_run_ids(sb: &Sandbox) -> Vec<i64> {
+    let conn = sb.db();
+    let mut stmt = conn
+        .prepare("SELECT id FROM runs WHERE role = 'lead' ORDER BY id")
+        .unwrap();
+    let ids = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<i64>, _>>()
+        .unwrap();
+    ids
+}
+
+#[test]
+fn return_clears_approval_after_start() {
+    let sb = Sandbox::new();
+    let repo = auto_to_gate(&sb);
+    let res = sb.run(&["approve", "1", "--no-continue"], None);
+    assert_ok(&res, "approve --no-continue");
+    let approved = approved_commit(&sb, 1).expect("approval recorded");
+
+    // Sửa tay plan sau khi duyệt: duyệt cũ, cổng chờ duyệt lại.
+    let plan_path = repo.join(".plan.md");
+    let mut text = std::fs::read_to_string(&plan_path).unwrap();
+    text.push_str("\n<!-- sửa tay sau khi duyệt -->\n");
+    std::fs::write(&plan_path, text).unwrap();
+    sb.git(&repo, &["add", ".plan.md"]);
+    sb.git(&repo, &["commit", "-m", "sua-app: plan"]);
+    let leads_before = lead_run_ids(&sb);
+
+    sb.write_scenario(by_role(json!({
+        "lead": [lead_append_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 1)],
+    })));
+    let mut srv = sb.serve(&[]);
+    let t = srv.get("/api/tasks/1").json();
+    let rl = t["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "return_lead")
+        .unwrap_or_else(|| panic!("return_lead missing: {}", t["controls"]))
+        .clone();
+    assert_eq!(rl["enabled"], true, "{rl}");
+    // Trước khi bấm: duyệt cũ vẫn còn.
+    assert_eq!(approved_commit(&sb, 1), Some(approved));
+
+    let resp = srv.post_json("/api/tasks/1/return", &json!({"note": "tách bước"}));
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+
+    assert_eq!(approved_commit(&sb, 1), None);
+    let leads = lead_run_ids(&sb);
+    assert_eq!(leads.len(), leads_before.len() + 1, "one new lead run");
+    let new_lead = *leads.last().unwrap();
+    assert_eq!(run_metrics(&sb, new_lead)["note"], "tách bước");
+
+    srv.stop(libc::SIGTERM, Duration::from_secs(10));
+}

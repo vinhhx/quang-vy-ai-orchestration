@@ -248,6 +248,27 @@ pub fn end_autopilot(
     Ok(changed == 1)
 }
 
+/// Hoàn lại duyệt plan sau khi autopilot không bắt đầu được — chỉ khi
+/// approved_commit vẫn là commit mà yêu cầu này vừa ghi (`written_commit`), để
+/// không xóa một lần duyệt khác ghi trong lúc đó. `prev` = (approved_at,
+/// approved_commit) trước khi ghi; None = xóa duyệt. Trả true khi đã ghi.
+pub fn revert_approval(
+    conn: &Connection,
+    task_id: i64,
+    written_commit: &str,
+    prev: Option<(i64, &str)>,
+) -> BrainResult<bool> {
+    let (at, commit) = match prev {
+        Some((at, c)) => (Some(at), Some(c)),
+        None => (None, None),
+    };
+    let changed = conn.execute(
+        "UPDATE tasks SET approved_at = ?1, approved_commit = ?2 WHERE id = ?3 AND approved_commit = ?4",
+        rusqlite::params![at, commit, task_id, written_commit],
+    )?;
+    Ok(changed == 1)
+}
+
 /// Slug và profile của dự án chứa task.
 pub fn task_project(conn: &Connection, task_id: i64) -> BrainResult<Option<(String, String)>> {
     let mut stmt = conn.prepare(
@@ -384,6 +405,30 @@ mod tests {
         assert_eq!(a.auto_state.as_deref(), Some("running"));
         assert_eq!(a.auto_pid, Some(1));
         assert_eq!(a.auto_pid_start, Some(7));
+    }
+
+    fn approval_of(conn: &Connection, task_id: i64) -> (Option<i64>, Option<String>) {
+        let a = auto_of(conn, task_id);
+        (a.approved_at, a.approved_commit)
+    }
+
+    #[test]
+    fn revert_approval_conditional() {
+        let (_dir, conn, id) = fresh_task();
+        // Yêu cầu này vừa ghi c2 (trước đó c1 lúc 100): hoàn lại c1.
+        crate::db::set_task_approval(&conn, id, 200, "c2").expect("approve");
+        assert!(revert_approval(&conn, id, "c2", Some((100, "c1"))).expect("revert"));
+        assert_eq!(approval_of(&conn, id), (Some(100), Some("c1".to_string())));
+
+        // Một tiến trình khác duyệt c3 trong lúc đó: giữ c3.
+        crate::db::set_task_approval(&conn, id, 300, "c3").expect("approve");
+        assert!(!revert_approval(&conn, id, "c2", Some((100, "c1"))).expect("revert"));
+        assert_eq!(approval_of(&conn, id), (Some(300), Some("c3".to_string())));
+
+        // Không có duyệt trước đó: xóa về NULL.
+        crate::db::set_task_approval(&conn, id, 400, "c4").expect("approve");
+        assert!(revert_approval(&conn, id, "c4", None).expect("revert"));
+        assert_eq!(approval_of(&conn, id), (None, None));
     }
 
     #[test]
