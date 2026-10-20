@@ -166,6 +166,12 @@ pub fn busy_reason(
         }
     }
 
+    // RESEARCH Pitfall 5 / AUTO-05: a live autopilot driver (also one started
+    // from a terminal, unknown to the JobManager) holds its project / profile.
+    if let Some(reason) = claim::live_driver_reason(conn, &project.id, &project.profile, None)? {
+        return Ok(Some(reason));
+    }
+
     let reserved = jobs.reserved();
     if reserved.iter().any(|(p, _)| p == &project.id) {
         return Ok(Some(format!(
@@ -242,6 +248,13 @@ pub fn busy_reason_for_task(
                 }
             }
         }
+    }
+
+    // A live driver of another task holds the project (or the personal profile).
+    if let Some(reason) =
+        claim::live_driver_reason(conn, &project.id, &project.profile, Some(task_id))?
+    {
+        return Ok(Some(reason));
     }
 
     let active_jobs = jobs.list();
@@ -642,7 +655,24 @@ async fn list_tasks(
                 busy: None,
                 now_ms,
             };
-            let view = taskstate::derive(&facts);
+            // Autopilot state without git: gate unknown, enough for banner, group and badge.
+            let auto = crate::db::task_auto(&conn, task.id)?.unwrap_or_default();
+            let aj = AutoJson::parse(auto.auto_json.as_deref());
+            let workflow = auto
+                .workflow_json
+                .as_deref()
+                .and_then(Workflow::from_snapshot);
+            let running = crate::db::running_run_for_task(&conn, task.id)?;
+            let auto_facts = AutoFacts {
+                workflow: workflow.as_ref(),
+                auto: Some(&auto),
+                auto_json: Some(&aj),
+                driver_alive: claim::driver_alive(&auto),
+                running: running.as_ref(),
+                gate: None,
+                plan_dirty: false,
+            };
+            let view = taskstate::derive_with(&facts, &auto_facts);
 
             task_items.push(serde_json::json!({
                 "id": task.id,
@@ -657,6 +687,9 @@ async fn list_tasks(
                 "group": view.group,
                 "current_step": view.current_step,
                 "steps": view.steps,
+                "auto_state": view.auto.state,
+                "stop_reason": view.auto.stop_reason,
+                "stop_detail": view.auto.stop_detail,
                 "created_at": task.created_at,
                 "updated_at": task.updated_at,
             }));
@@ -1050,7 +1083,8 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
 
         let mut runs_stmt = conn.prepare(
             "SELECT id, role, status, outcome, input_tokens, output_tokens,
-                    cache_read_tokens, cache_write_tokens, cost_usd, started_at, ended_at
+                    cache_read_tokens, cache_write_tokens, cost_usd, started_at, ended_at,
+                    stage, round
              FROM runs WHERE task_id = ?1 ORDER BY started_at ASC, id ASC",
         )?;
         let run_rows: Vec<serde_json::Value> = runs_stmt
@@ -1067,6 +1101,8 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
                     "cost_usd": r.get::<_, f64>(8)?,
                     "started_at": r.get::<_, i64>(9)?,
                     "ended_at": r.get::<_, Option<i64>>(10)?,
+                    "stage": r.get::<_, Option<String>>(11)?,
+                    "round": r.get::<_, Option<i64>>(12)?,
                 }))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1075,6 +1111,15 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             j.state == "running"
                 && (j.task_id == Some(task.id) || j.branch.as_deref() == Some(&task.branch))
         });
+
+        let workflow_json = match state.workflow.as_ref() {
+            Some(wf) => serde_json::json!({
+                "name": wf.name,
+                "summary": wf.summary(),
+                "auto": wf.auto,
+            }),
+            None => serde_json::Value::Null,
+        };
 
         let resp_json = serde_json::json!({
             "id": task.id,
@@ -1098,6 +1143,10 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "group": view.group,
             "current_step": view.current_step,
             "actions": view.actions,
+            "controls": view.controls,
+            "auto": view.auto,
+            "workflow": workflow_json,
+            "rev": state.rev,
             "plan": plan_obj,
             "qa": qa_obj,
             "runs": run_rows,
