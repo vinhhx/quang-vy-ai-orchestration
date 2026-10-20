@@ -261,25 +261,208 @@ fn decide_bash(tool_input: Option<&serde_json::Map<String, serde_json::Value>>) 
 /// Checks one Bash command line against the guard's git policy (W-1).
 /// `Err` carries the Vietnamese reason shown to the model.
 pub fn bash_command_check(command: &str) -> Result<(), String> {
-    let words: Vec<&str> = command.split_whitespace().collect();
+    let words = shell_words(command)?;
     let Some(first) = words.first() else {
         return Ok(());
     };
-    let base = Path::new(first)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
+    if is_env_assignment(&first.text) {
+        return Err(format!(
+            "lệnh Bash bắt đầu bằng gán biến môi trường ({}) — không được phép",
+            first.text
+        ));
+    }
+    let base = word_basename(&first.text);
+    if base.starts_with("git-") {
+        return Err(format!(
+            "gọi git qua {base} không được phép — dùng một lệnh `git <lệnh>` đơn"
+        ));
+    }
     if base != "git" {
+        if WRAPPER_COMMANDS.contains(&base.as_str())
+            && words[1..].iter().any(|w| w.text.contains("git"))
+        {
+            return Err(format!(
+                "lệnh git chạy qua {base} không được phép — dùng một lệnh `git <lệnh>` đơn"
+            ));
+        }
+        // Not git: claude's own permission rules decide.
         return Ok(());
     }
-    for w in &words[1..] {
-        if *w == "--output" || w.starts_with("--output=") {
+    if let Some(w) = words.iter().find(|w| w.glob) {
+        return Err(format!(
+            "lệnh git có ký tự glob ngoài dấu nháy ({}) — hãy đặt đối số trong dấu nháy đơn",
+            w.text
+        ));
+    }
+    git_policy_check(&words[1..])
+}
+
+fn git_policy_check(args: &[ShellWord]) -> Result<(), String> {
+    for w in args {
+        let t = w.text.as_str();
+        if t == "--output" || t.starts_with("--output=") {
             return Err(format!(
-                "git {w} ghi file hoặc chạy chương trình ngoài — không được phép"
+                "git {t} ghi file hoặc chạy chương trình ngoài — không được phép"
             ));
         }
     }
     Ok(())
+}
+
+/// Commands that run another command given as their arguments. A git call
+/// behind one of them would escape the git policy, so it is refused.
+const WRAPPER_COMMANDS: &[&str] = &[
+    "!", "builtin", "command", "exec", "eval", "env", "time", "timeout", "nice", "nohup", "ionice",
+    "stdbuf", "setsid", "sudo", "doas", "su", "runuser", "xargs", "find", "parallel", "watch",
+    "script", "unbuffer", "flock", "chroot", "nsenter", "taskset", "chrt", "strace", "ltrace",
+    "busybox", "sh", "bash", "dash", "zsh", "ksh", "mksh", "fish", "python", "python3", "perl",
+    "ruby", "node",
+];
+
+/// Characters that start a shell construct outside quotes: command lists,
+/// pipes, redirections, subshells, brace groups / brace expansion,
+/// command substitution and parameter expansion.
+const SHELL_OPERATORS: &[char] = &[';', '&', '|', '<', '>', '(', ')', '{', '}', '`', '$'];
+
+const ONE_COMMAND_RULE: &str = "chỉ cho phép một lệnh git đơn trên một dòng";
+
+/// One shell word after quote removal and unescaping. `glob` is set when
+/// the word holds an unquoted `*`, `?` or `[`, which bash would expand
+/// against file names after this check.
+#[derive(Debug, Clone, PartialEq)]
+struct ShellWord {
+    text: String,
+    glob: bool,
+}
+
+fn operator_err(c: char) -> String {
+    format!("lệnh Bash có toán tử shell ({c}) — {ONE_COMMAND_RULE}")
+}
+
+fn unterminated_err() -> String {
+    format!("lệnh Bash có dấu nháy chưa đóng — {ONE_COMMAND_RULE}")
+}
+
+/// Splits a Bash command the way bash would for one simple command, or
+/// refuses it when it holds anything beyond one plain command: a newline
+/// (inside quotes too), an unquoted operator / redirection / brace,
+/// `$` or backtick expansion (also inside double quotes), a comment, an
+/// unterminated quote or a trailing backslash.
+fn shell_words(command: &str) -> Result<Vec<ShellWord>, String> {
+    if command.contains('\n') || command.contains('\r') {
+        return Err(format!("lệnh Bash có xuống dòng — {ONE_COMMAND_RULE}"));
+    }
+    if command.chars().any(|c| c.is_control() && c != '\t') {
+        return Err(format!(
+            "lệnh Bash có ký tự điều khiển — {ONE_COMMAND_RULE}"
+        ));
+    }
+
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut started = false;
+    let mut glob = false;
+    let mut chars = command.chars();
+
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' => {
+                if started {
+                    words.push(ShellWord {
+                        text: std::mem::take(&mut cur),
+                        glob,
+                    });
+                    started = false;
+                    glob = false;
+                }
+            }
+            '\\' => match chars.next() {
+                Some(n) => {
+                    cur.push(n);
+                    started = true;
+                }
+                None => {
+                    return Err(format!(
+                        "lệnh Bash kết thúc bằng dấu \\ — {ONE_COMMAND_RULE}"
+                    ));
+                }
+            },
+            '\'' => {
+                started = true;
+                loop {
+                    match chars.next() {
+                        Some('\'') => break,
+                        Some(n) => cur.push(n),
+                        None => return Err(unterminated_err()),
+                    }
+                }
+            }
+            '"' => {
+                started = true;
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') => match chars.next() {
+                            Some(n @ ('"' | '\\' | '$' | '`')) => cur.push(n),
+                            Some(n) => {
+                                cur.push('\\');
+                                cur.push(n);
+                            }
+                            None => return Err(unterminated_err()),
+                        },
+                        Some(n @ ('$' | '`')) => return Err(operator_err(n)),
+                        Some(n) => cur.push(n),
+                        None => return Err(unterminated_err()),
+                    }
+                }
+            }
+            '#' if !started => return Err(operator_err('#')),
+            c if SHELL_OPERATORS.contains(&c) => return Err(operator_err(c)),
+            '*' | '?' | '[' => {
+                glob = true;
+                started = true;
+                cur.push(c);
+            }
+            _ => {
+                started = true;
+                cur.push(c);
+            }
+        }
+    }
+    if started {
+        words.push(ShellWord { text: cur, glob });
+    }
+    Ok(words)
+}
+
+/// `NAME=…`, `NAME+=…` or `NAME[i]=…`: bash treats a leading word of this
+/// shape as an environment assignment for the command that follows.
+fn is_env_assignment(word: &str) -> bool {
+    let b = word.as_bytes();
+    if b.is_empty() || !(b[0].is_ascii_alphabetic() || b[0] == b'_') {
+        return false;
+    }
+    let mut i = 1;
+    while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+        i += 1;
+    }
+    if i < b.len() && b[i] == b'[' {
+        match b[i..].iter().position(|&x| x == b']') {
+            Some(p) => i += p + 1,
+            None => return false,
+        }
+    }
+    if i < b.len() && b[i] == b'+' {
+        i += 1;
+    }
+    i < b.len() && b[i] == b'='
+}
+
+fn word_basename(word: &str) -> String {
+    Path::new(word)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 pub fn sh_quote(s: &str) -> String {
@@ -517,5 +700,100 @@ pub fn cmd_guard(policy: Option<&Path>) -> i32 {
         2
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_table(allowed: &[&str], refused: &[&str]) {
+        for cmd in allowed {
+            assert!(
+                bash_command_check(cmd).is_ok(),
+                "expected allowed: {cmd:?} -> {:?}",
+                bash_command_check(cmd)
+            );
+        }
+        for cmd in refused {
+            assert!(
+                bash_command_check(cmd).is_err(),
+                "expected refused: {cmd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bash_shell_table() {
+        let allowed = [
+            "git status --porcelain",
+            "git diff abc123..HEAD -- . ':(exclude).plan.md' ':(exclude).qa-report.md'",
+            "git log --format='%H %s' -5",
+            "git show HEAD:.plan-review.md",
+            "git show 'HEAD@{1}'",
+            "git commit -m \"sua-app: sửa app\"",
+            "git commit -m sua-app: sửa app",
+            "\"git\" status",
+            "/usr/bin/git status",
+            "ls -la",
+            // extra: an escaped `$` inside double quotes is literal; a non-git
+            // glob and a `#` inside a word are left to claude's own rules
+            "git log \"a\\$b\"",
+            "ls *.py",
+            "git log a#b",
+            "",
+            "   ",
+        ];
+        let refused = [
+            "git log > out.txt",
+            "git log < in.txt",
+            "git diff | sh",
+            "git log; rm -rf x",
+            "git log && id",
+            "git log & id",
+            "git log $(id)",
+            "git log $HOME",
+            "git log \"$HOME\"",
+            "git log `id`",
+            "git log (x)",
+            "git diff {--output=../x,HEAD}",
+            "git log #x",
+            "git log \"a",
+            "git log 'a",
+            "git commit -m \"a\nb\"",
+            "git status\nid",
+            "git status \\\n--output=x",
+            "GIT_EXTERNAL_DIFF=x git diff",
+            "X=1 ls",
+            // extra (stricter than the plan's table)
+            "git status\r",
+            "git log \"`id`\"",
+            "git status \\",
+            "X+=1 git status",
+            "X[0]=1 git status",
+            "git show HEAD@{1}",
+            "git diff --outpu?=x",
+            "git add src/*.py",
+            "git diff '--output=x'",
+            "git diff \\-\\-output=x",
+            "timeout 5 git diff --output=x",
+            "env git status",
+            "command git status",
+            "sh -c 'git diff --output=x'",
+            "xargs git diff",
+            "/usr/lib/git-core/git-diff --output=x",
+            "git log \u{7}",
+        ];
+        check_table(&allowed, &refused);
+
+        // quote removal and unescaping give the words bash would pass on
+        let w = shell_words("git log --format='%H %s' \"a\\\"b\" c\\ d '' x").unwrap();
+        let texts: Vec<&str> = w.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["git", "log", "--format=%H %s", "a\"b", "c d", "", "x"]
+        );
+        let err = bash_command_check("git log && id").unwrap_err();
+        assert!(err.contains("toán tử shell (&)"), "{err}");
     }
 }
