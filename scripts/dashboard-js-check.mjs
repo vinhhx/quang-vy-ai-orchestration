@@ -922,6 +922,241 @@ const sections = [
     },
   },
   {
+    name: 'task-header',
+    async run(ctx) {
+      const AB = ctx.AB;
+
+      // autoBadge: seven states, exact text and key
+      const badgeCases = [
+        [{ state: 'off' }, 'Autopilot: tắt', 'cho'],
+        [{ state: 'running' }, 'Autopilot: đang chạy', 'dang_chay'],
+        [{ state: 'stopping' }, 'Autopilot: đang dừng', 'dang_chay'],
+        [{ state: 'gate' }, 'Autopilot: chờ bạn duyệt plan', 'cho_ban'],
+        [{ state: 'stopped', stop_word: 'hết vòng' }, 'Autopilot: chờ bạn · hết vòng', 'cho_ban'],
+        [{ state: 'lost' }, 'Autopilot: đã dừng', 'killed'],
+        [{ state: 'done' }, 'Autopilot: xong', 'xong'],
+      ];
+      for (const [auto, text, key] of badgeCases) {
+        const b = AB.autoBadge(auto);
+        check(`autoBadge(${auto.state}) text`, b.text === text, `got "${b.text}"`);
+        check(`autoBadge(${auto.state}) key`, b.key === key, `got "${b.key}"`);
+      }
+      check('autoBadge(null) off', AB.autoBadge(null).text === 'Autopilot: tắt', `got "${AB.autoBadge(null).text}"`);
+
+      // budgetParts
+      const bp1 = AB.budgetParts({ used_ms: 2880000, used_minutes: 48, limit_minutes: 60, used_usd: 16, limit_usd: 20, estimated: false, estimated_runs: 0, level: 'near' });
+      check('budgetParts near text', bp1.text === 'Ngân sách: 48 / 60 phút · $16.00 / $20.00', `got "${bp1.text}"`);
+      check('budgetParts near level', bp1.level === 'sắp hết', `got "${bp1.level}"`);
+      check('budgetParts near note empty', bp1.note === '', `got "${bp1.note}"`);
+      const bp2 = AB.budgetParts({ used_ms: 3700000, used_minutes: 62, limit_minutes: 60, used_usd: 21.5, limit_usd: 20, estimated: true, estimated_runs: 2, level: 'over' });
+      check('budgetParts estimated has ≈ $', bp2.text.includes('≈ $'), `got "${bp2.text}"`);
+      check('budgetParts over level', bp2.level === 'đã hết', `got "${bp2.level}"`);
+      check('budgetParts estimated note', bp2.note.startsWith('Gồm chi phí ước tính từ token cho 2 run'), `got "${bp2.note}"`);
+      const bp3 = AB.budgetParts({ used_ms: 0, used_minutes: 0, limit_minutes: 60, used_usd: 0, limit_usd: 20, estimated: false, estimated_runs: 0, level: 'ok' });
+      check('budgetParts ok level empty', bp3.level === '', `got "${bp3.level}"`);
+      check('budgetParts(null) empty', AB.budgetParts(null).text === '', `got "${AB.budgetParts(null).text}"`);
+
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      ctx.AB.route = { name: 'task', params: { id: '1' } };
+      const taskJsSrc = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/js/task.js'), 'utf8');
+      vm.runInContext(taskJsSrc, ctx, { filename: 'task.js' });
+
+      const SUMMARY = 'plan ⇄ review → Bạn → code ⇄ review → QA ⇄ sửa';
+      const AUTO_START = { id: 'auto_start', label: 'Bật autopilot', enabled: true, reason: null, run_id: null };
+      const AUTO_STOP = { id: 'auto_stop', label: 'Dừng autopilot', enabled: true, reason: null, run_id: null };
+      const T = {
+        id: 1,
+        slug: 'sua-app',
+        status: 'planned',
+        current_step: 'dev',
+        actions: [{ id: 'run_dev', label: 'Chạy Dev', enabled: true, reason: null }],
+        controls: [
+          { id: 'approve', label: 'Duyệt plan', enabled: true, reason: null, run_id: null },
+          { id: 'return_lead', label: 'Trả về Lead', enabled: true, reason: null, run_id: null },
+          AUTO_START,
+        ],
+        auto: { state: 'off', legacy: false, workflow_auto: true, stop_reason: null, stop_word: null, stop_detail: null, stopped_in: null, stop_requested: false },
+        workflow: { name: 'mac-dinh', summary: SUMMARY, auto: true },
+        rev: 'rev-1',
+        steps: [],
+        runs: [],
+      };
+      const WF = { name: 'mac-dinh', summary: SUMMARY, auto: true, max_rounds: 3, budget_minutes: 60, budget_usd: 20, limits: '3 vòng · 60 phút · $20', loops: ['plan', 'build', 'qa'], stages: [] };
+
+      const c = factories.task();
+      c.id = '1';
+      c.task = T;
+      c.pipe = { workflow: WF, groups: [], gate: null, current_card: 'ban', budget: null, cards: {}, ledger: { groups: [], total: null } };
+
+      check('workflowLine mac-dinh', c.workflowLine === 'Quy trình: mac-dinh · ' + SUMMARY, `got "${c.workflowLine}"`);
+      c.task = { ...T, workflow: null };
+      check(
+        'workflowLine legacy',
+        c.workflowLine === 'Quy trình: chưa có (task tạo trước Phase 5.2) — chạy tay từng bước.',
+        `got "${c.workflowLine}"`
+      );
+      c.task = T;
+
+      const hc = c.headerControls.map((x) => x.id);
+      check('headerControls only auto_start / auto_stop', JSON.stringify(hc) === JSON.stringify(['auto_start']), `got ${JSON.stringify(hc)}`);
+      c.task = { ...T, controls: [AUTO_STOP], auto: { ...T.auto, state: 'running' } };
+      check('headerControls auto_stop while running', JSON.stringify(c.headerControls.map((x) => x.id)) === JSON.stringify(['auto_stop']));
+      c.task = T;
+
+      check(
+        'autoHelper enabled auto_start with mac-dinh limits',
+        c.autoHelper(AUTO_START) === 'Giới hạn: 3 vòng mỗi bước lặp, 60 phút hoặc $20 cho cả task. Autopilot luôn dừng ở bước bạn duyệt plan.',
+        `got "${c.autoHelper(AUTO_START)}"`
+      );
+      c.pipe = { ...c.pipe, workflow: { ...WF, loops: [], budget_usd: 0.05 } };
+      check(
+        'autoHelper without loops, cents',
+        c.autoHelper(AUTO_START) === 'Giới hạn: 60 phút hoặc $0.05 cho cả task. Autopilot luôn dừng ở bước bạn duyệt plan.',
+        `got "${c.autoHelper(AUTO_START)}"`
+      );
+      c.pipe = { ...c.pipe, workflow: WF };
+      check('autoHelper disabled auto_start empty', c.autoHelper({ ...AUTO_START, enabled: false, reason: 'x' }) === '', `got "${c.autoHelper({ ...AUTO_START, enabled: false })}"`);
+      c.pipe = null;
+      check('autoHelper without pipeline empty (no fabricated limits)', c.autoHelper(AUTO_START) === '', `got "${c.autoHelper(AUTO_START)}"`);
+      c.task = { ...T, controls: [AUTO_STOP], auto: { ...T.auto, state: 'running' } };
+      check('autoHelper running', c.autoHelper(AUTO_STOP) === 'Run hiện tại chạy nốt rồi autopilot dừng. Muốn dừng ngay: Kill.', `got "${c.autoHelper(AUTO_STOP)}"`);
+      check('autoBadgeText running', c.autoBadgeText === 'Autopilot: đang chạy', `got "${c.autoBadgeText}"`);
+      check('autoBadgeClass running blue', c.autoBadgeClass === AB.stepClass('dang_chay'), `got "${c.autoBadgeClass}"`);
+      c.task = { ...T, auto: { ...T.auto, state: 'lost' } };
+      check(
+        'autoHelper lost',
+        c.autoHelper(AUTO_START) === 'Autopilot đã dừng vì agent-brain serve tắt giữa chừng. Bật autopilot để chạy tiếp từ bước dở.',
+        `got "${c.autoHelper(AUTO_START)}"`
+      );
+      check('driverLost', c.driverLost === true);
+      check('headerHelper lost', c.headerHelper.startsWith('Autopilot đã dừng vì agent-brain serve'), `got "${c.headerHelper}"`);
+      c.task = T;
+
+      // budget getters read the pipeline payload
+      c.pipe = { workflow: WF, groups: [], gate: null, current_card: null, budget: { used_ms: 2880000, used_minutes: 48, limit_minutes: 60, used_usd: 16, limit_usd: 20, estimated: false, estimated_runs: 0, level: 'near' }, cards: {}, ledger: { groups: [], total: null } };
+      check('hasBudget', c.hasBudget === true);
+      check('budgetText', c.budgetText === 'Ngân sách: 48 / 60 phút · $16.00 / $20.00', `got "${c.budgetText}"`);
+      check('budgetLevel', c.budgetLevel === 'sắp hết', `got "${c.budgetLevel}"`);
+      c.pipe = null;
+      check('hasBudget false without pipeline', c.hasBudget === false);
+
+      // strip caption follows current_card
+      for (const [key, title] of [['plan', 'Lên plan'], ['plan_review', 'Review plan'], ['ban', 'Bạn'], ['code', 'Code'], ['code_review', 'Review code'], ['qa', 'QA'], ['fix', 'Sửa']]) {
+        c.pipe = { current_card: key, groups: [], gate: null };
+        check(`stripCaption current_card ${key}`, c.stripCaption === 'Bước hiện tại: ' + title, `got "${c.stripCaption}"`);
+      }
+      c.pipe = { current_card: null, groups: [], gate: null };
+      check('stripCaption fallback current_step', c.stripCaption === 'Bước hiện tại: Bạn', `got "${c.stripCaption}"`);
+
+      // in-flight labels
+      c.busyAction = 'auto_start';
+      check('actionText auto_start in flight', c.actionText(AUTO_START) === 'Đang bật...', `got "${c.actionText(AUTO_START)}"`);
+      c.busyAction = 'auto_stop';
+      check('actionText auto_stop in flight', c.actionText(AUTO_STOP) === 'Đang dừng...', `got "${c.actionText(AUTO_STOP)}"`);
+      c.busyAction = '';
+
+      // postControl
+      const posts = [];
+      let nextRes = null;
+      ctx.AB.api = function (method, url, body) {
+        posts.push({ method, url, body });
+        return Promise.resolve(nextRes);
+      };
+      let loads = 0;
+      c.load = function () {
+        loads++;
+      };
+      c.task = T;
+
+      nextRes = { ok: true, status: 202, data: { job_id: 7 } };
+      c.onAction(AUTO_START);
+      check('postControl busy while in flight', c.busyAction === 'auto_start', `got "${c.busyAction}"`);
+      await Promise.resolve();
+      await Promise.resolve();
+      check('postControl auto_start POST path', posts.length === 1 && posts[0].method === 'POST' && posts[0].url === '/api/tasks/1/auto', JSON.stringify(posts));
+      check('postControl body carries rev', posts[0] && posts[0].body && posts[0].body.rev === 'rev-1', JSON.stringify(posts[0]));
+      check('postControl 202 message', c.message === 'Đã bật autopilot.', `got "${c.message}"`);
+      check('postControl 202 reloads', loads === 1, `loads=${loads}`);
+      check('postControl clears busy', c.busyAction === '', `got "${c.busyAction}"`);
+
+      nextRes = { ok: true, status: 200, data: { ok: true } };
+      c.onAction(AUTO_STOP);
+      await Promise.resolve();
+      await Promise.resolve();
+      check('postControl auto_stop path', posts[1] && posts[1].url === '/api/tasks/1/auto/stop', JSON.stringify(posts[1]));
+      check('postControl auto_stop message', c.message === 'Đã yêu cầu dừng autopilot — run hiện tại chạy nốt rồi dừng.', `got "${c.message}"`);
+      check('postControl auto_stop reloads', loads === 2, `loads=${loads}`);
+
+      nextRes = { ok: false, status: 409, data: { error: 'Dữ liệu đã cũ — tải lại rồi thử lại', kind: 'stale' } };
+      c.onAction(AUTO_START);
+      await Promise.resolve();
+      await Promise.resolve();
+      check('postControl 409 stale message', c.message === 'Dữ liệu đã cũ — tải lại rồi thử lại', `got "${c.message}"`);
+      check('postControl 409 stale reloads at once', loads === 3, `loads=${loads}`);
+
+      nextRes = { ok: false, status: 409, data: { error: 'Dự án đang bận', kind: 'busy' } };
+      c.onAction(AUTO_START);
+      await Promise.resolve();
+      await Promise.resolve();
+      check('postControl 409 busy message', c.message === 'Dự án đang bận', `got "${c.message}"`);
+      check('postControl 409 busy no reload', loads === 3, `loads=${loads}`);
+
+      // 05.1 WR-04: a request busy for 10 s or more is superseded
+      const pipeCalls = [];
+      ctx.AB.api = function (method, url) {
+        pipeCalls.push(url);
+        return new Promise(() => {});
+      };
+      const w = factories.task();
+      w.id = '1';
+      w._pipeBusy = true;
+      w._pipeStarted = Date.now() - 1000;
+      w._pipeAgain = false;
+      w.loadPipeline();
+      check('WR-04 busy 1 s: no new request', pipeCalls.length === 0, `got ${pipeCalls.length}`);
+      check('WR-04 busy 1 s: sets _pipeAgain', w._pipeAgain === true);
+      check('WR-04 busy 1 s: not stale', w.pipeStale === false);
+
+      w._pipeAgain = false;
+      w._pipeStarted = Date.now() - 11000;
+      const seqBefore = w._pipeSeq;
+      w.loadPipeline();
+      check('WR-04 busy 11 s: new request started', pipeCalls.length === 1, `got ${pipeCalls.length}`);
+      check('WR-04 busy 11 s: pipeStale true', w.pipeStale === true);
+      check('WR-04 busy 11 s: seq advanced', w._pipeSeq === seqBefore + 1, `got ${w._pipeSeq}`);
+      check('WR-04 busy 11 s: _pipeStarted renewed', Date.now() - w._pipeStarted < 1000, `got ${w._pipeStarted}`);
+
+      // a superseded response is discarded and does not clear the newer request's busy flag
+      let resolvers = [];
+      ctx.AB.api = function () {
+        return new Promise((res) => resolvers.push(res));
+      };
+      const z = factories.task();
+      z.id = '1';
+      z.loadPipeline();
+      z._pipeStarted = Date.now() - 11000;
+      z.loadPipeline();
+      check('WR-04 two requests in flight', resolvers.length === 2, `got ${resolvers.length}`);
+      resolvers[0]({ ok: true, status: 200, data: { old: true } });
+      await Promise.resolve();
+      await Promise.resolve();
+      check('WR-04 old response discarded', z.pipe === null, 'pipe set from superseded response');
+      check('WR-04 newer request still busy', z._pipeBusy === true);
+      const fresh = { fresh: true };
+      resolvers[1]({ ok: true, status: 200, data: fresh });
+      await Promise.resolve();
+      await Promise.resolve();
+      check('WR-04 latest response applied', z.pipe === fresh, 'pipe not from the latest response');
+      check('WR-04 latest clears stale', z.pipeStale === false);
+      check('WR-04 latest clears busy', z._pipeBusy === false);
+    },
+  },
+  {
     name: 'ledger',
     async run(ctx) {
       const factories = {};

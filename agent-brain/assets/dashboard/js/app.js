@@ -296,6 +296,38 @@
       return parts;
     },
 
+    budgetParts: function (b) {
+      if (!b) return { text: '', level: '', note: '' };
+      var used = window.AB.fmtUsd(b.used_usd);
+      var text = 'Ngân sách: ' + b.used_minutes + ' / ' + b.limit_minutes + ' phút · ' +
+        (b.estimated ? '≈ ' : '') + used + ' / ' + window.AB.fmtUsd(b.limit_usd);
+      var level = '';
+      if (b.level === 'over') {
+        level = 'đã hết';
+      } else if (b.level === 'near') {
+        level = 'sắp hết';
+      }
+      var note = '';
+      if (b.estimated) {
+        note = 'Gồm chi phí ước tính từ token cho ' + b.estimated_runs + ' run bị dừng hoặc chưa có kết quả, nên có thể lớn hơn Tổng đến giờ.';
+      }
+      return { text: text, level: level, note: note };
+    },
+
+    autoBadge: function (auto) {
+      var state = auto ? auto.state : 'off';
+      if (state === 'running') return { text: 'Autopilot: đang chạy', key: 'dang_chay' };
+      if (state === 'stopping') return { text: 'Autopilot: đang dừng', key: 'dang_chay' };
+      if (state === 'gate') return { text: 'Autopilot: chờ bạn duyệt plan', key: 'cho_ban' };
+      if (state === 'stopped') {
+        var word = (auto && auto.stop_word) ? auto.stop_word : '—';
+        return { text: 'Autopilot: chờ bạn · ' + word, key: 'cho_ban' };
+      }
+      if (state === 'lost') return { text: 'Autopilot: đã dừng', key: 'killed' };
+      if (state === 'done') return { text: 'Autopilot: xong', key: 'xong' };
+      return { text: 'Autopilot: tắt', key: 'cho' };
+    },
+
     profileClass: function (p) {
       return PROFILE_CLASSES[p] || PROFILE_CLASSES.work;
     },

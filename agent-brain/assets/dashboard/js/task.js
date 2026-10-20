@@ -21,14 +21,18 @@
       _pipeSeq: 0,
       _pipeBusy: false,
       _pipeAgain: false,
+      _pipeStarted: 0,
       _left: false,
 
       stageTitles: {
         start: 'Bắt đầu',
         plan: 'Lên plan',
+        plan_review: 'Review plan',
         ban: 'Bạn',
         code: 'Code',
+        code_review: 'Review code',
         qa: 'QA',
+        fix: 'Sửa',
       },
 
       // Live log state
@@ -110,18 +114,26 @@
         var self = this;
         if (!this.id || this._left || this.notFound) return;
         if (this._pipeBusy) {
-          this._pipeAgain = true;
-          return;
+          // 05.1 WR-04: a request busy for 10 s or more is superseded; the
+          // seq guard below discards its late response.
+          if (Date.now() - this._pipeStarted < 10000) {
+            this._pipeAgain = true;
+            return;
+          }
+          this.pipeStale = true;
+          this._pipeAgain = false;
         }
         this._pipeBusy = true;
+        this._pipeStarted = Date.now();
+        var seq = ++this._pipeSeq;
         function finish() {
+          if (seq !== self._pipeSeq) return;
           self._pipeBusy = false;
           if (self._pipeAgain) {
             self._pipeAgain = false;
             self.loadPipeline();
           }
         }
-        var seq = ++this._pipeSeq;
         window.AB.api('GET', '/api/tasks/' + this.id + '/pipeline').then(function (res) {
           if (seq === self._pipeSeq) {
             if (res && res.ok && res.data) {
@@ -994,6 +1006,101 @@
         add('qa');
         return 'Pipeline: ' + titles.join(', ');
       },
+      // Pipeline card header (05.2): autopilot badge, toggle, workflow and budget
+      // lines. Badge, toggle and workflow line read only the task-detail payload.
+      get autoView() {
+        return (this.task && this.task.auto) ? this.task.auto : null;
+      },
+
+      get autoState() {
+        return this.autoView ? this.autoView.state : 'off';
+      },
+
+      get autoBadge() {
+        return window.AB.autoBadge(this.autoView);
+      },
+
+      get autoBadgeText() {
+        return this.autoBadge.text;
+      },
+
+      get autoBadgeClass() {
+        return window.AB.stepClass(this.autoBadge.key);
+      },
+
+      get autoBadgeGlyph() {
+        return window.AB.stepGlyph(this.autoBadge.key);
+      },
+
+      get autoBadgeGlyphClass() {
+        return window.AB.stepGlyphClass(this.autoBadge.key);
+      },
+
+      get workflowLine() {
+        if (!this.task) return '';
+        var wf = this.task.workflow;
+        if (!wf) return 'Quy trình: chưa có (task tạo trước Phase 5.2) — chạy tay từng bước.';
+        return 'Quy trình: ' + wf.name + (wf.summary ? ' · ' + wf.summary : '');
+      },
+
+      get budgetView() {
+        return (this.pipe && this.pipe.budget) ? this.pipe.budget : null;
+      },
+
+      get hasBudget() {
+        return Boolean(this.budgetView);
+      },
+
+      get budgetText() {
+        return window.AB.budgetParts(this.budgetView).text;
+      },
+
+      get budgetLevel() {
+        return window.AB.budgetParts(this.budgetView).level;
+      },
+
+      get budgetNote() {
+        return window.AB.budgetParts(this.budgetView).note;
+      },
+
+      get headerControls() {
+        var cs = (this.task && this.task.controls) ? this.task.controls : [];
+        return cs.filter(function (c) {
+          return c && (c.id === 'auto_start' || c.id === 'auto_stop');
+        });
+      },
+
+      get driverLost() {
+        return this.autoState === 'lost';
+      },
+
+      autoHelper: function (a) {
+        var st = this.autoState;
+        if (st === 'running' || st === 'stopping') {
+          return 'Run hiện tại chạy nốt rồi autopilot dừng. Muốn dừng ngay: Kill.';
+        }
+        if (st === 'lost') {
+          return 'Autopilot đã dừng vì agent-brain serve tắt giữa chừng. Bật autopilot để chạy tiếp từ bước dở.';
+        }
+        if (!a || a.id !== 'auto_start' || !a.enabled) return '';
+        var wf = (this.pipe && this.pipe.workflow) ? this.pipe.workflow : null;
+        if (!wf || typeof wf.budget_minutes !== 'number' || typeof wf.budget_usd !== 'number') return '';
+        var usd = wf.budget_usd;
+        var money = (Math.abs(Math.round(usd) - usd) < 1e-9) ? ('$' + Math.round(usd)) : ('$' + usd.toFixed(2));
+        var limits = wf.budget_minutes + ' phút hoặc ' + money + ' cho cả task.';
+        var hasLoops = Boolean(wf.loops && wf.loops.length > 0);
+        var text = hasLoops
+          ? 'Giới hạn: ' + wf.max_rounds + ' vòng mỗi bước lặp, ' + limits
+          : 'Giới hạn: ' + limits;
+        return text + ' Autopilot luôn dừng ở bước bạn duyệt plan.';
+      },
+
+      get headerHelper() {
+        var cs = this.headerControls;
+        if (cs.length > 0) return this.autoHelper(cs[0]);
+        return this.driverLost ? this.autoHelper(null) : '';
+      },
+
       get actionList() {
         return (this.task && this.task.actions) ? this.task.actions : [];
       },
@@ -1007,14 +1114,9 @@
       },
 
       get stripCaption() {
-        var map = this.stageTitles || {
-          plan: 'Lên plan',
-          ban: 'Bạn',
-          code: 'Code',
-          qa: 'QA',
-        };
-        if (this.pipe && this.pipe.current && map[this.pipe.current]) {
-          return 'Bước hiện tại: ' + map[this.pipe.current];
+        var map = this.stageTitles;
+        if (this.pipe && this.pipe.current_card && map[this.pipe.current_card]) {
+          return 'Bước hiện tại: ' + map[this.pipe.current_card];
         }
         var t = this.task;
         var step = t ? t.current_step : null;
@@ -1053,7 +1155,9 @@
 
       actionText: function (a) {
         if (this.busyAction === a.id) {
-          return a.id === 'kill' ? 'Đang dừng...' : 'Đang giao...';
+          if (a.id === 'auto_start') return 'Đang bật...';
+          if (a.id === 'kill' || a.id === 'auto_stop') return 'Đang dừng...';
+          return 'Đang giao...';
         }
         return a.label;
       },
@@ -1084,9 +1188,37 @@
           this.dialog = a;
           window.AB.lockScroll(true);
           window.AB.focusLater('ab-dlg-cancel');
+        } else if (a.id === 'auto_start' || a.id === 'auto_stop') {
+          this.postControl(a);
         } else {
           this.runAction(a);
         }
+      },
+
+      // Bật / Dừng autopilot: task-detail controls, sent with the task's rev so
+      // a click on stale data is refused (409 kind stale) and the task reloads.
+      postControl: function (a) {
+        var self = this;
+        if (!a || (a.id !== 'auto_start' && a.id !== 'auto_stop')) return;
+        var path = '/api/tasks/' + this.id + (a.id === 'auto_start' ? '/auto' : '/auto/stop');
+        var rev = (this.task && this.task.rev !== undefined) ? this.task.rev : null;
+        this.busyAction = a.id;
+        return window.AB.api('POST', path, { rev: rev }).then(function (res) {
+          self.busyAction = '';
+          if (res && (res.status === 202 || res.status === 200) && res.data) {
+            self.message = (a.id === 'auto_start')
+              ? 'Đã bật autopilot.'
+              : 'Đã yêu cầu dừng autopilot — run hiện tại chạy nốt rồi dừng.';
+            self.load();
+          } else if (res && res.status === 409 && res.data && res.data.error) {
+            self.message = res.data.error;
+            if (res.data.kind === 'stale') {
+              self.load();
+            }
+          } else {
+            self.message = window.AB.errorText(res);
+          }
+        });
       },
 
       closeDialog: function () {

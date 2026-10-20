@@ -34,7 +34,26 @@
 
     <!-- Pipeline card -->
     <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
-      <h2 class="text-xl font-semibold leading-[1.2]">Pipeline</h2>
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="text-xl font-semibold leading-[1.2]">Pipeline</h2>
+        <span data-auto-badge role="status" :class="autoBadgeClass">
+          <span aria-hidden="true" :class="autoBadgeGlyphClass" x-text="autoBadgeGlyph"></span>
+          <span x-text="autoBadgeText"></span>
+        </span>
+        <template x-for="a in headerControls" :key="a.id">
+          <div class="ml-auto space-y-1">
+            <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
+            <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
+          </div>
+        </template>
+      </div>
+
+      <div class="space-y-1">
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="workflowLine" x-text="workflowLine"></p>
+        <p data-budget class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words tabular-nums" x-show="hasBudget"><span x-text="budgetText"></span><span x-show="budgetLevel"> · </span><span class="font-semibold text-amber-800 dark:text-amber-300" x-show="budgetLevel" x-text="budgetLevel"></span></p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="budgetNote" x-text="budgetNote"></p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="headerHelper" x-text="headerHelper"></p>
+      </div>
 
       <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="pipeLoading">Đang tải...</p>
 
@@ -179,22 +198,10 @@
         <ul class="flex flex-wrap gap-2">
           <li data-placeholder-chip class="inline-flex items-center gap-2 rounded-xl border border-dashed border-slate-400 px-4 py-2 text-sm font-normal leading-normal text-slate-600 dark:border-slate-500 dark:text-slate-400">
             <span aria-hidden="true" class="w-6 text-center" x-text="placeholderGlyph"></span>
-            <span>Review plan · chưa tự động</span>
-          </li>
-          <li data-placeholder-chip class="inline-flex items-center gap-2 rounded-xl border border-dashed border-slate-400 px-4 py-2 text-sm font-normal leading-normal text-slate-600 dark:border-slate-500 dark:text-slate-400">
-            <span aria-hidden="true" class="w-6 text-center" x-text="placeholderGlyph"></span>
-            <span>Review code · chưa tự động</span>
-          </li>
-          <li data-placeholder-chip class="inline-flex items-center gap-2 rounded-xl border border-dashed border-slate-400 px-4 py-2 text-sm font-normal leading-normal text-slate-600 dark:border-slate-500 dark:text-slate-400">
-            <span aria-hidden="true" class="w-6 text-center" x-text="placeholderGlyph"></span>
-            <span>Sửa · chưa tự động</span>
-          </li>
-          <li data-placeholder-chip class="inline-flex items-center gap-2 rounded-xl border border-dashed border-slate-400 px-4 py-2 text-sm font-normal leading-normal text-slate-600 dark:border-slate-500 dark:text-slate-400">
-            <span aria-hidden="true" class="w-6 text-center" x-text="placeholderGlyph"></span>
             <span>PR nháp · chưa tự động</span>
           </li>
         </ul>
-        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Các giai đoạn này chưa có trong giao thức hiện tại; dashboard không giả lập kết quả.</p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Giai đoạn này chưa có trong giao thức hiện tại; dashboard không giả lập kết quả.</p>
       </div>
 
       <!-- Action strip -->
@@ -242,7 +249,7 @@
         </li>
         <li data-legend-item class="inline-flex items-center gap-1 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
           <span aria-hidden="true" :class="legendGlyphClass('vuong_mac')" x-text="legendGlyph('vuong_mac')"></span>
-          <span>vướng mắc / cần sửa</span>
+          <span>vướng mắc / cần sửa / sửa lại</span>
         </li>
       </ul>
     </div>

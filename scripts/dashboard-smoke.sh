@@ -327,6 +327,8 @@ for s in "${SCREENS[@]}"; do
 import sys
 from html.parser import HTMLParser
 
+VOID_TAGS = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr'}
+
 class PipelineParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -342,6 +344,9 @@ class PipelineParser(HTMLParser):
         self.in_ledger_total = False
         self.ledger_total_text = ''
         self.full_text = ''
+        self.badges = []
+        self.badge_depth = 0
+        self.depth = 0
 
     def handle_starttag(self, tag, attrs):
         if tag == 'template':
@@ -363,6 +368,12 @@ class PipelineParser(HTMLParser):
         if tag == 'button' and 'id' in attr_dict:
             self.button_ids.add(attr_dict['id'])
 
+        if tag not in VOID_TAGS:
+            self.depth += 1
+            if 'data-auto-badge' in attr_dict and self.badge_depth == 0:
+                self.badges.append({'role': attr_dict.get('role'), 'text': ''})
+                self.badge_depth = self.depth
+
         if 'data-legend-item' in attr_dict:
             self.legend_items.append(tag)
 
@@ -383,6 +394,8 @@ class PipelineParser(HTMLParser):
     def handle_data(self, data):
         if self.template_depth == 0:
             self.full_text += data
+            if self.badge_depth:
+                self.badges[-1]['text'] += data
             if self.in_chip:
                 self.chips[-1]['text'] += data
             if self.in_ledger_total:
@@ -392,6 +405,13 @@ class PipelineParser(HTMLParser):
         if tag == 'template':
             if self.template_depth > 0:
                 self.template_depth -= 1
+            return
+        if self.template_depth > 0:
+            return
+        if tag not in VOID_TAGS:
+            if self.badge_depth and self.depth == self.badge_depth:
+                self.badge_depth = 0
+            self.depth -= 1
         if self.in_chip and tag == 'li':
             self.in_chip = False
         if self.in_ledger_total and tag == 'p':
@@ -446,8 +466,40 @@ if len(parser.legend_items) != 7:
     print(f"Lỗi: Số lượng data-legend-item là {len(parser.legend_items)}, kỳ vọng 7", file=sys.stderr)
     sys.exit(1)
 
-if len(parser.chips) != 4:
-    print(f"Lỗi: Số lượng data-placeholder-chip là {len(parser.chips)}, kỳ vọng 4", file=sys.stderr)
+if 'vướng mắc / cần sửa / sửa lại' not in parser.full_text:
+    print("Lỗi: chú thích thứ 7 không chứa 'vướng mắc / cần sửa / sửa lại'", file=sys.stderr)
+    sys.exit(1)
+
+if len(parser.chips) != 1:
+    print(f"Lỗi: Số lượng data-placeholder-chip là {len(parser.chips)}, kỳ vọng 1", file=sys.stderr)
+    sys.exit(1)
+
+if 'PR nháp · chưa tự động' not in parser.chips[0]['text']:
+    print(f"Lỗi: Chip không chứa 'PR nháp · chưa tự động' (nội dung: '{parser.chips[0]['text']}')", file=sys.stderr)
+    sys.exit(1)
+
+if 'ab-act-auto_start' not in parser.button_ids:
+    print(f"Lỗi: Thiếu nút ab-act-auto_start trong danh sách buttons: {parser.button_ids}", file=sys.stderr)
+    sys.exit(1)
+
+if len(parser.badges) != 1:
+    print(f"Lỗi: Số phần tử data-auto-badge là {len(parser.badges)}, kỳ vọng 1", file=sys.stderr)
+    sys.exit(1)
+
+if parser.badges[0]['role'] != 'status':
+    print(f"Lỗi: data-auto-badge có role='{parser.badges[0]['role']}', kỳ vọng 'status'", file=sys.stderr)
+    sys.exit(1)
+
+if 'Autopilot: chờ bạn duyệt plan' not in parser.badges[0]['text']:
+    print(f"Lỗi: data-auto-badge không chứa 'Autopilot: chờ bạn duyệt plan' (nội dung: '{parser.badges[0]['text']}')", file=sys.stderr)
+    sys.exit(1)
+
+if 'Quy trình: mac-dinh ·' not in parser.full_text:
+    print("Lỗi: DOM không chứa 'Quy trình: mac-dinh ·'", file=sys.stderr)
+    sys.exit(1)
+
+if 'Ngân sách:' not in parser.full_text:
+    print("Lỗi: DOM không chứa 'Ngân sách:'", file=sys.stderr)
     sys.exit(1)
 
 for i, chip in enumerate(parser.chips):
