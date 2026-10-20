@@ -12,6 +12,7 @@
       busyAction: '',
       dialog: null,
       lastFocusId: '',
+      returnNote: '',
       runId: null,
 
       pipe: null,
@@ -612,6 +613,10 @@
           var slug = (this.task && this.task.slug) ? this.task.slug : '';
           return 'Chạy lại Lead cho task ' + slug + '?';
         }
+        if (this.dialog.id === 'return_lead') {
+          var rslug = (this.task && this.task.slug) ? this.task.slug : '';
+          return 'Trả plan về Lead cho task ' + rslug + '?';
+        }
         return '';
       },
 
@@ -620,24 +625,33 @@
         if (this.dialog.id === 'kill') {
           return 'Agent và mọi tiến trình con của nó sẽ bị dừng ngay. Thay đổi chưa commit trong thư mục dự án vẫn còn nguyên; task chuyển sang trạng thái killed.';
         }
-        if (this.dialog.id === 'relead') {
+        if (this.dialog.id === 'relead' || this.dialog.id === 'return_lead') {
           var slug = (this.task && this.task.slug) ? this.task.slug : '';
-          return 'Lead sẽ lập lại .plan.md trên nhánh task/' + slug + ' và commit \'' + slug + ': plan\'. Bản plan hiện tại vẫn còn trong lịch sử git.';
+          var body = 'Lead sẽ lập lại .plan.md trên nhánh task/' + slug + ' và commit \'' + slug + ': plan\'. Bản plan hiện tại vẫn còn trong lịch sử git.';
+          if (this.dialog.id === 'return_lead' && this.task && this.task.workflow && this.task.workflow.auto) {
+            body += ' Autopilot sẽ chạy lại vòng plan ⇄︎ review plan.';
+          }
+          return body;
         }
         return '';
+      },
+
+      get dialogIsReturn() {
+        return Boolean(this.dialog && this.dialog.id === 'return_lead');
       },
 
       get dialogOkLabel() {
         if (!this.dialog) return '';
         if (this.dialog.id === 'kill') return 'Kill run';
         if (this.dialog.id === 'relead') return 'Chạy lại Lead';
+        if (this.dialog.id === 'return_lead') return 'Trả về Lead';
         return '';
       },
 
       get dialogCancelLabel() {
         if (!this.dialog) return '';
         if (this.dialog.id === 'kill') return 'Giữ chạy tiếp';
-        if (this.dialog.id === 'relead') return 'Giữ plan hiện tại';
+        if (this.dialog.id === 'relead' || this.dialog.id === 'return_lead') return 'Giữ plan hiện tại';
         return '';
       },
 
@@ -1109,6 +1123,62 @@
         return this.actionList.length > 0;
       },
 
+      get controlList() {
+        return (this.task && this.task.controls) ? this.task.controls : [];
+      },
+
+      controlById: function (id) {
+        var cs = this.controlList;
+        for (var i = 0; i < cs.length; i++) {
+          if (cs[i] && cs[i].id === id) return cs[i];
+        }
+        return null;
+      },
+
+      // The gate buttons sit in the Bạn card while the pipeline (and its gate)
+      // is drawn; otherwise (pipeline failed, or no gate card) in the strip.
+      get gateInCard() {
+        return Boolean(this.pipe && this.gatePresent);
+      },
+
+      gateControlList: function () {
+        return this.controlList.filter(function (c) {
+          return c && (c.id === 'approve' || c.id === 'return_lead');
+        });
+      },
+
+      get gateControls() {
+        return this.gateInCard ? this.gateControlList() : [];
+      },
+
+      get hasGateControls() {
+        return this.gateControls.length > 0;
+      },
+
+      // Action strip: task actions, plus the gate controls when they cannot be
+      // drawn in the Bạn card.
+      get stripActions() {
+        var acts = this.actionList.slice();
+        if (!this.gateInCard && !this.pipeLoading) {
+          acts = this.gateControlList().concat(acts);
+        }
+        return acts;
+      },
+
+      get hasStripActions() {
+        return this.stripActions.length > 0;
+      },
+
+      get approveShown() {
+        var lists = [this.gateControls, this.stripActions];
+        for (var i = 0; i < lists.length; i++) {
+          for (var j = 0; j < lists[i].length; j++) {
+            if (lists[i][j] && lists[i][j].id === 'approve') return true;
+          }
+        }
+        return false;
+      },
+
       actionId: function (a) {
         return 'ab-act-' + (a ? a.id : '');
       },
@@ -1131,22 +1201,31 @@
         return 'Bước hiện tại: ' + title;
       },
 
+      // One primary per section: Duyệt plan > Chạy thêm 1 vòng > first enabled
+      // action of the strip. Red stays Kill only.
       actionClass: function (a) {
+        var primary = 'bg-indigo-600 text-white hover:bg-indigo-700';
+        var secondary = 'text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700';
+        if (!a) return secondary;
         if (a.id === 'kill') {
           return 'bg-rose-600 text-white hover:bg-rose-700';
         }
-        var actions = (this.task && this.task.actions) ? this.task.actions : [];
+        if (a.id === 'approve') return primary;
+        if (a.id === 'return_lead' || a.id === 'auto_start' || a.id === 'auto_stop' || a.id === 'auto_end') {
+          return secondary;
+        }
+        if (this.approveShown) return secondary;
+        if (a.id === 'auto_more_round') return primary;
+        var strip = this.stripActions;
         var firstEnabled = null;
-        for (var i = 0; i < actions.length; i++) {
-          if (actions[i].enabled) {
-            firstEnabled = actions[i];
+        for (var i = 0; i < strip.length; i++) {
+          if (strip[i] && strip[i].enabled) {
+            firstEnabled = strip[i];
             break;
           }
         }
-        if (firstEnabled && firstEnabled.id === a.id) {
-          return 'bg-indigo-600 text-white hover:bg-indigo-700';
-        }
-        return 'text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700';
+        if (firstEnabled && firstEnabled.id === a.id) return primary;
+        return secondary;
       },
 
       actionDisabled: function (a) {
@@ -1156,7 +1235,8 @@
       actionText: function (a) {
         if (this.busyAction === a.id) {
           if (a.id === 'auto_start') return 'Đang bật...';
-          if (a.id === 'kill' || a.id === 'auto_stop') return 'Đang dừng...';
+          if (a.id === 'approve') return 'Đang duyệt...';
+          if (a.id === 'kill' || a.id === 'auto_stop' || a.id === 'auto_end') return 'Đang dừng...';
           return 'Đang giao...';
         }
         return a.label;
@@ -1183,32 +1263,71 @@
       },
 
       onAction: function (a) {
+        if (!a) return;
         if (a.id === 'kill' || a.id === 'relead') {
           this.lastFocusId = this.actionId(a);
           this.dialog = a;
           window.AB.lockScroll(true);
           window.AB.focusLater('ab-dlg-cancel');
-        } else if (a.id === 'auto_start' || a.id === 'auto_stop') {
+        } else if (a.id === 'return_lead') {
+          // Not destructive (the plan stays in git history): focus the note.
+          this.lastFocusId = this.actionId(a);
+          this.returnNote = '';
+          this.dialog = a;
+          window.AB.lockScroll(true);
+          window.AB.focusLater('ab-return-note');
+        } else if (this.controlPaths[a.id]) {
           this.postControl(a);
         } else {
           this.runAction(a);
         }
       },
 
-      // Bật / Dừng autopilot: task-detail controls, sent with the task's rev so
-      // a click on stale data is refused (409 kind stale) and the task reloads.
+      controlPaths: {
+        approve: '/approve',
+        return_lead: '/return',
+        auto_start: '/auto',
+        auto_stop: '/auto/stop',
+        auto_more_round: '/auto/more-round',
+        auto_end: '/auto/end',
+      },
+
+      controlSuccess: function (a, data) {
+        switch (a.id) {
+          case 'approve':
+            return 'Đã duyệt plan lúc ' + window.AB.fmtClock(data.approved_at) + '.';
+          case 'return_lead':
+            return 'Đã trả plan về Lead (job ' + data.job_id + ').';
+          case 'auto_start':
+            return 'Đã bật autopilot.';
+          case 'auto_stop':
+            return 'Đã yêu cầu dừng autopilot — run hiện tại chạy nốt rồi dừng.';
+          case 'auto_more_round':
+            return 'Đã giao thêm 1 vòng.';
+          case 'auto_end':
+            return 'Đã dừng hẳn autopilot. Bật autopilot để chạy tiếp.';
+        }
+        return '';
+      },
+
+      // Task-detail controls (gate, autopilot): one click sends one POST with
+      // the task's rev, so a click on stale data is refused (409 kind stale)
+      // and the task reloads. A refused action is never retried.
       postControl: function (a) {
         var self = this;
-        if (!a || (a.id !== 'auto_start' && a.id !== 'auto_stop')) return;
-        var path = '/api/tasks/' + this.id + (a.id === 'auto_start' ? '/auto' : '/auto/stop');
+        if (!a || !this.controlPaths[a.id] || this.busyAction) return;
+        var path = '/api/tasks/' + this.id + this.controlPaths[a.id];
         var rev = (this.task && this.task.rev !== undefined) ? this.task.rev : null;
+        var body = { rev: rev };
+        if (a.id === 'return_lead') {
+          var note = (this.returnNote || '').trim();
+          if (note) body.note = note;
+        }
         this.busyAction = a.id;
-        return window.AB.api('POST', path, { rev: rev }).then(function (res) {
+        return window.AB.api('POST', path, body).then(function (res) {
           self.busyAction = '';
           if (res && (res.status === 202 || res.status === 200) && res.data) {
-            self.message = (a.id === 'auto_start')
-              ? 'Đã bật autopilot.'
-              : 'Đã yêu cầu dừng autopilot — run hiện tại chạy nốt rồi dừng.';
+            self.message = self.controlSuccess(a, res.data);
             self.load();
           } else if (res && res.status === 409 && res.data && res.data.error) {
             self.message = res.data.error;
@@ -1236,7 +1355,10 @@
       dialogOk: function () {
         var act = this.dialog;
         this.closeDialog();
-        if (act) {
+        if (!act) return;
+        if (act.id === 'return_lead') {
+          this.postControl(act);
+        } else {
           this.runAction(act);
         }
       },

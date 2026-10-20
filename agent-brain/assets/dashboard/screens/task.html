@@ -127,6 +127,14 @@
               <div class="flex flex-wrap gap-x-2 font-mono text-sm font-normal leading-normal tabular-nums text-slate-600 dark:text-slate-400">
                 <span x-text="gateTime"></span>
               </div>
+              <div class="flex flex-col gap-2" x-show="hasGateControls">
+                <template x-for="a in gateControls" :key="a.id">
+                  <div class="space-y-1">
+                    <button :id="actionId(a)" type="button" class="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl px-2 py-2 text-center text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
+                    <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
+                  </div>
+                </template>
+              </div>
             </div>
           </li>
 
@@ -205,10 +213,10 @@
       </div>
 
       <!-- Action strip -->
-      <div class="space-y-4 border-t border-slate-200 pt-4 dark:border-slate-700" x-show="hasActionList">
+      <div data-action-strip class="space-y-4 border-t border-slate-200 pt-4 dark:border-slate-700" x-show="hasStripActions">
         <p class="text-sm font-semibold leading-normal" x-text="stripCaption"></p>
         <div class="flex flex-wrap gap-2">
-          <template x-for="a in actionList" :key="a.id">
+          <template x-for="a in stripActions" :key="a.id">
             <div class="space-y-1">
               <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
               <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
@@ -408,6 +416,11 @@
     <div role="alertdialog" aria-modal="true" aria-labelledby="ab-dlg-title" aria-describedby="ab-dlg-body" @keydown.escape="dialogCancel" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 w-full max-w-lg space-y-4">
       <h2 id="ab-dlg-title" class="text-xl font-semibold leading-[1.2]" x-text="dialogTitle"></h2>
       <p id="ab-dlg-body" class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="dialogBody"></p>
+      <div class="space-y-2" x-show="dialogIsReturn">
+        <label for="ab-return-note" class="block text-sm font-semibold leading-normal">Ghi chú cho Lead (không bắt buộc)</label>
+        <p id="ab-return-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Ví dụ: tách bước 2 thành hai commit nhỏ. Ghi chú được gửi cho Lead làm đầu vào thêm và lưu cùng run này.</p>
+        <textarea id="ab-return-note" rows="3" maxlength="500" aria-describedby="ab-return-help" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 resize-y focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="returnNote"></textarea>
+      </div>
       <div class="flex flex-wrap justify-end gap-2">
         <button id="ab-dlg-cancel" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="dialogCancel" x-text="dialogCancelLabel"></button>
         <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="dialogOkClass" @click="dialogOk" x-text="dialogOkLabel"></button>

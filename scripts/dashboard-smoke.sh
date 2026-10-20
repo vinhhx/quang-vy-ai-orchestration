@@ -461,6 +461,11 @@ class PipelineParser(HTMLParser):
         self.groups = {}
         self.group_footers = {}
         self.budget_text = ''
+        self.card_buttons = {}
+        self.banners = []
+        self.banner_buttons = set()
+        self.strip_buttons = set()
+        self.textareas = {}
         self.depth = 0
         self.captures = []
         self.current_card = None
@@ -484,7 +489,19 @@ class PipelineParser(HTMLParser):
                 self.aria_current_cards.add(card_key)
 
         if tag == 'button' and 'id' in attr_dict:
-            self.button_ids.add(attr_dict['id'])
+            bid = attr_dict['id']
+            self.button_ids.add(bid)
+            # Where the button sits: innermost card, stop banner, action strip.
+            for _, kind, ref in self.captures:
+                if kind == 'card':
+                    self.card_buttons.setdefault(ref, set()).add(bid)
+                elif kind == 'banner':
+                    self.banner_buttons.add(bid)
+                elif kind == 'strip':
+                    self.strip_buttons.add(bid)
+
+        if tag == 'textarea' and 'id' in attr_dict:
+            self.textareas[attr_dict['id']] = attr_dict
 
         if tag not in VOID_TAGS:
             self.depth += 1
@@ -507,6 +524,11 @@ class PipelineParser(HTMLParser):
                 self.captures.append((self.depth, 'counts', None))
             if 'data-budget' in attr_dict:
                 self.captures.append((self.depth, 'budget', None))
+            if 'data-stop-banner' in attr_dict:
+                self.banners.append({'aria_live': attr_dict.get('aria-live'), 'style': attr_dict.get('style') or '', 'text': ''})
+                self.captures.append((self.depth, 'banner', len(self.banners) - 1))
+            if 'data-action-strip' in attr_dict:
+                self.captures.append((self.depth, 'strip', None))
 
         if 'data-legend-item' in attr_dict:
             self.legend_items.append(tag)
@@ -546,6 +568,8 @@ class PipelineParser(HTMLParser):
                     self.card_counts[card] = self.card_counts.get(card, '') + data
                 elif kind == 'budget':
                     self.budget_text += data
+                elif kind == 'banner':
+                    self.banners[ref]['text'] += data
             if self.in_chip:
                 self.chips[-1]['text'] += data
             if self.in_ledger_total:
@@ -723,6 +747,24 @@ for i, chip in enumerate(parser.chips):
     if 'chưa tự động' not in chip['text']:
         print(f"Lỗi: Chip thứ {i+1} không chứa 'chưa tự động' (nội dung: '{chip['text']}')", file=sys.stderr)
         sys.exit(1)
+
+# Bạn gate (task 1 waits at the gate): Duyệt plan and Trả về Lead inside the Bạn card.
+ban_buttons = parser.card_buttons.get('ban', set())
+for bid in ('ab-act-approve', 'ab-act-return_lead'):
+    if bid not in ban_buttons:
+        print(f"Lỗi: Thiếu nút {bid} trong card Bạn (nút trong card: {ban_buttons})", file=sys.stderr)
+        sys.exit(1)
+    if bid in parser.strip_buttons:
+        print(f"Lỗi: Nút {bid} không được nằm trong dải hành động khi pipeline tải được", file=sys.stderr)
+        sys.exit(1)
+
+note = parser.textareas.get('ab-return-note')
+if note is None:
+    print("Lỗi: Thiếu textarea #ab-return-note trong dialog Trả về Lead", file=sys.stderr)
+    sys.exit(1)
+if note.get('maxlength') != '500':
+    print(f"Lỗi: textarea #ab-return-note có maxlength '{note.get('maxlength')}', kỳ vọng '500'", file=sys.stderr)
+    sys.exit(1)
 
 print("Pipeline DOM OK")
 

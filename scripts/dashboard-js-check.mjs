@@ -1157,6 +1157,194 @@ const sections = [
     },
   },
   {
+    name: 'task-gate-actions',
+    async run(ctx) {
+      const AB = ctx.AB;
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      ctx.AB.route = { name: 'task', params: { id: '1' } };
+      const taskJsSrc = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/js/task.js'), 'utf8');
+      vm.runInContext(taskJsSrc, ctx, { filename: 'task.js' });
+
+      const PRIMARY = 'bg-indigo-600';
+      const APPROVE = { id: 'approve', label: 'Duyệt plan', enabled: true, reason: null, run_id: null };
+      const RETURN = { id: 'return_lead', label: 'Trả về Lead', enabled: true, reason: null, run_id: null };
+      const AUTO_START_OFF = { id: 'auto_start', label: 'Bật autopilot', enabled: false, reason: 'x', run_id: null };
+      const RUN_DEV = { id: 'run_dev', label: 'Chạy Dev', enabled: true, reason: null };
+      const RELEAD = { id: 'relead', label: 'Chạy lại Lead', enabled: true, reason: null };
+      const T = {
+        id: 1,
+        slug: 'sua-app',
+        status: 'planned',
+        current_step: 'dev',
+        actions: [RUN_DEV, RELEAD],
+        controls: [APPROVE, RETURN, AUTO_START_OFF],
+        auto: { state: 'gate', workflow_auto: true, stop_reason: null, stop_word: null, stop_detail: null, stopped_in: null, stop_requested: false },
+        workflow: { name: 'mac-dinh', summary: 'plan', auto: true },
+        rev: 'R',
+        steps: [],
+        runs: [],
+      };
+      const GATE = { present: true, state: 'cho_ban', state_word: 'chờ bạn', result: 'chờ duyệt plan', at_ms: Date.now(), note: '', derived: false };
+      const PIPE = { workflow: null, groups: [], gate: GATE, current_card: 'ban', budget: null, cards: {}, ledger: { groups: [], total: null } };
+
+      const c = factories.task();
+      c.id = '1';
+      c.task = T;
+      c.pipe = PIPE;
+
+      // gateControls / strip
+      check('gateControls ids', JSON.stringify(c.gateControls.map((x) => x.id)) === JSON.stringify(['approve', 'return_lead']), `got ${JSON.stringify(c.gateControls.map((x) => x.id))}`);
+      check('hasGateControls', c.hasGateControls === true);
+      check('stripActions without gate controls', JSON.stringify(c.stripActions.map((x) => x.id)) === JSON.stringify(['run_dev', 'relead']), `got ${JSON.stringify(c.stripActions.map((x) => x.id))}`);
+      check('actionClass(approve) primary', c.actionClass(APPROVE).includes(PRIMARY), `got "${c.actionClass(APPROVE)}"`);
+      check('actionClass(return_lead) secondary', !c.actionClass(RETURN).includes(PRIMARY) && c.actionClass(RETURN).includes('ring-slate-300'), `got "${c.actionClass(RETURN)}"`);
+      check('approve outranks the strip first enabled', !c.actionClass(RUN_DEV).includes(PRIMARY), `got "${c.actionClass(RUN_DEV)}"`);
+
+      c.pipe = null;
+      c.pipeError = 'Lỗi 500';
+      const failedIds = c.stripActions.map((x) => x.id);
+      check('pipeFailed: gateControls empty', c.gateControls.length === 0);
+      check('pipeFailed: strip has approve and return_lead', failedIds.includes('approve') && failedIds.includes('return_lead'), `got ${JSON.stringify(failedIds)}`);
+      check('pipeFailed: actionClass(approve) still primary', c.actionClass(APPROVE).includes(PRIMARY));
+      check('pipeFailed: run_dev secondary', !c.actionClass(RUN_DEV).includes(PRIMARY));
+      c.pipeError = '';
+      check('pipe loading: gate controls drawn nowhere', c.gateControls.length === 0 && !c.stripActions.some((x) => x.id === 'approve'));
+      c.task = { ...T, controls: [AUTO_START_OFF] };
+      c.pipe = PIPE;
+      check('no gate: first enabled strip action primary', c.actionClass(RUN_DEV).includes(PRIMARY), `got "${c.actionClass(RUN_DEV)}"`);
+      c.task = T;
+
+      // stubs
+      const posts = [];
+      let nextRes = null;
+      ctx.AB.api = function (method, url, body) {
+        posts.push({ method, url, body });
+        return Promise.resolve(nextRes);
+      };
+      const focusCalls = [];
+      ctx.AB.focusLater = function (id, fallback) {
+        focusCalls.push({ id, fallback });
+      };
+      ctx.AB.lockScroll = function () {};
+      let loads = 0;
+      c.load = function () {
+        loads++;
+      };
+      const settle = async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      };
+
+      // approve: no dialog, POST with rev
+      const approvedAt = Date.now();
+      nextRes = { ok: true, status: 200, data: { approved_at: approvedAt, plan_commit: 'abc', job_id: 3 } };
+      c.onAction(APPROVE);
+      check('approve: no dialog', c.dialog === null);
+      check('approve: busy while in flight', c.busyAction === 'approve');
+      check('approve: in-flight label', c.actionText(APPROVE) === 'Đang duyệt...', `got "${c.actionText(APPROVE)}"`);
+      check('approve: every action disabled while in flight', c.actionDisabled(RUN_DEV) && c.actionDisabled(RETURN));
+      await settle();
+      check('approve: POST path', posts.length === 1 && posts[0].method === 'POST' && posts[0].url === '/api/tasks/1/approve', JSON.stringify(posts));
+      check('approve: body is {rev}', posts[0] && JSON.stringify(posts[0].body) === JSON.stringify({ rev: 'R' }), JSON.stringify(posts[0]));
+      check('approve: 200 message', c.message === 'Đã duyệt plan lúc ' + AB.fmtClock(approvedAt) + '.', `got "${c.message}"`);
+      check('approve: 200 reloads', loads === 1, `loads=${loads}`);
+      check('approve: busy cleared', c.busyAction === '');
+
+      nextRes = { ok: false, status: 409, data: { error: 'Plan hiện tại đã được duyệt lúc 10:00 — không duyệt lại', kind: 'duplicate' } };
+      c.onAction(APPROVE);
+      await settle();
+      check('approve: 409 duplicate message', c.message === 'Plan hiện tại đã được duyệt lúc 10:00 — không duyệt lại', `got "${c.message}"`);
+      check('approve: 409 not retried', posts.length === 2, `posts=${posts.length}`);
+      await settle();
+      check('approve: 409 still not retried later', posts.length === 2, `posts=${posts.length}`);
+      check('approve: 409 duplicate no reload', loads === 1, `loads=${loads}`);
+
+      // a second click while one is in flight sends nothing
+      let hold;
+      ctx.AB.api = function (method, url, body) {
+        posts.push({ method, url, body });
+        return new Promise((r) => {
+          hold = r;
+        });
+      };
+      c.onAction(APPROVE);
+      c.postControl(APPROVE);
+      check('in flight: second click sends nothing', posts.length === 3, `posts=${posts.length}`);
+      hold({ ok: false, status: 500, data: null });
+      await settle();
+      check('500: errorText message', c.message === 'HTTP 500', `got "${c.message}"`);
+      ctx.AB.api = function (method, url, body) {
+        posts.push({ method, url, body });
+        return Promise.resolve(nextRes);
+      };
+
+      // Trả về Lead: dialog with note
+      c.returnNote = 'cũ';
+      c.onAction(RETURN);
+      check('return: opens dialog', c.dialog && c.dialog.id === 'return_lead');
+      check('return: dialogIsReturn', c.dialogIsReturn === true);
+      check('return: note reset', c.returnNote === '', `got "${c.returnNote}"`);
+      check('return: focuses ab-return-note', focusCalls.length > 0 && focusCalls[focusCalls.length - 1].id === 'ab-return-note', JSON.stringify(focusCalls));
+      check('return: lastFocusId is the trigger', c.lastFocusId === 'ab-act-return_lead', `got "${c.lastFocusId}"`);
+      check('return: no POST on open', posts.length === 3, `posts=${posts.length}`);
+      check('return: dialogTitle', c.dialogTitle === 'Trả plan về Lead cho task sua-app?', `got "${c.dialogTitle}"`);
+      const AUTO_TAIL = ' Autopilot sẽ chạy lại vòng plan ⇄︎ review plan.';
+      check('return: dialogBody auto tail', c.dialogBody.endsWith(AUTO_TAIL), `got "${c.dialogBody}"`);
+      check('return: dialogBody starts with the relead text', c.dialogBody.startsWith('Lead sẽ lập lại .plan.md trên nhánh task/sua-app và commit \'sua-app: plan\'.'), `got "${c.dialogBody}"`);
+      check('return: ok label', c.dialogOkLabel === 'Trả về Lead', `got "${c.dialogOkLabel}"`);
+      check('return: cancel label', c.dialogCancelLabel === 'Giữ plan hiện tại', `got "${c.dialogCancelLabel}"`);
+      check('return: ok class primary', c.dialogOkClass.includes(PRIMARY), `got "${c.dialogOkClass}"`);
+      c.task = { ...T, workflow: { name: 'nhanh', summary: 'plan → Bạn → code → QA', auto: false } };
+      check('return: nhanh has no auto tail', !c.dialogBody.includes('Autopilot'), `got "${c.dialogBody}"`);
+      c.task = T;
+
+      // whitespace-only note -> no note key
+      c.returnNote = '   ';
+      nextRes = { ok: true, status: 202, data: { job_id: 7 } };
+      c.dialogOk();
+      check('return: dialog closed on ok', c.dialog === null);
+      await settle();
+      check('return: POST path', posts[3] && posts[3].url === '/api/tasks/1/return', JSON.stringify(posts[3]));
+      check('return: blank note sent as no note', posts[3] && JSON.stringify(posts[3].body) === JSON.stringify({ rev: 'R' }), JSON.stringify(posts[3]));
+      check('return: 202 message', c.message === 'Đã trả plan về Lead (job 7).', `got "${c.message}"`);
+
+      c.onAction(RETURN);
+      c.returnNote = '  tách bước 2 ';
+      c.dialogOk();
+      await settle();
+      check('return: trimmed note', posts[4] && posts[4].body && posts[4].body.note === 'tách bước 2' && posts[4].body.rev === 'R', JSON.stringify(posts[4]));
+
+      // cancel sends nothing
+      c.onAction(RETURN);
+      c.dialogCancel();
+      check('return: cancel sends nothing', posts.length === 5, `posts=${posts.length}`);
+      check('return: cancel focuses the trigger', focusCalls[focusCalls.length - 1].id === 'ab-act-return_lead');
+
+      // stale -> reload at once
+      const loadsBefore = loads;
+      nextRes = { ok: false, status: 409, data: { error: 'Dữ liệu đã cũ — tải lại rồi thử lại', kind: 'stale' } };
+      c.onAction(RETURN);
+      c.dialogOk();
+      await settle();
+      check('return: 409 stale message', c.message === 'Dữ liệu đã cũ — tải lại rồi thử lại', `got "${c.message}"`);
+      check('return: 409 stale reloads at once', loads === loadsBefore + 1, `loads=${loads}`);
+
+      // long note refused by the server (422)
+      nextRes = { ok: false, status: 422, data: { error: 'Ghi chú quá dài (tối đa 500 ký tự)' } };
+      c.onAction(RETURN);
+      c.returnNote = 'x';
+      c.dialogOk();
+      await settle();
+      check('return: 422 shows server error', c.message === 'Ghi chú quá dài (tối đa 500 ký tự)', `got "${c.message}"`);
+      check('return: in-flight label', (() => { c.busyAction = 'return_lead'; const t = c.actionText(RETURN); c.busyAction = ''; return t; })() === 'Đang giao...');
+    },
+  },
+  {
     name: 'ledger',
     async run(ctx) {
       const factories = {};
