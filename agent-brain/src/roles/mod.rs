@@ -563,7 +563,7 @@ pub fn cmd_run(
                     );
                 }
             }
-            qa::cmd_qa(ctx, project, opts.dry_run, opts.verbose)
+            qa::cmd_qa(ctx, project, opts)
         }
         Role::PlanReview => {
             if let Some(r) = request {

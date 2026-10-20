@@ -440,3 +440,249 @@ Không có.
     assert_eq!(rows[1].2, "succeeded");
     assert_eq!(rows[2].2, "succeeded");
 }
+
+#[test]
+fn qa_counts() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _plan_sha, _dev_sha) = setup_lead_and_dev(&sb);
+
+    let qa_report = "\
+---
+specs: 3
+failing: 1
+---
+# QA: x
+## Thay đổi có khớp plan không (từng mục)
+ok
+## Sửa ngoài plan (nếu có)
+
+## Rủi ro
+
+## Kết luận
+Cần sửa
+";
+    let sc_qa = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".qa-report.md",
+                "content": qa_report,
+            }
+        ]
+    });
+    let res = sb.run(&["run", "qa", "web-ban-hang"], Some(sc_qa));
+    assert_eq!(res.code, 0, "qa failed: {}", res.stderr);
+
+    let conn = sb.db();
+    let (outcome, metrics_json): (String, Option<String>) = conn
+        .query_row(
+            "SELECT outcome, metrics_json FROM runs WHERE role = 'qa' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(outcome, "qa:fix");
+    let metrics: serde_json::Value =
+        serde_json::from_str(&metrics_json.unwrap_or_default()).unwrap();
+    assert_eq!(metrics["specs"], serde_json::json!(3));
+    assert_eq!(metrics["failing"], serde_json::json!(1));
+    assert_eq!(metrics["not_automatable"], serde_json::Value::Null);
+}
+
+#[test]
+fn qa_counts_missing() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _plan_sha, _dev_sha) = setup_lead_and_dev(&sb);
+
+    let qa_report = "\
+# QA: x
+## Thay đổi có khớp plan không (từng mục)
+ok
+## Sửa ngoài plan (nếu có)
+
+## Rủi ro
+
+## Kết luận
+Đạt
+";
+    let sc_qa = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".qa-report.md",
+                "content": qa_report,
+            }
+        ]
+    });
+    let res = sb.run(&["run", "qa", "web-ban-hang"], Some(sc_qa));
+    assert_eq!(res.code, 0, "qa failed: {}", res.stderr);
+
+    let conn = sb.db();
+    let metrics_json: Option<String> = conn
+        .query_row(
+            "SELECT metrics_json FROM runs WHERE role = 'qa' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let metrics: serde_json::Value =
+        serde_json::from_str(&metrics_json.unwrap_or_default()).unwrap();
+    assert_eq!(metrics["specs"], serde_json::Value::Null);
+    assert_eq!(metrics["failing"], serde_json::Value::Null);
+    assert_eq!(metrics["not_automatable"], serde_json::Value::Null);
+}
+
+#[test]
+fn qa_ignores_review_commit() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _plan_sha) = {
+        let repo = setup_project(&sb, "work");
+        let sc_lead = lead_scenario(&[("src/app.py", "app()", "trả về 2", "demo")]);
+        let res_lead = sb.run(
+            &[
+                "run",
+                "lead",
+                "web-ban-hang",
+                "sửa app",
+                "--name",
+                "sua-app",
+            ],
+            Some(sc_lead),
+        );
+        assert_eq!(res_lead.code, 0);
+        let task = "sua-app".to_string();
+        let plan_sha = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+        (repo, task, plan_sha)
+    };
+
+    let plan_review_report = "\
+---
+verdict: approve
+blocking: 0
+advisory: 0
+---
+# Review plan: x
+## Mục chặn (blocking)
+## Góp ý (advisory)
+";
+    let sc_pr = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".plan-review.md",
+                "content": plan_review_report,
+            }
+        ]
+    });
+    let res_pr = sb.run(&["run", "plan-review", "web-ban-hang"], Some(sc_pr));
+    assert_eq!(res_pr.code, 0);
+
+    let res_qa = sb.run(&["run", "qa", "web-ban-hang"], None);
+    assert_eq!(res_qa.code, 1);
+    assert!(res_qa.stderr.contains("chưa có thay đổi code sau plan"));
+}
+
+#[test]
+fn qa_stage_round() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _plan_sha, _dev_sha) = setup_lead_and_dev(&sb);
+
+    let qa_report = "\
+# QA: x
+## Thay đổi có khớp plan không (từng mục)
+ok
+## Sửa ngoài plan (nếu có)
+## Rủi ro
+## Kết luận
+Đạt
+";
+    let sc_qa = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".qa-report.md",
+                "content": qa_report,
+            }
+        ]
+    });
+    let res = sb.run(&["run", "qa", "web-ban-hang", "--round", "2"], Some(sc_qa));
+    assert_eq!(res.code, 0);
+
+    let conn = sb.db();
+    let (stage, round): (Option<String>, Option<i64>) = conn
+        .query_row(
+            "SELECT stage, round FROM runs WHERE role = 'qa' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stage.as_deref(), Some("qa"));
+    assert_eq!(round, Some(2));
+}
+
+#[test]
+fn qa_next_step_mentions_fix() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _plan_sha, _dev_sha) = setup_lead_and_dev(&sb);
+
+    let qa_report = "\
+# QA: x
+## Thay đổi có khớp plan không (từng mục)
+lỗi
+## Sửa ngoài plan (nếu có)
+## Rủi ro
+## Kết luận
+Cần sửa
+";
+    let sc_qa = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".qa-report.md",
+                "content": qa_report,
+            }
+        ]
+    });
+    let res = sb.run(&["run", "qa", "web-ban-hang"], Some(sc_qa));
+    assert_eq!(res.code, 0);
+    assert!(res
+        .stdout
+        .contains("agent-brain run dev \"web-ban-hang\" --fix qa"));
+    assert!(!res.stdout.contains("Dev không đọc báo cáo QA."));
+}
+
+#[test]
+fn qa_input_asks_for_counts() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _plan_sha, _dev_sha) = setup_lead_and_dev(&sb);
+
+    let qa_report = "\
+# QA: x
+## Thay đổi có khớp plan không (từng mục)
+ok
+## Sửa ngoài plan (nếu có)
+## Rủi ro
+## Kết luận
+Đạt
+";
+    let sc_qa = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".qa-report.md",
+                "content": qa_report,
+            }
+        ]
+    });
+    let res = sb.run(&["run", "qa", "web-ban-hang"], Some(sc_qa));
+    assert_eq!(res.code, 0);
+
+    let rec = sb.records().pop().unwrap();
+    let argv = rec["argv"].as_array().unwrap();
+    let p_idx = argv.iter().position(|x| x == "-p").unwrap();
+    let user_input = argv[p_idx + 1].as_str().unwrap();
+
+    assert!(user_input.contains("specs:"));
+    assert!(user_input.contains("failing:"));
+    assert!(user_input.contains("':(exclude).plan-review.md' ':(exclude).code-review.md'"));
+}

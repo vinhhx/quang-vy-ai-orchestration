@@ -15,7 +15,9 @@ pub const QA_ALLOWED_TOOLS: [&str; 9] = [
 
 pub const QA_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
 
-pub fn cmd_qa(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> BrainResult<i32> {
+pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> BrainResult<i32> {
+    let dry_run = opts.dry_run;
+    let verbose = opts.verbose;
     let proj = crate::projects::select_project(project, &ctx.map)?;
     let proj_path = crate::projects::require_runnable(&proj, &ctx.cfg)?;
 
@@ -79,15 +81,14 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> Bra
         }
     };
 
-    let mut code = crate::gitops::diff_names(&proj_path, &plan_commit, "HEAD")?;
-    code.remove(".plan.md");
-    code.remove(".qa-report.md");
+    let code = crate::gitops::diff_code_names(&proj_path, &plan_commit, "HEAD")?;
     if code.is_empty() {
         return Err(BrainError::error("chưa có thay đổi code sau plan"));
     }
 
-    let diff_cmd =
-        format!("git diff {plan_commit}..HEAD -- . ':(exclude).plan.md' ':(exclude).qa-report.md'");
+    let diff_cmd = format!(
+        "git diff {plan_commit}..HEAD -- . ':(exclude).plan.md' ':(exclude).qa-report.md' ':(exclude).plan-review.md' ':(exclude).code-review.md'"
+    );
 
     let mut allowed = QA_ALLOWED_TOOLS
         .iter()
@@ -109,7 +110,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> Bra
         let spec_dry = crate::roles::RoleSpec {
             role: crate::roles::Role::Qa,
             user_input: format!(
-                "Task: {task}\nĐầu vào: .plan.md và kết quả lệnh: {diff_cmd}\nGhi .qa-report.md theo khung có sẵn; mục Kết luận ghi đúng một dòng: Đạt hoặc Cần sửa."
+                "Task: {task}\nĐầu vào: .plan.md và kết quả lệnh: {diff_cmd}\nGhi .qa-report.md theo khung có sẵn; mục Kết luận ghi đúng một dòng: Đạt hoặc Cần sửa.\nỞ đầu .qa-report.md (trước dòng \"# QA:\") thêm front matter: dòng ---, specs: <số kiểm tra đã chạy>, failing: <số kiểm tra lỗi>, not_automatable: <số mục không kiểm tự động được>, dòng ---. Bỏ dòng nào bạn không biết."
             ),
             allowed_tools: allowed,
             disallowed_tools: disallowed,
@@ -140,7 +141,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> Bra
     std::fs::write(&qa_path, crate::planfile::render_qa_skeleton(req, &qa_meta))?;
 
     let user_input = format!(
-        "Task: {task}\nĐầu vào: .plan.md và kết quả lệnh: {diff_cmd}\nGhi .qa-report.md theo khung có sẵn; mục Kết luận ghi đúng một dòng: Đạt hoặc Cần sửa."
+        "Task: {task}\nĐầu vào: .plan.md và kết quả lệnh: {diff_cmd}\nGhi .qa-report.md theo khung có sẵn; mục Kết luận ghi đúng một dòng: Đạt hoặc Cần sửa.\nỞ đầu .qa-report.md (trước dòng \"# QA:\") thêm front matter: dòng ---, specs: <số kiểm tra đã chạy>, failing: <số kiểm tra lỗi>, not_automatable: <số mục không kiểm tự động được>, dòng ---. Bỏ dòng nào bạn không biết."
     );
 
     let spec = crate::roles::RoleSpec {
@@ -168,7 +169,17 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> Bra
         run_dir: None,
     };
 
-    let role_run = crate::roles::execute_role(ctx, &proj, &proj_path, run_plan)?;
+    let role_run = crate::roles::execute_role_staged(
+        ctx,
+        &proj,
+        &proj_path,
+        run_plan,
+        crate::roles::RunStage {
+            stage: Some("qa".to_string()),
+            round: opts.round,
+            metrics: None,
+        },
+    )?;
 
     match role_run.outcome.status {
         crate::runner::RunStatus::TimedOut => {
@@ -228,13 +239,21 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> Bra
     crate::gitops::commit_paths(&proj_path, &[".qa-report.md"], &format!("{task}: qa"))?;
     crate::term::emit_out(&format!("Kết luận QA: {verdict}"));
 
+    crate::db::merge_run_metrics(
+        &ctx.conn,
+        role_run.run_id,
+        &crate::report::qa_metrics(&crate::report::parse_qa_counts(&qa_text)),
+    )?;
+
     if verdict == "Cần sửa" {
         crate::term::emit_out("Bước tiếp theo:");
         crate::term::emit_out(&format!(
             "- Sửa .plan.md (commit '{task}: plan') hoặc chạy lại agent-brain run lead \"{project}\" \"{req}\" --name {task}"
         ));
         crate::term::emit_out(&format!("- Rồi chạy agent-brain run dev \"{project}\""));
-        crate::term::emit_out("Dev không đọc báo cáo QA.");
+        crate::term::emit_out(&format!(
+            "- Hoặc sửa theo báo cáo QA: agent-brain run dev \"{project}\" --fix qa"
+        ));
         crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "qa:fix")?;
         if let Some(tid) = task_id {
             crate::db::set_task_status(&ctx.conn, tid, "qa_fix")?;
