@@ -1,0 +1,28 @@
+{
+  "mac-dinh": {
+    "stages": [
+      "plan",
+      "plan-review",
+      "gate:you",
+      "implement",
+      "code-review",
+      "qa",
+      "fix"
+    ],
+    "loops": {
+      "plan": "plan-review",
+      "implement": "code-review",
+      "qa": "fix"
+    },
+    "auto": true
+  },
+  "nhanh": {
+    "stages": [
+      "plan",
+      "gate:you",
+      "implement",
+      "qa"
+    ],
+    "auto": false
+  }
+}

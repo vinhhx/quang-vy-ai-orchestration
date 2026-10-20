@@ -90,6 +90,20 @@ pub fn projects_of(map: &serde_json::Value) -> Vec<Project> {
     }
 }
 
+pub fn workflow_of(map: &serde_json::Value, project_id: &str) -> Option<String> {
+    let arr = map.get("projects").and_then(|p| p.as_array())?;
+    for p in arr {
+        if p.get("id").and_then(|v| v.as_str()) == Some(project_id) {
+            let wf = p.get("workflow").and_then(|v| v.as_str())?;
+            let trimmed = wf.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 pub fn load_map(path: &Path) -> BrainResult<serde_json::Value> {
     if !path.exists() {
         return Ok(serde_json::json!({"scan_roots": [], "projects": []}));
@@ -769,4 +783,24 @@ pub fn cmd_add(path: &str, kind: Option<&str>) -> BrainResult<i32> {
     }
 
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workflow_of() {
+        let map = serde_json::json!({
+            "projects": [
+                {"id": "a", "workflow": "nhanh"},
+                {"id": "b"},
+                {"id": "c", "workflow": "  "}
+            ]
+        });
+        assert_eq!(workflow_of(&map, "a"), Some("nhanh".to_string()));
+        assert_eq!(workflow_of(&map, "b"), None);
+        assert_eq!(workflow_of(&map, "c"), None);
+        assert_eq!(workflow_of(&map, "unknown"), None);
+    }
 }
