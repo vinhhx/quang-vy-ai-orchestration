@@ -572,6 +572,41 @@ pub fn plan_phase(wf: &Workflow, f: &Facts) -> PlanPhase {
 
     // (a) workflow có plan và plan_commit là None
     if wf.has("plan") && f.plan_commit.is_none() {
+        // Trần vòng cho Lead khi chưa có commit plan (WR-02): max_rounds + grant,
+        // hoặc 1 + grant khi workflow không có vòng plan.
+        let grant = f.grants.get("plan").copied().unwrap_or(0);
+        let cap_a = if wf.has_loop("plan") {
+            wf.max_rounds as i64 + grant
+        } else {
+            1 + grant
+        };
+        if highest_ok_plan_round >= cap_a {
+            let newest_lead = ok_runs
+                .iter()
+                .filter(|(_idx, r)| {
+                    r.stage == Some(Stage::Plan) || (r.stage.is_none() && r.role == "lead")
+                })
+                .last()
+                .map(|(_idx, r)| *r);
+            return PlanPhase::Stopped(StopInfo {
+                reason: StopReason::RunLoi,
+                loop_name: Some(Loop::Plan),
+                stage: Some(Stage::Plan),
+                round: Some(highest_ok_plan_round),
+                cap: Some(cap_a),
+                run_id: newest_lead.map(|r| r.id),
+                role: newest_lead.map(|r| r.role.clone()),
+                at_ms: f.now_ms,
+                detail_line: Some(format!(
+                    "Lead đã chạy {highest_ok_plan_round} vòng mà chưa có commit plan"
+                )),
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            });
+        }
         return PlanPhase::Next(StageRun {
             stage: Stage::Plan,
             round: 1 + highest_ok_plan_round,
@@ -627,7 +662,7 @@ pub fn plan_phase(wf: &Workflow, f: &Facts) -> PlanPhase {
                                 loop_name: Some(Loop::Plan),
                                 stage: Some(Stage::PlanReview),
                                 round: Some(r),
-                                cap: Some(wf.max_rounds as i64),
+                                cap: Some(cap),
                                 run_id: Some(x.id),
                                 role: Some(x.role.clone()),
                                 at_ms: f.now_ms,
@@ -998,7 +1033,7 @@ fn rule_d6_build_phase(
                                 loop_name: Some(Loop::Build),
                                 stage: Some(Stage::CodeReview),
                                 round: Some(r),
-                                cap: Some(wf.max_rounds as i64),
+                                cap: Some(cap),
                                 run_id: Some(x.id),
                                 role: Some(x.role.clone()),
                                 at_ms: f.now_ms,
@@ -1116,7 +1151,7 @@ fn rule_d7_qa_phase(
                                 loop_name: Some(Loop::Qa),
                                 stage: Some(Stage::Qa),
                                 round: Some(r),
-                                cap: Some(wf.max_rounds as i64),
+                                cap: Some(cap),
                                 run_id: Some(x.id),
                                 role: Some(x.role.clone()),
                                 at_ms: f.now_ms,
@@ -3135,6 +3170,295 @@ mod tests {
                 note: Some("x".to_string()),
                 fresh_plan: false,
             })
+        );
+    }
+
+    fn lead_runs_without_commit(n: i64) -> Vec<RunRow> {
+        (1..=n)
+            .map(|r| dummy_run(r, "lead", Some("plan"), Some(r), "succeeded", None, None))
+            .collect()
+    }
+
+    #[test]
+    fn rule_a_capped_after_max_rounds() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+        let aj = AutoJson::default();
+        let runs = lead_runs_without_commit(3);
+        let facts = build_facts(wf, &runs, &auto, &aj, None, &pricing, 8000, false);
+        assert_eq!(
+            decide(wf, &facts),
+            Decision::Stop(StopInfo {
+                reason: StopReason::RunLoi,
+                loop_name: Some(Loop::Plan),
+                stage: Some(Stage::Plan),
+                round: Some(3),
+                cap: Some(3),
+                run_id: Some(3),
+                role: Some("lead".to_string()),
+                at_ms: 8000,
+                detail_line: Some("Lead đã chạy 3 vòng mà chưa có commit plan".to_string()),
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+    }
+
+    #[test]
+    fn rule_a_grant_allows_one_more() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+        let mut grants = BTreeMap::new();
+        grants.insert("plan".to_string(), 1);
+        let aj = AutoJson {
+            grants,
+            ..Default::default()
+        };
+        let runs = lead_runs_without_commit(3);
+        let facts = build_facts(wf, &runs, &auto, &aj, None, &pricing, 8000, false);
+        assert_eq!(
+            decide(wf, &facts),
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 4,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: true,
+            })
+        );
+    }
+
+    #[test]
+    fn rule_a_below_cap_runs() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+        let aj = AutoJson::default();
+        let runs = lead_runs_without_commit(1);
+        let facts = build_facts(wf, &runs, &auto, &aj, None, &pricing, 8000, false);
+        assert_eq!(
+            decide(wf, &facts),
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 2,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: true,
+            })
+        );
+    }
+
+    #[test]
+    fn rule_a_no_plan_loop_cap_1() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("nhanh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+        let aj = AutoJson::default();
+        let runs = lead_runs_without_commit(1);
+        let facts = build_facts(wf, &runs, &auto, &aj, None, &pricing, 8000, false);
+        assert_eq!(
+            decide(wf, &facts),
+            Decision::Stop(StopInfo {
+                reason: StopReason::RunLoi,
+                loop_name: Some(Loop::Plan),
+                stage: Some(Stage::Plan),
+                round: Some(1),
+                cap: Some(1),
+                run_id: Some(1),
+                role: Some("lead".to_string()),
+                at_ms: 8000,
+                detail_line: Some("Lead đã chạy 1 vòng mà chưa có commit plan".to_string()),
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+
+        // a grant allows one more Lead without a plan loop
+        let mut grants = BTreeMap::new();
+        grants.insert("plan".to_string(), 1);
+        let aj_grant = AutoJson {
+            grants,
+            ..Default::default()
+        };
+        let f2 = build_facts(wf, &runs, &auto, &aj_grant, None, &pricing, 8000, false);
+        assert!(matches!(
+            decide(wf, &f2),
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 2,
+                ..
+            })
+        ));
+    }
+
+    fn het_vong(
+        loop_name: Loop,
+        stage: Stage,
+        round: i64,
+        cap: i64,
+        run_id: i64,
+        role: &str,
+        at_ms: i64,
+    ) -> Decision {
+        Decision::Stop(StopInfo {
+            reason: StopReason::HetVong,
+            loop_name: Some(loop_name),
+            stage: Some(stage),
+            round: Some(round),
+            cap: Some(cap),
+            run_id: Some(run_id),
+            role: Some(role.to_string()),
+            at_ms,
+            detail_line: None,
+            used_ms: None,
+            used_usd: None,
+            estimated: None,
+            limit_minutes: None,
+            limit_usd: None,
+        })
+    }
+
+    fn one_grant(key: &str) -> AutoJson {
+        let mut grants = BTreeMap::new();
+        grants.insert(key.to_string(), 1);
+        AutoJson {
+            grants,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn het_vong_cap_includes_grant() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+
+        // plan loop: P1..P4 / PR1..PR4 all revise, grants {"plan": 1} → 4 / 4
+        let auto = TaskAuto::default();
+        let mut plan_runs = Vec::new();
+        for r in 1..=4 {
+            plan_runs.push(dummy_run(
+                r * 2 - 1,
+                "lead",
+                Some("plan"),
+                Some(r),
+                "succeeded",
+                None,
+                None,
+            ));
+            plan_runs.push(dummy_run(
+                r * 2,
+                "plan-review",
+                Some("plan-review"),
+                Some(r),
+                "succeeded",
+                Some("review:revise"),
+                None,
+            ));
+        }
+        let f_plan = build_facts(
+            wf,
+            &plan_runs,
+            &auto,
+            &one_grant("plan"),
+            Some("p1"),
+            &pricing,
+            20000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f_plan),
+            het_vong(Loop::Plan, Stage::PlanReview, 4, 4, 8, "plan-review", 20000)
+        );
+
+        // build loop: CR4 revise, grants {"build": 1} → 4 / 4
+        let auto_app = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let cr4 = dummy_run(
+            10,
+            "code-review",
+            Some("code-review"),
+            Some(4),
+            "succeeded",
+            Some("review:revise"),
+            None,
+        );
+        let f_build = build_facts(
+            wf,
+            &[cr4],
+            &auto_app,
+            &one_grant("build"),
+            Some("p1"),
+            &pricing,
+            21000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f_build),
+            het_vong(
+                Loop::Build,
+                Stage::CodeReview,
+                4,
+                4,
+                10,
+                "code-review",
+                21000
+            )
+        );
+
+        // qa loop: Q4 qa:fix, grants {"qa": 1} → 4 / 4
+        let cr_pass = dummy_run(
+            14,
+            "code-review",
+            Some("code-review"),
+            Some(1),
+            "succeeded",
+            Some("review:pass"),
+            None,
+        );
+        let q4 = dummy_run(
+            15,
+            "qa",
+            Some("qa"),
+            Some(4),
+            "succeeded",
+            Some("qa:fix"),
+            None,
+        );
+        let f_qa = build_facts(
+            wf,
+            &[cr_pass, q4],
+            &auto_app,
+            &one_grant("qa"),
+            Some("p1"),
+            &pricing,
+            22000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f_qa),
+            het_vong(Loop::Qa, Stage::Qa, 4, 4, 15, "qa", 22000)
         );
     }
 
