@@ -248,7 +248,7 @@ Plans:
   5. Dashboard hiện thẻ review/sửa thật (vòng N / giới hạn, số chặn/góp ý), nút duyệt plan, bật/tắt autopilot; CSDL cũ nâng cấp lên schema mới không mất dữ liệu.
 
 **UI hint**: yes
-**Plans:** 18/20 plans executed
+**Plans:** 19/20 plans executed
 
 Plans:
 **Wave 1**
@@ -292,7 +292,7 @@ Plans:
 - [x] 05.2-18-PLAN.md — Giao việc Quy trình picker, Dự án workflow list, Tổng quan reason line and Autopilot badge
 
 **Wave 12** *(blocked on Wave 11 completion)*
-- [ ] 05.2-19-PLAN.md — Keyboard/layout checks, app.css rebuild, README, LIVE-CHECKS Phase 5.2 procedure, results template (05.1 WR-05)
+- [x] 05.2-19-PLAN.md — Keyboard/layout checks, app.css rebuild, README, LIVE-CHECKS Phase 5.2 procedure, results template (05.1 WR-05)
 
 **Wave 13** *(blocked on Wave 12 completion)*
 - [ ] 05.2-20-PLAN.md — AUTO-07 live checks with the real claude in an isolated environment (user go/no-go checkpoint)
