@@ -1,4 +1,5 @@
 use agent_brain::app;
+use agent_brain::autopilot;
 use agent_brain::error::EXIT_ROUTING;
 use agent_brain::fastpath;
 use agent_brain::guard;
@@ -92,6 +93,38 @@ enum Commands {
         /// Đường dẫn tới file chính sách
         #[arg(long)]
         policy: Option<PathBuf>,
+    },
+    /// Autopilot: chạy các bước của task theo quy trình, dừng ở bước duyệt plan
+    Auto {
+        /// ID task; với --start: <dự án> <yêu cầu> (đặt sau --)
+        #[arg(num_args = 1..)]
+        args: Vec<String>,
+        /// Tạo task mới bằng bước Lead đầu tiên rồi chạy tiếp
+        #[arg(long)]
+        start: bool,
+        /// Slug tên task (chỉ với --start)
+        #[arg(long)]
+        name: Option<String>,
+        /// Quy trình (workflow) cho task mới (chỉ với --start)
+        #[arg(long)]
+        workflow: Option<String>,
+        /// Chạy thêm 1 vòng sau khi autopilot đã dừng
+        #[arg(long)]
+        more_round: bool,
+        /// Lập lại plan (Trả về Lead)
+        #[arg(long)]
+        replan: bool,
+        /// Ghi chú cho Lead khi lập lại plan (dùng --note=NỘI DUNG)
+        #[arg(long, allow_hyphen_values = true)]
+        note: Option<String>,
+    },
+    /// Duyệt plan hiện tại của task (autopilot chạy tiếp nếu quy trình bật auto)
+    Approve {
+        /// ID của task
+        task_id: i64,
+        /// Chỉ ghi duyệt, không chạy tiếp autopilot
+        #[arg(long)]
+        no_continue: bool,
     },
     /// Mở dashboard web (chỉ 127.0.0.1, có token)
     Serve {
@@ -206,6 +239,30 @@ fn main() {
             fastpath::cmd_inspect(&mut ctx, &project, verbose)
         }
         Commands::Kill { task_id } => runner::cmd_kill(&mut ctx, task_id),
+        Commands::Auto {
+            args,
+            start,
+            name,
+            workflow,
+            more_round,
+            replan,
+            note,
+        } => {
+            let opts = autopilot::AutoOpts {
+                start,
+                args,
+                name,
+                workflow,
+                more_round,
+                replan,
+                note,
+            };
+            autopilot::cmd_auto(&mut ctx, &opts)
+        }
+        Commands::Approve {
+            task_id,
+            no_continue,
+        } => autopilot::cmd_approve(&mut ctx, task_id, no_continue),
         Commands::Stats {
             profile,
             since,
