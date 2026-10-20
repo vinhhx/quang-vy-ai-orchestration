@@ -280,6 +280,9 @@ pub struct RunOpts {
     pub verbose: bool,
     pub round: Option<i64>,
     pub fix: Option<FixInput>,
+    pub review: bool,
+    pub note: Option<String>,
+    pub workflow: Option<String>,
 }
 
 pub fn execute_role(
@@ -526,6 +529,12 @@ pub fn cmd_run(
         return Err(BrainError::error("--fix chỉ dùng với vai trò dev"));
     }
 
+    if (opts.review || opts.note.is_some() || opts.workflow.is_some()) && role != Role::Lead {
+        return Err(BrainError::error(
+            "--review, --note và --workflow chỉ dùng với vai trò lead",
+        ));
+    }
+
     match role {
         Role::Lead => {
             let req = match request {
@@ -536,14 +545,7 @@ pub fn cmd_run(
                     ));
                 }
             };
-            lead::cmd_lead(
-                ctx,
-                project,
-                req,
-                opts.name.as_deref(),
-                opts.dry_run,
-                opts.verbose,
-            )
+            lead::cmd_lead(ctx, project, req, opts)
         }
         Role::Dev => {
             if let Some(r) = request {

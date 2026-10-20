@@ -47,6 +47,15 @@ enum Commands {
         /// Chế độ sửa theo báo cáo (qa | code-review)
         #[arg(long, value_enum)]
         fix: Option<roles::FixInput>,
+        /// Lead sửa plan theo .plan-review.md
+        #[arg(long)]
+        review: bool,
+        /// Ghi chú cho Lead (dùng --note=NỘI DUNG)
+        #[arg(long, allow_hyphen_values = true)]
+        note: Option<String>,
+        /// Quy trình (workflow) cho task mới
+        #[arg(long)]
+        workflow: Option<String>,
     },
     /// Trạng thái nhanh của dự án
     Status {
@@ -176,6 +185,9 @@ fn main() {
             verbose,
             round,
             fix,
+            review,
+            note,
+            workflow,
         } => {
             let opts = roles::RunOpts {
                 name,
@@ -183,6 +195,9 @@ fn main() {
                 verbose,
                 round,
                 fix,
+                review,
+                note,
+                workflow,
             };
             roles::cmd_run(&mut ctx, role, &project, request.as_deref(), &opts)
         }

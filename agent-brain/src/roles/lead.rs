@@ -19,20 +19,31 @@ pub fn cmd_lead(
     ctx: &mut Ctx,
     project: &str,
     request: &str,
-    name: Option<&str>,
-    dry_run: bool,
-    verbose: bool,
+    opts: &crate::roles::RunOpts,
 ) -> BrainResult<i32> {
     let proj = crate::projects::select_project(project, &ctx.map)?;
     let proj_path = crate::projects::require_runnable(&proj, &ctx.cfg)?;
 
-    let task_slug = crate::routing::slugify(name.unwrap_or(request));
+    let task_slug = crate::routing::slugify(opts.name.as_deref().unwrap_or(request));
     if task_slug.is_empty() {
         return Err(BrainError::error(
             "Không thể tạo tên task từ yêu cầu — hãy truyền cờ --name <slug>",
         ));
     }
     let branch = format!("task/{task_slug}");
+
+    let loaded = crate::workflows::load(&ctx.cfg);
+    for e in &loaded.errors {
+        crate::term::emit(&format!("Cảnh báo workflows.json: {e}"));
+    }
+    let resolved = crate::workflows::resolve(
+        &loaded,
+        opts.workflow.as_deref(),
+        crate::projects::workflow_of(&ctx.map, &proj.id).as_deref(),
+    )?;
+    if let Some(ref note) = resolved.note {
+        crate::term::emit(note);
+    }
 
     let user_input = format!(
         "Yêu cầu: {}\nTask: {}\nFile .plan.md ở gốc dự án đã có sẵn khung (skeleton). Giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo). Ghi kế hoạch vào .plan.md theo đúng mẫu.",
@@ -59,7 +70,7 @@ pub fn cmd_lead(
         extra_args: Vec::new(),
     };
 
-    if dry_run {
+    if opts.dry_run {
         let argv = crate::roles::build_command(&spec, &ctx.cfg)?;
         let p_prof = &proj.profile;
         let p_desc = crate::profile::describe_profile(p_prof, &ctx.cfg.profiles);
@@ -69,6 +80,11 @@ pub fn cmd_lead(
         crate::term::emit_out(&format!("Profile: {p_prof} ({p_desc})"));
         crate::term::emit_out(&format!("Model: {model}"));
         crate::term::emit_out(&format!("Branch: {branch}"));
+        crate::term::emit_out(&format!(
+            "Workflow: {} — {}",
+            resolved.workflow.name,
+            resolved.workflow.summary()
+        ));
         crate::term::emit_out(&format!(
             "Command: {}",
             crate::roles::display_argv(&argv, "assets/prompts/lead.md")
@@ -165,6 +181,19 @@ pub fn cmd_lead(
         base_commit.as_deref(),
     )?;
 
+    let set =
+        crate::db::set_task_workflow_if_null(&ctx.conn, task_id, &resolved.workflow.to_snapshot())?;
+    if !set && opts.workflow.is_some() {
+        let existing_name = crate::db::task_auto(&ctx.conn, task_id)?
+            .and_then(|a| a.workflow_json)
+            .and_then(|j| crate::workflows::Workflow::from_snapshot(&j))
+            .map(|wf| wf.name)
+            .unwrap_or_else(|| "khong-ro".to_string());
+        crate::term::emit(&format!(
+            "Task đã có quy trình '{existing_name}' — bỏ qua --workflow."
+        ));
+    }
+
     let argv = crate::roles::build_command(&spec, &ctx.cfg)?;
     let model = ctx.cfg.model_for("lead")?;
     let timeout = ctx.cfg.timeout_for("lead");
@@ -177,7 +206,7 @@ pub fn cmd_lead(
         task_slug: task_slug.clone(),
         base_commit,
         plan_files: None,
-        verbose,
+        verbose: opts.verbose,
         timeout,
         run_dir: None,
     };
