@@ -158,6 +158,83 @@ files: []
 }
 
 #[test]
+fn identical_report_rerun_ok() {
+    let sb = Sandbox::new();
+    let (repo, _task, _plan_sha) = setup_lead(&sb);
+
+    let review_report = "\
+---
+verdict: revise
+blocking: 1
+advisory: 4
+files: []
+---
+# Review plan: x
+## Mục chặn (blocking)
+- thiếu test
+## Góp ý (advisory)
+";
+    let sc_review = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".plan-review.md",
+                "content": review_report,
+            }
+        ]
+    });
+
+    let res = sb.run(
+        &["run", "plan-review", "web-ban-hang", "--round", "1"],
+        Some(sc_review.clone()),
+    );
+    assert_eq!(
+        res.code, 0,
+        "plan-review round 1 failed: stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+
+    let head_before = sb.git(&repo, &["rev-parse", "HEAD"]);
+
+    let res = sb.run(
+        &["run", "plan-review", "web-ban-hang", "--round", "2"],
+        Some(sc_review),
+    );
+    assert_eq!(
+        res.code, 0,
+        "plan-review round 2 failed: stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+
+    let head_after = sb.git(&repo, &["rev-parse", "HEAD"]);
+    assert_eq!(head_before.trim(), head_after.trim());
+    assert!(
+        res.stdout.contains("giống bản đã commit"),
+        "stdout missing unchanged-report line: {}",
+        res.stdout
+    );
+
+    let conn = sb.db();
+    let (role, round, status, outcome): (String, Option<i64>, String, Option<String>) = conn
+        .query_row(
+            "SELECT role, round, status, outcome FROM runs ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(role, "plan-review");
+    assert_eq!(round, Some(2));
+    assert_eq!(status, "succeeded");
+    assert_eq!(outcome.as_deref(), Some("review:revise"));
+
+    let git_status = sb.git(&repo, &["status", "--porcelain"]);
+    assert!(
+        git_status.trim().is_empty(),
+        "git status --porcelain was not empty: {git_status}"
+    );
+}
+
+#[test]
 fn plan_review_approve() {
     let sb = Sandbox::new();
     let (repo, task, _plan_sha) = setup_lead(&sb);

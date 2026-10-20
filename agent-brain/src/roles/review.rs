@@ -315,11 +315,19 @@ pub fn cmd_review(
         }
     };
 
-    crate::gitops::commit_paths(
-        &proj_path,
-        &[kind.file()],
-        &format!("{task}: {}", kind.role()),
-    )?;
+    let report_changed = crate::gitops::changed_paths(&proj_path)?.contains(kind.file());
+    if report_changed {
+        crate::gitops::commit_paths(
+            &proj_path,
+            &[kind.file()],
+            &format!("{task}: {}", kind.role()),
+        )?;
+    } else {
+        crate::term::emit_out(&format!(
+            "Báo cáo {} giống bản đã commit — không tạo commit mới.",
+            kind.file()
+        ));
+    }
 
     let metrics = crate::report::review_metrics(&report);
     crate::db::merge_run_metrics(&ctx.conn, role_run.run_id, &metrics)?;
