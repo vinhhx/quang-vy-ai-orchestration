@@ -854,22 +854,32 @@ fn rule_d3_replan(
     eff_rounds: &[i64],
 ) -> Option<StageRun> {
     let rp = f.replan.as_ref()?;
-    let highest_ok_plan_round = f
-        .runs
-        .iter()
-        .enumerate()
-        .filter(|(idx, r)| {
-            cycs[*idx] == current_cycle
-                && r.is_ok()
-                && (r.stage == Some(Stage::Plan) || (r.stage.is_none() && r.role == "lead"))
-        })
-        .map(|(idx, _)| eff_rounds[idx])
-        .max()
-        .unwrap_or(0);
+    // Lead sau vòng build/QA mở chu kỳ mới — vòng tính lại từ 1 (WR-03, O7).
+    let opens_new_cycle = matches!(
+        f.runs.last().and_then(loop_of),
+        Some(Loop::Build | Loop::Qa)
+    );
+    let round = if opens_new_cycle {
+        1
+    } else {
+        let highest_ok_plan_round = f
+            .runs
+            .iter()
+            .enumerate()
+            .filter(|(idx, r)| {
+                cycs[*idx] == current_cycle
+                    && r.is_ok()
+                    && (r.stage == Some(Stage::Plan) || (r.stage.is_none() && r.role == "lead"))
+            })
+            .map(|(idx, _)| eff_rounds[idx])
+            .max()
+            .unwrap_or(0);
+        1 + highest_ok_plan_round
+    };
 
     Some(StageRun {
         stage: Stage::Plan,
-        round: 1 + highest_ok_plan_round,
+        round,
         fix_for: None,
         review_input: false,
         note: rp.note.clone(),
@@ -2854,6 +2864,276 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: true,
+            })
+        );
+    }
+
+    /// P1, PR1 approve, I1, CR1 pass, Q1 fix, F1(qa), Q2 fix, F2(qa), Q3 fix (mac-dinh).
+    fn qa_exhausted_runs() -> Vec<RunRow> {
+        vec![
+            dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None),
+            dummy_run(
+                2,
+                "plan-review",
+                Some("plan-review"),
+                Some(1),
+                "succeeded",
+                Some("review:approve"),
+                None,
+            ),
+            dummy_run(
+                3,
+                "dev",
+                Some("implement"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+            ),
+            dummy_run(
+                4,
+                "code-review",
+                Some("code-review"),
+                Some(1),
+                "succeeded",
+                Some("review:pass"),
+                None,
+            ),
+            dummy_run(
+                5,
+                "qa",
+                Some("qa"),
+                Some(1),
+                "succeeded",
+                Some("qa:fix"),
+                None,
+            ),
+            dummy_run(
+                6,
+                "dev",
+                Some("fix"),
+                Some(1),
+                "succeeded",
+                None,
+                Some(r#"{"fix_for":"qa"}"#),
+            ),
+            dummy_run(
+                7,
+                "qa",
+                Some("qa"),
+                Some(2),
+                "succeeded",
+                Some("qa:fix"),
+                None,
+            ),
+            dummy_run(
+                8,
+                "dev",
+                Some("fix"),
+                Some(2),
+                "succeeded",
+                None,
+                Some(r#"{"fix_for":"qa"}"#),
+            ),
+            dummy_run(
+                9,
+                "qa",
+                Some("qa"),
+                Some(3),
+                "succeeded",
+                Some("qa:fix"),
+                None,
+            ),
+        ]
+    }
+
+    #[test]
+    fn replan_after_qa_starts_round_1() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let aj = AutoJson {
+            replan: Some(Replan { note: None }),
+            ..Default::default()
+        };
+        let runs = qa_exhausted_runs();
+        let facts = build_facts(wf, &runs, &auto, &aj, Some("p1"), &pricing, 9000, false);
+        assert!(facts.approved);
+        assert_eq!(
+            decide(wf, &facts),
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 1,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: true,
+            })
+        );
+    }
+
+    #[test]
+    fn replan_new_cycle_then_revise_continues() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        // approved_commit p1, new plan commit p2 → not approved
+        let auto = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let aj = AutoJson::default();
+        let mut runs = qa_exhausted_runs();
+        runs.push(dummy_run(
+            10,
+            "lead",
+            Some("plan"),
+            Some(1),
+            "succeeded",
+            None,
+            None,
+        ));
+        runs.push(dummy_run(
+            11,
+            "plan-review",
+            Some("plan-review"),
+            Some(1),
+            "succeeded",
+            Some("review:revise"),
+            None,
+        ));
+        let facts = build_facts(wf, &runs, &auto, &aj, Some("p2"), &pricing, 11000, false);
+        assert!(!facts.approved);
+        assert_eq!(
+            decide(wf, &facts),
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 2,
+                fix_for: None,
+                review_input: true,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+    }
+
+    #[test]
+    fn replan_after_build_starts_round_1() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let aj = AutoJson {
+            replan: Some(Replan { note: None }),
+            ..Default::default()
+        };
+        let runs = vec![
+            dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None),
+            dummy_run(
+                2,
+                "plan-review",
+                Some("plan-review"),
+                Some(1),
+                "succeeded",
+                Some("review:approve"),
+                None,
+            ),
+            dummy_run(
+                3,
+                "dev",
+                Some("implement"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+            ),
+            dummy_run(
+                4,
+                "code-review",
+                Some("code-review"),
+                Some(1),
+                "succeeded",
+                Some("review:revise"),
+                None,
+            ),
+            dummy_run(
+                5,
+                "dev",
+                Some("fix"),
+                Some(2),
+                "succeeded",
+                None,
+                Some(r#"{"fix_for":"code_review"}"#),
+            ),
+            dummy_run(
+                6,
+                "code-review",
+                Some("code-review"),
+                Some(2),
+                "succeeded",
+                Some("review:revise"),
+                None,
+            ),
+        ];
+        let facts = build_facts(wf, &runs, &auto, &aj, Some("p1"), &pricing, 7000, false);
+        assert_eq!(
+            decide(wf, &facts),
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 1,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: true,
+            })
+        );
+    }
+
+    #[test]
+    fn replan_in_plan_loop_keeps_counting() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+        let aj = AutoJson {
+            replan: Some(Replan {
+                note: Some("x".to_string()),
+            }),
+            ..Default::default()
+        };
+        let runs = vec![
+            dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None),
+            dummy_run(
+                2,
+                "plan-review",
+                Some("plan-review"),
+                Some(1),
+                "succeeded",
+                Some("review:approve"),
+                None,
+            ),
+        ];
+        let facts = build_facts(wf, &runs, &auto, &aj, Some("p1"), &pricing, 5000, false);
+        assert_eq!(
+            decide(wf, &facts),
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 2,
+                fix_for: None,
+                review_input: false,
+                note: Some("x".to_string()),
+                fresh_plan: false,
             })
         );
     }
