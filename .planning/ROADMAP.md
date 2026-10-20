@@ -246,11 +246,25 @@ Plans:
   3. Autopilot chạy plan ↔ review plan tới khi duyệt hoặc hết vòng, dừng chờ người dùng duyệt plan, rồi chạy code ↔ review code và QA ↔ sửa; dừng đúng khi hết vòng, hết thời gian/tiền, vi phạm giao thức hoặc vướng mắc, kèm lý do.
   4. Kill trong lúc autopilot chạy dừng cả driver lẫn run hiện tại, không sót tiến trình; các quy tắc một run/dự án và một run personal vẫn giữ.
   5. Dashboard hiện thẻ review/sửa thật (vòng N / giới hạn, số chặn/góp ý), nút duyệt plan, bật/tắt autopilot; CSDL cũ nâng cấp lên schema mới không mất dữ liệu.
+
 **UI hint**: yes
 **Plans:** 0 plans
 
 Plans:
 - [ ] TBD (run /gsd-plan-phase 05.2 to break down)
+
+### Phase 05.3: Telegram Notifications and Actions (INSERTED)
+
+**Goal**: Người dùng nhận tin Telegram khi task cần mình (chờ duyệt plan, autopilot dừng kèm lý do, QA đạt, run lỗi) và xử lý ngay trong tin nhắn bằng nút Duyệt plan, Trả về Lead (kèm ghi chú), Chạy thêm 1 vòng, Dừng hẳn, Kill (xác nhận lại) — bot tự hỏi Telegram (long polling), không mở cổng vào máy, chỉ chat ID được phép; không giao việc mới qua Telegram.
+**Source**: Quyết định người dùng 2026-10-20 (đặt sau 5.2, trước bảng công việc; phạm vi: thông báo + hành động ở cổng/khi dừng)
+**Depends on**: Phase 05.2
+**Requirements**: TBD (định nghĩa khi /gsd-discuss-phase 05.3)
+**Notes**: Mở lại một quyết định Out of Scope (truy cập từ xa) theo cách hẹp — xem PROJECT.md. Cần crate HTTPS client mới cho bản build tĩnh offline → người dùng duyệt crate trước khi thêm (như Phase 5).
+**UI hint**: no
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 05.3 to break down)
 
 ### Phase 6: Multi-engine & Media Branch
 
