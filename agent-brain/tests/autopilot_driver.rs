@@ -501,3 +501,97 @@ fn group_sigint_case(sb: &Sandbox) {
     });
     assert!(gone, "alive: {:?}", driver.alive_recorded());
 }
+
+// ---------------------------------------------------------------------------
+// Task 3: WR-02 (driver) — mã thoát lỗi của con; IN-06 — dòng lỗi có ích
+// ---------------------------------------------------------------------------
+
+/// Hook pre-commit luôn từ chối: mọi commit trong repo đều lỗi.
+fn install_failing_pre_commit(repo: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let hook = repo.join(".git").join("hooks").join("pre-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// (id, role, status, outcome) của mọi run.
+fn run_rows(sb: &Sandbox) -> Vec<(i64, String, String, Option<String>)> {
+    let conn = sb.db();
+    let mut stmt = conn
+        .prepare("SELECT id, role, status, outcome FROM runs ORDER BY id")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+
+#[test]
+fn lead_commit_failure_stops_once() {
+    let sb = Sandbox::new();
+    let repo = setup_auto_project(&sb, "work");
+    install_failing_pre_commit(&repo);
+
+    let res = auto_start(
+        &sb,
+        "mac-dinh",
+        by_role(json!({"lead": [lead_plan_entry(), lead_plan_entry(), lead_plan_entry()]})),
+    );
+    assert_eq!(res.code, 4, "stderr: {}", res.stderr);
+    let leads: Vec<_> = run_rows(&sb)
+        .into_iter()
+        .filter(|r| r.1 == "lead")
+        .collect();
+    assert_eq!(leads.len(), 1, "one lead run: {leads:?}\n{}", res.stderr);
+    let stop = auto_json(&sb, 1)["stop"].clone();
+    assert_eq!(stop["reason"], "run_loi", "stop: {stop}");
+    assert_eq!(stop["run_id"], leads[0].0, "stop: {stop}");
+    assert!(
+        res.stderr.contains("Autopilot dừng · run lỗi"),
+        "stderr: {}",
+        res.stderr
+    );
+}
+
+#[test]
+fn dev_commit_failure_stops_run_loi() {
+    let sb = Sandbox::new();
+    approved_gate(&sb);
+    let repo = sb.repos.join("web-ban-hang");
+    assert!(repo.join(".git").is_dir(), "repo: {}", repo.display());
+    install_failing_pre_commit(&repo);
+
+    let res = sb.run(&["auto", "1"], Some(by_role(build_ok_roles())));
+    assert_eq!(res.code, 4, "stderr: {}", res.stderr);
+    let all = run_rows(&sb);
+    let devs: Vec<_> = all.iter().filter(|r| r.1 == "dev").collect();
+    assert_eq!(devs.len(), 1, "one dev run: {all:?}");
+    assert_eq!(devs[0].2, "succeeded");
+    assert_eq!(devs[0].3, None);
+    assert!(
+        all.iter().all(|r| r.1 != "code-review"),
+        "no code-review run"
+    );
+    let stop = auto_json(&sb, 1)["stop"].clone();
+    assert_eq!(stop["reason"], "run_loi", "stop: {stop}");
+    assert_eq!(stop["run_id"], devs[0].0, "stop: {stop}");
+}
+
+#[test]
+fn spawn_failure_detail_skips_banner() {
+    let sb = Sandbox::new();
+    approved_gate(&sb);
+    sb.write_config(json!({"claude_bin": "/nonexistent/claude-khong-co"}));
+    let before = run_rows(&sb).len();
+
+    let res = sb.run(&["auto", "1"], Some(by_role(build_ok_roles())));
+    assert_eq!(res.code, 4, "stderr: {}", res.stderr);
+    assert_eq!(run_rows(&sb).len(), before, "no run row");
+    let stop = auto_json(&sb, 1)["stop"].clone();
+    assert_eq!(stop["reason"], "run_loi", "stop: {stop}");
+    let detail = stop["detail_line"].as_str().unwrap_or("");
+    assert!(!detail.is_empty(), "stop: {stop}");
+    assert!(!detail.starts_with("[agent-brain]"), "stop: {stop}");
+    assert!(!detail.starts_with("Cảnh báo"), "stop: {stop}");
+}

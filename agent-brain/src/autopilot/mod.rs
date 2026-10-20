@@ -11,7 +11,9 @@ use crate::autopilot::claim::ClaimOpts;
 use crate::autopilot::decide::{
     AutoJson, Decision, Loop, Replan, Stage, StageRun, StopInfo, StopReason,
 };
-use crate::error::{BrainError, BrainResult, EXIT_BLOCKED, EXIT_OK};
+use crate::error::{
+    BrainError, BrainResult, EXIT_BLOCKED, EXIT_INTERRUPTED, EXIT_OK, EXIT_PROTOCOL,
+};
 use crate::workflows::Workflow;
 use std::io::BufRead;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,10 +62,34 @@ pub struct AutoOpts {
 /// Kết quả một tiến trình con.
 #[derive(Debug, Clone, Default)]
 struct ChildOutcome {
-    #[allow(dead_code)]
     exit_code: Option<i32>,
+    /// Dòng stderr đầu tiên có ích: bỏ banner `[agent-brain]`, `Cảnh báo …` và dòng tiến độ (IN-06).
     first_err_line: Option<String>,
+    /// Dòng stderr không rỗng cuối cùng.
+    last_err_line: Option<String>,
     interrupted: bool,
+}
+
+/// Dòng tiến độ của vai trò: `task N, run M` hoặc `run M`.
+fn is_progress_line(line: &str) -> bool {
+    fn digits(s: &str) -> bool {
+        !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+    }
+    if let Some(rest) = line.strip_prefix("task ") {
+        return match rest.split_once(", run ") {
+            Some((t, r)) => digits(t) && digits(r),
+            None => false,
+        };
+    }
+    line.strip_prefix("run ").is_some_and(digits)
+}
+
+/// Dòng stderr của con có thể làm chi tiết `run lỗi` (IN-06).
+fn is_error_candidate(line: &str) -> bool {
+    !line.is_empty()
+        && !line.starts_with("[agent-brain]")
+        && !line.starts_with("Cảnh báo")
+        && !is_progress_line(line)
 }
 
 /// Argv của tiến trình con cho một bước (vị trí sau `--`).
@@ -208,6 +234,7 @@ fn spawn_stage(ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainRes
     let stderr = child.stderr.take();
     let reader = std::thread::spawn(move || {
         let mut first: Option<String> = None;
+        let mut last: Option<String> = None;
         if let Some(s) = stderr {
             let mut r = std::io::BufReader::new(s);
             let mut buf = Vec::new();
@@ -219,15 +246,19 @@ fn spawn_stage(ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainRes
                         let line = String::from_utf8_lossy(&buf);
                         let line = line.trim_end_matches(['\n', '\r']);
                         crate::term::emit(line);
-                        if first.is_none() && !line.trim().is_empty() {
-                            first = Some(line.trim().to_string());
+                        let t = line.trim();
+                        if first.is_none() && is_error_candidate(t) {
+                            first = Some(t.to_string());
+                        }
+                        if !t.is_empty() {
+                            last = Some(t.to_string());
                         }
                     }
                     Err(_) => break,
                 }
             }
         }
-        first
+        (first, last)
     });
 
     // Chờ con: tín hiệu tới driver → chuyển một SIGTERM cho con rồi chờ nó tự dừng
@@ -269,10 +300,11 @@ fn spawn_stage(ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainRes
         std::thread::sleep(POLL);
     };
 
-    let first_err_line = reader.join().unwrap_or(None);
+    let (first_err_line, last_err_line) = reader.join().unwrap_or((None, None));
     Ok(ChildOutcome {
         exit_code: status.code(),
         first_err_line,
+        last_err_line,
         interrupted: signaled(),
     })
 }
@@ -291,6 +323,36 @@ fn max_run_id(ctx: &Ctx, task_id: i64) -> BrainResult<i64> {
         .map(|r| r.id)
         .max()
         .unwrap_or(0))
+}
+
+/// Con thoát với mã lỗi (không phải 0, 3, 4, 130) trong khi run mới nhất của task
+/// `succeeded` mà chưa có outcome: vai trò hỏng sau run (vd. commit bị hook từ chối).
+/// Dừng `run lỗi` gắn run đó, không để `decide` chạy lại bước (WR-02, D-27).
+/// Run failed / timed_out / killed hoặc đã có outcome thì để `decide` (D2) xử lý.
+fn child_error_stop(
+    ctx: &Ctx,
+    task_id: i64,
+    sr: &StageRun,
+    outcome: &ChildOutcome,
+) -> BrainResult<Option<StopInfo>> {
+    let code = match outcome.exit_code {
+        Some(c) if ![EXIT_OK, EXIT_PROTOCOL, EXIT_BLOCKED, EXIT_INTERRUPTED].contains(&c) => c,
+        _ => return Ok(None),
+    };
+    let run = match crate::db::latest_run_for_task(&ctx.conn, task_id)? {
+        Some(r) if r.status == "succeeded" && r.outcome.is_none() => r,
+        _ => return Ok(None),
+    };
+    let mut info = run_loi(
+        outcome
+            .last_err_line
+            .clone()
+            .unwrap_or_else(|| format!("Bước {} thoát với mã {code}", sr.stage.as_str())),
+        Some(sr),
+    );
+    info.run_id = Some(run.id);
+    info.role = Some(run.role);
+    Ok(Some(info))
 }
 
 fn stop_with(ctx: &Ctx, task_id: i64, slug: &str, mut aj: AutoJson, info: StopInfo) -> i32 {
@@ -410,6 +472,9 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
                         .clone()
                         .unwrap_or_else(|| format!("Bước {} không tạo run nào", sr.stage.as_str()));
                     let info = run_loi(detail, Some(&sr));
+                    return Ok(stop_with(ctx, task_id, &task.slug, aj, info));
+                }
+                if let Some(info) = child_error_stop(ctx, task_id, &sr, &outcome)? {
                     return Ok(stop_with(ctx, task_id, &task.slug, aj, info));
                 }
             }
@@ -570,19 +635,20 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
         }
 
         let aj = claim_task(ctx, task.id, &ClaimOpts::default())?;
+        let sr = StageRun {
+            stage: Stage::Plan,
+            round: 1,
+            fix_for: None,
+            review_input: false,
+            note: None,
+            fresh_plan: true,
+        };
         let after = max_run_id(ctx, task.id)?;
         if after <= before {
             let detail = outcome
                 .first_err_line
+                .clone()
                 .unwrap_or_else(|| "Bước plan không tạo run nào".to_string());
-            let sr = StageRun {
-                stage: Stage::Plan,
-                round: 1,
-                fix_for: None,
-                review_input: false,
-                note: None,
-                fresh_plan: true,
-            };
             return Ok(stop_with(
                 ctx,
                 task.id,
@@ -590,6 +656,9 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
                 aj,
                 run_loi(detail, Some(&sr)),
             ));
+        }
+        if let Some(info) = child_error_stop(ctx, task.id, &sr, &outcome)? {
+            return Ok(stop_with(ctx, task.id, &task.slug, aj, info));
         }
         return drive(ctx, task.id, false);
     }
