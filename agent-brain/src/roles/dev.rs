@@ -257,6 +257,26 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     let task_row = crate::tasks::current_task(&ctx.conn, proj_row_id, &proj_path)?;
     let task_id = task_row.map(|t| t.id);
 
+    if opts.fix.is_none() {
+        if let Some(tid) = task_id {
+            if let Some(auto) = crate::db::task_auto(&ctx.conn, tid)? {
+                if auto.workflow_json.is_some() {
+                    if let Some(pc) =
+                        crate::gitops::find_commit_by_subject(&proj_path, &format!("{task}: plan"))?
+                    {
+                        if auto.approved_commit.as_deref() != Some(pc.as_str()) {
+                            crate::db::set_task_approval(&ctx.conn, tid, crate::db::now_ms(), &pc)?;
+                            crate::term::emit(&format!(
+                                "Ghi nhận duyệt plan {} — chạy Dev trực tiếp cũng coi là đã duyệt",
+                                &pc[..7.min(pc.len())]
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let dev_base = crate::gitops::head_sha(&proj_path)?;
     let run_dir = crate::roles::new_run_dir(&ctx.cfg, &proj.id, &task, "dev")?;
 
