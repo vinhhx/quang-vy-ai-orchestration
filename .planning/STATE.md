@@ -81,7 +81,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Không có quyết đị
 
 ### Pending Todos
 
-None yet.
+- [After Phase 05.2] Update `docs/user_guide.html` + regenerate `docs/user_guide.pdf` (headless Chrome `--print-to-pdf`) to cover Phase 5.1 (pipeline + ledger on Chi tiết task) and Phase 5.2 (workflows, review roles, fix mode, autopilot, `agent-brain auto`/`approve`, budgets, stop banner); refresh "Hạn chế đã biết"; commit + push (user request 2026-10-20).
 
 ### Blockers/Concerns
 
