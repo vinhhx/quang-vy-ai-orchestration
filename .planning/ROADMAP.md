@@ -248,7 +248,7 @@ Plans:
   5. Dashboard hiện thẻ review/sửa thật (vòng N / giới hạn, số chặn/góp ý), nút duyệt plan, bật/tắt autopilot; CSDL cũ nâng cấp lên schema mới không mất dữ liệu.
 
 **UI hint**: yes
-**Plans:** 15/20 plans executed
+**Plans:** 16/20 plans executed
 
 Plans:
 **Wave 1**
@@ -283,7 +283,7 @@ Plans:
 - [x] 05.2-15-PLAN.md — Action endpoints: approve, return (note), auto start/stop/more-round/end, stale and duplicate 409s, serve shutdown (D-16)
 
 **Wave 9** *(blocked on Wave 8 completion)*
-- [ ] 05.2-16-PLAN.md — Task screen: data-driven flow with review/fix cards, footers, gate note, autopilot badge/toggle, budget line (05.1 WR-04)
+- [x] 05.2-16-PLAN.md — Task screen: data-driven flow with review/fix cards, footers, gate note, autopilot badge/toggle, budget line (05.1 WR-04)
 
 **Wave 10** *(blocked on Wave 9 completion)*
 - [ ] 05.2-17-PLAN.md — Task screen: Duyệt plan / Trả về Lead (note dialog), stop banner and actions, ledger counts and token line
