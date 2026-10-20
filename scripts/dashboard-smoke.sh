@@ -1145,5 +1145,5 @@ EOF
   fi
 
   stop_chrome
-  echo "Keys OK: combobox, confirm-dialog, raw-dialog, ledger, layout"
+  echo "Keys OK: combobox, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, picker, layout-5.2"
 fi

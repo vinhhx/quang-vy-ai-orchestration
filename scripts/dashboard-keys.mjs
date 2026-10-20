@@ -395,7 +395,7 @@ async function main() {
     `);
 
     if (info.pageOverflow) {
-      throw new Error(`LỖI layout: \${width}px trang bị tràn ngang (phần tử rộng nhất: \${info.widest})`);
+      throw new Error(`LỖI layout: ${width}px trang bị tràn ngang (phần tử rộng nhất: ${info.widest})`);
     }
 
     if (width === 1024) {
@@ -424,6 +424,246 @@ async function main() {
 
   await cdp('Emulation.clearDeviceMetricsOverride');
   console.log('OK layout');
+
+  // Check F, gate buttons (task 1 waits at the Bạn gate): Tab from the flow
+  // region reaches Duyệt plan then Trả về Lead, both inside the Bạn card, and
+  // at 1024 px the Trả về Lead text is not clipped.
+  await cdp('Emulation.setDeviceMetricsOverride', {
+    width: 1024,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await new Promise(r => setTimeout(r, 400));
+
+  await waitFor(`
+    (() => {
+      const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const approve = document.getElementById("ab-act-approve");
+      const ret = document.getElementById("ab-act-return_lead");
+      return vis(approve) && vis(ret) && !approve.disabled && !ret.disabled;
+    })()
+  `, 5000, 'gate-buttons', 'Không thấy hai nút ab-act-approve và ab-act-return_lead hiển thị và đang bật');
+
+  const gateInfo = await evaluate(`
+    (() => {
+      const approve = document.getElementById("ab-act-approve");
+      const ret = document.getElementById("ab-act-return_lead");
+      const inBan = (el) => Boolean(el && el.closest('[data-card="ban"]'));
+      return {
+        approveTag: approve.tagName.toLowerCase(),
+        retTag: ret.tagName.toLowerCase(),
+        approveInBan: inBan(approve),
+        retInBan: inBan(ret),
+        approveTab: approve.tabIndex,
+        retTab: ret.tabIndex,
+        retScroll: ret.scrollWidth,
+        retClient: ret.clientWidth,
+        retText: ret.textContent.trim(),
+      };
+    })()
+  `);
+  if (gateInfo.approveTag !== 'button' || gateInfo.retTag !== 'button') {
+    throw new Error(`LỖI gate-buttons: ab-act-approve là <${gateInfo.approveTag}>, ab-act-return_lead là <${gateInfo.retTag}>, kỳ vọng <button>`);
+  }
+  if (!gateInfo.approveInBan || !gateInfo.retInBan) {
+    throw new Error(`LỖI gate-buttons: nút không nằm trong [data-card="ban"] (approve: ${gateInfo.approveInBan}, return_lead: ${gateInfo.retInBan})`);
+  }
+  if (gateInfo.approveTab < 0 || gateInfo.retTab < 0) {
+    throw new Error(`LỖI gate-buttons: tabIndex âm (approve: ${gateInfo.approveTab}, return_lead: ${gateInfo.retTab})`);
+  }
+  if (gateInfo.retText !== 'Trả về Lead') {
+    throw new Error(`LỖI gate-buttons: chữ của ab-act-return_lead là "${gateInfo.retText}", kỳ vọng "Trả về Lead"`);
+  }
+  if (gateInfo.retScroll > gateInfo.retClient) {
+    throw new Error(`LỖI gate-buttons: 1024px nút Trả về Lead bị cắt chữ (scrollWidth ${gateInfo.retScroll} > clientWidth ${gateInfo.retClient})`);
+  }
+
+  // Tab order: the flow region, then the two Bạn-card buttons.
+  await evaluate('document.querySelector("[data-flow-region]").focus()');
+  await pressKey('Tab', 'Tab', 9);
+  await waitFor(
+    'document.activeElement && document.activeElement.id === "ab-act-approve"',
+    1500,
+    'gate-buttons',
+    'Tab từ vùng pipeline không tới nút Duyệt plan (ab-act-approve)'
+  );
+  await pressKey('Tab', 'Tab', 9);
+  await waitFor(
+    'document.activeElement && document.activeElement.id === "ab-act-return_lead"',
+    1500,
+    'gate-buttons',
+    'Tab sau Duyệt plan không tới nút Trả về Lead (ab-act-return_lead)'
+  );
+  console.log('OK gate-buttons');
+
+  // Check G, Trả về Lead dialog: Enter opens it with focus in the note,
+  // Enter in the note inserts a newline, Escape closes without any POST.
+  const taskBefore = await evaluate(`
+    fetch('/api/tasks/1')
+      .then(r => r.json())
+      .then(d => ({ rev: d.rev, runs: Array.isArray(d.runs) ? d.runs.length : 0 }))
+  `);
+  if (!taskBefore || !taskBefore.rev) {
+    throw new Error('LỖI return-dialog: GET /api/tasks/1 không có rev');
+  }
+
+  await pressKeyText('Enter', 'Enter', 13, '\r');
+  await waitFor(`
+    (() => {
+      const dlg = document.querySelector("[role=alertdialog]");
+      const open = Boolean(dlg && (dlg.offsetWidth || dlg.offsetHeight || dlg.getClientRects().length));
+      return open && document.activeElement && document.activeElement.id === "ab-return-note";
+    })()
+  `, 1500, 'return-dialog', 'Enter trên Trả về Lead không mở dialog hoặc focus không ở #ab-return-note');
+
+  await insertText('dòng 1');
+  await pressKeyText('Enter', 'Enter', 13, '\r');
+  await insertText('dòng 2');
+  await new Promise(r => setTimeout(r, 200));
+
+  const noteInfo = await evaluate(`
+    (() => {
+      const dlg = document.querySelector("[role=alertdialog]");
+      const open = Boolean(dlg && (dlg.offsetWidth || dlg.offsetHeight || dlg.getClientRects().length));
+      const note = document.getElementById("ab-return-note");
+      return { open, value: note ? note.value : null, active: document.activeElement ? document.activeElement.id : '' };
+    })()
+  `);
+  if (!noteInfo.open) {
+    throw new Error('LỖI return-dialog: Enter trong ô ghi chú đã đóng dialog (kỳ vọng xuống dòng)');
+  }
+  if (noteInfo.value !== 'dòng 1\ndòng 2') {
+    throw new Error(`LỖI return-dialog: giá trị #ab-return-note là ${JSON.stringify(noteInfo.value)}, kỳ vọng "dòng 1\\ndòng 2"`);
+  }
+
+  await pressKey('Escape', 'Escape', 27);
+  await waitFor(
+    '!Array.from(document.querySelectorAll("[role=alertdialog]")).some(el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length))',
+    1000,
+    'return-dialog',
+    'dialog Trả về Lead vẫn hiển thị sau khi bấm Escape'
+  );
+  await waitFor(
+    'document.activeElement && document.activeElement.id === "ab-act-return_lead"',
+    1500,
+    'return-dialog',
+    'Focus không trở về nút Trả về Lead sau khi đóng dialog bằng Escape'
+  );
+
+  const taskAfter = await evaluate(`
+    fetch('/api/tasks/1')
+      .then(r => r.json())
+      .then(d => ({ rev: d.rev, runs: Array.isArray(d.runs) ? d.runs.length : 0 }))
+  `);
+  if (taskAfter.rev !== taskBefore.rev || taskAfter.runs !== taskBefore.runs) {
+    throw new Error(`LỖI return-dialog: task 1 đã đổi sau Escape (rev ${taskBefore.rev} → ${taskAfter.rev}, runs ${taskBefore.runs} → ${taskAfter.runs})`);
+  }
+  console.log('OK return-dialog');
+
+  // Check H, Quy trình picker on Giao việc: ArrowDown moves the selection
+  // from mac-dinh to nhanh (native radio group).
+  await evaluate('window.location.hash = "#/assign"');
+  await waitFor(`
+    (() => {
+      if (!document.querySelector('[data-screen="assign"][data-loaded="yes"]')) return false;
+      const radios = Array.from(document.querySelectorAll('input[type="radio"][name="workflow"]'));
+      const checked = radios.find(r => r.checked);
+      return radios.length >= 2 && checked && checked.value === "mac-dinh";
+    })()
+  `, 5000, 'picker', 'Màn hình assign không có nhóm radio Quy trình với mac-dinh được chọn');
+
+  await evaluate(`
+    (() => {
+      const checked = Array.from(document.querySelectorAll('input[type="radio"][name="workflow"]')).find(r => r.checked);
+      checked.focus();
+    })()
+  `);
+  await pressKey('ArrowDown', 'ArrowDown', 40);
+  await new Promise(r => setTimeout(r, 200));
+
+  const pickerInfo = await evaluate(`
+    (() => {
+      const radios = Array.from(document.querySelectorAll('input[type="radio"][name="workflow"]'));
+      const checked = radios.find(r => r.checked);
+      const active = document.activeElement;
+      return {
+        checked: checked ? checked.value : null,
+        activeValue: active && active.name === "workflow" ? active.value : null,
+      };
+    })()
+  `);
+  if (pickerInfo.checked !== 'nhanh') {
+    throw new Error(`LỖI picker: sau ArrowDown radio được chọn là "${pickerInfo.checked}", kỳ vọng "nhanh"`);
+  }
+  if (pickerInfo.activeValue !== 'nhanh') {
+    throw new Error(`LỖI picker: sau ArrowDown focus ở "${pickerInfo.activeValue}", kỳ vọng radio "nhanh"`);
+  }
+  console.log('OK picker');
+
+  // Check I, layout of the stopped task (task 2) at 1024 / 768 / 480 px.
+  await evaluate('window.location.hash = "#/task/2"');
+  await waitFor(`
+    (() => {
+      if (!document.querySelector('[data-screen="task"][data-loaded="yes"]')) return false;
+      const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      return vis(document.querySelector("[data-stop-banner]")) && vis(document.querySelector("[data-flow]"));
+    })()
+  `, 5000, 'layout-5.2', 'Màn hình task/2 không hiện [data-stop-banner] và [data-flow]');
+
+  for (const width of [1024, 768, 480]) {
+    await cdp('Emulation.setDeviceMetricsOverride', {
+      width,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await new Promise(r => setTimeout(r, 400));
+
+    const info = await evaluate(`
+      (() => {
+        const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        const root = document.documentElement;
+        const pageOverflow = root.scrollWidth > root.clientWidth;
+        const flowEl = document.querySelector('[data-flow]');
+        const flowDir = flowEl ? getComputedStyle(flowEl).flexDirection : null;
+        const banner = vis(document.querySelector('[data-stop-banner]'));
+
+        let widest = '';
+        let maxRight = 0;
+        const all = document.querySelectorAll('*');
+        for (let i = 0; i < all.length; i++) {
+          const el = all[i];
+          const rect = el.getBoundingClientRect();
+          if (rect.right > maxRight) {
+            maxRight = rect.right;
+            const tag = el.tagName.toLowerCase();
+            const id = el.id ? '#' + el.id : '';
+            const cls = el.className && typeof el.className === 'string'
+              ? '.' + el.className.trim().split(/\\s+/).slice(0, 3).join('.')
+              : '';
+            widest = tag + id + cls;
+          }
+        }
+
+        return { pageOverflow, flowDir, banner, widest };
+      })()
+    `);
+
+    if (info.pageOverflow) {
+      throw new Error(`LỖI layout-5.2: ${width}px trang task/2 bị tràn ngang (phần tử rộng nhất: ${info.widest})`);
+    }
+    const wantDir = width === 480 ? 'column' : 'row';
+    if (info.flowDir !== wantDir) {
+      throw new Error(`LỖI layout-5.2: ${width}px flowDir là "${info.flowDir}", kỳ vọng "${wantDir}"`);
+    }
+    if (!info.banner) {
+      throw new Error(`LỖI layout-5.2: ${width}px [data-stop-banner] không hiển thị`);
+    }
+  }
+
+  await cdp('Emulation.clearDeviceMetricsOverride');
+  console.log('OK layout-5.2');
 
   ws.close();
 }
