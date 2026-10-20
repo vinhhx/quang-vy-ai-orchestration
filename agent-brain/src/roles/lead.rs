@@ -322,6 +322,7 @@ pub fn cmd_lead(
     }
 
     if !plan_path.is_file() {
+        crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
         return Err(BrainError::error(
             "Lead hoàn thành nhưng không tìm thấy file .plan.md",
         ));
@@ -346,6 +347,7 @@ pub fn cmd_lead(
             "Kế hoạch trong .plan.md không hợp lệ:\n{err_lines}\nSửa tay .plan.md rồi: git -C {} commit -m \"{task_slug}: plan\" -- .plan.md",
             proj_path.display()
         );
+        crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
         return Err(BrainError::error(err_msg));
     }
 
