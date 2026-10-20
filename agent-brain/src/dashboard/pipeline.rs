@@ -1,7 +1,10 @@
 //! Pipeline của task: thẻ giai đoạn, sổ lượt chạy và dòng tổng, suy ra thuần từ runs.
 
+use crate::autopilot::decide::{self, FixFor, GateState, Loop, RunFact, Stage};
 use crate::dashboard::taskstate;
-use crate::db::{RunRow, TaskRow};
+use crate::db::{RunRow, TaskAuto, TaskRow};
+use crate::pricing::{self, BudgetLimits, BudgetUsage};
+use crate::workflows::Workflow;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlanFacts {
@@ -20,6 +23,130 @@ pub struct PipelineFacts<'a> {
     pub plan: &'a PlanFacts,
     pub current_step: &'a str,
     pub now_ms: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Counts {
+    pub blocking: Option<i64>,
+    pub advisory: Option<i64>,
+    pub specs: Option<i64>,
+    pub failing: Option<i64>,
+    pub not_automatable: Option<i64>,
+}
+
+impl Counts {
+    pub fn from_metrics_json(s: Option<&str>) -> Option<Self> {
+        let text = s?;
+        let v: serde_json::Value = serde_json::from_str(text).ok()?;
+        let obj = v.as_object()?;
+        let blocking = obj.get("blocking").and_then(|v| v.as_i64());
+        let advisory = obj.get("advisory").and_then(|v| v.as_i64());
+        let specs = obj.get("specs").and_then(|v| v.as_i64());
+        let failing = obj.get("failing").and_then(|v| v.as_i64());
+        let not_automatable = obj.get("not_automatable").and_then(|v| v.as_i64());
+
+        if blocking.is_none()
+            && advisory.is_none()
+            && specs.is_none()
+            && failing.is_none()
+            && not_automatable.is_none()
+        {
+            None
+        } else {
+            Some(Counts {
+                blocking,
+                advisory,
+                specs,
+                failing,
+                not_automatable,
+            })
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct FlowFacts<'a> {
+    pub workflow: Option<&'a Workflow>,
+    pub auto: Option<&'a TaskAuto>,
+    pub auto_json: Option<&'a decide::AutoJson>,
+    pub gate: Option<GateState>,
+    pub plan_commit_at: Option<i64>,
+    pub driver_alive: bool,
+    pub next_card: Option<String>,
+    pub budget: Option<BudgetUsage>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct WorkflowView {
+    pub name: String,
+    pub summary: String,
+    pub auto: bool,
+    pub max_rounds: i64,
+    pub budget_minutes: i64,
+    pub budget_usd: f64,
+    pub limits: String,
+    pub loops: Vec<String>,
+    pub stages: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct FlowCard {
+    pub key: String,
+    pub title: String,
+    pub tag: String,
+    pub state: String,
+    pub state_word: String,
+    pub result: String,
+    pub counts: Option<Counts>,
+    pub duration_ms: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub has_run: bool,
+    pub run_id: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct FlowGroup {
+    pub key: String,
+    pub cards: Vec<FlowCard>,
+    pub round: Option<i64>,
+    pub cap: Option<i64>,
+    pub stopped: bool,
+    pub stop_word: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct GateView {
+    pub present: bool,
+    pub state: String,
+    pub state_word: String,
+    pub result: String,
+    pub at_ms: Option<i64>,
+    pub note_kind: String,
+    pub note: Option<String>,
+    pub derived: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct BudgetView {
+    pub used_ms: i64,
+    pub used_minutes: i64,
+    pub limit_minutes: i64,
+    pub used_usd: f64,
+    pub limit_usd: f64,
+    pub estimated: bool,
+    pub estimated_runs: i64,
+    pub level: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct PipelineResponse {
+    #[serde(flatten)]
+    pub base: PipelineView,
+    pub workflow: Option<WorkflowView>,
+    pub groups: Vec<FlowGroup>,
+    pub gate: GateView,
+    pub current_card: Option<String>,
+    pub budget: Option<BudgetView>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -94,6 +221,12 @@ pub struct LedgerRow {
     pub output_tokens: i64,
     pub cache_read_tokens: i64,
     pub cache_write_tokens: i64,
+    #[serde(rename = "loop")]
+    pub loop_name: String,
+    pub stage: Option<String>,
+    pub kind: String,
+    pub outcome: Option<String>,
+    pub counts: Option<Counts>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -116,40 +249,94 @@ pub fn state_word(state: &str) -> &'static str {
         "killed" => "đã dừng",
         "loi" => "lỗi",
         "cho_ban" => "chờ bạn",
+        "duyet" => "duyệt",
+        "sua_lai" => "sửa lại",
         _ => "lỗi",
     }
 }
 
 pub fn derive(f: &PipelineFacts) -> PipelineView {
-    // R1 Input: keep runs whose role is lead, dev or qa (drop inspect); sort by (started_at ASC, id ASC)
+    derive_inner(f, false)
+}
+
+fn derive_inner(f: &PipelineFacts, staged: bool) -> PipelineView {
+    // R1 Input: keep runs whose role is lead, dev, qa, plan-review, code-review (drop inspect); sort by (started_at ASC, id ASC)
     let mut valid_runs: Vec<&RunRow> = f
         .runs
         .iter()
-        .filter(|r| r.role == "lead" || r.role == "dev" || r.role == "qa")
+        .filter(|r| {
+            r.role == "lead"
+                || r.role == "dev"
+                || r.role == "qa"
+                || r.role == "plan-review"
+                || r.role == "code-review"
+        })
         .collect();
     valid_runs.sort_by_key(|r| (r.started_at, r.id));
 
-    // R2 Round: per role, 1-based counter over the sorted runs (task-wide)
+    let run_facts: Vec<RunFact> = valid_runs.iter().map(|r| RunFact::from_row(r)).collect();
+    let eff_rounds = if staged {
+        decide::effective_rounds(&run_facts)
+    } else {
+        Vec::new()
+    };
+
+    // R2 Round: per role, 1-based counter over the sorted runs (task-wide) for legacy
     let mut lead_round = 0i64;
     let mut dev_round = 0i64;
     let mut qa_round = 0i64;
+    let mut plan_review_round = 0i64;
+    let mut code_review_round = 0i64;
 
     let mut ledger_rows: Vec<LedgerRow> = Vec::with_capacity(valid_runs.len());
-    for run in &valid_runs {
-        let round = match run.role.as_str() {
-            "lead" => {
-                lead_round += 1;
-                lead_round
+    for (idx, run) in valid_runs.iter().enumerate() {
+        let rf = &run_facts[idx];
+        let loop_name = decide::loop_of(rf)
+            .map(|l| l.as_str().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let kind = match (rf.stage, rf.role.as_str(), rf.fix_for) {
+            (Some(Stage::Plan), _, _) => "plan",
+            (Some(Stage::PlanReview), _, _) => "review plan",
+            (Some(Stage::Implement), _, _) => "code",
+            (Some(Stage::CodeReview), _, _) => "review code",
+            (Some(Stage::Qa), _, _) => "QA",
+            (Some(Stage::Fix), _, Some(FixFor::CodeReview)) => "sửa theo review",
+            (Some(Stage::Fix), _, _) => "sửa theo QA",
+            (None, "lead", _) => "plan",
+            (None, "dev", _) => "code",
+            (None, "qa", _) => "QA",
+            (None, "plan-review", _) => "review plan",
+            (None, "code-review", _) => "review code",
+            _ => "unknown",
+        };
+
+        let round = if staged {
+            eff_rounds[idx]
+        } else {
+            match run.role.as_str() {
+                "lead" => {
+                    lead_round += 1;
+                    lead_round
+                }
+                "dev" => {
+                    dev_round += 1;
+                    dev_round
+                }
+                "qa" => {
+                    qa_round += 1;
+                    qa_round
+                }
+                "plan-review" => {
+                    plan_review_round += 1;
+                    plan_review_round
+                }
+                "code-review" => {
+                    code_review_round += 1;
+                    code_review_round
+                }
+                _ => 0,
             }
-            "dev" => {
-                dev_round += 1;
-                dev_round
-            }
-            "qa" => {
-                qa_round += 1;
-                qa_round
-            }
-            _ => 0,
         };
 
         // R3 Row state: taskstate::step_state(Some(run)).0, then dat when xong and outcome == Some("qa:pass")
@@ -178,12 +365,9 @@ pub fn derive(f: &PipelineFacts) -> PipelineView {
             };
 
         // R5 Label
-        let label = match run.role.as_str() {
-            "lead" => format!("Vòng {round} · plan"),
-            "dev" => format!("Vòng {round} · code"),
-            "qa" => format!("Vòng {round} · QA"),
-            _ => format!("Vòng {round} · {}", run.role),
-        };
+        let label = format!("Vòng {round} · {kind}");
+
+        let counts = Counts::from_metrics_json(run.metrics_json.as_deref());
 
         ledger_rows.push(LedgerRow {
             run_id: run.id,
@@ -202,53 +386,57 @@ pub fn derive(f: &PipelineFacts) -> PipelineView {
             output_tokens: run.output_tokens,
             cache_read_tokens: run.cache_read_tokens,
             cache_write_tokens: run.cache_write_tokens,
+            loop_name,
+            stage: run.stage.clone(),
+            kind: kind.to_string(),
+            outcome: run.outcome.clone(),
+            counts,
         });
     }
 
-    // R6 Groups: maximal runs of consecutive rows with the same role
+    // R6 Groups: maximal runs of consecutive rows with the same loop_name
     struct GroupIndices {
-        kind: &'static str,
-        role: String,
+        kind: String,
         run_indices: Vec<usize>,
     }
 
     let mut raw_groups: Vec<GroupIndices> = Vec::new();
-    for (idx, run) in valid_runs.iter().enumerate() {
-        let kind = match run.role.as_str() {
-            "lead" => "plan",
-            "dev" => "build",
-            "qa" => "qa",
-            _ => "unknown",
-        };
+    for (idx, row) in ledger_rows.iter().enumerate() {
+        let loop_name = row.loop_name.clone();
         if let Some(last) = raw_groups.last_mut() {
-            if last.role == run.role {
+            if last.kind == loop_name {
                 last.run_indices.push(idx);
                 continue;
             }
         }
         raw_groups.push(GroupIndices {
-            kind,
-            role: run.role.clone(),
+            kind: loop_name,
             run_indices: vec![idx],
         });
     }
 
-    // R7 Cycle: starts at 1; plan group whose prev group is build or qa increments it
+    // R7 Cycle: starts at 1; plan group whose prev group is build or qa increments it,
+    // provided its first row is not a plan-review run
     let mut cycle_counter = 1i64;
     let mut groups: Vec<LedgerGroup> = Vec::with_capacity(raw_groups.len());
 
     for (i, rg) in raw_groups.iter().enumerate() {
         let n = (i + 1) as i64;
         if i > 0 && rg.kind == "plan" {
-            let prev_kind = raw_groups[i - 1].kind;
+            let prev_kind = &raw_groups[i - 1].kind;
             if prev_kind == "build" || prev_kind == "qa" {
-                cycle_counter += 1;
+                let first_row = &ledger_rows[rg.run_indices[0]];
+                let is_plan_review = first_row.role == "plan-review"
+                    || first_row.stage.as_deref() == Some("plan-review");
+                if !is_plan_review {
+                    cycle_counter += 1;
+                }
             }
         }
         let cycle = cycle_counter;
 
         // R8 Header
-        let header = match rg.kind {
+        let header = match rg.kind.as_str() {
             "plan" => {
                 if cycle == 1 {
                     "Chu kỳ 1 · plan đầu tiên".to_string()
@@ -301,7 +489,7 @@ pub fn derive(f: &PipelineFacts) -> PipelineView {
 
         groups.push(LedgerGroup {
             key: format!("c{cycle}-{}-{n}", rg.kind),
-            kind: rg.kind.to_string(),
+            kind: rg.kind.clone(),
             cycle,
             header,
             right,
@@ -392,6 +580,631 @@ pub fn derive(f: &PipelineFacts) -> PipelineView {
             qa,
         },
         ledger: Ledger { groups, total },
+    }
+}
+
+fn run_matches_card(r: &RunRow, card_key: &str) -> bool {
+    let rf = RunFact::from_row(r);
+    match card_key {
+        "plan" => rf.stage == Some(Stage::Plan) || (rf.stage.is_none() && rf.role == "lead"),
+        "plan_review" => {
+            rf.stage == Some(Stage::PlanReview) || (rf.stage.is_none() && rf.role == "plan-review")
+        }
+        "code" => {
+            rf.stage == Some(Stage::Implement)
+                || (rf.stage.is_none() && rf.role == "dev")
+                || (rf.stage == Some(Stage::Fix) && rf.fix_for == Some(FixFor::CodeReview))
+        }
+        "code_review" => {
+            rf.stage == Some(Stage::CodeReview) || (rf.stage.is_none() && rf.role == "code-review")
+        }
+        "qa" => rf.stage == Some(Stage::Qa) || (rf.stage.is_none() && rf.role == "qa"),
+        "fix" => {
+            rf.stage == Some(Stage::Fix) && (rf.fix_for == Some(FixFor::Qa) || rf.fix_for.is_none())
+        }
+        _ => false,
+    }
+}
+
+fn run_card_key(r: &RunRow) -> &'static str {
+    let rf = RunFact::from_row(r);
+    match rf.stage {
+        Some(Stage::Plan) => "plan",
+        Some(Stage::PlanReview) => "plan_review",
+        Some(Stage::Implement) => "code",
+        Some(Stage::CodeReview) => "code_review",
+        Some(Stage::Qa) => "qa",
+        Some(Stage::Fix) => {
+            if rf.fix_for == Some(FixFor::CodeReview) {
+                "code"
+            } else {
+                "fix"
+            }
+        }
+        None => match rf.role.as_str() {
+            "lead" => "plan",
+            "plan-review" => "plan_review",
+            "dev" => "code",
+            "code-review" => "code_review",
+            "qa" => "qa",
+            _ => "plan",
+        },
+    }
+}
+
+fn card_result(
+    key: &str,
+    state: &str,
+    latest_run: Option<&RunRow>,
+    f: &PipelineFacts,
+    x: &FlowFacts,
+    qa_latest_run: Option<&RunRow>,
+    fix_has_run_in_cycle: bool,
+) -> String {
+    match key {
+        "plan" => match state {
+            "cho" => "chưa bắt đầu".to_string(),
+            "dang_chay" => "đang lập plan".to_string(),
+            "xong" => {
+                if matches!(x.gate, Some(GateState::NoPlan))
+                    || matches!(f.plan, PlanFacts::NoCommit)
+                {
+                    "xong".to_string()
+                } else {
+                    "plan đã commit".to_string()
+                }
+            }
+            "killed" => "đã dừng".to_string(),
+            "loi" => "Lead lỗi".to_string(),
+            "vi_pham" => "vi phạm giao thức".to_string(),
+            "vuong_mac" => "vướng mắc".to_string(),
+            "can_sua" => "cần sửa".to_string(),
+            _ => state_word(state).to_string(),
+        },
+        "plan_review" => match state {
+            "cho" => "chưa bắt đầu".to_string(),
+            "dang_chay" => "đang review plan".to_string(),
+            "duyet" => "duyệt".to_string(),
+            "sua_lai" => "sửa lại".to_string(),
+            "killed" => "đã dừng".to_string(),
+            "loi" => "Review lỗi".to_string(),
+            "vi_pham" => "vi phạm giao thức".to_string(),
+            _ => state_word(state).to_string(),
+        },
+        "code" => match state {
+            "cho" => "chưa bắt đầu".to_string(),
+            "dang_chay" => {
+                let is_cr_fix = latest_run
+                    .map(|r| {
+                        let rf = RunFact::from_row(r);
+                        rf.stage == Some(Stage::Fix) && rf.fix_for == Some(FixFor::CodeReview)
+                    })
+                    .unwrap_or(false);
+                if is_cr_fix {
+                    "đang sửa theo review".to_string()
+                } else {
+                    "đang code".to_string()
+                }
+            }
+            "xong" => {
+                if let Some(n) = latest_run.and_then(|r| r.num_turns) {
+                    format!("{n} lượt")
+                } else {
+                    "xong".to_string()
+                }
+            }
+            "vuong_mac" => "vướng mắc".to_string(),
+            "can_sua" => "cần sửa".to_string(),
+            "killed" => "đã dừng".to_string(),
+            "loi" => "Dev lỗi".to_string(),
+            "vi_pham" => "vi phạm giao thức".to_string(),
+            _ => state_word(state).to_string(),
+        },
+        "code_review" => match state {
+            "cho" => "chưa bắt đầu".to_string(),
+            "dang_chay" => "đang review code".to_string(),
+            "dat" => "đạt".to_string(),
+            "sua_lai" => "sửa lại".to_string(),
+            "killed" => "đã dừng".to_string(),
+            "loi" => "Review lỗi".to_string(),
+            "vi_pham" => "vi phạm giao thức".to_string(),
+            _ => state_word(state).to_string(),
+        },
+        "qa" => match state {
+            "cho" => "chưa bắt đầu".to_string(),
+            "dang_chay" => "đang kiểm tra".to_string(),
+            "xong" => {
+                if latest_run.and_then(|r| r.outcome.as_deref()) == Some("qa:pass") {
+                    "đạt".to_string()
+                } else {
+                    "xong".to_string()
+                }
+            }
+            "can_sua" => "cần sửa".to_string(),
+            "vuong_mac" => "vướng mắc".to_string(),
+            "killed" => "đã dừng".to_string(),
+            "loi" => "QA lỗi".to_string(),
+            "vi_pham" => "vi phạm giao thức".to_string(),
+            _ => state_word(state).to_string(),
+        },
+        "fix" => match state {
+            "cho" => {
+                let qa_passed = qa_latest_run
+                    .and_then(|r| r.outcome.as_deref())
+                    .map(|oc| oc == "qa:pass")
+                    .unwrap_or(false);
+                if qa_passed && !fix_has_run_in_cycle {
+                    "không cần sửa".to_string()
+                } else {
+                    "chưa bắt đầu".to_string()
+                }
+            }
+            "dang_chay" => "đang sửa".to_string(),
+            "xong" => {
+                if let Some(n) = latest_run.and_then(|r| r.num_turns) {
+                    format!("{n} lượt")
+                } else {
+                    "xong".to_string()
+                }
+            }
+            "vuong_mac" => "vướng mắc".to_string(),
+            "killed" => "đã dừng".to_string(),
+            "loi" => "Dev lỗi".to_string(),
+            "vi_pham" => "vi phạm giao thức".to_string(),
+            _ => state_word(state).to_string(),
+        },
+        _ => state_word(state).to_string(),
+    }
+}
+
+fn derive_gate_view(base: &PipelineView, _f: &PipelineFacts, x: &FlowFacts) -> GateView {
+    if let Some(wf) = x.workflow {
+        let present = wf.has("gate:you");
+        if !present {
+            return GateView {
+                present: false,
+                state: "cho".to_string(),
+                state_word: "chưa bắt đầu".to_string(),
+                result: "chưa có plan".to_string(),
+                at_ms: None,
+                note_kind: "not_open".to_string(),
+                note: None,
+                derived: false,
+            };
+        }
+        let auto_state = x.auto.and_then(|a| a.auto_state.as_deref());
+        let stopped_loop = x
+            .auto_json
+            .and_then(|aj| aj.stop.as_ref())
+            .and_then(|s| s.loop_name);
+        let has_plan_review = wf.has("plan-review");
+        let not_open_note = if has_plan_review {
+            "Cổng này mở khi plan đã commit và review plan xong."
+        } else {
+            "Cổng này mở khi plan đã commit."
+        };
+
+        match x.gate {
+            Some(GateState::NoPlan) => GateView {
+                present: true,
+                state: "cho".to_string(),
+                state_word: "chưa bắt đầu".to_string(),
+                result: "chưa có plan".to_string(),
+                at_ms: None,
+                note_kind: "not_open".to_string(),
+                note: Some(not_open_note.to_string()),
+                derived: false,
+            },
+            Some(GateState::AwaitingReview) => GateView {
+                present: true,
+                state: "cho".to_string(),
+                state_word: "chờ review plan".to_string(),
+                result: "chờ review plan".to_string(),
+                at_ms: None,
+                note_kind: "not_open".to_string(),
+                note: Some(not_open_note.to_string()),
+                derived: false,
+            },
+            Some(GateState::Waiting) => {
+                let note_kind =
+                    if auto_state == Some("stopped") && stopped_loop == Some(Loop::Plan) {
+                        "loop_stopped"
+                    } else if wf.auto {
+                        "auto_waiting"
+                    } else {
+                        "manual_waiting"
+                    };
+                let money = if (wf.budget_usd.round() - wf.budget_usd).abs() < 1e-9 {
+                    format!("${:.0}", wf.budget_usd)
+                } else {
+                    format!("${:.2}", wf.budget_usd)
+                };
+                let note = match note_kind {
+                    "loop_stopped" => {
+                        "Plan chưa qua review. Bạn có thể duyệt plan hiện tại hoặc trả về Lead."
+                            .to_string()
+                    }
+                    "auto_waiting" => format!(
+                        "Autopilot dừng ở đây để bạn duyệt plan. Duyệt plan rồi autopilot tự chạy Code, Review code, QA và Sửa, tối đa {} vòng mỗi bước, trong {} phút hoặc {}.",
+                        wf.max_rounds, wf.budget_minutes, money
+                    ),
+                    "manual_waiting" => {
+                        "Duyệt plan để ghi nhận bạn đồng ý, rồi bấm Chạy Dev. Bấm Chạy Dev trực tiếp cũng coi là đã duyệt."
+                            .to_string()
+                    }
+                    _ => "".to_string(),
+                };
+                GateView {
+                    present: true,
+                    state: "cho_ban".to_string(),
+                    state_word: "chờ bạn".to_string(),
+                    result: "chờ duyệt plan".to_string(),
+                    at_ms: x.plan_commit_at,
+                    note_kind: note_kind.to_string(),
+                    note: Some(note),
+                    derived: false,
+                }
+            }
+            Some(GateState::Approved) => GateView {
+                present: true,
+                state: "xong".to_string(),
+                state_word: "xong".to_string(),
+                result: "đã duyệt plan".to_string(),
+                at_ms: x.auto.and_then(|a| a.approved_at),
+                note_kind: "approved_explicit".to_string(),
+                note: None,
+                derived: false,
+            },
+            None => GateView {
+                present: true,
+                state: base.cards.ban.state.clone(),
+                state_word: base.cards.ban.state_word.clone(),
+                result: base.cards.ban.result.clone(),
+                at_ms: base.cards.ban.at_ms,
+                note_kind: "derived".to_string(),
+                note: Some(
+                    "Cổng duyệt suy ra từ dữ liệu: Dev đã chạy trên bản plan hiện tại thì coi là đã duyệt."
+                        .to_string(),
+                ),
+                derived: true,
+            },
+        }
+    } else {
+        GateView {
+            present: true,
+            state: base.cards.ban.state.clone(),
+            state_word: base.cards.ban.state_word.clone(),
+            result: base.cards.ban.result.clone(),
+            at_ms: base.cards.ban.at_ms,
+            note_kind: "derived".to_string(),
+            note: Some(
+                "Cổng duyệt suy ra từ dữ liệu: Dev đã chạy trên bản plan hiện tại thì coi là đã duyệt."
+                    .to_string(),
+            ),
+            derived: true,
+        }
+    }
+}
+
+fn derive_current_card(valid_runs: &[&RunRow], x: &FlowFacts, gate_state: &str) -> Option<String> {
+    if valid_runs.is_empty() {
+        return None;
+    }
+    // 1. the running run's card
+    if let Some(running_run) = valid_runs.iter().rev().find(|r| r.status == "running") {
+        return Some(run_card_key(running_run).to_string());
+    }
+    // 2. else the stopped stage's card
+    let is_stopped = x.auto.and_then(|a| a.auto_state.as_deref()) == Some("stopped");
+    if is_stopped {
+        if let Some(stop) = x.auto_json.and_then(|aj| aj.stop.as_ref()) {
+            let card = match stop.stage {
+                Some(Stage::Plan) => Some("plan"),
+                Some(Stage::PlanReview) => Some("plan_review"),
+                Some(Stage::Implement) => Some("code"),
+                Some(Stage::CodeReview) => Some("code_review"),
+                Some(Stage::Qa) => Some("qa"),
+                Some(Stage::Fix) => {
+                    if stop.loop_name == Some(Loop::Build) {
+                        Some("code")
+                    } else {
+                        Some("fix")
+                    }
+                }
+                None => match stop.loop_name {
+                    Some(Loop::Plan) => Some("plan"),
+                    Some(Loop::Build) => Some("code"),
+                    Some(Loop::Qa) => Some("qa"),
+                    None => None,
+                },
+            };
+            if let Some(c) = card {
+                return Some(c.to_string());
+            }
+        }
+    }
+    // 3. else `ban` at a waiting gate
+    if gate_state == "cho_ban" {
+        return Some("ban".to_string());
+    }
+    // 4. else the next stage's card while a driver runs
+    if x.driver_alive {
+        if let Some(ref next) = x.next_card {
+            return Some(next.clone());
+        }
+    }
+    // 5. else the latest run's card
+    if let Some(latest) = valid_runs.last() {
+        return Some(run_card_key(latest).to_string());
+    }
+    None
+}
+
+pub fn derive_response(f: &PipelineFacts, x: &FlowFacts) -> PipelineResponse {
+    let staged = x.workflow.is_some();
+    let base = derive_inner(f, staged);
+
+    let workflow = x.workflow.map(|wf| WorkflowView {
+        name: wf.name.clone(),
+        summary: wf.summary(),
+        auto: wf.auto,
+        max_rounds: wf.max_rounds as i64,
+        budget_minutes: wf.budget_minutes as i64,
+        budget_usd: wf.budget_usd,
+        limits: wf.limits_text(),
+        loops: wf.loops.clone(),
+        stages: wf.stages.clone(),
+    });
+
+    let mut valid_runs: Vec<&RunRow> = f
+        .runs
+        .iter()
+        .filter(|r| {
+            r.role == "lead"
+                || r.role == "dev"
+                || r.role == "qa"
+                || r.role == "plan-review"
+                || r.role == "code-review"
+        })
+        .collect();
+    valid_runs.sort_by_key(|r| (r.started_at, r.id));
+    let run_facts: Vec<RunFact> = valid_runs.iter().map(|r| RunFact::from_row(r)).collect();
+    let cycs = decide::cycles(&run_facts);
+    let current_cycle = cycs.last().copied();
+    let eff_rounds = decide::effective_rounds(&run_facts);
+
+    let auto_state = x.auto.and_then(|a| a.auto_state.as_deref());
+    let auto_stop_loop = x
+        .auto_json
+        .and_then(|aj| aj.stop.as_ref())
+        .and_then(|s| s.loop_name)
+        .map(|l| l.as_str().to_string());
+
+    let qa_latest_run_in_cycle = current_cycle.and_then(|cur_cyc| {
+        valid_runs
+            .iter()
+            .enumerate()
+            .filter(|(idx, r)| cycs[*idx] == cur_cyc && run_matches_card(r, "qa"))
+            .last()
+            .map(|(_, r)| *r)
+    });
+    let fix_has_run_in_cycle = current_cycle
+        .map(|cur_cyc| {
+            valid_runs
+                .iter()
+                .enumerate()
+                .any(|(idx, r)| cycs[idx] == cur_cyc && run_matches_card(r, "fix"))
+        })
+        .unwrap_or(false);
+
+    // Group definitions:
+    // canonical loop keys in order: plan, build, qa
+    struct GroupDef {
+        key: &'static str,
+        cards: Vec<(&'static str, &'static str, &'static str, &'static str)>, // key, stage, title, tag
+    }
+
+    let group_defs = [
+        GroupDef {
+            key: "plan",
+            cards: vec![
+                ("plan", "plan", "Lên plan", "lead"),
+                ("plan_review", "plan-review", "Review plan", "plan-review"),
+            ],
+        },
+        GroupDef {
+            key: "build",
+            cards: vec![
+                ("code", "implement", "Code", "dev"),
+                ("code_review", "code-review", "Review code", "code-review"),
+            ],
+        },
+        GroupDef {
+            key: "qa",
+            cards: vec![("qa", "qa", "QA", "qa"), ("fix", "fix", "Sửa", "dev · fix")],
+        },
+    ];
+
+    let mut groups = Vec::new();
+    for gdef in &group_defs {
+        let (has_group, allowed_card_keys): (bool, Vec<&str>) = match x.workflow {
+            Some(wf) => {
+                let mut ckeys = Vec::new();
+                for (ckey, stage, _, _) in &gdef.cards {
+                    if wf.has(stage) {
+                        ckeys.push(*ckey);
+                    }
+                }
+                (!ckeys.is_empty(), ckeys)
+            }
+            None => {
+                // Synthesized legacy flow: stages [plan, gate:you, implement, qa], no loops
+                match gdef.key {
+                    "plan" => (true, vec!["plan"]),
+                    "build" => (true, vec!["code"]),
+                    "qa" => (true, vec!["qa"]),
+                    _ => (false, Vec::new()),
+                }
+            }
+        };
+
+        if !has_group {
+            continue;
+        }
+
+        let mut flow_cards = Vec::new();
+        for (ckey, _stage, title, tag) in &gdef.cards {
+            if !allowed_card_keys.contains(ckey) {
+                continue;
+            }
+
+            let card_runs: Vec<(usize, &RunRow)> = valid_runs
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| run_matches_card(r, ckey))
+                .map(|(i, &r)| (i, r))
+                .collect();
+
+            let has_run = !card_runs.is_empty();
+            let mut total_duration = 0i64;
+            let mut has_duration = false;
+            let mut total_cost = 0.0f64;
+            let mut has_cost = false;
+            for (_, r) in &card_runs {
+                let dur = if r.status == "running" {
+                    Some((f.now_ms - r.started_at).max(0))
+                } else if let Some(ended) = r.ended_at {
+                    Some((ended - r.started_at).max(0))
+                } else {
+                    None
+                };
+                if let Some(d) = dur {
+                    total_duration += d;
+                    has_duration = true;
+                }
+                if r.status != "killed" && r.status != "running" && r.usage_source == "result" {
+                    total_cost += r.cost_usd;
+                    has_cost = true;
+                }
+            }
+            let duration_ms = if has_duration {
+                Some(total_duration)
+            } else {
+                None
+            };
+            let cost_usd = if has_cost { Some(total_cost) } else { None };
+
+            let latest_run_in_cycle = current_cycle.and_then(|cur_cyc| {
+                card_runs
+                    .iter()
+                    .filter(|(idx, _)| cycs[*idx] == cur_cyc)
+                    .last()
+                    .map(|(_, r)| *r)
+            });
+
+            let run_id = latest_run_in_cycle.map(|r| r.id);
+            let counts = latest_run_in_cycle
+                .and_then(|r| Counts::from_metrics_json(r.metrics_json.as_deref()));
+            let state = latest_run_in_cycle
+                .map(|r| taskstate::step_state(Some(r)).0)
+                .unwrap_or("cho");
+            let state_word_str = state_word(state).to_string();
+
+            let result = card_result(
+                ckey,
+                state,
+                latest_run_in_cycle,
+                f,
+                x,
+                qa_latest_run_in_cycle,
+                fix_has_run_in_cycle,
+            );
+
+            flow_cards.push(FlowCard {
+                key: ckey.to_string(),
+                title: title.to_string(),
+                tag: tag.to_string(),
+                state: state.to_string(),
+                state_word: state_word_str,
+                result,
+                counts,
+                duration_ms,
+                cost_usd,
+                has_run,
+                run_id,
+            });
+        }
+
+        // Group round: round of latest run of the group's cards in the current cycle
+        let group_round = current_cycle.and_then(|cur_cyc| {
+            valid_runs
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| {
+                    cycs[*idx] == cur_cyc
+                        && decide::loop_of(&run_facts[*idx])
+                            .map(|l| l.as_str() == gdef.key)
+                            .unwrap_or(false)
+                })
+                .last()
+                .map(|(idx, _)| eff_rounds[idx])
+        });
+
+        let cap = x
+            .workflow
+            .filter(|wf| wf.has_loop(gdef.key))
+            .map(|wf| wf.max_rounds as i64);
+
+        let stopped = auto_state == Some("stopped") && auto_stop_loop.as_deref() == Some(gdef.key);
+        let stop_word = if stopped {
+            x.auto_json
+                .and_then(|aj| aj.stop.as_ref())
+                .map(|s| crate::autopilot::view::reason_word(s.reason).to_string())
+        } else {
+            None
+        };
+
+        groups.push(FlowGroup {
+            key: gdef.key.to_string(),
+            cards: flow_cards,
+            round: group_round,
+            cap,
+            stopped,
+            stop_word,
+        });
+    }
+
+    let gate = derive_gate_view(&base, f, x);
+    let current_card = derive_current_card(&valid_runs, x, &gate.state);
+
+    let budget = if let (Some(wf), Some(u)) = (x.workflow, x.budget.as_ref()) {
+        let limits = BudgetLimits::from_workflow(wf);
+        let level = match pricing::budget_level(u, &limits) {
+            pricing::BudgetLevel::Ok => "ok",
+            pricing::BudgetLevel::Near => "near",
+            pricing::BudgetLevel::Over => "over",
+        };
+        Some(BudgetView {
+            used_ms: u.used_ms,
+            used_minutes: (u.used_ms as f64 / 60000.0).round() as i64,
+            limit_minutes: limits.minutes,
+            used_usd: u.used_usd,
+            limit_usd: limits.usd,
+            estimated: u.estimated_runs > 0,
+            estimated_runs: u.estimated_runs,
+            level: level.to_string(),
+        })
+    } else {
+        None
+    };
+
+    PipelineResponse {
+        base,
+        workflow,
+        groups,
+        gate,
+        current_card,
+        budget,
     }
 }
 
@@ -1746,5 +2559,512 @@ mod tests {
         let runs = vec![lead, qa];
         let res = approving_dev_run(&runs, "aaa1", None, |p, b| p == b);
         assert_eq!(res, None);
+    }
+
+    fn staged_run(
+        id: i64,
+        role: &str,
+        stage: Option<&str>,
+        round: Option<i64>,
+        status: &str,
+        outcome: Option<&str>,
+        metrics: Option<&str>,
+        started_at: i64,
+    ) -> RunRow {
+        let mut r = run(
+            id,
+            role,
+            status,
+            outcome,
+            started_at,
+            Some(started_at + 1000),
+        );
+        r.stage = stage.map(|s| s.to_string());
+        r.round = round;
+        r.metrics_json = metrics.map(|s| s.to_string());
+        r
+    }
+
+    fn test_mac_dinh() -> Workflow {
+        Workflow {
+            name: "mac-dinh".to_string(),
+            stages: vec![
+                "plan".to_string(),
+                "plan-review".to_string(),
+                "gate:you".to_string(),
+                "implement".to_string(),
+                "code-review".to_string(),
+                "qa".to_string(),
+                "fix".to_string(),
+            ],
+            loops: vec!["plan".to_string(), "build".to_string(), "qa".to_string()],
+            max_rounds: 3,
+            budget_minutes: 60,
+            budget_usd: 20.0,
+            auto: true,
+            source: "builtin".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_state_words_new() {
+        assert_eq!(state_word("duyet"), "duyệt");
+        assert_eq!(state_word("sua_lai"), "sửa lại");
+    }
+
+    #[test]
+    fn test_staged_ledger_rows() {
+        let task = dummy_task("dev_done");
+        let runs = vec![
+            staged_run(
+                1,
+                "lead",
+                Some("plan"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                1000,
+            ),
+            staged_run(
+                2,
+                "plan-review",
+                Some("plan-review"),
+                Some(1),
+                "succeeded",
+                Some("review:revise"),
+                Some(r#"{"blocking":1,"advisory":4}"#),
+                2000,
+            ),
+            staged_run(
+                3,
+                "lead",
+                Some("plan"),
+                Some(2),
+                "succeeded",
+                None,
+                None,
+                3000,
+            ),
+            staged_run(
+                4,
+                "plan-review",
+                Some("plan-review"),
+                Some(2),
+                "succeeded",
+                Some("review:approve"),
+                Some(r#"{"blocking":0,"advisory":1}"#),
+                4000,
+            ),
+            staged_run(
+                5,
+                "dev",
+                Some("implement"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                5000,
+            ),
+            staged_run(
+                6,
+                "code-review",
+                Some("code-review"),
+                Some(1),
+                "succeeded",
+                Some("review:revise"),
+                Some(r#"{"blocking":2,"advisory":0}"#),
+                6000,
+            ),
+            staged_run(
+                7,
+                "dev",
+                Some("fix"),
+                Some(2),
+                "succeeded",
+                None,
+                Some(r#"{"fix_for":"code_review"}"#),
+                7000,
+            ),
+            staged_run(
+                8,
+                "code-review",
+                Some("code-review"),
+                Some(2),
+                "succeeded",
+                Some("review:pass"),
+                None,
+                8000,
+            ),
+            staged_run(
+                9,
+                "qa",
+                Some("qa"),
+                Some(1),
+                "succeeded",
+                Some("qa:fix"),
+                Some(r#"{"specs":3,"failing":1}"#),
+                9000,
+            ),
+            staged_run(
+                10,
+                "dev",
+                Some("fix"),
+                Some(1),
+                "succeeded",
+                None,
+                Some(r#"{"fix_for":"qa"}"#),
+                10000,
+            ),
+            staged_run(
+                11,
+                "qa",
+                Some("qa"),
+                Some(2),
+                "succeeded",
+                Some("qa:pass"),
+                None,
+                11000,
+            ),
+        ];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 20000,
+        };
+        let wf = test_mac_dinh();
+        let flow = FlowFacts {
+            workflow: Some(&wf),
+            ..Default::default()
+        };
+        let resp = derive_response(&facts, &flow);
+        assert_eq!(resp.base.ledger.groups.len(), 3);
+        assert_eq!(resp.base.ledger.groups[0].rows.len(), 4);
+        assert_eq!(resp.base.ledger.groups[1].rows.len(), 4);
+        assert_eq!(resp.base.ledger.groups[2].rows.len(), 3);
+
+        let all_rows: Vec<&LedgerRow> = resp
+            .base
+            .ledger
+            .groups
+            .iter()
+            .flat_map(|g| &g.rows)
+            .collect();
+        let labels: Vec<&str> = all_rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Vòng 1 · plan",
+                "Vòng 1 · review plan",
+                "Vòng 2 · plan",
+                "Vòng 2 · review plan",
+                "Vòng 1 · code",
+                "Vòng 1 · review code",
+                "Vòng 2 · sửa theo review",
+                "Vòng 2 · review code",
+                "Vòng 1 · QA",
+                "Vòng 1 · sửa theo QA",
+                "Vòng 2 · QA",
+            ]
+        );
+        // verdicts of the review rows "sửa lại", "duyệt", "sửa lại", "đạt"
+        assert_eq!(all_rows[1].verdict, "sửa lại");
+        assert_eq!(all_rows[3].verdict, "duyệt");
+        assert_eq!(all_rows[5].verdict, "sửa lại");
+        assert_eq!(all_rows[7].verdict, "đạt");
+
+        // row 2 counts {blocking 1, advisory 4, others null} (1-based row 2 -> all_rows[1])
+        assert_eq!(
+            all_rows[1].counts,
+            Some(Counts {
+                blocking: Some(1),
+                advisory: Some(4),
+                specs: None,
+                failing: None,
+                not_automatable: None,
+            })
+        );
+        // row 9 counts {specs 3, failing 1, not_automatable null} (1-based row 9 -> all_rows[8])
+        assert_eq!(
+            all_rows[8].counts,
+            Some(Counts {
+                blocking: None,
+                advisory: None,
+                specs: Some(3),
+                failing: Some(1),
+                not_automatable: None,
+            })
+        );
+    }
+
+    #[test]
+    fn test_flow_groups_mac_dinh() {
+        let task = dummy_task("dev_done");
+        let runs = vec![
+            staged_run(
+                1,
+                "lead",
+                Some("plan"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                1000,
+            ),
+            staged_run(
+                2,
+                "plan-review",
+                Some("plan-review"),
+                Some(1),
+                "succeeded",
+                Some("review:revise"),
+                Some(r#"{"blocking":1,"advisory":4}"#),
+                2000,
+            ),
+            staged_run(
+                3,
+                "lead",
+                Some("plan"),
+                Some(2),
+                "succeeded",
+                None,
+                None,
+                3000,
+            ),
+            staged_run(
+                4,
+                "plan-review",
+                Some("plan-review"),
+                Some(2),
+                "succeeded",
+                Some("review:approve"),
+                Some(r#"{"blocking":0,"advisory":1}"#),
+                4000,
+            ),
+            staged_run(
+                5,
+                "dev",
+                Some("implement"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                5000,
+            ),
+            staged_run(
+                6,
+                "code-review",
+                Some("code-review"),
+                Some(1),
+                "succeeded",
+                Some("review:revise"),
+                Some(r#"{"blocking":2,"advisory":0}"#),
+                6000,
+            ),
+            staged_run(
+                7,
+                "dev",
+                Some("fix"),
+                Some(2),
+                "succeeded",
+                None,
+                Some(r#"{"fix_for":"code_review"}"#),
+                7000,
+            ),
+            staged_run(
+                8,
+                "code-review",
+                Some("code-review"),
+                Some(2),
+                "succeeded",
+                Some("review:pass"),
+                None,
+                8000,
+            ),
+            staged_run(
+                9,
+                "qa",
+                Some("qa"),
+                Some(1),
+                "succeeded",
+                Some("qa:fix"),
+                Some(r#"{"specs":3,"failing":1}"#),
+                9000,
+            ),
+            staged_run(
+                10,
+                "dev",
+                Some("fix"),
+                Some(1),
+                "succeeded",
+                None,
+                Some(r#"{"fix_for":"qa"}"#),
+                10000,
+            ),
+            staged_run(
+                11,
+                "qa",
+                Some("qa"),
+                Some(2),
+                "succeeded",
+                Some("qa:pass"),
+                None,
+                11000,
+            ),
+        ];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 20000,
+        };
+        let wf = test_mac_dinh();
+        let flow = FlowFacts {
+            workflow: Some(&wf),
+            ..Default::default()
+        };
+        let resp = derive_response(&facts, &flow);
+
+        let group_keys: Vec<&str> = resp.groups.iter().map(|g| g.key.as_str()).collect();
+        assert_eq!(group_keys, vec!["plan", "build", "qa"]);
+
+        let card_keys: Vec<Vec<&str>> = resp
+            .groups
+            .iter()
+            .map(|g| g.cards.iter().map(|c| c.key.as_str()).collect())
+            .collect();
+        assert_eq!(
+            card_keys,
+            vec![
+                vec!["plan", "plan_review"],
+                vec!["code", "code_review"],
+                vec!["qa", "fix"],
+            ]
+        );
+
+        let titles: Vec<Vec<&str>> = resp
+            .groups
+            .iter()
+            .map(|g| g.cards.iter().map(|c| c.title.as_str()).collect())
+            .collect();
+        assert_eq!(
+            titles,
+            vec![
+                vec!["Lên plan", "Review plan"],
+                vec!["Code", "Review code"],
+                vec!["QA", "Sửa"],
+            ]
+        );
+
+        let tags: Vec<Vec<&str>> = resp
+            .groups
+            .iter()
+            .map(|g| g.cards.iter().map(|c| c.tag.as_str()).collect())
+            .collect();
+        assert_eq!(
+            tags,
+            vec![
+                vec!["lead", "plan-review"],
+                vec!["dev", "code-review"],
+                vec!["qa", "dev · fix"],
+            ]
+        );
+
+        let group_rounds: Vec<Option<i64>> = resp.groups.iter().map(|g| g.round).collect();
+        assert_eq!(group_rounds, vec![Some(2), Some(2), Some(2)]);
+
+        let group_caps: Vec<Option<i64>> = resp.groups.iter().map(|g| g.cap).collect();
+        assert_eq!(group_caps, vec![Some(3), Some(3), Some(3)]);
+    }
+
+    #[test]
+    fn test_response_serializes_flat() {
+        let task = dummy_task("dev_done");
+        let runs = vec![staged_run(
+            1,
+            "lead",
+            Some("plan"),
+            Some(1),
+            "succeeded",
+            None,
+            None,
+            1000,
+        )];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 5000,
+        };
+        let wf = test_mac_dinh();
+        let flow = FlowFacts {
+            workflow: Some(&wf),
+            ..Default::default()
+        };
+        let resp = derive_response(&facts, &flow);
+        let val = serde_json::to_value(&resp).unwrap();
+        let obj = val.as_object().unwrap();
+        let mut keys: Vec<String> = obj.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "budget",
+                "cards",
+                "current",
+                "current_card",
+                "cycle",
+                "gate",
+                "groups",
+                "ledger",
+                "task_id",
+                "workflow"
+            ]
+        );
+        let wf_view = resp.workflow.as_ref().unwrap();
+        assert_eq!(wf_view.summary, wf.summary());
+        assert_eq!(wf_view.limits, "3 vòng · 60 phút · $20");
+    }
+
+    #[test]
+    fn test_legacy_rows_extended_only() {
+        let task = dummy_task("dev_done");
+        let runs = vec![
+            run(1, "lead", "succeeded", None, 1000, Some(2000)),
+            run(2, "dev", "succeeded", None, 2000, Some(3000)),
+            run(3, "qa", "succeeded", None, 3000, Some(4000)),
+        ];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 10000,
+        };
+        let view = derive(&facts);
+        let all_rows: Vec<&LedgerRow> = view.ledger.groups.iter().flat_map(|g| &g.rows).collect();
+        assert_eq!(all_rows.len(), 3);
+
+        assert_eq!(all_rows[0].loop_name, "plan");
+        assert_eq!(all_rows[0].stage, None);
+        assert_eq!(all_rows[0].kind, "plan");
+        assert_eq!(all_rows[0].counts, None);
+        assert_eq!(all_rows[0].label, "Vòng 1 · plan");
+
+        assert_eq!(all_rows[1].loop_name, "build");
+        assert_eq!(all_rows[1].stage, None);
+        assert_eq!(all_rows[1].kind, "code");
+        assert_eq!(all_rows[1].counts, None);
+        assert_eq!(all_rows[1].label, "Vòng 1 · code");
+
+        assert_eq!(all_rows[2].loop_name, "qa");
+        assert_eq!(all_rows[2].stage, None);
+        assert_eq!(all_rows[2].kind, "QA");
+        assert_eq!(all_rows[2].counts, None);
+        assert_eq!(all_rows[2].label, "Vòng 1 · QA");
     }
 }
