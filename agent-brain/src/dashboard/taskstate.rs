@@ -1,4 +1,6 @@
-use crate::db::{RunRow, TaskRow};
+use crate::autopilot::decide::{AutoJson, GateState};
+use crate::db::{RunRow, TaskAuto, TaskRow};
+use crate::workflows::Workflow;
 
 #[derive(Clone, Debug, Default)]
 pub struct GitFacts {
@@ -44,13 +46,38 @@ pub struct ActionView {
     pub run_id: Option<i64>,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Default)]
+pub struct AutoFacts<'a> {
+    pub workflow: Option<&'a Workflow>,
+    pub auto: Option<&'a TaskAuto>,
+    pub auto_json: Option<&'a AutoJson>,
+    pub driver_alive: bool,
+    pub running: Option<&'a RunRow>,
+    pub gate: Option<GateState>,
+    pub plan_dirty: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct AutoView {
+    pub state: String,
+    pub legacy: bool,
+    pub workflow_auto: bool,
+    pub stop_reason: Option<String>,
+    pub stop_word: Option<String>,
+    pub stop_detail: Option<String>,
+    pub stopped_in: Option<String>,
+    pub stop_requested: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct TaskView {
     pub steps: Vec<StepView>,
     pub banner: Option<String>,
     pub group: String,
     pub current_step: String,
     pub actions: Vec<ActionView>,
+    pub controls: Vec<ActionView>,
+    pub auto: AutoView,
 }
 
 pub fn step_state(run: Option<&RunRow>) -> (&'static str, &'static str) {
@@ -65,6 +92,9 @@ pub fn step_state(run: Option<&RunRow>) -> (&'static str, &'static str) {
         Some("dev:blocked") => return ("vuong_mac", "Vướng mắc"),
         Some("qa:fix") => return ("can_sua", "Cần sửa"),
         Some("protocol_violation") => return ("vi_pham", "Vi phạm giao thức"),
+        Some("review:approve") => return ("duyet", "duyệt"),
+        Some("review:revise") => return ("sua_lai", "sửa lại"),
+        Some("review:pass") => return ("dat", "đạt"),
         _ => {}
     }
     match r.status.as_str() {
@@ -272,7 +302,164 @@ fn build_relead(f: &TaskFacts) -> ActionView {
     }
 }
 
+/// Xác định trạng thái autopilot cho AutoView.
+fn auto_state_of(a: &AutoFacts) -> &'static str {
+    if a.workflow.is_none() {
+        return "off";
+    }
+    match a.auto.and_then(|auto| auto.auto_state.as_deref()) {
+        Some("running") => {
+            if a.driver_alive {
+                if a.auto.map_or(false, |auto| auto.auto_stop_at.is_some()) {
+                    "stopping"
+                } else {
+                    "running"
+                }
+            } else {
+                "lost"
+            }
+        }
+        Some("interrupted") => "lost",
+        Some("gate") => {
+            if a.gate == Some(GateState::Approved) {
+                "off"
+            } else {
+                "gate"
+            }
+        }
+        Some("stopped") => "stopped",
+        Some("done") => "done",
+        _ => "off",
+    }
+}
+
+/// Dựng nút điều khiển Duyệt plan (gate Waiting).
+fn build_approve(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) -> ActionView {
+    let mut enabled = true;
+    let mut reason = None;
+
+    if running_run.is_some() {
+        enabled = false;
+        reason = Some("Đang có run chạy — chờ run xong hoặc bấm Kill".to_string());
+    } else if a.driver_alive {
+        enabled = false;
+        reason = Some("Autopilot đang chạy task này — chờ autopilot dừng".to_string());
+    } else if a.plan_dirty {
+        enabled = false;
+        reason = Some(format!(
+            "Plan có thay đổi chưa commit — commit với message '{}: plan' rồi duyệt",
+            f.task.slug
+        ));
+    } else if a.workflow.map_or(false, |w| w.auto) && f.busy.is_some() {
+        enabled = false;
+        reason = f.busy.clone();
+    }
+
+    ActionView {
+        id: "approve".to_string(),
+        label: "Duyệt plan".to_string(),
+        enabled,
+        reason,
+        run_id: None,
+    }
+}
+
+/// Dựng nút điều khiển Trả về Lead (gate Waiting).
+fn build_return_lead(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) -> ActionView {
+    let mut enabled = true;
+    let mut reason = None;
+
+    if running_run.is_some() {
+        enabled = false;
+        reason = Some("Đang có run chạy — chờ run xong hoặc bấm Kill".to_string());
+    } else if a.driver_alive {
+        enabled = false;
+        reason = Some("Autopilot đang chạy task này — chờ autopilot dừng".to_string());
+    } else if let Some(busy) = &f.busy {
+        enabled = false;
+        reason = Some(busy.clone());
+    } else if f.git.current_branch.as_deref() != Some(&f.task.branch) {
+        enabled = false;
+        reason = Some(format!(
+            "Nhánh '{}' đã tồn tại nhưng chưa được checkout — hãy checkout nhánh đó hoặc dùng cờ --name khác",
+            f.task.branch
+        ));
+    } else {
+        let mut dirty: Vec<String> = f
+            .git
+            .dirty
+            .iter()
+            .filter(|p| *p != ".plan.md")
+            .cloned()
+            .collect();
+        if !dirty.is_empty() {
+            enabled = false;
+            dirty.sort();
+            let list = dirty
+                .iter()
+                .map(|p| format!("  {p}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            reason = Some(format!(
+                "Working tree có thay đổi chưa commit — dừng, không tự stash:\n{list}"
+            ));
+        }
+    }
+
+    ActionView {
+        id: "return_lead".to_string(),
+        label: "Trả về Lead".to_string(),
+        enabled,
+        reason,
+        run_id: None,
+    }
+}
+
+/// Dựng nút điều khiển Bật autopilot.
+fn build_auto_start(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) -> ActionView {
+    let mut enabled = true;
+    let mut reason = None;
+
+    if a.workflow.is_none() {
+        enabled = false;
+        reason =
+            Some("Task tạo trước Phase 5.2 — không có quy trình để chạy autopilot.".to_string());
+    } else if running_run.is_some() {
+        enabled = false;
+        reason = Some("Đang có run chạy — chờ run xong hoặc bấm Kill".to_string());
+    } else if f.task.status == "qa_pass" {
+        enabled = false;
+        reason = Some("Task đã xong (QA đạt).".to_string());
+    } else if a.gate == Some(GateState::Waiting) {
+        enabled = false;
+        reason =
+            Some("Autopilot dừng ở bước duyệt plan — bấm Duyệt plan để chạy tiếp.".to_string());
+    } else if let Some(busy) = &f.busy {
+        enabled = false;
+        reason = Some(busy.clone());
+    } else if f.git.current_branch.as_deref() != Some(&f.task.branch) {
+        enabled = false;
+        let cur = f.git.current_branch.as_deref().unwrap_or("None");
+        reason = Some(format!(
+            "Không ở nhánh task '{}' (nhánh hiện tại: '{cur}') — không đoán",
+            f.task.branch
+        ));
+    }
+
+    ActionView {
+        id: "auto_start".to_string(),
+        label: "Bật autopilot".to_string(),
+        enabled,
+        reason,
+        run_id: None,
+    }
+}
+
 pub fn derive(f: &TaskFacts) -> TaskView {
+    derive_with(f, &AutoFacts::default())
+}
+
+pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
     let steps = vec![
         make_step("lead", f.lead, f.now_ms),
         make_step("dev", f.dev, f.now_ms),
@@ -340,10 +527,12 @@ pub fn derive(f: &TaskFacts) -> TaskView {
         "waiting".to_string()
     };
 
-    let running_run = all_runs
-        .into_iter()
-        .flatten()
-        .find(|r| r.status == "running");
+    let running_run = a.running.filter(|r| r.status == "running").or_else(|| {
+        all_runs
+            .into_iter()
+            .flatten()
+            .find(|r| r.status == "running")
+    });
 
     let actions = if let Some(r) = running_run {
         vec![ActionView {
@@ -380,12 +569,59 @@ pub fn derive(f: &TaskFacts) -> TaskView {
         }
     };
 
+    let auto_state = auto_state_of(a);
+    let legacy = a.workflow.is_none();
+    let workflow_auto = a.workflow.map_or(false, |w| w.auto);
+    let stop_requested =
+        !legacy && a.auto.map_or(false, |auto| auto.auto_stop_at.is_some()) && a.driver_alive;
+
+    let (stop_reason, stop_word, stop_detail, stopped_in) = if auto_state == "stopped" {
+        if let Some(stop) = a.auto_json.and_then(|aj| aj.stop.as_ref()) {
+            (
+                Some(stop.reason.as_str().to_string()),
+                Some(crate::autopilot::view::reason_word(stop.reason).to_string()),
+                Some(crate::autopilot::view::stop_detail(stop, &f.task.slug)),
+                stop.loop_name.map(|l| l.as_str().to_string()),
+            )
+        } else {
+            (None, None, None, None)
+        }
+    } else {
+        (None, None, None, None)
+    };
+
+    let auto = AutoView {
+        state: auto_state.to_string(),
+        legacy,
+        workflow_auto,
+        stop_reason,
+        stop_word,
+        stop_detail,
+        stopped_in,
+        stop_requested,
+    };
+
+    let mut controls = Vec::new();
+    if legacy {
+        controls.push(build_auto_start(f, a, running_run));
+    } else {
+        if a.gate == Some(GateState::Waiting) {
+            controls.push(build_approve(f, a, running_run));
+            controls.push(build_return_lead(f, a, running_run));
+        }
+        if auto_state != "running" && auto_state != "stopping" {
+            controls.push(build_auto_start(f, a, running_run));
+        }
+    }
+
     TaskView {
         steps,
         banner,
         group,
         current_step,
         actions,
+        controls,
+        auto,
     }
 }
 
@@ -1018,5 +1254,379 @@ mod tests {
             now_ms: 2000,
         };
         assert!(derive(&facts).actions[1].enabled);
+    }
+
+    fn dummy_task_auto(auto_state: Option<&str>, auto_stop_at: Option<i64>) -> TaskAuto {
+        TaskAuto {
+            workflow_json: None,
+            approved_at: None,
+            approved_commit: None,
+            auto_state: auto_state.map(|s| s.to_string()),
+            auto_pid: None,
+            auto_pid_start: None,
+            auto_stop_at,
+            auto_stop_kind: None,
+            auto_json: None,
+        }
+    }
+
+    #[test]
+    fn test_review_words() {
+        let oc_approve = "review:approve";
+        let r1 = dummy_run(1, "plan-review", "succeeded", Some(oc_approve));
+        assert_eq!(step_state(Some(&r1)), ("duyet", "duyệt"));
+
+        let oc_revise = "review:revise";
+        let r2 = dummy_run(2, "code-review", "succeeded", Some(oc_revise));
+        assert_eq!(step_state(Some(&r2)), ("sua_lai", "sửa lại"));
+
+        let oc_pass = "review:pass";
+        let r3 = dummy_run(3, "code-review", "succeeded", Some(oc_pass));
+        assert_eq!(step_state(Some(&r3)), ("dat", "đạt"));
+
+        let r4 = dummy_run(4, "plan-review", "running", None);
+        assert_eq!(step_state(Some(&r4)), ("dang_chay", "đang chạy"));
+    }
+
+    #[test]
+    fn test_legacy_task_defaults() {
+        let task = dummy_task("planned");
+        let git = GitFacts::default();
+        let facts = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 2000,
+        };
+        let view = derive(&facts);
+        assert_eq!(view.auto.state, "off");
+        assert!(view.auto.legacy);
+        assert!(!view.auto.workflow_auto);
+        assert!(!view.auto.stop_requested);
+        assert_eq!(view.controls.len(), 1);
+        assert_eq!(view.controls[0].id, "auto_start");
+        assert!(!view.controls[0].enabled);
+        assert_eq!(
+            view.controls[0].reason.as_deref(),
+            Some("Task tạo trước Phase 5.2 — không có quy trình để chạy autopilot.")
+        );
+        // actions equal to what 05.1 returned
+        assert_eq!(view.actions.len(), 2);
+        assert_eq!(view.actions[0].id, "run_dev");
+        assert_eq!(view.actions[1].id, "relead");
+    }
+
+    #[test]
+    fn test_gate_waiting_controls() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+
+        let task = dummy_task("planned");
+        let git = GitFacts {
+            current_branch: Some("task/sua-app".to_string()),
+            dirty: vec![],
+            plan_exists: true,
+            plan_blockers: false,
+            plan_errors: vec![],
+            plan_commit: Some("abc".to_string()),
+            code_after_plan: false,
+        };
+        let facts = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 2000,
+        };
+        let auto_facts = AutoFacts {
+            workflow: Some(mac_dinh),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+
+        let view = derive_with(&facts, &auto_facts);
+        let control_ids: Vec<&str> = view.controls.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(control_ids, vec!["approve", "return_lead", "auto_start"]);
+
+        // approve and return_lead enabled
+        assert!(view.controls[0].enabled);
+        assert_eq!(view.controls[0].id, "approve");
+        assert!(view.controls[1].enabled);
+        assert_eq!(view.controls[1].id, "return_lead");
+
+        // auto_start disabled with gate waiting text
+        assert!(!view.controls[2].enabled);
+        assert_eq!(view.controls[2].id, "auto_start");
+        assert_eq!(
+            view.controls[2].reason.as_deref(),
+            Some("Autopilot dừng ở bước duyệt plan — bấm Duyệt plan để chạy tiếp.")
+        );
+    }
+
+    #[test]
+    fn test_approve_reasons() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+        let nhanh = wfs.get("nhanh").unwrap();
+
+        let task = dummy_task("planned");
+        let git = GitFacts {
+            current_branch: Some("task/sua-app".to_string()),
+            dirty: vec![],
+            plan_exists: true,
+            plan_blockers: false,
+            plan_errors: vec![],
+            plan_commit: Some("abc".to_string()),
+            code_after_plan: false,
+        };
+
+        // 1. plan_dirty -> approve disabled
+        let facts = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 2000,
+        };
+        let auto_facts_dirty = AutoFacts {
+            workflow: Some(mac_dinh),
+            gate: Some(GateState::Waiting),
+            plan_dirty: true,
+            ..Default::default()
+        };
+        let view_dirty = derive_with(&facts, &auto_facts_dirty);
+        assert_eq!(view_dirty.controls[0].id, "approve");
+        assert!(!view_dirty.controls[0].enabled);
+        assert_eq!(
+            view_dirty.controls[0].reason.as_deref(),
+            Some("Plan có thay đổi chưa commit — commit với message 'sua-app: plan' rồi duyệt")
+        );
+
+        // 2. busy Some("Dự án x bận") with mac-dinh (auto true) -> approve disabled
+        let facts_busy = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: Some("Dự án x bận".to_string()),
+            now_ms: 2000,
+        };
+        let auto_facts_macdinh = AutoFacts {
+            workflow: Some(mac_dinh),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let view_busy_macdinh = derive_with(&facts_busy, &auto_facts_macdinh);
+        assert_eq!(view_busy_macdinh.controls[0].id, "approve");
+        assert!(!view_busy_macdinh.controls[0].enabled);
+        assert_eq!(
+            view_busy_macdinh.controls[0].reason.as_deref(),
+            Some("Dự án x bận")
+        );
+
+        // 3. same busy with nhanh (auto false) -> approve enabled
+        let auto_facts_nhanh = AutoFacts {
+            workflow: Some(nhanh),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let view_busy_nhanh = derive_with(&facts_busy, &auto_facts_nhanh);
+        assert_eq!(view_busy_nhanh.controls[0].id, "approve");
+        assert!(view_busy_nhanh.controls[0].enabled);
+
+        // 4. running lead run -> approve disabled
+        let lead_running = dummy_run(1, "lead", "running", None);
+        let facts_lead_running = TaskFacts {
+            task: &task,
+            lead: Some(&lead_running),
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 2000,
+        };
+        let view_lead_running = derive_with(&facts_lead_running, &auto_facts_macdinh);
+        assert_eq!(view_lead_running.controls[0].id, "approve");
+        assert!(!view_lead_running.controls[0].enabled);
+        assert_eq!(
+            view_lead_running.controls[0].reason.as_deref(),
+            Some("Đang có run chạy — chờ run xong hoặc bấm Kill")
+        );
+    }
+
+    #[test]
+    fn test_gate_not_open() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+
+        let task = dummy_task("planned");
+        let git = GitFacts::default();
+        let facts = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 2000,
+        };
+
+        for gate in [
+            GateState::AwaitingReview,
+            GateState::NoPlan,
+            GateState::Approved,
+        ] {
+            let auto_facts = AutoFacts {
+                workflow: Some(mac_dinh),
+                gate: Some(gate),
+                ..Default::default()
+            };
+            let view = derive_with(&facts, &auto_facts);
+            assert!(
+                !view.controls.iter().any(|c| c.id == "approve"),
+                "gate {:?} should not have approve",
+                gate
+            );
+            assert!(
+                !view.controls.iter().any(|c| c.id == "return_lead"),
+                "gate {:?} should not have return_lead",
+                gate
+            );
+        }
+    }
+
+    #[test]
+    fn test_auto_state_mapping() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+
+        let task = dummy_task("planned");
+        let git = GitFacts::default();
+        let facts = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 2000,
+        };
+
+        // 1. auto_state "running" + driver_alive: true -> "running"
+        let auto_run = dummy_task_auto(Some("running"), None);
+        let af1 = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto_run),
+            driver_alive: true,
+            ..Default::default()
+        };
+        let v1 = derive_with(&facts, &af1);
+        assert_eq!(v1.auto.state, "running");
+        assert!(!v1.auto.stop_requested);
+
+        // 2. auto_state "running" + auto_stop_at Some -> "stopping" and stop_requested true
+        let auto_stopping = dummy_task_auto(Some("running"), Some(1500));
+        let af2 = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto_stopping),
+            driver_alive: true,
+            ..Default::default()
+        };
+        let v2 = derive_with(&facts, &af2);
+        assert_eq!(v2.auto.state, "stopping");
+        assert!(v2.auto.stop_requested);
+
+        // 3. auto_state "running" + driver dead -> "lost"
+        let af3 = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto_run),
+            driver_alive: false,
+            ..Default::default()
+        };
+        let v3 = derive_with(&facts, &af3);
+        assert_eq!(v3.auto.state, "lost");
+
+        // 4. auto_state "interrupted" -> "lost"
+        let auto_interrupted = dummy_task_auto(Some("interrupted"), None);
+        let af4 = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto_interrupted),
+            driver_alive: false,
+            ..Default::default()
+        };
+        let v4 = derive_with(&facts, &af4);
+        assert_eq!(v4.auto.state, "lost");
+
+        // 5. auto_state "gate" with gate Waiting -> "gate"
+        let auto_gate = dummy_task_auto(Some("gate"), None);
+        let af5 = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto_gate),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let v5 = derive_with(&facts, &af5);
+        assert_eq!(v5.auto.state, "gate");
+
+        // 6. auto_state "gate" with gate Approved -> "off"
+        let af6 = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto_gate),
+            gate: Some(GateState::Approved),
+            ..Default::default()
+        };
+        let v6 = derive_with(&facts, &af6);
+        assert_eq!(v6.auto.state, "off");
+
+        // 7. auto_state "done" -> "done"
+        let auto_done = dummy_task_auto(Some("done"), None);
+        let af7 = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto_done),
+            ..Default::default()
+        };
+        let v7 = derive_with(&facts, &af7);
+        assert_eq!(v7.auto.state, "done");
+
+        // 8. auto_state "ended" / NULL -> "off"
+        let auto_ended = dummy_task_auto(Some("ended"), None);
+        let af8 = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto_ended),
+            ..Default::default()
+        };
+        assert_eq!(derive_with(&facts, &af8).auto.state, "off");
+
+        let auto_null = dummy_task_auto(None, None);
+        let af9 = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto_null),
+            ..Default::default()
+        };
+        assert_eq!(derive_with(&facts, &af9).auto.state, "off");
     }
 }
