@@ -215,12 +215,37 @@ pub fn claim(
     Ok(aj)
 }
 
-/// Trả task: ghi auto_state, auto_json và xóa pid của driver.
+/// Trả task: ghi auto_state, auto_json và xóa pid của driver — một câu lệnh,
+/// chỉ khi hàng vẫn thuộc tiến trình này (`auto_pid` = pid của mình). Hàng đã
+/// đổi chủ (driver khác nhận, Dừng hẳn) thì không ghi gì và in một dòng.
 pub fn release(conn: &Connection, task_id: i64, state: &str, aj: &AutoJson) -> BrainResult<()> {
-    crate::db::set_auto_json(conn, task_id, Some(&aj.to_json()))?;
-    crate::db::set_auto_state(conn, task_id, Some(state))?;
-    crate::db::set_auto_driver(conn, task_id, None, None)?;
+    let own_pid = std::process::id() as i64;
+    let changed = conn.execute(
+        "UPDATE tasks SET auto_json = ?1, auto_state = ?2, auto_pid = NULL, auto_pid_start = NULL, updated_at = ?5 WHERE id = ?3 AND auto_pid IS ?4",
+        rusqlite::params![aj.to_json(), state, task_id, own_pid, crate::db::now_ms()],
+    )?;
+    if changed == 0 {
+        crate::term::emit(&format!(
+            "Autopilot: task {task_id} đã đổi trạng thái bởi tiến trình khác — không ghi đè"
+        ));
+    }
     Ok(())
+}
+
+/// Dừng hẳn autopilot: auto_state `ended`, xóa pid và cờ dừng — chỉ khi
+/// auto_state vẫn là `expect_state` và không có driver giữ task. Trả true khi
+/// đã ghi (false = trạng thái đã đổi giữa lúc đọc và lúc ghi).
+pub fn end_autopilot(
+    conn: &Connection,
+    task_id: i64,
+    expect_state: &str,
+    aj: &AutoJson,
+) -> BrainResult<bool> {
+    let changed = conn.execute(
+        "UPDATE tasks SET auto_json = ?1, auto_state = 'ended', auto_pid = NULL, auto_pid_start = NULL, auto_stop_at = NULL, auto_stop_kind = NULL, updated_at = ?4 WHERE id = ?2 AND auto_state = ?3 AND auto_pid IS NULL",
+        rusqlite::params![aj.to_json(), task_id, expect_state, crate::db::now_ms()],
+    )?;
+    Ok(changed == 1)
 }
 
 /// Slug và profile của dự án chứa task.
@@ -302,4 +327,91 @@ pub fn approve_record(conn: &Connection, task_id: i64, plan_commit: &str) -> Bra
     let now = crate::db::now_ms();
     crate::db::set_task_approval(conn, task_id, now, plan_commit)?;
     Ok(now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{open, project_row_id, sync_projects, task_auto, upsert_task};
+    use crate::projects::Project;
+
+    fn fresh_task() -> (tempfile::TempDir, Connection, i64) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = open(&dir.path().join("brain.db")).expect("open db");
+        let project = Project {
+            id: "demo".to_string(),
+            path: dir.path().to_string_lossy().to_string(),
+            name_vi: "Demo".to_string(),
+            aliases: vec![],
+            kind: "code".to_string(),
+            profile: "default".to_string(),
+            repo: None,
+            missing: false,
+        };
+        sync_projects(&conn, &[project]).expect("sync projects");
+        let project_id = project_row_id(&conn, "demo").expect("project id");
+        let task_id =
+            upsert_task(&conn, project_id, "t", "T", "t", Some("main"), None).expect("upsert task");
+        (dir, conn, task_id)
+    }
+
+    fn set_row(conn: &Connection, task_id: i64, state: &str, pid: Option<i64>) {
+        conn.execute(
+            "UPDATE tasks SET auto_state = ?1, auto_pid = ?2, auto_pid_start = ?3, auto_stop_at = 5, auto_stop_kind = 'soft' WHERE id = ?4",
+            rusqlite::params![state, pid, pid.map(|_| 7i64), task_id],
+        )
+        .expect("set row");
+    }
+
+    fn auto_of(conn: &Connection, task_id: i64) -> TaskAuto {
+        task_auto(conn, task_id).expect("task_auto").expect("row")
+    }
+
+    #[test]
+    fn release_only_own_row() {
+        let (_dir, conn, id) = fresh_task();
+        let own = std::process::id() as i64;
+        set_row(&conn, id, "running", Some(own));
+        release(&conn, id, "gate", &AutoJson::default()).expect("release own");
+        let a = auto_of(&conn, id);
+        assert_eq!(a.auto_state.as_deref(), Some("gate"));
+        assert_eq!(a.auto_pid, None);
+        assert_eq!(a.auto_pid_start, None);
+
+        set_row(&conn, id, "running", Some(1));
+        release(&conn, id, "gate", &AutoJson::default()).expect("release other");
+        let a = auto_of(&conn, id);
+        assert_eq!(a.auto_state.as_deref(), Some("running"));
+        assert_eq!(a.auto_pid, Some(1));
+        assert_eq!(a.auto_pid_start, Some(7));
+    }
+
+    #[test]
+    fn end_autopilot_conditional() {
+        let (_dir, conn, id) = fresh_task();
+        set_row(&conn, id, "stopped", None);
+        assert!(end_autopilot(&conn, id, "stopped", &AutoJson::default()).expect("end"));
+        let a = auto_of(&conn, id);
+        assert_eq!(a.auto_state.as_deref(), Some("ended"));
+        assert_eq!(a.auto_pid, None);
+        assert_eq!(a.auto_stop_at, None);
+        assert_eq!(a.auto_stop_kind, None);
+
+        // Một driver đã nhận task giữa lúc đọc và lúc ghi: không ghi gì.
+        set_row(&conn, id, "running", Some(1));
+        assert!(!end_autopilot(&conn, id, "stopped", &AutoJson::default()).expect("end"));
+        let a = auto_of(&conn, id);
+        assert_eq!(a.auto_state.as_deref(), Some("running"));
+        assert_eq!(a.auto_pid, Some(1));
+        assert_eq!(a.auto_stop_kind.as_deref(), Some("soft"));
+
+        // auto_state đúng nhưng còn pid: cũng không ghi.
+        set_row(&conn, id, "stopped", Some(1));
+        assert!(!end_autopilot(&conn, id, "stopped", &AutoJson::default()).expect("end"));
+        assert_eq!(auto_of(&conn, id).auto_state.as_deref(), Some("stopped"));
+
+        set_row(&conn, id, "gate", None);
+        assert!(end_autopilot(&conn, id, "gate", &AutoJson::default()).expect("end"));
+        assert_eq!(auto_of(&conn, id).auto_state.as_deref(), Some("ended"));
+    }
 }

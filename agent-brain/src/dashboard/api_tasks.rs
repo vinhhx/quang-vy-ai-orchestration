@@ -1737,8 +1737,13 @@ async fn post_control(
             }
             "auto_end" => {
                 // Dừng hẳn: giữ auto_json.stop làm lịch sử; Bật autopilot chạy lại sau.
-                claim::release(&conn, task_id, "ended", &state.aj)?;
-                crate::db::clear_auto_stop(&conn, task_id)?;
+                // Chỉ ghi khi task vẫn `stopped` và không có driver (WR-04).
+                if !claim::end_autopilot(&conn, task_id, "stopped", &state.aj)? {
+                    return Ok(json_resp(
+                        StatusCode::CONFLICT,
+                        serde_json::json!({ "error": STALE_MSG, "kind": "stale" }),
+                    ));
+                }
                 Ok(json_resp(StatusCode::OK, serde_json::json!({ "ok": true })))
             }
             _ => Ok(conflict(NOT_ALLOWED_MSG, "not_allowed")),
