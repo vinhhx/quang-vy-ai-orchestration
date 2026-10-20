@@ -44,6 +44,9 @@ enum Commands {
         /// Vòng lặp (ẩn)
         #[arg(long, hide = true)]
         round: Option<i64>,
+        /// Chế độ sửa theo báo cáo (qa | code-review)
+        #[arg(long, value_enum)]
+        fix: Option<roles::FixInput>,
     },
     /// Trạng thái nhanh của dự án
     Status {
@@ -172,12 +175,14 @@ fn main() {
             dry_run,
             verbose,
             round,
+            fix,
         } => {
             let opts = roles::RunOpts {
                 name,
                 dry_run,
                 verbose,
                 round,
+                fix,
             };
             roles::cmd_run(&mut ctx, role, &project, request.as_deref(), &opts)
         }

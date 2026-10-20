@@ -35,9 +35,39 @@ impl Role {
 
 pub const LEAD_PROMPT: &str = include_str!("../../assets/prompts/lead.md");
 pub const DEV_PROMPT: &str = include_str!("../../assets/prompts/dev.md");
+pub const DEV_FIX_PROMPT: &str = include_str!("../../assets/prompts/dev-fix.md");
 pub const QA_PROMPT: &str = include_str!("../../assets/prompts/qa.md");
 pub const PLAN_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/plan-review.md");
 pub const CODE_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/code-review.md");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum FixInput {
+    Qa,
+    CodeReview,
+}
+
+impl FixInput {
+    pub fn report_file(&self) -> &'static str {
+        match self {
+            FixInput::Qa => crate::report::QA_REPORT_FILE,
+            FixInput::CodeReview => crate::report::CODE_REVIEW_FILE,
+        }
+    }
+
+    pub fn metrics_value(&self) -> &'static str {
+        match self {
+            FixInput::Qa => "qa",
+            FixInput::CodeReview => "code_review",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            FixInput::Qa => "QA",
+            FixInput::CodeReview => "review",
+        }
+    }
+}
 
 pub fn prompt_for(role: Role) -> &'static str {
     match role {
@@ -87,10 +117,17 @@ pub fn abs_rules(root: &Path, rel_files: &[&str], tools: &[&str]) -> Vec<String>
 }
 
 pub fn build_command(spec: &RoleSpec, cfg: &Config) -> BrainResult<Vec<String>> {
+    build_command_with_prompt(spec, cfg, prompt_for(spec.role))
+}
+
+pub fn build_command_with_prompt(
+    spec: &RoleSpec,
+    cfg: &Config,
+    prompt_text: &str,
+) -> BrainResult<Vec<String>> {
     check_forbidden_args(&cfg.common_args)?;
     check_forbidden_args(&spec.extra_args)?;
 
-    let prompt_text = prompt_for(spec.role);
     let model = cfg.model_for(spec.role.as_str())?;
 
     let mut cmd = vec![
@@ -242,6 +279,7 @@ pub struct RunOpts {
     pub dry_run: bool,
     pub verbose: bool,
     pub round: Option<i64>,
+    pub fix: Option<FixInput>,
 }
 
 pub fn execute_role(
@@ -484,6 +522,10 @@ pub fn cmd_run(
         }
     }
 
+    if opts.fix.is_some() && role != Role::Dev {
+        return Err(BrainError::error("--fix chỉ dùng với vai trò dev"));
+    }
+
     match role {
         Role::Lead => {
             let req = match request {
@@ -511,7 +553,7 @@ pub fn cmd_run(
                     );
                 }
             }
-            dev::cmd_dev(ctx, project, opts.dry_run, opts.verbose)
+            dev::cmd_dev(ctx, project, opts)
         }
         Role::Qa => {
             if let Some(r) = request {

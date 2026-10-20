@@ -39,7 +39,9 @@ pub fn dev_allowed_tools(files: &[String], root: Option<&Path>) -> Vec<String> {
     tools
 }
 
-pub fn cmd_dev(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> BrainResult<i32> {
+pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> BrainResult<i32> {
+    let dry_run = opts.dry_run;
+    let verbose = opts.verbose;
     let proj = crate::projects::select_project(project, &ctx.map)?;
     let proj_path = crate::projects::require_runnable(&proj, &ctx.cfg)?;
 
@@ -115,20 +117,119 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> Br
         ));
     }
 
-    let allowed = dev_allowed_tools(&files, Some(&proj_path));
+    let (active_files, allowed, user_input, prompt_path, is_fix) = if let Some(fix) = opts.fix {
+        let report_file = fix.report_file();
+        let report_path = proj_path.join(report_file);
+        if !report_path.is_file() {
+            let action = match fix {
+                crate::roles::FixInput::CodeReview => "review code",
+                crate::roles::FixInput::Qa => "QA",
+            };
+            return Err(BrainError::error(format!(
+                "Không tìm thấy {report_file} — chạy {action} trước khi chạy chế độ sửa"
+            )));
+        }
+
+        let report_text = std::fs::read_to_string(&report_path)?;
+        match fix {
+            crate::roles::FixInput::CodeReview => {
+                let r = crate::report::parse_review(&report_text, crate::report::ReviewKind::Code)
+                    .map_err(|reason| {
+                        BrainError::error(format!(
+                            "Báo cáo .code-review.md không đúng định dạng: {reason}"
+                        ))
+                    })?;
+                if r.verdict != "revise" {
+                    return Err(BrainError::error(format!(
+                        "Báo cáo .code-review.md không yêu cầu sửa (verdict {}) — không chạy chế độ sửa",
+                        r.verdict
+                    )));
+                }
+            }
+            crate::roles::FixInput::Qa => {
+                let verdict = crate::planfile::parse_qa_verdict(&report_text);
+                if verdict.as_deref() != Some("Cần sửa") {
+                    return Err(BrainError::error(
+                        "Báo cáo .qa-report.md không kết luận Cần sửa — không chạy chế độ sửa",
+                    ));
+                }
+            }
+        }
+
+        let named = crate::report::named_files(&report_text, &proj_path);
+        if named.files.is_empty() {
+            crate::term::emit_out(&format!("File được nêu trong {report_file}: (không có)"));
+        } else {
+            crate::term::emit_out(&format!(
+                "File được nêu trong {report_file}: {}",
+                named.files.join(", ")
+            ));
+        }
+        for (path, code) in &named.rejected {
+            crate::term::emit_out(&format!("Bỏ qua (không được phép): {path} ({code})"));
+        }
+
+        let mut fix_files = files.clone();
+        for nf in &named.files {
+            let norm_nf = crate::planfile::normalize_plan_path(nf);
+            if !fix_files
+                .iter()
+                .any(|f| crate::planfile::normalize_plan_path(f) == norm_nf)
+            {
+                fix_files.push(nf.clone());
+            }
+        }
+
+        let mut allowed = dev_allowed_tools(&fix_files, Some(&proj_path));
+        allowed.push(format!("Read(./{report_file})"));
+        allowed.extend(crate::roles::abs_rules(
+            &proj_path,
+            &[report_file],
+            &["Read"],
+        ));
+
+        let report_desc = match fix {
+            crate::roles::FixInput::CodeReview => "báo cáo review code",
+            crate::roles::FixInput::Qa => "báo cáo QA",
+        };
+        let user_input = format!(
+            "Task: {task}\nChế độ sửa theo {report_desc} ({report_file}).\nĐọc .plan.md và {report_file}, sửa mọi mục chặn và lỗi được nêu, không làm thêm việc khác.\nFile được đọc và sửa: {}\nCommit với message: \"{task}: sửa theo {}\".",
+            fix_files.join(", "),
+            fix.label()
+        );
+
+        (
+            fix_files,
+            allowed,
+            user_input,
+            "assets/prompts/dev-fix.md",
+            true,
+        )
+    } else {
+        let allowed = dev_allowed_tools(&files, Some(&proj_path));
+        let user_input = format!(
+            "Task: {task}\nĐọc .plan.md rồi sửa đúng các mục trong bảng Thay đổi.\nFile được đọc và sửa: {}\nCommit với message: \"{task}: <mô tả ngắn>\".",
+            files.join(", ")
+        );
+        (
+            files.clone(),
+            allowed,
+            user_input,
+            "assets/prompts/dev.md",
+            false,
+        )
+    };
+
     let disallowed = DEV_DISALLOWED_TOOLS
         .iter()
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
 
     if dry_run {
-        crate::term::emit_out(&format!("Allowlist: {}", files.join(", ")));
+        crate::term::emit_out(&format!("Allowlist: {}", active_files.join(", ")));
         let spec_dry = crate::roles::RoleSpec {
             role: crate::roles::Role::Dev,
-            user_input: format!(
-                "Task: {task}\nĐọc .plan.md rồi sửa đúng các mục trong bảng Thay đổi.\nFile được đọc và sửa: {}\nCommit với message: \"{task}: <mô tả ngắn>\".",
-                files.join(", ")
-            ),
+            user_input,
             allowed_tools: allowed,
             disallowed_tools: disallowed,
             extra_args: vec![
@@ -136,10 +237,18 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> Br
                 "<run_dir/settings.json>".to_string(),
             ],
         };
-        let cmd = crate::roles::build_command(&spec_dry, &ctx.cfg)?;
+        let cmd = if is_fix {
+            crate::roles::build_command_with_prompt(
+                &spec_dry,
+                &ctx.cfg,
+                crate::roles::DEV_FIX_PROMPT,
+            )?
+        } else {
+            crate::roles::build_command(&spec_dry, &ctx.cfg)?
+        };
         crate::term::emit_out(&format!(
             "Command: {}",
-            crate::roles::display_argv(&cmd, "assets/prompts/dev.md")
+            crate::roles::display_argv(&cmd, prompt_path)
         ));
         return Ok(crate::error::EXIT_OK);
     }
@@ -151,25 +260,39 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> Br
     let dev_base = crate::gitops::head_sha(&proj_path)?;
     let run_dir = crate::roles::new_run_dir(&ctx.cfg, &proj.id, &task, "dev")?;
 
-    let mut allow_paths = Vec::new();
-    for f in &files {
-        allow_paths.push(proj_path.join(f));
-    }
-    allow_paths.push(proj_path.join(".plan.md"));
-
     let exe = std::env::current_exe()?;
-    let settings = crate::guard::write_hook_settings(
-        &run_dir,
-        &proj_path,
-        Some(&allow_paths),
-        &allow_paths,
-        &exe,
-    )?;
+    let settings = if let Some(fix) = opts.fix {
+        let mut write_allow = Vec::new();
+        for f in &active_files {
+            write_allow.push(proj_path.join(f));
+        }
+        write_allow.push(proj_path.join(".plan.md"));
 
-    let user_input = format!(
-        "Task: {task}\nĐọc .plan.md rồi sửa đúng các mục trong bảng Thay đổi.\nFile được đọc và sửa: {}\nCommit với message: \"{task}: <mô tả ngắn>\".",
-        files.join(", ")
-    );
+        let mut read_allow = write_allow.clone();
+        read_allow.push(proj_path.join(fix.report_file()));
+
+        crate::guard::write_hook_settings(
+            &run_dir,
+            &proj_path,
+            Some(&read_allow),
+            &write_allow,
+            &exe,
+        )?
+    } else {
+        let mut allow_paths = Vec::new();
+        for f in &active_files {
+            allow_paths.push(proj_path.join(f));
+        }
+        allow_paths.push(proj_path.join(".plan.md"));
+
+        crate::guard::write_hook_settings(
+            &run_dir,
+            &proj_path,
+            Some(&allow_paths),
+            &allow_paths,
+            &exe,
+        )?
+    };
 
     let spec = crate::roles::RoleSpec {
         role: crate::roles::Role::Dev,
@@ -182,7 +305,11 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> Br
         ],
     };
 
-    let argv = crate::roles::build_command(&spec, &ctx.cfg)?;
+    let argv = if is_fix {
+        crate::roles::build_command_with_prompt(&spec, &ctx.cfg, crate::roles::DEV_FIX_PROMPT)?
+    } else {
+        crate::roles::build_command(&spec, &ctx.cfg)?
+    };
     let model = ctx.cfg.model_for("dev")?;
     let timeout = ctx.cfg.timeout_for("dev");
 
@@ -193,13 +320,29 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> Br
         task_id,
         task_slug: task.clone(),
         base_commit: Some(dev_base.clone()),
-        plan_files: Some(files.clone()),
+        plan_files: Some(active_files.clone()),
         verbose,
         timeout,
         run_dir: Some(run_dir),
     };
 
-    let role_run = crate::roles::execute_role(ctx, &proj, &proj_path, run_plan)?;
+    let stage = if let Some(fix) = opts.fix {
+        crate::roles::RunStage {
+            stage: Some("fix".to_string()),
+            round: opts.round,
+            metrics: Some(serde_json::json!({
+                "fix_for": fix.metrics_value()
+            })),
+        }
+    } else {
+        crate::roles::RunStage {
+            stage: Some("implement".to_string()),
+            round: opts.round,
+            metrics: None,
+        }
+    };
+
+    let role_run = crate::roles::execute_role_staged(ctx, &proj, &proj_path, run_plan, stage)?;
 
     let changed_now = crate::gitops::changed_paths(&proj_path)?;
     let emit_changed_now = |changed: &std::collections::BTreeSet<String>| {
@@ -256,7 +399,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, dry_run: bool, verbose: bool) -> Br
     let all_changed_nfc: std::collections::BTreeSet<String> =
         all_changed.into_iter().map(|p| p.nfc().collect()).collect();
 
-    let mut allowed_nfc: std::collections::BTreeSet<String> = files
+    let mut allowed_nfc: std::collections::BTreeSet<String> = active_files
         .iter()
         .map(|f| {
             let norm = crate::planfile::normalize_plan_path(f);
