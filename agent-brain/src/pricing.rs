@@ -1,1 +1,556 @@
-//! Ước tính chi phí theo token và mức dùng ngân sách của task (điền ở plan 05.2-03).
+use crate::config::Price;
+use crate::db::RunRow;
+use crate::workflows::Workflow;
+use std::collections::BTreeMap;
+
+/// Tra cứu giá theo model family (lowercased substring match) hoặc lấy họ đắt nhất trong bảng.
+/// Nếu bảng rỗng, fallback về giá mặc định.
+pub fn price_for(model: Option<&str>, table: &BTreeMap<String, Price>) -> Price {
+    if let Some(m) = model {
+        let m_lower = m.to_ascii_lowercase();
+        for (family, p) in table {
+            if m_lower.contains(family) {
+                return *p;
+            }
+        }
+    }
+
+    if table.is_empty() {
+        Price {
+            input: 4.0,
+            output: 20.0,
+            cache_read: 0.2,
+            cache_write: 8.0,
+        }
+    } else {
+        table
+            .values()
+            .max_by(|a, b| {
+                a.input
+                    .partial_cmp(&b.input)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .copied()
+            .unwrap()
+    }
+}
+
+/// Ước tính chi phí USD dựa trên token và bảng giá.
+/// Các hệ số nhân lấy từ bảng config.json đã khớp với các run thực tế (RESEARCH §3.8).
+/// Một run bị killed hoặc partial luôn được ước tính để trần ngân sách không bị bypass (D-19).
+pub fn estimate_usd(r: &RunRow, table: &BTreeMap<String, Price>) -> f64 {
+    let p = price_for(r.model.as_deref(), table);
+    (r.input_tokens as f64 * p.input
+        + r.output_tokens as f64 * p.output
+        + r.cache_read_tokens as f64 * p.cache_read
+        + r.cache_write_tokens as f64 * p.cache_write)
+        / 1_000_000.0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RunCost {
+    pub usd: f64,
+    pub estimated: bool,
+    pub counted: bool,
+}
+
+pub fn run_cost(r: &RunRow, table: &BTreeMap<String, Price>) -> RunCost {
+    if r.status == "running" {
+        RunCost {
+            usd: 0.0,
+            estimated: false,
+            counted: false,
+        }
+    } else if r.usage_source == "result" && r.status != "killed" {
+        RunCost {
+            usd: r.cost_usd,
+            estimated: false,
+            counted: true,
+        }
+    } else {
+        RunCost {
+            usd: estimate_usd(r, table),
+            estimated: true,
+            counted: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize)]
+pub struct BudgetUsage {
+    pub used_ms: i64,
+    pub used_usd: f64,
+    pub used_cents: i64,
+    pub estimated_runs: i64,
+}
+
+pub fn budget_usage(runs: &[RunRow], table: &BTreeMap<String, Price>, now_ms: i64) -> BudgetUsage {
+    let mut used_ms: i64 = 0;
+    let mut used_usd: f64 = 0.0;
+    let mut estimated_runs: i64 = 0;
+
+    for r in runs {
+        if r.role == "inspect" {
+            continue;
+        }
+
+        let dur = if r.status == "running" {
+            now_ms - r.started_at
+        } else if let Some(ended) = r.ended_at {
+            ended - r.started_at
+        } else {
+            0
+        };
+        if dur > 0 {
+            used_ms += dur;
+        }
+
+        let cost = run_cost(r, table);
+        if cost.counted {
+            used_usd += cost.usd;
+            if cost.estimated {
+                estimated_runs += 1;
+            }
+        }
+    }
+
+    let used_cents = (used_usd * 100.0).round() as i64;
+    BudgetUsage {
+        used_ms,
+        used_usd,
+        used_cents,
+        estimated_runs,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BudgetLimits {
+    pub minutes: i64,
+    pub usd: f64,
+}
+
+impl BudgetLimits {
+    pub fn from_workflow(wf: &Workflow) -> Self {
+        Self {
+            minutes: wf.budget_minutes as i64,
+            usd: wf.budget_usd,
+        }
+    }
+
+    pub fn limit_ms(&self) -> i64 {
+        self.minutes * 60_000
+    }
+
+    pub fn limit_cents(&self) -> i64 {
+        (self.usd * 100.0).round() as i64
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BudgetLevel {
+    Ok,
+    Near,
+    Over,
+}
+
+pub fn budget_level(u: &BudgetUsage, l: &BudgetLimits) -> BudgetLevel {
+    let limit_ms = l.limit_ms();
+    let limit_cents = l.limit_cents();
+
+    if u.used_ms >= limit_ms || u.used_cents >= limit_cents {
+        BudgetLevel::Over
+    } else if u.used_ms * 5 >= limit_ms * 4 || u.used_cents * 5 >= limit_cents * 4 {
+        BudgetLevel::Near
+    } else {
+        BudgetLevel::Ok
+    }
+}
+
+pub fn exhausted(u: &BudgetUsage, l: &BudgetLimits) -> bool {
+    budget_level(u, l) == BudgetLevel::Over
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_run(
+        role: &str,
+        status: &str,
+        model: Option<&str>,
+        usage_source: &str,
+        cost_usd: f64,
+        started_at: i64,
+        ended_at: Option<i64>,
+        in_tok: i64,
+        out_tok: i64,
+        cr_tok: i64,
+        cw_tok: i64,
+    ) -> RunRow {
+        RunRow {
+            id: 1,
+            task_id: Some(1),
+            project_id: 1,
+            role: role.to_string(),
+            engine: "claude".to_string(),
+            profile: "work".to_string(),
+            model: model.map(|s| s.to_string()),
+            session_id: None,
+            pid: None,
+            pgid: None,
+            pid_start: None,
+            status: status.to_string(),
+            outcome: None,
+            exit_code: None,
+            kill_requested_at: None,
+            started_at,
+            ended_at,
+            input_tokens: in_tok,
+            output_tokens: out_tok,
+            cache_read_tokens: cr_tok,
+            cache_write_tokens: cw_tok,
+            cost_usd,
+            num_turns: None,
+            assistant_turns: None,
+            turns_before_first_edit: None,
+            reads_outside_plan: None,
+            permission_denials: 0,
+            usage_source: usage_source.to_string(),
+            base_commit: None,
+            run_dir: None,
+            error: None,
+            stage: None,
+            round: None,
+            metrics_json: None,
+        }
+    }
+
+    #[test]
+    fn test_fitted_estimate() {
+        let table = crate::config::default_pricing();
+        let r = dummy_run(
+            "lead",
+            "killed",
+            Some("claude-opus-5-5"),
+            "partial",
+            0.0,
+            0,
+            Some(1000),
+            4,
+            20,
+            33917,
+            6536,
+        );
+        let est = estimate_usd(&r, &table);
+        assert!((est - 0.0594874).abs() < 1e-9);
+
+        let cost = run_cost(&r, &table);
+        assert!(cost.estimated);
+        assert!(cost.counted);
+        assert!((cost.usd - 0.0594874).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_stored_cost_wins() {
+        let table = crate::config::default_pricing();
+        let r = dummy_run(
+            "dev",
+            "succeeded",
+            Some("claude-sonnet-5-5"),
+            "result",
+            1.32,
+            0,
+            Some(1000),
+            100,
+            200,
+            300,
+            400,
+        );
+        let cost = run_cost(&r, &table);
+        assert_eq!(
+            cost,
+            RunCost {
+                usd: 1.32,
+                estimated: false,
+                counted: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_killed_with_result_is_estimated() {
+        let table = crate::config::default_pricing();
+        let r = dummy_run(
+            "dev",
+            "killed",
+            Some("claude-sonnet-5-5"),
+            "result",
+            0.0,
+            0,
+            Some(1000),
+            100,
+            200,
+            0,
+            0,
+        );
+        let cost = run_cost(&r, &table);
+        assert!(cost.estimated);
+        assert!(cost.counted);
+    }
+
+    #[test]
+    fn test_running_not_counted() {
+        let table = crate::config::default_pricing();
+        let now = 100_000;
+        let r = dummy_run(
+            "dev",
+            "running",
+            Some("claude-opus-5-5"),
+            "none",
+            0.0,
+            now - 90_000,
+            None,
+            0,
+            0,
+            0,
+            0,
+        );
+        let cost = run_cost(&r, &table);
+        assert!(!cost.counted);
+        assert!(!cost.estimated);
+        assert_eq!(cost.usd, 0.0);
+
+        let u = budget_usage(&[r], &table, now);
+        assert_eq!(u.used_ms, 90_000);
+        assert_eq!(u.used_usd, 0.0);
+        assert_eq!(u.estimated_runs, 0);
+    }
+
+    #[test]
+    fn test_unknown_model_is_most_expensive() {
+        let table = crate::config::default_pricing();
+        let opus_price = table.get("opus").copied().unwrap();
+
+        let p1 = price_for(Some("gpt-x"), &table);
+        assert_eq!(p1, opus_price);
+
+        let p2 = price_for(None, &table);
+        assert_eq!(p2, opus_price);
+    }
+
+    #[test]
+    fn test_estimate_monotonic() {
+        let table = crate::config::default_pricing();
+        let base = dummy_run(
+            "lead",
+            "killed",
+            Some("claude-opus-5-5"),
+            "partial",
+            0.0,
+            0,
+            Some(1000),
+            10,
+            10,
+            10,
+            10,
+        );
+        let base_est = estimate_usd(&base, &table);
+
+        let mut r_in = base.clone();
+        r_in.input_tokens += 10;
+        assert!(estimate_usd(&r_in, &table) >= base_est);
+
+        let mut r_out = base.clone();
+        r_out.output_tokens += 10;
+        assert!(estimate_usd(&r_out, &table) >= base_est);
+
+        let mut r_cr = base.clone();
+        r_cr.cache_read_tokens += 10;
+        assert!(estimate_usd(&r_cr, &table) >= base_est);
+
+        let mut r_cw = base.clone();
+        r_cw.cache_write_tokens += 10;
+        assert!(estimate_usd(&r_cw, &table) >= base_est);
+    }
+
+    #[test]
+    fn test_budget_usage_sums() {
+        let table = crate::config::default_pricing();
+        let r_lead = dummy_run(
+            "lead",
+            "succeeded",
+            Some("claude-sonnet-5-5"),
+            "result",
+            1.25,
+            0,
+            Some(60_000),
+            100,
+            100,
+            0,
+            0,
+        );
+        let r_dev = dummy_run(
+            "dev",
+            "killed",
+            Some("claude-opus-5-5"),
+            "partial",
+            0.0,
+            60_000,
+            Some(90_000),
+            4,
+            20,
+            33917,
+            6536,
+        );
+        let dev_est = estimate_usd(&r_dev, &table);
+        let r_qa = dummy_run(
+            "qa",
+            "succeeded",
+            Some("claude-sonnet-5-5"),
+            "result",
+            0.50,
+            90_000,
+            Some(150_000),
+            100,
+            100,
+            0,
+            0,
+        );
+        let r_inspect = dummy_run(
+            "inspect",
+            "succeeded",
+            Some("claude-opus-5-5"),
+            "result",
+            9.99,
+            0,
+            Some(10_000),
+            100,
+            100,
+            0,
+            0,
+        );
+
+        let runs = vec![r_lead, r_dev, r_qa, r_inspect];
+        let usage = budget_usage(&runs, &table, 150_000);
+
+        assert_eq!(usage.used_ms, 150_000);
+        let expected_usd = 1.75 + dev_est;
+        assert!((usage.used_usd - expected_usd).abs() < 1e-9);
+        assert_eq!(usage.used_cents, (expected_usd * 100.0).round() as i64);
+        assert_eq!(usage.estimated_runs, 1);
+    }
+
+    #[test]
+    fn test_levels() {
+        let limits = BudgetLimits {
+            minutes: 60,
+            usd: 20.0,
+        };
+
+        // Time levels: 47 min -> Ok, 48 min -> Near, 60 min -> Over, 59 min 59.999 s -> Near
+        let u_47m = BudgetUsage {
+            used_ms: 47 * 60_000,
+            used_usd: 10.0,
+            used_cents: 1000,
+            estimated_runs: 0,
+        };
+        assert_eq!(budget_level(&u_47m, &limits), BudgetLevel::Ok);
+        assert!(!exhausted(&u_47m, &limits));
+
+        let u_48m = BudgetUsage {
+            used_ms: 48 * 60_000,
+            used_usd: 10.0,
+            used_cents: 1000,
+            estimated_runs: 0,
+        };
+        assert_eq!(budget_level(&u_48m, &limits), BudgetLevel::Near);
+        assert!(!exhausted(&u_48m, &limits));
+
+        let u_59m_sub = BudgetUsage {
+            used_ms: 60 * 60_000 - 1,
+            used_usd: 10.0,
+            used_cents: 1000,
+            estimated_runs: 0,
+        };
+        assert_eq!(budget_level(&u_59m_sub, &limits), BudgetLevel::Near);
+
+        let u_60m = BudgetUsage {
+            used_ms: 60 * 60_000,
+            used_usd: 10.0,
+            used_cents: 1000,
+            estimated_runs: 0,
+        };
+        assert_eq!(budget_level(&u_60m, &limits), BudgetLevel::Over);
+        assert!(exhausted(&u_60m, &limits));
+
+        // Cost levels: $15.99 -> Ok, $16.00 -> Near, $19.994 -> Near, $19.995 -> Over, $20 -> Over
+        let u_15_99 = BudgetUsage {
+            used_ms: 0,
+            used_usd: 15.99,
+            used_cents: (15.99 * 100.0_f64).round() as i64,
+            estimated_runs: 0,
+        };
+        assert_eq!(budget_level(&u_15_99, &limits), BudgetLevel::Ok);
+
+        let u_16_00 = BudgetUsage {
+            used_ms: 0,
+            used_usd: 16.00,
+            used_cents: (16.00 * 100.0_f64).round() as i64,
+            estimated_runs: 0,
+        };
+        assert_eq!(budget_level(&u_16_00, &limits), BudgetLevel::Near);
+
+        let u_19_994 = BudgetUsage {
+            used_ms: 0,
+            used_usd: 19.994,
+            used_cents: (19.994 * 100.0_f64).round() as i64, // 1999 cents
+            estimated_runs: 0,
+        };
+        assert_eq!(u_19_994.used_cents, 1999);
+        assert_eq!(budget_level(&u_19_994, &limits), BudgetLevel::Near);
+
+        let u_19_995 = BudgetUsage {
+            used_ms: 0,
+            used_usd: 19.995,
+            used_cents: (19.995 * 100.0_f64).round() as i64, // 2000 cents
+            estimated_runs: 0,
+        };
+        assert_eq!(u_19_995.used_cents, 2000);
+        assert_eq!(budget_level(&u_19_995, &limits), BudgetLevel::Over);
+        assert!(exhausted(&u_19_995, &limits));
+
+        let u_20_00 = BudgetUsage {
+            used_ms: 0,
+            used_usd: 20.00,
+            used_cents: (20.00 * 100.0_f64).round() as i64,
+            estimated_runs: 0,
+        };
+        assert_eq!(budget_level(&u_20_00, &limits), BudgetLevel::Over);
+        assert!(exhausted(&u_20_00, &limits));
+    }
+
+    #[test]
+    fn test_limits_from_workflow() {
+        let mac_dinh = Workflow {
+            name: "mac-dinh".to_string(),
+            stages: vec![],
+            loops: vec![],
+            max_rounds: 3,
+            budget_minutes: 60,
+            budget_usd: 20.0,
+            auto: true,
+            source: "builtin".to_string(),
+        };
+        let limits = BudgetLimits::from_workflow(&mac_dinh);
+        assert_eq!(
+            limits,
+            BudgetLimits {
+                minutes: 60,
+                usd: 20.0
+            }
+        );
+        assert_eq!(limits.limit_ms(), 3_600_000);
+        assert_eq!(limits.limit_cents(), 2000);
+    }
+}
