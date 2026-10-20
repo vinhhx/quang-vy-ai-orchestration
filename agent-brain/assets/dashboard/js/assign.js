@@ -25,6 +25,13 @@
       jobFailed: false,
       profile: window.AB.profile(),
       loaded: false,
+      workflows: [],
+      workflowErrors: [],
+      projectDefaults: {},
+      workflowsLoading: true,
+      workflowsFailed: false,
+      workflowName: 'mac-dinh',
+      workflowTouched: false,
 
       _slugSeq: 0,
       _suggestSeq: 0,
@@ -36,6 +43,7 @@
       init: function () {
         var self = this;
         this.loaded = true;
+        this.loadWorkflows();
 
         var profileHandler = function (e) {
           self.profile = (e.detail && e.detail.profile) ? e.detail.profile : window.AB.profile();
@@ -51,6 +59,91 @@
           if (self._queryTimer) clearTimeout(self._queryTimer);
           if (self._searchTimer) clearTimeout(self._searchTimer);
         });
+      },
+
+      // Read-only: GET /api/workflows (workflows are edited in workflows.json only, D-23).
+      loadWorkflows: function () {
+        var self = this;
+        this.workflowsLoading = true;
+        return window.AB.api('GET', '/api/workflows').then(function (res) {
+          self.workflowsLoading = false;
+          if (res && res.ok && res.data && Array.isArray(res.data.workflows)) {
+            self.workflows = res.data.workflows;
+            self.workflowErrors = Array.isArray(res.data.errors) ? res.data.errors : [];
+            self.projectDefaults = (res.data.project_defaults && typeof res.data.project_defaults === 'object') ? res.data.project_defaults : {};
+            self.workflowsFailed = false;
+            if (!self.workflowTouched || !self.hasWorkflow(self.workflowName)) {
+              self.workflowName = self.defaultWorkflowFor(self.selected);
+            }
+          } else {
+            self.workflows = [];
+            self.workflowErrors = [];
+            self.projectDefaults = {};
+            self.workflowsFailed = true;
+          }
+        });
+      },
+
+      hasWorkflow: function (name) {
+        if (!name || !this.workflows) return false;
+        for (var i = 0; i < this.workflows.length; i++) {
+          if (this.workflows[i].name === name) return true;
+        }
+        return false;
+      },
+
+      findWorkflow: function (name) {
+        if (!name || !this.workflows) return null;
+        for (var i = 0; i < this.workflows.length; i++) {
+          if (this.workflows[i].name === name) return this.workflows[i];
+        }
+        return null;
+      },
+
+      projectDefault: function (project) {
+        if (!project || !project.id || !this.projectDefaults) return null;
+        return this.projectDefaults[project.id] || null;
+      },
+
+      defaultWorkflowFor: function (project) {
+        var d = this.projectDefault(project);
+        if (d && d.effective) return d.effective;
+        if (project && project.workflow && this.hasWorkflow(project.workflow)) return project.workflow;
+        return 'mac-dinh';
+      },
+
+      pickWorkflow: function (name) {
+        if (!name) return;
+        this.workflowName = name;
+        this.workflowTouched = true;
+      },
+
+      onWorkflowChange: function (event) {
+        var target = event && event.target;
+        this.pickWorkflow((target && target.value) ? target.value : this.workflowName);
+      },
+
+      workflowChecked: function (w) {
+        return Boolean(w && w.name === this.workflowName);
+      },
+
+      workflowOptionClass: function (w) {
+        if (this.workflowChecked(w)) {
+          return 'bg-indigo-50 ring-2 ring-indigo-600 dark:bg-indigo-900/20 dark:ring-indigo-400';
+        }
+        return 'ring-1 ring-slate-300 hover:bg-slate-50 dark:ring-slate-600 dark:hover:bg-slate-700/50';
+      },
+
+      optionChips: function (w) {
+        if (!w) return [];
+        var chips = [];
+        var d = this.projectDefault(this.selected);
+        if (d && d.effective === w.name) {
+          chips.push('mặc định của dự án');
+        }
+        chips.push(w.source === 'builtin' ? 'có sẵn' : 'từ workflows.json');
+        chips.push(w.auto ? 'autopilot' : 'chạy tay');
+        return chips;
       },
 
       onRequestInput: function () {
@@ -192,11 +285,19 @@
           id: item.id,
           name_vi: item.name_vi,
           profile: item.profile,
+          workflow: item.workflow || null,
         };
         this.query = item.name_vi + ' (' + item.id + ')';
         this.open = false;
         this.active = -1;
+        this.selectDefaultWorkflow();
         this.refreshPreflight();
+      },
+
+      // The project's default, unless the user picked a radio by hand (UI-SPEC B5).
+      selectDefaultWorkflow: function () {
+        if (this.workflowTouched) return;
+        this.workflowName = this.defaultWorkflowFor(this.selected);
       },
 
       chooseCandidate: function (c) {
@@ -205,12 +306,14 @@
           id: c.id,
           name_vi: c.name_vi,
           profile: c.profile,
+          workflow: c.workflow || null,
         };
         this.query = c.name_vi + ' (' + c.id + ')';
         this.open = false;
         this.active = -1;
         this.candidates = [];
         this.error = '';
+        this.selectDefaultWorkflow();
         this.refreshPreflight();
       },
 
@@ -259,7 +362,7 @@
       submit: async function () {
         if (this.startDisabled) return;
         this.submitting = true;
-        const res = await window.AB.api('POST', '/api/tasks', { project: this.selected.id, request: this.request, name: this.slug });
+        const res = await window.AB.api('POST', '/api/tasks', this.postBody);
         if (res.status === 202 && res.data) {
           this.accepted = true;
           this.jobId = res.data.job_id;
@@ -396,6 +499,48 @@
         if (this.preflightPending || !this.preflight) return 'Đang kiểm tra...';
         if (this.reasonHead) return this.reasonHead;
         return '';
+      },
+
+      // `workflow` only when the list loaded; otherwise the server default applies.
+      get postBody() {
+        var body = {
+          project: this.selected ? this.selected.id : '',
+          request: this.request,
+          name: this.slug,
+        };
+        if (this.workflowsLoaded && this.workflowName) {
+          body.workflow = this.workflowName;
+        }
+        return body;
+      },
+
+      get workflowsLoaded() {
+        return Boolean(!this.workflowsLoading && !this.workflowsFailed && this.workflows && this.workflows.length > 0);
+      },
+
+      get hasWorkflowErrors() {
+        return Boolean(this.workflowErrors && this.workflowErrors.length > 0);
+      },
+
+      get errorLines() {
+        var errs = this.workflowErrors || [];
+        var lines = errs.slice(0, 10);
+        if (errs.length > 10) {
+          lines.push('… và ' + (errs.length - 10) + ' lỗi khác');
+        }
+        return lines;
+      },
+
+      get selectedHelp() {
+        var w = this.findWorkflow(this.workflowName);
+        if (!w) return '';
+        var d = this.projectDefault(this.selected);
+        if (d && d.note && d.effective === w.name) {
+          return d.note;
+        }
+        return w.auto
+          ? 'Quy trình này tự chạy autopilot và luôn dừng ở bước bạn duyệt plan.'
+          : 'Quy trình này chạy tay: bạn bấm từng bước.';
       },
 
       get startLabel() {

@@ -407,6 +407,155 @@ const sections = [
     },
   },
   {
+    name: 'assign-workflow',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      const assignJsPath = path.join(
+        repoRoot,
+        'agent-brain/assets/dashboard/js/assign.js'
+      );
+      const assignJsSrc = fs.readFileSync(assignJsPath, 'utf8');
+      vm.runInContext(assignJsSrc, ctx, { filename: 'assign.js' });
+
+      check(
+        'assign factory registered',
+        typeof factories.assign === 'function',
+        'factories.assign not found'
+      );
+      if (typeof factories.assign !== 'function') return;
+
+      const SUMMARY_MAC = 'plan ⇄︎ review → Bạn → code ⇄︎ review → QA ⇄︎ sửa';
+      const WF_LIST = [
+        { name: 'mac-dinh', source: 'builtin', summary: SUMMARY_MAC, auto: true, loops: true, limits: '3 vòng · 60 phút · $20', default_for: [] },
+        { name: 'nhanh', source: 'builtin', summary: 'plan → Bạn → code → QA', auto: false, loops: false, limits: '60 phút · $20', default_for: ['Web'] },
+        { name: 'chi-phi-thap', source: 'file', summary: 'plan → Bạn → code → QA', auto: true, loops: false, limits: '30 phút · $5', default_for: [] },
+      ];
+      const NOTE = "Quy trình 'x' của dự án không có trong workflows.json — dùng mac-dinh.";
+      let wfResponse = {
+        ok: true,
+        status: 200,
+        data: {
+          workflows: WF_LIST,
+          errors: [],
+          project_defaults: {
+            web: { workflow: 'nhanh', effective: 'nhanh', note: null },
+            app: { workflow: null, effective: 'mac-dinh', note: null },
+            cu: { workflow: 'x', effective: 'mac-dinh', note: NOTE },
+          },
+        },
+      };
+      const posts = [];
+      const savedApi = ctx.AB.api;
+      ctx.AB.api = function (method, url, body) {
+        if (method === 'GET' && url === '/api/workflows') {
+          return Promise.resolve(wfResponse);
+        }
+        if (method === 'POST' && url === '/api/tasks') {
+          posts.push(body);
+          return Promise.resolve({ ok: false, status: 422, data: { error: 'Quy trình không hợp lệ' } });
+        }
+        return Promise.resolve({ ok: false, status: 404, data: null });
+      };
+
+      try {
+        const c = factories.assign();
+        check('assign: workflowsLoading starts true', c.workflowsLoading === true, `got ${c.workflowsLoading}`);
+        check('assign: workflowName starts mac-dinh', c.workflowName === 'mac-dinh', `got "${c.workflowName}"`);
+        await c.loadWorkflows();
+        check('assign: workflows loaded in server order', c.workflows.length === 3 && c.workflows[0].name === 'mac-dinh' && c.workflows[2].name === 'chi-phi-thap', `got ${c.workflows.map((w) => w.name).join(',')}`);
+        check('assign: workflowsLoading false after load', c.workflowsLoading === false, `got ${c.workflowsLoading}`);
+        check('assign: no project → mac-dinh', c.workflowName === 'mac-dinh', `got "${c.workflowName}"`);
+        check('assign: no project → no default chip', JSON.stringify(c.optionChips(WF_LIST[0])) === JSON.stringify(['có sẵn', 'autopilot']), `got ${JSON.stringify(c.optionChips(WF_LIST[0]))}`);
+        check('assign: file chips', JSON.stringify(c.optionChips(WF_LIST[2])) === JSON.stringify(['từ workflows.json', 'autopilot']), `got ${JSON.stringify(c.optionChips(WF_LIST[2]))}`);
+        check('assign: helper for auto workflow', c.selectedHelp === 'Quy trình này tự chạy autopilot và luôn dừng ở bước bạn duyệt plan.', `got "${c.selectedHelp}"`);
+        check('assign: mac-dinh option selected class', c.workflowOptionClass(WF_LIST[0]) === 'bg-indigo-50 ring-2 ring-indigo-600 dark:bg-indigo-900/20 dark:ring-indigo-400', `got "${c.workflowOptionClass(WF_LIST[0])}"`);
+        check('assign: nhanh option unselected class', c.workflowOptionClass(WF_LIST[1]).includes('ring-1 ring-slate-300') && !c.workflowOptionClass(WF_LIST[1]).includes('indigo'), `got "${c.workflowOptionClass(WF_LIST[1])}"`);
+        check('assign: workflowChecked', c.workflowChecked(WF_LIST[0]) === true && c.workflowChecked(WF_LIST[1]) === false);
+
+        c.choose({ id: 'web', name_vi: 'Web', profile: 'work', workflow: 'nhanh' });
+        check('assign: choose web → nhanh (project default)', c.workflowName === 'nhanh', `got "${c.workflowName}"`);
+        check('assign: workflowTouched stays false after choose', c.workflowTouched === false, `got ${c.workflowTouched}`);
+        const nhanhChips = c.optionChips(WF_LIST[1]);
+        check('assign: nhanh chips with project default', JSON.stringify(nhanhChips) === JSON.stringify(['mặc định của dự án', 'có sẵn', 'chạy tay']), `got ${JSON.stringify(nhanhChips)}`);
+        const macChips = c.optionChips(WF_LIST[0]);
+        check('assign: mac-dinh chips without default chip', JSON.stringify(macChips) === JSON.stringify(['có sẵn', 'autopilot']), `got ${JSON.stringify(macChips)}`);
+        check('assign: helper for manual workflow', c.selectedHelp === 'Quy trình này chạy tay: bạn bấm từng bước.', `got "${c.selectedHelp}"`);
+
+        c.choose({ id: 'app', name_vi: 'App', profile: 'work', workflow: null });
+        check('assign: project without default → mac-dinh', c.workflowName === 'mac-dinh', `got "${c.workflowName}"`);
+        const macChipsApp = c.optionChips(WF_LIST[0]);
+        check('assign: mac-dinh default chip for app', macChipsApp.includes('mặc định của dự án') && macChipsApp.includes('có sẵn') && macChipsApp.includes('autopilot'), `got ${JSON.stringify(macChipsApp)}`);
+
+        c.choose({ id: 'cu', name_vi: 'Cũ', profile: 'work', workflow: 'x' });
+        check('assign: unknown project default → mac-dinh', c.workflowName === 'mac-dinh', `got "${c.workflowName}"`);
+        check('assign: project default note shown verbatim', c.selectedHelp === NOTE, `got "${c.selectedHelp}"`);
+
+        c.choose({ id: 'web', name_vi: 'Web', profile: 'work', workflow: 'nhanh' });
+        c.onWorkflowChange({ target: { value: 'chi-phi-thap' } });
+        check('assign: onWorkflowChange picks the radio value', c.workflowName === 'chi-phi-thap', `got "${c.workflowName}"`);
+        check('assign: onWorkflowChange sets workflowTouched', c.workflowTouched === true, `got ${c.workflowTouched}`);
+        c.choose({ id: 'app', name_vi: 'App', profile: 'work', workflow: null });
+        check('assign: touched selection survives a project change', c.workflowName === 'chi-phi-thap', `got "${c.workflowName}"`);
+
+        const c2 = factories.assign();
+        await c2.loadWorkflows();
+        c2.pickWorkflow('chi-phi-thap');
+        check('assign: pickWorkflow sets workflowTouched', c2.workflowTouched === true, `got ${c2.workflowTouched}`);
+        c2.choose({ id: 'web', name_vi: 'Web', profile: 'work', workflow: 'nhanh' });
+        check('assign: pickWorkflow then choose keeps chi-phi-thap', c2.workflowName === 'chi-phi-thap', `got "${c2.workflowName}"`);
+
+        // postBody carries the selected workflow once the list loaded
+        const body = c2.postBody;
+        check('assign: postBody.workflow == workflowName', body.workflow === c2.workflowName && body.project === 'web', `got ${JSON.stringify(body)}`);
+        check('assign: the picker adds no disabled reason', c2.disabledReason === 'Nhập yêu cầu', `got "${c2.disabledReason}"`);
+
+        // submit posts postBody
+        c2.request = 'sửa app';
+        c2.slug = 'sua-app';
+        c2.preflight = { can_start: true };
+        c2.preflightPending = false;
+        await c2.submit();
+        check('assign: submit posts once', posts.length === 1, `got ${posts.length}`);
+        check('assign: submit POST body has workflow', posts[0] && posts[0].workflow === 'chi-phi-thap' && posts[0].name === 'sua-app' && posts[0].request === 'sửa app', `got ${JSON.stringify(posts[0])}`);
+
+        // errors: 12 server lines → 10 + '… và 2 lỗi khác'
+        const errs = [];
+        for (let i = 1; i <= 12; i++) errs.push(`Dòng ${i}: lỗi ${i}`);
+        wfResponse = { ok: true, status: 200, data: { workflows: WF_LIST.slice(0, 2), errors: errs, project_defaults: {} } };
+        const c3 = factories.assign();
+        await c3.loadWorkflows();
+        check('assign: hasWorkflowErrors', c3.hasWorkflowErrors === true);
+        check('assign: errorLines has 11 lines', c3.errorLines.length === 11, `got ${c3.errorLines.length}`);
+        check('assign: errorLines first is server line 1', c3.errorLines[0] === 'Dòng 1: lỗi 1', `got "${c3.errorLines[0]}"`);
+        check('assign: errorLines tenth is server line 10', c3.errorLines[9] === 'Dòng 10: lỗi 10', `got "${c3.errorLines[9]}"`);
+        check('assign: errorLines last is the remainder', c3.errorLines[10] === '… và 2 lỗi khác', `got "${c3.errorLines[10]}"`);
+        check('assign: built-ins still selectable with errors', c3.workflows.length === 2 && c3.workflowName === 'mac-dinh', `got ${c3.workflows.length} / "${c3.workflowName}"`);
+
+        // fetch failure → workflowsFailed, no workflow key in the POST body
+        wfResponse = { ok: false, status: 0, data: null };
+        const c4 = factories.assign();
+        await c4.loadWorkflows();
+        check('assign: workflowsFailed on fetch failure', c4.workflowsFailed === true && c4.workflowsLoading === false, `got ${c4.workflowsFailed} / ${c4.workflowsLoading}`);
+        c4.choose({ id: 'web', name_vi: 'Web', profile: 'work', workflow: 'nhanh' });
+        const body4 = c4.postBody;
+        check('assign: failed list → postBody has no workflow key', !Object.prototype.hasOwnProperty.call(body4, 'workflow'), `got ${JSON.stringify(body4)}`);
+        check('assign: failed list → no selected helper', c4.selectedHelp === '', `got "${c4.selectedHelp}"`);
+
+        // still loading → no workflow key either (server default)
+        const c5 = factories.assign();
+        c5.choose({ id: 'web', name_vi: 'Web', profile: 'work', workflow: 'nhanh' });
+        check('assign: loading → postBody has no workflow key', !Object.prototype.hasOwnProperty.call(c5.postBody, 'workflow'), `got ${JSON.stringify(c5.postBody)}`);
+      } finally {
+        ctx.AB.api = savedApi;
+      }
+    },
+  },
+  {
     name: 'task-cards',
     async run(ctx) {
       const factories = {};

@@ -845,6 +845,145 @@ EOF
       exit 1
     fi
   fi
+
+  # DOM assertions for the Giao việc, Dự án and Tổng quan screens (Phase 5.2).
+  if [[ "$s" == "assign" || "$s" == "projects" || "$s" == "overview" ]]; then
+    if ! python3 - "$DOM_OUT" "$s" <<'EOF'
+import sys
+from html.parser import HTMLParser
+
+VOID_TAGS = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr'}
+
+
+class Node:
+    def __init__(self, tag, attrs, parent):
+        self.tag = tag
+        self.attrs = dict(attrs)
+        self.parent = parent
+        self.content = []
+
+    def hidden(self):
+        n = self
+        while n is not None:
+            if 'display: none' in (n.attrs.get('style') or ''):
+                return True
+            n = n.parent
+        return False
+
+    def _own_text(self):
+        # Visible text below this node (subtrees hidden by x-show are skipped).
+        if 'display: none' in (self.attrs.get('style') or ''):
+            return ''
+        return ''.join(c if isinstance(c, str) else c._own_text() for c in self.content)
+
+    def text(self):
+        return '' if self.hidden() else self._own_text()
+
+    def walk(self):
+        for c in self.content:
+            if isinstance(c, Node):
+                yield c
+                yield from c.walk()
+
+    def find(self, pred):
+        return [n for n in self.walk() if pred(n)]
+
+
+class TreeParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.root = Node('#root', [], None)
+        self.cur = self.root
+        self.template_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'template':
+            self.template_depth += 1
+            return
+        if self.template_depth > 0:
+            return
+        node = Node(tag, attrs, self.cur)
+        self.cur.content.append(node)
+        if tag not in VOID_TAGS:
+            self.cur = node
+
+    def handle_startendtag(self, tag, attrs):
+        if tag == 'template' or self.template_depth > 0:
+            return
+        self.cur.content.append(Node(tag, attrs, self.cur))
+
+    def handle_endtag(self, tag):
+        if tag == 'template':
+            self.template_depth = max(0, self.template_depth - 1)
+            return
+        if self.template_depth > 0 or tag in VOID_TAGS:
+            return
+        n = self.cur
+        while n is not None and n.tag != tag:
+            n = n.parent
+        if n is not None and n.parent is not None:
+            self.cur = n.parent
+
+    def handle_data(self, data):
+        if self.template_depth > 0:
+            return
+        self.cur.content.append(data)
+
+
+def fail(msg):
+    print(f"Lỗi: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+dom_path, screen = sys.argv[1], sys.argv[2]
+with open(dom_path, 'r', encoding='utf-8') as f:
+    html = f.read()
+parser = TreeParser()
+parser.feed(html)
+root = parser.root
+full_text = root.text()
+
+if screen == 'assign':
+    fieldsets = []
+    for fs in root.find(lambda n: n.tag == 'fieldset'):
+        legends = [c for c in fs.content if isinstance(c, Node) and c.tag == 'legend']
+        if legends and legends[0].text().strip() == 'Quy trình':
+            fieldsets.append(fs)
+    if len(fieldsets) != 1:
+        fail(f"Số fieldset có legend 'Quy trình' là {len(fieldsets)}, kỳ vọng 1")
+    fs = fieldsets[0]
+    radios = fs.find(lambda n: n.tag == 'input' and n.attrs.get('type') == 'radio' and n.attrs.get('name') == 'workflow')
+    if len(radios) < 2:
+        fail(f"Số input[type=radio][name=workflow] là {len(radios)}, kỳ vọng ít nhất 2")
+    checked = [r for r in radios if 'checked' in r.attrs]
+    if len(checked) != 1:
+        fail(f"Số radio quy trình đang chọn là {len(checked)}, kỳ vọng 1")
+    if checked[0].attrs.get('value') != 'mac-dinh':
+        fail(f"Radio đang chọn có value '{checked[0].attrs.get('value')}', kỳ vọng 'mac-dinh'")
+    fs_text = fs.text()
+    for needle in ('plan ⇄︎ review → Bạn → code ⇄︎ review → QA ⇄︎ sửa', '3 vòng · 60 phút · $20', 'nhanh',
+                   'Quy trình này tự chạy autopilot và luôn dừng ở bước bạn duyệt plan.'):
+        if needle not in fs_text:
+            fail(f"Fieldset Quy trình không chứa '{needle}' (nội dung: '{' '.join(fs_text.split())[:400]}')")
+    if 'Đang tải quy trình...' in fs_text:
+        fail("Fieldset Quy trình vẫn hiện 'Đang tải quy trình...'")
+    if 'Không tải được danh sách quy trình' in fs_text:
+        fail("Fieldset Quy trình hiện callout lỗi tải danh sách")
+    print("Assign DOM OK")
+    sys.exit(0)
+
+print(f"Không có kiểm tra DOM cho {screen}")
+EOF
+    then
+      echo "--- 40 dòng đầu của DOM ---" >&2
+      head -n 40 "$DOM_OUT" >&2 || true
+      echo "--- serve stderr ---" >&2
+      if [[ -f "$TMP/serve.err" ]]; then
+        cat "$TMP/serve.err" >&2
+      fi
+      exit 1
+    fi
+  fi
 done
 
 echo "Smoke OK: ${SCREENS[*]}"
