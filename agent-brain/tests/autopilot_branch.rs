@@ -312,3 +312,67 @@ fn plan_commit_for_legacy_fallback() {
         .unwrap();
     assert_eq!(base.as_deref(), Some(plan.as_str()));
 }
+
+// ---------------------------------------------------------------------------
+// Task 3: live-driver check on every profile (IN-10)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn work_project_driver_blocks_cli_run() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+    );
+    assert_ok(&res, "run lead sua-app");
+
+    // Task 1 giả làm driver còn sống: pid của chính tiến trình test.
+    let me = std::process::id() as i32;
+    let start = agent_brain::procs::proc_id(me).unwrap().start as i64;
+    sb.db()
+        .execute(
+            "UPDATE tasks SET auto_state = 'running', auto_pid = ?1, auto_pid_start = ?2 WHERE id = 1",
+            rusqlite::params![me as i64, start],
+        )
+        .unwrap();
+    let before = run_count(&sb);
+
+    let args = [
+        "run",
+        "lead",
+        "--name",
+        "viec-khac",
+        "--",
+        "web-ban-hang",
+        "việc khác",
+    ];
+    let res = sb.run(&args, Some(lead_plan_entry()));
+    assert_eq!(res.code, 1, "stderr: {}", res.stderr);
+    assert!(
+        res.stderr
+            .contains("Dự án web-ban-hang đang chạy autopilot cho task 1"),
+        "stderr: {}",
+        res.stderr
+    );
+    assert_eq!(run_count(&sb), before, "blocked run starts no claude");
+
+    let res = sb.run_env(&args, Some(lead_plan_entry()), &[(AUTO_ENV, "1")]);
+    assert_ok(&res, "run lead as the driver's own child");
+    assert_eq!(run_count(&sb), before + 1);
+
+    sb.db()
+        .execute(
+            "UPDATE tasks SET auto_state = NULL, auto_pid = NULL, auto_pid_start = NULL WHERE id = 1",
+            [],
+        )
+        .unwrap();
+}
