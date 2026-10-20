@@ -103,7 +103,9 @@ impl Sandbox {
             "models": {
                 "lead": "opus",
                 "dev": "sonnet",
-                "qa": "sonnet"
+                "qa": "sonnet",
+                "plan-review": "opus",
+                "code-review": "opus"
             },
             "inspect_model": "sonnet",
             "profiles": {
@@ -128,13 +130,17 @@ impl Sandbox {
             "max_turns": {
                 "lead": null,
                 "dev": null,
-                "qa": null
+                "qa": null,
+                "plan-review": null,
+                "code-review": null
             },
             "timeout_seconds": {
                 "lead": 30,
                 "dev": 30,
                 "qa": 30,
-                "inspect": 30
+                "inspect": 30,
+                "plan-review": 30,
+                "code-review": 30
             },
             "runs_dir": self.runs.to_str().unwrap(),
             "kill_grace_secs": 1,

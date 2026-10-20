@@ -5,6 +5,64 @@ use std::time::Duration;
 
 pub const DEFAULT_CONFIG_JSON: &str = include_str!("../assets/config.default.json");
 pub const DEFAULT_DASHBOARD_PORT: u16 = 7437;
+pub const REVIEW_MODEL_DEFAULT: &str = "opus";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutopilotDefaults {
+    pub max_rounds: u32,
+    pub budget_minutes: u32,
+    pub budget_usd: f64,
+}
+
+impl Default for AutopilotDefaults {
+    fn default() -> Self {
+        Self {
+            max_rounds: 3,
+            budget_minutes: 60,
+            budget_usd: 20.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
+pub fn default_pricing() -> BTreeMap<String, Price> {
+    let mut m = BTreeMap::new();
+    m.insert(
+        "opus".to_string(),
+        Price {
+            input: 4.0,
+            output: 20.0,
+            cache_read: 0.2,
+            cache_write: 8.0,
+        },
+    );
+    m.insert(
+        "sonnet".to_string(),
+        Price {
+            input: 2.0,
+            output: 10.0,
+            cache_read: 0.1,
+            cache_write: 4.0,
+        },
+    );
+    m.insert(
+        "haiku".to_string(),
+        Price {
+            input: 0.1,
+            output: 0.5,
+            cache_read: 0.005,
+            cache_write: 0.2,
+        },
+    );
+    m
+}
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ProfileCfg {
@@ -26,6 +84,8 @@ pub struct Config {
     pub kill_grace_secs: u64,
     pub inspect_max_diff_bytes: usize,
     pub dashboard_port: u16,
+    pub autopilot: AutopilotDefaults,
+    pub pricing: BTreeMap<String, Price>,
 }
 
 impl Config {
@@ -192,6 +252,12 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
             models.insert(k.clone(), s.to_string());
         }
     }
+    models
+        .entry("plan-review".to_string())
+        .or_insert_with(|| REVIEW_MODEL_DEFAULT.to_string());
+    models
+        .entry("code-review".to_string())
+        .or_insert_with(|| REVIEW_MODEL_DEFAULT.to_string());
 
     let mut profiles = BTreeMap::new();
     for (k, val) in profiles_val {
@@ -217,6 +283,69 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         }
     }
 
+    let mut autopilot = AutopilotDefaults::default();
+    if let Some(ap_val) = obj.get("autopilot") {
+        if let Some(ap_obj) = ap_val.as_object() {
+            if let Some(mr) = ap_obj.get("max_rounds") {
+                match mr.as_u64() {
+                    Some(n) if (1..=10).contains(&n) => autopilot.max_rounds = n as u32,
+                    _ => {
+                        return Err(BrainError::error(
+                            "Cấu hình autopilot.max_rounds phải là số nguyên từ 1 đến 10",
+                        ))
+                    }
+                }
+            }
+            if let Some(bm) = ap_obj.get("budget_minutes") {
+                match bm.as_u64() {
+                    Some(n) if (1..=1440).contains(&n) => autopilot.budget_minutes = n as u32,
+                    _ => {
+                        return Err(BrainError::error(
+                            "Cấu hình autopilot.budget_minutes phải là số nguyên từ 1 đến 1440",
+                        ))
+                    }
+                }
+            }
+            if let Some(bu) = ap_obj.get("budget_usd") {
+                match bu.as_f64() {
+                    Some(f) if f.is_finite() && f > 0.0 && f <= 1000.0 => autopilot.budget_usd = f,
+                    _ => {
+                        return Err(BrainError::error(
+                            "Cấu hình autopilot.budget_usd phải là số lớn hơn 0 và không quá 1000",
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    let mut pricing = default_pricing();
+    if let Some(p_val) = obj.get("pricing") {
+        if let Some(p_obj) = p_val.as_object() {
+            for (family, val) in p_obj {
+                let price: Price = serde_json::from_value(val.clone()).map_err(|_| {
+                    BrainError::error(format!(
+                        "Cấu hình pricing.{family} không hợp lệ (cần input, output, cache_read, cache_write là số không âm)"
+                    ))
+                })?;
+                if !price.input.is_finite()
+                    || price.input < 0.0
+                    || !price.output.is_finite()
+                    || price.output < 0.0
+                    || !price.cache_read.is_finite()
+                    || price.cache_read < 0.0
+                    || !price.cache_write.is_finite()
+                    || price.cache_write < 0.0
+                {
+                    return Err(BrainError::error(format!(
+                        "Cấu hình pricing.{family} không hợp lệ (cần input, output, cache_read, cache_write là số không âm)"
+                    )));
+                }
+                pricing.insert(family.clone(), price);
+            }
+        }
+    }
+
     Ok(Config {
         claude_bin,
         models,
@@ -229,6 +358,8 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         kill_grace_secs,
         inspect_max_diff_bytes,
         dashboard_port,
+        autopilot,
+        pricing,
     })
 }
 
@@ -266,4 +397,225 @@ pub fn load_config() -> BrainResult<Config> {
     let default_val = serde_json::from_str(DEFAULT_CONFIG_JSON)
         .map_err(|e| BrainError::error(format!("Lỗi đọc cấu hình mặc định: {e}")))?;
     config_from_value(&default_val)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_review_models_and_limits() {
+        let val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        let cfg = config_from_value(&val).unwrap();
+        assert_eq!(cfg.model_for("plan-review").unwrap(), "opus");
+        assert_eq!(cfg.model_for("code-review").unwrap(), "opus");
+        assert_eq!(cfg.timeout_for("plan-review"), Duration::from_secs(1200));
+        assert_eq!(cfg.timeout_for("code-review"), Duration::from_secs(1500));
+        assert_eq!(
+            cfg.autopilot,
+            AutopilotDefaults {
+                max_rounds: 3,
+                budget_minutes: 60,
+                budget_usd: 20.0,
+            }
+        );
+        assert_eq!(
+            cfg.pricing.get("opus").copied().unwrap(),
+            Price {
+                input: 4.0,
+                output: 20.0,
+                cache_read: 0.2,
+                cache_write: 8.0,
+            }
+        );
+        assert_eq!(cfg.pricing.get("sonnet").unwrap().cache_write, 4.0);
+        assert_eq!(cfg.pricing.get("haiku").unwrap().input, 0.1);
+    }
+
+    #[test]
+    fn minimal_config_gets_defaults() {
+        let default_val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        let val = serde_json::json!({
+            "models": {
+                "lead": "opus",
+                "dev": "sonnet",
+                "qa": "sonnet"
+            },
+            "profiles": default_val["profiles"]
+        });
+        let cfg = config_from_value(&val).unwrap();
+        assert_eq!(cfg.model_for("plan-review").unwrap(), "opus");
+        assert_eq!(cfg.model_for("code-review").unwrap(), "opus");
+        assert_eq!(cfg.autopilot, AutopilotDefaults::default());
+        assert_eq!(cfg.pricing, default_pricing());
+    }
+
+    #[test]
+    fn review_model_override() {
+        let default_val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        let val = serde_json::json!({
+            "models": {
+                "lead": "opus",
+                "dev": "sonnet",
+                "qa": "sonnet",
+                "plan-review": "sonnet"
+            },
+            "profiles": default_val["profiles"]
+        });
+        let cfg = config_from_value(&val).unwrap();
+        assert_eq!(cfg.model_for("plan-review").unwrap(), "sonnet");
+        assert_eq!(cfg.model_for("code-review").unwrap(), "opus");
+    }
+
+    #[test]
+    fn autopilot_override_and_ranges() {
+        let default_val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        let base = serde_json::json!({
+            "models": {
+                "lead": "opus",
+                "dev": "sonnet",
+                "qa": "sonnet"
+            },
+            "profiles": default_val["profiles"]
+        });
+
+        // override max_rounds: 5
+        let mut v = base.clone();
+        v["autopilot"] = serde_json::json!({"max_rounds": 5});
+        let cfg = config_from_value(&v).unwrap();
+        assert_eq!(cfg.autopilot.max_rounds, 5);
+        assert_eq!(cfg.autopilot.budget_minutes, 60);
+        assert_eq!(cfg.autopilot.budget_usd, 20.0);
+
+        // max_rounds 0 -> Err
+        let mut v = base.clone();
+        v["autopilot"] = serde_json::json!({"max_rounds": 0});
+        let err = config_from_value(&v).unwrap_err();
+        assert_eq!(
+            err.message,
+            "Cấu hình autopilot.max_rounds phải là số nguyên từ 1 đến 10"
+        );
+
+        // max_rounds 11 -> Err
+        let mut v = base.clone();
+        v["autopilot"] = serde_json::json!({"max_rounds": 11});
+        let err = config_from_value(&v).unwrap_err();
+        assert_eq!(
+            err.message,
+            "Cấu hình autopilot.max_rounds phải là số nguyên từ 1 đến 10"
+        );
+
+        // budget_minutes 0 -> Err
+        let mut v = base.clone();
+        v["autopilot"] = serde_json::json!({"budget_minutes": 0});
+        let err = config_from_value(&v).unwrap_err();
+        assert_eq!(
+            err.message,
+            "Cấu hình autopilot.budget_minutes phải là số nguyên từ 1 đến 1440"
+        );
+
+        // budget_usd 0 -> Err
+        let mut v = base.clone();
+        v["autopilot"] = serde_json::json!({"budget_usd": 0});
+        let err = config_from_value(&v).unwrap_err();
+        assert_eq!(
+            err.message,
+            "Cấu hình autopilot.budget_usd phải là số lớn hơn 0 và không quá 1000"
+        );
+
+        // budget_usd 1001 -> Err
+        let mut v = base.clone();
+        v["autopilot"] = serde_json::json!({"budget_usd": 1001});
+        let err = config_from_value(&v).unwrap_err();
+        assert_eq!(
+            err.message,
+            "Cấu hình autopilot.budget_usd phải là số lớn hơn 0 và không quá 1000"
+        );
+
+        // budget_usd "x" -> Err
+        let mut v = base.clone();
+        v["autopilot"] = serde_json::json!({"budget_usd": "x"});
+        let err = config_from_value(&v).unwrap_err();
+        assert_eq!(
+            err.message,
+            "Cấu hình autopilot.budget_usd phải là số lớn hơn 0 và không quá 1000"
+        );
+
+        // autopilot not an object -> defaults
+        let mut v = base.clone();
+        v["autopilot"] = serde_json::json!("not-an-object");
+        let cfg = config_from_value(&v).unwrap();
+        assert_eq!(cfg.autopilot, AutopilotDefaults::default());
+    }
+
+    #[test]
+    fn pricing_override_one_family() {
+        let default_val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        let base = serde_json::json!({
+            "models": {
+                "lead": "opus",
+                "dev": "sonnet",
+                "qa": "sonnet"
+            },
+            "profiles": default_val["profiles"]
+        });
+
+        let mut v = base.clone();
+        v["pricing"] = serde_json::json!({
+            "sonnet": {
+                "input": 3,
+                "output": 15,
+                "cache_read": 0.3,
+                "cache_write": 6
+            }
+        });
+        let cfg = config_from_value(&v).unwrap();
+        assert_eq!(
+            cfg.pricing.get("sonnet").copied().unwrap(),
+            Price {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.3,
+                cache_write: 6.0,
+            }
+        );
+        assert_eq!(
+            cfg.pricing.get("opus").copied().unwrap(),
+            default_pricing()["opus"]
+        );
+        assert_eq!(
+            cfg.pricing.get("haiku").copied().unwrap(),
+            default_pricing()["haiku"]
+        );
+
+        // missing field
+        let mut v = base.clone();
+        v["pricing"] = serde_json::json!({
+            "sonnet": {
+                "input": 3,
+                "output": 15
+            }
+        });
+        let err = config_from_value(&v).unwrap_err();
+        assert_eq!(
+            err.message,
+            "Cấu hình pricing.sonnet không hợp lệ (cần input, output, cache_read, cache_write là số không âm)"
+        );
+
+        // negative field
+        let mut v = base.clone();
+        v["pricing"] = serde_json::json!({
+            "sonnet": {
+                "input": -1.0,
+                "output": 15,
+                "cache_read": 0.3,
+                "cache_write": 6
+            }
+        });
+        let err = config_from_value(&v).unwrap_err();
+        assert_eq!(
+            err.message,
+            "Cấu hình pricing.sonnet không hợp lệ (cần input, output, cache_read, cache_write là số không âm)"
+        );
+    }
 }

@@ -1,4 +1,9 @@
 {
+  "autopilot": {
+    "max_rounds": 3,
+    "budget_minutes": 60,
+    "budget_usd": 20
+  },
   "claude_bin": "claude",
   "common_args": [
     "--strict-mcp-config"
@@ -10,12 +15,34 @@
   "max_turns": {
     "lead": null,
     "dev": null,
-    "qa": null
+    "qa": null,
+    "plan-review": null,
+    "code-review": null
   },
   "models": {
     "lead": "opus",
     "dev": "sonnet",
     "qa": "sonnet"
+  },
+  "pricing": {
+    "opus": {
+      "input": 4.0,
+      "output": 20.0,
+      "cache_read": 0.2,
+      "cache_write": 8.0
+    },
+    "sonnet": {
+      "input": 2.0,
+      "output": 10.0,
+      "cache_read": 0.1,
+      "cache_write": 4.0
+    },
+    "haiku": {
+      "input": 0.1,
+      "output": 0.5,
+      "cache_read": 0.005,
+      "cache_write": 0.2
+    }
   },
   "profiles": {
     "work": {
@@ -40,6 +67,8 @@
     "lead": 1800,
     "dev": 1800,
     "qa": 1200,
-    "inspect": 300
+    "inspect": 300,
+    "plan-review": 1200,
+    "code-review": 1500
   }
 }
