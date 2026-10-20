@@ -464,12 +464,25 @@
         return Boolean(this.costNote);
       },
 
-      get isBlocked() {
+      // D-03 causes (also drive the amber markers on the plan section and the
+      // QA card); the callouts themselves hide while the stop banner shows the
+      // same cause, because the banner body carries the guidance.
+      get blockedCause() {
         return Boolean(this.task && (this.task.status === 'blocked' || (this.task.plan && this.task.plan.blockers)));
       },
 
-      get isQaFix() {
+      get qaFixCause() {
         return Boolean(this.task && (this.task.status === 'qa_fix' || (this.task.qa && this.task.qa.verdict === 'Cần sửa')));
+      },
+
+      get isBlocked() {
+        if (this.showBanner && this.autoView.stop_reason === 'vuong_mac') return false;
+        return this.blockedCause;
+      },
+
+      get isQaFix() {
+        if (this.showBanner && this.autoView.stop_reason === 'het_vong' && this.autoView.stopped_in === 'qa') return false;
+        return this.qaFixCause;
       },
 
       get blockedBody() {
@@ -592,7 +605,7 @@
       },
 
       get qaCardRing() {
-        return this.isQaFix ? 'ring-2 ring-amber-500 dark:ring-amber-400' : 'ring-1 ring-slate-200 dark:ring-slate-700';
+        return this.qaFixCause ?'ring-2 ring-amber-500 dark:ring-amber-400' : 'ring-1 ring-slate-200 dark:ring-slate-700';
       },
 
 
@@ -607,7 +620,7 @@
       get dialogTitle() {
         if (!this.dialog) return '';
         if (this.dialog.id === 'kill') {
-          return 'Kill run ' + this.dialog.run_id + ' (' + window.AB.roleName(this.runningStepRole) + ')?';
+          return 'Kill run ' + this.dialog.run_id + ' (' + window.AB.roleName(this.killRole(this.dialog)) + ')?';
         }
         if (this.dialog.id === 'relead') {
           var slug = (this.task && this.task.slug) ? this.task.slug : '';
@@ -623,7 +636,11 @@
       get dialogBody() {
         if (!this.dialog) return '';
         if (this.dialog.id === 'kill') {
-          return 'Agent và mọi tiến trình con của nó sẽ bị dừng ngay. Thay đổi chưa commit trong thư mục dự án vẫn còn nguyên; task chuyển sang trạng thái killed.';
+          var kbody = 'Agent và mọi tiến trình con của nó sẽ bị dừng ngay. Thay đổi chưa commit trong thư mục dự án vẫn còn nguyên; task chuyển sang trạng thái killed.';
+          if (this.autoState === 'running' || this.autoState === 'stopping') {
+            kbody += ' Autopilot cũng dừng với lý do "dừng bởi bạn".';
+          }
+          return kbody;
         }
         if (this.dialog.id === 'relead' || this.dialog.id === 'return_lead') {
           var slug = (this.task && this.task.slug) ? this.task.slug : '';
@@ -661,6 +678,18 @@
           return 'bg-rose-600 text-white hover:bg-rose-700';
         }
         return 'bg-indigo-600 text-white hover:bg-indigo-700';
+      },
+
+      // Role of the run a Kill targets (Review plan / Review code included);
+      // falls back to the running step for runs not in the task's list.
+      killRole: function (a) {
+        var runs = (this.task && this.task.runs) ? this.task.runs : [];
+        if (a && a.run_id !== null && a.run_id !== undefined) {
+          for (var i = 0; i < runs.length; i++) {
+            if (runs[i] && runs[i].id === a.run_id && runs[i].role) return runs[i].role;
+          }
+        }
+        return this.runningStepRole;
       },
 
       get runningStepRole() {
@@ -1088,6 +1117,62 @@
         return this.autoState === 'lost';
       },
 
+      // Stop banner (05.2): autopilot stopped with a reason. Heading, body and
+      // reasons are server strings; the banner reads only the task detail.
+      get showBanner() {
+        return this.autoState === 'stopped';
+      },
+
+      get bannerHeading() {
+        if (!this.showBanner) return '';
+        var word = this.autoView.stop_word;
+        return word ? 'Autopilot dừng · ' + word : 'Autopilot dừng';
+      },
+
+      get bannerBody() {
+        return (this.showBanner && this.autoView.stop_detail) ? this.autoView.stop_detail : '';
+      },
+
+      get stopGlyph() {
+        return window.AB.stepGlyph('cho_ban');
+      },
+
+      get bannerIsBudget() {
+        return Boolean(this.showBanner && this.autoView.stop_reason === 'het_ngan_sach');
+      },
+
+      get bannerBudget() {
+        return this.bannerIsBudget ? this.budgetText : '';
+      },
+
+      get bannerControls() {
+        if (!this.showBanner) return [];
+        var out = [];
+        var more = this.controlById('auto_more_round');
+        if (more) out.push(more);
+        var acts = this.actionList;
+        for (var i = 0; i < acts.length; i++) {
+          if (acts[i] && acts[i].id === 'relead') {
+            out.push(acts[i]);
+            break;
+          }
+        }
+        var end = this.controlById('auto_end');
+        if (end) out.push(end);
+        return out;
+      },
+
+      get hasBannerControls() {
+        return this.bannerControls.length > 0;
+      },
+
+      moreRoundHelp: function (a) {
+        if (a && a.id === 'auto_more_round' && this.bannerIsBudget) {
+          return 'Chạy vượt ngân sách một lần, chỉ cho vòng này.';
+        }
+        return '';
+      },
+
       autoHelper: function (a) {
         var st = this.autoState;
         if (st === 'running' || st === 'stopping') {
@@ -1156,9 +1241,14 @@
       },
 
       // Action strip: task actions, plus the gate controls when they cannot be
-      // drawn in the Bạn card.
+      // drawn in the Bạn card; relead moves to the stop banner while it shows.
       get stripActions() {
         var acts = this.actionList.slice();
+        if (this.showBanner) {
+          acts = acts.filter(function (a) {
+            return a && a.id !== 'relead';
+          });
+        }
         if (!this.gateInCard && !this.pipeLoading) {
           acts = this.gateControlList().concat(acts);
         }
@@ -1216,6 +1306,7 @@
         }
         if (this.approveShown) return secondary;
         if (a.id === 'auto_more_round') return primary;
+        if (this.controlById('auto_more_round') && this.showBanner) return secondary;
         var strip = this.stripActions;
         var firstEnabled = null;
         for (var i = 0; i < strip.length; i++) {
@@ -1418,7 +1509,7 @@
       },
 
       sectionRing: function (name) {
-        return (name === 'Vướng mắc' && this.isBlocked)
+        return (name === 'Vướng mắc' && this.blockedCause)
           ? 'ring-2 ring-amber-500 dark:ring-amber-400'
           : 'ring-1 ring-slate-200 dark:ring-slate-700';
       },

@@ -657,6 +657,23 @@ if screen == 'task-stop':
         fail("DOM không chứa ghi chú ước tính 'Gồm chi phí ước tính từ token cho 1 run'")
     if 'Quy trình: mac-dinh ·' not in parser.full_text:
         fail("Dòng quy trình không phải 'Quy trình: mac-dinh · …'")
+    # Stop banner: amber, polite live region, server detail, three actions.
+    if len(parser.banners) != 1:
+        fail(f"Số phần tử data-stop-banner là {len(parser.banners)}, kỳ vọng 1")
+    banner = parser.banners[0]
+    if banner['aria_live'] != 'polite':
+        fail(f"data-stop-banner có aria-live='{banner['aria_live']}', kỳ vọng 'polite'")
+    if 'display: none' in banner['style']:
+        fail("data-stop-banner đang bị ẩn")
+    if 'Autopilot dừng · hết vòng' not in banner['text']:
+        fail(f"Banner dừng không chứa 'Autopilot dừng · hết vòng' (nội dung: '{banner['text']}')")
+    if 'Review code vẫn yêu cầu sửa lại sau 3 / 3 vòng.' not in banner['text']:
+        fail(f"Banner dừng không chứa chi tiết của server (nội dung: '{banner['text']}')")
+    for bid in ('ab-act-auto_more_round', 'ab-act-relead', 'ab-act-auto_end'):
+        if bid not in parser.banner_buttons:
+            fail(f"Thiếu nút {bid} trong banner dừng (nút trong banner: {parser.banner_buttons})")
+    if 'ab-act-relead' in parser.strip_buttons:
+        fail("ab-act-relead không được nằm cả trong dải hành động khi banner dừng hiện")
     print("Stop DOM OK")
     sys.exit(0)
 
@@ -765,6 +782,12 @@ if note is None:
 if note.get('maxlength') != '500':
     print(f"Lỗi: textarea #ab-return-note có maxlength '{note.get('maxlength')}', kỳ vọng '500'", file=sys.stderr)
     sys.exit(1)
+
+# Task 1 has no autopilot stop: the banner element exists but is hidden.
+for b in parser.banners:
+    if 'display: none' not in b['style']:
+        print("Lỗi: banner dừng hiển thị trên task không bị autopilot dừng", file=sys.stderr)
+        sys.exit(1)
 
 print("Pipeline DOM OK")
 

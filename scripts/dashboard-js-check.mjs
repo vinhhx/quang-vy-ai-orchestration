@@ -1345,6 +1345,183 @@ const sections = [
     },
   },
   {
+    name: 'task-banner',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      ctx.AB.route = { name: 'task', params: { id: '1' } };
+      const taskJsSrc = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/js/task.js'), 'utf8');
+      vm.runInContext(taskJsSrc, ctx, { filename: 'task.js' });
+
+      const PRIMARY = 'bg-indigo-600';
+      const D = 'Review code vẫn yêu cầu sửa lại sau 3 / 3 vòng.';
+      const MORE = { id: 'auto_more_round', label: 'Chạy thêm 1 vòng', enabled: true, reason: null, run_id: null };
+      const END = { id: 'auto_end', label: 'Dừng hẳn', enabled: true, reason: null, run_id: null };
+      const START = { id: 'auto_start', label: 'Bật autopilot', enabled: true, reason: null, run_id: null };
+      const STOP = { id: 'auto_stop', label: 'Dừng autopilot', enabled: true, reason: null, run_id: null };
+      const APPROVE = { id: 'approve', label: 'Duyệt plan', enabled: true, reason: null, run_id: null };
+      const RETURN = { id: 'return_lead', label: 'Trả về Lead', enabled: true, reason: null, run_id: null };
+      const RUN_DEV = { id: 'run_dev', label: 'Chạy Dev', enabled: true, reason: null };
+      const RELEAD = { id: 'relead', label: 'Chạy lại Lead', enabled: true, reason: null };
+      const KILL = { id: 'kill', label: 'Kill', enabled: true, reason: null, run_id: 9 };
+      const STOPPED = { state: 'stopped', workflow_auto: true, stop_reason: 'het_vong', stop_word: 'hết vòng', stop_detail: D, stopped_in: 'build', stop_requested: false };
+      const T = {
+        id: 1,
+        slug: 'dung-lai',
+        status: 'planned',
+        current_step: 'dev',
+        actions: [RUN_DEV, RELEAD],
+        controls: [START, MORE, END],
+        auto: STOPPED,
+        workflow: { name: 'mac-dinh', summary: 'plan', auto: true },
+        rev: 'R',
+        steps: [],
+        runs: [],
+      };
+      const BUDGET = { used_ms: 3700000, used_minutes: 62, limit_minutes: 60, used_usd: 21.5, limit_usd: 20, estimated: false, estimated_runs: 0, level: 'over' };
+      const PIPE = { workflow: null, groups: [], gate: { present: true, state: 'xong', result: 'đã duyệt plan', at_ms: Date.now() }, current_card: 'code_review', budget: BUDGET, cards: {}, ledger: { groups: [], total: null } };
+
+      const c = factories.task();
+      c.id = '1';
+      c.task = T;
+      c.pipe = PIPE;
+
+      check('banner: showBanner when stopped', c.showBanner === true);
+      check('banner: heading', c.bannerHeading === 'Autopilot dừng · hết vòng', `got "${c.bannerHeading}"`);
+      check('banner: body is stop_detail verbatim', c.bannerBody === D, `got "${c.bannerBody}"`);
+      check('banner: controls order', JSON.stringify(c.bannerControls.map((x) => x.id)) === JSON.stringify(['auto_more_round', 'relead', 'auto_end']), `got ${JSON.stringify(c.bannerControls.map((x) => x.id))}`);
+      check('banner: strip excludes relead', JSON.stringify(c.stripActions.map((x) => x.id)) === JSON.stringify(['run_dev']), `got ${JSON.stringify(c.stripActions.map((x) => x.id))}`);
+      check('banner: no budget repeat for hết vòng', c.bannerBudget === '' && c.moreRoundHelp(MORE) === '', `got "${c.bannerBudget}" / "${c.moreRoundHelp(MORE)}"`);
+      check('banner: more-round primary (no gate)', c.actionClass(MORE).includes(PRIMARY), `got "${c.actionClass(MORE)}"`);
+      check('banner: relead secondary', !c.actionClass(RELEAD).includes(PRIMARY), `got "${c.actionClass(RELEAD)}"`);
+      check('banner: end secondary', !c.actionClass(END).includes(PRIMARY), `got "${c.actionClass(END)}"`);
+      check('banner: strip first enabled not primary while banner primary shows', !c.actionClass(RUN_DEV).includes(PRIMARY), `got "${c.actionClass(RUN_DEV)}"`);
+
+      // hết ngân sách: helper under Chạy thêm 1 vòng, budget line repeated
+      c.task = { ...T, auto: { ...STOPPED, stop_reason: 'het_ngan_sach', stop_word: 'hết ngân sách', stopped_in: null } };
+      check('budget: moreRoundHelp', c.moreRoundHelp(MORE) === 'Chạy vượt ngân sách một lần, chỉ cho vòng này.', `got "${c.moreRoundHelp(MORE)}"`);
+      check('budget: moreRoundHelp only for more-round', c.moreRoundHelp(END) === '');
+      check('budget: bannerBudget repeats budgetText', c.bannerBudget === c.budgetText && c.bannerBudget.startsWith('Ngân sách: 62 / 60 phút'), `got "${c.bannerBudget}"`);
+
+      // gate shown: Duyệt plan is the only primary
+      c.task = { ...T, controls: [APPROVE, RETURN, START, MORE, END] };
+      check('gate + banner: approve primary', c.actionClass(APPROVE).includes(PRIMARY));
+      check('gate + banner: more-round secondary', !c.actionClass(MORE).includes(PRIMARY), `got "${c.actionClass(MORE)}"`);
+
+      // running: no banner, relead back in the strip
+      c.task = { ...T, controls: [STOP], auto: { ...STOPPED, state: 'running', stop_reason: null, stop_word: null, stop_detail: null, stopped_in: null } };
+      check('running: showBanner false', c.showBanner === false);
+      check('running: bannerControls empty', c.bannerControls.length === 0);
+      check('running: strip has relead', c.stripActions.some((x) => x.id === 'relead'));
+      check('running: strip first enabled primary', c.actionClass(RUN_DEV).includes(PRIMARY), `got "${c.actionClass(RUN_DEV)}"`);
+
+      // colours: red stays Kill only
+      for (const a of [APPROVE, MORE, END, STOP]) {
+        check(`colour: actionClass(${a.id}) has no rose`, !c.actionClass(a).includes('rose'), `got "${c.actionClass(a)}"`);
+      }
+      check('colour: actionClass(kill) bg-rose-600', c.actionClass(KILL).includes('bg-rose-600'), `got "${c.actionClass(KILL)}"`);
+
+      // D-03 callouts hidden for the same cause
+      c.task = { ...T, status: 'blocked', auto: { ...STOPPED, stop_reason: 'vuong_mac', stop_word: 'vướng mắc', stopped_in: 'build' } };
+      check('D-03: blocked hidden under vướng mắc banner', c.isBlocked === false);
+      check('D-03: plan section keeps its amber ring', c.sectionRing('Vướng mắc').includes('ring-amber-500'), `got "${c.sectionRing('Vướng mắc')}"`);
+      c.task = { ...T, status: 'blocked', auto: { state: 'off', stop_reason: null } };
+      check('D-03: blocked shown without banner', c.isBlocked === true);
+      c.task = { ...T, status: 'qa_fix', auto: { ...STOPPED, stop_reason: 'het_vong', stopped_in: 'qa', stop_detail: 'QA vẫn kết luận Cần sửa sau 3 / 3 vòng. Xem báo cáo QA bên dưới.' } };
+      check('D-03: qa_fix hidden under QA hết vòng banner', c.isQaFix === false);
+      check('D-03: QA card keeps its amber ring', c.qaCardRing.includes('ring-amber-500'), `got "${c.qaCardRing}"`);
+      c.task = { ...T, status: 'qa_fix', auto: { ...STOPPED, stop_reason: 'het_vong', stopped_in: 'build' } };
+      check('D-03: qa_fix shown for a build-loop stop', c.isQaFix === true);
+      c.task = { ...T, status: 'qa_fix', auto: { state: 'off' } };
+      check('D-03: qa_fix shown without banner', c.isQaFix === true);
+
+      // more-round / end
+      const posts = [];
+      let nextRes = null;
+      ctx.AB.api = function (method, url, body) {
+        posts.push({ method, url, body });
+        return Promise.resolve(nextRes);
+      };
+      ctx.AB.focusLater = function () {};
+      ctx.AB.lockScroll = function () {};
+      let loads = 0;
+      c.load = function () {
+        loads++;
+      };
+      const settle = async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      };
+      c.task = T;
+
+      let hold;
+      ctx.AB.api = function (method, url, body) {
+        posts.push({ method, url, body });
+        return new Promise((r) => {
+          hold = r;
+        });
+      };
+      c.onAction(MORE);
+      check('more-round: no dialog', c.dialog === null);
+      check('more-round: in-flight label', c.actionText(MORE) === 'Đang giao...', `got "${c.actionText(MORE)}"`);
+      for (const a of [MORE, END, RELEAD, RUN_DEV, START]) {
+        check(`in flight: ${a.id} disabled`, c.actionDisabled(a) === true);
+      }
+      hold({ ok: true, status: 202, data: { job_id: 11 } });
+      await settle();
+      check('more-round: POST path', posts[0] && posts[0].url === '/api/tasks/1/auto/more-round', JSON.stringify(posts[0]));
+      check('more-round: body {rev}', posts[0] && JSON.stringify(posts[0].body) === JSON.stringify({ rev: 'R' }), JSON.stringify(posts[0]));
+      check('more-round: 202 message', c.message === 'Đã giao thêm 1 vòng.', `got "${c.message}"`);
+      check('more-round: reloads', loads === 1, `loads=${loads}`);
+
+      ctx.AB.api = function (method, url, body) {
+        posts.push({ method, url, body });
+        return Promise.resolve(nextRes);
+      };
+      nextRes = { ok: true, status: 200, data: { ok: true } };
+      c.busyAction = 'auto_end';
+      check('end: in-flight label', c.actionText(END) === 'Đang dừng...', `got "${c.actionText(END)}"`);
+      c.busyAction = '';
+      c.onAction(END);
+      check('end: no dialog', c.dialog === null);
+      await settle();
+      check('end: POST path', posts[1] && posts[1].url === '/api/tasks/1/auto/end', JSON.stringify(posts[1]));
+      check('end: body {rev}', posts[1] && JSON.stringify(posts[1].body) === JSON.stringify({ rev: 'R' }), JSON.stringify(posts[1]));
+      check('end: 200 message', c.message === 'Đã dừng hẳn autopilot. Bật autopilot để chạy tiếp.', `got "${c.message}"`);
+
+      nextRes = { ok: false, status: 409, data: { error: 'Autopilot không ở trạng thái dừng', kind: 'duplicate' } };
+      c.onAction(MORE);
+      await settle();
+      check('more-round: 409 message', c.message === 'Autopilot không ở trạng thái dừng', `got "${c.message}"`);
+      check('more-round: 409 not retried', posts.length === 3, `posts=${posts.length}`);
+
+      // banner relead keeps the confirmation dialog
+      c.onAction(RELEAD);
+      check('banner relead opens the dialog', c.dialog === RELEAD);
+      check('banner relead sends nothing yet', posts.length === 3);
+      c.dialogCancel();
+
+      // Kill dialog: role of the killed run, autopilot sentence
+      c.task = { ...T, actions: [KILL], auto: { state: 'running' }, runs: [{ id: 8, role: 'dev' }, { id: 9, role: 'code-review' }], steps: [{ role: 'dev', state: 'dang_chay' }] };
+      c.dialog = KILL;
+      check('kill: title names the killed run role', c.dialogTitle === 'Kill run 9 (Review code)?', `got "${c.dialogTitle}"`);
+      check('kill: autopilot sentence while running', c.dialogBody.endsWith(' Autopilot cũng dừng với lý do "dừng bởi bạn".'), `got "${c.dialogBody}"`);
+      c.task = { ...c.task, auto: { state: 'stopping' } };
+      check('kill: autopilot sentence while stopping', c.dialogBody.endsWith('"dừng bởi bạn".'));
+      c.task = { ...c.task, auto: { state: 'off' } };
+      check('kill: no autopilot sentence when off', !c.dialogBody.includes('Autopilot'), `got "${c.dialogBody}"`);
+      c.task = { ...c.task, runs: [{ id: 9, role: 'plan-review' }] };
+      check('kill: Review plan title', c.dialogTitle === 'Kill run 9 (Review plan)?', `got "${c.dialogTitle}"`);
+      c.task = { ...c.task, runs: [] };
+      check('kill: falls back to the running step', c.dialogTitle === 'Kill run 9 (Dev)?', `got "${c.dialogTitle}"`);
+      c.dialog = null;
+    },
+  },
+  {
     name: 'ledger',
     async run(ctx) {
       const factories = {};
