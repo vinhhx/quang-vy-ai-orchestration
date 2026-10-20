@@ -422,6 +422,14 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         .route("/api/tasks/{id}/qa", post(post_task_qa))
         .route("/api/tasks/{id}/relead", post(post_task_relead))
         .route("/api/tasks/{id}/approve", post(post_approve))
+        .route("/api/tasks/{id}/return", post(post_return))
+        .route("/api/tasks/{id}/auto", post(post_auto))
+        .route("/api/tasks/{id}/auto/stop", post(post_auto_stop))
+        .route(
+            "/api/tasks/{id}/auto/more-round",
+            post(post_auto_more_round),
+        )
+        .route("/api/tasks/{id}/auto/end", post(post_auto_end))
         .route("/api/preflight", get(get_preflight))
         .route("/api/slug", get(get_slug))
         .route("/api/jobs/{id}", get(get_job))
@@ -1387,7 +1395,17 @@ async fn post_task_action(
             )
                 .into_response());
         }
+        // Chạy lại Lead trên quy trình `auto: true`: autopilot lập lại plan từ khung
+        // mới (`auto {id} --replan`, không ghi chú) rồi review plan như thường.
+        let replan_auto =
+            action_id == "relead" && state.workflow.as_ref().map_or(false, |w| w.auto);
+        let role = if replan_auto { "auto" } else { role };
         let args = match role {
+            "auto" => vec![
+                "auto".to_string(),
+                task.id.to_string(),
+                "--replan".to_string(),
+            ],
             "dev" => vec![
                 "run".to_string(),
                 "dev".to_string(),
@@ -1667,6 +1685,62 @@ async fn post_control(
                     }),
                 ))
             }
+            "return_lead" => {
+                // D-17 / D-30: bỏ duyệt rồi lập lại plan (ghi chú là một phần tử argv).
+                crate::db::clear_task_approval(&conn, task_id)?;
+                let (role, args) = if wf_auto {
+                    let mut a = vec!["auto".to_string(), id_str, "--replan".to_string()];
+                    if let Some(n) = note.as_deref() {
+                        a.push(format!("--note={n}"));
+                    }
+                    ("auto", a)
+                } else {
+                    let mut a = vec![
+                        "run".to_string(),
+                        "lead".to_string(),
+                        "--name".to_string(),
+                        state.task.slug.clone(),
+                    ];
+                    if let Some(n) = note.as_deref() {
+                        a.push(format!("--note={n}"));
+                    }
+                    a.push("--".to_string());
+                    a.push(state.project.id.clone());
+                    a.push(state.task.title.clone());
+                    ("lead", a)
+                };
+                match start_job(&st, task_job(&state, role, args)) {
+                    Ok(job_id) => Ok(json_resp(
+                        StatusCode::ACCEPTED,
+                        serde_json::json!({ "job_id": job_id }),
+                    )),
+                    Err(resp) => Ok(resp),
+                }
+            }
+            "auto_start" | "auto_more_round" => {
+                let mut args = vec!["auto".to_string(), id_str];
+                if control == "auto_more_round" {
+                    args.push("--more-round".to_string());
+                }
+                match start_job(&st, task_job(&state, "auto", args)) {
+                    Ok(job_id) => Ok(json_resp(
+                        StatusCode::ACCEPTED,
+                        serde_json::json!({ "job_id": job_id }),
+                    )),
+                    Err(resp) => Ok(resp),
+                }
+            }
+            "auto_stop" => {
+                // Dừng mềm: run đang chạy chạy xong, autopilot không bắt đầu bước mới.
+                crate::db::request_auto_stop(&conn, task_id, "soft")?;
+                Ok(json_resp(StatusCode::OK, serde_json::json!({ "ok": true })))
+            }
+            "auto_end" => {
+                // Dừng hẳn: giữ auto_json.stop làm lịch sử; Bật autopilot chạy lại sau.
+                claim::release(&conn, task_id, "ended", &state.aj)?;
+                crate::db::clear_auto_stop(&conn, task_id)?;
+                Ok(json_resp(StatusCode::OK, serde_json::json!({ "ok": true })))
+            }
             _ => Ok(conflict(NOT_ALLOWED_MSG, "not_allowed")),
         }
     })
@@ -1684,6 +1758,46 @@ async fn post_approve(
     Json(body): Json<ControlBody>,
 ) -> Response {
     post_control(st, task_id, "approve", body.rev, None).await
+}
+
+async fn post_return(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<ReturnBody>,
+) -> Response {
+    post_control(st, task_id, "return_lead", body.rev, body.note).await
+}
+
+async fn post_auto(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<ControlBody>,
+) -> Response {
+    post_control(st, task_id, "auto_start", body.rev, None).await
+}
+
+async fn post_auto_stop(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<ControlBody>,
+) -> Response {
+    post_control(st, task_id, "auto_stop", body.rev, None).await
+}
+
+async fn post_auto_more_round(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<ControlBody>,
+) -> Response {
+    post_control(st, task_id, "auto_more_round", body.rev, None).await
+}
+
+async fn post_auto_end(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<ControlBody>,
+) -> Response {
+    post_control(st, task_id, "auto_end", body.rev, None).await
 }
 
 async fn get_job(State(st): State<Arc<AppState>>, AxumPath(job_id): AxumPath<u64>) -> Response {

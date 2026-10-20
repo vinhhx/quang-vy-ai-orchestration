@@ -1088,3 +1088,473 @@ fn approve_refused_reasons() {
     );
     assert_eq!(approved_commit(&sb, 1), None);
 }
+
+// ---------------------------------------------------------------------------
+// Plan 05.2-15 Task 2: return, autopilot start / stop / more-round / end, relead
+// ---------------------------------------------------------------------------
+
+fn lead_append_entry() -> Value {
+    json!({"ops": [{
+        "op": "write",
+        "path": ".plan.md",
+        "content": "\n<!-- v2 -->\n",
+        "append": true,
+    }]})
+}
+
+fn task_auto_json(sb: &Sandbox, task_id: i64) -> Value {
+    let aj: Option<String> = sb
+        .db()
+        .query_row(
+            "SELECT auto_json FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&aj.unwrap_or_else(|| "{}".to_string())).unwrap()
+}
+
+fn run_metrics(sb: &Sandbox, run_id: i64) -> Value {
+    let m: Option<String> = sb
+        .db()
+        .query_row(
+            "SELECT metrics_json FROM runs WHERE id = ?1",
+            [run_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&m.unwrap_or_else(|| "{}".to_string())).unwrap()
+}
+
+fn last_run_id(sb: &Sandbox, role: &str) -> i64 {
+    sb.db()
+        .query_row("SELECT MAX(id) FROM runs WHERE role = ?1", [role], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+/// Prompt (`-p`) của lần gọi claude giả cuối cùng cho Lead.
+fn last_lead_prompt(sb: &Sandbox) -> String {
+    let rec = sb
+        .records()
+        .into_iter()
+        .filter(|r| {
+            let argv = r["argv"].as_array().unwrap();
+            argv.iter()
+                .position(|a| a.as_str() == Some("--append-system-prompt"))
+                .map(|i| {
+                    argv[i + 1]
+                        .as_str()
+                        .unwrap_or("")
+                        .starts_with("Bạn là Lead")
+                })
+                .unwrap_or(false)
+        })
+        .last()
+        .expect("a Lead record");
+    let argv: Vec<String> = rec["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap_or("").to_string())
+        .collect();
+    let i = argv.iter().position(|a| a == "-p").unwrap();
+    argv[i + 1].clone()
+}
+
+const FRESH_SKELETON: &str = "đã có sẵn khung (skeleton)";
+
+/// mac-dinh qua `auto --start` (CLI): review plan luôn revise → dừng `hết vòng` ở vòng 3 / 3.
+fn plan_cap_stopped(sb: &Sandbox) {
+    setup_auto_project(sb, "work");
+    let sc = by_role(json!({
+        "lead": [lead_plan_entry(), lead_append_entry()],
+        "plan-review": [
+            plan_review_entry("revise", 1, 0),
+            plan_review_entry("revise", 1, 1),
+            plan_review_entry("revise", 1, 2)
+        ],
+    }));
+    let res = sb.run(
+        &[
+            "auto",
+            "--start",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(sc),
+    );
+    assert_eq!(res.code, 4, "stderr: {}", res.stderr);
+    assert_eq!(task_auto_state(sb, 1).as_deref(), Some("stopped"));
+    let stop = task_auto_json(sb, 1)["stop"].clone();
+    assert_eq!(stop["reason"], "het_vong", "{stop}");
+    assert_eq!(stop["loop_name"], "plan", "{stop}");
+}
+
+/// Chờ một run `dev` đang chạy; trả id của run.
+fn wait_running_dev(sb: &Sandbox) -> i64 {
+    let mut found = None;
+    let ok = wait_until(Duration::from_secs(20), || {
+        let row: rusqlite::Result<i64> = sb.db().query_row(
+            "SELECT id FROM runs WHERE status = 'running' AND role = 'dev'",
+            [],
+            |r| r.get(0),
+        );
+        match row {
+            Ok(id) => {
+                found = Some(id);
+                true
+            }
+            Err(_) => false,
+        }
+    });
+    assert!(ok, "no running dev run");
+    found.unwrap()
+}
+
+fn run_status(sb: &Sandbox, run_id: i64) -> String {
+    sb.db()
+        .query_row("SELECT status FROM runs WHERE id = ?1", [run_id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+#[test]
+fn return_with_note_auto() {
+    let sb = Sandbox::new();
+    let repo = setup_auto_project(&sb, "work");
+    sb.write_scenario(by_role(json!({
+        "lead": [lead_plan_entry(), lead_append_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 1), plan_review_entry("approve", 0, 2)],
+    })));
+    let srv = sb.serve(&[]);
+    giao_viec_to_gate(&sb, &srv);
+
+    let t = srv.get("/api/tasks/1").json();
+    let rev = t["rev"].as_str().unwrap().to_string();
+    assert_eq!(control(&t, "return_lead")["enabled"], true);
+
+    let resp = srv.post_json(
+        "/api/tasks/1/return",
+        &json!({"note": "  -tách bước 2  ", "rev": rev}),
+    );
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(job_role(&srv, job_id), "auto");
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+
+    assert_eq!(
+        run_roles(&sb),
+        vec!["lead", "plan-review", "lead", "plan-review"]
+    );
+    let lead2 = last_run_id(&sb, "lead");
+    assert_eq!(run_metrics(&sb, lead2)["note"], "-tách bước 2");
+    let prompt = last_lead_prompt(&sb);
+    assert!(
+        prompt.contains("Ghi chú của người dùng: -tách bước 2"),
+        "prompt: {prompt}"
+    );
+    assert!(!prompt.contains(FRESH_SKELETON), "prompt: {prompt}");
+
+    // Lead sửa trên plan hiện tại: các dòng đầu vẫn còn, phần thêm nằm sau.
+    let plan = std::fs::read_to_string(repo.join(".plan.md")).unwrap();
+    assert!(plan.contains("| 1 | src/app.py |"), "{plan}");
+    assert!(plan.contains("<!-- v2 -->"), "{plan}");
+
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+    assert_eq!(approved_commit(&sb, 1), None);
+}
+
+#[test]
+fn return_manual_and_limits() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    run_lead(&sb, "web-ban-hang", "sua-app", "sửa app");
+    sb.write_scenario(lead_plan_entry());
+    let srv = sb.serve(&[]);
+
+    let long = "ă".repeat(501);
+    let resp = srv.post_json("/api/tasks/1/return", &json!({ "note": long }));
+    assert_eq!(resp.status, 422, "{}", resp.text());
+    assert_eq!(resp.json()["error"], "Ghi chú quá dài (tối đa 500 ký tự)");
+    assert_eq!(srv.get("/api/jobs/1").status, 404, "no job for a long note");
+
+    let resp = srv.post_json("/api/tasks/1/return", &json!({}));
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(job_role(&srv, job_id), "lead");
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+
+    assert_eq!(run_roles(&sb), vec!["lead", "lead"]);
+    let prompt = last_lead_prompt(&sb);
+    assert!(prompt.contains(FRESH_SKELETON), "prompt: {prompt}");
+    assert!(
+        !prompt.contains("Ghi chú của người dùng"),
+        "prompt: {prompt}"
+    );
+    assert_eq!(approved_commit(&sb, 1), None);
+}
+
+#[test]
+fn auto_start_stop_end() {
+    // Chạy thêm 1 vòng sau `hết vòng`: một job, một lượt cộng vòng.
+    let sb = Sandbox::new();
+    plan_cap_stopped(&sb);
+    sb.write_scenario(by_role(json!({
+        "lead": [lead_append_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 0)],
+    })));
+    let srv = sb.serve(&[]);
+    let t = srv.get("/api/tasks/1").json();
+    assert_eq!(t["auto"]["state"], "stopped");
+    assert_eq!(control(&t, "auto_more_round")["enabled"], true, "{t}");
+
+    let resp = srv.post_json("/api/tasks/1/auto/more-round", &json!({}));
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(job_role(&srv, job_id), "auto");
+
+    let again = srv.post_json("/api/tasks/1/auto/more-round", &json!({}));
+    assert_eq!(again.status, 409, "{}", again.text());
+    let kind = again.json()["kind"].as_str().unwrap().to_string();
+    assert!(kind == "busy" || kind == "duplicate", "{}", again.text());
+
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+    assert_eq!(task_auto_json(&sb, 1)["grants"]["plan"], 1);
+    assert_eq!(run_count(&sb), 8);
+
+    let late = srv.post_json("/api/tasks/1/auto/more-round", &json!({}));
+    assert_eq!(late.status, 409, "{}", late.text());
+    let body = late.json();
+    assert_eq!(body["kind"], "duplicate", "{body}");
+    assert_eq!(body["error"], "Autopilot không ở trạng thái dừng");
+    assert_eq!(task_auto_json(&sb, 1)["grants"]["plan"], 1);
+    assert_eq!(run_count(&sb), 8);
+    drop(srv);
+
+    // Dừng hẳn trên task đang dừng.
+    let sb = Sandbox::new();
+    plan_cap_stopped(&sb);
+    let srv = sb.serve(&[]);
+    let resp = srv.post_json("/api/tasks/1/auto/end", &json!({}));
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_eq!(resp.json()["ok"], true);
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("ended"));
+    // auto_json.stop giữ lại làm lịch sử.
+    assert_eq!(task_auto_json(&sb, 1)["stop"]["reason"], "het_vong");
+
+    let t = srv.get("/api/tasks/1").json();
+    assert_eq!(t["auto"]["state"], "off", "{}", t["auto"]);
+    assert!(t["auto"]["stop_reason"].is_null(), "{}", t["auto"]);
+    let banner = t["banner"].as_str().unwrap_or("");
+    assert!(
+        !banner.starts_with("Chờ bạn"),
+        "stop banner still shown: {banner}"
+    );
+    // Không còn nút của banner dừng; plan vẫn chờ duyệt ở cổng.
+    let ids: Vec<&str> = t["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["approve", "return_lead", "auto_start"], "{t}");
+
+    let again = srv.post_json("/api/tasks/1/auto/end", &json!({}));
+    assert_eq!(again.status, 409, "{}", again.text());
+    assert_eq!(again.json()["kind"], "duplicate");
+    assert_eq!(srv.get("/api/jobs/1").status, 404, "end starts no job");
+}
+
+#[test]
+fn auto_stop_soft() {
+    let sb = Sandbox::new();
+    let _repo = auto_to_gate(&sb);
+    let res = sb.run(&["approve", "1", "--no-continue"], None);
+    assert_ok(&res, "approve --no-continue");
+
+    let mut dev = dev_impl_entry();
+    dev["sleep"] = json!(3.0);
+    sb.write_scenario(by_role(json!({
+        "dev": [dev],
+        "code-review": [code_review_entry("pass", 0)],
+        "qa": [qa_entry("Đạt")],
+    })));
+    let srv = sb.serve(&[]);
+
+    let stop_early = srv.post_json("/api/tasks/1/auto/stop", &json!({}));
+    assert_eq!(stop_early.status, 409, "{}", stop_early.text());
+    assert_eq!(stop_early.json()["error"], "Autopilot không chạy");
+
+    let resp = srv.post_json("/api/tasks/1/auto", &json!({}));
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(job_role(&srv, job_id), "auto");
+    let dev_run = wait_running_dev(&sb);
+
+    let dup = srv.post_json("/api/tasks/1/auto", &json!({}));
+    assert_eq!(dup.status, 409, "{}", dup.text());
+    let body = dup.json();
+    assert_eq!(body["kind"], "duplicate", "{body}");
+    assert_eq!(body["error"], "Autopilot đang chạy task này");
+
+    let stop = srv.post_json("/api/tasks/1/auto/stop", &json!({}));
+    assert_eq!(stop.status, 200, "{}", stop.text());
+    assert_eq!(stop.json()["ok"], true);
+
+    let stop2 = srv.post_json("/api/tasks/1/auto/stop", &json!({}));
+    assert_eq!(stop2.status, 409, "{}", stop2.text());
+    assert_eq!(stop2.json()["error"], "Đang chờ run hiện tại chạy xong.");
+
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 4, "{job}");
+    assert_eq!(run_status(&sb, dev_run), "succeeded");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("stopped"));
+    assert_eq!(task_auto_json(&sb, 1)["stop"]["reason"], "dung_boi_ban");
+    assert!(
+        !run_roles(&sb).iter().any(|r| r == "code-review"),
+        "no stage after a soft stop"
+    );
+}
+
+#[test]
+fn relead_auto_workflow_replans() {
+    let sb = Sandbox::new();
+    let _repo = auto_to_gate(&sb);
+    let aj =
+        json!({"stop": {"reason": "dung_boi_ban", "loop_name": "plan", "round": 1, "at_ms": 1}});
+    sb.db()
+        .execute(
+            "UPDATE tasks SET auto_state = 'stopped', auto_json = ?1 WHERE id = 1",
+            [aj.to_string()],
+        )
+        .unwrap();
+    sb.write_scenario(by_role(json!({
+        "lead": [lead_plan_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 3)],
+    })));
+
+    let srv = sb.serve(&[]);
+    let t = srv.get("/api/tasks/1").json();
+    assert_eq!(t["auto"]["state"], "stopped");
+    assert_eq!(action(&t, "relead")["enabled"], true, "{}", t["actions"]);
+
+    let resp = srv.post_json("/api/tasks/1/relead", &json!({}));
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(job_role(&srv, job_id), "auto");
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+
+    assert_eq!(
+        run_roles(&sb),
+        vec!["lead", "plan-review", "lead", "plan-review"]
+    );
+    let prompt = last_lead_prompt(&sb);
+    assert!(prompt.contains(FRESH_SKELETON), "prompt: {prompt}");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+}
+
+#[test]
+fn stale_rev_refused() {
+    let sb = Sandbox::new();
+    let _repo = auto_to_gate(&sb);
+    let srv = sb.serve(&[]);
+
+    for path in ["/api/tasks/1/approve", "/api/tasks/1/return"] {
+        let resp = srv.post_json(path, &json!({"rev": "0000000000000000"}));
+        assert_eq!(resp.status, 409, "{path}: {}", resp.text());
+        let body = resp.json();
+        assert_eq!(body["kind"], "stale", "{path}: {body}");
+        assert_eq!(
+            body["error"],
+            "Trạng thái task đã thay đổi — màn hình sẽ tải lại."
+        );
+    }
+    assert_eq!(approved_commit(&sb, 1), None);
+    assert_eq!(srv.get("/api/jobs/1").status, 404, "no job started");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+}
+
+#[test]
+fn legacy_task_refused() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+    let task_id = seed_task(&sb, &repo, "main", None, &[lead_seed_run()]);
+
+    let srv = sb.serve(&[]);
+    let resp = srv.post_json(&format!("/api/tasks/{task_id}/auto"), &json!({}));
+    assert_eq!(resp.status, 409, "{}", resp.text());
+    let body = resp.json();
+    assert_eq!(
+        body["error"],
+        "Task tạo trước Phase 5.2 — không có quy trình để chạy autopilot."
+    );
+    assert_eq!(body["kind"], "not_allowed");
+    assert_eq!(srv.get("/api/jobs/1").status, 404);
+}
+
+#[test]
+fn gate_checks_on_new_routes() {
+    let sb = Sandbox::new();
+    let srv = sb.serve(&[]);
+    let good_origin = format!("http://127.0.0.1:{}", srv.port);
+    let cookie = srv.cookie.clone();
+
+    for path in [
+        "/api/tasks/1/approve",
+        "/api/tasks/1/return",
+        "/api/tasks/1/auto",
+        "/api/tasks/1/auto/stop",
+        "/api/tasks/1/auto/more-round",
+        "/api/tasks/1/auto/end",
+    ] {
+        let no_cookie = srv.request(
+            "POST",
+            path,
+            &[
+                ("Origin", &good_origin),
+                ("Content-Type", "application/json"),
+            ],
+            b"{}",
+        );
+        assert_eq!(no_cookie.status, 401, "{path}");
+
+        let evil = srv.request(
+            "POST",
+            path,
+            &[
+                ("Cookie", &cookie),
+                ("Origin", "http://evil.example"),
+                ("Content-Type", "application/json"),
+            ],
+            b"{}",
+        );
+        assert_eq!(evil.status, 403, "{path}");
+
+        let plain = srv.request(
+            "POST",
+            path,
+            &[
+                ("Cookie", &cookie),
+                ("Origin", &good_origin),
+                ("Content-Type", "text/plain"),
+            ],
+            b"{}",
+        );
+        assert_eq!(plain.status, 415, "{path}");
+
+        let unknown = srv.post_json(path, &json!({"x": 1}));
+        assert_eq!(unknown.status, 422, "{path}: {}", unknown.text());
+    }
+    assert_eq!(srv.get("/api/jobs/1").status, 404);
+}
