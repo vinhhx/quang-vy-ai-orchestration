@@ -95,7 +95,7 @@ pub fn cmd_kill(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
             start: s as u64,
         },
         _ => {
-            crate::db::mark_status(&ctx.conn, run.id, "lost")?;
+            crate::db::mark_lost_if_running(&ctx.conn, run.id)?;
             return Err(BrainError::error(format!(
                 "Run {} không còn tiến trình — đã đánh dấu lost, không gửi tín hiệu",
                 run.id
@@ -104,7 +104,7 @@ pub fn cmd_kill(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
     };
 
     if !crate::procs::alive(root) {
-        crate::db::mark_status(&ctx.conn, run.id, "lost")?;
+        crate::db::mark_lost_if_running(&ctx.conn, run.id)?;
         return Err(BrainError::error(format!(
             "Run {} không còn tiến trình — đã đánh dấu lost, không gửi tín hiệu",
             run.id

@@ -448,6 +448,17 @@ pub fn mark_status(conn: &Connection, run_id: i64, status: &str) -> BrainResult<
     Ok(())
 }
 
+/// Đánh dấu run `lost` chỉ khi nó vẫn `running` — không ghi đè `killed`/`done`
+/// mà tiến trình con vừa ghi (Kill song song với driver autopilot).
+pub fn mark_lost_if_running(conn: &Connection, run_id: i64) -> BrainResult<bool> {
+    let now = now_ms();
+    let changed = conn.execute(
+        "UPDATE runs SET status = 'lost', ended_at = COALESCE(ended_at, ?1) WHERE id = ?2 AND status = 'running'",
+        params![now, run_id],
+    )?;
+    Ok(changed > 0)
+}
+
 #[derive(Debug, Clone)]
 pub struct RunRow {
     pub id: i64,
@@ -793,4 +804,66 @@ pub fn auto_driver_rows(conn: &Connection) -> BrainResult<Vec<DriverRow>> {
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_db() -> (tempfile::TempDir, Connection, i64) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = open(&dir.path().join("brain.db")).expect("open db");
+        let project = Project {
+            id: "demo".to_string(),
+            path: dir.path().to_string_lossy().to_string(),
+            name_vi: "Demo".to_string(),
+            aliases: vec![],
+            kind: "code".to_string(),
+            profile: "default".to_string(),
+            repo: None,
+            missing: false,
+        };
+        sync_projects(&conn, &[project]).expect("sync projects");
+        let project_id = project_row_id(&conn, "demo").expect("project id");
+        (dir, conn, project_id)
+    }
+
+    fn new_run(conn: &Connection, project_id: i64) -> i64 {
+        insert_run(
+            conn,
+            &NewRun {
+                task_id: None,
+                project_id,
+                role: "dev".to_string(),
+                profile: "default".to_string(),
+                model: None,
+                pid: 1,
+                pgid: 1,
+                pid_start: 1,
+                base_commit: None,
+                run_dir: None,
+            },
+        )
+        .expect("insert run")
+    }
+
+    #[test]
+    fn mark_lost_if_running_marks_running_run() {
+        let (_dir, conn, project_id) = fresh_db();
+        let run_id = new_run(&conn, project_id);
+        assert!(mark_lost_if_running(&conn, run_id).expect("mark lost"));
+        let run = get_run(&conn, run_id).expect("get run").expect("run row");
+        assert_eq!(run.status, "lost");
+        assert!(run.ended_at.is_some());
+    }
+
+    #[test]
+    fn mark_lost_if_running_keeps_killed_run() {
+        let (_dir, conn, project_id) = fresh_db();
+        let run_id = new_run(&conn, project_id);
+        mark_status(&conn, run_id, "killed").expect("mark killed");
+        assert!(!mark_lost_if_running(&conn, run_id).expect("mark lost"));
+        let run = get_run(&conn, run_id).expect("get run").expect("run row");
+        assert_eq!(run.status, "killed");
+    }
 }

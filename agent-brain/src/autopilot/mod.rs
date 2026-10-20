@@ -222,16 +222,19 @@ fn spawn_stage(ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainRes
         }
         if let Some(tid) = task_id {
             if !kill_done && !forwarded && kill_flag_set(ctx, tid) {
-                if let Ok(Some(_run)) = crate::db::running_run_for_task(&ctx.conn, tid) {
+                if let Ok(Some(run)) = crate::db::running_run_for_task(&ctx.conn, tid) {
                     kill_done = true;
-                    match crate::runner::cmd_kill(ctx, tid) {
-                        Ok(code) => crate::term::emit(&format!(
-                            "Autopilot: đã yêu cầu dừng run của task {tid} (mã {code})"
-                        )),
-                        Err(e) => crate::term::emit(&format!(
-                            "Autopilot: không dừng được run của task {tid}: {}",
-                            e.message
-                        )),
+                    // Kill của người khác đang chạy (đã ghi kill_requested_at) — chỉ chờ con.
+                    if run.kill_requested_at.is_none() {
+                        match crate::runner::cmd_kill(ctx, tid) {
+                            Ok(code) => crate::term::emit(&format!(
+                                "Autopilot: đã yêu cầu dừng run của task {tid} (mã {code})"
+                            )),
+                            Err(e) => crate::term::emit(&format!(
+                                "Autopilot: không dừng được run của task {tid}: {}",
+                                e.message
+                            )),
+                        }
                     }
                 }
             }
