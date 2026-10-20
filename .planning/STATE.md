@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 4
-current_phase_name: Session & Token Optimization
-status: planning
+current_phase: "05.2"
+current_phase_name: Workflows and Autopilot
+status: Ready to discuss
 stopped_at: Phase 05.1 complete, ready to plan Phase 4
-last_updated: "2026-10-20T01:24:14.494Z"
+last_updated: "2026-10-20T01:29:18.700Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 05.1 complete, transitioned to Phase 4
-state_head: bfa675c34e214de2e2838cf3b23ba0e9ca1643f4
+state_head: 8578091a195116a0313fb9d9d7efe7f346349bec
 progress:
-  total_phases: 7
+  total_phases: 8
   completed_phases: 5
   total_plans: 39
   completed_plans: 39
-  percent: 71
+  percent: 63
 ---
 
 # Project State
@@ -27,12 +27,12 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 
 ## Current Position
 
-Phase: 4 — Session & Token Optimization
+Phase: 05.2 — Workflows and Autopilot (INSERTED)
 Plan: Not started
-Status: Ready to plan
+Status: Ready to discuss
 Last activity: 2026-10-20 — Phase 05.1 complete, transitioned to Phase 4
 
-Progress: [███████░░░] 71% (5/7 phases complete, 39/39 planned plans done)
+Progress: [██████░░░░] 63% (5/7 phases complete, 39/39 planned plans done)
 
 ## Performance Metrics
 
@@ -108,6 +108,7 @@ None yet.
 ### Roadmap Evolution
 
 - Phase 05.1 inserted after Phase 5: Pipeline View — Dashboard v2 step A (autopilot-style task pipeline + run ledger from existing data)
+- Phase 05.2 inserted after Phase 05.1: Workflows and Autopilot — Dashboard v2 step B (review roles, workflow templates, autopilot, schema v2)
 
 ## Deferred Items
 

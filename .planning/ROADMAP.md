@@ -234,6 +234,24 @@ Plans:
 **Wave 3** *(blocked on Wave 2 completion)*
 - [x] 05.1-05-PLAN.md — Run ledger (cycle headers, row → log, total, Hiện thêm 20), CDP keyboard + 1024/768/480 layout checks, app.css rebuild, phase gate
 
+### Phase 05.2: Workflows and Autopilot (INSERTED)
+
+**Goal**: Mỗi task chạy theo một quy trình (workflow) có tên — mặc định `mac-dinh` — với hai vai trò review mới (review plan, review code) và chế độ sửa sau QA; autopilot tự chạy các vòng lặp tới khi đạt hoặc chạm giới hạn (3 vòng, 60 phút hoặc $20), luôn dừng ở cổng duyệt plan của người dùng, và dashboard hiện các giai đoạn này như thẻ thật (bước B của Dashboard v2).
+**Source**: Thiết kế Dashboard v2 (https://claude.ai/artifact/KdMc5CMNSMg4G5T9jLjFRK), quyết định người dùng 2026-10-19
+**Depends on**: Phase 05.1
+**Requirements**: AUTO-01, AUTO-02, AUTO-03, AUTO-04, AUTO-05, AUTO-06, AUTO-07
+**Success Criteria** (what must be TRUE):
+  1. `agent-brain run plan-review` / `code-review` chạy được trên task, chỉ ghi file báo cáo của mình, và báo cáo có verdict + số chặn/góp ý đọc được bằng máy.
+  2. Giao việc chọn được quy trình theo tên (CLI `--workflow`, dashboard "Quy trình"); không chọn thì dùng `mac-dinh`; task lưu bản sao quy trình lúc bắt đầu.
+  3. Autopilot chạy plan ↔ review plan tới khi duyệt hoặc hết vòng, dừng chờ người dùng duyệt plan, rồi chạy code ↔ review code và QA ↔ sửa; dừng đúng khi hết vòng, hết thời gian/tiền, vi phạm giao thức hoặc vướng mắc, kèm lý do.
+  4. Kill trong lúc autopilot chạy dừng cả driver lẫn run hiện tại, không sót tiến trình; các quy tắc một run/dự án và một run personal vẫn giữ.
+  5. Dashboard hiện thẻ review/sửa thật (vòng N / giới hạn, số chặn/góp ý), nút duyệt plan, bật/tắt autopilot; CSDL cũ nâng cấp lên schema mới không mất dữ liệu.
+**UI hint**: yes
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 05.2 to break down)
+
 ### Phase 6: Multi-engine & Media Branch
 
 **Goal**: Mỗi vai trò (Lead/Dev/QA) chạy được bằng engine khác nhau và đổi được giữa các task khi hết quota (không đổi ngầm), và sản xuất video chạy ở nhánh riêng tách khỏi Git worktree nhưng vẫn điều phối chung một nơi.

@@ -118,6 +118,18 @@ Thiết kế: https://claude.ai/artifact/KdMc5CMNSMg4G5T9jLjFRK (quyết định
 - [x] **PIPE-04**: Bộ từ vựng trạng thái chung (xong, đang chạy, chờ bạn, đã dừng, chưa bắt đầu, chưa tự động) có chú thích; "đang chạy" dùng màu xanh dương (indigo chỉ còn cho hành động/lựa chọn); giai đoạn chưa có (review plan, review code, sửa, PR nháp) không giả lập mà hiện "chưa tự động". *(derived: Dashboard v2 design system)*
 - [x] **PIPE-05**: Pipeline và sổ lượt chạy cập nhật trực tiếp qua SSE như các màn hình khác; giữ nguyên nút Kill / Chạy Dev / Chạy QA / Chạy lại Lead và các quy tắc bận; hoạt động ở 1024/768/480 px (dưới 640 px xếp dọc), cả giao diện sáng/tối, dùng được bằng bàn phím; dữ liệu đến từ `GET /api/tasks/{id}/pipeline`. *(derived: Dashboard v2 View 1)*
 
+### Workflows and Autopilot (GSD Phase 5.2 — Dashboard v2, bước B)
+
+Thiết kế: https://claude.ai/artifact/KdMc5CMNSMg4G5T9jLjFRK; quyết định người dùng 2026-10-19 (quy trình theo tên chọn cho từng task, mặc định `mac-dinh`; 3 vòng mỗi vòng lặp; 60 phút hoặc $20 mỗi task).
+
+- [ ] **AUTO-01**: Hai vai trò mới chỉ-đọc `plan-review` và `code-review` (CLI `agent-brain run plan-review|code-review PROJECT`): đọc `.plan.md` / diff, chỉ được ghi `.plan-review.md` / `.code-review.md` (guard allowlist), báo cáo có front-matter `verdict` (approve/revise; pass/revise) và số `blocking` / `advisory`. *(derived: Dashboard v2 System changes §1)*
+- [ ] **AUTO-02**: Chế độ sửa sau QA: Dev chạy với báo cáo QA làm đầu vào (`stage = fix`), được ghi file trong plan + file QA nêu; QA ghi số `specs`, `not_automatable`, `failing` vào front-matter báo cáo. *(derived: Dashboard v2 System changes §1)*
+- [ ] **AUTO-03**: Migration schema v2: `runs.stage`, `runs.round`, `runs.metrics_json`; `tasks.workflow_json` (bản sao quy trình), `tasks.approved_at`; role CHECK thêm `plan-review`, `code-review`; CSDL Phase 5 nâng cấp tại chỗ không mất dữ liệu. *(derived: Dashboard v2 System changes §3)*
+- [ ] **AUTO-04**: Quy trình có tên trong `~/.config/agent-brain/workflows.json` (mặc định nhúng `mac-dinh`), chọn khi giao việc (`--workflow NAME`, ô "Quy trình" ở Giao việc); không chọn → `mac-dinh`; task giữ bản sao lúc bắt đầu; file sai báo lỗi tiếng Việt rõ dòng. *(derived: Dashboard v2 Workflow templates)*
+- [ ] **AUTO-05**: Autopilot `agent-brain auto TASK`: chạy các vòng lặp tới khi đạt hoặc chạm giới hạn (mặc định 3 vòng, 60 phút hoặc $20, quy trình ghi đè được); luôn dừng ở cổng duyệt plan (duyệt bằng `agent-brain approve TASK` hoặc nút dashboard, ghi `approved_at`); dừng khi vi phạm giao thức, vướng mắc, hết vòng hoặc hết ngân sách, để task ở "chờ bạn" kèm lý do; Kill dừng driver và run hiện tại qua `runner::cmd_kill`; giữ quy tắc một run/dự án, một run personal. *(derived: Dashboard v2 System changes §2)*
+- [ ] **AUTO-06**: Dashboard: thẻ Review plan / Review code / Sửa thành thẻ thật trong nhóm vòng lặp (footer `vòng N / giới hạn`), sổ lượt chạy hiện số chặn/góp ý/kiểm thử/lỗi, thẻ "Bạn" có nút Duyệt plan / Trả về Lead, có nút bật/dừng autopilot; PR nháp vẫn "chưa tự động". *(derived: Dashboard v2 View 1)*
+- [ ] **AUTO-07**: Kiểm tra thật với claude trên repo nháp: quy trình `mac-dinh` chạy tới QA đạt có ít nhất một vòng "sửa lại" plan; dừng do ngân sách hoạt động; Kill giữa vòng lặp không sót tiến trình. *(derived: Phase 5 live-check pattern)*
+
 ### Multi-engine Routing (GSD Phase 6 — nguồn Phase 5)
 
 - [ ] **ENG-01**: Chạy task với đội hình `tiet-kiem` (trong `teams.json`): Lead và QA chạy Claude, Dev chạy DeepSeek; log ghi đúng engine cho từng run. Đây là cổng phase: 1 task trộn engine chạy end-to-end. *(src: P5-01)*
@@ -226,6 +238,13 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | PIPE-03 | Phase 5.1 | Complete |
 | PIPE-04 | Phase 5.1 | Complete |
 | PIPE-05 | Phase 5.1 | Complete |
+| AUTO-01 | Phase 5.2 | Pending |
+| AUTO-02 | Phase 5.2 | Pending |
+| AUTO-03 | Phase 5.2 | Pending |
+| AUTO-04 | Phase 5.2 | Pending |
+| AUTO-05 | Phase 5.2 | Pending |
+| AUTO-06 | Phase 5.2 | Pending |
+| AUTO-07 | Phase 5.2 | Pending |
 | ENG-01 | Phase 6 | Pending |
 | ENG-02 | Phase 6 | Pending |
 | ENG-03 | Phase 6 | Pending |
@@ -266,4 +285,4 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 
 ---
 *Requirements defined: 2026-10-14*
-*Last updated: 2026-10-19 — added PIPE-01..05 (Phase 5.1)*
+*Last updated: 2026-10-20 — added AUTO-01..07 (Phase 5.2)*
