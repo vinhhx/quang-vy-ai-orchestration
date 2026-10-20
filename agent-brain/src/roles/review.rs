@@ -110,6 +110,17 @@ pub fn cmd_review(
         }
     };
 
+    if kind == ReviewKind::Code {
+        let code = crate::gitops::diff_code_names(&proj_path, &plan_commit, "HEAD")?;
+        if code.is_empty() {
+            return Err(BrainError::error("chưa có thay đổi code sau plan"));
+        }
+    }
+
+    let diff_cmd = format!(
+        "git diff {plan_commit}..HEAD -- . ':(exclude).plan.md' ':(exclude).qa-report.md' ':(exclude).plan-review.md' ':(exclude).code-review.md'"
+    );
+
     let file = kind.file();
     let mut allowed = REVIEW_ALLOWED_BASE
         .iter()
@@ -141,7 +152,7 @@ pub fn cmd_review(
             "Task: {task}\nĐầu vào: .plan.md (commit {plan_commit})\n{prev_line}Ghi {file} theo khung có sẵn: điền front matter verdict / blocking / advisory / files ở đầu file; verdict là revise khi và chỉ khi có ít nhất một mục chặn."
         ),
         ReviewKind::Code => format!(
-            "Task: {task}\nĐầu vào: .plan.md (commit {plan_commit})\n{prev_line}Ghi {file} theo khung có sẵn: điền front matter verdict / blocking / advisory / files ở đầu file; verdict là revise khi và chỉ khi có ít nhất một mục chặn."
+            "Task: {task}\nĐầu vào: .plan.md và kết quả lệnh: {diff_cmd}\n{prev_line}Ghi {file} theo khung có sẵn: điền front matter verdict / blocking / advisory / files ở đầu file; verdict là revise khi và chỉ khi có ít nhất một mục chặn."
         ),
     };
 
@@ -151,6 +162,9 @@ pub fn cmd_review(
     };
 
     if opts.dry_run {
+        if kind == ReviewKind::Code {
+            crate::term::emit_out(&format!("Diff command: {diff_cmd}"));
+        }
         let spec_dry = crate::roles::RoleSpec {
             role: role_enum,
             user_input: user_input.clone(),
