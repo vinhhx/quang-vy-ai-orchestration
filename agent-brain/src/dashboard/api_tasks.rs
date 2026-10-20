@@ -29,6 +29,8 @@ pub struct NewTask {
     pub request: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub workflow: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -498,6 +500,21 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
             Err(refusal) => return Ok(refusal.into_response()),
         };
 
+        // D-14 / D-24: body > project default > mac-dinh; an unknown name is
+        // refused before any job starts.
+        let loaded = crate::workflows::load(&st.cfg);
+        let project_default = crate::projects::workflow_of(&map, &project.id);
+        let workflow = match crate::workflows::resolve(
+            &loaded,
+            body.workflow.as_deref(),
+            project_default.as_deref(),
+        ) {
+            Ok(r) => r.workflow,
+            Err(e) => {
+                return Ok(json_error(StatusCode::UNPROCESSABLE_ENTITY, &e.message));
+            }
+        };
+
         let conn = crate::db::open(&st.db_path)?;
         let pf = lead_preflight(&conn, &st.jobs, &project, &proj_root, &slug)?;
         if !pf.can_start {
@@ -516,21 +533,45 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
         }
 
         let branch = format!("task/{slug}");
+        // Argument vector, positionals after `--` (a request starting with `-` stays data).
+        let (role, args) = if workflow.auto {
+            (
+                "auto",
+                vec![
+                    "auto".to_string(),
+                    "--start".to_string(),
+                    "--name".to_string(),
+                    slug.clone(),
+                    "--workflow".to_string(),
+                    workflow.name.clone(),
+                    "--".to_string(),
+                    project.id.clone(),
+                    trimmed_req,
+                ],
+            )
+        } else {
+            (
+                "lead",
+                vec![
+                    "run".to_string(),
+                    "lead".to_string(),
+                    "--name".to_string(),
+                    slug.clone(),
+                    "--workflow".to_string(),
+                    workflow.name.clone(),
+                    "--".to_string(),
+                    project.id.clone(),
+                    trimmed_req,
+                ],
+            )
+        };
         let spec = crate::dashboard::jobs::JobSpec {
-            role: "lead".to_string(),
+            role: role.to_string(),
             project: project.id.clone(),
             profile: project.profile.clone(),
             branch: Some(branch.clone()),
             task_id: None,
-            args: vec![
-                "run".to_string(),
-                "lead".to_string(),
-                "--name".to_string(),
-                slug.clone(),
-                "--".to_string(),
-                project.id.clone(),
-                trimmed_req,
-            ],
+            args,
         };
 
         match st.jobs.start(spec) {
@@ -540,6 +581,8 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
                     "project": project.id,
                     "slug": slug,
                     "branch": branch,
+                    "workflow": workflow.name,
+                    "auto": workflow.auto,
                 });
                 if let Some(w) = pf.warning {
                     resp_val["warning"] = serde_json::json!(w);

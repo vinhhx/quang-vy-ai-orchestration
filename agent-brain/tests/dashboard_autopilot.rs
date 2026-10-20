@@ -633,3 +633,216 @@ fn list_tasks_auto_fields() {
     assert_eq!(item["banner"], "Chờ bạn · hết vòng");
     assert_eq!(item["group"], "waiting");
 }
+
+// ---------------------------------------------------------------------------
+// Task 3: Giao việc with a workflow
+// ---------------------------------------------------------------------------
+
+fn auto_scenario() -> Value {
+    by_role(json!({
+        "lead": [lead_plan_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 1)],
+    }))
+}
+
+fn task_snapshot_name(sb: &Sandbox, task_id: i64) -> Option<String> {
+    let wf: Option<String> = sb
+        .db()
+        .query_row(
+            "SELECT workflow_json FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    wf.map(|j| {
+        let v: Value = serde_json::from_str(&j).unwrap();
+        v["name"].as_str().unwrap().to_string()
+    })
+}
+
+fn task_auto_state(sb: &Sandbox, task_id: i64) -> Option<String> {
+    sb.db()
+        .query_row(
+            "SELECT auto_state FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+fn job_role(srv: &common::Serve, job_id: u64) -> String {
+    let j = srv.get(&format!("/api/jobs/{job_id}")).json();
+    j["role"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn create_task_nhanh_runs_lead() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    sb.write_scenario(lead_plan_entry());
+
+    let srv = sb.serve(&[]);
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "web-ban-hang", "request": "sửa app", "name": "sua-app"}),
+    );
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let body = resp.json();
+    assert_eq!(body["workflow"], "nhanh");
+    assert_eq!(body["auto"], false);
+    let job_id = body["job_id"].as_u64().unwrap();
+    assert_eq!(job_role(&srv, job_id), "lead");
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+    assert_eq!(job["role"], "lead");
+
+    assert_eq!(task_snapshot_name(&sb, 1).as_deref(), Some("nhanh"));
+    assert_eq!(task_auto_state(&sb, 1), None);
+}
+
+#[test]
+fn create_task_mac_dinh_starts_autopilot() {
+    let sb = Sandbox::new();
+    let _repo = setup_auto_project(&sb, "work");
+    sb.write_scenario(auto_scenario());
+
+    let srv = sb.serve(&[]);
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "web-ban-hang", "request": "sửa app", "name": "sua-app"}),
+    );
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let body = resp.json();
+    assert_eq!(body["workflow"], "mac-dinh");
+    assert_eq!(body["auto"], true);
+    let job_id = body["job_id"].as_u64().unwrap();
+    assert_eq!(job_role(&srv, job_id), "auto");
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+
+    assert_eq!(task_snapshot_name(&sb, 1).as_deref(), Some("mac-dinh"));
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+    let conn = sb.db();
+    let mut stmt = conn
+        .prepare("SELECT role FROM runs WHERE task_id = 1 ORDER BY id")
+        .unwrap();
+    let roles: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(roles, vec!["lead", "plan-review"]);
+}
+
+#[test]
+fn create_task_explicit_workflow_wins() {
+    let sb = Sandbox::new();
+    let repo_a = sb.make_repo(
+        "web-ban-hang",
+        &[("src/app.py", "def app():\n    return 1\n")],
+        None,
+        None,
+    );
+    let repo_b = sb.make_repo(
+        "kho",
+        &[("src/app.py", "def app():\n    return 1\n")],
+        None,
+        None,
+    );
+    // web-ban-hang defaults to nhanh; kho has no workflow key (server default mac-dinh)
+    let entry_a = sb.project_entry(&repo_a, "web-ban-hang", "work");
+    let mut entry_b = sb.project_entry(&repo_b, "kho", "work");
+    entry_b.as_object_mut().unwrap().remove("workflow");
+    sb.write_map(json!([entry_a, entry_b]), &[]);
+    sb.write_scenario(auto_scenario());
+
+    let srv = sb.serve(&[]);
+
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "web-ban-hang", "request": "sửa app", "name": "sua-app", "workflow": "mac-dinh"}),
+    );
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let body = resp.json();
+    assert_eq!(body["workflow"], "mac-dinh");
+    assert_eq!(body["auto"], true);
+    let job_id = body["job_id"].as_u64().unwrap();
+    assert_eq!(job_role(&srv, job_id), "auto");
+    assert_eq!(wait_for_job(&srv, job_id)["exit_code"], 0);
+
+    sb.write_scenario(lead_plan_entry());
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "kho", "request": "sửa kho", "name": "sua-kho", "workflow": "nhanh"}),
+    );
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let body = resp.json();
+    assert_eq!(body["workflow"], "nhanh");
+    assert_eq!(body["auto"], false);
+    let job_id = body["job_id"].as_u64().unwrap();
+    assert_eq!(job_role(&srv, job_id), "lead");
+    assert_eq!(wait_for_job(&srv, job_id)["exit_code"], 0);
+
+    let kho_task: i64 = sb
+        .db()
+        .query_row("SELECT id FROM tasks WHERE slug = 'sua-kho'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(task_snapshot_name(&sb, kho_task).as_deref(), Some("nhanh"));
+}
+
+#[test]
+fn create_task_unknown_workflow() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    let srv = sb.serve(&[]);
+
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "web-ban-hang", "request": "sửa app", "name": "sua-app", "workflow": "khong-co"}),
+    );
+    assert_eq!(resp.status, 422, "{}", resp.text());
+    let err = resp.json()["error"].as_str().unwrap().to_string();
+    assert!(err.starts_with("Không có quy trình 'khong-co'"), "{err}");
+
+    assert_eq!(srv.get("/api/jobs/1").status, 404);
+    let tasks: i64 = sb
+        .db()
+        .query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(tasks, 0);
+}
+
+#[test]
+fn create_task_body_fields() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    sb.write_scenario(lead_plan_entry());
+    let srv = sb.serve(&[]);
+
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "web-ban-hang", "request": "sửa app", "name": "sua-app", "extra": 1}),
+    );
+    assert_eq!(resp.status, 422, "{}", resp.text());
+    assert_eq!(srv.get("/api/jobs/1").status, 404);
+
+    let request = "-sửa app gấp";
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "web-ban-hang", "request": request, "name": "sua-gap"}),
+    );
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+
+    let title: String = sb
+        .db()
+        .query_row("SELECT title FROM tasks WHERE slug = 'sua-gap'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(title, request);
+}
