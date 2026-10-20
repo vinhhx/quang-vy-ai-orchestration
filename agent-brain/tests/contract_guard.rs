@@ -343,7 +343,7 @@ fn hook_settings_shape_and_quoting() {
     assert_eq!(hooks.len(), 1);
     assert_eq!(
         hooks[0].get("matcher").and_then(|v| v.as_str()),
-        Some("Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob")
+        Some("Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob|Bash")
     );
     let inner_hooks = hooks[0]
         .get("hooks")

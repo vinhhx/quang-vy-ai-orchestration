@@ -2,7 +2,7 @@ use crate::error::BrainResult;
 use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
-pub const GUARD_MATCHER: &str = "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob";
+pub const GUARD_MATCHER: &str = "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob|Bash";
 pub const WRITE_TOOLS: [&str; 4] = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
 pub const READ_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
 
@@ -94,6 +94,10 @@ pub fn decide(policy: &Policy, payload: &serde_json::Value) -> Decision {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| policy.root.to_str().unwrap_or(""));
+
+    if tool_name == "Bash" {
+        return decide_bash(tool_input);
+    }
 
     let is_write = WRITE_TOOLS.contains(&tool_name);
     let is_read = READ_TOOLS.contains(&tool_name);
@@ -217,6 +221,65 @@ pub fn decide(policy: &Policy, payload: &serde_json::Value) -> Decision {
             }
         }
     }
+}
+
+/// Maximum number of characters of a Bash command kept in a decision / log line.
+const BASH_LOG_MAX_CHARS: usize = 200;
+
+fn decide_bash(tool_input: Option<&serde_json::Map<String, serde_json::Value>>) -> Decision {
+    let command = match tool_input
+        .and_then(|ti| ti.get("command"))
+        .and_then(|v| v.as_str())
+    {
+        Some(c) => c,
+        None => {
+            return Decision {
+                allow: false,
+                tool: "Bash".to_string(),
+                path: String::new(),
+                reason: "thiếu lệnh Bash".to_string(),
+            };
+        }
+    };
+    let shown: String = command.chars().take(BASH_LOG_MAX_CHARS).collect();
+    match bash_command_check(command) {
+        Ok(()) => Decision {
+            allow: true,
+            tool: "Bash".to_string(),
+            path: shown,
+            reason: "lệnh Bash được phép".to_string(),
+        },
+        Err(reason) => Decision {
+            allow: false,
+            tool: "Bash".to_string(),
+            path: shown,
+            reason,
+        },
+    }
+}
+
+/// Checks one Bash command line against the guard's git policy (W-1).
+/// `Err` carries the Vietnamese reason shown to the model.
+pub fn bash_command_check(command: &str) -> Result<(), String> {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let Some(first) = words.first() else {
+        return Ok(());
+    };
+    let base = Path::new(first)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if base != "git" {
+        return Ok(());
+    }
+    for w in &words[1..] {
+        if *w == "--output" || w.starts_with("--output=") {
+            return Err(format!(
+                "git {w} ghi file hoặc chạy chương trình ngoài — không được phép"
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn sh_quote(s: &str) -> String {
@@ -435,7 +498,13 @@ pub fn cmd_guard(policy: Option<&Path>) -> i32 {
         append_log(log_path, &decision);
     }
 
-    if !decision.allow {
+    if !decision.allow && decision.tool == "Bash" {
+        crate::term::emit(&format!(
+            "agent-brain guard: chặn lệnh Bash '{}' — {}",
+            decision.path, decision.reason
+        ));
+        2
+    } else if !decision.allow {
         let display_path = if decision.path.is_empty() {
             "<none>"
         } else {
