@@ -237,3 +237,111 @@ fn workflows_endpoint_gated() {
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
 }
+
+#[test]
+fn projects_carry_workflow() {
+    let sb = Sandbox::new();
+    let repo_w = sb.make_repo("proj-w", &[], None, None);
+    let repo_k = sb.make_repo("proj-k", &[], None, None);
+
+    let mut entry_w = sb.project_entry(&repo_w, "proj-w", "work");
+    entry_w["workflow"] = serde_json::json!("nhanh");
+    let mut entry_k = sb.project_entry(&repo_k, "proj-k", "work");
+    entry_k.as_object_mut().unwrap().remove("workflow");
+
+    sb.write_map(serde_json::json!([entry_w, entry_k]), &[]);
+
+    let mut srv = sb.serve(&[]);
+    let r = srv.get("/api/projects");
+    assert_eq!(r.status, 200);
+    let j = r.json();
+
+    let projects = j["projects"].as_array().expect("projects array");
+    let pw = projects.iter().find(|p| p["id"] == "proj-w").unwrap();
+    assert_eq!(pw["workflow"], "nhanh");
+
+    let pk = projects.iter().find(|p| p["id"] == "proj-k").unwrap();
+    assert_eq!(pk["workflow"], serde_json::Value::Null);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn alias_edit_keeps_workflow() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("web-ban-hang", &[], None, None);
+    let mut entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    entry["workflow"] = serde_json::json!("nhanh");
+    entry["aliases"] = serde_json::json!(["old-alias"]);
+    sb.write_map(serde_json::json!([entry]), &[]);
+
+    let mut srv = sb.serve(&[]);
+    let r_list = srv.get("/api/projects");
+    assert_eq!(r_list.status, 200);
+    let etag = r_list.json()["etag"].as_str().unwrap().to_string();
+
+    let put_body = serde_json::json!({
+        "aliases": ["new-alias"],
+        "etag": etag
+    });
+    let r_put = srv.put_json("/api/projects/web-ban-hang", &put_body);
+    assert_eq!(r_put.status, 200);
+    let j_put = r_put.json();
+    let projects = j_put["projects"].as_array().unwrap();
+    let p = projects.iter().find(|p| p["id"] == "web-ban-hang").unwrap();
+    assert_eq!(p["workflow"], "nhanh");
+
+    // Check disk
+    let map_data = sb.read_map();
+    let p_disk = &map_data["projects"][0];
+    assert_eq!(p_disk["workflow"], "nhanh");
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn alias_conflict_body_has_workflow() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("web-ban-hang", &[], None, None);
+    let mut entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    entry["workflow"] = serde_json::json!("nhanh");
+    sb.write_map(serde_json::json!([entry]), &[]);
+
+    let mut srv = sb.serve(&[]);
+    let put_body = serde_json::json!({
+        "aliases": ["conflict-alias"],
+        "etag": "stale-etag-12345"
+    });
+    let r_put = srv.put_json("/api/projects/web-ban-hang", &put_body);
+    assert_eq!(r_put.status, 409);
+    let j = r_put.json();
+    let projects = j["projects"].as_array().unwrap();
+    let p = projects.iter().find(|p| p["id"] == "web-ban-hang").unwrap();
+    assert_eq!(p["workflow"], "nhanh");
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn suggest_items_carry_workflow() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("web-ban-hang", &[], None, None);
+    let mut entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    entry["workflow"] = serde_json::json!("nhanh");
+    entry["aliases"] = serde_json::json!(["web"]);
+    sb.write_map(serde_json::json!([entry]), &[]);
+
+    let mut srv = sb.serve(&[]);
+    let r = srv.get("/api/projects/suggest?q=web");
+    assert_eq!(r.status, 200);
+    let j = r.json();
+    let items = j["items"].as_array().unwrap();
+    assert!(!items.is_empty());
+    assert_eq!(items[0]["workflow"], "nhanh");
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}

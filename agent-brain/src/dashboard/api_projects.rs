@@ -30,6 +30,20 @@ pub fn map_etag(path: &Path) -> String {
     format!("{:016x}-{}", hash, bytes.len())
 }
 
+fn project_json(p: &crate::projects::Project, map: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "id": p.id,
+        "name_vi": p.name_vi,
+        "aliases": p.aliases,
+        "path": p.path,
+        "type": p.kind,
+        "profile": p.profile,
+        "repo": p.repo,
+        "missing": p.missing,
+        "workflow": crate::projects::workflow_of(map, &p.id),
+    })
+}
+
 #[derive(serde::Deserialize)]
 struct ProjectsQuery {
     profile: Option<String>,
@@ -107,18 +121,7 @@ async fn list_projects(
 
         let projects_json: Vec<serde_json::Value> = projects
             .into_iter()
-            .map(|p| {
-                serde_json::json!({
-                    "id": p.id,
-                    "name_vi": p.name_vi,
-                    "aliases": p.aliases,
-                    "path": p.path,
-                    "type": p.kind,
-                    "profile": p.profile,
-                    "repo": p.repo,
-                    "missing": p.missing,
-                })
-            })
+            .map(|p| project_json(&p, &map))
             .collect();
 
         let body = serde_json::json!({
@@ -169,6 +172,7 @@ async fn suggest_projects(
                     "missing": s.project.missing,
                     "rank": s.rank,
                     "matched": s.matched,
+                    "workflow": crate::projects::workflow_of(&map, &s.project.id),
                 })
             })
             .collect();
@@ -212,18 +216,7 @@ async fn update_aliases(
             let projects = crate::projects::projects_of(&map);
             let projects_json: Vec<serde_json::Value> = projects
                 .into_iter()
-                .map(|p| {
-                    serde_json::json!({
-                        "id": p.id,
-                        "name_vi": p.name_vi,
-                        "aliases": p.aliases,
-                        "path": p.path,
-                        "type": p.kind,
-                        "profile": p.profile,
-                        "repo": p.repo,
-                        "missing": p.missing,
-                    })
-                })
+                .map(|p| project_json(&p, &map))
                 .collect();
 
             let conflict_body = serde_json::json!({
@@ -328,18 +321,7 @@ async fn update_aliases(
         let projects = crate::projects::projects_of(&data);
         let projects_json: Vec<serde_json::Value> = projects
             .into_iter()
-            .map(|p| {
-                serde_json::json!({
-                    "id": p.id,
-                    "name_vi": p.name_vi,
-                    "aliases": p.aliases,
-                    "path": p.path,
-                    "type": p.kind,
-                    "profile": p.profile,
-                    "repo": p.repo,
-                    "missing": p.missing,
-                })
-            })
+            .map(|p| project_json(&p, &data))
             .collect();
 
         let body = serde_json::json!({
@@ -517,5 +499,27 @@ async fn project_status(
     match res {
         Ok(r) => r,
         Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_project_json_includes_workflow() {
+        let map = serde_json::json!({
+            "projects": [
+                {
+                    "id": "p1",
+                    "path": "/tmp/p1",
+                    "name_vi": "P1",
+                    "workflow": "nhanh"
+                }
+            ]
+        });
+        let projs = crate::projects::projects_of(&map);
+        let j = project_json(&projs[0], &map);
+        assert_eq!(j["workflow"], "nhanh");
     }
 }
