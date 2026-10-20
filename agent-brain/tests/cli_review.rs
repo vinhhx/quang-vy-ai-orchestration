@@ -621,3 +621,334 @@ files: []
     let m2_idx = argv2.iter().position(|x| x == "--model").unwrap();
     assert_eq!(argv2[m2_idx + 1], "sonnet");
 }
+
+struct ChildGuard(std::process::Child);
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn review_violation_blocked_by_guard() {
+    let sb = Sandbox::new();
+    let (repo, task, _plan_sha) = setup_lead(&sb);
+
+    let original_app = std::fs::read_to_string(repo.join("src/app.py")).unwrap();
+
+    let approve_report = "\
+---
+verdict: approve
+blocking: 0
+advisory: 0
+files: []
+---
+# Review plan: x
+## Mục chặn (blocking)
+## Góp ý (advisory)
+";
+    let sc = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": "src/app.py",
+                "content": "def app(): return 999\n",
+            },
+            {
+                "op": "write",
+                "path": ".plan-review.md",
+                "content": approve_report,
+            }
+        ]
+    });
+
+    let res = sb.run(&["run", "plan-review", "web-ban-hang"], Some(sc));
+    assert_eq!(
+        res.code, 0,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+
+    let current_app = std::fs::read_to_string(repo.join("src/app.py")).unwrap();
+    assert_eq!(current_app, original_app);
+
+    let recs = sb.records();
+    let last_rec = recs.last().unwrap();
+    let blocked = last_rec["blocked"].as_array().expect("blocked array");
+    assert!(!blocked.is_empty(), "expected blocked entries");
+    let has_app_blocked = blocked.iter().any(|b| {
+        let tool = b["tool"].as_str().unwrap_or("");
+        let path = b["path"].as_str().unwrap_or("");
+        (tool == "Write" || tool == "Edit") && path.ends_with("src/app.py")
+    });
+    assert!(has_app_blocked, "blocked was: {:?}", blocked);
+
+    let head_subj = sb.git(&repo, &["log", "-1", "--format=%s"]);
+    assert_eq!(head_subj.trim(), format!("{task}: plan-review"));
+}
+
+#[test]
+fn review_violation() {
+    let sb = Sandbox::new();
+    let (repo, _task, plan_sha) = setup_lead(&sb);
+
+    let approve_report = "\
+---
+verdict: approve
+blocking: 0
+advisory: 0
+files: []
+---
+# Review plan: x
+## Mục chặn (blocking)
+## Góp ý (advisory)
+";
+    let sc = serde_json::json!({
+        "ignore_hooks": true,
+        "ops": [
+            {
+                "op": "write",
+                "path": "src/app.py",
+                "content": "def app(): return 999\n",
+            },
+            {
+                "op": "write",
+                "path": ".plan-review.md",
+                "content": approve_report,
+            }
+        ]
+    });
+
+    let res = sb.run(&["run", "plan-review", "web-ban-hang"], Some(sc));
+    assert_eq!(res.code, 3);
+    assert!(
+        res.stdout.contains("vi phạm giao thức"),
+        "stdout was: {}",
+        res.stdout
+    );
+
+    let conn = sb.db();
+    let outcome: Option<String> = conn
+        .query_row(
+            "SELECT outcome FROM runs WHERE role = 'plan-review' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(outcome.as_deref(), Some("protocol_violation"));
+
+    let curr_head = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    assert_eq!(curr_head, plan_sha);
+}
+
+#[test]
+fn malformed_reports_are_violations() {
+    let sb = Sandbox::new();
+    let (repo, _task, plan_sha) = setup_lead(&sb);
+
+    // (a) fake writes nothing -> skeleton stays
+    let sc_a = serde_json::json!({
+        "ops": []
+    });
+    let res_a = sb.run(&["run", "plan-review", "web-ban-hang"], Some(sc_a));
+    assert_eq!(res_a.code, 3);
+    assert!(
+        res_a.stdout.contains("thiếu verdict"),
+        "stdout was: {}",
+        res_a.stdout
+    );
+    let conn = sb.db();
+    let outcome: Option<String> = conn
+        .query_row(
+            "SELECT outcome FROM runs WHERE role = 'plan-review' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(outcome.as_deref(), Some("protocol_violation"));
+    assert_eq!(sb.git(&repo, &["rev-parse", "HEAD"]).trim(), plan_sha);
+
+    // (b) report without front matter
+    let sc_b = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".plan-review.md",
+                "content": "# Review plan without front matter\n"
+            }
+        ]
+    });
+    let res_b = sb.run(&["run", "plan-review", "web-ban-hang"], Some(sc_b));
+    assert_eq!(res_b.code, 3);
+    assert!(
+        res_b.stdout.contains("thiếu khối front matter"),
+        "stdout was: {}",
+        res_b.stdout
+    );
+    let outcome: Option<String> = conn
+        .query_row(
+            "SELECT outcome FROM runs WHERE role = 'plan-review' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(outcome.as_deref(), Some("protocol_violation"));
+    assert_eq!(sb.git(&repo, &["rev-parse", "HEAD"]).trim(), plan_sha);
+
+    // (c) verdict approve with blocking 1
+    let sc_c = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".plan-review.md",
+                "content": "---\nverdict: approve\nblocking: 1\nadvisory: 0\nfiles: []\n---\n# Review plan\n"
+            }
+        ]
+    });
+    let res_c = sb.run(&["run", "plan-review", "web-ban-hang"], Some(sc_c));
+    assert_eq!(res_c.code, 3);
+    assert!(
+        res_c
+            .stdout
+            .contains("có 1 mục chặn nên verdict phải là revise"),
+        "stdout was: {}",
+        res_c.stdout
+    );
+    let outcome: Option<String> = conn
+        .query_row(
+            "SELECT outcome FROM runs WHERE role = 'plan-review' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(outcome.as_deref(), Some("protocol_violation"));
+    assert_eq!(sb.git(&repo, &["rev-parse", "HEAD"]).trim(), plan_sha);
+}
+
+#[test]
+fn forbidden_args_refused() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _plan_sha) = setup_lead(&sb);
+
+    sb.write_config(serde_json::json!({
+        "common_args": ["--strict-mcp-config", "--dangerously-skip-permissions"]
+    }));
+
+    let out = sb.run(&["run", "plan-review", "web-ban-hang"], None);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("Cờ quyền không được phép: --dangerously-skip-permissions"),
+        "stderr was: {}",
+        out.stderr
+    );
+}
+
+#[test]
+fn review_run_counts_for_personal_busy_rule() {
+    let sb = Sandbox::new();
+    let repo1 = sb.make_repo("proj-1", &[("src/main.py", "")], None, None);
+    let repo2 = sb.make_repo("proj-2", &[("src/main.py", "")], None, None);
+    let mut entry1 = sb.project_entry(&repo1, "proj-1", "personal");
+    entry1["name_vi"] = serde_json::json!("Dự án 1");
+    let mut entry2 = sb.project_entry(&repo2, "proj-2", "personal");
+    entry2["name_vi"] = serde_json::json!("Dự án 2");
+    sb.write_map(serde_json::json!([entry1, entry2]), &[]);
+
+    let decoy_child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn decoy sleep");
+    let decoy = ChildGuard(decoy_child);
+    let decoy_pid = decoy.0.id() as i32;
+    let proc_stat = agent_brain::procs::read_stat(decoy_pid).expect("read decoy stat");
+    let decoy_start = proc_stat.start;
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = sb.read_map();
+    let projects = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+    let proj_row_id = agent_brain::db::project_row_id(&conn, "proj-1").expect("proj1 id");
+
+    agent_brain::db::insert_run(
+        &conn,
+        &agent_brain::db::NewRun {
+            task_id: None,
+            project_id: proj_row_id,
+            role: "plan-review".to_string(),
+            profile: "personal".to_string(),
+            model: Some("opus".to_string()),
+            pid: decoy_pid as i64,
+            pgid: decoy_pid as i64,
+            pid_start: decoy_start as i64,
+            base_commit: None,
+            run_dir: None,
+        },
+    )
+    .expect("insert run");
+
+    let out = sb.run(&["run", "lead", "proj-2", "thêm việc"], None);
+    assert_eq!(
+        out.code, 1,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+    assert!(
+        out.stderr
+            .contains("không chạy song song trên cùng thư mục cấu hình (E-06)"),
+        "stderr missing E-06 message: {}",
+        out.stderr
+    );
+}
+
+#[test]
+fn dirty_tree_refused_report_excepted() {
+    let sb = Sandbox::new();
+    let (repo, _task, _plan_sha) = setup_lead(&sb);
+
+    // An untracked file in the repo
+    std::fs::write(repo.join("untracked.txt"), "hello").unwrap();
+    let out = sb.run(&["run", "plan-review", "web-ban-hang"], None);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("Working tree có thay đổi chưa commit:\n  untracked.txt"),
+        "stderr was: {}",
+        out.stderr
+    );
+
+    // Clean up untracked file
+    std::fs::remove_file(repo.join("untracked.txt")).unwrap();
+
+    // A dirty .plan-review.md alone does not block a new review
+    std::fs::write(repo.join(".plan-review.md"), "dirty content").unwrap();
+
+    let approve_report = "\
+---
+verdict: approve
+blocking: 0
+advisory: 0
+files: []
+---
+# Review plan: x
+## Mục chặn (blocking)
+## Góp ý (advisory)
+";
+    let sc = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".plan-review.md",
+                "content": approve_report,
+            }
+        ]
+    });
+
+    let res = sb.run(&["run", "plan-review", "web-ban-hang"], Some(sc));
+    assert_eq!(
+        res.code, 0,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+}
