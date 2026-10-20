@@ -248,7 +248,7 @@ Plans:
   5. Dashboard hiện thẻ review/sửa thật (vòng N / giới hạn, số chặn/góp ý), nút duyệt plan, bật/tắt autopilot; CSDL cũ nâng cấp lên schema mới không mất dữ liệu.
 
 **UI hint**: yes
-**Plans:** 12/20 plans executed
+**Plans:** 14/20 plans executed
 
 Plans:
 **Wave 1**
@@ -276,8 +276,8 @@ Plans:
 - [x] 05.2-11-PLAN.md — Autopilot driver `agent-brain auto` / `auto --start` / `approve` (claim, child stages, stops, signals, kill flag)
 
 **Wave 7** *(blocked on Wave 6 completion)*
-- [ ] 05.2-12-PLAN.md — Kill stops the autopilot through runner::cmd_kill; kill mid-loop and in the gap leave no process
-- [ ] 05.2-14-PLAN.md — Task API read side: pipeline flow over HTTP, controls/auto/rev, driver-aware busy rules, Giao việc workflow (05.1 WR-01, IN-05)
+- [x] 05.2-12-PLAN.md — Kill stops the autopilot through runner::cmd_kill; kill mid-loop and in the gap leave no process
+- [x] 05.2-14-PLAN.md — Task API read side: pipeline flow over HTTP, controls/auto/rev, driver-aware busy rules, Giao việc workflow (05.1 WR-01, IN-05)
 
 **Wave 8** *(blocked on Wave 7 completion)*
 - [ ] 05.2-15-PLAN.md — Action endpoints: approve, return (note), auto start/stop/more-round/end, stale and duplicate 409s, serve shutdown (D-16)
