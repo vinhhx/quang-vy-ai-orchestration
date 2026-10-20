@@ -5,7 +5,7 @@
 
 use crate::config::Price;
 use crate::db::{RunRow, TaskAuto};
-use crate::pricing::{BudgetLimits, BudgetUsage};
+use crate::pricing::{self, BudgetLimits, BudgetUsage};
 use crate::workflows::Workflow;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -710,18 +710,17 @@ pub fn gate_state(wf: &Workflow, f: &Facts) -> GateState {
     }
 }
 
-/// Quyết định hành động tiếp theo của autopilot (D1 .. D9).
-pub fn decide(wf: &Workflow, f: &Facts) -> Decision {
-    let eff_rounds = effective_rounds(&f.runs);
-    let cycs = cycles(&f.runs);
-    let current_cycle = cycs.last().copied().unwrap_or(1);
+// ============================================================================
+// Các hàm trợ giúp cho quy tắc D1 .. D9
+// ============================================================================
 
-    // Quy tắc D1: Stop request từ bên ngoài có độ ưu tiên cao nhất
+/// Quy tắc D1: Yêu cầu dừng từ bên ngoài (soft hoặc kill stop request).
+fn rule_d1_stop_request(f: &Facts, eff_rounds: &[i64]) -> Option<Decision> {
     if f.stop_request.is_some() {
         let last_run = f.runs.last();
         let last_idx = f.runs.len().checked_sub(1);
         let round = last_idx.map(|idx| eff_rounds[idx]);
-        return Decision::Stop(StopInfo {
+        Some(Decision::Stop(StopInfo {
             reason: StopReason::DungBoiBan,
             loop_name: last_run.and_then(loop_of),
             stage: last_run.and_then(|r| r.stage),
@@ -736,55 +735,542 @@ pub fn decide(wf: &Workflow, f: &Facts) -> Decision {
             estimated: None,
             limit_minutes: None,
             limit_usd: None,
-        });
+        }))
+    } else {
+        None
+    }
+}
+
+/// Quy tắc D2: Kiểm tra lỗi / trạng thái bất thường của run cuối cùng (trừ khi đang resume).
+fn rule_d2_last_run_failures(f: &Facts, eff_rounds: &[i64]) -> Option<Decision> {
+    if f.resume {
+        return None;
+    }
+    let last_run = f.runs.last()?;
+    let last_idx = f.runs.len() - 1;
+    let round = Some(eff_rounds[last_idx]);
+    let loop_name = loop_of(last_run);
+    let stage = last_run.stage;
+
+    if last_run.status == "running" {
+        return Some(Decision::Stop(StopInfo {
+            reason: StopReason::RunLoi,
+            loop_name,
+            stage,
+            round,
+            cap: None,
+            run_id: Some(last_run.id),
+            role: Some(last_run.role.clone()),
+            at_ms: f.now_ms,
+            detail_line: Some(format!("Run {} vẫn đang chạy", last_run.id)),
+            used_ms: None,
+            used_usd: None,
+            estimated: None,
+            limit_minutes: None,
+            limit_usd: None,
+        }));
+    }
+    if last_run.status == "killed" {
+        return Some(Decision::Stop(StopInfo {
+            reason: StopReason::DungBoiBan,
+            loop_name,
+            stage,
+            round,
+            cap: None,
+            run_id: Some(last_run.id),
+            role: Some(last_run.role.clone()),
+            at_ms: f.now_ms,
+            detail_line: None,
+            used_ms: None,
+            used_usd: None,
+            estimated: None,
+            limit_minutes: None,
+            limit_usd: None,
+        }));
+    }
+    if last_run.status == "failed" || last_run.status == "timed_out" || last_run.status == "lost" {
+        return Some(Decision::Stop(StopInfo {
+            reason: StopReason::RunLoi,
+            loop_name,
+            stage,
+            round,
+            cap: None,
+            run_id: Some(last_run.id),
+            role: Some(last_run.role.clone()),
+            at_ms: f.now_ms,
+            detail_line: None,
+            used_ms: None,
+            used_usd: None,
+            estimated: None,
+            limit_minutes: None,
+            limit_usd: None,
+        }));
+    }
+    if last_run.outcome.as_deref() == Some("protocol_violation") {
+        return Some(Decision::Stop(StopInfo {
+            reason: StopReason::ViPhamGiaoThuc,
+            loop_name,
+            stage,
+            round,
+            cap: None,
+            run_id: Some(last_run.id),
+            role: Some(last_run.role.clone()),
+            at_ms: f.now_ms,
+            detail_line: None,
+            used_ms: None,
+            used_usd: None,
+            estimated: None,
+            limit_minutes: None,
+            limit_usd: None,
+        }));
+    }
+    if last_run.outcome.as_deref() == Some("dev:blocked") {
+        return Some(Decision::Stop(StopInfo {
+            reason: StopReason::VuongMac,
+            loop_name,
+            stage,
+            round,
+            cap: None,
+            run_id: Some(last_run.id),
+            role: Some(last_run.role.clone()),
+            at_ms: f.now_ms,
+            detail_line: None,
+            used_ms: None,
+            used_usd: None,
+            estimated: None,
+            limit_minutes: None,
+            limit_usd: None,
+        }));
     }
 
-    // Quy tắc D3: Replan từ người dùng (nếu có)
-    if let Some(ref rp) = f.replan {
-        let highest_ok_plan_round = f
-            .runs
-            .iter()
-            .enumerate()
-            .filter(|(idx, r)| {
-                cycs[*idx] == current_cycle
-                    && r.is_ok()
-                    && (r.stage == Some(Stage::Plan) || (r.stage.is_none() && r.role == "lead"))
-            })
-            .map(|(idx, _)| eff_rounds[idx])
-            .max()
-            .unwrap_or(0);
+    None
+}
 
-        let candidate = StageRun {
-            stage: Stage::Plan,
-            round: 1 + highest_ok_plan_round,
-            fix_for: None,
-            review_input: false,
-            note: rp.note.clone(),
-            fresh_plan: rp.note.is_none(),
-        };
-        return Decision::Run(candidate);
-    }
+/// Quy tắc D3: Replan từ người dùng (Trả về Lead / Chạy lại Lead).
+fn rule_d3_replan(
+    f: &Facts,
+    current_cycle: i64,
+    cycs: &[i64],
+    eff_rounds: &[i64],
+) -> Option<StageRun> {
+    let rp = f.replan.as_ref()?;
+    let highest_ok_plan_round = f
+        .runs
+        .iter()
+        .enumerate()
+        .filter(|(idx, r)| {
+            cycs[*idx] == current_cycle
+                && r.is_ok()
+                && (r.stage == Some(Stage::Plan) || (r.stage.is_none() && r.role == "lead"))
+        })
+        .map(|(idx, _)| eff_rounds[idx])
+        .max()
+        .unwrap_or(0);
 
-    // Quy tắc D4: Giai đoạn lập plan (khi wf có plan hoặc plan-review VÀ chưa được approved)
+    Some(StageRun {
+        stage: Stage::Plan,
+        round: 1 + highest_ok_plan_round,
+        fix_for: None,
+        review_input: false,
+        note: rp.note.clone(),
+        fresh_plan: rp.note.is_none(),
+    })
+}
+
+/// Quy tắc D4: Giai đoạn lập plan (chỉ chạy khi chưa approved).
+fn rule_d4_plan_phase(wf: &Workflow, f: &Facts) -> Option<Decision> {
     if (wf.has("plan") || wf.has("plan-review")) && !f.approved {
         match plan_phase(wf, f) {
-            PlanPhase::Next(candidate) => return Decision::Run(candidate),
-            PlanPhase::Stopped(stop_info) => return Decision::Stop(stop_info),
-            PlanPhase::Done => {}
+            PlanPhase::Next(candidate) => Some(rule_d9_budget(candidate, f)),
+            PlanPhase::Stopped(stop_info) => Some(Decision::Stop(stop_info)),
+            PlanPhase::Done => None,
         }
+    } else {
+        None
     }
+}
 
-    // Quy tắc D5: Cổng duyệt plan (Gate)
+/// Quy tắc D5: Cổng duyệt plan (Gate) của bạn.
+fn rule_d5_gate(wf: &Workflow, f: &Facts) -> Option<Decision> {
     let later = wf.has("implement") || wf.has("code-review") || wf.has("qa") || wf.has("fix");
     if later && !f.approved {
-        return Decision::Gate;
+        return Some(Decision::Gate);
     }
     if !later {
         if wf.has("gate:you") && !f.approved {
-            return Decision::Gate;
+            return Some(Decision::Gate);
         } else {
-            return Decision::Done;
+            return Some(Decision::Done);
         }
+    }
+    None
+}
+
+/// Quy tắc D6: Giai đoạn build (implement và code-review).
+fn rule_d6_build_phase(
+    wf: &Workflow,
+    f: &Facts,
+    current_cycle: i64,
+    cycs: &[i64],
+    eff_rounds: &[i64],
+) -> Result<Option<Decision>, ()> {
+    if !wf.has("implement") && !wf.has("code-review") {
+        return Ok(None);
+    }
+
+    let ok_runs: Vec<(usize, &RunFact)> = f
+        .runs
+        .iter()
+        .enumerate()
+        .filter(|(idx, r)| cycs[*idx] == current_cycle && r.is_ok())
+        .collect();
+
+    let last_ok_build_loop = ok_runs
+        .iter()
+        .filter(|(_, r)| loop_of(r) == Some(Loop::Build))
+        .last();
+
+    match last_ok_build_loop {
+        None => {
+            if wf.has("implement") {
+                let candidate = StageRun {
+                    stage: Stage::Implement,
+                    round: 1,
+                    fix_for: None,
+                    review_input: false,
+                    note: None,
+                    fresh_plan: false,
+                };
+                Ok(Some(rule_d9_budget(candidate, f)))
+            } else if wf.has("code-review") {
+                let candidate = StageRun {
+                    stage: Stage::CodeReview,
+                    round: 1,
+                    fix_for: None,
+                    review_input: false,
+                    note: None,
+                    fresh_plan: false,
+                };
+                Ok(Some(rule_d9_budget(candidate, f)))
+            } else {
+                Ok(None)
+            }
+        }
+        Some(&(idx, x)) => {
+            if wf.has("code-review") {
+                let r = eff_rounds[idx];
+                let is_impl_or_fix = x.stage == Some(Stage::Implement)
+                    || (x.stage.is_none() && x.role == "dev")
+                    || (x.stage == Some(Stage::Fix) && x.fix_for != Some(FixFor::Qa));
+                if is_impl_or_fix {
+                    let candidate = StageRun {
+                        stage: Stage::CodeReview,
+                        round: r,
+                        fix_for: None,
+                        review_input: false,
+                        note: None,
+                        fresh_plan: false,
+                    };
+                    return Ok(Some(rule_d9_budget(candidate, f)));
+                }
+
+                // X là CodeReview
+                if x.outcome.as_deref() == Some("review:pass") {
+                    // Build done, tiếp tục sang QA
+                    return Ok(None);
+                } else if x.outcome.as_deref() == Some("review:revise") {
+                    if wf.has("implement") && wf.has_loop("build") {
+                        let grant = f.grants.get("build").copied().unwrap_or(0);
+                        let cap = wf.max_rounds as i64 + grant;
+                        if r >= cap {
+                            return Ok(Some(Decision::Stop(StopInfo {
+                                reason: StopReason::HetVong,
+                                loop_name: Some(Loop::Build),
+                                stage: Some(Stage::CodeReview),
+                                round: Some(r),
+                                cap: Some(wf.max_rounds as i64),
+                                run_id: Some(x.id),
+                                role: Some(x.role.clone()),
+                                at_ms: f.now_ms,
+                                detail_line: None,
+                                used_ms: None,
+                                used_usd: None,
+                                estimated: None,
+                                limit_minutes: None,
+                                limit_usd: None,
+                            })));
+                        } else {
+                            let candidate = StageRun {
+                                stage: Stage::Fix,
+                                round: r + 1,
+                                fix_for: Some(FixFor::CodeReview),
+                                review_input: false,
+                                note: None,
+                                fresh_plan: false,
+                            };
+                            return Ok(Some(rule_d9_budget(candidate, f)));
+                        }
+                    } else {
+                        return Ok(Some(Decision::Stop(StopInfo {
+                            reason: StopReason::HetVong,
+                            loop_name: Some(Loop::Build),
+                            stage: Some(Stage::CodeReview),
+                            round: Some(1),
+                            cap: Some(1),
+                            run_id: Some(x.id),
+                            role: Some(x.role.clone()),
+                            at_ms: f.now_ms,
+                            detail_line: None,
+                            used_ms: None,
+                            used_usd: None,
+                            estimated: None,
+                            limit_minutes: None,
+                            limit_usd: None,
+                        })));
+                    }
+                } else {
+                    return Ok(Some(Decision::Stop(StopInfo {
+                        reason: StopReason::RunLoi,
+                        loop_name: Some(Loop::Build),
+                        stage: Some(Stage::CodeReview),
+                        round: Some(r),
+                        cap: None,
+                        run_id: Some(x.id),
+                        role: Some(x.role.clone()),
+                        at_ms: f.now_ms,
+                        detail_line: Some("Review không có kết luận".to_string()),
+                        used_ms: None,
+                        used_usd: None,
+                        estimated: None,
+                        limit_minutes: None,
+                        limit_usd: None,
+                    })));
+                }
+            } else {
+                // Không có code-review -> build done
+                Ok(None)
+            }
+        }
+    }
+}
+
+/// Quy tắc D7: Giai đoạn QA và fix (QA).
+fn rule_d7_qa_phase(
+    wf: &Workflow,
+    f: &Facts,
+    current_cycle: i64,
+    cycs: &[i64],
+    eff_rounds: &[i64],
+) -> Option<Decision> {
+    if !wf.has("qa") {
+        return None;
+    }
+
+    let ok_runs: Vec<(usize, &RunFact)> = f
+        .runs
+        .iter()
+        .enumerate()
+        .filter(|(idx, r)| cycs[*idx] == current_cycle && r.is_ok())
+        .collect();
+
+    let last_ok_qa_loop = ok_runs
+        .iter()
+        .filter(|(_, r)| loop_of(r) == Some(Loop::Qa))
+        .last();
+
+    match last_ok_qa_loop {
+        None => {
+            let candidate = StageRun {
+                stage: Stage::Qa,
+                round: 1,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: false,
+            };
+            Some(rule_d9_budget(candidate, f))
+        }
+        Some(&(idx, x)) => {
+            let r = eff_rounds[idx];
+            let is_qa = x.stage == Some(Stage::Qa) || (x.stage.is_none() && x.role == "qa");
+            if is_qa {
+                if x.outcome.as_deref() == Some("qa:pass") {
+                    return Some(Decision::Done);
+                } else if x.outcome.as_deref() == Some("qa:fix") {
+                    if wf.has("fix") && wf.has_loop("qa") {
+                        let grant = f.grants.get("qa").copied().unwrap_or(0);
+                        let cap = wf.max_rounds as i64 + grant;
+                        if r >= cap {
+                            return Some(Decision::Stop(StopInfo {
+                                reason: StopReason::HetVong,
+                                loop_name: Some(Loop::Qa),
+                                stage: Some(Stage::Qa),
+                                round: Some(r),
+                                cap: Some(wf.max_rounds as i64),
+                                run_id: Some(x.id),
+                                role: Some(x.role.clone()),
+                                at_ms: f.now_ms,
+                                detail_line: None,
+                                used_ms: None,
+                                used_usd: None,
+                                estimated: None,
+                                limit_minutes: None,
+                                limit_usd: None,
+                            }));
+                        } else {
+                            let candidate = StageRun {
+                                stage: Stage::Fix,
+                                round: r,
+                                fix_for: Some(FixFor::Qa),
+                                review_input: false,
+                                note: None,
+                                fresh_plan: false,
+                            };
+                            return Some(rule_d9_budget(candidate, f));
+                        }
+                    } else {
+                        return Some(Decision::Stop(StopInfo {
+                            reason: StopReason::HetVong,
+                            loop_name: Some(Loop::Qa),
+                            stage: Some(Stage::Qa),
+                            round: Some(1),
+                            cap: Some(1),
+                            run_id: Some(x.id),
+                            role: Some(x.role.clone()),
+                            at_ms: f.now_ms,
+                            detail_line: None,
+                            used_ms: None,
+                            used_usd: None,
+                            estimated: None,
+                            limit_minutes: None,
+                            limit_usd: None,
+                        }));
+                    }
+                } else {
+                    return Some(Decision::Stop(StopInfo {
+                        reason: StopReason::RunLoi,
+                        loop_name: Some(Loop::Qa),
+                        stage: Some(Stage::Qa),
+                        round: Some(r),
+                        cap: None,
+                        run_id: Some(x.id),
+                        role: Some(x.role.clone()),
+                        at_ms: f.now_ms,
+                        detail_line: Some("QA không có kết luận".to_string()),
+                        used_ms: None,
+                        used_usd: None,
+                        estimated: None,
+                        limit_minutes: None,
+                        limit_usd: None,
+                    }));
+                }
+            } else {
+                // X là Fix(Qa)
+                let candidate = StageRun {
+                    stage: Stage::Qa,
+                    round: r + 1,
+                    fix_for: None,
+                    review_input: false,
+                    note: None,
+                    fresh_plan: false,
+                };
+                Some(rule_d9_budget(candidate, f))
+            }
+        }
+    }
+}
+
+/// Quy tắc D8: Không có QA stage -> Done sau khi build phase hoàn tất.
+fn rule_d8_no_qa_phase(wf: &Workflow) -> Option<Decision> {
+    if !wf.has("qa") {
+        Some(Decision::Done)
+    } else {
+        None
+    }
+}
+
+/// Quy tắc D9: Kiểm tra trần ngân sách cho ứng viên StageRun.
+fn rule_d9_budget(candidate: StageRun, f: &Facts) -> Decision {
+    if pricing::exhausted(&f.budget_usage, &f.budget_limits) && f.bypass_left == 0 {
+        let loop_name = match candidate.stage {
+            Stage::Plan | Stage::PlanReview => Some(Loop::Plan),
+            Stage::Implement | Stage::CodeReview => Some(Loop::Build),
+            Stage::Fix => {
+                if candidate.fix_for == Some(FixFor::Qa) {
+                    Some(Loop::Qa)
+                } else {
+                    Some(Loop::Build)
+                }
+            }
+            Stage::Qa => Some(Loop::Qa),
+        };
+        Decision::Stop(StopInfo {
+            reason: StopReason::HetNganSach,
+            loop_name,
+            stage: Some(candidate.stage),
+            round: Some(candidate.round),
+            cap: None,
+            run_id: None,
+            role: None,
+            at_ms: f.now_ms,
+            detail_line: None,
+            used_ms: Some(f.budget_usage.used_ms),
+            used_usd: Some(f.budget_usage.used_usd),
+            estimated: Some(f.budget_usage.estimated_runs > 0),
+            limit_minutes: Some(f.budget_limits.minutes),
+            limit_usd: Some(f.budget_limits.usd),
+        })
+    } else {
+        Decision::Run(candidate)
+    }
+}
+
+/// Quyết định hành động tiếp theo của autopilot (D1 .. D9).
+pub fn decide(wf: &Workflow, f: &Facts) -> Decision {
+    let eff_rounds = effective_rounds(&f.runs);
+    let cycs = cycles(&f.runs);
+    let current_cycle = cycs.last().copied().unwrap_or(1);
+
+    // Quy tắc D1: Stop request từ bên ngoài có độ ưu tiên cao nhất
+    if let Some(dec) = rule_d1_stop_request(f, &eff_rounds) {
+        return dec;
+    }
+
+    // Quy tắc D2: Kiểm tra lỗi của run cuối cùng (trừ khi đang resume)
+    if let Some(dec) = rule_d2_last_run_failures(f, &eff_rounds) {
+        return dec;
+    }
+
+    // Quy tắc D3: Replan từ người dùng (nếu có)
+    if let Some(candidate) = rule_d3_replan(f, current_cycle, &cycs, &eff_rounds) {
+        return rule_d9_budget(candidate, f);
+    }
+
+    // Quy tắc D4: Giai đoạn lập plan (khi wf có plan hoặc plan-review VÀ chưa được approved)
+    if let Some(dec) = rule_d4_plan_phase(wf, f) {
+        return dec;
+    }
+
+    // Quy tắc D5: Cổng duyệt plan (Gate)
+    if let Some(dec) = rule_d5_gate(wf, f) {
+        return dec;
+    }
+
+    // Quy tắc D6: Giai đoạn build (implement và code-review)
+    match rule_d6_build_phase(wf, f, current_cycle, &cycs, &eff_rounds) {
+        Ok(Some(dec)) => return dec,
+        Ok(None) => {}
+        Err(_) => {}
+    }
+
+    // Quy tắc D7: Giai đoạn QA và fix (QA)
+    if let Some(dec) = rule_d7_qa_phase(wf, f, current_cycle, &cycs, &eff_rounds) {
+        return dec;
+    }
+
+    // Quy tắc D8: Không có QA stage -> Done sau build phase
+    if let Some(dec) = rule_d8_no_qa_phase(wf) {
+        return dec;
     }
 
     Decision::Done
@@ -1065,5 +1551,1491 @@ mod tests {
 
         assert_eq!(AutoJson::parse(Some("not json")), AutoJson::default());
         assert_eq!(AutoJson::parse(None), AutoJson::default());
+    }
+
+    // ------------------------------------------------------------------------
+    // Behavior tests (Task 2)
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn build_loop() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let aj = AutoJson::default();
+
+        let p1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+        let pr1 = dummy_run(
+            2,
+            "plan-review",
+            Some("plan-review"),
+            Some(1),
+            "succeeded",
+            Some("review:approve"),
+            None,
+        );
+        let i1 = dummy_run(
+            3,
+            "dev",
+            Some("implement"),
+            Some(1),
+            "succeeded",
+            None,
+            None,
+        );
+
+        // approved, cycle [P1 ok, PR1 approve, I1 ok] → Run(CodeReview, 1)
+        let f1 = build_facts(
+            wf,
+            &[p1.clone(), pr1.clone(), i1.clone()],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f1),
+            Decision::Run(StageRun {
+                stage: Stage::CodeReview,
+                round: 1,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+
+        // + CR1 revise → Run(Fix(CodeReview), 2)
+        let cr1 = dummy_run(
+            4,
+            "code-review",
+            Some("code-review"),
+            Some(1),
+            "succeeded",
+            Some("review:revise"),
+            None,
+        );
+        let f2 = build_facts(
+            wf,
+            &[p1.clone(), pr1.clone(), i1.clone(), cr1.clone()],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            6000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f2),
+            Decision::Run(StageRun {
+                stage: Stage::Fix,
+                round: 2,
+                fix_for: Some(FixFor::CodeReview),
+                review_input: false,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+
+        // + Fix2 ok (stage fix, fix_for code_review, round 2) → Run(CodeReview, 2)
+        let fix2 = dummy_run(
+            5,
+            "dev",
+            Some("fix"),
+            Some(2),
+            "succeeded",
+            None,
+            Some(r#"{"fix_for":"code_review"}"#),
+        );
+        let f3 = build_facts(
+            wf,
+            &[
+                p1.clone(),
+                pr1.clone(),
+                i1.clone(),
+                cr1.clone(),
+                fix2.clone(),
+            ],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            7000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f3),
+            Decision::Run(StageRun {
+                stage: Stage::CodeReview,
+                round: 2,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+
+        // + CR2 pass → Run(Qa, 1)
+        let cr2 = dummy_run(
+            6,
+            "code-review",
+            Some("code-review"),
+            Some(2),
+            "succeeded",
+            Some("review:pass"),
+            None,
+        );
+        let f4 = build_facts(
+            wf,
+            &[p1, pr1, i1, cr1, fix2, cr2],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            8000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f4),
+            Decision::Run(StageRun {
+                stage: Stage::Qa,
+                round: 1,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+    }
+
+    #[test]
+    fn qa_loop() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let aj = AutoJson::default();
+
+        let p1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+        let pr1 = dummy_run(
+            2,
+            "plan-review",
+            Some("plan-review"),
+            Some(1),
+            "succeeded",
+            Some("review:approve"),
+            None,
+        );
+        let i1 = dummy_run(
+            3,
+            "dev",
+            Some("implement"),
+            Some(1),
+            "succeeded",
+            None,
+            None,
+        );
+        let cr1 = dummy_run(
+            4,
+            "code-review",
+            Some("code-review"),
+            Some(1),
+            "succeeded",
+            Some("review:pass"),
+            None,
+        );
+
+        // + Q1 qa:fix → Run(Fix(Qa), 1)
+        let q1 = dummy_run(
+            5,
+            "qa",
+            Some("qa"),
+            Some(1),
+            "succeeded",
+            Some("qa:fix"),
+            None,
+        );
+        let f1 = build_facts(
+            wf,
+            &[p1.clone(), pr1.clone(), i1.clone(), cr1.clone(), q1.clone()],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            9000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f1),
+            Decision::Run(StageRun {
+                stage: Stage::Fix,
+                round: 1,
+                fix_for: Some(FixFor::Qa),
+                review_input: false,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+
+        // + FixQ1 ok → Run(Qa, 2)
+        let fix_q1 = dummy_run(
+            6,
+            "dev",
+            Some("fix"),
+            Some(1),
+            "succeeded",
+            None,
+            Some(r#"{"fix_for":"qa"}"#),
+        );
+        let f2 = build_facts(
+            wf,
+            &[
+                p1.clone(),
+                pr1.clone(),
+                i1.clone(),
+                cr1.clone(),
+                q1.clone(),
+                fix_q1.clone(),
+            ],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            10000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f2),
+            Decision::Run(StageRun {
+                stage: Stage::Qa,
+                round: 2,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+
+        // + Q2 qa:pass → Done
+        let q2 = dummy_run(
+            7,
+            "qa",
+            Some("qa"),
+            Some(2),
+            "succeeded",
+            Some("qa:pass"),
+            None,
+        );
+        let f3 = build_facts(
+            wf,
+            &[p1, pr1, i1, cr1, q1, fix_q1, q2],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            11000,
+            false,
+        );
+        assert_eq!(decide(wf, &f3), Decision::Done);
+    }
+
+    #[test]
+    fn caps() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+        let aj = AutoJson::default();
+
+        // plan loop with three revises (P1 PR1 P2 PR2 P3 PR3, all revise)
+        let p1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+        let pr1 = dummy_run(
+            2,
+            "plan-review",
+            Some("plan-review"),
+            Some(1),
+            "succeeded",
+            Some("review:revise"),
+            None,
+        );
+        let p2 = dummy_run(3, "lead", Some("plan"), Some(2), "succeeded", None, None);
+        let pr2 = dummy_run(
+            4,
+            "plan-review",
+            Some("plan-review"),
+            Some(2),
+            "succeeded",
+            Some("review:revise"),
+            None,
+        );
+        let p3 = dummy_run(5, "lead", Some("plan"), Some(3), "succeeded", None, None);
+        let pr3 = dummy_run(
+            6,
+            "plan-review",
+            Some("plan-review"),
+            Some(3),
+            "succeeded",
+            Some("review:revise"),
+            None,
+        );
+
+        let f1 = build_facts(
+            wf,
+            &[
+                p1.clone(),
+                pr1.clone(),
+                p2.clone(),
+                pr2.clone(),
+                p3.clone(),
+                pr3.clone(),
+            ],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            12000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f1),
+            Decision::Stop(StopInfo {
+                reason: StopReason::HetVong,
+                loop_name: Some(Loop::Plan),
+                stage: Some(Stage::PlanReview),
+                round: Some(3),
+                cap: Some(3),
+                run_id: Some(6),
+                role: Some("plan-review".to_string()),
+                at_ms: 12000,
+                detail_line: None,
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+
+        // with grants {"plan":1} → Run(Plan, 4, review_input true)
+        let mut grants = BTreeMap::new();
+        grants.insert("plan".to_string(), 1);
+        let aj_grant = AutoJson {
+            grants,
+            ..Default::default()
+        };
+        let f2 = build_facts(
+            wf,
+            &[p1, pr1, p2, pr2, p3, pr3],
+            &auto,
+            &aj_grant,
+            Some("p1"),
+            &pricing,
+            13000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f2),
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 4,
+                fix_for: None,
+                review_input: true,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+
+        // build loop CR3 revise at cap → Stop{HetVong, Build, round 3, cap 3}
+        let auto_app = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let cr3 = dummy_run(
+            10,
+            "code-review",
+            Some("code-review"),
+            Some(3),
+            "succeeded",
+            Some("review:revise"),
+            None,
+        );
+        let f_build_cap = build_facts(
+            wf,
+            &[cr3],
+            &auto_app,
+            &aj,
+            Some("p1"),
+            &pricing,
+            14000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f_build_cap),
+            Decision::Stop(StopInfo {
+                reason: StopReason::HetVong,
+                loop_name: Some(Loop::Build),
+                stage: Some(Stage::CodeReview),
+                round: Some(3),
+                cap: Some(3),
+                run_id: Some(10),
+                role: Some("code-review".to_string()),
+                at_ms: 14000,
+                detail_line: None,
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+
+        // qa loop Q3 qa:fix at cap → Stop{HetVong, Qa, round 3, cap 3}
+        let cr_pass = dummy_run(
+            14,
+            "code-review",
+            Some("code-review"),
+            Some(1),
+            "succeeded",
+            Some("review:pass"),
+            None,
+        );
+        let q3 = dummy_run(
+            15,
+            "qa",
+            Some("qa"),
+            Some(3),
+            "succeeded",
+            Some("qa:fix"),
+            None,
+        );
+        let f_qa_cap = build_facts(
+            wf,
+            &[cr_pass, q3],
+            &auto_app,
+            &aj,
+            Some("p1"),
+            &pricing,
+            15000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f_qa_cap),
+            Decision::Stop(StopInfo {
+                reason: StopReason::HetVong,
+                loop_name: Some(Loop::Qa),
+                stage: Some(Stage::Qa),
+                round: Some(3),
+                cap: Some(3),
+                run_id: Some(15),
+                role: Some("qa".to_string()),
+                at_ms: 15000,
+                detail_line: None,
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+    }
+
+    #[test]
+    fn no_fourth_round() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+        let aj = AutoJson::default();
+
+        let mut runs = Vec::new();
+        for r in 1..=3 {
+            runs.push(dummy_run(
+                r * 2 - 1,
+                "lead",
+                Some("plan"),
+                Some(r),
+                "succeeded",
+                None,
+                None,
+            ));
+            runs.push(dummy_run(
+                r * 2,
+                "plan-review",
+                Some("plan-review"),
+                Some(r),
+                "succeeded",
+                Some("review:revise"),
+                None,
+            ));
+        }
+
+        let facts = build_facts(wf, &runs, &auto, &aj, Some("p1"), &pricing, 20000, false);
+        let d = decide(wf, &facts);
+        // Không bao giờ trả về Run(Plan, 4) khi không có grant
+        assert_ne!(
+            d,
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 4,
+                fix_for: None,
+                review_input: true,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+        assert!(matches!(
+            d,
+            Decision::Stop(StopInfo {
+                reason: StopReason::HetVong,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn nhanh_and_o4() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let nhanh_wf = loaded.get("nhanh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto_app = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let aj = AutoJson::default();
+
+        let p1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+        // [P1] → Run(Implement, 1)
+        let f1 = build_facts(
+            nhanh_wf,
+            &[p1.clone()],
+            &auto_app,
+            &aj,
+            Some("p1"),
+            &pricing,
+            1000,
+            false,
+        );
+        assert_eq!(
+            decide(nhanh_wf, &f1),
+            Decision::Run(StageRun {
+                stage: Stage::Implement,
+                round: 1,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+
+        // [P1, I1] → Run(Qa, 1)
+        let i1 = dummy_run(
+            2,
+            "dev",
+            Some("implement"),
+            Some(1),
+            "succeeded",
+            None,
+            None,
+        );
+        let f2 = build_facts(
+            nhanh_wf,
+            &[p1.clone(), i1.clone()],
+            &auto_app,
+            &aj,
+            Some("p1"),
+            &pricing,
+            2000,
+            false,
+        );
+        assert_eq!(
+            decide(nhanh_wf, &f2),
+            Decision::Run(StageRun {
+                stage: Stage::Qa,
+                round: 1,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+
+        // [P1, I1, Q1 qa:fix] → Stop{HetVong, Qa, round 1, cap 1}
+        let q1_fix = dummy_run(
+            3,
+            "qa",
+            Some("qa"),
+            Some(1),
+            "succeeded",
+            Some("qa:fix"),
+            None,
+        );
+        let f3 = build_facts(
+            nhanh_wf,
+            &[p1.clone(), i1.clone(), q1_fix],
+            &auto_app,
+            &aj,
+            Some("p1"),
+            &pricing,
+            3000,
+            false,
+        );
+        assert_eq!(
+            decide(nhanh_wf, &f3),
+            Decision::Stop(StopInfo {
+                reason: StopReason::HetVong,
+                loop_name: Some(Loop::Qa),
+                stage: Some(Stage::Qa),
+                round: Some(1),
+                cap: Some(1),
+                run_id: Some(3),
+                role: Some("qa".to_string()),
+                at_ms: 3000,
+                detail_line: None,
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+
+        // Q1 qa:pass → Done
+        let q1_pass = dummy_run(
+            3,
+            "qa",
+            Some("qa"),
+            Some(1),
+            "succeeded",
+            Some("qa:pass"),
+            None,
+        );
+        let f4 = build_facts(
+            nhanh_wf,
+            &[p1, i1, q1_pass],
+            &auto_app,
+            &aj,
+            Some("p1"),
+            &pricing,
+            4000,
+            false,
+        );
+        assert_eq!(decide(nhanh_wf, &f4), Decision::Done);
+
+        // Workflow {stages ["code-review"], loops []} approved → Run(CodeReview, 1), revise → Stop{HetVong, Build, 1, 1}
+        let o4_wf = Workflow {
+            name: "o4-test".to_string(),
+            stages: vec!["code-review".to_string()],
+            loops: vec![],
+            max_rounds: 3,
+            budget_minutes: 60,
+            budget_usd: 20.0,
+            auto: false,
+            source: "test".to_string(),
+        };
+        let f_o4_1 = build_facts(
+            &o4_wf,
+            &[],
+            &auto_app,
+            &aj,
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert_eq!(
+            decide(&o4_wf, &f_o4_1),
+            Decision::Run(StageRun {
+                stage: Stage::CodeReview,
+                round: 1,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+
+        let cr_rev = dummy_run(
+            1,
+            "code-review",
+            Some("code-review"),
+            Some(1),
+            "succeeded",
+            Some("review:revise"),
+            None,
+        );
+        let f_o4_2 = build_facts(
+            &o4_wf,
+            &[cr_rev],
+            &auto_app,
+            &aj,
+            Some("p1"),
+            &pricing,
+            6000,
+            false,
+        );
+        assert_eq!(
+            decide(&o4_wf, &f_o4_2),
+            Decision::Stop(StopInfo {
+                reason: StopReason::HetVong,
+                loop_name: Some(Loop::Build),
+                stage: Some(Stage::CodeReview),
+                round: Some(1),
+                cap: Some(1),
+                run_id: Some(1),
+                role: Some("code-review".to_string()),
+                at_ms: 6000,
+                detail_line: None,
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+    }
+
+    #[test]
+    fn gate_has_priority_over_build() {
+        let custom_wf = Workflow {
+            name: "no-gate-token".to_string(),
+            stages: vec![
+                "plan".to_string(),
+                "implement".to_string(),
+                "qa".to_string(),
+            ],
+            loops: vec![],
+            max_rounds: 3,
+            budget_minutes: 60,
+            budget_usd: 20.0,
+            auto: false,
+            source: "test".to_string(),
+        };
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+        let aj = AutoJson::default();
+        let p1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+
+        let facts = build_facts(
+            &custom_wf,
+            &[p1],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert_eq!(decide(&custom_wf, &facts), Decision::Gate);
+    }
+
+    #[test]
+    fn approval_overrides_plan_stop() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let aj = AutoJson::default();
+
+        let mut runs = Vec::new();
+        for r in 1..=3 {
+            runs.push(dummy_run(
+                r * 2 - 1,
+                "lead",
+                Some("plan"),
+                Some(r),
+                "succeeded",
+                None,
+                None,
+            ));
+            runs.push(dummy_run(
+                r * 2,
+                "plan-review",
+                Some("plan-review"),
+                Some(r),
+                "succeeded",
+                Some("review:revise"),
+                None,
+            ));
+        }
+
+        // approved and PR3 revise at cap → Run(Implement, 1)
+        let facts = build_facts(wf, &runs, &auto, &aj, Some("p1"), &pricing, 20000, false);
+        assert_eq!(
+            decide(wf, &facts),
+            Decision::Run(StageRun {
+                stage: Stage::Implement,
+                round: 1,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+    }
+
+    #[test]
+    fn stop_request_first() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto_soft = TaskAuto {
+            auto_stop_at: Some(3000),
+            auto_stop_kind: Some("soft".to_string()),
+            ..Default::default()
+        };
+        let aj = AutoJson::default();
+        let p1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+
+        let facts = build_facts(
+            wf,
+            &[p1],
+            &auto_soft,
+            &aj,
+            Some("p1"),
+            &pricing,
+            4000,
+            false,
+        );
+        let d = decide(wf, &facts);
+        assert!(matches!(
+            d,
+            Decision::Stop(StopInfo {
+                reason: StopReason::DungBoiBan,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn last_run_failures() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let aj = AutoJson::default();
+
+        // killed → DungBoiBan
+        let r_killed = dummy_run(1, "dev", Some("implement"), Some(1), "killed", None, None);
+        let f1 = build_facts(
+            wf,
+            &[r_killed],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f1),
+            Decision::Stop(StopInfo {
+                reason: StopReason::DungBoiBan,
+                loop_name: Some(Loop::Build),
+                stage: Some(Stage::Implement),
+                round: Some(1),
+                cap: None,
+                run_id: Some(1),
+                role: Some("dev".to_string()),
+                at_ms: 5000,
+                detail_line: None,
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+
+        // failed / timed_out / lost → RunLoi
+        let r_failed = dummy_run(2, "dev", Some("implement"), Some(1), "failed", None, None);
+        let f2 = build_facts(
+            wf,
+            &[r_failed],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            6000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f2),
+            Decision::Stop(StopInfo {
+                reason: StopReason::RunLoi,
+                loop_name: Some(Loop::Build),
+                stage: Some(Stage::Implement),
+                round: Some(1),
+                cap: None,
+                run_id: Some(2),
+                role: Some("dev".to_string()),
+                at_ms: 6000,
+                detail_line: None,
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+
+        // succeeded + protocol_violation → ViPhamGiaoThuc
+        let r_proto = dummy_run(
+            3,
+            "dev",
+            Some("implement"),
+            Some(1),
+            "succeeded",
+            Some("protocol_violation"),
+            None,
+        );
+        let f3 = build_facts(
+            wf,
+            &[r_proto],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            7000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f3),
+            Decision::Stop(StopInfo {
+                reason: StopReason::ViPhamGiaoThuc,
+                loop_name: Some(Loop::Build),
+                stage: Some(Stage::Implement),
+                round: Some(1),
+                cap: None,
+                run_id: Some(3),
+                role: Some("dev".to_string()),
+                at_ms: 7000,
+                detail_line: None,
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+
+        // succeeded + dev:blocked → VuongMac
+        let r_blocked = dummy_run(
+            4,
+            "dev",
+            Some("implement"),
+            Some(1),
+            "succeeded",
+            Some("dev:blocked"),
+            None,
+        );
+        let f4 = build_facts(
+            wf,
+            &[r_blocked],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            8000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f4),
+            Decision::Stop(StopInfo {
+                reason: StopReason::VuongMac,
+                loop_name: Some(Loop::Build),
+                stage: Some(Stage::Implement),
+                round: Some(1),
+                cap: None,
+                run_id: Some(4),
+                role: Some("dev".to_string()),
+                at_ms: 8000,
+                detail_line: None,
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+
+        // running → RunLoi with detail_line
+        let r_running = dummy_run(5, "dev", Some("implement"), Some(1), "running", None, None);
+        let f5 = build_facts(
+            wf,
+            &[r_running],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            9000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f5),
+            Decision::Stop(StopInfo {
+                reason: StopReason::RunLoi,
+                loop_name: Some(Loop::Build),
+                stage: Some(Stage::Implement),
+                round: Some(1),
+                cap: None,
+                run_id: Some(5),
+                role: Some("dev".to_string()),
+                at_ms: 9000,
+                detail_line: Some("Run 5 vẫn đang chạy".to_string()),
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+    }
+
+    #[test]
+    fn resume_retries_same_round() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+        let aj = AutoJson::default();
+
+        let p1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+        let pr1 = dummy_run(
+            2,
+            "plan-review",
+            Some("plan-review"),
+            Some(1),
+            "succeeded",
+            Some("review:revise"),
+            None,
+        );
+        let p2_killed = dummy_run(3, "lead", Some("plan"), Some(2), "killed", None, None);
+
+        // with resume false → Stop{DungBoiBan}
+        let f_no_resume = build_facts(
+            wf,
+            &[p1.clone(), pr1.clone(), p2_killed.clone()],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert!(matches!(
+            decide(wf, &f_no_resume),
+            Decision::Stop(StopInfo {
+                reason: StopReason::DungBoiBan,
+                ..
+            })
+        ));
+
+        // with resume true → Run(Plan, 2, review_input true)
+        let f_resume = build_facts(
+            wf,
+            &[p1, pr1, p2_killed],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            5000,
+            true,
+        );
+        assert_eq!(
+            decide(wf, &f_resume),
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 2,
+                fix_for: None,
+                review_input: true,
+                note: None,
+                fresh_plan: false,
+            })
+        );
+    }
+
+    #[test]
+    fn budget() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+        let aj = AutoJson::default();
+
+        // candidate Run with used >= limit and bypass 0 → Stop{HetNganSach}
+        let mut f_over = build_facts(wf, &[], &auto, &aj, None, &pricing, 5000, false);
+        f_over.budget_usage.used_ms = 3_600_000; // 60 phút
+        f_over.budget_usage.used_usd = 20.0;
+        f_over.budget_usage.used_cents = 2000;
+        f_over.budget_usage.estimated_runs = 1;
+
+        assert_eq!(
+            decide(wf, &f_over),
+            Decision::Stop(StopInfo {
+                reason: StopReason::HetNganSach,
+                loop_name: Some(Loop::Plan),
+                stage: Some(Stage::Plan),
+                round: Some(1),
+                cap: None,
+                run_id: None,
+                role: None,
+                at_ms: 5000,
+                detail_line: None,
+                used_ms: Some(3_600_000),
+                used_usd: Some(20.0),
+                estimated: Some(true),
+                limit_minutes: Some(60),
+                limit_usd: Some(20.0),
+            })
+        );
+
+        // bypass 2 → the Run
+        let mut f_bypass = f_over.clone();
+        f_bypass.bypass_left = 2;
+        assert_eq!(
+            decide(wf, &f_bypass),
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 1,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: true,
+            })
+        );
+
+        // at the gate with an exhausted budget → Gate
+        let p1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+        let pr1 = dummy_run(
+            2,
+            "plan-review",
+            Some("plan-review"),
+            Some(1),
+            "succeeded",
+            Some("review:approve"),
+            None,
+        );
+        let mut f_gate = build_facts(
+            wf,
+            &[p1, pr1],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        f_gate.budget_usage.used_cents = 2500;
+        assert_eq!(decide(wf, &f_gate), Decision::Gate);
+    }
+
+    #[test]
+    fn budget_cents_boundary() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+        let aj = AutoJson::default();
+
+        let mut f = build_facts(wf, &[], &auto, &aj, None, &pricing, 5000, false);
+
+        // used $19.994 → Run
+        f.budget_usage.used_usd = 19.994;
+        f.budget_usage.used_cents = (19.994f64 * 100.0).round() as i64; // 1999
+        assert!(matches!(decide(wf, &f), Decision::Run(_)));
+
+        // used $19.995 → Stop{HetNganSach}
+        f.budget_usage.used_usd = 19.995;
+        f.budget_usage.used_cents = (19.995f64 * 100.0).round() as i64; // 2000
+        assert!(matches!(
+            decide(wf, &f),
+            Decision::Stop(StopInfo {
+                reason: StopReason::HetNganSach,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn replan() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+
+        let p1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+        let pr1 = dummy_run(
+            2,
+            "plan-review",
+            Some("plan-review"),
+            Some(1),
+            "succeeded",
+            Some("review:approve"),
+            None,
+        );
+
+        // replan {note Some("tách bước 2")} after [P1, PR1 approve]
+        let aj_note = AutoJson {
+            replan: Some(Replan {
+                note: Some("tách bước 2".to_string()),
+            }),
+            ..Default::default()
+        };
+        let f1 = build_facts(
+            wf,
+            &[p1.clone(), pr1.clone()],
+            &auto,
+            &aj_note,
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f1),
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 2,
+                fix_for: None,
+                review_input: false,
+                note: Some("tách bước 2".to_string()),
+                fresh_plan: false,
+            })
+        );
+
+        // note None → fresh_plan true
+        let aj_none = AutoJson {
+            replan: Some(Replan { note: None }),
+            ..Default::default()
+        };
+        let f2 = build_facts(
+            wf,
+            &[p1, pr1],
+            &auto,
+            &aj_none,
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert_eq!(
+            decide(wf, &f2),
+            Decision::Run(StageRun {
+                stage: Stage::Plan,
+                round: 2,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: true,
+            })
+        );
+    }
+
+    #[test]
+    fn rounds_and_cycles() {
+        // [L, PR, L, PR, D impl, CR, D fix(code_review), CR, Q, D fix(qa), Q, L]
+        let r0 = dummy_run(1, "lead", None, None, "succeeded", None, None);
+        let r1 = dummy_run(2, "plan-review", None, None, "succeeded", None, None);
+        let r2 = dummy_run(3, "lead", None, None, "succeeded", None, None);
+        let r3 = dummy_run(4, "plan-review", None, None, "succeeded", None, None);
+        let r4 = dummy_run(5, "dev", None, None, "succeeded", None, None);
+        let r5 = dummy_run(6, "code-review", None, None, "succeeded", None, None);
+        let r6 = dummy_run(
+            7,
+            "dev",
+            Some("fix"),
+            None,
+            "succeeded",
+            None,
+            Some(r#"{"fix_for":"code_review"}"#),
+        );
+        let r7 = dummy_run(8, "code-review", None, None, "succeeded", None, None);
+        let r8 = dummy_run(9, "qa", None, None, "succeeded", None, None);
+        let r9 = dummy_run(
+            10,
+            "dev",
+            Some("fix"),
+            None,
+            "succeeded",
+            None,
+            Some(r#"{"fix_for":"qa"}"#),
+        );
+        let r10 = dummy_run(11, "qa", None, None, "succeeded", None, None);
+        let r11 = dummy_run(12, "lead", None, None, "succeeded", None, None);
+
+        let runs: Vec<RunFact> = vec![r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+            .iter()
+            .map(RunFact::from_row)
+            .collect();
+
+        let cycs = cycles(&runs);
+        assert_eq!(cycs, vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]);
+
+        let eff = effective_rounds(&runs);
+        assert_eq!(eff, vec![1, 1, 2, 2, 1, 1, 2, 2, 1, 1, 2, 1]);
+
+        // A stored round wins over the derived one
+        let mut r_stored = runs.clone();
+        r_stored[0].round = Some(99);
+        assert_eq!(effective_rounds(&r_stored)[0], 99);
+
+        // A plan-review that follows a QA run does not start a new cycle
+        let mut runs_pr = runs.clone();
+        runs_pr.truncate(11); // up to Q
+        let pr_after_q = RunFact {
+            id: 13,
+            role: "plan-review".to_string(),
+            stage: Some(Stage::PlanReview),
+            fix_for: None,
+            round: None,
+            status: "succeeded".to_string(),
+            outcome: None,
+            kill_requested: false,
+            started_at: 5000,
+        };
+        runs_pr.push(pr_after_q);
+        assert_eq!(cycles(&runs_pr).last().copied(), Some(1));
+    }
+
+    #[test]
+    fn gate_state_cases() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto::default();
+        let aj = AutoJson::default();
+
+        // no plan commit → NoPlan
+        let f_no_plan = build_facts(wf, &[], &auto, &aj, None, &pricing, 5000, false);
+        assert_eq!(gate_state(wf, &f_no_plan), GateState::NoPlan);
+
+        // plan committed and PR1 revise below cap → AwaitingReview
+        let p1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+        let pr1_rev = dummy_run(
+            2,
+            "plan-review",
+            Some("plan-review"),
+            Some(1),
+            "succeeded",
+            Some("review:revise"),
+            None,
+        );
+        let f_await = build_facts(
+            wf,
+            &[p1.clone(), pr1_rev],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert_eq!(gate_state(wf, &f_await), GateState::AwaitingReview);
+
+        // PR approve → Waiting
+        let pr1_app = dummy_run(
+            2,
+            "plan-review",
+            Some("plan-review"),
+            Some(1),
+            "succeeded",
+            Some("review:approve"),
+            None,
+        );
+        let f_wait = build_facts(
+            wf,
+            &[p1.clone(), pr1_app],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert_eq!(gate_state(wf, &f_wait), GateState::Waiting);
+
+        // plan loop stopped at cap → Waiting
+        let mut cap_runs = Vec::new();
+        for r in 1..=3 {
+            cap_runs.push(dummy_run(
+                r * 2 - 1,
+                "lead",
+                Some("plan"),
+                Some(r),
+                "succeeded",
+                None,
+                None,
+            ));
+            cap_runs.push(dummy_run(
+                r * 2,
+                "plan-review",
+                Some("plan-review"),
+                Some(r),
+                "succeeded",
+                Some("review:revise"),
+                None,
+            ));
+        }
+        let f_cap = build_facts(wf, &cap_runs, &auto, &aj, Some("p1"), &pricing, 5000, false);
+        assert_eq!(gate_state(wf, &f_cap), GateState::Waiting);
+
+        // approved → Approved
+        let auto_approved = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let f_approved = build_facts(
+            wf,
+            &[p1.clone()],
+            &auto_approved,
+            &aj,
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert_eq!(gate_state(wf, &f_approved), GateState::Approved);
+
+        // nhanh with plan committed → Waiting
+        let nhanh_wf = loaded.get("nhanh").unwrap();
+        let f_nhanh = build_facts(
+            nhanh_wf,
+            &[p1],
+            &auto,
+            &aj,
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert_eq!(gate_state(nhanh_wf, &f_nhanh), GateState::Waiting);
     }
 }
