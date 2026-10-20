@@ -2606,6 +2606,1010 @@ mod tests {
         }
     }
 
+    fn test_nhanh() -> Workflow {
+        Workflow {
+            name: "nhanh".to_string(),
+            stages: vec![
+                "plan".to_string(),
+                "gate:you".to_string(),
+                "implement".to_string(),
+                "qa".to_string(),
+            ],
+            loops: vec![],
+            max_rounds: 3,
+            budget_minutes: 60,
+            budget_usd: 20.0,
+            auto: false,
+            source: "builtin".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_card_results_new() {
+        let task = dummy_task("dev_done");
+        let wf = test_mac_dinh();
+
+        // 1. plan_review variations
+        for (status, outcome, exp_res) in [
+            ("running", None, "đang review plan"),
+            ("succeeded", Some("review:approve"), "duyệt"),
+            ("succeeded", Some("review:revise"), "sửa lại"),
+            ("killed", None, "đã dừng"),
+            ("failed", None, "Review lỗi"),
+            ("succeeded", Some("protocol_violation"), "vi phạm giao thức"),
+        ] {
+            let runs = vec![staged_run(
+                1,
+                "plan-review",
+                Some("plan-review"),
+                Some(1),
+                status,
+                outcome,
+                None,
+                1000,
+            )];
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &runs,
+                plan: &PlanFacts::Unknown,
+                current_step: "qa",
+                now_ms: 5000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            let pr_card = resp.groups[0]
+                .cards
+                .iter()
+                .find(|c| c.key == "plan_review")
+                .unwrap();
+            assert_eq!(pr_card.result, exp_res);
+        }
+
+        // 2. code_review variations
+        for (status, outcome, exp_res) in [
+            ("running", None, "đang review code"),
+            ("succeeded", Some("review:pass"), "đạt"),
+            ("succeeded", Some("review:revise"), "sửa lại"),
+            ("killed", None, "đã dừng"),
+            ("failed", None, "Review lỗi"),
+            ("succeeded", Some("protocol_violation"), "vi phạm giao thức"),
+        ] {
+            let runs = vec![staged_run(
+                1,
+                "code-review",
+                Some("code-review"),
+                Some(1),
+                status,
+                outcome,
+                None,
+                1000,
+            )];
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &runs,
+                plan: &PlanFacts::Unknown,
+                current_step: "qa",
+                now_ms: 5000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            let cr_card = resp.groups[1]
+                .cards
+                .iter()
+                .find(|c| c.key == "code_review")
+                .unwrap();
+            assert_eq!(cr_card.result, exp_res);
+        }
+
+        // 3. fix variations
+        // 3a. fix cho "chưa bắt đầu"
+        {
+            let runs = vec![staged_run(
+                1,
+                "lead",
+                Some("plan"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                1000,
+            )];
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &runs,
+                plan: &PlanFacts::Unknown,
+                current_step: "lead",
+                now_ms: 5000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            let fix_card = resp.groups[2]
+                .cards
+                .iter()
+                .find(|c| c.key == "fix")
+                .unwrap();
+            assert_eq!(fix_card.state, "cho");
+            assert_eq!(fix_card.result, "chưa bắt đầu");
+        }
+
+        // 3b. fix cho "không cần sửa" when qa passed and no fix run in cycle
+        {
+            let runs = vec![staged_run(
+                1,
+                "qa",
+                Some("qa"),
+                Some(1),
+                "succeeded",
+                Some("qa:pass"),
+                None,
+                1000,
+            )];
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &runs,
+                plan: &PlanFacts::Unknown,
+                current_step: "qa",
+                now_ms: 5000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            let fix_card = resp.groups[2]
+                .cards
+                .iter()
+                .find(|c| c.key == "fix")
+                .unwrap();
+            assert_eq!(fix_card.state, "cho");
+            assert_eq!(fix_card.result, "không cần sửa");
+        }
+
+        // 3c. fix active/completed states
+        for (status, outcome, turns, exp_res) in [
+            ("running", None, None, "đang sửa"),
+            ("succeeded", None, Some(5), "5 lượt"),
+            ("succeeded", None, None, "xong"),
+            ("succeeded", Some("dev:blocked"), None, "vướng mắc"),
+            ("killed", None, None, "đã dừng"),
+            ("failed", None, None, "Dev lỗi"),
+            (
+                "succeeded",
+                Some("protocol_violation"),
+                None,
+                "vi phạm giao thức",
+            ),
+        ] {
+            let mut r = staged_run(
+                1,
+                "dev",
+                Some("fix"),
+                Some(1),
+                status,
+                outcome,
+                Some(r#"{"fix_for":"qa"}"#),
+                1000,
+            );
+            r.num_turns = turns;
+            let runs = vec![r];
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &runs,
+                plan: &PlanFacts::Unknown,
+                current_step: "dev",
+                now_ms: 5000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            let fix_card = resp.groups[2]
+                .cards
+                .iter()
+                .find(|c| c.key == "fix")
+                .unwrap();
+            assert_eq!(fix_card.result, exp_res);
+        }
+
+        // 4. code: "đang sửa theo review" when running code-review fix
+        {
+            let r = staged_run(
+                1,
+                "dev",
+                Some("fix"),
+                Some(2),
+                "running",
+                None,
+                Some(r#"{"fix_for":"code_review"}"#),
+                1000,
+            );
+            let runs = vec![r];
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &runs,
+                plan: &PlanFacts::Unknown,
+                current_step: "dev",
+                now_ms: 5000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            let code_card = resp.groups[1]
+                .cards
+                .iter()
+                .find(|c| c.key == "code")
+                .unwrap();
+            assert_eq!(code_card.result, "đang sửa theo review");
+        }
+    }
+
+    #[test]
+    fn test_counts_known_zero_and_unknown() {
+        // review approve with blocking 0
+        let counts0 = Counts::from_metrics_json(Some(r#"{"blocking":0,"advisory":1}"#)).unwrap();
+        assert_eq!(counts0.blocking, Some(0));
+        assert_eq!(counts0.advisory, Some(1));
+
+        // QA metrics with all null
+        let counts_all_null = Counts::from_metrics_json(Some(
+            r#"{"specs":null,"failing":null,"not_automatable":null}"#,
+        ));
+        assert_eq!(counts_all_null, None);
+
+        // run without metrics
+        assert_eq!(Counts::from_metrics_json(None), None);
+        assert_eq!(Counts::from_metrics_json(Some("")), None);
+        assert_eq!(Counts::from_metrics_json(Some("{}")), None);
+    }
+
+    #[test]
+    fn test_gate_view_cases() {
+        let task = dummy_task("dev_done");
+        let wf_auto = test_mac_dinh();
+        let wf_manual = test_nhanh();
+
+        // 1. NoPlan
+        {
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &[],
+                plan: &PlanFacts::NoCommit,
+                current_step: "lead",
+                now_ms: 1000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf_auto),
+                gate: Some(GateState::NoPlan),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.gate.state, "cho");
+            assert_eq!(resp.gate.state_word, "chưa bắt đầu");
+            assert_eq!(resp.gate.result, "chưa có plan");
+            assert_eq!(resp.gate.note_kind, "not_open");
+            assert_eq!(
+                resp.gate.note.as_deref(),
+                Some("Cổng này mở khi plan đã commit và review plan xong.")
+            );
+            assert_eq!(resp.gate.at_ms, None);
+            assert!(!resp.gate.derived);
+        }
+
+        // 2. AwaitingReview
+        {
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &[],
+                plan: &PlanFacts::Unknown,
+                current_step: "lead",
+                now_ms: 1000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf_auto),
+                gate: Some(GateState::AwaitingReview),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.gate.state, "cho");
+            assert_eq!(resp.gate.state_word, "chờ review plan");
+            assert_eq!(resp.gate.result, "chờ review plan");
+            assert_eq!(resp.gate.note_kind, "not_open");
+            assert_eq!(
+                resp.gate.note.as_deref(),
+                Some("Cổng này mở khi plan đã commit và review plan xong.")
+            );
+            assert_eq!(resp.gate.at_ms, None);
+            assert!(!resp.gate.derived);
+        }
+
+        // 3. Waiting (mac-dinh auto)
+        {
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &[],
+                plan: &PlanFacts::Unknown,
+                current_step: "lead",
+                now_ms: 1000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf_auto),
+                gate: Some(GateState::Waiting),
+                plan_commit_at: Some(5000),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.gate.state, "cho_ban");
+            assert_eq!(resp.gate.state_word, "chờ bạn");
+            assert_eq!(resp.gate.result, "chờ duyệt plan");
+            assert_eq!(resp.gate.at_ms, Some(5000));
+            assert_eq!(resp.gate.note_kind, "auto_waiting");
+            assert_eq!(
+                resp.gate.note.as_deref(),
+                Some("Autopilot dừng ở đây để bạn duyệt plan. Duyệt plan rồi autopilot tự chạy Code, Review code, QA và Sửa, tối đa 3 vòng mỗi bước, trong 60 phút hoặc $20.")
+            );
+            assert!(!resp.gate.derived);
+        }
+
+        // 4. Waiting (nhanh manual)
+        {
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &[],
+                plan: &PlanFacts::Unknown,
+                current_step: "lead",
+                now_ms: 1000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf_manual),
+                gate: Some(GateState::Waiting),
+                plan_commit_at: Some(6000),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.gate.state, "cho_ban");
+            assert_eq!(resp.gate.state_word, "chờ bạn");
+            assert_eq!(resp.gate.result, "chờ duyệt plan");
+            assert_eq!(resp.gate.at_ms, Some(6000));
+            assert_eq!(resp.gate.note_kind, "manual_waiting");
+            assert_eq!(
+                resp.gate.note.as_deref(),
+                Some("Duyệt plan để ghi nhận bạn đồng ý, rồi bấm Chạy Dev. Bấm Chạy Dev trực tiếp cũng coi là đã duyệt.")
+            );
+            assert!(!resp.gate.derived);
+        }
+
+        // 5. Waiting with auto_state stopped and stop loop plan
+        {
+            let auto = TaskAuto {
+                workflow_json: None,
+                auto_state: Some("stopped".to_string()),
+                approved_at: None,
+                approved_commit: None,
+                auto_pid: None,
+                auto_pid_start: None,
+                auto_stop_at: None,
+                auto_stop_kind: None,
+                auto_json: None,
+            };
+            let stop_info = decide::StopInfo {
+                reason: decide::StopReason::HetVong,
+                loop_name: Some(Loop::Plan),
+                stage: Some(Stage::PlanReview),
+                round: Some(3),
+                cap: Some(3),
+                run_id: Some(1),
+                role: Some("plan-review".to_string()),
+                at_ms: 7000,
+                detail_line: None,
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            };
+            let aj = decide::AutoJson {
+                stop: Some(stop_info),
+                ..Default::default()
+            };
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &[],
+                plan: &PlanFacts::Unknown,
+                current_step: "lead",
+                now_ms: 1000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf_auto),
+                auto: Some(&auto),
+                auto_json: Some(&aj),
+                gate: Some(GateState::Waiting),
+                plan_commit_at: Some(5000),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.gate.state, "cho_ban");
+            assert_eq!(resp.gate.result, "chờ duyệt plan");
+            assert_eq!(resp.gate.note_kind, "loop_stopped");
+            assert_eq!(
+                resp.gate.note.as_deref(),
+                Some("Plan chưa qua review. Bạn có thể duyệt plan hiện tại hoặc trả về Lead.")
+            );
+        }
+
+        // 6. Approved (approved_at 1234)
+        {
+            let auto = TaskAuto {
+                workflow_json: None,
+                auto_state: Some("running".to_string()),
+                approved_at: Some(1234),
+                approved_commit: Some("abc".to_string()),
+                auto_pid: None,
+                auto_pid_start: None,
+                auto_stop_at: None,
+                auto_stop_kind: None,
+                auto_json: None,
+            };
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &[],
+                plan: &PlanFacts::Unknown,
+                current_step: "dev",
+                now_ms: 2000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf_auto),
+                auto: Some(&auto),
+                gate: Some(GateState::Approved),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.gate.state, "xong");
+            assert_eq!(resp.gate.state_word, "xong");
+            assert_eq!(resp.gate.result, "đã duyệt plan");
+            assert_eq!(resp.gate.at_ms, Some(1234));
+            assert_eq!(resp.gate.note_kind, "approved_explicit");
+            assert_eq!(resp.gate.note, None);
+        }
+
+        // 7. Legacy task (workflow None) with base ban `cho_ban`
+        {
+            let lead_run = run(1, "lead", "succeeded", None, 1000, Some(2000));
+            let runs = vec![lead_run];
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &runs,
+                plan: &PlanFacts::Commit {
+                    sha: "abc".to_string(),
+                    at_ms: Some(2000),
+                    approved_by: None,
+                },
+                current_step: "dev",
+                now_ms: 3000,
+            };
+            let flow = FlowFacts {
+                workflow: None,
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.gate.state, "cho_ban");
+            assert_eq!(resp.gate.note_kind, "derived");
+            assert!(resp.gate.derived);
+            assert_eq!(
+                resp.gate.note.as_deref(),
+                Some("Cổng duyệt suy ra từ dữ liệu: Dev đã chạy trên bản plan hiện tại thì coi là đã duyệt.")
+            );
+        }
+    }
+
+    #[test]
+    fn test_gate_note_money() {
+        let task = dummy_task("dev_done");
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &[],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 1000,
+        };
+
+        // 0.05 budget_usd
+        let mut wf005 = test_mac_dinh();
+        wf005.budget_usd = 0.05;
+        let flow005 = FlowFacts {
+            workflow: Some(&wf005),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let resp005 = derive_response(&facts, &flow005);
+        assert!(resp005.gate.note.as_deref().unwrap().contains("$0.05"));
+
+        // 20 budget_usd
+        let wf20 = test_mac_dinh();
+        let flow20 = FlowFacts {
+            workflow: Some(&wf20),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let resp20 = derive_response(&facts, &flow20);
+        assert!(resp20
+            .gate
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("trong 60 phút hoặc $20."));
+    }
+
+    #[test]
+    fn test_footer_after_grant() {
+        let task = dummy_task("dev_done");
+        let runs = vec![
+            staged_run(
+                1,
+                "lead",
+                Some("plan"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                1000,
+            ),
+            staged_run(
+                2,
+                "lead",
+                Some("plan"),
+                Some(2),
+                "succeeded",
+                None,
+                None,
+                2000,
+            ),
+            staged_run(
+                3,
+                "lead",
+                Some("plan"),
+                Some(3),
+                "succeeded",
+                None,
+                None,
+                3000,
+            ),
+            staged_run(
+                4,
+                "lead",
+                Some("plan"),
+                Some(4),
+                "succeeded",
+                None,
+                None,
+                4000,
+            ),
+        ];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 5000,
+        };
+        let wf = test_mac_dinh();
+        let flow = FlowFacts {
+            workflow: Some(&wf),
+            ..Default::default()
+        };
+        let resp = derive_response(&facts, &flow);
+        assert_eq!(resp.groups[0].round, Some(4));
+        assert_eq!(resp.groups[0].cap, Some(3));
+    }
+
+    #[test]
+    fn test_stopped_group() {
+        let task = dummy_task("dev_done");
+        let runs = vec![staged_run(
+            1,
+            "dev",
+            Some("implement"),
+            Some(1),
+            "succeeded",
+            None,
+            None,
+            1000,
+        )];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 2000,
+        };
+        let wf = test_mac_dinh();
+        let auto = TaskAuto {
+            workflow_json: None,
+            auto_state: Some("stopped".to_string()),
+            approved_at: None,
+            approved_commit: None,
+            auto_pid: None,
+            auto_pid_start: None,
+            auto_stop_at: None,
+            auto_stop_kind: None,
+            auto_json: None,
+        };
+        let stop_info = decide::StopInfo {
+            reason: decide::StopReason::HetVong,
+            loop_name: Some(Loop::Build),
+            stage: Some(Stage::CodeReview),
+            round: Some(3),
+            cap: Some(3),
+            run_id: Some(1),
+            role: Some("code-review".to_string()),
+            at_ms: 2000,
+            detail_line: None,
+            used_ms: None,
+            used_usd: None,
+            estimated: None,
+            limit_minutes: None,
+            limit_usd: None,
+        };
+        let aj = decide::AutoJson {
+            stop: Some(stop_info),
+            ..Default::default()
+        };
+        let flow = FlowFacts {
+            workflow: Some(&wf),
+            auto: Some(&auto),
+            auto_json: Some(&aj),
+            ..Default::default()
+        };
+        let resp = derive_response(&facts, &flow);
+        // build group stopped true, stop_word "hết vòng"; others false / null
+        assert!(!resp.groups[0].stopped);
+        assert_eq!(resp.groups[0].stop_word, None);
+
+        assert!(resp.groups[1].stopped);
+        assert_eq!(resp.groups[1].stop_word.as_deref(), Some("hết vòng"));
+
+        assert!(!resp.groups[2].stopped);
+        assert_eq!(resp.groups[2].stop_word, None);
+    }
+
+    #[test]
+    fn test_current_card_rules() {
+        let task = dummy_task("dev_done");
+        let wf = test_mac_dinh();
+
+        // 1. running plan-review -> "plan_review"
+        {
+            let runs = vec![staged_run(
+                1,
+                "plan-review",
+                Some("plan-review"),
+                Some(1),
+                "running",
+                None,
+                None,
+                1000,
+            )];
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &runs,
+                plan: &PlanFacts::Unknown,
+                current_step: "plan-review",
+                now_ms: 2000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.current_card.as_deref(), Some("plan_review"));
+        }
+
+        // 2. auto stopped at stage Fix loop qa -> "fix"
+        {
+            let auto = TaskAuto {
+                workflow_json: None,
+                auto_state: Some("stopped".to_string()),
+                approved_at: None,
+                approved_commit: None,
+                auto_pid: None,
+                auto_pid_start: None,
+                auto_stop_at: None,
+                auto_stop_kind: None,
+                auto_json: None,
+            };
+            let stop_info = decide::StopInfo {
+                reason: decide::StopReason::HetVong,
+                loop_name: Some(Loop::Qa),
+                stage: Some(Stage::Fix),
+                round: Some(3),
+                cap: Some(3),
+                run_id: Some(1),
+                role: Some("dev".to_string()),
+                at_ms: 2000,
+                detail_line: None,
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            };
+            let aj = decide::AutoJson {
+                stop: Some(stop_info),
+                ..Default::default()
+            };
+            let runs = vec![staged_run(
+                1,
+                "qa",
+                Some("qa"),
+                Some(1),
+                "succeeded",
+                Some("qa:fix"),
+                None,
+                1000,
+            )];
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &runs,
+                plan: &PlanFacts::Unknown,
+                current_step: "qa",
+                now_ms: 2000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf),
+                auto: Some(&auto),
+                auto_json: Some(&aj),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.current_card.as_deref(), Some("fix"));
+        }
+
+        // 3. gate Waiting, no driver -> "ban"
+        {
+            let runs = vec![staged_run(
+                1,
+                "lead",
+                Some("plan"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                1000,
+            )];
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &runs,
+                plan: &PlanFacts::Unknown,
+                current_step: "dev",
+                now_ms: 2000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf),
+                gate: Some(GateState::Waiting),
+                driver_alive: false,
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.current_card.as_deref(), Some("ban"));
+        }
+
+        // 4. driver alive with next_card "code_review" -> "code_review"
+        {
+            let runs = vec![staged_run(
+                1,
+                "dev",
+                Some("implement"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                1000,
+            )];
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &runs,
+                plan: &PlanFacts::Unknown,
+                current_step: "dev",
+                now_ms: 2000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf),
+                gate: Some(GateState::Approved),
+                driver_alive: true,
+                next_card: Some("code_review".to_string()),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.current_card.as_deref(), Some("code_review"));
+        }
+
+        // 5. idle after QA pass -> "qa"
+        {
+            let runs = vec![staged_run(
+                1,
+                "qa",
+                Some("qa"),
+                Some(1),
+                "succeeded",
+                Some("qa:pass"),
+                None,
+                1000,
+            )];
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &runs,
+                plan: &PlanFacts::Unknown,
+                current_step: "qa",
+                now_ms: 2000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf),
+                gate: Some(GateState::Approved),
+                driver_alive: false,
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.current_card.as_deref(), Some("qa"));
+        }
+
+        // 6. no runs -> null
+        {
+            let facts = PipelineFacts {
+                task: &task,
+                runs: &[],
+                plan: &PlanFacts::Unknown,
+                current_step: "lead",
+                now_ms: 2000,
+            };
+            let flow = FlowFacts {
+                workflow: Some(&wf),
+                ..Default::default()
+            };
+            let resp = derive_response(&facts, &flow);
+            assert_eq!(resp.current_card, None);
+        }
+    }
+
+    #[test]
+    fn test_budget_view() {
+        let task = dummy_task("dev_done");
+        let wf = test_mac_dinh();
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &[],
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 1000,
+        };
+
+        // usage {used_ms 2_880_000, used_usd 16.0, used_cents 1600, estimated_runs 1} with mac-dinh
+        // -> used_minutes 48, limit_minutes 60, limit_usd 20.0, estimated true, level "near"
+        let usage = BudgetUsage {
+            used_ms: 2_880_000,
+            used_usd: 16.0,
+            used_cents: 1600,
+            estimated_runs: 1,
+        };
+        let flow = FlowFacts {
+            workflow: Some(&wf),
+            budget: Some(usage),
+            ..Default::default()
+        };
+        let resp = derive_response(&facts, &flow);
+        let b = resp.budget.as_ref().unwrap();
+        assert_eq!(b.used_minutes, 48);
+        assert_eq!(b.limit_minutes, 60);
+        assert_eq!(b.used_usd, 16.0);
+        assert_eq!(b.limit_usd, 20.0);
+        assert!(b.estimated);
+        assert_eq!(b.level, "near");
+
+        // over the limit
+        let usage_over = BudgetUsage {
+            used_ms: 4_000_000,
+            used_usd: 25.0,
+            used_cents: 2500,
+            estimated_runs: 0,
+        };
+        let flow_over = FlowFacts {
+            workflow: Some(&wf),
+            budget: Some(usage_over),
+            ..Default::default()
+        };
+        let resp_over = derive_response(&facts, &flow_over);
+        assert_eq!(resp_over.budget.as_ref().unwrap().level, "over");
+
+        // legacy task -> budget null
+        let flow_legacy = FlowFacts {
+            workflow: None,
+            budget: Some(usage),
+            ..Default::default()
+        };
+        let resp_legacy = derive_response(&facts, &flow_legacy);
+        assert_eq!(resp_legacy.budget, None);
+    }
+
+    #[test]
+    fn test_legacy_flow() {
+        let task = dummy_task("dev_done");
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &[],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 1000,
+        };
+        let flow = FlowFacts {
+            workflow: None,
+            ..Default::default()
+        };
+        let resp = derive_response(&facts, &flow);
+        assert_eq!(resp.workflow, None);
+        assert_eq!(resp.groups.len(), 3);
+        assert_eq!(resp.groups[0].key, "plan");
+        assert_eq!(resp.groups[0].cards.len(), 1);
+        assert_eq!(resp.groups[0].cards[0].key, "plan");
+        assert_eq!(resp.groups[0].cap, None);
+
+        assert_eq!(resp.groups[1].key, "build");
+        assert_eq!(resp.groups[1].cards.len(), 1);
+        assert_eq!(resp.groups[1].cards[0].key, "code");
+        assert_eq!(resp.groups[1].cap, None);
+
+        assert_eq!(resp.groups[2].key, "qa");
+        assert_eq!(resp.groups[2].cards.len(), 1);
+        assert_eq!(resp.groups[2].cards[0].key, "qa");
+        assert_eq!(resp.groups[2].cap, None);
+
+        assert!(resp.gate.present);
+        assert!(resp.gate.derived);
+    }
+
+    #[test]
+    fn test_nhanh_flow() {
+        let task = dummy_task("dev_done");
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &[],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 1000,
+        };
+        let wf = test_nhanh();
+        let flow = FlowFacts {
+            workflow: Some(&wf),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let resp = derive_response(&facts, &flow);
+        assert_eq!(resp.groups.len(), 3);
+        assert_eq!(resp.groups[0].cards.len(), 1);
+        assert_eq!(resp.groups[0].cap, None);
+
+        assert_eq!(resp.groups[1].cards.len(), 1);
+        assert_eq!(resp.groups[1].cap, None);
+
+        assert_eq!(resp.groups[2].cards.len(), 1);
+        assert_eq!(resp.groups[2].cap, None);
+
+        assert_eq!(resp.gate.note_kind, "manual_waiting");
+        assert_eq!(
+            resp.gate.note.as_deref(),
+            Some("Duyệt plan để ghi nhận bạn đồng ý, rồi bấm Chạy Dev. Bấm Chạy Dev trực tiếp cũng coi là đã duyệt.")
+        );
+    }
+
     #[test]
     fn test_state_words_new() {
         assert_eq!(state_word("duyet"), "duyệt");
