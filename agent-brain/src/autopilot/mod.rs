@@ -14,6 +14,7 @@ use crate::autopilot::decide::{
 use crate::error::{BrainError, BrainResult, EXIT_BLOCKED, EXIT_OK};
 use crate::workflows::Workflow;
 use std::io::BufRead;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Trần an toàn số bước một lần chạy driver được bắt đầu.
@@ -22,6 +23,27 @@ pub const MAX_STAGES_PER_RUN: usize = 50;
 pub const AUTOPILOT_TASK_ENV: &str = "AGENT_BRAIN_AUTOPILOT_TASK";
 
 const POLL: Duration = Duration::from_millis(200);
+
+/// Driver nhận SIGINT / SIGTERM / SIGHUP: handler chỉ đặt cờ này.
+static SIGNALED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_signal(_sig: libc::c_int) {
+    SIGNALED.store(true, Ordering::SeqCst);
+}
+
+/// Cài handler cho SIGINT, SIGTERM, SIGHUP (một lần, trước khi chạy bước nào).
+fn install_signal_handlers() {
+    let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    unsafe {
+        libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGTERM, handler);
+        libc::signal(libc::SIGHUP, handler);
+    }
+}
+
+fn signaled() -> bool {
+    SIGNALED.load(Ordering::SeqCst)
+}
 
 /// Tham số dòng lệnh `agent-brain auto`.
 #[derive(Debug, Clone, Default)]
@@ -127,7 +149,7 @@ fn run_loi(detail: String, sr: Option<&StageRun>) -> StopInfo {
 }
 
 /// Chạy `agent-brain <args>` làm tiến trình con (PDEATHSIG, stdout kế thừa, stderr chép lại).
-fn spawn_stage(_ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainResult<ChildOutcome> {
+fn spawn_stage(ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainResult<ChildOutcome> {
     use std::os::unix::process::CommandExt;
 
     let exe = std::env::current_exe()?;
@@ -183,9 +205,36 @@ fn spawn_stage(_ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainRe
         first
     });
 
+    // Chờ con: tín hiệu tới driver → chuyển một SIGINT cho con rồi chờ nó tự dừng
+    // (con dừng claude của nó); cờ kill trên task → runner::cmd_kill một lần (D-04).
+    let child_pid = child.id() as libc::pid_t;
+    let mut forwarded = false;
+    let mut kill_done = false;
     let status = loop {
         if let Some(st) = child.try_wait()? {
             break st;
+        }
+        if signaled() && !forwarded {
+            unsafe {
+                libc::kill(child_pid, libc::SIGINT);
+            }
+            forwarded = true;
+        }
+        if let Some(tid) = task_id {
+            if !kill_done && !forwarded && kill_flag_set(ctx, tid) {
+                if let Ok(Some(_run)) = crate::db::running_run_for_task(&ctx.conn, tid) {
+                    kill_done = true;
+                    match crate::runner::cmd_kill(ctx, tid) {
+                        Ok(code) => crate::term::emit(&format!(
+                            "Autopilot: đã yêu cầu dừng run của task {tid} (mã {code})"
+                        )),
+                        Err(e) => crate::term::emit(&format!(
+                            "Autopilot: không dừng được run của task {tid}: {}",
+                            e.message
+                        )),
+                    }
+                }
+            }
         }
         std::thread::sleep(POLL);
     };
@@ -194,8 +243,16 @@ fn spawn_stage(_ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainRe
     Ok(ChildOutcome {
         exit_code: status.code(),
         first_err_line,
-        interrupted: false,
+        interrupted: signaled(),
     })
+}
+
+/// Task có cờ dừng loại `kill` (Kill trong lúc autopilot chạy).
+fn kill_flag_set(ctx: &Ctx, task_id: i64) -> bool {
+    match crate::db::task_auto(&ctx.conn, task_id) {
+        Ok(Some(a)) => a.auto_stop_at.is_some() && a.auto_stop_kind.as_deref() == Some("kill"),
+        _ => false,
+    }
 }
 
 fn max_run_id(ctx: &Ctx, task_id: i64) -> BrainResult<i64> {
@@ -246,6 +303,10 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
 
     let mut resume = resume_first;
     for _ in 0..MAX_STAGES_PER_RUN {
+        // Tín hiệu giữa hai bước: không bắt đầu bước mới.
+        if signaled() {
+            return Ok(interrupted(ctx, task_id));
+        }
         let auto = crate::db::task_auto(&ctx.conn, task_id)?.unwrap_or_default();
         let mut aj = AutoJson::parse(auto.auto_json.as_deref());
         let runs = crate::db::runs_for_task(&ctx.conn, task_id)?;
@@ -393,6 +454,7 @@ fn claim_task(ctx: &mut Ctx, task_id: i64, opts: &ClaimOpts) -> BrainResult<Auto
 
 /// `agent-brain auto` — `--start` tạo task bằng bước Lead đầu tiên, còn lại tiếp tục task có sẵn.
 pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
+    install_signal_handlers();
     if opts.start {
         if opts.more_round || opts.replan || opts.note.is_some() {
             return Err(BrainError::error(
@@ -582,6 +644,7 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
         return Ok(EXIT_OK);
     }
 
+    install_signal_handlers();
     claim::claim(
         &mut ctx.conn,
         task_id,

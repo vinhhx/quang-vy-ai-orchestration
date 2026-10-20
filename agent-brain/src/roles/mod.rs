@@ -330,6 +330,19 @@ pub fn execute_role_staged(
         }
     }
 
+    // E-06 cũng tính driver autopilot còn sống (giữa hai bước không có run nào chạy);
+    // con của chính driver đó mang AGENT_BRAIN_AUTOPILOT_TASK nên được bỏ qua.
+    if project.profile == "personal" {
+        let exclude = std::env::var(crate::autopilot::AUTOPILOT_TASK_ENV)
+            .ok()
+            .and_then(|v| v.trim().parse::<i64>().ok());
+        if let Some(reason) =
+            crate::autopilot::claim::live_driver_reason(&ctx.conn, "", "personal", exclude)?
+        {
+            return Err(BrainError::error(reason));
+        }
+    }
+
     let env = crate::profile::build_env(
         &project.profile,
         &ctx.cfg.profiles,

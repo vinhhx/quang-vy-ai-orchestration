@@ -876,3 +876,280 @@ fn legacy_task_refused() {
         res.stderr
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 3
+// ---------------------------------------------------------------------------
+
+/// Driver do test sinh ra: Drop dừng đúng tiến trình đã ghi (Child) và các
+/// tiến trình con đã ghi pid + start time, không bao giờ tìm theo tên.
+struct ChildGuard {
+    child: std::process::Child,
+    procs: Vec<agent_brain::procs::ProcId>,
+}
+
+impl ChildGuard {
+    fn pid(&self) -> i32 {
+        self.child.id() as i32
+    }
+
+    fn wait_exit(&mut self, timeout: std::time::Duration) -> Option<i32> {
+        use std::os::unix::process::ExitStatusExt;
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if let Ok(Some(st)) = self.child.try_wait() {
+                return Some(st.code().unwrap_or_else(|| 128 + st.signal().unwrap_or(0)));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        None
+    }
+
+    /// Ghi lại các tiến trình con hiện có của driver (agent-brain run, fake claude).
+    fn record_descendants(&mut self) {
+        let pid = self.pid();
+        for p in agent_brain::procs::descendants(pid) {
+            if !self.procs.contains(&p) {
+                self.procs.push(p);
+            }
+        }
+    }
+
+    fn alive_recorded(&self) -> Vec<agent_brain::procs::ProcId> {
+        self.procs
+            .iter()
+            .copied()
+            .filter(|p| agent_brain::procs::alive(*p))
+            .collect()
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Ok(None) = self.child.try_wait() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        for p in &self.procs {
+            if agent_brain::procs::alive(*p) {
+                agent_brain::procs::signal_proc(*p, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+fn spawn_driver(sb: &Sandbox, args: &[&str], scenario: Value) -> ChildGuard {
+    sb.write_scenario(scenario);
+    let out = std::fs::File::create(sb.root.join("driver.stdout.txt")).unwrap();
+    let err = std::fs::File::create(sb.root.join("driver.stderr.txt")).unwrap();
+    let mut cmd = sb.command(args, &[]);
+    cmd.stdout(std::process::Stdio::from(out));
+    cmd.stderr(std::process::Stdio::from(err));
+    let child = cmd.spawn().expect("spawn driver");
+    ChildGuard {
+        child,
+        procs: Vec::new(),
+    }
+}
+
+fn driver_stderr(sb: &Sandbox) -> String {
+    std::fs::read_to_string(sb.root.join("driver.stderr.txt")).unwrap_or_default()
+}
+
+/// Chờ một run `running` của vai trò; trả (run id, ProcId của claude giả).
+fn wait_running_run(sb: &Sandbox, role: &str) -> (i64, agent_brain::procs::ProcId) {
+    let mut found = None;
+    let ok = common::wait_until(std::time::Duration::from_secs(15), || {
+        let conn = sb.db();
+        let row: rusqlite::Result<(i64, i64, i64)> = conn.query_row(
+            "SELECT id, pid, pid_start FROM runs WHERE status = 'running' AND role = ?1",
+            [role],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        );
+        if let Ok((id, pid, start)) = row {
+            found = Some((
+                id,
+                agent_brain::procs::ProcId {
+                    pid: pid as i32,
+                    start: start as u64,
+                },
+            ));
+            true
+        } else {
+            false
+        }
+    });
+    assert!(ok, "no running {role} run: {}", driver_stderr(sb));
+    found.unwrap()
+}
+
+fn run_status(sb: &Sandbox, run_id: i64) -> String {
+    sb.db()
+        .query_row("SELECT status FROM runs WHERE id = ?1", [run_id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+fn approved_gate(sb: &Sandbox) {
+    flow_to_gate(sb);
+    let res = sb.run(&["approve", "1", "--no-continue"], None);
+    assert_ok(&res, "approve --no-continue");
+}
+
+fn slow_dev_roles(sleep: f64) -> Value {
+    let mut dev = dev_impl_entry();
+    dev["sleep"] = json!(sleep);
+    json!({
+        "dev": [dev],
+        "code-review": [code_review_entry("pass", 0, &[])],
+        "qa": [qa_entry("Đạt")],
+    })
+}
+
+#[test]
+fn soft_stop_between_stages() {
+    let sb = Sandbox::new();
+    approved_gate(&sb);
+
+    let mut driver = spawn_driver(&sb, &["auto", "1"], by_role(slow_dev_roles(3.0)));
+    let (dev_run, claude) = wait_running_run(&sb, "dev");
+    driver.procs.push(claude);
+    driver.record_descendants();
+    agent_brain::db::request_auto_stop(&sb.db(), 1, "soft").unwrap();
+
+    let code = driver.wait_exit(std::time::Duration::from_secs(30));
+    assert_eq!(code, Some(4), "stderr: {}", driver_stderr(&sb));
+    assert_eq!(run_status(&sb, dev_run), "succeeded");
+    let stop = auto_json(&sb, 1)["stop"].clone();
+    assert_eq!(stop["reason"], "dung_boi_ban");
+    assert!(
+        runs(&sb).iter().all(|r| r.0 != "code-review"),
+        "no code-review run"
+    );
+    let (state, pid, _) = auto_state(&sb, 1);
+    assert_eq!(state.as_deref(), Some("stopped"));
+    assert_eq!(pid, None);
+    assert!(driver_stderr(&sb).contains("Autopilot dừng · dừng bởi bạn"));
+    assert!(driver.alive_recorded().is_empty());
+}
+
+#[test]
+fn kill_flag_during_run() {
+    let sb = Sandbox::new();
+    approved_gate(&sb);
+
+    let mut driver = spawn_driver(&sb, &["auto", "1"], by_role(slow_dev_roles(30.0)));
+    let (dev_run, claude) = wait_running_run(&sb, "dev");
+    driver.procs.push(claude);
+    driver.record_descendants();
+    assert!(driver.procs.len() >= 2, "recorded: {:?}", driver.procs);
+
+    agent_brain::db::request_auto_stop(&sb.db(), 1, "kill").unwrap();
+    let killed = common::wait_until(std::time::Duration::from_secs(15), || {
+        run_status(&sb, dev_run) == "killed"
+    });
+    assert!(killed, "dev run not killed: {}", driver_stderr(&sb));
+
+    let code = driver.wait_exit(std::time::Duration::from_secs(15));
+    assert_eq!(code, Some(4), "stderr: {}", driver_stderr(&sb));
+    let stop = auto_json(&sb, 1)["stop"].clone();
+    assert_eq!(stop["reason"], "dung_boi_ban");
+    assert_eq!(stop["run_id"], dev_run);
+    let gone = common::wait_until(std::time::Duration::from_secs(5), || {
+        driver.alive_recorded().is_empty()
+    });
+    assert!(gone, "alive: {:?}", driver.alive_recorded());
+}
+
+#[test]
+fn sigterm_interrupts() {
+    let sb = Sandbox::new();
+    approved_gate(&sb);
+
+    let mut driver = spawn_driver(&sb, &["auto", "1"], by_role(slow_dev_roles(30.0)));
+    let (dev_run, claude) = wait_running_run(&sb, "dev");
+    driver.procs.push(claude);
+    driver.record_descendants();
+
+    unsafe {
+        libc::kill(driver.pid(), libc::SIGTERM);
+    }
+    let code = driver.wait_exit(std::time::Duration::from_secs(20));
+    assert_eq!(code, Some(130), "stderr: {}", driver_stderr(&sb));
+    let (state, pid, _) = auto_state(&sb, 1);
+    assert_eq!(state.as_deref(), Some("interrupted"));
+    assert_eq!(pid, None);
+    assert_eq!(run_status(&sb, dev_run), "killed");
+    assert!(driver_stderr(&sb).contains("Autopilot đã dừng (bị ngắt) — task 1"));
+    let gone = common::wait_until(std::time::Duration::from_secs(5), || {
+        driver.alive_recorded().is_empty()
+    });
+    assert!(gone, "alive: {:?}", driver.alive_recorded());
+
+    let res = sb.run(&["auto", "1"], Some(by_role(build_ok_roles())));
+    assert_ok(&res, "auto 1 after interrupt");
+    let all = runs(&sb);
+    let devs: Vec<&RunTuple> = all.iter().filter(|r| r.0 == "dev").collect();
+    assert_eq!(devs.len(), 2);
+    assert_eq!(devs[0].2, Some(1));
+    assert_eq!(devs[1], &rt("dev", "implement", 1, None));
+    let (state, _, _) = auto_state(&sb, 1);
+    assert_eq!(state.as_deref(), Some("done"));
+}
+
+#[test]
+fn personal_driver_blocks_cli_run() {
+    let sb = Sandbox::new();
+    let repo_a = sb.make_repo(
+        "du-an-a",
+        &[("src/app.py", "def app():\n    return 1\n")],
+        None,
+        None,
+    );
+    let repo_b = sb.make_repo(
+        "du-an-b",
+        &[("src/app.py", "def app():\n    return 1\n")],
+        None,
+        None,
+    );
+    let a = sb.project_entry(&repo_a, "du-an-a", "personal");
+    let b = sb.project_entry(&repo_b, "du-an-b", "personal");
+    sb.write_map(json!([a, b]), &[]);
+
+    let res = sb.run(
+        &["run", "lead", "du-an-a", "việc a", "--name", "viec-a"],
+        Some(lead_plan_entry()),
+    );
+    assert_ok(&res, "run lead A");
+
+    let me = std::process::id() as i32;
+    let start = agent_brain::procs::proc_id(me).unwrap().start as i64;
+    sb.db()
+        .execute(
+            "UPDATE tasks SET auto_state = 'running', auto_pid = ?1, auto_pid_start = ?2 WHERE id = 1",
+            rusqlite::params![me as i64, start],
+        )
+        .unwrap();
+
+    let res = sb.run(
+        &["run", "lead", "du-an-b", "việc b", "--name", "viec-b"],
+        Some(lead_plan_entry()),
+    );
+    assert_eq!(res.code, 1, "stderr: {}", res.stderr);
+    assert!(
+        res.stderr.contains("đang chạy autopilot cho task 1"),
+        "stderr: {}",
+        res.stderr
+    );
+    assert!(res.stderr.contains("(E-06)"), "stderr: {}", res.stderr);
+    assert_eq!(runs(&sb).len(), 1, "blocked run starts no claude");
+
+    let res = sb.run_env(
+        &["run", "lead", "du-an-b", "việc b", "--name", "viec-b"],
+        Some(lead_plan_entry()),
+        &[("AGENT_BRAIN_AUTOPILOT_TASK", "1")],
+    );
+    assert_ok(&res, "run lead B as the driver's own child");
+    assert_eq!(runs(&sb).len(), 2);
+}
