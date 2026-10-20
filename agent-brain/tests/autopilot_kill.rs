@@ -266,3 +266,158 @@ fn kill_mid_run_stops_driver_and_tree() {
     assert_eq!(stop["run_id"], dev_run, "auto_json: {stop}");
     assert_eq!(running_count(&sb), 0);
 }
+
+/// Driver giả còn sống: một tiến trình python3 ngủ (không dùng `sleep N`), ghi
+/// (pid, start) của nó vào auto_pid / auto_pid_start với auto_state `running`.
+fn fake_live_driver(sb: &Sandbox) -> (KillGuard, ProcId) {
+    let child = std::process::Command::new("python3")
+        .args(["-c", "import time; time.sleep(60)"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn python3 sleeper");
+    let mut guard = KillGuard::new(child);
+    let p = agent_brain::procs::proc_id(guard.pid()).expect("sleeper proc_id");
+    guard.record(p);
+    sb.db()
+        .execute(
+            "UPDATE tasks SET auto_state = 'running', auto_pid = ?1, auto_pid_start = ?2 WHERE id = 1",
+            rusqlite::params![p.pid as i64, p.start as i64],
+        )
+        .unwrap();
+    (guard, p)
+}
+
+#[test]
+fn kill_in_gap_sets_flag() {
+    let sb = Sandbox::new();
+    approved_nhanh_task(&sb);
+    let (_guard, sleeper) = fake_live_driver(&sb);
+    assert_eq!(running_count(&sb), 0);
+
+    let kill = sb.run(&["kill", "1"], None);
+    assert_eq!(kill.code, 0, "kill failed: {}", kill.stderr);
+    assert!(
+        kill.stderr.contains("Đã yêu cầu autopilot dừng (task 1)"),
+        "stderr: {}",
+        kill.stderr
+    );
+    assert!(
+        kill.stderr
+            .contains("không có run đang chạy; autopilot dừng trước bước tiếp theo."),
+        "stderr: {}",
+        kill.stderr
+    );
+
+    let auto = auto_row(&sb);
+    assert_eq!(auto.auto_stop_kind.as_deref(), Some("kill"));
+    assert!(auto.auto_stop_at.is_some(), "auto_stop_at not set");
+    assert_eq!(auto.auto_state.as_deref(), Some("running"));
+    // Kill không bao giờ gửi tín hiệu cho chính driver.
+    assert!(
+        agent_brain::procs::alive(sleeper),
+        "kill signalled the driver process"
+    );
+}
+
+#[test]
+fn kill_without_driver_unchanged() {
+    let sb = Sandbox::new();
+    approved_nhanh_task(&sb);
+    sb.db()
+        .execute(
+            "UPDATE tasks SET auto_state = 'running', auto_pid = 999999, auto_pid_start = 1 WHERE id = 1",
+            [],
+        )
+        .unwrap();
+
+    let kill = sb.run(&["kill", "1"], None);
+    assert_eq!(kill.code, 1, "stderr: {}", kill.stderr);
+    assert!(
+        kill.stderr.contains("không có run đang chạy"),
+        "stderr: {}",
+        kill.stderr
+    );
+    assert!(
+        !kill.stderr.contains("Đã yêu cầu autopilot dừng"),
+        "stderr: {}",
+        kill.stderr
+    );
+    let auto = auto_row(&sb);
+    assert_eq!(auto.auto_stop_kind, None);
+    assert_eq!(auto.auto_stop_at, None);
+}
+
+fn dev_impl_entry() -> Value {
+    json!({"ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "read", "path": "src/app.py"},
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+        {"op": "git", "args": ["add", "src/app.py"]},
+        {"op": "git", "args": ["commit", "-m", "sua-app: sửa app"]}
+    ]})
+}
+
+fn qa_entry(verdict: &str) -> Value {
+    let report = format!(
+        "# QA: sửa app\n## Thay đổi có khớp plan không (từng mục)\n- src/app.py: đã xem.\n## Sửa ngoài plan (nếu có)\nKhông.\n## Rủi ro\nKhông.\n## Kết luận\n{verdict}\n"
+    );
+    json!({"ops": [{"op": "write", "path": ".qa-report.md", "content": report}]})
+}
+
+#[test]
+fn sigkilled_driver_leaves_nothing_running() {
+    let sb = Sandbox::new();
+    approved_nhanh_task(&sb);
+
+    let (mut driver, tree) = spawn_tree_driver(&sb);
+    let dev_run = wait_running_dev(&sb);
+    driver.record_descendants();
+
+    // SIGKILL chỉ cho pid driver đã ghi (Child do test sinh ra).
+    let driver_id = agent_brain::procs::proc_id(driver.pid()).expect("driver proc_id");
+    assert!(agent_brain::procs::signal_proc(driver_id, libc::SIGKILL));
+    let code = driver.wait_exit(Duration::from_secs(15));
+    assert_eq!(code, Some(128 + libc::SIGKILL), "driver did not die");
+
+    let gone = common::wait_until(Duration::from_secs(15), || {
+        tree.iter().all(|p| !agent_brain::procs::alive(*p))
+    });
+    assert!(gone, "tree survived: {:?}", driver.alive_recorded());
+    let none_running = common::wait_until(Duration::from_secs(15), || running_count(&sb) == 0);
+    assert!(
+        none_running,
+        "run {dev_run} still running: {}",
+        run_status(&sb, dev_run)
+    );
+    let all_gone = common::wait_until(Duration::from_secs(5), || {
+        driver.alive_recorded().is_empty()
+    });
+    assert!(all_gone, "alive: {:?}", driver.alive_recorded());
+
+    // Hàng `running` cũ của driver đã chết được coi như không có driver.
+    let auto = auto_row(&sb);
+    assert_eq!(auto.auto_state.as_deref(), Some("running"));
+    let kill = sb.run(&["kill", "1"], None);
+    assert_eq!(kill.code, 1, "stderr: {}", kill.stderr);
+    assert!(
+        kill.stderr.contains("không có run đang chạy"),
+        "stderr: {}",
+        kill.stderr
+    );
+    assert!(
+        !kill.stderr.contains("Đã yêu cầu autopilot dừng"),
+        "stderr: {}",
+        kill.stderr
+    );
+    assert_eq!(auto_row(&sb).auto_stop_kind, None);
+
+    // `agent-brain auto 1` nhận lại task (Pitfall 11) và chạy tiếp tới xong.
+    sb.write_config(json!({}));
+    let sc = json!({"by_role": {"dev": [dev_impl_entry()], "qa": [qa_entry("Đạt")]}});
+    let res = sb.run(&["auto", "1"], Some(sc));
+    assert_ok(&res, "auto 1 after a SIGKILLed driver");
+    assert_eq!(auto_row(&sb).auto_state.as_deref(), Some("done"));
+    assert_eq!(running_count(&sb), 0);
+}
