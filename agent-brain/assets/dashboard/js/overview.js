@@ -119,7 +119,7 @@
           {
             key: 'waiting',
             title: 'Chờ bạn',
-            hint: 'Duyệt plan hoặc chạy bước tiếp',
+            hint: 'Duyệt plan hoặc xử lý chỗ autopilot dừng',
             empty: 'Không có task nào chờ bạn.',
           },
           {
@@ -198,6 +198,27 @@
       pillLabel: function (t, role) {
         var s = this.step(t, role);
         return window.AB.roleName(role) + ': ' + (s ? window.AB.stepWord(s) : 'chờ');
+      },
+
+      // Autopilot stop reason (server stop_detail, shown verbatim) under the banner row.
+      hasReason: function (t) {
+        return Boolean(t && t.auto_state === 'stopped' && t.stop_detail);
+      },
+
+      reasonText: function (t) {
+        return (t && t.stop_detail) ? t.stop_detail : '';
+      },
+
+      showAutoBadge: function (t) {
+        return Boolean(t && (t.auto_state === 'running' || t.auto_state === 'stopping'));
+      },
+
+      get autoBadgeClass() {
+        return window.AB.stepClass('dang_chay');
+      },
+
+      get autoBadgeGlyph() {
+        return window.AB.stepGlyph('dang_chay');
       },
 
       profileClass: function (p) {

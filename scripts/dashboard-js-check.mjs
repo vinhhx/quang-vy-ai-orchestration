@@ -404,6 +404,47 @@ const sections = [
         runningLabel === 'Dev: đang chạy',
         `got "${runningLabel}"`
       );
+
+      // Phase 5.2: Chờ bạn hint, autopilot stop reason line, Autopilot badge
+      const DETAIL = 'Review code vẫn yêu cầu sửa lại sau 3 / 3 vòng.';
+      const stoppedTask = { id: 2, group: 'waiting', auto_state: 'stopped', stop_reason: 'het_vong', stop_detail: DETAIL, banner: 'Chờ bạn · hết vòng', updated_at: 2000 };
+      const gateTask = { id: 1, group: 'waiting', auto_state: 'gate', stop_reason: null, stop_detail: null, banner: 'Chờ duyệt plan', updated_at: 1000 };
+      const runTask = { id: 3, group: 'running', auto_state: 'running', stop_detail: null };
+      const stoppingTask = { id: 4, group: 'running', auto_state: 'stopping', stop_detail: null };
+      comp.tasks = [stoppedTask, gateTask, runTask, stoppingTask];
+      const waiting = comp.groups.find((g) => g.key === 'waiting');
+      check('overview: waiting group exists', Boolean(waiting));
+      check(
+        'overview: waiting hint',
+        waiting && waiting.hint === 'Duyệt plan hoặc xử lý chỗ autopilot dừng',
+        `got "${waiting && waiting.hint}"`
+      );
+      check(
+        'overview: waiting keeps server order (newest first)',
+        waiting && waiting.items.length === 2 && waiting.items[0].id === 2 && waiting.items[1].id === 1,
+        `got ${waiting && waiting.items.map((t) => t.id).join(',')}`
+      );
+      check('overview: hasReason stopped', comp.hasReason(stoppedTask) === true);
+      check('overview: reasonText stopped', comp.reasonText(stoppedTask) === DETAIL, `got "${comp.reasonText(stoppedTask)}"`);
+      check('overview: hasReason gate is false', comp.hasReason(gateTask) === false);
+      check('overview: reasonText gate is empty', comp.reasonText(gateTask) === '', `got "${comp.reasonText(gateTask)}"`);
+      check('overview: hasReason stopped without detail is false', comp.hasReason({ auto_state: 'stopped', stop_detail: null }) === false);
+      check('overview: showAutoBadge running', comp.showAutoBadge(runTask) === true);
+      check('overview: showAutoBadge stopping', comp.showAutoBadge(stoppingTask) === true);
+      for (const st of ['off', 'gate', 'stopped', 'lost', 'done', undefined]) {
+        check(`overview: showAutoBadge ${st} is false`, comp.showAutoBadge({ auto_state: st }) === false);
+      }
+      check(
+        'overview: autoBadgeClass is the dang_chay step class',
+        comp.autoBadgeClass === ctx.AB.stepClass('dang_chay'),
+        `got "${comp.autoBadgeClass}"`
+      );
+      check(
+        'overview: autoBadgeGlyph is the dang_chay glyph',
+        comp.autoBadgeGlyph === ctx.AB.stepGlyph('dang_chay'),
+        `got "${comp.autoBadgeGlyph}"`
+      );
+
     },
   },
   {

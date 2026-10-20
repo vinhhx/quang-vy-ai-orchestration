@@ -1001,6 +1001,45 @@ if screen == 'projects':
     print("Projects DOM OK")
     sys.exit(0)
 
+if screen == 'overview':
+    groups = [g for g in root.find(lambda n: n.attrs.get('data-overview-group') == 'waiting')]
+    if len(groups) != 1:
+        fail(f"Số nhóm data-overview-group='waiting' là {len(groups)}, kỳ vọng 1")
+    waiting = groups[0]
+    if waiting.hidden():
+        fail("Nhóm Chờ bạn đang bị ẩn")
+    if 'Duyệt plan hoặc xử lý chỗ autopilot dừng' not in waiting.text():
+        fail("Nhóm Chờ bạn không có gợi ý 'Duyệt plan hoặc xử lý chỗ autopilot dừng'")
+    items = {i.attrs.get('data-task-id'): i for i in waiting.find(lambda n: 'data-task-id' in n.attrs)}
+    for tid in ('1', '2'):
+        if tid not in items:
+            fail(f"Nhóm Chờ bạn không có task {tid} (có: {sorted(items)})")
+
+    def reason_lines(item):
+        return [r for r in item.find(lambda n: 'data-reason-line' in n.attrs) if not r.hidden()]
+
+    stopped = items['2']
+    stopped_text = ' '.join(stopped.text().split())
+    if 'Chờ bạn · hết vòng' not in stopped_text:
+        fail(f"Task 2 không có banner 'Chờ bạn · hết vòng' (nội dung: '{stopped_text}')")
+    lines = reason_lines(stopped)
+    if len(lines) != 1 or lines[0].text().strip() != 'Review code vẫn yêu cầu sửa lại sau 3 / 3 vòng.':
+        fail(f"Task 2 không có dòng lý do 'Review code vẫn yêu cầu sửa lại sau 3 / 3 vòng.' (nhận được: {[l.text() for l in lines]})")
+    gate = items['1']
+    gate_text = ' '.join(gate.text().split())
+    if 'Chờ duyệt plan' not in gate_text:
+        fail(f"Task 1 không có banner 'Chờ duyệt plan' (nội dung: '{gate_text}')")
+    if reason_lines(gate):
+        fail("Task 1 (chờ duyệt plan) không được có dòng lý do")
+    # No autopilot driver runs in the fixture: every Autopilot badge stays hidden.
+    badges = root.find(lambda n: n.attrs.get('aria-label') == 'Autopilot: đang chạy')
+    if not badges:
+        fail("Thiếu badge aria-label='Autopilot: đang chạy' trong task item")
+    if [b for b in badges if not b.hidden()]:
+        fail("Badge Autopilot hiện dù không có autopilot nào đang chạy")
+    print("Overview DOM OK")
+    sys.exit(0)
+
 print(f"Không có kiểm tra DOM cho {screen}")
 EOF
     then
