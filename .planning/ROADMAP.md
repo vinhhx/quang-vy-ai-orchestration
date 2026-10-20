@@ -248,10 +248,54 @@ Plans:
   5. Dashboard hiện thẻ review/sửa thật (vòng N / giới hạn, số chặn/góp ý), nút duyệt plan, bật/tắt autopilot; CSDL cũ nâng cấp lên schema mới không mất dữ liệu.
 
 **UI hint**: yes
-**Plans:** 0 plans
+**Plans:** 20 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 05.2 to break down)
+**Wave 1**
+- [ ] 05.2-01-PLAN.md — Tracer: schema v2 (runs rebuild with FK-safe runner, tasks columns incl. approved_commit) proven on a v1 DB with events; v2 data helpers; module stubs
+- [ ] 05.2-02-PLAN.md — Config defaults (review models/timeouts, autopilot limits, price table) and test harness (fake claude per-role queue, Sandbox workflow helpers)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 05.2-03-PLAN.md — Workflows (built-ins, workflows.json validation with Vietnamese key/line errors, resolution, snapshot) and pricing/budget arithmetic
+- [ ] 05.2-04-PLAN.md — Report front matter parser, named files for fix mode, shared protocol-file list, tri-state ancestry and bounded plan-commit lookup (05.1 WR-01/WR-02 helpers)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 05.2-05-PLAN.md — Review roles `run plan-review|code-review` (guarded report-only writes, D-06 verdicts, staged run recording)
+- [ ] 05.2-06-PLAN.md — Autopilot pure core: decide() rules (loops, caps, gate, budget, stops, resume) and stop wording
+- [ ] 05.2-13-PLAN.md — GET /api/workflows and per-project workflow on project JSON
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 05.2-07-PLAN.md — Dev fix mode (`--fix qa|code-review`), QA counts, protocol-aware QA diff, implicit approval
+- [ ] 05.2-08-PLAN.md — Task state derivation: review words, autopilot state, controls, any-role Kill, driver-aware actions
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 05.2-09-PLAN.md — Lead: workflow snapshot (`--workflow`), `--review` / `--note=` re-plans on the committed plan, approval clearing
+- [ ] 05.2-10-PLAN.md — Pipeline flow derivation: real review/fix cards, footers with cap, gate view and notes, budget, staged ledger (05.1 WR-02/WR-03)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 05.2-11-PLAN.md — Autopilot driver `agent-brain auto` / `auto --start` / `approve` (claim, child stages, stops, signals, kill flag)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 05.2-12-PLAN.md — Kill stops the autopilot through runner::cmd_kill; kill mid-loop and in the gap leave no process
+- [ ] 05.2-14-PLAN.md — Task API read side: pipeline flow over HTTP, controls/auto/rev, driver-aware busy rules, Giao việc workflow (05.1 WR-01, IN-05)
+
+**Wave 8** *(blocked on Wave 7 completion)*
+- [ ] 05.2-15-PLAN.md — Action endpoints: approve, return (note), auto start/stop/more-round/end, stale and duplicate 409s, serve shutdown (D-16)
+
+**Wave 9** *(blocked on Wave 8 completion)*
+- [ ] 05.2-16-PLAN.md — Task screen: data-driven flow with review/fix cards, footers, gate note, autopilot badge/toggle, budget line (05.1 WR-04)
+
+**Wave 10** *(blocked on Wave 9 completion)*
+- [ ] 05.2-17-PLAN.md — Task screen: Duyệt plan / Trả về Lead (note dialog), stop banner and actions, ledger counts and token line
+
+**Wave 11** *(blocked on Wave 10 completion)*
+- [ ] 05.2-18-PLAN.md — Giao việc Quy trình picker, Dự án workflow list, Tổng quan reason line and Autopilot badge
+
+**Wave 12** *(blocked on Wave 11 completion)*
+- [ ] 05.2-19-PLAN.md — Keyboard/layout checks, app.css rebuild, README, LIVE-CHECKS Phase 5.2 procedure, results template (05.1 WR-05)
+
+**Wave 13** *(blocked on Wave 12 completion)*
+- [ ] 05.2-20-PLAN.md — AUTO-07 live checks with the real claude in an isolated environment (user go/no-go checkpoint)
 
 ### Phase 05.3: Telegram Notifications and Actions (INSERTED)
 
