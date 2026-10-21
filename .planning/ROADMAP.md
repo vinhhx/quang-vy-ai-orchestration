@@ -318,7 +318,7 @@ Plans:
 **Requirements**: TELE-01, TELE-02, TELE-03, TELE-04, TELE-05, TELE-06, TELE-07
 **Notes**: Mở lại một quyết định Out of Scope (truy cập từ xa) theo cách hẹp — xem PROJECT.md. Gọi Telegram qua `curl` của hệ thống (05.3-CONTEXT D-04), không thêm crate HTTPS.
 **UI hint**: no
-**Plans:** 3/8 plans executed
+**Plans:** 5/8 plans executed
 
 Plans:
 **Wave 1**
@@ -329,8 +329,8 @@ Plans:
 - [x] 05.3-03-PLAN.md — Notifications: gate (with plan document), stop, QA đạt, run lỗi via pump hints; once per event (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 05.3-04-PLAN.md — Outage resilience (D-05): queue, backoff 5→60 s, 429, drop stale, one warning line per outage; outbox edit items; two tasks at once (wave 3)
-- [ ] 05.3-05-PLAN.md — Buttons act: long poll, chat-ID allowlist, Duyệt plan / Chạy thêm 1 vòng / Dừng hẳn, stale handling (wave 3)
+- [x] 05.3-04-PLAN.md — Outage resilience (D-05): queue, backoff 5→60 s, 429, drop stale, one warning line per outage; outbox edit items; two tasks at once (wave 3)
+- [x] 05.3-05-PLAN.md — Buttons act: long poll, chat-ID allowlist, Duyệt plan / Chạy thêm 1 vòng / Dừng hẳn, stale handling (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 05.3-06-PLAN.md — Trả về Lead note prompt, Kill with confirmation, edits that show who acted (wave 4)
