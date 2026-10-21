@@ -252,6 +252,44 @@ fn guard_binary_bash_exit_codes() {
     assert!(lines.iter().all(|l| l["tool"] == "Bash"));
 }
 
+/// 05.2-32: through the real hook payload, the guard binary blocks a
+/// `git commit` that would open an editor and any `--amend`.
+#[test]
+fn guard_binary_refuses_editor_forms() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path().canonicalize().expect("canonicalize");
+    let policy = write_policy(&dir);
+
+    let (code, stderr) = run_guard(&policy, &bash_payload(&dir, "git commit"));
+    assert_eq!(code, Some(2), "stderr: {stderr}");
+    assert!(
+        stderr.starts_with("agent-brain guard: chặn lệnh Bash 'git commit'"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("cần -m"), "stderr: {stderr}");
+
+    let (code, stderr) = run_guard(&policy, &bash_payload(&dir, "git commit --amend -m x"));
+    assert_eq!(code, Some(2), "stderr: {stderr}");
+    assert!(
+        stderr.starts_with("agent-brain guard: chặn lệnh Bash 'git commit --amend -m x'"),
+        "stderr: {stderr}"
+    );
+
+    let (code, stderr) = run_guard(&policy, &bash_payload(&dir, "git add -p"));
+    assert_eq!(code, Some(2), "stderr: {stderr}");
+
+    let (code, stderr) = run_guard(&policy, &bash_payload(&dir, "git commit -m \"x\""));
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+
+    let lines = guard_log_lines(&dir);
+    let decisions: Vec<&str> = lines
+        .iter()
+        .map(|l| l["decision"].as_str().unwrap())
+        .collect();
+    assert_eq!(decisions, vec!["block", "block", "block", "allow"]);
+    assert!(lines.iter().all(|l| l["tool"] == "Bash"));
+}
+
 fn setup_lead_task(sb: &Sandbox) -> (PathBuf, String, String) {
     let repo = setup_project(sb, "work");
     let sc_lead = lead_scenario(&[("src/app.py", "app()", "trả về 2", "yêu cầu")]);

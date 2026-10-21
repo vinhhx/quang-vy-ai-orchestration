@@ -307,16 +307,53 @@ const GIT_SUBCOMMANDS: [&str; 6] = ["diff", "log", "show", "status", "add", "com
 /// Long options of diff / log / show that write a file, run an external
 /// program or read files outside the repository.
 const GIT_DIFF_FORBIDDEN: &[&str] = &["output", "ext-diff", "textconv", "no-index"];
-/// Long options of commit that read the message from a file.
-const GIT_COMMIT_FORBIDDEN: &[&str] = &["file", "template", "pathspec-from-file"];
-/// Long options of add that add ignored files or read pathspecs from a file.
-const GIT_ADD_FORBIDDEN: &[&str] = &["force", "pathspec-from-file"];
+/// Long options of commit that read the message from a file, open an
+/// editor or an interactive prompt (a run would hang until its timeout), or
+/// rewrite an existing commit (`--amend`, e.g. the approved plan commit).
+const GIT_COMMIT_FORBIDDEN: &[&str] = &[
+    "file",
+    "template",
+    "pathspec-from-file",
+    "amend",
+    "patch",
+    "edit",
+    "reedit-message",
+    "interactive",
+];
+/// Long options of add that add ignored files, read pathspecs from a file,
+/// or open an editor or an interactive prompt.
+const GIT_ADD_FORBIDDEN: &[&str] = &[
+    "force",
+    "pathspec-from-file",
+    "patch",
+    "interactive",
+    "edit",
+];
 /// Exact long option names that share a prefix with a forbidden name but
 /// are harmless.
 const GIT_LONG_EXACT_ALLOWED: &[&str] = &["text", "no-ext-diff", "no-textconv"];
 
 fn git_forbidden_err(sub: &str, opt: &str) -> String {
     format!("git {sub} {opt} ghi file hoặc chạy chương trình ngoài — không được phép")
+}
+
+/// Refusal of a `git commit` without a message source: git would open an
+/// editor and the run would hang until its timeout.
+const GIT_COMMIT_NO_MESSAGE_ERR: &str =
+    "git commit cần -m \"…\" (một dòng); không mở trình soạn thảo";
+
+/// True when `name` (a long option name as typed) selects `full`: a prefix
+/// of it at least `min` characters long, the way git resolves
+/// abbreviations.
+fn long_abbrev_of(name: &str, full: &str, min: usize) -> bool {
+    name.len() >= min && full.starts_with(name)
+}
+
+/// True when a `--fixup` value creates a commit without an editor: the
+/// plain `--fixup=<commit>` form. `amend:` / `reword:` (any `<word>:`
+/// form) open an editor.
+fn plain_fixup_value(value: Option<&str>) -> bool {
+    value.is_some_and(|v| !v.is_empty() && !v.contains(':'))
 }
 
 /// The git option policy (W-1) on the words after `git`.
@@ -345,16 +382,25 @@ fn git_policy_check(args: &[ShellWord]) -> Result<(), String> {
 
     let rest = &args[i + 1..];
     let mut j = 0;
+    // `git commit` needs a message source (-m, --message, -C,
+    // --reuse-message, plain --fixup); without one git opens an editor.
+    let mut has_message = false;
+    // after `--` every word is a pathspec: it is still refused when it
+    // looks like a forbidden option, but never counts as a message source
+    let mut after_dashdash = false;
     while j < rest.len() {
         let word = rest[j].text.as_str();
         j += 1;
         if word == "--" {
             // pathspec separator: keep scanning (a later option-like
             // pathspec is refused too, which is safe)
+            after_dashdash = true;
             continue;
         }
         if let Some(long) = word.strip_prefix("--") {
-            let name = long.split('=').next().unwrap_or("");
+            let mut parts = long.splitn(2, '=');
+            let name = parts.next().unwrap_or("");
+            let value = parts.next();
             if name.is_empty() || GIT_LONG_EXACT_ALLOWED.contains(&name) {
                 continue;
             }
@@ -362,6 +408,17 @@ fn git_policy_check(args: &[ShellWord]) -> Result<(), String> {
             // so any non-empty prefix of a forbidden name counts.
             if forbidden_long.iter().any(|f| f.starts_with(name)) {
                 return Err(git_forbidden_err(sub, word));
+            }
+            if sub == "commit" && !after_dashdash {
+                if long_abbrev_of(name, "message", 3) || long_abbrev_of(name, "reuse-message", 3) {
+                    has_message = true;
+                } else if long_abbrev_of(name, "fixup", 3) {
+                    // `--fixup=<commit>` or `--fixup <commit>`
+                    let value = value.or_else(|| rest.get(j).map(|w| w.text.as_str()));
+                    if plain_fixup_value(value) {
+                        has_message = true;
+                    }
+                }
             }
             continue;
         }
@@ -375,8 +432,15 @@ fn git_policy_check(args: &[ShellWord]) -> Result<(), String> {
             "commit" => {
                 for (k, ch) in cluster.char_indices() {
                     match ch {
-                        'F' | 't' => return Err(git_forbidden_err(sub, word)),
+                        // -F / -t read a file; -p / -e / -c open a prompt
+                        // or an editor
+                        'F' | 't' | 'p' | 'e' | 'c' => {
+                            return Err(git_forbidden_err(sub, word));
+                        }
                         'm' => {
+                            if !after_dashdash {
+                                has_message = true;
+                            }
                             // the rest of the cluster is the message; when
                             // `m` ends the cluster the next word is
                             if k + ch.len_utf8() == cluster.len() {
@@ -384,20 +448,34 @@ fn git_policy_check(args: &[ShellWord]) -> Result<(), String> {
                             }
                             break;
                         }
+                        'C' => {
+                            // reuses a commit's message, no editor; takes
+                            // an attached value: stop the scan (the next
+                            // word is still checked)
+                            if !after_dashdash {
+                                has_message = true;
+                            }
+                            break;
+                        }
                         // these take an attached value: stop the scan
                         // (the next word is still checked)
-                        'c' | 'C' | 'u' | 'S' => break,
+                        'u' | 'S' => break,
                         _ => {}
                     }
                 }
             }
             "add" => {
-                if cluster.contains('f') {
+                // -f adds ignored files; -p / -i / -e open a prompt or an
+                // editor
+                if cluster.contains(['f', 'p', 'i', 'e']) {
                     return Err(git_forbidden_err(sub, word));
                 }
             }
             _ => {}
         }
+    }
+    if sub == "commit" && !has_message {
+        return Err(GIT_COMMIT_NO_MESSAGE_ERR.to_string());
     }
     Ok(())
 }
@@ -935,6 +1013,28 @@ mod tests {
             "git commit -C HEAD",
             "git diff --stat",
             "git add -u",
+            // 05.2-32: message sources and harmless commit / add forms
+            "git commit -m \"x\"",
+            "git commit -am \"x\"",
+            "git commit --message=\"x\"",
+            "git commit -C HEAD",
+            "git commit --allow-empty -m \"x\"",
+            "git add -A",
+            "git add -u",
+            "git add src/a.py",
+            // extra
+            "git commit --message x",
+            "git commit --mes=x",
+            "git commit --reuse-message=HEAD",
+            "git commit -i -m x src/a.py",
+            "git commit --include -m x src/a.py",
+            "git commit --all --quiet --no-verify --author=\"A <a@b>\" -m x",
+            "git commit --only -m x src/a.py",
+            "git commit --no-edit -m x",
+            "git commit -m --amend",
+            "git commit --fixup HEAD",
+            "git add --all",
+            "git add --intent-to-add src/a.py",
         ];
         let refused = [
             "git diff --output=/tmp/x",
@@ -988,8 +1088,49 @@ mod tests {
             "git add -Af .env",
             "git add --pathspec-f=/x",
             "git Diff",
+            // 05.2-32: forms that open an editor or a prompt, and --amend
+            "git add -p",
+            "git add -i src/a.py",
+            "git add --patch",
+            "git add --inter",
+            "git add -e x",
+            "git commit",
+            "git commit -a",
+            "git commit --amend -m \"x\"",
+            "git commit --am -m \"x\"",
+            "git commit -em \"x\"",
+            "git commit -p -m \"x\"",
+            "git commit -c HEAD",
+            "git commit --reedit-message=HEAD",
+            // extra
+            "git add -Ap",
+            "git add --edit x",
+            "git add --interactive",
+            "git commit --amend --no-edit",
+            "git commit --amend -C HEAD",
+            "git commit -m x --amend",
+            "git commit --edit -m x",
+            "git commit --e -m x",
+            "git commit --patch -m x",
+            "git commit --interactive -m x",
+            "git commit --re=HEAD",
+            "git commit -ac HEAD",
+            "git commit -ap -m x",
+            "git commit --me",
+            "git commit --squash=HEAD",
+            "git commit --fixup=amend:HEAD",
+            "git commit --fixup=reword:HEAD",
+            "git commit --fixup amend:HEAD",
+            "git commit --fixup",
+            "git commit -- -m x",
+            "git commit src/a.py",
         ];
         check_table(&allowed, &refused);
+
+        assert_eq!(
+            bash_command_check("git commit -a").unwrap_err(),
+            "git commit cần -m \"…\" (một dòng); không mở trình soạn thảo"
+        );
 
         assert_eq!(
             bash_command_check("git push").unwrap_err(),
