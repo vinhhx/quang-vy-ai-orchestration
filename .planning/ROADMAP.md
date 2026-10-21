@@ -318,7 +318,7 @@ Plans:
 **Requirements**: TELE-01, TELE-02, TELE-03, TELE-04, TELE-05, TELE-06, TELE-07
 **Notes**: Mở lại một quyết định Out of Scope (truy cập từ xa) theo cách hẹp — xem PROJECT.md. Gọi Telegram qua `curl` của hệ thống (05.3-CONTEXT D-04), không thêm crate HTTPS.
 **UI hint**: no
-**Plans:** 5/8 plans executed
+**Plans:** 7/8 plans executed
 
 Plans:
 **Wave 1**
@@ -333,8 +333,8 @@ Plans:
 - [x] 05.3-05-PLAN.md — Buttons act: long poll, chat-ID allowlist, Duyệt plan / Chạy thêm 1 vòng / Dừng hẳn, stale handling (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 05.3-06-PLAN.md — Trả về Lead note prompt, Kill with confirmation, edits that show who acted (wave 4)
-- [ ] 05.3-07-PLAN.md — Pairing CLI: `agent-brain telegram setup` / `test` (wave 4)
+- [x] 05.3-06-PLAN.md — Trả về Lead note prompt, Kill with confirmation, edits that show who acted (wave 4)
+- [x] 05.3-07-PLAN.md — Pairing CLI: `agent-brain telegram setup` / `test` (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 05.3-08-PLAN.md — Docs + live check with the user's bot and phone (user checkpoints) (wave 5)
