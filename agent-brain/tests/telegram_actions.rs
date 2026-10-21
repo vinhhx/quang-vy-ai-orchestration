@@ -940,3 +940,185 @@ fn sigint_with_open_long_poll_is_prompt() {
         curl.pid
     );
 }
+
+// ---------------------------------------------------------------------------
+// Plan 05.3-06: Trả về Lead with a note, Kill with confirmation, messages that
+// follow the task
+// ---------------------------------------------------------------------------
+
+const NOTE_ASK: &str = "Gửi ghi chú cho Lead hoặc bấm Không ghi chú";
+
+fn run_metrics(sb: &Sandbox, run_id: i64) -> Value {
+    let m: Option<String> = sb
+        .db()
+        .query_row(
+            "SELECT metrics_json FROM runs WHERE id = ?1",
+            [run_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&m.unwrap_or_else(|| "{}".to_string())).unwrap()
+}
+
+fn last_run_id(sb: &Sandbox, role: &str) -> i64 {
+    sb.db()
+        .query_row("SELECT MAX(id) FROM runs WHERE role = ?1", [role], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+/// Prompt (`-p`) of the fake claude's last Lead call (copied from dashboard_autopilot.rs).
+fn last_lead_prompt(sb: &Sandbox) -> String {
+    let rec = sb
+        .records()
+        .into_iter()
+        .filter(|r| {
+            let argv = r["argv"].as_array().unwrap();
+            argv.iter()
+                .position(|a| a.as_str() == Some("--append-system-prompt"))
+                .map(|i| {
+                    argv[i + 1]
+                        .as_str()
+                        .unwrap_or("")
+                        .starts_with("Bạn là Lead")
+                })
+                .unwrap_or(false)
+        })
+        .last()
+        .expect("a Lead record");
+    let argv: Vec<String> = rec["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap_or("").to_string())
+        .collect();
+    let i = argv.iter().position(|a| a == "-p").unwrap();
+    argv[i + 1].clone()
+}
+
+/// mac-dinh gate, then one more Lead round (append) that plan review approves.
+fn return_scenario() -> Value {
+    by_role(json!({
+        "lead": [lead_plan_entry(), lead_append_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 1), plan_review_entry("approve", 0, 2)],
+    }))
+}
+
+fn wait_job_role(srv: &Serve, job_id: u64, timeout: Duration) -> String {
+    let mut role = String::new();
+    let ok = wait_until(timeout, || {
+        let r = srv.get(&format!("/api/jobs/{job_id}"));
+        if r.status == 200 {
+            role = r.json()["role"].as_str().unwrap_or("").to_string();
+            return true;
+        }
+        false
+    });
+    assert!(
+        ok,
+        "job {job_id} never started; stderr:\n{}",
+        stderr_of(srv)
+    );
+    role
+}
+
+fn send_text(tg: &FakeTelegram, text: &str) -> i64 {
+    tg.push_update(tg.message_update(PAIRED_CHAT, PAIRED_CHAT, "private", text))
+}
+
+/// `Trả về Lead` on `rec`: answered, and a note prompt replying to it.
+fn open_note_prompt(tg: &FakeTelegram, srv: &Serve, rec: &Value, task_id: i64) -> Value {
+    let cb_id = press(tg, PAIRED_CHAT, PAIRED_CHAT, rec, "Trả về Lead");
+    let ans = wait_answer(tg, srv, &cb_id);
+    assert_eq!(ans["json"]["text"], json!(NOTE_ASK), "{ans}");
+    let prompt = wait_message(tg, srv, &format!("Ghi chú cho Lead (task {task_id})"));
+    assert_eq!(
+        text_of(&prompt),
+        format!("Ghi chú cho Lead (task {task_id}): gửi tin nhắn kế tiếp làm ghi chú (tối đa 500 ký tự), hoặc bấm Không ghi chú. Hết hạn sau 10 phút.")
+    );
+    assert_eq!(
+        labels(&prompt),
+        vec!["Không ghi chú".to_string(), "Huỷ".to_string()],
+        "{prompt}"
+    );
+    assert_eq!(prompt["json"]["chat_id"], json!(PAIRED_CHAT), "{prompt}");
+    assert_eq!(
+        prompt["json"]["reply_parameters"]["message_id"],
+        json!(message_id_of(rec)),
+        "{prompt}"
+    );
+    // Same task and rev as the pressed button.
+    let rev = button_data(rec, "Trả về Lead")
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        button_data(&prompt, "Không ghi chú"),
+        format!("n:{task_id}:{rev}")
+    );
+    assert_eq!(button_data(&prompt, "Huỷ"), format!("c:{task_id}:{rev}"));
+    prompt
+}
+
+#[test]
+fn return_lead_with_note_from_telegram() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    auto_start_to_gate(&sb, return_scenario());
+    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    let m = message_id_of(&gate);
+    let t = text_of(&gate).to_string();
+
+    let prompt = open_note_prompt(&tg, &srv, &gate, 1);
+    let p = message_id_of(&prompt);
+    assert_eq!(srv.get("/api/jobs/1").status, 404, "no job before the note");
+
+    send_text(&tg, "  -tách bước 2  ");
+    assert_eq!(
+        wait_job_role(&srv, 1, Duration::from_secs(15)),
+        "auto",
+        "the dashboard's return_lead job"
+    );
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], 0, "{job}");
+
+    let lead2 = last_run_id(&sb, "lead");
+    assert_eq!(run_metrics(&sb, lead2)["note"], "-tách bước 2");
+    let lead_prompt = last_lead_prompt(&sb);
+    assert!(
+        lead_prompt.contains("Ghi chú của người dùng: -tách bước 2"),
+        "prompt: {lead_prompt}"
+    );
+
+    let edit = wait_edit(&tg, &srv, m, |r| {
+        text_of(r).contains("✓ Đã trả về Lead (ghi chú: «-tách bước 2») — từ Telegram lúc ")
+    });
+    assert!(text_of(&edit).starts_with(&t), "{edit}");
+    assert!(empty_keyboard(&edit), "{edit}");
+    let pe = wait_edit(&tg, &srv, p, |r| text_of(r) == "Đã gửi cho Lead.");
+    assert!(empty_keyboard(&pe), "{pe}");
+    assert_eq!(approved_commit(&sb, 1), None);
+
+    let out = stdout_of(&srv);
+    assert!(
+        out.contains("Telegram: Trả về Lead task 1 — đã giao (ghi chú 12 ký tự)"),
+        "{out}"
+    );
+    assert!(!out.contains("tách bước"), "note text on stdout: {out}");
+    assert!(!stderr_of(&srv).contains("tách bước"));
+    // The note was not answered with the help line.
+    assert!(
+        !tg.calls("sendMessage").iter().any(|r| text_of(r) == HELP),
+        "{:#?}",
+        tg.records()
+    );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}

@@ -7,13 +7,19 @@
 //! dashboard's own `run_control`, which re-reads the task and checks the `rev`
 //! the message was rendered with, so a stale button never acts. No update can
 //! create a task or start new work (task intake is Phase 05.4).
+//!
+//! `Trả về Lead` asks for an optional note (D-13): while one prompt is open and
+//! not expired, the paired chat's next text message is the note, passed to the
+//! dashboard's own `return_lead` / `relead` path as one argv element.
 
 use super::callback::{self, Callback, Op};
 use super::outbox::{Outgoing, Tracked};
 use super::render;
 use super::transport::{backoff_ms, base_backoff_ms, Body, CallError, LONG_POLL_SECS};
 use super::{sleep_or_stop, BotCtx, Channel};
-use crate::dashboard::api_tasks::{load_task_state, run_control, ControlOutcome};
+use crate::dashboard::api_tasks::{
+    load_task_state, normalize_note, run_control, run_task_action, ControlOutcome, TaskState,
+};
 use crate::error::BrainResult;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -32,6 +38,19 @@ pub const HELP_TEXT: &str =
 pub const INVALID_BUTTON: &str = "Nút không hợp lệ.";
 const UNAVAILABLE_TEXT: &str = "Dashboard đang dừng — không nhận việc mới";
 const INTERNAL_TEXT: &str = "Lỗi nội bộ — xem terminal đang chạy agent-brain serve";
+const NOT_APPLICABLE: &str = "Hành động không áp dụng cho trạng thái hiện tại";
+
+/// How long a `Trả về Lead` note prompt stays open (D-13).
+pub const NOTE_PROMPT_SECS: i64 = 600;
+const NOTE_ASK_ANSWER: &str = "Gửi ghi chú cho Lead hoặc bấm Không ghi chú";
+pub const NOTE_TOO_LONG: &str =
+    "Ghi chú quá dài (tối đa 500 ký tự) — gửi lại ngắn hơn hoặc bấm Không ghi chú.";
+pub const NOTE_EXPIRED: &str = "Hết thời gian (10 phút) — không làm gì.";
+pub const NOTE_CANCELLED: &str = "Đã huỷ — không làm gì.";
+pub const NOTE_REPLACED: &str = "Đã huỷ — có yêu cầu ghi chú mới.";
+pub const NOTE_SENT: &str = "Đã gửi cho Lead.";
+const NOTE_STALE: &str = "Task đã đổi trạng thái — không làm gì.";
+const PROMPT_FAILED: &str = "Không gửi được yêu cầu ghi chú — bấm lại sau";
 
 /// Telegram's limit for an `answerCallbackQuery` text.
 const ANSWER_MAX: usize = 200;
@@ -105,13 +124,35 @@ pub fn authz(update: &Value, paired: i64) -> Authz {
     Authz::Skip
 }
 
-/// State of the poll loop (plan 05.3-06 adds the pending note).
+/// The open `Trả về Lead` note prompt (D-13). At most one is open at a time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingNote {
+    pub task_id: i64,
+    /// The rev of the pressed message; the return runs only with this rev.
+    pub rev: String,
+    /// The message whose `Trả về Lead` was pressed.
+    pub origin_message_id: i64,
+    pub origin_text: String,
+    /// The prompt message (with `Không ghi chú` / `Huỷ`).
+    pub prompt_message_id: i64,
+    pub expires_at_ms: i64,
+}
+
+impl PendingNote {
+    pub fn expired(&self, now_ms: i64) -> bool {
+        now_ms >= self.expires_at_ms
+    }
+}
+
+/// State of the poll loop.
 #[derive(Debug, Default)]
 pub struct PollState {
     /// Next `getUpdates` offset: the last handled update_id + 1.
     pub offset: Option<i64>,
     /// When each unknown ID was last logged.
     pub strangers: HashMap<i64, Instant>,
+    /// The open note prompt of `Trả về Lead`, if any.
+    pub pending: Option<PendingNote>,
 }
 
 impl PollState {
@@ -322,10 +363,21 @@ pub fn handle_update(ctx: &Arc<BotCtx>, state: &mut PollState, update: &Value) {
     }
 }
 
-/// A text from the paired chat. Nothing creates a task (D-01); plan 05.3-06
-/// adds the note prompt of `Trả về Lead` here.
-fn on_text(ctx: &Arc<BotCtx>, _state: &mut PollState, _text: &str) {
-    reply(ctx, HELP_TEXT);
+/// A text from the paired chat. Nothing creates a task (D-01). While a note
+/// prompt is open and not expired, the text is the note of `Trả về Lead`
+/// (D-13); otherwise the help line is the only reply.
+fn on_text(ctx: &Arc<BotCtx>, state: &mut PollState, text: &str) {
+    let now = crate::db::now_ms();
+    let open = state.pending.as_ref().is_some_and(|p| !p.expired(now));
+    if !open {
+        reply(ctx, HELP_TEXT);
+        return;
+    }
+    match normalize_note(Some(text)) {
+        // The prompt stays open: the user may send a shorter note.
+        Err(_) => reply(ctx, NOTE_TOO_LONG),
+        Ok(note) => perform_return(ctx, state, note, None),
+    }
 }
 
 fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
@@ -363,9 +415,280 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
     }
 }
 
-/// `Trả về Lead` and its note prompt (plan 05.3-06).
-fn on_return_lead(ctx: &Arc<BotCtx>, _state: &mut PollState, press: &Press, _cb: &Callback) {
-    answer(ctx, &press.id, INVALID_BUTTON, false);
+/// A task's state read on a fresh connection.
+enum Loaded {
+    State(Box<TaskState>),
+    Gone,
+    Error,
+}
+
+fn load_fresh(ctx: &BotCtx, task_id: i64) -> Loaded {
+    let conn = match crate::db::open(&ctx.st.db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            crate::term::emit(&format!("Telegram: lỗi mở CSDL: {}", e.message));
+            return Loaded::Error;
+        }
+    };
+    match load_task_state(&ctx.st, &conn, task_id) {
+        Ok(Ok(s)) => Loaded::State(Box::new(s)),
+        Ok(Err(_)) => Loaded::Gone,
+        Err(e) => {
+            crate::term::emit(&format!("Telegram: lỗi đọc task {task_id}: {}", e.message));
+            Loaded::Error
+        }
+    }
+}
+
+fn has_control(s: &TaskState, id: &str) -> bool {
+    s.view.controls.iter().any(|c| c.id == id)
+}
+
+fn has_action(s: &TaskState, id: &str) -> bool {
+    s.view.actions.iter().any(|a| a.id == id)
+}
+
+/// Stops the detector from also editing a message the bot is about to edit.
+fn untrack(ctx: &BotCtx, message_id: i64) -> Option<Tracked> {
+    ctx.registry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove_by_message(message_id)
+}
+
+/// One inline button row with callback data for `cb`'s task, run and rev.
+fn button_row(label: &str, op: Op, cb: &Callback) -> Vec<render::Button> {
+    vec![render::Button {
+        label: label.to_string(),
+        data: callback::encode(&Callback {
+            op,
+            task_id: cb.task_id,
+            run_id: cb.run_id,
+            rev: cb.rev.clone(),
+        }),
+    }]
+}
+
+/// The text of the note prompt (D-13).
+pub fn note_prompt_text(task_id: i64) -> String {
+    format!(
+        "Ghi chú cho Lead (task {task_id}): gửi tin nhắn kế tiếp làm ghi chú (tối đa 500 ký tự), hoặc bấm Không ghi chú. Hết hạn sau 10 phút."
+    )
+}
+
+/// `Trả về Lead` and its note prompt (D-13).
+fn on_return_lead(ctx: &Arc<BotCtx>, state: &mut PollState, press: &Press, cb: &Callback) {
+    match cb.op {
+        Op::ReturnLead => ask_note(ctx, state, press, cb),
+        _ => answer(ctx, &press.id, INVALID_BUTTON, false),
+    }
+}
+
+/// `Trả về Lead` pressed: checks the task, then opens the note prompt.
+fn ask_note(ctx: &Arc<BotCtx>, state: &mut PollState, press: &Press, cb: &Callback) {
+    let label = "Trả về Lead";
+    let s = match load_fresh(ctx, cb.task_id) {
+        Loaded::State(s) => s,
+        Loaded::Gone => {
+            untrack(ctx, press.message_id);
+            stale(ctx, press, label, cb.task_id);
+            return;
+        }
+        Loaded::Error => {
+            answer(ctx, &press.id, INTERNAL_TEXT, true);
+            return;
+        }
+    };
+    if cb.rev != s.rev {
+        untrack(ctx, press.message_id);
+        stale(ctx, press, label, cb.task_id);
+        return;
+    }
+    if !has_control(&s, "return_lead") && !has_action(&s, "relead") {
+        answer(ctx, &press.id, NOT_APPLICABLE, true);
+        return;
+    }
+    // One prompt at a time: a new press replaces the open one.
+    if let Some(old) = state.pending.take() {
+        edit(
+            ctx,
+            old.prompt_message_id,
+            NOTE_REPLACED,
+            render::no_keyboard(),
+        );
+    }
+    let keyboard = render::keyboard_json(&[
+        button_row("Không ghi chú", Op::NoNote, cb),
+        button_row("Huỷ", Op::CancelNote, cb),
+    ]);
+    match send_prompt(
+        ctx,
+        &note_prompt_text(cb.task_id),
+        press.message_id,
+        keyboard,
+    ) {
+        Some(prompt_message_id) => {
+            state.pending = Some(PendingNote {
+                task_id: cb.task_id,
+                rev: cb.rev.clone(),
+                origin_message_id: press.message_id,
+                origin_text: press.text.clone(),
+                prompt_message_id,
+                expires_at_ms: crate::db::now_ms() + NOTE_PROMPT_SECS * 1000,
+            });
+            answer(ctx, &press.id, NOTE_ASK_ANSWER, false);
+        }
+        None => answer(ctx, &press.id, PROMPT_FAILED, true),
+    }
+}
+
+/// Tells the user `text`: as the callback answer when there is a press,
+/// otherwise as a message in the paired chat.
+fn tell(ctx: &BotCtx, callback_id: Option<&str>, text: &str, alert: bool) {
+    match callback_id {
+        Some(id) => answer(ctx, id, text, alert),
+        None => reply(ctx, text),
+    }
+}
+
+/// Runs `Trả về Lead` for the open prompt with `note` (already normalized),
+/// through the dashboard's own path (D-02): control `return_lead` (Bạn gate,
+/// autopilot stop) or, where the state has none, the `Chạy lại Lead` action.
+/// The prompt is closed whatever the outcome.
+fn perform_return(
+    ctx: &Arc<BotCtx>,
+    state: &mut PollState,
+    note: Option<String>,
+    callback_id: Option<&str>,
+) {
+    let p = match state.pending.take() {
+        Some(p) => p,
+        None => return,
+    };
+    let label = "Trả về Lead";
+    let task_id = p.task_id;
+    let removed = untrack(ctx, p.origin_message_id);
+
+    let outcome: BrainResult<ControlOutcome> = match load_fresh(ctx, task_id) {
+        Loaded::Gone => Ok(ControlOutcome::NotFound(format!(
+            "Không tìm thấy task {task_id}"
+        ))),
+        Loaded::Error => Err(crate::error::BrainError::new(
+            "không đọc được trạng thái task",
+            1,
+        )),
+        Loaded::State(s) if s.rev != p.rev => Ok(ControlOutcome::Stale),
+        Loaded::State(s) => {
+            if has_control(&s, "return_lead") {
+                run_control(
+                    &ctx.st,
+                    task_id,
+                    "return_lead",
+                    Some(&p.rev),
+                    note.as_deref(),
+                )
+            } else if has_action(&s, "relead") {
+                run_task_action(
+                    &ctx.st,
+                    task_id,
+                    "relead",
+                    "lead",
+                    Some(&p.rev),
+                    note.as_deref(),
+                )
+            } else {
+                Ok(ControlOutcome::Refused {
+                    reason: NOT_APPLICABLE.to_string(),
+                    kind: "not_allowed",
+                })
+            }
+        }
+    };
+
+    let refused = |reason: &str| {
+        tell(ctx, callback_id, reason, true);
+        reinsert(ctx, removed.clone());
+        edit(ctx, p.prompt_message_id, reason, render::no_keyboard());
+        audit(label, task_id, reason);
+    };
+    match outcome {
+        Ok(ControlOutcome::Started { .. }) => {
+            let what = match note.as_deref() {
+                Some(n) => format!("Đã trả về Lead (ghi chú: «{n}»)"),
+                None => "Đã trả về Lead (không ghi chú)".to_string(),
+            };
+            let suffix = render::result_suffix(&what, true, crate::db::now_ms());
+            edit(
+                ctx,
+                p.origin_message_id,
+                &with_suffix(&p.origin_text, &suffix),
+                render::no_keyboard(),
+            );
+            edit(ctx, p.prompt_message_id, NOTE_SENT, render::no_keyboard());
+            if let Some(id) = callback_id {
+                answer(ctx, id, "Đã trả về Lead", false);
+            }
+            // Never the note itself on the terminal: only its length.
+            let result = match note.as_deref() {
+                Some(n) => format!("đã giao (ghi chú {} ký tự)", n.chars().count()),
+                None => "đã giao (không ghi chú)".to_string(),
+            };
+            audit(label, task_id, &result);
+        }
+        Ok(ControlOutcome::Stale) | Ok(ControlOutcome::NotFound(_)) => {
+            // The origin message stays untracked: it loses its buttons.
+            let sentence = format!("Task đã đổi trạng thái: {}", state_now(ctx, task_id));
+            edit(
+                ctx,
+                p.origin_message_id,
+                &with_suffix(&p.origin_text, &format!("\n\n{sentence}")),
+                render::no_keyboard(),
+            );
+            edit(ctx, p.prompt_message_id, NOTE_STALE, render::no_keyboard());
+            if let Some(id) = callback_id {
+                answer(ctx, id, &sentence, false);
+            }
+            audit(label, task_id, &sentence);
+        }
+        Ok(ControlOutcome::Refused { reason, .. }) => refused(&reason),
+        Ok(ControlOutcome::Invalid(msg)) => refused(&msg),
+        Ok(ControlOutcome::Unavailable) => refused(UNAVAILABLE_TEXT),
+        Ok(other) => {
+            // Not an outcome of return_lead / relead.
+            crate::term::emit(&format!(
+                "Telegram: kết quả không mong đợi khi trả về Lead task {task_id}: {other:?}"
+            ));
+            refused(INTERNAL_TEXT);
+        }
+        Err(e) => {
+            crate::term::emit(&format!(
+                "Telegram: lỗi nội bộ khi trả về Lead task {task_id} ({})",
+                e.message
+            ));
+            refused(INTERNAL_TEXT);
+        }
+    }
+}
+
+/// Sends the note prompt as a reply to `reply_to`; the prompt's message id,
+/// or `None` when Telegram did not take it (one attempt).
+fn send_prompt(ctx: &BotCtx, text: &str, reply_to: i64, keyboard: Value) -> Option<i64> {
+    let body = json!({
+        "chat_id": ctx.cfg.chat_id,
+        "text": text,
+        "reply_markup": keyboard,
+        "reply_parameters": {
+            "message_id": reply_to,
+            "allow_sending_without_reply": true,
+        },
+    });
+    match ctx
+        .tx
+        .call("sendMessage", &Body::Json(body), REPLY_MAX_SECS)
+    {
+        Ok(v) => v.get("message_id").and_then(Value::as_i64),
+        Err(_) => None,
+    }
 }
 
 /// `Kill` with its confirmation (plan 05.3-06).
@@ -495,21 +818,7 @@ pub(crate) fn apply_outcome(
 /// A stale press (D-15): nothing was executed; the user learns the task's
 /// current state and the message loses its buttons.
 pub(crate) fn stale(ctx: &Arc<BotCtx>, press: &Press, label: &str, task_id: i64) {
-    let now_line = match crate::db::open(&ctx.st.db_path) {
-        Ok(conn) => match load_task_state(&ctx.st, &conn, task_id) {
-            Ok(Ok(s)) => render::state_line(&s),
-            Ok(Err(_)) => format!("không còn task {task_id}"),
-            Err(e) => {
-                crate::term::emit(&format!("Telegram: lỗi đọc task {task_id}: {}", e.message));
-                "không đọc được trạng thái task".to_string()
-            }
-        },
-        Err(e) => {
-            crate::term::emit(&format!("Telegram: lỗi mở CSDL: {}", e.message));
-            "không đọc được trạng thái task".to_string()
-        }
-    };
-    let sentence = format!("Task đã đổi trạng thái: {now_line}");
+    let sentence = format!("Task đã đổi trạng thái: {}", state_now(ctx, task_id));
     answer(ctx, &press.id, &sentence, false);
     edit(
         ctx,
@@ -518,6 +827,15 @@ pub(crate) fn stale(ctx: &Arc<BotCtx>, press: &Press, label: &str, task_id: i64)
         render::no_keyboard(),
     );
     audit(label, task_id, &sentence);
+}
+
+/// One short line for where the task is now (read on a fresh connection).
+fn state_now(ctx: &BotCtx, task_id: i64) -> String {
+    match load_fresh(ctx, task_id) {
+        Loaded::State(s) => render::state_line(&s),
+        Loaded::Gone => format!("không còn task {task_id}"),
+        Loaded::Error => "không đọc được trạng thái task".to_string(),
+    }
 }
 
 /// Answers a callback query (stops the button's spinner). Failures — e.g. a
