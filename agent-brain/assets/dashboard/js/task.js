@@ -1181,6 +1181,9 @@
         if (st === 'lost') {
           return 'Autopilot đã dừng vì agent-brain serve tắt giữa chừng. Bật autopilot để chạy tiếp từ bước dở.';
         }
+        if (st === 'gate') {
+          return 'Autopilot dừng ở bước duyệt plan — bấm Duyệt plan để chạy tiếp.';
+        }
         if (!a || a.id !== 'auto_start' || !a.enabled) return '';
         var wf = (this.pipe && this.pipe.workflow) ? this.pipe.workflow : null;
         if (!wf || typeof wf.budget_minutes !== 'number' || typeof wf.budget_usd !== 'number') return '';
@@ -1392,6 +1395,10 @@
           case 'auto_start':
             return 'Đã bật autopilot.';
           case 'auto_stop':
+            // 05.2-29: Dừng autopilot at the gate turns autopilot off ({ended: true}).
+            if (data && data.ended) {
+              return 'Đã tắt autopilot cho task này — Duyệt plan giờ chỉ ghi nhận, không tự chạy tiếp. Bấm Bật autopilot để bật lại.';
+            }
             return 'Đã yêu cầu dừng autopilot — run hiện tại chạy nốt rồi dừng.';
           case 'auto_more_round':
             return 'Đã giao thêm 1 vòng.';

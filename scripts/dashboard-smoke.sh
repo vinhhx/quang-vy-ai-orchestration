@@ -754,6 +754,11 @@ if 'ab-act-auto_stop' not in parser.button_ids:
     print(f"Lỗi: Thiếu nút ab-act-auto_stop trong danh sách buttons: {parser.button_ids}", file=sys.stderr)
     sys.exit(1)
 
+# Header helper while autopilot waits at the gate (UI fix 1): says what Dừng autopilot does.
+if 'Autopilot dừng ở bước duyệt plan — bấm Duyệt plan để chạy tiếp.' not in parser.full_text:
+    print("Lỗi: Thiếu gợi ý 'Autopilot dừng ở bước duyệt plan — bấm Duyệt plan để chạy tiếp.' ở đầu card Pipeline", file=sys.stderr)
+    sys.exit(1)
+
 if len(parser.badges) != 1:
     print(f"Lỗi: Số phần tử data-auto-badge là {len(parser.badges)}, kỳ vọng 1", file=sys.stderr)
     sys.exit(1)

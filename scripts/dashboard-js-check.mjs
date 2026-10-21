@@ -1833,6 +1833,101 @@ const sections = [
     },
   },
   {
+    name: 'task-gate-autopilot',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      ctx.AB.route = { name: 'task', params: { id: '1' } };
+      const taskJsSrc = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/js/task.js'), 'utf8');
+      vm.runInContext(taskJsSrc, ctx, { filename: 'task.js' });
+
+      const GATE_HELP = 'Autopilot dừng ở bước duyệt plan — bấm Duyệt plan để chạy tiếp.';
+      const ENDED_MSG = 'Đã tắt autopilot cho task này — Duyệt plan giờ chỉ ghi nhận, không tự chạy tiếp. Bấm Bật autopilot để bật lại.';
+      const SOFT_MSG = 'Đã yêu cầu dừng autopilot — run hiện tại chạy nốt rồi dừng.';
+      const LIMITS = 'Giới hạn: 3 vòng mỗi bước lặp, 60 phút hoặc $20 cho cả task. Autopilot luôn dừng ở bước bạn duyệt plan.';
+      const APPROVE = { id: 'approve', label: 'Duyệt plan', enabled: true, reason: null, run_id: null };
+      const RETURN = { id: 'return_lead', label: 'Trả về Lead', enabled: true, reason: null, run_id: null };
+      const STOP = { id: 'auto_stop', label: 'Dừng autopilot', enabled: true, reason: null, run_id: null };
+      const START = { id: 'auto_start', label: 'Bật autopilot', enabled: true, reason: null, run_id: null };
+      const GATE_AUTO = { state: 'gate', workflow_auto: true, stop_reason: null, stop_word: null, stop_detail: null, stopped_in: null, stop_requested: false };
+      const T = {
+        id: 1,
+        slug: 'sua-app',
+        status: 'planned',
+        current_step: 'dev',
+        actions: [],
+        controls: [APPROVE, RETURN, STOP],
+        auto: GATE_AUTO,
+        workflow: { name: 'mac-dinh', summary: 'plan', auto: true },
+        rev: 'R',
+        steps: [],
+        runs: [],
+      };
+      const WF = { name: 'mac-dinh', summary: 'plan', auto: true, max_rounds: 3, budget_minutes: 60, budget_usd: 20, limits: '3 vòng · 60 phút · $20', loops: ['plan', 'build', 'qa'], stages: [] };
+      const GATE = { present: true, state: 'cho_ban', state_word: 'chờ bạn', result: 'chờ duyệt plan', at_ms: Date.now(), note: '', derived: false };
+      const PIPE = { workflow: WF, groups: [], gate: GATE, current_card: 'ban', budget: null, cards: {}, ledger: { groups: [], total: null } };
+
+      const c = factories.task();
+      c.id = '1';
+      c.task = T;
+      c.pipe = PIPE;
+
+      // Armed gate: Dừng autopilot in the header with the gate helper.
+      check('gate: headerControls ids', JSON.stringify(c.headerControls.map((x) => x.id)) === JSON.stringify(['auto_stop']), `got ${JSON.stringify(c.headerControls.map((x) => x.id))}`);
+      check('gate: headerHelper', c.headerHelper === GATE_HELP, `got "${c.headerHelper}"`);
+      const stopClass = c.actionClass(STOP);
+      check('gate: auto_stop secondary', stopClass.includes('ring-slate-300') && !stopClass.includes('indigo') && !stopClass.includes('rose'), `got "${stopClass}"`);
+      check('gate: approve stays the primary', c.actionClass(APPROVE).includes('bg-indigo-600'), `got "${c.actionClass(APPROVE)}"`);
+
+      const posts = [];
+      let nextRes = null;
+      ctx.AB.api = function (method, url, body) {
+        posts.push({ method, url, body });
+        return Promise.resolve(nextRes);
+      };
+      ctx.AB.focusLater = function () {};
+      ctx.AB.lockScroll = function () {};
+      let loads = 0;
+      c.load = function () {
+        loads++;
+      };
+      const settle = async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      };
+
+      // Dừng autopilot at the gate: the server turns autopilot off ({ended: true}).
+      nextRes = { ok: true, status: 200, data: { ok: true, ended: true } };
+      c.onAction(STOP);
+      check('gate stop: no dialog', c.dialog === null);
+      check('gate stop: in-flight label', c.actionText(STOP) === 'Đang dừng...', `got "${c.actionText(STOP)}"`);
+      await settle();
+      check('gate stop: POST path', posts.length === 1 && posts[0].method === 'POST' && posts[0].url === '/api/tasks/1/auto/stop', JSON.stringify(posts));
+      check('gate stop: body {rev}', posts[0] && JSON.stringify(posts[0].body) === JSON.stringify({ rev: 'R' }), JSON.stringify(posts[0]));
+      check('gate stop: ended message', c.message === ENDED_MSG, `got "${c.message}"`);
+      check('gate stop: reloads once', loads === 1, `loads=${loads}`);
+      check('gate stop: busy cleared', c.busyAction === '');
+
+      // Soft stop of a running driver keeps the existing copy.
+      c.task = { ...T, controls: [STOP], auto: { ...GATE_AUTO, state: 'running' } };
+      nextRes = { ok: true, status: 200, data: { ok: true } };
+      c.onAction(STOP);
+      await settle();
+      check('running stop: soft-stop message', c.message === SOFT_MSG, `got "${c.message}"`);
+      check('running stop: reloads', loads === 2, `loads=${loads}`);
+      check('running stop: helper unchanged', c.headerHelper === 'Run hiện tại chạy nốt rồi autopilot dừng. Muốn dừng ngay: Kill.', `got "${c.headerHelper}"`);
+
+      // Turned off at the gate: Bật autopilot with the limits helper.
+      c.task = { ...T, controls: [APPROVE, RETURN, START], auto: { ...GATE_AUTO, state: 'off' } };
+      check('off: headerControls ids', JSON.stringify(c.headerControls.map((x) => x.id)) === JSON.stringify(['auto_start']), `got ${JSON.stringify(c.headerControls.map((x) => x.id))}`);
+      check('off: limits helper', c.headerHelper === LIMITS, `got "${c.headerHelper}"`);
+    },
+  },
+  {
     name: 'ledger',
     async run(ctx) {
       const factories = {};
