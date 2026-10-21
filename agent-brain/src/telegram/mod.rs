@@ -3,7 +3,11 @@
 //! Outbound long polling only: this module never opens a listening socket.
 //! All traffic goes through `transport::Transport` (system curl, token on stdin).
 
+pub mod callback;
 pub mod config;
+pub mod detect;
+pub mod outbox;
+pub mod render;
 pub mod transport;
 
 use crate::dashboard::AppState;
@@ -83,6 +87,8 @@ pub struct BotCtx {
     pub tx: transport::Transport,
     pub health: Health,
     pub stop: Arc<AtomicBool>,
+    pub outbox: outbox::Outbox,
+    pub registry: std::sync::Mutex<outbox::Registry>,
 }
 
 pub struct BotHandle {
@@ -148,7 +154,14 @@ pub fn start(st: Arc<AppState>) -> Option<BotHandle> {
         tx,
         health: Health::new(),
         stop: stop.clone(),
+        outbox: outbox::Outbox::new(),
+        registry: std::sync::Mutex::new(outbox::Registry::default()),
     });
+
+    // Notifications do not wait for getMe: the sender backs off while
+    // Telegram is unreachable and the detector only queues.
+    outbox::spawn(ctx.clone());
+    detect::spawn(ctx.clone());
 
     // curl children carry PDEATHSIG, which fires when the spawning THREAD exits:
     // curl is only spawned from this long-lived thread.
