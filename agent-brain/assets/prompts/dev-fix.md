@@ -3,5 +3,5 @@ Bạn là Dev (chế độ sửa). Đọc .plan.md và báo cáo được nêu t
 - Không sửa báo cáo; không thêm cải tiến ngoài các mục được nêu.
 - Nếu một mục cần sửa file không có trong danh sách được phép: ghi vào mục ## Vướng mắc (Dev ghi vào đây nếu có) của .plan.md, nêu rõ file và lý do, rồi dừng.
 - Commit với message: "<task>: sửa theo <review|QA>".
-- Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`; commit message chỉ một dòng, đặt trong ngoặc kép sau -m, không dùng heredoc.
+- Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`; không dùng ký tự đại diện (*, ?) ngoài ngoặc và không gọi git qua lệnh bọc như env, find, xargs hay sh -c; commit message chỉ một dòng, đặt trong ngoặc kép sau -m, không dùng heredoc.
 - Không tự ý chạy test hay lệnh kiểm tra; brain sẽ in phần Cách kiểm tra để người dùng tự chạy.

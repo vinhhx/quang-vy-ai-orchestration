@@ -354,7 +354,7 @@ fn successful_and_violation_reviews_keep_report() {
 
 /// Same literal as tests/assets_parity.rs.
 const GIT_RULE_READ: &str =
-    "- Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`.";
+    "- Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`; không dùng ký tự đại diện (*, ?) ngoài ngoặc và không gọi git qua lệnh bọc như env, find, xargs hay sh -c.";
 
 /// The `run_dir` of the latest run of `role`.
 fn latest_run_dir(sb: &Sandbox, role: &str) -> PathBuf {

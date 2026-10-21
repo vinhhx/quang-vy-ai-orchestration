@@ -5,9 +5,9 @@ use std::path::Path;
 const GIT_RULE_PREFIX: &str = "- Chạy mỗi lệnh git riêng, trên một dòng";
 /// Lead, QA and both reviewers (read-only git).
 const GIT_RULE_READ: &str =
-    "- Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`.";
+    "- Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`; không dùng ký tự đại diện (*, ?) ngoài ngoặc và không gọi git qua lệnh bọc như env, find, xargs hay sh -c.";
 /// Dev and Dev-fix (they also commit).
-const GIT_RULE_COMMIT: &str = "- Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`; commit message chỉ một dòng, đặt trong ngoặc kép sau -m, không dùng heredoc.";
+const GIT_RULE_COMMIT: &str = "- Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`; không dùng ký tự đại diện (*, ?) ngoài ngoặc và không gọi git qua lệnh bọc như env, find, xargs hay sh -c; commit message chỉ một dòng, đặt trong ngoặc kép sau -m, không dùng heredoc.";
 
 /// The prompt with every git-rule line dropped; every other byte (newlines
 /// included) is kept.
