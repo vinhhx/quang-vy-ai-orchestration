@@ -316,12 +316,25 @@ Plans:
 **Source**: Quyết định người dùng 2026-10-20 (đặt sau 5.2, trước bảng công việc; phạm vi: thông báo + hành động ở cổng/khi dừng)
 **Depends on**: Phase 05.2
 **Requirements**: TBD (định nghĩa khi /gsd-discuss-phase 05.3)
-**Notes**: Mở lại một quyết định Out of Scope (truy cập từ xa) theo cách hẹp — xem PROJECT.md. Cần crate HTTPS client mới cho bản build tĩnh offline → người dùng duyệt crate trước khi thêm (như Phase 5).
+**Notes**: Mở lại một quyết định Out of Scope (truy cập từ xa) theo cách hẹp — xem PROJECT.md. Gọi Telegram qua `curl` của hệ thống (05.3-CONTEXT D-04), không thêm crate HTTPS.
 **UI hint**: no
 **Plans:** 0 plans
 
 Plans:
 - [ ] TBD (run /gsd-plan-phase 05.3 to break down)
+
+### Phase 05.4: Work Board (INSERTED)
+
+**Goal**: Màn hình mới `#/board` (View 2 của Dashboard v2): các hạng mục công việc xếp theo wave (wave 0 không phụ thuộc, wave sau chỉ phụ thuộc wave trước), đường nối phụ thuộc, đường găng (critical path) tô nổi, bấm một hạng mục để làm sáng những gì nó chờ và những gì chờ nó, công tắc ẩn/thu gọn hạng mục đã xong — dữ liệu nhập từ `ROADMAP.md` + front matter plan của GSD (`wave`, `depends_on`) trước, chế độ epic của Lead làm sau.
+**Source**: Thiết kế Dashboard v2 (`05.1-DESIGN-REF.html`, "View 2 · Work board"; https://claude.ai/artifact/KdMc5CMNSMg4G5T9jLjFRK), quyết định người dùng 2026-10-19 (Phase C, nhập roadmap GSD trước) và 2026-10-20 (bảng công việc → 5.4)
+**Depends on**: Phase 05.2
+**Requirements**: TBD (định nghĩa khi /gsd-discuss-phase 05.4)
+**Notes**: Tầng mới trên task: bảng `epics`, hạng mục, phụ thuộc; `GET /api/board?epic=&milestone=&profile=` trả hạng mục kèm trạng thái suy ra, wave, cờ critical và các cạnh. Giữ nguyên quy tắc Phase 5: `127.0.0.1` + token, Tailwind v4 build, Alpine CSP, không CDN, offline, tiếng Việt, sáng/tối, `dashboard-ui-lint.sh` phải qua.
+**UI hint**: yes
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 05.4 to break down)
 
 ### Phase 6: Multi-engine & Media Branch
 
