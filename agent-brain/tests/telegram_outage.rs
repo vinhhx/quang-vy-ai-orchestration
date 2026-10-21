@@ -496,3 +496,37 @@ fn autopilot_not_blocked_by_outage() {
     assert_eq!(count_lines(&err, WARNING), 1, "stderr:\n{err}");
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+/// WR-05: `getMe` fails for good (404: malformed or deleted token). The sender and the
+/// detector stop with the poll thread instead of queueing events that Telegram rejects.
+#[test]
+fn getme_non_retryable_stops_notifications() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_two_projects(&sb);
+    tg.set_behavior(json!([
+        {"method": "getMe", "times": 100, "status": 404, "description": "Not Found"}
+    ]));
+
+    let mut srv = tg.serve(&sb, &[]);
+    assert!(
+        wait_until(Duration::from_secs(10), || stderr_of(&srv)
+            .contains("Telegram: lỗi — Telegram trả lỗi 404")),
+        "no error line; stderr:\n{}\nrecords:\n{:#?}",
+        stderr_of(&srv),
+        tg.records()
+    );
+    // Give the stop flag time to reach the detector and the sender.
+    std::thread::sleep(Duration::from_secs(1));
+
+    run_lead(&sb, "web-ban-hang", "sua-app", "sửa app");
+    std::thread::sleep(Duration::from_secs(4));
+    assert!(
+        tg.calls("sendMessage").is_empty(),
+        "notifications continued after getMe failed:\n{:#?}",
+        tg.records()
+    );
+    assert_eq!(count_lines(&stderr_of(&srv), "Telegram: bỏ tin"), 0);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}

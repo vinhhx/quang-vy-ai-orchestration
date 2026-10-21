@@ -173,6 +173,9 @@ pub fn start(st: Arc<AppState>) -> Option<BotHandle> {
         .spawn(move || poll_thread(ctx));
     if let Err(e) = spawned {
         crate::term::emit(&format!("Telegram: lỗi — không tạo được luồng bot: {e}"));
+        // The sender and the detector are already running and nobody holds a
+        // `BotHandle` to stop them.
+        stop.store(true, Ordering::SeqCst);
         return None;
     }
     Some(BotHandle { stop })
@@ -215,7 +218,11 @@ fn poll_thread(ctx: Arc<BotCtx>) {
                         }
                     }
                     None => {
+                        // Retrying is pointless (e.g. 404 for a malformed or deleted
+                        // token): stop the sender and the detector too, or they keep
+                        // queueing events that are rejected one by one.
                         crate::term::emit(&format!("Telegram: lỗi — {}", e.text()));
+                        ctx.stop.store(true, Ordering::SeqCst);
                         return;
                     }
                 }
