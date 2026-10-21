@@ -333,10 +333,22 @@ fn auto_state_of(a: &AutoFacts) -> &'static str {
     }
 }
 
+/// Autopilot còn bật cho task: quy trình `auto: true` và bạn chưa tắt autopilot
+/// (auto_state khác `ended` — Dừng autopilot ở cổng hoặc Dừng hẳn). Quyết định
+/// Duyệt plan có chạy tiếp autopilot không, Trả về Lead / Chạy lại Lead chạy
+/// `auto N --replan` hay Lead tay (D-14, D-15 sửa đổi, UI-SPEC B3).
+pub fn autopilot_continues(workflow: Option<&Workflow>, auto: Option<&TaskAuto>) -> bool {
+    workflow.map_or(false, |w| w.auto)
+        && auto.and_then(|a| a.auto_state.as_deref()) != Some("ended")
+}
+
 /// Dựng nút điều khiển Duyệt plan (gate Waiting).
 fn build_approve(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) -> ActionView {
     let mut enabled = true;
     let mut reason = None;
+    // Duyệt plan chạy tiếp autopilot: cần dự án rảnh và đúng nhánh task (CR-01).
+    // Duyệt chỉ ghi nhận (quy trình tay, autopilot đã tắt) thì không cần.
+    let continues = autopilot_continues(a.workflow, a.auto);
 
     if running_run.is_some() {
         enabled = false;
@@ -350,9 +362,16 @@ fn build_approve(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) -> 
             "Plan có thay đổi chưa commit — commit với message '{}: plan' rồi duyệt",
             f.task.slug
         ));
-    } else if a.workflow.map_or(false, |w| w.auto) && f.busy.is_some() {
+    } else if continues && f.busy.is_some() {
         enabled = false;
         reason = f.busy.clone();
+    } else if continues && f.git.current_branch.as_deref() != Some(&f.task.branch) {
+        enabled = false;
+        let cur = f.git.current_branch.as_deref().unwrap_or("None");
+        reason = Some(format!(
+            "Không ở nhánh task '{}' (nhánh hiện tại: '{cur}') — không đoán",
+            f.task.branch
+        ));
     }
 
     ActionView {
@@ -1614,6 +1633,113 @@ mod tests {
             start_null.reason.as_deref(),
             Some("Autopilot dừng ở bước duyệt plan — bấm Duyệt plan để chạy tiếp.")
         );
+    }
+
+    #[test]
+    fn autopilot_continues_rule() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+        let nhanh = wfs.get("nhanh").unwrap();
+
+        let states = [None, Some("gate"), Some("stopped"), Some("ended")];
+        for st in states {
+            let a = dummy_task_auto(st, None);
+            assert_eq!(
+                autopilot_continues(Some(mac_dinh), Some(&a)),
+                st != Some("ended"),
+                "mac-dinh, auto_state {st:?}"
+            );
+            assert!(
+                !autopilot_continues(Some(nhanh), Some(&a)),
+                "nhanh, auto_state {st:?}"
+            );
+            assert!(
+                !autopilot_continues(None, Some(&a)),
+                "no workflow, auto_state {st:?}"
+            );
+        }
+        assert!(autopilot_continues(Some(mac_dinh), None));
+        assert!(!autopilot_continues(Some(nhanh), None));
+        assert!(!autopilot_continues(None, None));
+    }
+
+    #[test]
+    fn approve_branch_rule() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+        let nhanh = wfs.get("nhanh").unwrap();
+
+        let task = dummy_task("planned");
+        let git = gate_git("main");
+        let facts = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 2000,
+        };
+        let approve_of = |view: &TaskView| {
+            view.controls
+                .iter()
+                .find(|c| c.id == "approve")
+                .cloned()
+                .unwrap()
+        };
+
+        // 1. mac-dinh, autopilot armed at the gate, on main: approval would
+        // start the driver on another branch -> disabled (CR-01).
+        let gate = dummy_task_auto(Some("gate"), None);
+        let af = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&gate),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let ap = approve_of(&derive_with(&facts, &af));
+        assert!(!ap.enabled);
+        assert_eq!(
+            ap.reason.as_deref(),
+            Some("Không ở nhánh task 'task/sua-app' (nhánh hiện tại: 'main') — không đoán")
+        );
+
+        // 2. autopilot turned off (`ended`): approval only records -> enabled.
+        let ended = dummy_task_auto(Some("ended"), None);
+        let af_ended = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&ended),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let ap = approve_of(&derive_with(&facts, &af_ended));
+        assert!(ap.enabled, "{ap:?}");
+
+        // 3. nhanh (manual) on main -> enabled.
+        let af_nhanh = AutoFacts {
+            workflow: Some(nhanh),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let ap = approve_of(&derive_with(&facts, &af_nhanh));
+        assert!(ap.enabled, "{ap:?}");
+
+        // 4. mac-dinh on the task branch -> enabled.
+        let git_ok = gate_git("task/sua-app");
+        let facts_ok = TaskFacts {
+            git: &git_ok,
+            ..facts
+        };
+        let ap = approve_of(&derive_with(&facts_ok, &af));
+        assert!(ap.enabled, "{ap:?}");
     }
 
     #[test]

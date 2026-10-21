@@ -1395,10 +1395,11 @@ async fn post_task_action(
             )
                 .into_response());
         }
-        // Chạy lại Lead trên quy trình `auto: true`: autopilot lập lại plan từ khung
-        // mới (`auto {id} --replan`, không ghi chú) rồi review plan như thường.
-        let replan_auto =
-            action_id == "relead" && state.workflow.as_ref().map_or(false, |w| w.auto);
+        // Chạy lại Lead khi autopilot còn bật (quy trình `auto: true`, chưa `ended`):
+        // autopilot lập lại plan từ khung mới (`auto {id} --replan`, không ghi chú)
+        // rồi review plan như thường; autopilot đã tắt thì chạy Lead tay.
+        let replan_auto = action_id == "relead"
+            && taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto));
         let role = if replan_auto { "auto" } else { role };
         let args = match role {
             "auto" => vec![
@@ -1657,7 +1658,6 @@ async fn post_control(
         }
 
         let id_str = task_id.to_string();
-        let wf_auto = state.workflow.as_ref().map_or(false, |w| w.auto);
         match control {
             "approve" => {
                 let plan_commit = match claim::approve_check(&conn, &state.task, &state.root) {
@@ -1673,20 +1673,22 @@ async fn post_control(
                     _ => None,
                 };
                 let approved_at = claim::approve_record(&conn, task_id, &plan_commit)?;
-                let job_id = if wf_auto {
-                    let spec = task_job(&state, "auto", vec!["auto".to_string(), id_str]);
-                    match start_job(&st, spec) {
-                        Ok(j) => Some(j),
-                        Err(resp) => {
-                            // Không để lại duyệt nửa chừng khi autopilot không bắt đầu được;
-                            // chỉ hoàn lại khi duyệt vẫn là của yêu cầu này (WR-04).
-                            claim::revert_approval(&conn, task_id, &plan_commit, prev)?;
-                            return Ok(resp);
+                // Autopilot còn bật: chạy tiếp; đã tắt (`ended`) / quy trình tay: chỉ ghi nhận.
+                let job_id =
+                    if taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)) {
+                        let spec = task_job(&state, "auto", vec!["auto".to_string(), id_str]);
+                        match start_job(&st, spec) {
+                            Ok(j) => Some(j),
+                            Err(resp) => {
+                                // Không để lại duyệt nửa chừng khi autopilot không bắt đầu được;
+                                // chỉ hoàn lại khi duyệt vẫn là của yêu cầu này (WR-04).
+                                claim::revert_approval(&conn, task_id, &plan_commit, prev)?;
+                                return Ok(resp);
+                            }
                         }
-                    }
-                } else {
-                    None
-                };
+                    } else {
+                        None
+                    };
                 Ok(json_resp(
                     StatusCode::OK,
                     serde_json::json!({
@@ -1699,27 +1701,28 @@ async fn post_control(
             "return_lead" => {
                 // D-17 / D-30: lập lại plan (ghi chú là một phần tử argv); bỏ duyệt
                 // chỉ sau khi job đã bắt đầu — job bị từ chối thì giữ nguyên duyệt (WR-04).
-                let (role, args) = if wf_auto {
-                    let mut a = vec!["auto".to_string(), id_str, "--replan".to_string()];
-                    if let Some(n) = note.as_deref() {
-                        a.push(format!("--note={n}"));
-                    }
-                    ("auto", a)
-                } else {
-                    let mut a = vec![
-                        "run".to_string(),
-                        "lead".to_string(),
-                        "--name".to_string(),
-                        state.task.slug.clone(),
-                    ];
-                    if let Some(n) = note.as_deref() {
-                        a.push(format!("--note={n}"));
-                    }
-                    a.push("--".to_string());
-                    a.push(state.project.id.clone());
-                    a.push(state.task.title.clone());
-                    ("lead", a)
-                };
+                let (role, args) =
+                    if taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)) {
+                        let mut a = vec!["auto".to_string(), id_str, "--replan".to_string()];
+                        if let Some(n) = note.as_deref() {
+                            a.push(format!("--note={n}"));
+                        }
+                        ("auto", a)
+                    } else {
+                        let mut a = vec![
+                            "run".to_string(),
+                            "lead".to_string(),
+                            "--name".to_string(),
+                            state.task.slug.clone(),
+                        ];
+                        if let Some(n) = note.as_deref() {
+                            a.push(format!("--note={n}"));
+                        }
+                        a.push("--".to_string());
+                        a.push(state.project.id.clone());
+                        a.push(state.task.title.clone());
+                        ("lead", a)
+                    };
                 match start_job(&st, task_job(&state, role, args)) {
                     Ok(job_id) => {
                         crate::db::clear_task_approval(&conn, task_id)?;

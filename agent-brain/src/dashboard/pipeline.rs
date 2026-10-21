@@ -809,7 +809,9 @@ fn derive_gate_view(base: &PipelineView, _f: &PipelineFacts, x: &FlowFacts) -> G
                 let note_kind =
                     if auto_state == Some("stopped") && stopped_loop == Some(Loop::Plan) {
                         "loop_stopped"
-                    } else if wf.auto {
+                    } else if wf.auto && auto_state != Some("ended") {
+                        // Autopilot còn bật. Đã tắt cho task (`ended`): duyệt chỉ
+                        // ghi nhận, nên dùng ghi chú của đường tay (D-15 sửa đổi).
                         "auto_waiting"
                     } else {
                         "manual_waiting"
@@ -3127,6 +3129,61 @@ mod tests {
                 Some("Cổng duyệt suy ra từ dữ liệu: Dev đã chạy trên bản plan hiện tại thì coi là đã duyệt.")
             );
         }
+    }
+
+    #[test]
+    fn gate_note_ended_is_manual() {
+        let task = dummy_task("planned");
+        let wf_auto = test_mac_dinh();
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &[],
+            plan: &PlanFacts::Unknown,
+            current_step: "lead",
+            now_ms: 1000,
+        };
+        let auto_of = |st: &str| TaskAuto {
+            workflow_json: None,
+            auto_state: Some(st.to_string()),
+            approved_at: None,
+            approved_commit: None,
+            auto_pid: None,
+            auto_pid_start: None,
+            auto_stop_at: None,
+            auto_stop_kind: None,
+            auto_json: None,
+        };
+
+        // Autopilot turned off for the task: approval only records.
+        let ended = auto_of("ended");
+        let flow = FlowFacts {
+            workflow: Some(&wf_auto),
+            auto: Some(&ended),
+            gate: Some(GateState::Waiting),
+            plan_commit_at: Some(5000),
+            ..Default::default()
+        };
+        let resp = derive_response(&facts, &flow);
+        assert_eq!(resp.gate.state, "cho_ban");
+        assert_eq!(resp.gate.note_kind, "manual_waiting");
+        assert_eq!(
+            resp.gate.note.as_deref(),
+            Some("Duyệt plan để ghi nhận bạn đồng ý, rồi bấm Chạy Dev. Bấm Chạy Dev trực tiếp cũng coi là đã duyệt.")
+        );
+
+        // Autopilot armed at the gate: unchanged.
+        let gate = auto_of("gate");
+        let flow = FlowFacts {
+            workflow: Some(&wf_auto),
+            auto: Some(&gate),
+            gate: Some(GateState::Waiting),
+            plan_commit_at: Some(5000),
+            ..Default::default()
+        };
+        assert_eq!(
+            derive_response(&facts, &flow).gate.note_kind,
+            "auto_waiting"
+        );
     }
 
     #[test]

@@ -1529,6 +1529,93 @@ fn ended_gate_rearm() {
 }
 
 #[test]
+fn approve_after_gate_stop_records_only() {
+    let sb = Sandbox::new();
+    let repo = auto_to_gate(&sb);
+    // A Dev run would show up if the approval wrongly continued the autopilot.
+    sb.write_scenario(full_flow_scenario());
+    let srv = sb.serve(&[]);
+    stop_at_gate(&sb, &srv);
+
+    let t = srv.get("/api/tasks/1").json();
+    assert_eq!(control(&t, "approve")["enabled"], true);
+    let rev = t["rev"].as_str().unwrap().to_string();
+    let resp = srv.post_json("/api/tasks/1/approve", &json!({ "rev": rev }));
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    let body = resp.json();
+    assert!(body["job_id"].is_null(), "{body}");
+    let sha = plan_sha(&sb, &repo);
+    assert_eq!(body["plan_commit"], sha.as_str(), "{body}");
+    assert_eq!(approved_commit(&sb, 1), Some(sha));
+
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        !run_roles(&sb).iter().any(|r| r == "dev"),
+        "no Dev run after a recording-only approval: {:?}",
+        run_roles(&sb)
+    );
+    assert_eq!(srv.get("/api/jobs/1").status, 404, "no job started");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("ended"));
+    let p = srv.get("/api/tasks/1/pipeline").json();
+    assert_eq!(p["gate"]["note_kind"], "approved_explicit", "{}", p["gate"]);
+}
+
+#[test]
+fn return_after_gate_stop_runs_manual_lead() {
+    let sb = Sandbox::new();
+    let repo = auto_to_gate(&sb);
+    sb.write_scenario(by_role(json!({ "lead": [lead_append_entry()] })));
+    let srv = sb.serve(&[]);
+    stop_at_gate(&sb, &srv);
+
+    let p = srv.get("/api/tasks/1/pipeline").json();
+    assert_eq!(p["gate"]["note_kind"], "manual_waiting", "{}", p["gate"]);
+
+    let t = srv.get("/api/tasks/1").json();
+    assert_eq!(control(&t, "return_lead")["enabled"], true);
+    let rev = t["rev"].as_str().unwrap().to_string();
+    let resp = srv.post_json("/api/tasks/1/return", &json!({"note": "x", "rev": rev}));
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(job_role(&srv, job_id), "lead");
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+
+    // A manual Lead run, no Review plan after it, autopilot stays off.
+    assert_eq!(run_roles(&sb), vec!["lead", "plan-review", "lead"]);
+    assert_eq!(run_metrics(&sb, last_run_id(&sb, "lead"))["note"], "x");
+    let plan = std::fs::read_to_string(repo.join(".plan.md")).unwrap();
+    assert!(plan.contains("<!-- v2 -->"), "{plan}");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("ended"));
+    assert_eq!(approved_commit(&sb, 1), None);
+}
+
+#[test]
+fn approve_on_other_branch_refused() {
+    let sb = Sandbox::new();
+    let repo = auto_to_gate(&sb);
+    sb.git(&repo, &["checkout", "main"]);
+    let srv = sb.serve(&[]);
+
+    let reason = "Không ở nhánh task 'task/sua-app' (nhánh hiện tại: 'main') — không đoán";
+    let t = srv.get("/api/tasks/1").json();
+    assert_eq!(t["auto"]["state"], "gate", "{}", t["auto"]);
+    let ap = control(&t, "approve");
+    assert_eq!(ap["enabled"], false, "{ap}");
+    assert_eq!(ap["reason"], reason);
+
+    let rev = t["rev"].as_str().unwrap().to_string();
+    let resp = srv.post_json("/api/tasks/1/approve", &json!({ "rev": rev }));
+    assert_eq!(resp.status, 409, "{}", resp.text());
+    let body = resp.json();
+    assert_eq!(body["kind"], "not_allowed", "{body}");
+    assert_eq!(body["error"], reason);
+    assert_eq!(approved_commit(&sb, 1), None);
+    assert_eq!(srv.get("/api/jobs/1").status, 404, "no job started");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+}
+
+#[test]
 fn relead_auto_workflow_replans() {
     let sb = Sandbox::new();
     let _repo = auto_to_gate(&sb);
