@@ -481,7 +481,7 @@ Chi phí dự kiến (giá tương đương API): P5.2-01 khoảng $2–5, P5.2-
 > [!CAUTION]
 > **An toàn tiến trình và tài khoản**:
 > - Chỉ dừng tiến trình bằng `$AB kill <task_id>`, Ctrl+C trong terminal của chính tiến trình đó, hoặc `kill -INT <PID>` với PID đã ghi lại. Không dùng `pkill`, `killall` hay bất kỳ lệnh dừng tiến trình theo tên nào.
-> - `ps` chỉ dùng để đọc (`ps -eo ... --forest`, `ps -p <PID,...>`, `ps --ppid <PID>`, `ps -g <PGID>`).
+> - `ps` chỉ dùng để đọc (`ps -eo ... --forest`, `ps -p <PID,...>`, `ps --ppid <PID>`, `ps -eo pid,ppid,pgid,args | awk -v g=<PGID> '$3 == g'`). Không tìm process group bằng cờ `-g` của `ps`: với procps, cờ -g chọn theo session chứ không theo process group.
 > - Không chạy task nào trên profile `personal` khi `~/.claude-orca` đang được dùng. Mọi ca dưới đây chạy trên `du-an-nhap` (profile `work`).
 > - Không dùng cổng của dashboard thật; dashboard của đợt nghiệm thu này chạy ở `--port 7438`. Không giao việc cho `du-an-nhap` từ dashboard thật trong lúc nghiệm thu (dashboard thật không thấy bản sao DB nên không chặn được việc chạy chồng).
 
@@ -653,7 +653,7 @@ Chi phí dự kiến (giá tương đương API): P5.2-01 khoảng $2–5, P5.2-
   3. Ghi lại cây tiến trình, chỉ đọc:
      ```bash
      ps -o pid,ppid,pgid,args --ppid "$DRIVER"      # tiến trình con agent-brain run plan-review (CHILD)
-     ps -o pid,ppid,pgid,args -g "$PGID"            # claude và các tiến trình con của nó
+     ps -eo pid,ppid,pgid,args | awk -v g="$PGID" '$3 == g'   # claude và các tiến trình con của nó (cùng PGID)
      ps -eo pid,ppid,pgid,args --forest             # đối chiếu cây dưới DRIVER
      ```
      Ghi đủ danh sách PID: `DRIVER`, `CHILD`, `CLAUDE` và mọi tiến trình con của `CLAUDE` thấy được.
