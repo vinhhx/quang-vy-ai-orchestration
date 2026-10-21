@@ -156,6 +156,18 @@ enum Step {
 }
 
 /// Sends one notification: plan document first (gate), then the text replying to it.
+///
+/// D-05 guarantees, in order of the loop:
+/// - before EVERY attempt (document or text) the task state is reloaded and the
+///   item is dropped when `current_event` no longer has the item's key;
+/// - every retryable failure reports `health.failed(Channel::Send, ..)` and waits
+///   `retry_delay_ms(failures, base)`, `failures` counting the consecutive
+///   failures of the current request (reset when a request succeeds);
+/// - `health.ok(Channel::Send)` is called once per finished item: after the
+///   text message is delivered, or when Telegram rejects it for good. A
+///   delivered document alone does not end the outage (its text is still to come);
+/// - a document already delivered for the item is never sent again;
+/// - the `registry` lock is only taken after Telegram answered, never during a call.
 fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
     let base_ms = base_backoff_ms();
     let chat_id = ctx.cfg.chat_id;
@@ -215,6 +227,9 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
                 Ok(v) => {
                     doc_message = v.get("message_id").and_then(|m| m.as_i64());
                     doc_done = true;
+                    failures = 0;
+                    // Re-check the task before the text attempt (D-05).
+                    continue;
                 }
                 Err(CallError::Stopped) => return Step::Stopped,
                 Err(e) => {
@@ -233,6 +248,8 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
                                 e.text()
                             ));
                             doc_done = true;
+                            failures = 0;
+                            continue;
                         }
                     }
                 }
