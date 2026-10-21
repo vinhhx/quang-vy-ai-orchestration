@@ -248,7 +248,7 @@ Plans:
   5. Dashboard hiện thẻ review/sửa thật (vòng N / giới hạn, số chặn/góp ý), nút duyệt plan, bật/tắt autopilot; CSDL cũ nâng cấp lên schema mới không mất dữ liệu.
 
 **UI hint**: yes
-**Plans:** 32/32 plans executed
+**Plans:** 32/32 plans complete
 
 Plans:
 - [x] 05.2-32-PLAN.md
