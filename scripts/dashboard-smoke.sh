@@ -850,6 +850,18 @@ EOF
     fi
   fi
 
+  # UI fix 3: the File column of the plan's Thay đổi table keeps a path on one
+  # line (whitespace-nowrap, scrolls inside overflow-x-auto), never per letter.
+  if [[ "$s" == "task" ]]; then
+    FILE_TDS="$(grep -o '<td[^>]*x-text="c.file"[^>]*>[^<]*</td>' "$DOM_OUT" || true)"
+    if [[ -z "$FILE_TDS" ]] || ! grep -qF '>src/app.py</td>' <<< "$FILE_TDS" \
+      || grep -qF 'break-all' <<< "$FILE_TDS" || grep -vqF 'whitespace-nowrap' <<< "$FILE_TDS"; then
+      echo "Lỗi: Cột File trong bảng Thay đổi vẫn ngắt theo từng chữ (cần whitespace-nowrap, không break-all): ${FILE_TDS:-không có ô File}" >&2
+      exit 1
+    fi
+    echo "Changes table DOM OK"
+  fi
+
   # DOM assertions for the Giao việc, Dự án and Tổng quan screens (Phase 5.2).
   if [[ "$s" == "assign" || "$s" == "projects" || "$s" == "overview" ]]; then
     if ! python3 - "$DOM_OUT" "$s" <<'EOF'

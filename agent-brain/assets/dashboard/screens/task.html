@@ -376,7 +376,7 @@
               <tbody>
                 <template x-for="(c, idx) in changes" :key="idx">
                   <tr class="border-t border-slate-200 dark:border-slate-700">
-                    <td class="py-2 pr-4 align-top font-mono break-all" x-text="c.file"></td>
+                    <td class="py-2 pr-4 align-top font-mono whitespace-nowrap" x-text="c.file"></td>
                     <td class="py-2 pr-4 align-top break-words" x-text="c.where"></td>
                     <td class="py-2 pr-4 align-top break-words" x-text="c.what"></td>
                     <td class="py-2 pr-4 align-top break-words" x-text="c.why"></td>
