@@ -394,6 +394,65 @@ mod tests {
     }
 
     #[test]
+    fn edit_request_targets_the_paired_chat() {
+        let kb = serde_json::json!({"inline_keyboard": []});
+        let edit = Outgoing::Edit {
+            message_id: 7,
+            text: "t".to_string(),
+            keyboard: kb.clone(),
+        };
+        assert_eq!(
+            edit_request(5555, &edit),
+            Some((
+                "editMessageText",
+                serde_json::json!({
+                    "chat_id": 5555,
+                    "message_id": 7,
+                    "text": "t",
+                    "reply_markup": {"inline_keyboard": []}
+                })
+            ))
+        );
+        let k =
+            serde_json::json!({"inline_keyboard": [[{"text": "Kill", "callback_data": "k:1:x"}]]});
+        let keyboard = Outgoing::Keyboard {
+            message_id: 7,
+            keyboard: k.clone(),
+        };
+        assert_eq!(
+            edit_request(5555, &keyboard),
+            Some((
+                "editMessageReplyMarkup",
+                serde_json::json!({"chat_id": 5555, "message_id": 7, "reply_markup": k})
+            ))
+        );
+        assert_eq!(edit_request(5555, &Outgoing::Notify(ev(1))), None);
+    }
+
+    #[test]
+    fn not_modified_only_for_the_same_content_answer() {
+        let api = |code: i64, d: &str| CallError::Api {
+            code,
+            description: d.to_string(),
+            retry_after: None,
+        };
+        assert!(not_modified(&api(
+            400,
+            "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message"
+        )));
+        assert!(not_modified(&api(
+            400,
+            "Bad Request: message is not modified: specified new message content and reply markup are exactly the same"
+        )));
+        assert!(!not_modified(&api(
+            400,
+            "Bad Request: message to edit not found"
+        )));
+        assert!(!not_modified(&api(500, "message is not modified")));
+        assert!(!not_modified(&CallError::Network("x".to_string())));
+    }
+
+    #[test]
     fn registry_keeps_one_message_per_task() {
         let mut r = Registry::default();
         r.insert(tracked(2, 10));

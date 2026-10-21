@@ -568,3 +568,71 @@ fn gate_message_shows_personal_profile() {
     assert_plain_and_paired(&tg);
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+// ---------------------------------------------------------------------------
+// Plan 04 Task 2: two tasks reaching events at the same time (TELE-05)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn two_tasks_each_notified_once() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    let mut entries = Vec::new();
+    for id in ["web-ban-hang", "kho-hang"] {
+        let repo = sb.make_repo(
+            id,
+            &[("src/app.py", "def app():\n    return 1\n")],
+            None,
+            None,
+        );
+        entries.push(sb.project_entry(&repo, id, "work"));
+    }
+    sb.write_map(Value::Array(entries), &[]);
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    // Both Lead runs at once, so both gates appear together.
+    sb.write_scenario(lead_plan_entry());
+    let leads: Vec<_> = [
+        ("web-ban-hang", "sua-app", "sửa app"),
+        ("kho-hang", "kiem-kho", "kiểm kho"),
+    ]
+    .into_iter()
+    .map(|(project, name, request)| {
+        let mut cmd = sb.command(
+            &["run", "lead", "--name", name, "--", project, request],
+            &[],
+        );
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        (project, cmd)
+    })
+    .collect();
+    let children: Vec<_> = leads
+        .into_iter()
+        .map(|(project, mut cmd)| (project, cmd.spawn().expect("spawn run lead")))
+        .collect();
+    for (project, child) in children {
+        let out = child.wait_with_output().expect("wait run lead");
+        assert!(
+            out.status.success(),
+            "run lead {project} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    wait_message(&tg, &srv, "Chờ duyệt plan · task 2");
+    std::thread::sleep(Duration::from_secs(3));
+    for task in [1, 2] {
+        let sent = messages_starting(&tg, &format!("Chờ duyệt plan · task {task}"));
+        assert_eq!(sent.len(), 1, "task {task}: {sent:#?}");
+        assert_eq!(sent[0]["json"]["chat_id"], json!(5555), "{}", sent[0]);
+    }
+    assert_eq!(tg.calls("sendMessage").len(), 2, "{:#?}", tg.records());
+    assert_eq!(tg.calls("sendDocument").len(), 2, "{:#?}", tg.records());
+    assert_plain_and_paired(&tg);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
