@@ -1928,6 +1928,95 @@ const sections = [
     },
   },
   {
+    name: 'task-load-seq',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      ctx.AB.route = { name: 'task', params: { id: '1' } };
+      const taskJsSrc = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/js/task.js'), 'utf8');
+      vm.runInContext(taskJsSrc, ctx, { filename: 'task.js' });
+
+      const resolvers = [];
+      const urls = [];
+      ctx.AB.api = function (method, url) {
+        urls.push(method + ' ' + url);
+        return new Promise((r) => {
+          resolvers.push(r);
+        });
+      };
+      const settle = async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      };
+      const mk = (rev) => ({ id: 1, slug: 'sua-app', status: 'planned', rev, steps: [], runs: [], actions: [], controls: [] });
+
+      const c = factories.task();
+      c.id = '1';
+      c.pinned = true;
+      c.loadPipeline = function () {};
+
+      // Two polls in flight; the second (newer) answers first.
+      c.load();
+      c.load();
+      check('seq: two GETs sent', resolvers.length === 2 && urls.every((u) => u === 'GET /api/tasks/1'), JSON.stringify(urls));
+      const second = mk('R2');
+      const first = mk('R1');
+      resolvers[1]({ ok: true, status: 200, data: second });
+      await settle();
+      check('seq: newer response applied', c.task === second, `got rev ${c.task && c.task.rev}`);
+      resolvers[0]({ ok: true, status: 200, data: first });
+      await settle();
+      check('seq: late older response dropped', c.task === second, `got rev ${c.task && c.task.rev}`);
+      check('seq: _taskApplied is the newer seq', c._taskApplied === 2 && c._taskSeq === 2, `applied=${c._taskApplied} seq=${c._taskSeq}`);
+
+      // A late older error does not mark the fresh state stale either.
+      c.load();
+      c.load();
+      resolvers[3]({ ok: true, status: 200, data: mk('R4') });
+      await settle();
+      resolvers[2]({ ok: false, status: 500, data: null });
+      await settle();
+      check('seq: late older error dropped', c.task && c.task.rev === 'R4' && c.stale === false, `rev=${c.task && c.task.rev} stale=${c.stale}`);
+
+      // A single load still applies.
+      c.load();
+      const single = mk('R5');
+      resolvers[4]({ ok: true, status: 200, data: single });
+      await settle();
+      check('seq: single load applies', c.task === single && c.loaded === true && c.notFound === false, `rev=${c.task && c.task.rev}`);
+
+      // In order (older first) both apply, the newer last.
+      c.load();
+      c.load();
+      resolvers[5]({ ok: true, status: 200, data: mk('R6') });
+      await settle();
+      check('seq: in-order older applies', c.task && c.task.rev === 'R6', `rev=${c.task && c.task.rev}`);
+      resolvers[6]({ ok: true, status: 200, data: mk('R7') });
+      await settle();
+      check('seq: in-order newer applies', c.task && c.task.rev === 'R7', `rev=${c.task && c.task.rev}`);
+
+      // A 404 still sets notFound.
+      c.load();
+      resolvers[7]({ ok: false, status: 404, data: { error: 'không có' } });
+      await settle();
+      check('seq: 404 sets notFound', c.notFound === true && c.loaded === true, `notFound=${c.notFound}`);
+
+      // A fresh component: first load error before anything applied shows the error.
+      const d = factories.task();
+      d.id = '1';
+      d.pinned = true;
+      d.loadPipeline = function () {};
+      d.load();
+      resolvers[8]({ ok: false, status: 500, data: null });
+      await settle();
+      check('seq: first error shown', d.error === 'HTTP 500' && d.loaded === false, `error="${d.error}"`);
+    },
+  },
+  {
     name: 'ledger',
     async run(ctx) {
       const factories = {};

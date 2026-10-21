@@ -14,6 +14,8 @@
       lastFocusId: '',
       returnNote: '',
       runId: null,
+      _taskSeq: 0,
+      _taskApplied: 0,
 
       pipe: null,
       pipeError: '',
@@ -71,7 +73,13 @@
         var self = this;
         if (!this.id) return;
         this.loadPipeline();
+        // IN-07: polls can land out of order on a slow server; a response older
+        // than the last applied one is dropped, so it cannot bring back state
+        // (and buttons) from before a successful control.
+        var seq = ++this._taskSeq;
         window.AB.api('GET', '/api/tasks/' + this.id).then(function (res) {
+          if (seq <= self._taskApplied) return;
+          self._taskApplied = seq;
           if (res.ok && res.data) {
             self.task = res.data;
             self.loaded = true;

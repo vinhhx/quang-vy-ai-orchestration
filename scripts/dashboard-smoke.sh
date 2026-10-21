@@ -391,6 +391,22 @@ if [[ -z "$URL" ]]; then
   exit 1
 fi
 
+# One headless Chrome DOM dump: dump_dom URL OUT_FILE PROFILE_DIR. Chrome runs in
+# the foreground and exits after the dump.
+dump_dom() {
+  "$CHROME_BIN" \
+    --headless=new \
+    --no-sandbox \
+    --disable-gpu \
+    --no-first-run \
+    --disable-background-networking \
+    --disable-component-update \
+    --disable-sync \
+    --user-data-dir="$3" \
+    --virtual-time-budget=6000 \
+    --dump-dom "$1" > "$2" 2>/dev/null || true
+}
+
 for s in "${SCREENS[@]}"; do
   # data-screen of the rendered screen (task-stop is the task screen of task 2)
   SCREEN_NAME="$s"
@@ -410,17 +426,22 @@ for s in "${SCREENS[@]}"; do
   TARGET_URL="${URL}${HASH}"
   DOM_OUT="$TMP/dom-$s.html"
 
-  "$CHROME_BIN" \
-    --headless=new \
-    --no-sandbox \
-    --disable-gpu \
-    --no-first-run \
-    --disable-background-networking \
-    --disable-component-update \
-    --disable-sync \
-    --user-data-dir="$TMP/chrome-$s" \
-    --virtual-time-budget=6000 \
-    --dump-dom "$TARGET_URL" > "$DOM_OUT" 2>/dev/null || true
+  dump_dom "$TARGET_URL" "$DOM_OUT" "$TMP/chrome-$s"
+
+  # Overview race (05.2-UI-REVIEW Pillar 6): virtual time does not wait for the
+  # real /api/tasks answer, so a slow first answer leaves the groups empty.
+  # Retry while no task item is rendered (the template's `:data-task-id` does
+  # not count), with a fresh Chrome profile each time, at most 3 attempts; the
+  # assertions below run on the last dump, so a real failure still fails.
+  if [[ "$s" == "overview" ]]; then
+    ATTEMPT=1
+    while ! grep -qE '[[:space:]]data-task-id="[0-9]+"' "$DOM_OUT" && (( ATTEMPT < 3 )); do
+      ATTEMPT=$((ATTEMPT + 1))
+      echo "Thử lại overview (lần $ATTEMPT)" >&2
+      sleep 1
+      dump_dom "$TARGET_URL" "$DOM_OUT" "$TMP/chrome-$s-$ATTEMPT"
+    done
+  fi
 
   if ! grep -q "data-screen=\"$SCREEN_NAME\"" "$DOM_OUT" || ! grep -q 'data-loaded="yes"' "$DOM_OUT"; then
     echo "Lỗi: Màn hình $s không render thành công (thiếu data-screen=\"$SCREEN_NAME\" hoặc data-loaded=\"yes\")" >&2
