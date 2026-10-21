@@ -210,6 +210,42 @@ pub struct NamedFiles {
     pub rejected: Vec<(String, String)>,
 }
 
+/// Paths a report may never add to the fix write set (WR-06): secrets, agent
+/// settings, and CI, hook, editor or build-script files that run code later.
+/// Matches the lowercased, normalised root-relative path.
+fn sensitive_path(rel: &str) -> bool {
+    const DIRS: &[&str] = &[
+        ".github",
+        ".gitlab",
+        ".circleci",
+        ".husky",
+        ".githooks",
+        ".vscode",
+        ".devcontainer",
+        ".claude",
+    ];
+    const NAMES: &[&str] = &[
+        ".gitlab-ci.yml",
+        ".gitmodules",
+        ".gitattributes",
+        "makefile",
+        "package.json",
+        ".npmrc",
+        ".pre-commit-config.yaml",
+    ];
+    let lower = rel.to_lowercase();
+    if lower.split('/').any(|c| DIRS.contains(&c)) {
+        return true;
+    }
+    let basename = lower.rsplit('/').next().unwrap_or(&lower);
+    NAMES.contains(&basename)
+        || basename.starts_with(".env")
+        || basename.starts_with("id_rsa")
+        || basename.starts_with("id_ed25519")
+        || basename.ends_with(".pem")
+        || basename.ends_with(".key")
+}
+
 pub fn named_files(report_text: &str, root: &std::path::Path) -> NamedFiles {
     named_files_with(report_text, root, None)
 }
@@ -293,20 +329,36 @@ pub fn named_files_with(
             continue;
         }
 
-        // 2. sensitive
-        let basename = f.rsplit('/').next().unwrap_or(&f);
-        let is_sensitive = basename.starts_with(".env")
-            || basename.ends_with(".pem")
-            || basename.ends_with(".key")
-            || basename.starts_with("id_rsa")
-            || basename.starts_with("id_ed25519")
-            || f == ".claude"
-            || f.starts_with(".claude/")
-            || f.contains("/.claude/");
-
-        if is_sensitive {
+        // 2. sensitive (literal path, case-insensitive)
+        if sensitive_path(&f) {
             rejected.push((f.clone(), format!("sensitive:{f}")));
             continue;
+        }
+
+        // 2b. symlinks: check the target too (W-2). A dangling link is refused;
+        // a target inside the repo must not be sensitive either. Targets outside
+        // the root were already refused by path_error (outside_root).
+        let p = root.join(&f);
+        if let Ok(meta) = std::fs::symlink_metadata(&p) {
+            match std::fs::canonicalize(&p) {
+                Err(_) => {
+                    if meta.file_type().is_symlink() {
+                        rejected.push((f.clone(), format!("symlink:{f}")));
+                        continue;
+                    }
+                }
+                Ok(target) => {
+                    let canon_root =
+                        std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+                    if let Ok(rel) = target.strip_prefix(&canon_root) {
+                        let rel = rel.to_string_lossy().replace('\\', "/");
+                        if sensitive_path(&rel) {
+                            rejected.push((f.clone(), format!("sensitive:{f}")));
+                            continue;
+                        }
+                    }
+                }
+            }
         }
 
         // 3. body tokens only for files already changed since the plan commit (WR-06)
@@ -320,7 +372,6 @@ pub fn named_files_with(
         }
 
         // 4. untracked
-        let p = root.join(&f);
         if std::fs::symlink_metadata(&p).is_ok() && !crate::gitops::is_tracked(root, &f) {
             rejected.push((f.clone(), format!("untracked:{f}")));
             continue;
@@ -648,6 +699,89 @@ mod tests {
         );
         assert!(nf_all.rejected.is_empty());
         assert_eq!(named_files(report, root), nf_all);
+    }
+
+    #[test]
+    fn named_files_ci_and_case() {
+        let dir = test_repo();
+        let root = dir.path();
+        test_commit(root, &[("src/main.rs", "// main")], "init");
+
+        let denied = [
+            ".github/workflows/ci.yml",
+            ".GitHub/x.yml",
+            ".gitlab-ci.yml",
+            ".husky/pre-commit",
+            ".githooks/post-commit",
+            ".gitmodules",
+            ".gitattributes",
+            "Makefile",
+            "sub/MAKEFILE",
+            "package.json",
+            ".npmrc",
+            ".vscode/settings.json",
+            ".devcontainer/devcontainer.json",
+            ".circleci/config.yml",
+            ".pre-commit-config.yaml",
+            ".ENV.local",
+            "Keys/SERVER.PEM",
+            ".gitlab/issue_templates/x.md",
+            "web/.Claude/settings.json",
+        ];
+        let allowed = ["src/package_json.py", "docs/makefile-notes.md"];
+        let mut all: Vec<&str> = denied.to_vec();
+        all.extend(allowed);
+        let files_json = serde_json::to_string(&all).unwrap();
+        let report =
+            format!("---\nverdict: revise\nblocking: 1\nadvisory: 0\nfiles: {files_json}\n---\n");
+
+        let nf = named_files(&report, root);
+        for d in denied {
+            assert!(
+                nf.rejected
+                    .iter()
+                    .any(|(f, code)| f == d && *code == format!("sensitive:{d}")),
+                "{d} not rejected as sensitive: {:?}",
+                nf.rejected
+            );
+        }
+        assert_eq!(
+            nf.files,
+            allowed.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+        assert_eq!(nf.rejected.len(), denied.len());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn named_files_symlink_target() {
+        let dir = test_repo();
+        let root = dir.path();
+        test_commit(
+            root,
+            &[(".env", "SECRET=1\n"), ("docs/readme.md", "# docs")],
+            "init",
+        );
+        std::os::unix::fs::symlink("../.env", root.join("docs/cfg")).unwrap();
+        std::os::unix::fs::symlink("missing.txt", root.join("docs/gone")).unwrap();
+        std::os::unix::fs::symlink("readme.md", root.join("docs/ok.md")).unwrap();
+        test_commit(root, &[], "links");
+
+        let report = "---\nverdict: revise\nblocking: 1\nadvisory: 0\nfiles: [\"docs/cfg\", \"docs/gone\", \"docs/ok.md\"]\n---\n";
+        let nf = named_files(report, root);
+        assert!(
+            nf.rejected
+                .contains(&("docs/cfg".to_string(), "sensitive:docs/cfg".to_string())),
+            "rejected was: {:?}",
+            nf.rejected
+        );
+        assert!(
+            nf.rejected
+                .contains(&("docs/gone".to_string(), "symlink:docs/gone".to_string())),
+            "rejected was: {:?}",
+            nf.rejected
+        );
+        assert_eq!(nf.files, vec!["docs/ok.md".to_string()]);
     }
 
     #[test]
