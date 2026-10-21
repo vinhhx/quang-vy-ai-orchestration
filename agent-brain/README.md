@@ -55,7 +55,9 @@ agent-brain --version
 | **kill** | `agent-brain kill TASK_ID` | Dừng an toàn một task đang chạy theo `TASK_ID` (dựa trên PID và thời điểm khởi tạo trong DB), gửi SIGINT và dọn sạch cây tiến trình con. Nếu task có autopilot đang chạy, autopilot cũng dừng với lý do `dừng bởi bạn` (ghi yêu cầu dừng trước, rồi mới dừng run); khi autopilot đang ở giữa hai bước (không có run nào chạy) lệnh trả 0 với dòng `Đã yêu cầu autopilot dừng (task N) …`. |
 | **stats** | `agent-brain stats [--profile P] [--since Nm\|Nh\|Nd] [--json]` | Báo cáo thống kê lượt chạy, thời gian, số token tiêu thụ và chi phí tương đương từ SQLite. Hỗ trợ lọc theo profile và thời gian. |
 | **guard** | `agent-brain guard --policy FILE` | Hook nội bộ do Claude CLI gọi qua `--settings`: kiểm tra quyền đọc/ghi từng file theo policy allowlist của plan (Dev, Review plan, Review code) và kiểm tra lệnh Bash của mọi vai trò (Lead và QA chỉ có phần kiểm tra Bash). Mỗi lệnh Bash phải là một lệnh đơn trên một dòng: không xuống dòng, không toán tử shell (`;`, `&`, `\|`, `(`, `)`, `{`, `}`), không chuyển hướng (`<`, `>`), không thay thế lệnh hay biến (`$`, dấu backtick), không gán biến môi trường ở đầu lệnh. Lệnh git chỉ được là `git diff`, `log`, `show`, `status`, `add`, `commit`; trước tên lệnh không có tùy chọn git nào ngoài `--no-pager` (hoặc `-P`); không có ký tự đại diện (`*`, `?`, `[`) ngoài dấu nháy; không gọi git qua lệnh bọc (`env`, `timeout`, `sh -c`, `xargs`, `find`, `sudo`, …) hay qua `git-<lệnh>`. Tùy chọn bị từ chối (kể cả dạng viết tắt): `diff` / `log` / `show` với `--output`, `--ext-diff`, `--textconv`, `--no-index`; `commit` với `-F` / `--file`, `-t` / `--template`, `--pathspec-from-file`, `--amend`, các dạng mở trình soạn thảo (`-p` / `--patch`, `-e` / `--edit`, `-c` / `--reedit-message`, `--interactive`) và commit không có `-m` / `--message` / `-C` / `--reuse-message`; `add` với `-f` / `--force`, `--pathspec-from-file`, `-p` / `--patch`, `-i` / `--interactive`, `-e` / `--edit`. Lệnh git thêm vào `allowedTools` qua `common_args` (ví dụ `git push`) vẫn bị hook từ chối. |
-| **serve** | `agent-brain serve [--port N]` | Mở dashboard web trong chính binary, chỉ 127.0.0.1, có token. Cổng mặc định 7437, `--port 0` để hệ điều hành tự chọn. |
+| **serve** | `agent-brain serve [--port N]` | Mở dashboard web trong chính binary, chỉ 127.0.0.1, có token. Cổng mặc định 7437, `--port 0` để hệ điều hành tự chọn. Khi đã ghép nối Telegram (`telegram.json` hợp lệ), serve chạy luôn bot Telegram (xem mục 14, Telegram: thông báo và nút). |
+| **telegram setup** | `agent-brain telegram setup` | Ghép nối bot Telegram: hỏi token bot (từ @BotFather, không hiện khi gõ), kiểm tra token, in một mã 6 số; bạn nhắn mã đó cho bot từ chat riêng trên điện thoại. Lưu token và chat ID vào `telegram.json` (quyền `0600`), gửi tin xác nhận vào Telegram. Từ chối khi `agent-brain serve` đang chạy trên cùng thư mục dữ liệu. Chạy lại để thay ghép nối cũ. |
+| **telegram test** | `agent-brain telegram test` | Gửi một tin thử tới chat đã ghép nối. Chưa ghép nối: `Chưa ghép nối Telegram — chạy agent-brain telegram setup`, thoát `1`. |
 
 ---
 
@@ -178,6 +180,16 @@ Nội dung `agent-brain/assets/config.default.json` (cấu hình nhúng trong bi
 - `kill_grace_secs`: Thời gian chờ (mặc định `3` giây) giữa tín hiệu SIGINT ban đầu và tín hiệu SIGKILL cưỡng chế khi dừng tiến trình.
 - `inspect_max_diff_bytes`: Giới hạn dung lượng diff tối đa (100.000 byte) gửi cho Claude khi `inspect` (tránh tràn token).
 - `dashboard_port`: Cổng lắng nghe mặc định của dashboard web (mặc định `7437`). Thứ tự ưu tiên: cờ `--port` trên dòng lệnh > `dashboard_port` trong file cấu hình > cổng mặc định 7437; truyền `--port 0` để hệ điều hành tự chọn một cổng ngẫu nhiên chưa sử dụng.
+
+### Telegram (telegram.json và biến môi trường)
+
+- **Đường dẫn**: `~/.config/agent-brain/telegram.json` (khi đặt `XDG_CONFIG_HOME` thì là `$XDG_CONFIG_HOME/agent-brain/telegram.json`; `AGENT_BRAIN_CONFIG` không đổi vị trí file này). File do `agent-brain telegram setup` tạo, gồm token bot (`token`), chat ID đã ghép nối (`chat_id`) và thời điểm ghép nối (`paired_at`). Không có file thì không có bot, `serve` chạy như trước và không in dòng `Telegram` nào.
+- **Quyền `0600`**: setup ghi file mới với quyền `0600` rồi đổi tên vào chỗ (không lúc nào đọc được bởi người khác). Khi file đọc được bởi nhóm hoặc người khác, `serve` không bật bot (`Telegram: lỗi — … có quyền đọc cho nhóm/người khác — chạy: chmod 600 …`) và `telegram test` từ chối cùng lý do; binary không tự sửa quyền. File sai dạng (thiếu `token` / `chat_id`): `… không hợp lệ: thiếu hoặc sai khóa token/chat_id`.
+- **Bí mật**: file chứa token của bot. Không commit, không gửi cho ai, không dán vào chat hay nhật ký. `config.json` không chứa bí mật nào. Binary không bao giờ in nội dung file hay token.
+- **Biến môi trường** (dùng cho kiểm thử và chẩn đoán; dùng hằng ngày thì không cần đặt):
+  - `AGENT_BRAIN_TELEGRAM_API`: địa chỉ gốc của Bot API thay cho `https://api.telegram.org`. Chỉ nhận `https://…` hoặc `http://127.0.0.1:<cổng>` (Telegram giả trên máy), để token không bao giờ đi qua mạng dưới dạng chữ thường; giá trị khác bị từ chối: `AGENT_BRAIN_TELEGRAM_API chỉ nhận https://… hoặc http://127.0.0.1:<cổng>`.
+  - `AGENT_BRAIN_CURL`: lệnh `curl` dùng để gọi Telegram (mặc định `curl` trong `PATH`).
+  - `AGENT_BRAIN_TELEGRAM_BACKOFF_MS`: thời gian chờ cơ sở khi thử lại (mặc định `5000`, giới hạn 100–5000 ms); thời gian chờ tăng gấp đôi sau mỗi lần lỗi, tối đa gấp 12 lần (5 → 10 → 20 → 40 → 60 giây).
 
 ### Quy trình (workflows.json)
 
@@ -307,6 +319,7 @@ Kết quả: `chi-phi-thap` là `plan ⇄ review → Bạn → code → QA` · `
 
 - File cơ sở dữ liệu `brain.db` được tạo với quyền `0600` (chỉ người dùng hiện tại có quyền đọc/ghi).
 - Các thư mục lưu trữ (`runs/`, thư mục DB) được tạo với quyền `0700`.
+- File `telegram.json` (token bot và chat ID đã ghép nối) được tạo với quyền `0600`. `serve` và `telegram test` từ chối file đọc được bởi nhóm hoặc người khác (sửa bằng `chmod 600 ~/.config/agent-brain/telegram.json`).
 - Mọi dòng sự kiện stream-json thô từ Claude CLI được lưu nguyên vẹn vào cột `raw_json` của bảng `events`, cho phép kiểm toán độc lập bất kỳ lúc nào mà không sợ parse sai lệch.
 
 ---
@@ -330,6 +343,7 @@ Bao gồm các bài kiểm thử tự động cho lõi điều phối và dashbo
 - `tests/dashboard_kill.rs`: Kiểm tra endpoint `/api/runs/:id/kill` dừng an toàn tiến trình và dọn dẹp cây tiến trình.
 - `tests/dashboard_projects.rs`: Kiểm tra API danh sách dự án, cập nhật alias, quét repo và phát hiện tên trùng lặp.
 - `tests/dashboard_stats.rs`: Kiểm tra báo cáo thống kê token theo ngày, vai trò và profile qua API.
+- `tests/telegram_serve.rs`, `tests/telegram_notify.rs`, `tests/telegram_outage.rs`, `tests/telegram_actions.rs`, `tests/telegram_setup.rs`: Bot Telegram trong `serve` (token chỉ qua stdin của curl, từ chối file không phải `0600`), thông báo, mất kết nối, các nút và ghép nối. Mọi test nói chuyện với Telegram giả trên máy (`tests/fakes/fake_telegram.py` qua `AGENT_BRAIN_TELEGRAM_API=http://127.0.0.1:<cổng>`), không bao giờ gọi `api.telegram.org`.
 
 ---
 
@@ -431,6 +445,53 @@ Dự án, thống kê, quy trình:
 - **Quyền hạn mức shell**: Token dashboard cấp toàn quyền thực thi mã nguồn và lệnh trên các thư mục dự án đã đăng ký. **Tuyệt đối không chia sẻ URL chứa token** cho người khác hoặc đưa vào nhật ký công khai.
 - **Không cách ly cổng cho cookie (Port Isolation)**: Theo tiêu chuẩn RFC 6265 §8.5, cookie không được cách ly theo số cổng trên cùng một tên miền. Do đó, nếu máy tính đang chạy một dịch vụ web nội bộ khác trên `127.0.0.1`, dịch vụ đó về mặt lý thuyết có thể nhận được cookie phiên của dashboard.
 - **Chỉ lắng nghe Loopback**: Dashboard chỉ mở trên giao diện cục bộ `127.0.0.1`. Các thiết bị khác trong mạng LAN hoàn toàn không thể kết nối tới server (được bảo vệ triệt để từ tầng socket bind).
+
+### Telegram: thông báo và nút
+
+Khi đã ghép nối, `agent-brain serve` nhắn cho bạn qua Telegram lúc một task cần bạn, và bạn xử lý ngay trên tin nhắn. Đây là ngoại lệ hẹp của quy tắc chỉ-localhost: chỉ có thông báo và các nút ở cổng duyệt / lúc autopilot dừng; dashboard vẫn chỉ mở ở `127.0.0.1`.
+
+- **Bật**:
+  1. Tạo bot bằng @BotFather (`/newbot`) và giữ token.
+  2. Tắt `serve` nếu đang chạy (setup từ chối: `agent-brain serve đang chạy (pid N) — dừng serve (Ctrl+C) trước khi ghép nối Telegram, rồi chạy lại serve.`), rồi chạy `agent-brain telegram setup`. Dán token sau dòng `Token bot (từ @BotFather): ` (không hiện gì khi dán; token phải có dạng `<số>:<chuỗi>`).
+  3. Setup in `Mở Telegram, nhắn cho @<tên bot> đúng mã sau (hết hạn sau 10 phút): NNNNNN`. Nhắn đúng 6 số đó (hoặc `/start NNNNNN`) cho bot **trong chat riêng** với bot. Tin trong nhóm, kênh hay từ người khác không được tính; mã sai in `Mã sai (n/5) — đang chờ mã đúng.`, sai 5 lần hoặc quá 10 phút thì setup dừng và phải chạy lại.
+  4. Khi đúng mã: Telegram nhận `Đã ghép nối agent-brain với chat này. …`, terminal in `Đã ghép nối với chat … (@<tên bot>). Đã lưu …/telegram.json (quyền 0600). Khởi động lại agent-brain serve để bật thông báo.`
+  5. Chạy `agent-brain telegram test` (tin `Tin thử từ agent-brain trên máy <tên máy>: kết nối Telegram hoạt động.`), rồi chạy lại `agent-brain serve`: sau hai dòng URL có dòng `Telegram: đã kết nối (@<tên bot>)`. Serve chỉ đọc `telegram.json` lúc khởi động.
+- **Khi nào có tin** (mọi task, mọi profile `work` / `personal`, task do dashboard, `agent-brain auto` / `run` trong terminal hay autopilot khởi chạy đều như nhau; nguồn là `brain.db`):
+
+| Tin | Dòng đầu | Nội dung | Nút |
+|---|---|---|---|
+| Chờ duyệt plan | `Chờ duyệt plan · task N` | Tiêu đề task; `Dự án: … · profile … · nhánh …`; tiêu đề plan; `Thay đổi (n file):` và tối đa 15 file; `Review plan: duyệt · vòng r / cap`. File `.plan.md` hiện tại được gửi kèm ngay trước tin, tên `{slug}.plan.md`, để đọc đủ trên điện thoại. | `Duyệt plan`, `Trả về Lead` |
+| Autopilot dừng | `Autopilot dừng · {lý do} · task N` | Lý do và chi tiết như biểu ngữ hổ phách (`hết vòng`, `hết ngân sách`, `vi phạm giao thức`, `vướng mắc`, `dừng bởi bạn`, `run lỗi`); với `hết ngân sách` thêm `Chạy vượt ngân sách một lần, chỉ cho vòng này.` | `Chạy thêm 1 vòng`, `Trả về Lead` (khi dashboard có Trả về Lead / Chạy lại Lead), `Dừng hẳn` |
+| QA đạt | `QA đạt · task N` | Tóm tắt `Tổng: n run · m phút · $x` | không có |
+| Run lỗi | `Run lỗi · task N` | `Run R (vai trò) lỗi hoặc quá thời gian — xem log của run này.` và tóm tắt | những nút trạng thái task cho phép (`Duyệt plan`, `Trả về Lead`) |
+
+  Mỗi lần trạng thái thay đổi chỉ có một tin. Tin là chữ thường (không định dạng), nên tiêu đề task, plan hay tên file do agent viết không chèn được định dạng hay liên kết. Nút **`Kill`** được thêm vào cuối tin bất cứ lúc nào task có run đang chạy; các nút của tin đi theo trạng thái task (thêm / bớt Kill, đổi `rev`).
+- **Chỉ khi `serve` chạy**: không có `serve` thì không có Telegram. Lúc khởi động, `serve` ghi nhận mọi trạng thái đã có mà không gửi, nên khởi động lại `serve` không gửi lại tin cũ (và việc xảy ra lúc `serve` tắt không được gửi bù). Nút bấm trên điện thoại lúc `serve` tắt bị bỏ qua khi `serve` chạy lại; bấm lại sau khi `serve` đã chạy.
+- **Các nút** chạy đúng các hàm của nút trên dashboard, với cùng luật bận (một run mỗi dự án, một run `personal`, autopilot không chạy chồng):
+  - **Duyệt plan**: gắn với `rev` của tin, tức đúng commit plan lúc tin được gửi; plan đã đổi (kể cả sửa tay) thì không duyệt. Autopilot còn bật thì chạy tiếp (cần nhánh của task đang được checkout); đã tắt (`ended`) thì chỉ ghi nhận duyệt. Tin được sửa thành `✓ Đã duyệt plan <sha7> · autopilot chạy tiếp — từ Telegram lúc HH:MM`.
+  - **Trả về Lead**: bot hỏi `Ghi chú cho Lead (task N): gửi tin nhắn kế tiếp làm ghi chú (tối đa 500 ký tự), hoặc bấm Không ghi chú. Hết hạn sau 10 phút.` với hai nút `Không ghi chú` và `Huỷ`. Tin nhắn kế tiếp của bạn là ghi chú (lưu cùng run Lead như `--note`); ghi chú quá 500 ký tự thì bot hỏi lại; `Huỷ` hoặc hết 10 phút thì không làm gì (`Hết thời gian (10 phút) — không làm gì.`). Autopilot còn bật thì chạy `agent-brain auto N --replan`, đã tắt thì chạy Lead tay.
+  - **Chạy thêm 1 vòng** và **Dừng hẳn**: như hai nút cùng tên ở biểu ngữ dừng của dashboard (`Đã giao thêm 1 vòng`; `Đã dừng hẳn autopilot. Bật autopilot trên dashboard để chạy tiếp.`). Sau Dừng hẳn ở lần dừng của vòng plan, plan vẫn chờ duyệt nên có tin `Chờ duyệt plan` mới.
+  - **Kill**: bấm lần đầu chỉ sửa tin thành `Xác nhận Kill run N?` với hai nút `Kill` / `Huỷ`. Chỉ lần bấm `Kill` thứ hai mới dừng run, qua cùng đường `runner::cmd_kill` như `agent-brain kill` (cả cây tiến trình; autopilot dừng với `dừng bởi bạn`). `Huỷ` trả lời `Đã huỷ Kill` và run chạy tiếp.
+  - **Nút cũ**: trước khi làm gì, bot đọc lại trạng thái task. Tin đã cũ thì không làm gì, trả lời `Task đã đổi trạng thái: …` và bỏ các nút của tin đó. Việc đã được xử lý trên dashboard hay terminal thì tin được sửa, ghi `… — xử lý ngoài Telegram (dashboard hoặc terminal) lúc HH:MM` và mất nút (với tin gửi từ lần chạy `serve` hiện tại; tin gửi trước khi `serve` khởi động lại không được sửa, nhưng nút của chúng vẫn được kiểm tra lại như trên).
+  - Tin chữ gửi cho bot ngoài lúc hỏi ghi chú chỉ nhận một câu trả lời: `Bot chỉ nhận nút bấm trên tin thông báo — không giao việc mới qua Telegram.`
+- **Luật an toàn**:
+  - Chỉ chat đã ghép nối: tin hay nút bấm chỉ được nhận khi cả chat ID và người gửi đều là chat đã ghép nối. Mọi chat khác (kể cả nhóm có bạn và bot) bị bỏ qua, không trả lời; terminal của `serve` in `Telegram: bỏ qua tin từ chat lạ {id}` (tối đa một dòng mỗi 10 phút cho mỗi ID).
+  - Chỉ kết nối ra ngoài: bot dùng long polling (`getUpdates`, 25 giây), không mở cổng nào trên máy.
+  - Không giao việc mới qua Telegram; dashboard không truy cập được từ xa.
+  - Token chỉ đi qua stdin của `curl` (`curl -q -sS --max-time N --proto =https -K -`): không bao giờ nằm trên dòng lệnh (`ps` không thấy), stderr của curl bị bỏ, `-q` bỏ qua `~/.curlrc`. Token không bao giờ được in hay ghi vào log.
+- **Các dòng trên terminal của `serve`**:
+  - `Telegram: đã kết nối (@<tên bot>)`: bot đã chạy.
+  - `Telegram: đã gửi tin {chờ duyệt plan | autopilot dừng | QA đạt | run lỗi} cho task N`: một tin đã tới Telegram.
+  - `Telegram: {nút} task N — {kết quả}`: một lần bấm nút từ Telegram và kết quả của nó.
+  - `Telegram: bỏ qua tin từ chat lạ {id}`: tin hay nút bấm từ chat khác bị bỏ qua.
+  - `Telegram: không tới được Telegram (…) — đang thử lại; thông báo được giữ lại, các run và autopilot vẫn chạy bình thường.` và sau đó `Telegram: đã kết nối lại`: một lần mất kết nối. Bot thử lại sau 5 giây, tăng dần tới 60 giây (429 thì theo `retry_after`, tối đa 300 giây); tin được giữ trong hàng đợi (tối đa 200, đầy thì in `Telegram: hàng đợi đầy — bỏ thông báo cũ nhất`) và gửi khi có mạng lại; tin mà trạng thái task đã qua thì bị bỏ. Run và autopilot không bao giờ chờ Telegram.
+  - `Telegram: lỗi — …`: bot không chạy (hoặc dừng); dashboard vẫn chạy bình thường.
+- **Xử lý sự cố Telegram**:
+  - `… có quyền đọc cho nhóm/người khác — chạy: chmod 600 …`: chạy đúng lệnh `chmod 600` được in, rồi chạy lại `serve`.
+  - `Không tìm thấy lệnh curl (curl) — cài curl rồi chạy lại agent-brain serve`: cài `curl` (hoặc đặt `AGENT_BRAIN_CURL`).
+  - `Telegram: lỗi — Telegram từ chối token (401) — chạy lại agent-brain telegram setup`: token bị thu hồi hoặc sai; chạy lại setup.
+  - `Telegram: bot đang được đọc ở nơi khác (409) — tắt webhook hoặc tiến trình agent-brain khác rồi chạy lại serve`: một tiến trình khác (một `serve` khác, một `telegram setup`, hay một webhook) đang đọc cùng bot. Mỗi bot chỉ được một nơi đọc.
+  - Không có tin nào: kiểm tra `serve` có in `Telegram: đã kết nối (@…)`; nhớ rằng trạng thái đã có trước lúc `serve` khởi động không được gửi.
 
 ### Xử lý sự cố (Troubleshooting)
 - **Lỗi 401 Unauthorized**: Mở lại URL đầy đủ chứa `?token=TOKEN` được in ở terminal chạy `agent-brain serve` để làm mới cookie phiên trên trình duyệt.
