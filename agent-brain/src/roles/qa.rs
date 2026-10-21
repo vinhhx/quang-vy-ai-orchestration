@@ -117,7 +117,10 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
             ),
             allowed_tools: allowed,
             disallowed_tools: disallowed,
-            extra_args: Vec::new(),
+            extra_args: vec![
+                "--settings".to_string(),
+                "<run_dir/settings.json>".to_string(),
+            ],
         };
         let argv = crate::roles::build_command(&spec_dry, &ctx.cfg)?;
         crate::term::emit_out(&format!(
@@ -130,6 +133,12 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
     let proj_row_id = crate::db::project_row_id(&ctx.conn, &proj.id)?;
     let task_row = crate::tasks::current_task(&ctx.conn, proj_row_id, &proj_path)?;
     let task_id = task_row.map(|t| t.id);
+
+    // W-1: QA's Bash git calls go through the guard's git policy; its file
+    // writes stay with the allow rules and the post-run backstop.
+    let run_dir = crate::roles::new_run_dir(&ctx.cfg, &proj.id, &task, "qa")?;
+    let exe = std::env::current_exe()?;
+    let settings = crate::guard::write_bash_hook_settings(&run_dir, &proj_path, &exe)?;
 
     let qa_path = proj_path.join(".qa-report.md");
     let qa_meta = serde_json::json!({
@@ -156,7 +165,10 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         user_input,
         allowed_tools: allowed,
         disallowed_tools: disallowed,
-        extra_args: Vec::new(),
+        extra_args: vec![
+            "--settings".to_string(),
+            settings.to_string_lossy().to_string(),
+        ],
     };
 
     let argv = crate::roles::build_command(&spec, &ctx.cfg)?;
@@ -173,7 +185,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         plan_files: None,
         verbose,
         timeout,
-        run_dir: None,
+        run_dir: Some(run_dir),
     };
 
     let role_run = crate::roles::execute_role_staged(

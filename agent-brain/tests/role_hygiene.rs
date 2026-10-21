@@ -1,5 +1,7 @@
 //! Role hygiene (05.2-27):
 //! - WR-05: a failed or killed review / QA run leaves no report behind.
+//! - W-1: Lead and QA run under the Bash-only git guard, and their prompts
+//!   carry the one-line git rule.
 
 mod common;
 #[path = "support/protocol.rs"]
@@ -344,4 +346,242 @@ fn successful_and_violation_reviews_keep_report() {
     );
     let status = porcelain(&sb, &repo);
     assert!(status.trim().is_empty(), "tree not clean: {status}");
+}
+
+// ---------------------------------------------------------------------------
+// W-1: Lead and QA under the Bash git guard.
+// ---------------------------------------------------------------------------
+
+/// Same literal as tests/assets_parity.rs.
+const GIT_RULE_READ: &str =
+    "- Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`.";
+
+/// The `run_dir` of the latest run of `role`.
+fn latest_run_dir(sb: &Sandbox, role: &str) -> PathBuf {
+    let run_dir: String = sb
+        .db()
+        .query_row(
+            "SELECT run_dir FROM runs WHERE role = ?1 ORDER BY id DESC LIMIT 1",
+            rusqlite::params![role],
+            |r| r.get(0),
+        )
+        .unwrap();
+    PathBuf::from(run_dir)
+}
+
+fn guard_log_lines(run_dir: &std::path::Path) -> Vec<serde_json::Value> {
+    let log_path = run_dir.join("guard.jsonl");
+    let content = std::fs::read_to_string(&log_path)
+        .unwrap_or_else(|e| panic!("read guard log {}: {e}", log_path.display()));
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("parse guard log line"))
+        .collect()
+}
+
+/// The normal Lead plan scenario with one git call in front.
+fn lead_scenario_with_git(git_args: &[&str]) -> serde_json::Value {
+    let mut sc = lead_scenario(&[("src/app.py", "app()", "trả về 2", "demo")]);
+    let ops = sc["ops"].as_array_mut().expect("ops");
+    ops.insert(0, serde_json::json!({"op": "git", "args": git_args}));
+    sc
+}
+
+fn run_lead(sb: &Sandbox, sc: serde_json::Value) -> common::RunOut {
+    sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(sc),
+    )
+}
+
+#[test]
+fn lead_git_output_blocked() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+
+    let res = run_lead(
+        &sb,
+        lead_scenario_with_git(&["log", "--output=../leak-lead.txt"]),
+    );
+    assert_eq!(
+        res.code, 0,
+        "Lead failed: stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    let head_subj = sb.git(&repo, &["log", "-1", "--format=%s"]);
+    assert_eq!(head_subj.trim(), "sua-app: plan");
+
+    let rec = sb.records().pop().expect("fake record");
+    assert!(
+        rec["settings"].as_str().is_some(),
+        "Lead ran without --settings: {rec}"
+    );
+    let blocked = rec["blocked"].as_array().expect("blocked array");
+    assert!(
+        blocked.iter().any(|b| b["tool"] == "Bash"),
+        "no Bash entry in blocked: {blocked:?}"
+    );
+    assert!(
+        !sb.repos.join("leak-lead.txt").exists(),
+        "git log --output wrote outside the repo"
+    );
+
+    let run_dir = latest_run_dir(&sb, "lead");
+    assert!(run_dir.join("settings.json").is_file());
+    assert!(run_dir.join("policy.json").is_file());
+    assert_eq!(
+        rec["settings"].as_str(),
+        Some(run_dir.join("settings.json").to_string_lossy().as_ref())
+    );
+    let lines = guard_log_lines(&run_dir);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["decision"] == "block" && l["tool"] == "Bash"),
+        "no Bash block line in guard log: {lines:?}"
+    );
+}
+
+#[test]
+fn lead_git_status_allowed() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    let res = run_lead(&sb, lead_scenario_with_git(&["status", "--porcelain"]));
+    assert_eq!(
+        res.code, 0,
+        "Lead failed: stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    let rec = sb.records().pop().expect("fake record");
+    assert!(rec["settings"].as_str().is_some());
+    let blocked = rec["blocked"].as_array().expect("blocked array");
+    assert!(
+        !blocked.iter().any(|b| b["tool"] == "Bash"),
+        "git status was blocked: {blocked:?}"
+    );
+}
+
+#[test]
+fn qa_git_ext_diff_blocked() {
+    let sb = Sandbox::new();
+    let (repo, task, _plan_sha, _dev_sha) = setup_lead_and_dev(&sb);
+
+    let qa_report = "\
+# QA: sửa app
+## Thay đổi có khớp plan không (từng mục)
+- src/app.py: khớp.
+## Sửa ngoài plan (nếu có)
+Không.
+## Rủi ro
+Không phát hiện rủi ro.
+## Kết luận
+Đạt
+";
+    let sc = serde_json::json!({"ops": [
+        {"op": "git", "args": ["show", "--ext-diff", "HEAD"]},
+        {"op": "write", "path": ".qa-report.md", "content": qa_report, "keep_meta": true}
+    ]});
+    let res = sb.run(&["run", "qa", "--", "web-ban-hang"], Some(sc));
+    assert_eq!(
+        res.code, 0,
+        "QA failed: stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    let head_subj = sb.git(&repo, &["log", "-1", "--format=%s"]);
+    assert_eq!(head_subj.trim(), format!("{task}: qa"));
+    let outcome: Option<String> = sb
+        .db()
+        .query_row(
+            "SELECT outcome FROM runs WHERE role = 'qa' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(outcome.as_deref(), Some("qa:pass"));
+
+    let rec = sb.records().pop().expect("fake record");
+    assert!(
+        rec["settings"].as_str().is_some(),
+        "QA ran without --settings"
+    );
+    let blocked = rec["blocked"].as_array().expect("blocked array");
+    assert!(
+        blocked.iter().any(|b| b["tool"] == "Bash"),
+        "no Bash entry in blocked: {blocked:?}"
+    );
+
+    let run_dir = latest_run_dir(&sb, "qa");
+    let lines = guard_log_lines(&run_dir);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["decision"] == "block" && l["tool"] == "Bash"),
+        "no Bash block line in guard log: {lines:?}"
+    );
+}
+
+#[test]
+fn lead_dry_run_shows_settings() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--dry-run",
+            "--name",
+            "x",
+            "--",
+            "web-ban-hang",
+            "x",
+        ],
+        None,
+    );
+    assert_eq!(
+        res.code, 0,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    // The Command line runs to the end of stdout (the quoted -p input has
+    // newlines).
+    let cmd_start = res
+        .stdout
+        .find("Command:")
+        .unwrap_or_else(|| panic!("no Command line: {}", res.stdout));
+    let cmd_line = &res.stdout[cmd_start..];
+    assert!(
+        cmd_line.contains("--settings"),
+        "dry-run Command has no --settings: {cmd_line}"
+    );
+    // --dry-run creates no run directory.
+    assert!(
+        !sb.runs.join("web-ban-hang").exists(),
+        "dry-run created a run directory"
+    );
+    assert!(sb.records().is_empty(), "dry-run started claude");
+}
+
+#[test]
+fn lead_qa_prompts_carry_git_rule() {
+    for (name, prompt) in [
+        ("lead", agent_brain::roles::LEAD_PROMPT),
+        ("qa", agent_brain::roles::QA_PROMPT),
+    ] {
+        assert_eq!(
+            prompt.lines().filter(|l| *l == GIT_RULE_READ).count(),
+            1,
+            "prompt '{name}' must carry the git rule exactly once"
+        );
+    }
 }

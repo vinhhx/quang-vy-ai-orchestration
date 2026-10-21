@@ -13,6 +13,7 @@ Quy tắc kế hoạch:
 - Dev chỉ được phép đọc và sửa các file được liệt kê trong bảng "Thay đổi", vì vậy bạn phải liệt kê đầy đủ tất cả file cần sửa để hoàn thành yêu cầu.
 - Để trống mục "Vướng mắc" (Dev sẽ ghi vào đây nếu gặp khó khăn trong quá trình thực thi).
 - Tuyệt đối KHÔNG sửa code và KHÔNG chạy test.
+- Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`.
 
 Ví dụ dòng trong bảng Thay đổi:
 - Tốt:

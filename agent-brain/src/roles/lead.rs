@@ -150,16 +150,18 @@ pub fn cmd_lead(
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
 
-    let spec = crate::roles::RoleSpec {
-        role: crate::roles::Role::Lead,
-        user_input,
-        allowed_tools: allowed,
-        disallowed_tools: disallowed,
-        extra_args: Vec::new(),
-    };
-
     if opts.dry_run {
-        let argv = crate::roles::build_command(&spec, &ctx.cfg)?;
+        let spec_dry = crate::roles::RoleSpec {
+            role: crate::roles::Role::Lead,
+            user_input,
+            allowed_tools: allowed,
+            disallowed_tools: disallowed,
+            extra_args: vec![
+                "--settings".to_string(),
+                "<run_dir/settings.json>".to_string(),
+            ],
+        };
+        let argv = crate::roles::build_command(&spec_dry, &ctx.cfg)?;
         let p_prof = &proj.profile;
         let p_desc = crate::profile::describe_profile(p_prof, &ctx.cfg.profiles);
         let model = ctx.cfg.model_for("lead")?;
@@ -287,6 +289,22 @@ pub fn cmd_lead(
         ));
     }
 
+    // W-1: Lead's Bash git calls go through the guard's git policy; its file
+    // writes stay with the allow rules and the post-run backstop.
+    let run_dir = crate::roles::new_run_dir(&ctx.cfg, &proj.id, &task_slug, "lead")?;
+    let exe = std::env::current_exe()?;
+    let settings = crate::guard::write_bash_hook_settings(&run_dir, &proj_path, &exe)?;
+    let spec = crate::roles::RoleSpec {
+        role: crate::roles::Role::Lead,
+        user_input,
+        allowed_tools: allowed,
+        disallowed_tools: disallowed,
+        extra_args: vec![
+            "--settings".to_string(),
+            settings.to_string_lossy().to_string(),
+        ],
+    };
+
     let argv = crate::roles::build_command(&spec, &ctx.cfg)?;
     let model = ctx.cfg.model_for("lead")?;
     let timeout = ctx.cfg.timeout_for("lead");
@@ -301,7 +319,7 @@ pub fn cmd_lead(
         plan_files: None,
         verbose: opts.verbose,
         timeout,
-        run_dir: None,
+        run_dir: Some(run_dir),
     };
 
     let round = match opts.round {
