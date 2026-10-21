@@ -21,10 +21,60 @@ const DOCUMENT_MAX_SECS: u64 = 60;
 const MESSAGE_MAX_SECS: u64 = 30;
 const CAPTION_MAX: usize = 1000;
 const DB_READ_ATTEMPTS: u32 = 3;
+const EDIT_MAX_SECS: u64 = 20;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outgoing {
     Notify(Event),
+    /// Replaces the text and buttons of a sent message (D-15, plan 05.3-06).
+    Edit {
+        message_id: i64,
+        text: String,
+        keyboard: serde_json::Value,
+    },
+    /// Replaces only the buttons of a sent message.
+    Keyboard {
+        message_id: i64,
+        keyboard: serde_json::Value,
+    },
+}
+
+/// Bot API method and JSON body for an `Edit` / `Keyboard` item, always on
+/// `chat_id` (the paired chat); `None` for a `Notify` item.
+pub fn edit_request(chat_id: i64, item: &Outgoing) -> Option<(&'static str, serde_json::Value)> {
+    match item {
+        Outgoing::Notify(_) => None,
+        Outgoing::Edit {
+            message_id,
+            text,
+            keyboard,
+        } => Some((
+            "editMessageText",
+            serde_json::json!({
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                "reply_markup": keyboard,
+            }),
+        )),
+        Outgoing::Keyboard {
+            message_id,
+            keyboard,
+        } => Some((
+            "editMessageReplyMarkup",
+            serde_json::json!({
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reply_markup": keyboard,
+            }),
+        )),
+    }
+}
+
+/// Telegram's answer to an edit that changes nothing; the message already
+/// shows the wanted content, so it counts as success.
+pub fn not_modified(e: &CallError) -> bool {
+    matches!(e, CallError::Api { code: 400, description, .. } if description.contains("message is not modified"))
 }
 
 #[derive(Default)]
@@ -320,6 +370,59 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
     }
 }
 
+/// Sends one `Edit` / `Keyboard` item with the same retry, drop and Health
+/// rules as a notification. The item carries its final content, so it is not
+/// re-checked against the task state.
+fn edit(ctx: &BotCtx, item: &Outgoing) -> Step {
+    let (method, body) = match edit_request(ctx.cfg.chat_id, item) {
+        Some(r) => r,
+        None => return Step::Done,
+    };
+    let message_id = body.get("message_id").and_then(|m| m.as_i64()).unwrap_or(0);
+    let base_ms = base_backoff_ms();
+    let mut failures: u32 = 0;
+    loop {
+        if ctx.stop.load(Ordering::SeqCst) {
+            return Step::Stopped;
+        }
+        match ctx
+            .tx
+            .call(method, &Body::Json(body.clone()), EDIT_MAX_SECS)
+        {
+            Ok(_) => {
+                ctx.health.ok(Channel::Send);
+                return Step::Done;
+            }
+            Err(CallError::Stopped) => return Step::Stopped,
+            Err(e) if not_modified(&e) => {
+                ctx.health.ok(Channel::Send);
+                return Step::Done;
+            }
+            Err(e) => {
+                failures = failures.saturating_add(1);
+                match e.retry_delay_ms(failures, base_ms) {
+                    Some(ms) => {
+                        ctx.health.failed(Channel::Send, &e.text());
+                        if sleep_or_stop(&ctx.stop, ms) {
+                            return Step::Stopped;
+                        }
+                    }
+                    None => {
+                        crate::term::emit(&format!(
+                            "Telegram: bỏ sửa tin {message_id} — {}",
+                            e.text()
+                        ));
+                        if matches!(e, CallError::Api { .. }) {
+                            ctx.health.ok(Channel::Send);
+                        }
+                        return Step::Done;
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn run(ctx: Arc<BotCtx>) {
     let mut conn: Option<Connection> = None;
     loop {
@@ -332,6 +435,7 @@ fn run(ctx: Arc<BotCtx>) {
         };
         let step = match &item {
             Outgoing::Notify(ev) => notify(&ctx, &mut conn, ev),
+            Outgoing::Edit { .. } | Outgoing::Keyboard { .. } => edit(&ctx, &item),
         };
         if let Step::Stopped = step {
             return;
@@ -395,11 +499,10 @@ mod tests {
 
     #[test]
     fn edit_request_targets_the_paired_chat() {
-        let kb = serde_json::json!({"inline_keyboard": []});
         let edit = Outgoing::Edit {
             message_id: 7,
             text: "t".to_string(),
-            keyboard: kb.clone(),
+            keyboard: serde_json::json!({"inline_keyboard": []}),
         };
         assert_eq!(
             edit_request(5555, &edit),
