@@ -636,3 +636,64 @@ fn two_tasks_each_notified_once() {
     assert_plain_and_paired(&tg);
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+/// WR-06: a task whose state cannot be read while the detector seeds (here a corrupt
+/// run row) must not have its pre-restart event notified once it can be read again.
+#[test]
+fn unreadable_task_at_start_does_not_resend_old_event() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+    );
+    assert_ok(&res, "run lead");
+
+    // The gate exists before serve starts. Break the task's run row so that reading
+    // the task fails while the detector seeds.
+    let started_at: i64 = sb
+        .db()
+        .query_row(
+            "SELECT started_at FROM runs WHERE task_id = 1 ORDER BY id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("read started_at");
+    sb.db()
+        .execute("UPDATE runs SET started_at = 'x' WHERE task_id = 1", [])
+        .expect("corrupt run row");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+    assert!(
+        wait_until(Duration::from_secs(10), || stderr_of(&srv)
+            .contains("Telegram: lỗi đọc task 1")),
+        "the task was readable at start-up; stderr:\n{}",
+        stderr_of(&srv)
+    );
+
+    // The row is readable again: the next scan reads the task.
+    sb.db()
+        .execute(
+            "UPDATE runs SET started_at = ?1 WHERE task_id = 1",
+            [started_at],
+        )
+        .expect("repair run row");
+    std::thread::sleep(Duration::from_secs(5));
+    assert!(
+        messages_starting(&tg, "Chờ duyệt plan").is_empty(),
+        "the old gate was sent again: {:#?}",
+        tg.records()
+    );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}

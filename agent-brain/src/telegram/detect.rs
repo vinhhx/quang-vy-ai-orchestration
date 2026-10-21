@@ -134,6 +134,9 @@ pub struct Detector {
     sigs: HashMap<i64, String>,
     seen: HashSet<(i64, String)>,
     reported: HashSet<i64>,
+    /// Tasks whose state could not be read while seeding. Their first successful
+    /// read is a pre-restart state: its event is marked seen, not notified.
+    unseeded: HashSet<i64>,
 }
 
 enum Eval {
@@ -220,7 +223,11 @@ impl Detector {
                 Eval::Gone => {
                     self.sigs.insert(task_id, sig);
                 }
-                Eval::Failed => {}
+                // Not seen yet: without this, the first scan that reads the task would
+                // notify an event that existed before the restart (TELE-04).
+                Eval::Failed => {
+                    self.unseeded.insert(task_id);
+                }
             }
         }
         Ok(())
@@ -257,13 +264,17 @@ impl Detector {
                         out.push(item);
                     }
                     if let Some(ev) = ev {
-                        if self.seen.insert((ev.task_id, ev.key.clone())) {
+                        if self.seen.insert((ev.task_id, ev.key.clone()))
+                            && !self.unseeded.contains(&task_id)
+                        {
                             out.push(Outgoing::Notify(ev));
                         }
                     }
+                    self.unseeded.remove(&task_id);
                 }
                 Eval::Gone => {
                     self.sigs.insert(task_id, sig);
+                    self.unseeded.remove(&task_id);
                 }
                 // Signature not recorded: the task is evaluated again next scan.
                 Eval::Failed => {}
