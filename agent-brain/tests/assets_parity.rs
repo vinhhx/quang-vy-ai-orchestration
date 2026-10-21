@@ -1,5 +1,26 @@
 use std::path::Path;
 
+/// W-1 (05.2-27): the one-line git rule the Rust prompts carry and the
+/// Python brain's prompts (no Bash guard) do not. Shared start of both rules.
+const GIT_RULE_PREFIX: &str = "- Chạy mỗi lệnh git riêng, trên một dòng";
+/// Lead, QA and both reviewers (read-only git).
+const GIT_RULE_READ: &str =
+    "- Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`.";
+/// Dev and Dev-fix (they also commit).
+const GIT_RULE_COMMIT: &str = "- Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`; commit message chỉ một dòng, đặt trong ngoặc kép sau -m, không dùng heredoc.";
+
+/// The prompt with every git-rule line dropped; every other byte (newlines
+/// included) is kept.
+fn without_git_rule(text: &str) -> String {
+    text.split_inclusive('\n')
+        .filter(|l| !l.starts_with(GIT_RULE_PREFIX))
+        .collect()
+}
+
+fn count_lines_equal(text: &str, line: &str) -> usize {
+    text.lines().filter(|l| *l == line).count()
+}
+
 #[test]
 fn prompts_equal_phase2() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -8,12 +29,22 @@ fn prompts_equal_phase2() {
         let rust_asset_path = repo_root.join(format!("agent-brain/assets/prompts/{role}.md"));
         let python_prompt_path = repo_root.join(format!("brain/prompts/{role}.md"));
 
-        let rust_asset_bytes = std::fs::read(&rust_asset_path).expect("read rust asset prompt");
+        let rust_asset = std::fs::read_to_string(&rust_asset_path).expect("read rust asset prompt");
         let python_prompt_bytes = std::fs::read(&python_prompt_path).expect("read python prompt");
 
+        let rule_lines = rust_asset
+            .lines()
+            .filter(|l| l.starts_with(GIT_RULE_PREFIX))
+            .count();
+        assert!(
+            rule_lines <= 1,
+            "role '{role}' has {rule_lines} git-rule lines (at most one allowed)"
+        );
+
         assert_eq!(
-            rust_asset_bytes, python_prompt_bytes,
-            "Prompt file bytes mismatch for role '{role}'"
+            without_git_rule(&rust_asset).into_bytes(),
+            python_prompt_bytes,
+            "Prompt file bytes mismatch for role '{role}' (git-rule line excluded)"
         );
 
         let constant_bytes = match role {
@@ -24,8 +55,37 @@ fn prompts_equal_phase2() {
         };
 
         assert_eq!(
-            constant_bytes, python_prompt_bytes,
+            constant_bytes,
+            rust_asset.as_bytes(),
             "Embedded prompt constant mismatch for role '{role}'"
+        );
+    }
+}
+
+#[test]
+fn prompts_carry_git_rule() {
+    for (name, prompt, rule) in [
+        ("dev", agent_brain::roles::DEV_PROMPT, GIT_RULE_COMMIT),
+        (
+            "dev-fix",
+            agent_brain::roles::DEV_FIX_PROMPT,
+            GIT_RULE_COMMIT,
+        ),
+        (
+            "plan-review",
+            agent_brain::roles::PLAN_REVIEW_PROMPT,
+            GIT_RULE_READ,
+        ),
+        (
+            "code-review",
+            agent_brain::roles::CODE_REVIEW_PROMPT,
+            GIT_RULE_READ,
+        ),
+    ] {
+        assert_eq!(
+            count_lines_equal(prompt, rule),
+            1,
+            "prompt '{name}' must carry the git rule exactly once"
         );
     }
 }
