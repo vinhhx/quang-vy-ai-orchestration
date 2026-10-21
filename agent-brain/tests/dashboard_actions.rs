@@ -275,3 +275,73 @@ fn kill_run_refuses_finished_and_missing() {
         KillOutcome::NotFound("Không tìm thấy run 999".to_string())
     );
 }
+
+/// Thêm một dòng run `running` không có tiến trình thật (pid 0) cho task — `cmd_kill`
+/// chỉ đánh dấu `lost`, không gửi tín hiệu nào.
+fn add_stale_running_run(sb: &Sandbox, task_id: i64) -> i64 {
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let base = agent_brain::db::get_run(&conn, 1)
+        .expect("get_run")
+        .expect("run 1");
+    agent_brain::db::insert_run(
+        &conn,
+        &agent_brain::db::NewRun {
+            task_id: Some(task_id),
+            project_id: base.project_id,
+            role: "dev".to_string(),
+            profile: base.profile.clone(),
+            model: None,
+            pid: 0,
+            pgid: 0,
+            pid_start: 0,
+            base_commit: None,
+            run_dir: None,
+        },
+    )
+    .expect("insert_run")
+}
+
+fn status_of(sb: &Sandbox, run_id: i64) -> String {
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    agent_brain::db::get_run(&conn, run_id)
+        .expect("get_run")
+        .expect("run")
+        .status
+}
+
+#[test]
+fn kill_run_refuses_when_task_has_two_running_runs() {
+    let sb = Sandbox::new();
+    let _repo = lead_task(&sb);
+    let a = add_stale_running_run(&sb, 1);
+    let b = add_stale_running_run(&sb, 1);
+    let st = app_state(&sb);
+    for confirmed in [a, b] {
+        match kill_run(&st, confirmed).unwrap() {
+            KillOutcome::Refused(msg) => {
+                assert!(msg.contains("nhiều run đang chạy"), "{msg}");
+            }
+            other => panic!("phải từ chối, nhận {other:?}"),
+        }
+    }
+    // Không run nào bị đụng tới.
+    assert_eq!(status_of(&sb, a), "running");
+    assert_eq!(status_of(&sb, b), "running");
+}
+
+#[test]
+fn kill_run_single_running_run_reaches_cmd_kill() {
+    let sb = Sandbox::new();
+    let _repo = lead_task(&sb);
+    let a = add_stale_running_run(&sb, 1);
+    let st = app_state(&sb);
+    // Qua được kiểm tra "run duy nhất đang chạy"; run không có tiến trình thật nên bị
+    // đánh dấu lost và cmd_kill từ chối (không gửi tín hiệu nào).
+    match kill_run(&st, a).unwrap() {
+        KillOutcome::Refused(msg) => {
+            assert!(!msg.contains("nhiều run đang chạy"), "{msg}");
+        }
+        other => panic!("nhận {other:?}"),
+    }
+    assert_eq!(status_of(&sb, a), "lost");
+}

@@ -96,6 +96,26 @@ pub fn kill_run(st: &AppState, run_id: i64) -> BrainResult<KillOutcome> {
         )));
     }
 
+    // `cmd_kill` dừng "run đang chạy của task": chỉ an toàn khi đó đúng là run đã xác nhận.
+    // Task có nhiều run `running` (ví dụ dòng cũ của tiến trình đã chết) thì từ chối,
+    // không đoán run nào — tránh dừng nhầm run và ghi sai "Đã dừng run {id}".
+    let running: Vec<i64> = crate::db::runs_for_task(&conn, task_id)?
+        .into_iter()
+        .filter(|r| r.status == "running")
+        .map(|r| r.id)
+        .collect();
+    if running != [id] {
+        let others: Vec<String> = running
+            .iter()
+            .filter(|r| **r != id)
+            .map(|r| r.to_string())
+            .collect();
+        return Ok(KillOutcome::Refused(format!(
+            "Task {task_id} có nhiều run đang chạy (run {}) — không chắc dừng đúng run {id}, mở dashboard để xử lý",
+            others.join(", ")
+        )));
+    }
+
     let mut ctx = crate::app::open_ctx_with(st.cfg.clone(), &st.map_path, &st.db_path)?;
     match crate::runner::cmd_kill(&mut ctx, task_id) {
         Ok(1) => Ok(KillOutcome::Done {
