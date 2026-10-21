@@ -137,6 +137,15 @@ pub struct ClaimOpts {
     pub replan: Option<Replan>,
 }
 
+/// Số vòng cấp thêm cho `Chạy thêm 1 vòng`: đủ để trần vượt vòng đã dừng
+/// (G-01: Trả về Lead có thể chạy quá trần), tối thiểu 1.
+fn more_round_grant(round: Option<i64>, cap: Option<i64>) -> i64 {
+    match (round, cap) {
+        (Some(r), Some(c)) => (r + 1 - c).max(1),
+        _ => 1,
+    }
+}
+
 /// Nhận task cho driver này trong một giao dịch BEGIN IMMEDIATE.
 pub fn claim(
     conn: &mut Connection,
@@ -189,7 +198,7 @@ pub fn claim(
                         .map(|l| l.as_str())
                         .unwrap_or("plan")
                         .to_string();
-                    *aj.grants.entry(key).or_insert(0) += 1;
+                    *aj.grants.entry(key).or_insert(0) += more_round_grant(stop.round, stop.cap);
                 }
                 StopReason::HetNganSach => {
                     aj.bypass_stages = 2;
@@ -458,5 +467,16 @@ mod tests {
         set_row(&conn, id, "gate", None);
         assert!(end_autopilot(&conn, id, "gate", &AutoJson::default()).expect("end"));
         assert_eq!(auto_of(&conn, id).auto_state.as_deref(), Some("ended"));
+    }
+
+    #[test]
+    fn more_round_grant_lifts_cap() {
+        assert_eq!(more_round_grant(Some(3), Some(3)), 1);
+        // G-01: Trả về Lead chạy vòng 4 với trần 3 → cấp 2 để trần thành 5.
+        assert_eq!(more_round_grant(Some(4), Some(3)), 2);
+        assert_eq!(more_round_grant(Some(4), Some(4)), 1);
+        assert_eq!(more_round_grant(Some(2), Some(3)), 1);
+        assert_eq!(more_round_grant(None, Some(3)), 1);
+        assert_eq!(more_round_grant(Some(4), None), 1);
     }
 }
