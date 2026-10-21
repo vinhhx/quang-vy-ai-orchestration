@@ -978,7 +978,8 @@ Cần chuẩn bị: một bot mới tạo bằng @BotFather (`/newbot`), điện
   2. Trên điện thoại, tin `Autopilot dừng · hết vòng · task 2`: bấm `Trả về Lead`. Bot hỏi ghi chú; nhắn một câu ngắn, ví dụ `Thêm test cho app()`. Chờ tới tin dừng mới của task 2, rồi:
      ```bash
      q "SELECT id, role, round, status, json_extract(metrics_json, '\$.note') FROM runs WHERE task_id = 2 ORDER BY id"
-     grep -c 'Thêm test cho app()' "$FAKE_CLAUDE_RECORD"      # ghi chú có trong lời nhắn gửi cho Lead
+     # ghi chú có trong lời nhắn gửi cho Lead (file ghi JSON với \u nên không grep trực tiếp được)
+     python3 -c 'import json, sys; print(sum(sys.argv[1].lower() in json.dumps(json.loads(l), ensure_ascii=False).lower() for l in open(sys.argv[2], encoding="utf-8")))' 'Thêm test cho app()' "$FAKE_CLAUDE_RECORD"
      ```
   3. Trên tin dừng mới: bấm `Chạy thêm 1 vòng`. Chờ tới tin dừng tiếp theo.
   4. Trên tin dừng đó: bấm `Dừng hẳn`. Rồi:
@@ -988,7 +989,7 @@ Cần chuẩn bị: một bot mới tạo bằng @BotFather (`/newbot`), điện
      ```
 - **Kết quả mong đợi**:
   1. Bước 1: `Autopilot dừng · hết vòng: Review plan vẫn yêu cầu sửa lại sau 3 / 3 vòng. (task 2)`, `exit=4`; SQL `2 | stopped | het_vong`. Điện thoại nhận `Autopilot dừng · hết vòng · task 2` / tiêu đề / dòng dự án / chi tiết lý do, với các nút `Chạy thêm 1 vòng`, `Trả về Lead`, `Dừng hẳn`.
-  2. Bước 2: bot gửi `Ghi chú cho Lead (task 2): gửi tin nhắn kế tiếp làm ghi chú (tối đa 500 ký tự), hoặc bấm Không ghi chú. Hết hạn sau 10 phút.` với `Không ghi chú` / `Huỷ`; sau tin nhắn của bạn, lời hỏi đổi thành `Đã gửi cho Lead.`, tin dừng được sửa `✓ Đã trả về Lead (ghi chú: «Thêm test cho app()») — từ Telegram lúc HH:MM`. Autopilot chạy Lead vòng 4 rồi Review plan vòng 4 và dừng lại: tin mới `Autopilot dừng · hết vòng · task 2` với chi tiết `… sau 4 / 3 vòng.` SQL: run Lead vòng 4 có ghi chú `Thêm test cho app()` (các run Lead trước: `None`); `grep -c` lớn hơn hoặc bằng `1`.
+  2. Bước 2: bot gửi `Ghi chú cho Lead (task 2): gửi tin nhắn kế tiếp làm ghi chú (tối đa 500 ký tự), hoặc bấm Không ghi chú. Hết hạn sau 10 phút.` với `Không ghi chú` / `Huỷ`; sau tin nhắn của bạn, lời hỏi đổi thành `Đã gửi cho Lead.`, tin dừng được sửa `✓ Đã trả về Lead (ghi chú: «Thêm test cho app()») — từ Telegram lúc HH:MM`. Autopilot chạy Lead vòng 4 rồi Review plan vòng 4 và dừng lại: tin mới `Autopilot dừng · hết vòng · task 2` với chi tiết `… sau 4 / 3 vòng.` SQL: run Lead vòng 4 có ghi chú `Thêm test cho app()` (các run Lead trước: `None`); lệnh `python3` đếm được lớn hơn hoặc bằng `1`.
   3. Bước 3: tin được sửa `✓ Đã giao thêm 1 vòng — từ Telegram lúc HH:MM`; thêm một vòng plan ⇄ review rồi một tin dừng mới.
   4. Bước 4: tin được sửa `✓ Đã dừng hẳn autopilot. Bật autopilot trên dashboard để chạy tiếp. — từ Telegram lúc HH:MM`; SQL `2 | ended | …`. Ghi lại xem sau đó có tin `Chờ duyệt plan · task 2` không (05.3-03 dự kiến có, vì plan vẫn chờ duyệt; **không** bấm nút của tin này).
   5. `serve.out` có một dòng `Telegram: {nút} task 2 — …` cho mỗi lần bấm.
