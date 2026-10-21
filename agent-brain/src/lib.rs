@@ -21,5 +21,6 @@ pub mod runner;
 pub mod stats;
 pub mod stream;
 pub mod tasks;
+pub mod telegram;
 pub mod term;
 pub mod workflows;

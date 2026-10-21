@@ -1,0 +1,208 @@
+//! Telegram bot inside `agent-brain serve` (Phase 05.3, D-01/D-04/D-05/D-06).
+//!
+//! Outbound long polling only: this module never opens a listening socket.
+//! All traffic goes through `transport::Transport` (system curl, token on stdin).
+
+pub mod config;
+pub mod transport;
+
+use crate::dashboard::AppState;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Telegram channels whose health is tracked separately.
+/// `Poll` = the `ab-tg` thread (getMe, getUpdates); `Send` = the outbox thread `ab-tg-send`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    Poll,
+    Send,
+}
+
+impl Channel {
+    fn bit(self) -> u8 {
+        match self {
+            Channel::Poll => 1,
+            Channel::Send => 2,
+        }
+    }
+}
+
+/// One outage = one warning line + one recovery line, however the channels interleave.
+/// Each channel owns one bit of the mask; every transition is a single atomic op.
+#[derive(Debug, Default)]
+pub struct Health {
+    mask: AtomicU8,
+}
+
+impl Health {
+    pub fn new() -> Health {
+        Health {
+            mask: AtomicU8::new(0),
+        }
+    }
+
+    /// Marks `ch` failing. Prints the warning (and returns true) only when no
+    /// channel was failing before, i.e. an outage starts.
+    pub fn failed(&self, ch: Channel, what: &str) -> bool {
+        let prev = self.mask.fetch_or(ch.bit(), Ordering::SeqCst);
+        if prev == 0 {
+            crate::term::emit(&format!(
+                "Telegram: không tới được Telegram ({what}) — đang thử lại; thông báo được giữ lại, các run và autopilot vẫn chạy bình thường."
+            ));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Marks `ch` healthy. Prints the recovery line (and returns true) only when
+    /// `ch` was the last failing channel, i.e. the outage ends.
+    pub fn ok(&self, ch: Channel) -> bool {
+        let prev = self.mask.fetch_and(!ch.bit(), Ordering::SeqCst);
+        if prev == ch.bit() {
+            crate::term::emit_out("Telegram: đã kết nối lại");
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn ok_quiet(&self, ch: Channel) {
+        self.mask.fetch_and(!ch.bit(), Ordering::SeqCst);
+    }
+
+    pub fn is_failing(&self) -> bool {
+        self.mask.load(Ordering::SeqCst) != 0
+    }
+}
+
+pub struct BotCtx {
+    pub st: Arc<AppState>,
+    pub cfg: config::TelegramConfig,
+    pub tx: transport::Transport,
+    pub health: Health,
+    pub stop: Arc<AtomicBool>,
+}
+
+pub struct BotHandle {
+    stop: Arc<AtomicBool>,
+}
+
+impl BotHandle {
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Sleeps `ms` in 100 ms slices; returns true as soon as `stop` is set.
+pub fn sleep_or_stop(stop: &AtomicBool, ms: u64) -> bool {
+    let mut left = ms;
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            return true;
+        }
+        if left == 0 {
+            return false;
+        }
+        let slice = left.min(100);
+        std::thread::sleep(Duration::from_millis(slice));
+        left -= slice;
+    }
+}
+
+/// Starts the bot when `telegram.json` is present and valid. Without the file
+/// nothing is printed and `None` is returned (serve behaves as before, D-06).
+pub fn start(st: Arc<AppState>) -> Option<BotHandle> {
+    let path = config::path();
+    let cfg = match config::load(&path) {
+        Ok(c) => c,
+        Err(config::LoadError::Missing) => return None,
+        Err(e) => {
+            if let Some(msg) = e.message() {
+                crate::term::emit(&format!("Telegram: lỗi — {msg}"));
+            }
+            return None;
+        }
+    };
+    let base = match transport::api_base() {
+        Ok(b) => b,
+        Err(e) => {
+            crate::term::emit(&format!("Telegram: lỗi — {e}"));
+            return None;
+        }
+    };
+    let curl = transport::curl_bin();
+    if let Err(e) = transport::check_curl(&curl) {
+        crate::term::emit(&format!("Telegram: lỗi — {e}"));
+        return None;
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let upload_dir = crate::config::data_dir().join("telegram-upload");
+    let _ = std::fs::remove_dir_all(&upload_dir);
+    let tx = transport::Transport::new(cfg.token.clone(), base, curl, upload_dir, stop.clone());
+    let ctx = Arc::new(BotCtx {
+        st,
+        cfg,
+        tx,
+        health: Health::new(),
+        stop: stop.clone(),
+    });
+
+    // curl children carry PDEATHSIG, which fires when the spawning THREAD exits:
+    // curl is only spawned from this long-lived thread.
+    let spawned = std::thread::Builder::new()
+        .name("ab-tg".to_string())
+        .spawn(move || poll_thread(ctx));
+    if let Err(e) = spawned {
+        crate::term::emit(&format!("Telegram: lỗi — không tạo được luồng bot: {e}"));
+        return None;
+    }
+    Some(BotHandle { stop })
+}
+
+fn poll_thread(ctx: Arc<BotCtx>) {
+    let base_ms = transport::base_backoff_ms();
+    let mut failures: u32 = 0;
+    loop {
+        if ctx.stop.load(Ordering::SeqCst) {
+            return;
+        }
+        match ctx
+            .tx
+            .call("getMe", &transport::Body::Json(serde_json::json!({})), 20)
+        {
+            Ok(me) => {
+                ctx.health.ok_quiet(Channel::Poll);
+                let username = me.get("username").and_then(|u| u.as_str()).unwrap_or("?");
+                crate::term::emit_out(&format!("Telegram: đã kết nối (@{username})"));
+                // Plan 05.3-05 continues here with the getUpdates loop.
+                return;
+            }
+            Err(e) if e.is_unauthorized() => {
+                crate::term::emit(
+                    "Telegram: lỗi — Telegram từ chối token (401) — chạy lại agent-brain telegram setup",
+                );
+                ctx.stop.store(true, Ordering::SeqCst);
+                return;
+            }
+            Err(transport::CallError::Stopped) => return,
+            Err(e) => {
+                failures = failures.saturating_add(1);
+                match e.retry_delay_ms(failures, base_ms) {
+                    Some(ms) => {
+                        ctx.health.failed(Channel::Poll, &e.text());
+                        if sleep_or_stop(&ctx.stop, ms) {
+                            return;
+                        }
+                    }
+                    None => {
+                        crate::term::emit(&format!("Telegram: lỗi — {}", e.text()));
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}

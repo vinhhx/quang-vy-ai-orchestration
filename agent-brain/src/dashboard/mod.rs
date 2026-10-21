@@ -195,7 +195,7 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
         jobs: jobs.clone(),
     });
 
-    let app_router = router(state);
+    let app_router = router(state.clone());
 
     let mut sigint = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
     {
@@ -231,6 +231,7 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
     crate::term::emit_out(
         "Mở URL trên trong trình duyệt. Nhấn Ctrl+C để dừng dashboard (các run do dashboard khởi chạy cũng dừng theo).",
     );
+    let bot = crate::telegram::start(state.clone());
 
     let signal_fut = async {
         tokio::select! {
@@ -257,6 +258,9 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
         _ = signal_fut => {
             let _ = shutdown_tx.send(true);
             pump_stop.store(true, Ordering::SeqCst);
+            if let Some(b) = &bot {
+                b.stop();
+            }
 
             let jobs_clone = jobs.clone();
             let grace = Duration::from_secs(cfg.kill_grace_secs + 5);
