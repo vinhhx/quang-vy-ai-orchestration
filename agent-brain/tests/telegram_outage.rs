@@ -13,7 +13,7 @@ mod protocol;
 mod tg;
 
 use common::{wait_until, RunOut, Sandbox, Serve};
-use protocol::lead_scenario;
+use protocol::{lead_scenario, setup_project};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -90,14 +90,16 @@ fn assert_ok(res: &RunOut, what: &str) {
     );
 }
 
+/// `None` also while the task row does not exist yet.
 fn task_auto_state(sb: &Sandbox, task_id: i64) -> Option<String> {
     sb.db()
         .query_row(
             "SELECT auto_state FROM tasks WHERE id = ?1",
             [task_id],
-            |r| r.get(0),
+            |r| r.get::<_, Option<String>>(0),
         )
-        .unwrap()
+        .ok()
+        .flatten()
 }
 
 fn gate_scenario() -> Value {
@@ -297,5 +299,200 @@ fn outage_then_recovery_delivers_once() {
         1,
         "stderr:\n{err}\nstdout:\n{out}"
     );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// Task 3: 429, non-retryable 4xx, stale drop, never block
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rate_limit_retry_after_honored() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+    tg.set_behavior(json!([
+        {"method": "sendMessage", "times": 1, "status": 429,
+         "description": "Too Many Requests: retry after 2", "retry_after": 2}
+    ]));
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    run_lead(&sb, "web-ban-hang", "sua-app", "sửa app");
+
+    let ok = wait_delivered(
+        &tg,
+        &srv,
+        "Chờ duyệt plan · task 1",
+        Duration::from_secs(20),
+    );
+    let limited = messages(&tg, "Chờ duyệt plan · task 1", 429);
+    assert_eq!(limited.len(), 1, "{:#?}", tg.records());
+    let waited = t_of(&ok) - t_of(&limited[0]);
+    assert!(
+        waited >= 2.0,
+        "retry after {waited:.3} s, expected at least 2 s; records:\n{:#?}",
+        tg.records()
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(messages(&tg, "Chờ duyệt plan · task 1", 200).len(), 1);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn non_retryable_drops_one_item() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_two_projects(&sb);
+    tg.set_behavior(json!([
+        {"method": "sendMessage", "times": 1, "status": 400,
+         "description": "Bad Request: chat not found"}
+    ]));
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    run_lead(&sb, "web-ban-hang", "sua-app", "sửa app");
+    assert!(
+        wait_until(Duration::from_secs(15), || stderr_of(&srv)
+            .contains("Telegram: bỏ tin cho task 1 —")),
+        "no drop line; stderr:\n{}\nrecords:\n{:#?}",
+        stderr_of(&srv),
+        tg.records()
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    let task1: Vec<Value> = tg
+        .calls("sendMessage")
+        .into_iter()
+        .filter(|r| text_of(r).starts_with("Chờ duyệt plan · task 1"))
+        .collect();
+    assert_eq!(task1.len(), 1, "{task1:#?}");
+    assert_eq!(status_of(&task1[0]), 400, "{task1:#?}");
+    assert_eq!(
+        count_lines(&stderr_of(&srv), "Telegram: bỏ tin cho task 1 —"),
+        1
+    );
+
+    run_lead(&sb, "kho-hang", "kiem-kho", "kiểm kho");
+    let msg = wait_delivered(
+        &tg,
+        &srv,
+        "Chờ duyệt plan · task 2",
+        Duration::from_secs(15),
+    );
+    assert_eq!(msg["json"]["chat_id"], json!(PAIRED_CHAT));
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn stale_after_outage_dropped() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+    tg.set_behavior(json!([
+        {"method": "sendDocument", "times": 100000, "status": 502, "description": "Bad Gateway"},
+        {"method": "sendMessage", "times": 100000, "status": 502, "description": "Bad Gateway"}
+    ]));
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    run_lead(&sb, "web-ban-hang", "sua-app", "sửa app");
+    let failing = |r: &Value| status_of(r) == 502;
+    assert!(
+        wait_until(Duration::from_secs(15), || {
+            tg.calls("sendDocument").iter().any(failing)
+                || tg.calls("sendMessage").iter().any(failing)
+        }),
+        "no failed attempt; records:\n{:#?}\nstderr:\n{}",
+        tg.records(),
+        stderr_of(&srv)
+    );
+
+    // Approved from the dashboard while Telegram is down: the gate is stale.
+    let resp = srv.post_json("/api/tasks/1/approve", &json!({}));
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    tg.set_behavior(json!([]));
+
+    std::thread::sleep(Duration::from_secs(5));
+    let delivered: Vec<Value> = tg
+        .records()
+        .into_iter()
+        .filter(|r| {
+            matches!(r["method"].as_str(), Some("sendMessage" | "sendDocument"))
+                && status_of(r) == 200
+        })
+        .collect();
+    assert!(delivered.is_empty(), "stale gate delivered: {delivered:#?}");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn autopilot_not_blocked_by_outage() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+    sb.write_scenario(full_flow_scenario());
+    // getMe passes (a delay-only rule matches first); everything else fails.
+    tg.set_behavior(json!([
+        {"method": "getMe", "times": 100000, "delay_ms": 0},
+        {"method": "*", "times": 100000, "status": 502, "description": "Bad Gateway"}
+    ]));
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "web-ban-hang", "request": "sửa app", "name": "sua-app"}),
+    );
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    assert!(
+        wait_until(Duration::from_secs(30), || task_auto_state(&sb, 1)
+            .as_deref()
+            == Some("gate")),
+        "no gate; auto_state {:?}; stderr:\n{}",
+        task_auto_state(&sb, 1),
+        stderr_of(&srv)
+    );
+
+    let resp = srv.post_json("/api/tasks/1/approve", &json!({}));
+    assert_eq!(resp.status, 200, "{}", resp.text());
+
+    let mut api_failures = Vec::new();
+    let done = wait_until(Duration::from_secs(60), || {
+        let r = srv.get("/api/tasks");
+        if r.status != 200 {
+            api_failures.push(r.status);
+        }
+        task_auto_state(&sb, 1).as_deref() == Some("done")
+    });
+    assert!(
+        done,
+        "autopilot did not finish; auto_state {:?}; stderr:\n{}",
+        task_auto_state(&sb, 1),
+        stderr_of(&srv)
+    );
+    assert!(api_failures.is_empty(), "GET /api/tasks: {api_failures:?}");
+    assert_eq!(srv.get("/api/tasks").status, 200);
+
+    // Telegram really was down the whole time, and the outage was reported once.
+    let attempts: Vec<Value> = tg
+        .records()
+        .into_iter()
+        .filter(|r| r["method"] != json!("getMe"))
+        .collect();
+    assert!(!attempts.is_empty(), "the sender never tried");
+    assert!(
+        attempts.iter().all(|r| status_of(r) == 502),
+        "{attempts:#?}"
+    );
+    let err = stderr_of(&srv);
+    assert_eq!(count_lines(&err, WARNING), 1, "stderr:\n{err}");
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }

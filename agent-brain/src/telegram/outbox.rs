@@ -497,6 +497,64 @@ mod tests {
         }
     }
 
+    fn notify_id(item: &Outgoing) -> Option<i64> {
+        match item {
+            Outgoing::Notify(e) => Some(e.task_id),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn full_queue_drops_the_oldest_notify() {
+        let ob = Outbox::new();
+        for i in 0..=(QUEUE_CAP as i64) {
+            ob.push(Outgoing::Notify(ev(i)));
+        }
+        assert_eq!(ob.len(), QUEUE_CAP);
+        // Item 0 (the first pushed) is gone; 1..=QUEUE_CAP remain in order.
+        assert_eq!(ob.pop_timeout(10).as_ref().and_then(notify_id), Some(1));
+        ob.push(Outgoing::Notify(ev(1000)));
+        ob.push(Outgoing::Notify(ev(1001)));
+        assert_eq!(ob.len(), QUEUE_CAP);
+        assert_eq!(ob.pop_timeout(10).as_ref().and_then(notify_id), Some(3));
+    }
+
+    #[test]
+    fn full_queue_keeps_edit_items_while_notify_items_exist() {
+        let ob = Outbox::new();
+        let edit = Outgoing::Edit {
+            message_id: 9,
+            text: "x".to_string(),
+            keyboard: render::no_keyboard(),
+        };
+        ob.push(edit.clone());
+        for i in 1..(QUEUE_CAP as i64) {
+            ob.push(Outgoing::Notify(ev(i)));
+        }
+        assert_eq!(ob.len(), QUEUE_CAP);
+        ob.push(Outgoing::Notify(ev(5000)));
+        assert_eq!(ob.len(), QUEUE_CAP);
+        assert_eq!(ob.pop_timeout(10), Some(edit));
+        // The oldest Notify (task 1) was dropped instead of the Edit.
+        assert_eq!(ob.pop_timeout(10).as_ref().and_then(notify_id), Some(2));
+    }
+
+    #[test]
+    fn full_queue_without_notify_drops_the_oldest_item() {
+        let ob = Outbox::new();
+        for i in 0..=(QUEUE_CAP as i64) {
+            ob.push(Outgoing::Keyboard {
+                message_id: i,
+                keyboard: render::no_keyboard(),
+            });
+        }
+        assert_eq!(ob.len(), QUEUE_CAP);
+        match ob.pop_timeout(10) {
+            Some(Outgoing::Keyboard { message_id, .. }) => assert_eq!(message_id, 1),
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn edit_request_targets_the_paired_chat() {
         let edit = Outgoing::Edit {

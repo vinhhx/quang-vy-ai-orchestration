@@ -579,6 +579,16 @@ mod tests {
             retry_after: Some(7),
         };
         assert_eq!(e429.retry_delay_ms(1, 5000), Some(7000));
+        let e429_huge = CallError::Api {
+            code: 429,
+            description: "Too Many Requests".into(),
+            retry_after: Some(100_000),
+        };
+        assert_eq!(e429_huge.retry_delay_ms(1, 5000), Some(300_000));
+        assert_eq!(
+            e429_huge.retry_delay_ms(1, 5000),
+            Some(MAX_RETRY_AFTER_SECS * 1000)
+        );
         let e400 = CallError::Api {
             code: 400,
             description: "Bad Request".into(),
