@@ -870,20 +870,15 @@ fn running_of(runs: &[RunRow]) -> Option<&RunRow> {
         .max_by_key(|r| (r.started_at, r.id))
 }
 
-/// Đọc toàn bộ trạng thái task (Err(Response) = 404 JSON cho task / dự án không có).
+/// Đọc toàn bộ trạng thái task (Err(thông báo) = task / dự án không có; dashboard trả 404).
 pub fn load_task_state(
     st: &AppState,
     conn: &rusqlite::Connection,
     task_id: i64,
-) -> BrainResult<Result<TaskState, Response>> {
+) -> BrainResult<Result<TaskState, String>> {
     let task = match crate::db::get_task(conn, task_id)? {
         Some(t) => t,
-        None => {
-            return Ok(Err(json_error(
-                StatusCode::NOT_FOUND,
-                &format!("Không tìm thấy task {task_id}"),
-            )));
-        }
+        None => return Ok(Err(format!("Không tìm thấy task {task_id}"))),
     };
 
     let map = crate::projects::load_map(&st.map_path)?;
@@ -895,12 +890,7 @@ pub fn load_task_state(
     )?;
     let project = match projects.into_iter().find(|p| p.id == project_slug) {
         Some(p) => p,
-        None => {
-            return Ok(Err(json_error(
-                StatusCode::NOT_FOUND,
-                &format!("Không tìm thấy dự án {project_slug}"),
-            )));
-        }
+        None => return Ok(Err(format!("Không tìm thấy dự án {project_slug}"))),
     };
 
     let root = PathBuf::from(&project.path);
@@ -1071,7 +1061,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
         let conn = crate::db::open(&st.db_path)?;
         let state = match load_task_state(&st, &conn, id)? {
             Ok(s) => s,
-            Err(resp) => return Ok(resp),
+            Err(msg) => return Ok(json_error(StatusCode::NOT_FOUND, &msg)),
         };
         let task = &state.task;
         let project = &state.project;
@@ -1250,7 +1240,7 @@ async fn get_pipeline(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i6
         let conn = crate::db::open(&st.db_path)?;
         let state = match load_task_state(&st, &conn, id)? {
             Ok(s) => s,
-            Err(resp) => return Ok(resp),
+            Err(msg) => return Ok(json_error(StatusCode::NOT_FOUND, &msg)),
         };
 
         let plan = plan_facts(&state.root, &state.task, &state.runs);
@@ -1353,7 +1343,7 @@ async fn post_task_action(
         let conn = crate::db::open(&st.db_path)?;
         let state = match load_task_state(&st, &conn, task_id)? {
             Ok(s) => s,
-            Err(resp) => return Ok(resp),
+            Err(msg) => return Ok(json_error(StatusCode::NOT_FOUND, &msg)),
         };
         let task = &state.task;
         let project = &state.project;
@@ -1541,18 +1531,22 @@ fn conflict(error: &str, kind: &str) -> Response {
     )
 }
 
-/// Bắt đầu một job; lỗi được đổi thành 503 (dashboard đang dừng) hoặc 409 busy.
-fn start_job(st: &AppState, spec: crate::dashboard::jobs::JobSpec) -> Result<u64, Response> {
+/// Bắt đầu một job; lỗi được đổi thành `Unavailable` (dashboard đang dừng, 503)
+/// hoặc `Refused` loại `busy` (409).
+fn start_job_outcome(
+    st: &AppState,
+    spec: crate::dashboard::jobs::JobSpec,
+) -> Result<u64, ControlOutcome> {
     match st.jobs.start(spec) {
         Ok(job_id) => Ok(job_id),
         Err(e) => {
             if e.message.contains("Dashboard đang dừng") {
-                Err(json_resp(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    serde_json::json!({ "error": "Dashboard đang dừng — không nhận việc mới" }),
-                ))
+                Err(ControlOutcome::Unavailable)
             } else {
-                Err(conflict(&e.message, "busy"))
+                Err(ControlOutcome::Refused {
+                    reason: e.message,
+                    kind: "busy",
+                })
             }
         }
     }
@@ -1599,9 +1593,252 @@ fn absent_control(control: &str, state: &TaskState) -> (String, &'static str) {
     }
 }
 
+/// Kết quả của một nút điều khiển / hành động task, không gắn với HTTP: dashboard
+/// (`control_response`) và bot Telegram cùng gọi một đường xử lý (05.3 D-02).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ControlOutcome {
+    /// Duyệt plan: ghi nhận duyệt cho commit plan; `job_id` khi autopilot chạy tiếp.
+    Approved {
+        approved_at: i64,
+        plan_commit: String,
+        job_id: Option<u64>,
+    },
+    /// Một job đã bắt đầu (Trả về Lead, Bật autopilot, Chạy thêm 1 vòng, Dev / QA / Lead).
+    Started { job_id: u64 },
+    /// Dừng mềm: đã ghi cờ dừng cho driver đang chạy.
+    StopRequested,
+    /// Autopilot đã tắt (`ended`); `at_gate` khi tắt ở cổng duyệt plan.
+    Ended { at_gate: bool },
+    /// `rev` không khớp hoặc trạng thái đã đổi trong lúc ghi.
+    Stale,
+    /// Từ chối với lý do và loại (`busy`, `not_allowed`, `duplicate`).
+    Refused { reason: String, kind: &'static str },
+    /// Dashboard đang dừng — không nhận việc mới.
+    Unavailable,
+    /// Task / dự án không có.
+    NotFound(String),
+    /// Đầu vào không hợp lệ (ghi chú quá dài).
+    Invalid(String),
+}
+
+/// Ghi chú cho Lead (05.2 D-17): cắt khoảng trắng, rỗng = không có ghi chú;
+/// dài hơn `MAX_NOTE_CHARS` ký tự thì từ chối.
+pub fn normalize_note(note: Option<&str>) -> Result<Option<String>, String> {
+    let note = note
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if let Some(n) = note.as_deref() {
+        if n.chars().count() > crate::roles::lead::MAX_NOTE_CHARS {
+            return Err("Ghi chú quá dài (tối đa 500 ký tự)".to_string());
+        }
+    }
+    Ok(note)
+}
+
 /// Nút điều khiển của task (Duyệt plan, Trả về Lead, Bật / Dừng autopilot,
-/// Chạy thêm 1 vòng, Dừng hẳn). Trạng thái được đọc lại trên server; chỉ làm
-/// khi nút có mặt và đang bật.
+/// Chạy thêm 1 vòng, Dừng hẳn). Trạng thái được đọc lại từ DB và git; chỉ làm
+/// khi nút có mặt và đang bật. Thứ tự kiểm tra: ghi chú → trạng thái → `rev` →
+/// nút có mặt → nút bật → hành động.
+pub fn run_control(
+    st: &AppState,
+    task_id: i64,
+    control: &str,
+    rev: Option<&str>,
+    note: Option<&str>,
+) -> BrainResult<ControlOutcome> {
+    // Ghi chú (chỉ Trả về Lead): cắt khoảng trắng, rỗng = không có ghi chú.
+    let note = match normalize_note(note) {
+        Ok(n) => n,
+        Err(msg) => return Ok(ControlOutcome::Invalid(msg)),
+    };
+
+    let conn = crate::db::open(&st.db_path)?;
+    let state = match load_task_state(st, &conn, task_id)? {
+        Ok(s) => s,
+        Err(msg) => return Ok(ControlOutcome::NotFound(msg)),
+    };
+
+    if let Some(r) = rev {
+        if r != state.rev {
+            return Ok(ControlOutcome::Stale);
+        }
+    }
+
+    let ctl = match state.view.controls.iter().find(|c| c.id == control) {
+        Some(c) => c.clone(),
+        None => {
+            let (reason, kind) = absent_control(control, &state);
+            return Ok(ControlOutcome::Refused { reason, kind });
+        }
+    };
+    if !ctl.enabled {
+        let reason = ctl.reason.unwrap_or_default();
+        let kind = if state.busy.as_deref() == Some(reason.as_str()) {
+            "busy"
+        } else {
+            "not_allowed"
+        };
+        return Ok(ControlOutcome::Refused { reason, kind });
+    }
+
+    let id_str = task_id.to_string();
+    match control {
+        "approve" => {
+            let plan_commit = match claim::approve_check(&conn, &state.task, &state.root) {
+                Ok(pc) => pc,
+                Err(reason) => {
+                    return Ok(ControlOutcome::Refused {
+                        reason,
+                        kind: "not_allowed",
+                    })
+                }
+            };
+            // Duyệt trước khi ghi, để hoàn lại khi autopilot không bắt đầu được.
+            let prev = match (
+                state.auto.approved_at,
+                state.auto.approved_commit.as_deref(),
+            ) {
+                (Some(at), Some(c)) => Some((at, c)),
+                _ => None,
+            };
+            let approved_at = claim::approve_record(&conn, task_id, &plan_commit)?;
+            // Autopilot còn bật: chạy tiếp; đã tắt (`ended`) / quy trình tay: chỉ ghi nhận.
+            let job_id =
+                if taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)) {
+                    let spec = task_job(&state, "auto", vec!["auto".to_string(), id_str]);
+                    match start_job_outcome(st, spec) {
+                        Ok(j) => Some(j),
+                        Err(outcome) => {
+                            // Không để lại duyệt nửa chừng khi autopilot không bắt đầu được;
+                            // chỉ hoàn lại khi duyệt vẫn là của yêu cầu này (WR-04).
+                            claim::revert_approval(&conn, task_id, &plan_commit, prev)?;
+                            return Ok(outcome);
+                        }
+                    }
+                } else {
+                    None
+                };
+            Ok(ControlOutcome::Approved {
+                approved_at,
+                plan_commit,
+                job_id,
+            })
+        }
+        "return_lead" => {
+            // D-17 / D-30: lập lại plan (ghi chú là một phần tử argv); bỏ duyệt
+            // chỉ sau khi job đã bắt đầu — job bị từ chối thì giữ nguyên duyệt (WR-04).
+            let (role, args) =
+                if taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)) {
+                    let mut a = vec!["auto".to_string(), id_str, "--replan".to_string()];
+                    if let Some(n) = note.as_deref() {
+                        a.push(format!("--note={n}"));
+                    }
+                    ("auto", a)
+                } else {
+                    let mut a = vec![
+                        "run".to_string(),
+                        "lead".to_string(),
+                        "--name".to_string(),
+                        state.task.slug.clone(),
+                    ];
+                    if let Some(n) = note.as_deref() {
+                        a.push(format!("--note={n}"));
+                    }
+                    a.push("--".to_string());
+                    a.push(state.project.id.clone());
+                    a.push(state.task.title.clone());
+                    ("lead", a)
+                };
+            match start_job_outcome(st, task_job(&state, role, args)) {
+                Ok(job_id) => {
+                    crate::db::clear_task_approval(&conn, task_id)?;
+                    Ok(ControlOutcome::Started { job_id })
+                }
+                Err(outcome) => Ok(outcome),
+            }
+        }
+        "auto_start" | "auto_more_round" => {
+            let mut args = vec!["auto".to_string(), id_str];
+            if control == "auto_more_round" {
+                args.push("--more-round".to_string());
+            }
+            match start_job_outcome(st, task_job(&state, "auto", args)) {
+                Ok(job_id) => Ok(ControlOutcome::Started { job_id }),
+                Err(outcome) => Ok(outcome),
+            }
+        }
+        "auto_stop" => {
+            if state.driver_alive {
+                // Dừng mềm: run đang chạy chạy xong, autopilot không bắt đầu bước mới.
+                crate::db::request_auto_stop(&conn, task_id, "soft")?;
+                return Ok(ControlOutcome::StopRequested);
+            }
+            // Autopilot chờ ở cổng duyệt plan (không có driver): tắt autopilot cho
+            // task (`ended`). Không bỏ qua cổng — vẫn phải bấm Duyệt plan (D-03);
+            // Bật autopilot bật lại. Chỉ ghi khi task vẫn `gate` (WR-04).
+            if !claim::end_autopilot(&conn, task_id, "gate", &state.aj)? {
+                return Ok(ControlOutcome::Stale);
+            }
+            Ok(ControlOutcome::Ended { at_gate: true })
+        }
+        "auto_end" => {
+            // Dừng hẳn: giữ auto_json.stop làm lịch sử; Bật autopilot chạy lại sau.
+            // Chỉ ghi khi task vẫn `stopped` và không có driver (WR-04).
+            if !claim::end_autopilot(&conn, task_id, "stopped", &state.aj)? {
+                return Ok(ControlOutcome::Stale);
+            }
+            Ok(ControlOutcome::Ended { at_gate: false })
+        }
+        _ => Ok(ControlOutcome::Refused {
+            reason: NOT_ALLOWED_MSG.to_string(),
+            kind: "not_allowed",
+        }),
+    }
+}
+
+/// Đổi `ControlOutcome` thành phản hồi JSON của dashboard (mã và thân như trước 05.3).
+fn control_response(o: ControlOutcome) -> Response {
+    match o {
+        ControlOutcome::Approved {
+            approved_at,
+            plan_commit,
+            job_id,
+        } => json_resp(
+            StatusCode::OK,
+            serde_json::json!({
+                "approved_at": approved_at,
+                "plan_commit": plan_commit,
+                "job_id": job_id,
+            }),
+        ),
+        ControlOutcome::Started { job_id } => json_resp(
+            StatusCode::ACCEPTED,
+            serde_json::json!({ "job_id": job_id }),
+        ),
+        ControlOutcome::StopRequested => {
+            json_resp(StatusCode::OK, serde_json::json!({ "ok": true }))
+        }
+        ControlOutcome::Ended { at_gate: true } => json_resp(
+            StatusCode::OK,
+            serde_json::json!({ "ok": true, "ended": true }),
+        ),
+        ControlOutcome::Ended { at_gate: false } => {
+            json_resp(StatusCode::OK, serde_json::json!({ "ok": true }))
+        }
+        ControlOutcome::Stale => conflict(STALE_MSG, "stale"),
+        ControlOutcome::Refused { reason, kind } => conflict(&reason, kind),
+        ControlOutcome::Unavailable => json_resp(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": "Dashboard đang dừng — không nhận việc mới" }),
+        ),
+        ControlOutcome::NotFound(msg) => json_error(StatusCode::NOT_FOUND, &msg),
+        ControlOutcome::Invalid(msg) => json_error(StatusCode::UNPROCESSABLE_ENTITY, &msg),
+    }
+}
+
+/// Route của các nút điều khiển: chạy `run_control` ngoài luồng async rồi đổi
+/// kết quả thành JSON.
 async fn post_control(
     st: Arc<AppState>,
     task_id: i64,
@@ -1609,182 +1846,11 @@ async fn post_control(
     rev: Option<String>,
     note: Option<String>,
 ) -> Response {
-    // Ghi chú (chỉ Trả về Lead): cắt khoảng trắng, rỗng = không có ghi chú.
-    let note = note
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    if let Some(n) = note.as_deref() {
-        if n.chars().count() > crate::roles::lead::MAX_NOTE_CHARS {
-            return json_error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "Ghi chú quá dài (tối đa 500 ký tự)",
-            );
-        }
-    }
-
-    let res = blocking(move || {
-        let conn = crate::db::open(&st.db_path)?;
-        let state = match load_task_state(&st, &conn, task_id)? {
-            Ok(s) => s,
-            Err(resp) => return Ok(resp),
-        };
-
-        if let Some(r) = rev.as_deref() {
-            if r != state.rev {
-                return Ok(json_resp(
-                    StatusCode::CONFLICT,
-                    serde_json::json!({ "error": STALE_MSG, "kind": "stale" }),
-                ));
-            }
-        }
-
-        let ctl = match state.view.controls.iter().find(|c| c.id == control) {
-            Some(c) => c.clone(),
-            None => {
-                let (reason, kind) = absent_control(control, &state);
-                return Ok(conflict(&reason, kind));
-            }
-        };
-        if !ctl.enabled {
-            let reason = ctl.reason.unwrap_or_default();
-            let kind = if state.busy.as_deref() == Some(reason.as_str()) {
-                "busy"
-            } else {
-                "not_allowed"
-            };
-            return Ok(conflict(&reason, kind));
-        }
-
-        let id_str = task_id.to_string();
-        match control {
-            "approve" => {
-                let plan_commit = match claim::approve_check(&conn, &state.task, &state.root) {
-                    Ok(pc) => pc,
-                    Err(reason) => return Ok(conflict(&reason, "not_allowed")),
-                };
-                // Duyệt trước khi ghi, để hoàn lại khi autopilot không bắt đầu được.
-                let prev = match (
-                    state.auto.approved_at,
-                    state.auto.approved_commit.as_deref(),
-                ) {
-                    (Some(at), Some(c)) => Some((at, c)),
-                    _ => None,
-                };
-                let approved_at = claim::approve_record(&conn, task_id, &plan_commit)?;
-                // Autopilot còn bật: chạy tiếp; đã tắt (`ended`) / quy trình tay: chỉ ghi nhận.
-                let job_id =
-                    if taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)) {
-                        let spec = task_job(&state, "auto", vec!["auto".to_string(), id_str]);
-                        match start_job(&st, spec) {
-                            Ok(j) => Some(j),
-                            Err(resp) => {
-                                // Không để lại duyệt nửa chừng khi autopilot không bắt đầu được;
-                                // chỉ hoàn lại khi duyệt vẫn là của yêu cầu này (WR-04).
-                                claim::revert_approval(&conn, task_id, &plan_commit, prev)?;
-                                return Ok(resp);
-                            }
-                        }
-                    } else {
-                        None
-                    };
-                Ok(json_resp(
-                    StatusCode::OK,
-                    serde_json::json!({
-                        "approved_at": approved_at,
-                        "plan_commit": plan_commit,
-                        "job_id": job_id,
-                    }),
-                ))
-            }
-            "return_lead" => {
-                // D-17 / D-30: lập lại plan (ghi chú là một phần tử argv); bỏ duyệt
-                // chỉ sau khi job đã bắt đầu — job bị từ chối thì giữ nguyên duyệt (WR-04).
-                let (role, args) =
-                    if taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)) {
-                        let mut a = vec!["auto".to_string(), id_str, "--replan".to_string()];
-                        if let Some(n) = note.as_deref() {
-                            a.push(format!("--note={n}"));
-                        }
-                        ("auto", a)
-                    } else {
-                        let mut a = vec![
-                            "run".to_string(),
-                            "lead".to_string(),
-                            "--name".to_string(),
-                            state.task.slug.clone(),
-                        ];
-                        if let Some(n) = note.as_deref() {
-                            a.push(format!("--note={n}"));
-                        }
-                        a.push("--".to_string());
-                        a.push(state.project.id.clone());
-                        a.push(state.task.title.clone());
-                        ("lead", a)
-                    };
-                match start_job(&st, task_job(&state, role, args)) {
-                    Ok(job_id) => {
-                        crate::db::clear_task_approval(&conn, task_id)?;
-                        Ok(json_resp(
-                            StatusCode::ACCEPTED,
-                            serde_json::json!({ "job_id": job_id }),
-                        ))
-                    }
-                    Err(resp) => Ok(resp),
-                }
-            }
-            "auto_start" | "auto_more_round" => {
-                let mut args = vec!["auto".to_string(), id_str];
-                if control == "auto_more_round" {
-                    args.push("--more-round".to_string());
-                }
-                match start_job(&st, task_job(&state, "auto", args)) {
-                    Ok(job_id) => Ok(json_resp(
-                        StatusCode::ACCEPTED,
-                        serde_json::json!({ "job_id": job_id }),
-                    )),
-                    Err(resp) => Ok(resp),
-                }
-            }
-            "auto_stop" => {
-                if state.driver_alive {
-                    // Dừng mềm: run đang chạy chạy xong, autopilot không bắt đầu bước mới.
-                    crate::db::request_auto_stop(&conn, task_id, "soft")?;
-                    return Ok(json_resp(StatusCode::OK, serde_json::json!({ "ok": true })));
-                }
-                // Autopilot chờ ở cổng duyệt plan (không có driver): tắt autopilot cho
-                // task (`ended`). Không bỏ qua cổng — vẫn phải bấm Duyệt plan (D-03);
-                // Bật autopilot bật lại. Chỉ ghi khi task vẫn `gate` (WR-04).
-                if !claim::end_autopilot(&conn, task_id, "gate", &state.aj)? {
-                    return Ok(json_resp(
-                        StatusCode::CONFLICT,
-                        serde_json::json!({ "error": STALE_MSG, "kind": "stale" }),
-                    ));
-                }
-                Ok(json_resp(
-                    StatusCode::OK,
-                    serde_json::json!({ "ok": true, "ended": true }),
-                ))
-            }
-            "auto_end" => {
-                // Dừng hẳn: giữ auto_json.stop làm lịch sử; Bật autopilot chạy lại sau.
-                // Chỉ ghi khi task vẫn `stopped` và không có driver (WR-04).
-                if !claim::end_autopilot(&conn, task_id, "stopped", &state.aj)? {
-                    return Ok(json_resp(
-                        StatusCode::CONFLICT,
-                        serde_json::json!({ "error": STALE_MSG, "kind": "stale" }),
-                    ));
-                }
-                Ok(json_resp(StatusCode::OK, serde_json::json!({ "ok": true })))
-            }
-            _ => Ok(conflict(NOT_ALLOWED_MSG, "not_allowed")),
-        }
-    })
-    .await;
+    let res =
+        blocking(move || run_control(&st, task_id, control, rev.as_deref(), note.as_deref())).await;
 
     match res {
-        Ok(resp) => resp,
+        Ok(o) => control_response(o),
         Err(e) => internal_error("xử lý nút điều khiển của task", &e),
     }
 }
