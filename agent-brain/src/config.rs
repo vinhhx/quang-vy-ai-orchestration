@@ -282,6 +282,14 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
             }
         }
     }
+    // IN-01 (D-07): a config written before 5.2 has no review timeouts; give the
+    // reviewers their intended ceilings instead of the 1800 s fallback.
+    timeout_seconds
+        .entry("plan-review".to_string())
+        .or_insert(1200);
+    timeout_seconds
+        .entry("code-review".to_string())
+        .or_insert(1500);
 
     let mut autopilot = AutopilotDefaults::default();
     if let Some(ap_val) = obj.get("autopilot") {
@@ -448,6 +456,41 @@ mod tests {
         assert_eq!(cfg.model_for("code-review").unwrap(), "opus");
         assert_eq!(cfg.autopilot, AutopilotDefaults::default());
         assert_eq!(cfg.pricing, default_pricing());
+    }
+
+    #[test]
+    fn review_timeouts_default_when_missing() {
+        let default_val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        let val = serde_json::json!({
+            "models": {
+                "lead": "opus",
+                "dev": "sonnet",
+                "qa": "sonnet"
+            },
+            "profiles": default_val["profiles"],
+            "timeout_seconds": { "lead": 1800 }
+        });
+        let cfg = config_from_value(&val).unwrap();
+        assert_eq!(cfg.timeout_for("plan-review"), Duration::from_secs(1200));
+        assert_eq!(cfg.timeout_for("code-review"), Duration::from_secs(1500));
+        assert_eq!(cfg.timeout_for("dev"), Duration::from_secs(1800));
+    }
+
+    #[test]
+    fn review_timeouts_explicit_win() {
+        let default_val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        let val = serde_json::json!({
+            "models": {
+                "lead": "opus",
+                "dev": "sonnet",
+                "qa": "sonnet"
+            },
+            "profiles": default_val["profiles"],
+            "timeout_seconds": { "lead": 1800, "plan-review": 900 }
+        });
+        let cfg = config_from_value(&val).unwrap();
+        assert_eq!(cfg.timeout_for("plan-review"), Duration::from_secs(900));
+        assert_eq!(cfg.timeout_for("code-review"), Duration::from_secs(1500));
     }
 
     #[test]
