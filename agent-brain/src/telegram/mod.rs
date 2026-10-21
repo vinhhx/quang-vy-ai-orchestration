@@ -3,6 +3,7 @@
 //! Outbound long polling only: this module never opens a listening socket.
 //! All traffic goes through `transport::Transport` (system curl, token on stdin).
 
+pub mod bot;
 pub mod callback;
 pub mod config;
 pub mod detect;
@@ -190,7 +191,8 @@ fn poll_thread(ctx: Arc<BotCtx>) {
                 ctx.health.ok_quiet(Channel::Poll);
                 let username = me.get("username").and_then(|u| u.as_str()).unwrap_or("?");
                 crate::term::emit_out(&format!("Telegram: đã kết nối (@{username})"));
-                // Plan 05.3-05 continues here with the getUpdates loop.
+                // Same thread: curl's PDEATHSIG stays tied to a long-lived thread.
+                bot::run_poll(&ctx);
                 return;
             }
             Err(e) if e.is_unauthorized() => {
