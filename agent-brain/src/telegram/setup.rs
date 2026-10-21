@@ -326,8 +326,62 @@ fn pair(curl: &str, base: String, data_dir: &std::path::Path) -> i32 {
     0
 }
 
+fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc != 0 {
+        return "máy này".to_string();
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+    if name.is_empty() {
+        "máy này".to_string()
+    } else {
+        name
+    }
+}
+
+/// Sends one test message to the paired chat. Same 0600 / validity refusals
+/// as serve (`config::load`).
 pub fn cmd_test() -> i32 {
-    fail("agent-brain telegram test chưa sẵn sàng")
+    let path = config::path();
+    let cfg = match config::load(&path) {
+        Ok(c) => c,
+        Err(config::LoadError::Missing) => {
+            return fail("Chưa ghép nối Telegram — chạy agent-brain telegram setup")
+        }
+        Err(e) => return fail(&e.message().unwrap_or_default()),
+    };
+    let curl = transport::curl_bin();
+    if let Err(e) = curl_ok(&curl, "agent-brain telegram test") {
+        return fail(&e);
+    }
+    let base = match transport::api_base() {
+        Ok(b) => b,
+        Err(e) => return fail(&e),
+    };
+    let tx = Transport::new(
+        cfg.token.clone(),
+        base,
+        curl,
+        crate::config::data_dir().join("telegram-upload"),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let text = format!(
+        "Tin thử từ agent-brain trên máy {}: kết nối Telegram hoạt động.",
+        hostname()
+    );
+    match tx.call(
+        "sendMessage",
+        &Body::Json(json!({"chat_id": cfg.chat_id, "text": text})),
+        SHORT_CALL_SECS,
+    ) {
+        Ok(_) => {
+            crate::term::emit_out(&format!("Đã gửi tin thử tới chat {}.", cfg.chat_id));
+            0
+        }
+        Err(e) => fail(&call_failed(&e)),
+    }
 }
 
 #[cfg(test)]
