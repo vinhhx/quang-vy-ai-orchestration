@@ -315,7 +315,7 @@ Plans:
 **Goal**: Người dùng nhận tin Telegram khi task cần mình (chờ duyệt plan, autopilot dừng kèm lý do, QA đạt, run lỗi) và xử lý ngay trong tin nhắn bằng nút Duyệt plan, Trả về Lead (kèm ghi chú), Chạy thêm 1 vòng, Dừng hẳn, Kill (xác nhận lại) — bot tự hỏi Telegram (long polling), không mở cổng vào máy, chỉ chat ID được phép; không giao việc mới qua Telegram.
 **Source**: Quyết định người dùng 2026-10-20 (đặt sau 5.2, trước bảng công việc; phạm vi: thông báo + hành động ở cổng/khi dừng)
 **Depends on**: Phase 05.2
-**Requirements**: TBD (định nghĩa khi /gsd-discuss-phase 05.3)
+**Requirements**: TELE-01, TELE-02, TELE-03, TELE-04, TELE-05, TELE-06, TELE-07
 **Notes**: Mở lại một quyết định Out of Scope (truy cập từ xa) theo cách hẹp — xem PROJECT.md. Gọi Telegram qua `curl` của hệ thống (05.3-CONTEXT D-04), không thêm crate HTTPS.
 **UI hint**: no
 **Plans:** 0 plans
