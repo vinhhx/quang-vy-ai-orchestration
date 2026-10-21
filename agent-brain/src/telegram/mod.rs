@@ -206,3 +206,48 @@ fn poll_thread(ctx: Arc<BotCtx>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_tracks_channels_separately() {
+        let h = Health::new();
+        assert!(h.failed(Channel::Send, "x"));
+        assert!(!h.failed(Channel::Send, "x"));
+        // A poll success does not end the send outage.
+        assert!(!h.ok(Channel::Poll));
+        assert!(h.is_failing());
+        // Outage already announced.
+        assert!(!h.failed(Channel::Poll, "y"));
+        // Poll still failing.
+        assert!(!h.ok(Channel::Send));
+        assert!(h.is_failing());
+        assert!(h.ok(Channel::Poll));
+        assert!(!h.is_failing());
+        assert!(!h.ok(Channel::Poll));
+        // A new outage.
+        assert!(h.failed(Channel::Poll, "z"));
+        h.ok_quiet(Channel::Poll);
+        assert!(!h.is_failing());
+    }
+
+    #[test]
+    fn health_single_send_outage_recovers() {
+        let h = Health::new();
+        assert!(h.failed(Channel::Send, "x"));
+        assert!(h.ok(Channel::Send));
+        assert!(!h.is_failing());
+    }
+
+    #[test]
+    fn sleep_or_stop_returns_early() {
+        let stop = AtomicBool::new(true);
+        let t = std::time::Instant::now();
+        assert!(sleep_or_stop(&stop, 10_000));
+        assert!(t.elapsed() < Duration::from_millis(500));
+        let go = AtomicBool::new(false);
+        assert!(!sleep_or_stop(&go, 120));
+    }
+}

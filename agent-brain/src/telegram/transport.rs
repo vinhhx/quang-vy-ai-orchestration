@@ -510,3 +510,138 @@ impl Transport {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOKEN: &str = "4242:fake-token-for-tests";
+
+    #[test]
+    fn argv_never_carries_the_token() {
+        for base in [DEFAULT_API, "http://127.0.0.1:9"] {
+            let argv = curl_argv(LONG_POLL_SECS + 10, base);
+            assert!(argv.iter().all(|a| !a.contains(TOKEN)), "{argv:?}");
+            let n = argv.len();
+            assert_eq!(&argv[n - 2..], &["-K".to_string(), "-".to_string()]);
+        }
+        assert!(curl_argv(5, DEFAULT_API).contains(&"=https".to_string()));
+        assert!(curl_argv(5, "http://127.0.0.1:9").contains(&"=http,https".to_string()));
+    }
+
+    #[test]
+    fn config_carries_url_with_token() {
+        let url = format!("{DEFAULT_API}/bot{TOKEN}/getMe");
+        let cfg = build_config(&url, &Body::Json(serde_json::json!({})));
+        assert!(
+            cfg.contains(&format!(
+                "url = \"https://api.telegram.org/bot{TOKEN}/getMe\""
+            )),
+            "{cfg}"
+        );
+        assert!(cfg.contains("data-raw = \"{}\""), "{cfg}");
+        let up = build_config(
+            &url,
+            &Body::Upload {
+                fields: vec![("caption".to_string(), "a \"b\"; type=x".to_string())],
+                file_field: "document".to_string(),
+                filename: "x.plan.md".to_string(),
+                content: "c".to_string(),
+            },
+        );
+        assert!(
+            up.contains(r#"form-string = "caption=a \"b\"; type=x""#),
+            "{up}"
+        );
+        assert!(
+            up.contains(r#"form = "document=@upload.md;filename=x.plan.md;type=text/markdown""#),
+            "{up}"
+        );
+    }
+
+    #[test]
+    fn quote_cfg_escapes() {
+        assert_eq!(quote_cfg(r#"a\b"c"#), r#""a\\b\"c""#);
+        assert_eq!(quote_cfg("x\ny\r\tz"), r#""x\ny\r\tz""#);
+    }
+
+    #[test]
+    fn backoff_doubles_to_sixty_seconds() {
+        let got: Vec<u64> = (1..=6).map(|f| backoff_ms(f, 5000)).collect();
+        assert_eq!(got, vec![5000, 10000, 20000, 40000, 60000, 60000]);
+    }
+
+    #[test]
+    fn retry_delay_by_error_kind() {
+        let e429 = CallError::Api {
+            code: 429,
+            description: "Too Many Requests".into(),
+            retry_after: Some(7),
+        };
+        assert_eq!(e429.retry_delay_ms(1, 5000), Some(7000));
+        let e400 = CallError::Api {
+            code: 400,
+            description: "Bad Request".into(),
+            retry_after: None,
+        };
+        assert_eq!(e400.retry_delay_ms(1, 5000), None);
+        let e502 = CallError::Api {
+            code: 502,
+            description: "Bad Gateway".into(),
+            retry_after: None,
+        };
+        assert_eq!(e502.retry_delay_ms(2, 5000), Some(10000));
+        assert_eq!(
+            CallError::Network("x".into()).retry_delay_ms(3, 5000),
+            Some(20000)
+        );
+        assert_eq!(CallError::Stopped.retry_delay_ms(1, 5000), None);
+        assert_eq!(CallError::Spawn("x".into()).retry_delay_ms(1, 5000), None);
+        let e401 = CallError::Api {
+            code: 401,
+            description: "Unauthorized".into(),
+            retry_after: None,
+        };
+        assert!(e401.is_unauthorized());
+        assert!(!e400.is_unauthorized());
+    }
+
+    #[test]
+    fn env_overrides() {
+        std::env::set_var("AGENT_BRAIN_TELEGRAM_API", "http://example.com");
+        assert!(api_base().is_err());
+        std::env::set_var("AGENT_BRAIN_TELEGRAM_API", "http://127.0.0.1:9/");
+        assert_eq!(api_base().unwrap(), "http://127.0.0.1:9");
+        std::env::set_var("AGENT_BRAIN_TELEGRAM_API", "https://tg.example/");
+        assert_eq!(api_base().unwrap(), "https://tg.example");
+        std::env::remove_var("AGENT_BRAIN_TELEGRAM_API");
+        assert_eq!(api_base().unwrap(), DEFAULT_API);
+
+        std::env::set_var("AGENT_BRAIN_TELEGRAM_BACKOFF_MS", "1");
+        assert_eq!(base_backoff_ms(), 100);
+        std::env::set_var("AGENT_BRAIN_TELEGRAM_BACKOFF_MS", "999999");
+        assert_eq!(base_backoff_ms(), 5000);
+        std::env::remove_var("AGENT_BRAIN_TELEGRAM_BACKOFF_MS");
+        assert_eq!(base_backoff_ms(), 5000);
+    }
+
+    #[test]
+    fn redact_replaces_token() {
+        let s = format!("bad url /bot{TOKEN}/getMe and {TOKEN}");
+        let r = redact(&s, TOKEN);
+        assert!(!r.contains(TOKEN));
+        assert_eq!(r.matches("<token>").count(), 2);
+    }
+
+    #[test]
+    fn transport_debug_hides_token() {
+        let t = Transport::new(
+            TOKEN.into(),
+            DEFAULT_API.into(),
+            "curl".into(),
+            PathBuf::from("/nonexistent"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(!format!("{t:?}").contains(TOKEN));
+    }
+}

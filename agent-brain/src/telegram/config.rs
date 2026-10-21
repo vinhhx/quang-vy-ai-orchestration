@@ -175,3 +175,117 @@ pub fn save(path: &Path, cfg: &TelegramConfig) -> BrainResult<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const TOKEN: &str = "4242:fake-token-for-tests";
+
+    fn tmpdir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let d =
+            std::env::temp_dir().join(format!("ab-tgcfg-{name}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn write(dir: &Path, text: &str, mode: u32) -> PathBuf {
+        let p = dir.join(FILE_NAME);
+        std::fs::write(&p, text).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+        p
+    }
+
+    #[test]
+    fn missing_file_is_missing() {
+        let d = tmpdir("missing");
+        assert_eq!(load(&d.join(FILE_NAME)).unwrap_err(), LoadError::Missing);
+        assert_eq!(LoadError::Missing.message(), None);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn group_readable_file_is_refused_not_fixed() {
+        let d = tmpdir("insecure");
+        let p = write(
+            &d,
+            &format!(r#"{{"token":"{TOKEN}","chat_id":5,"paired_at":1}}"#),
+            0o644,
+        );
+        let err = load(&p).unwrap_err();
+        let msg = err.message().unwrap();
+        assert!(matches!(err, LoadError::Insecure(_)));
+        assert!(msg.contains("chmod 600"), "{msg}");
+        assert!(msg.contains(&p.display().to_string()), "{msg}");
+        assert!(!msg.contains(TOKEN));
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn invalid_contents_are_refused_without_echo() {
+        let d = tmpdir("invalid");
+        for text in [
+            r#"{"token":"","chat_id":5}"#,
+            r#"{"token":"abc","chat_id":5}"#,
+            r#"{"token":"1:x"}"#,
+            r#"{"token":"1:x","chat_id":0}"#,
+            "not json at all",
+        ] {
+            let p = write(&d, text, 0o600);
+            let err = load(&p).unwrap_err();
+            assert!(matches!(err, LoadError::Invalid(_)), "{text}: {err:?}");
+            let msg = err.message().unwrap();
+            assert!(msg.contains("không hợp lệ"), "{msg}");
+            assert!(!msg.contains(text), "{msg}");
+        }
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn valid_file_loads() {
+        let d = tmpdir("valid");
+        let p = write(
+            &d,
+            &format!(r#"{{"token":"{TOKEN}","chat_id":5555,"paired_at":7}}"#),
+            0o600,
+        );
+        let cfg = load(&p).unwrap();
+        assert_eq!(cfg.token, TOKEN);
+        assert_eq!(cfg.chat_id, 5555);
+        assert_eq!(cfg.paired_at, 7);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn save_writes_0600_and_debug_hides_token() {
+        let d = tmpdir("save");
+        let p = d.join("sub").join(FILE_NAME);
+        let cfg = TelegramConfig {
+            token: TOKEN.to_string(),
+            chat_id: 42,
+            paired_at: 9,
+        };
+        save(&p, &cfg).unwrap();
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let back = load(&p).unwrap();
+        assert_eq!(back.chat_id, 42);
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains(TOKEN), "{dbg}");
+        assert!(dbg.contains("<ẩn>"), "{dbg}");
+        let leftovers: Vec<_> = std::fs::read_dir(p.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
