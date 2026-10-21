@@ -554,3 +554,136 @@ pub(crate) fn reply(ctx: &BotCtx, text: &str) {
         .tx
         .call("sendMessage", &Body::Json(body), REPLY_MAX_SECS);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAIRED: i64 = 5555;
+
+    fn message(chat: Option<i64>, from: Option<i64>) -> Value {
+        let mut m = json!({"message_id": 1, "text": "xin chào"});
+        if let Some(c) = chat {
+            m["chat"] = json!({"id": c, "type": "private"});
+        }
+        if let Some(f) = from {
+            m["from"] = json!({"id": f, "is_bot": false});
+        }
+        json!({"update_id": 1, "message": m})
+    }
+
+    fn cbq(chat: i64, from: i64) -> Value {
+        json!({"update_id": 2, "callback_query": {
+            "id": "cb-1",
+            "from": {"id": from, "is_bot": false},
+            "message": {"message_id": 9, "chat": {"id": chat, "type": "private"}, "text": "t"},
+            "data": "a:1:0123456789abcdef"
+        }})
+    }
+
+    #[test]
+    fn authz_paired_and_strangers() {
+        assert_eq!(
+            authz(&message(Some(PAIRED), Some(PAIRED)), PAIRED),
+            Authz::Paired
+        );
+        assert_eq!(
+            authz(&message(Some(7777), Some(7777)), PAIRED),
+            Authz::Stranger(7777)
+        );
+        // Chat ID first.
+        assert_eq!(
+            authz(&message(Some(7777), Some(PAIRED)), PAIRED),
+            Authz::Stranger(7777)
+        );
+        // Adjacency: the paired chat but another sender.
+        assert_eq!(
+            authz(&message(Some(PAIRED), Some(8888)), PAIRED),
+            Authz::Stranger(8888)
+        );
+        assert_eq!(authz(&cbq(PAIRED, PAIRED), PAIRED), Authz::Paired);
+        assert_eq!(authz(&cbq(PAIRED, 8888), PAIRED), Authz::Stranger(8888));
+        assert_eq!(authz(&cbq(7777, 7777), PAIRED), Authz::Stranger(7777));
+        assert_eq!(authz(&cbq(7777, PAIRED), PAIRED), Authz::Stranger(7777));
+    }
+
+    #[test]
+    fn authz_skips_incomplete_updates() {
+        // Callback without its message.
+        let mut no_msg = cbq(PAIRED, PAIRED);
+        no_msg["callback_query"]
+            .as_object_mut()
+            .unwrap()
+            .remove("message");
+        assert_eq!(authz(&no_msg, PAIRED), Authz::Skip);
+        // Callback without data (also from a stranger).
+        let mut no_data = cbq(7777, 7777);
+        no_data["callback_query"]
+            .as_object_mut()
+            .unwrap()
+            .remove("data");
+        assert_eq!(authz(&no_data, PAIRED), Authz::Skip);
+        // Other update types.
+        let edited = json!({"update_id": 3, "edited_message": {
+            "message_id": 1, "chat": {"id": PAIRED}, "from": {"id": PAIRED}, "text": "x"
+        }});
+        assert_eq!(authz(&edited, PAIRED), Authz::Skip);
+        assert_eq!(authz(&json!({"update_id": 4}), PAIRED), Authz::Skip);
+        // Message without chat, or without sender.
+        assert_eq!(authz(&message(None, Some(PAIRED)), PAIRED), Authz::Skip);
+        assert_eq!(authz(&message(Some(PAIRED), None), PAIRED), Authz::Skip);
+        // A string chat id is not a number.
+        let odd = json!({"message": {"chat": {"id": "5555"}, "from": {"id": PAIRED}}});
+        assert_eq!(authz(&odd, PAIRED), Authz::Skip);
+    }
+
+    #[test]
+    fn stranger_logged_once_per_window() {
+        let mut s = HashMap::new();
+        let t0 = Instant::now();
+        assert!(stranger_should_log(&mut s, 7777, t0));
+        assert!(!stranger_should_log(
+            &mut s,
+            7777,
+            t0 + Duration::from_secs(1)
+        ));
+        assert!(stranger_should_log(
+            &mut s,
+            8888,
+            t0 + Duration::from_secs(1)
+        ));
+        assert!(!stranger_should_log(
+            &mut s,
+            7777,
+            t0 + Duration::from_secs(STRANGER_LOG_SECS - 1)
+        ));
+        assert!(stranger_should_log(
+            &mut s,
+            7777,
+            t0 + Duration::from_secs(STRANGER_LOG_SECS)
+        ));
+    }
+
+    #[test]
+    fn updates_sorted_and_ids_required() {
+        let v = json!([
+            {"update_id": 12, "message": {}},
+            {"message": {}},
+            {"update_id": 10, "message": {}},
+            {"update_id": 11, "callback_query": {}}
+        ]);
+        let ids: Vec<i64> = sorted_updates(&v).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec![10, 11, 12]);
+        assert!(sorted_updates(&json!({"x": 1})).is_empty());
+    }
+
+    #[test]
+    fn suffix_keeps_original_text() {
+        let s = with_suffix("Chờ duyệt plan · task 1", "\n\n✓ x");
+        assert_eq!(s, "Chờ duyệt plan · task 1\n\n✓ x");
+        let long = "a".repeat(render::MAX_TEXT + 50);
+        let s = with_suffix(&long, "\n\nb");
+        assert!(s.ends_with("\n…\n\nb"), "{}", &s[s.len() - 10..]);
+        assert_eq!(s.chars().count(), render::MAX_TEXT + 3);
+    }
+}
