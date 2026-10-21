@@ -1154,7 +1154,15 @@ fn return_lead_without_note() {
     let mut srv = tg.serve(&sb, &[]);
     wait_polling(&tg, &srv);
 
-    auto_start_to_gate(&sb, return_scenario());
+    // Without a note the Lead re-plans from a fresh skeleton (05.2 D-17), so
+    // its second entry writes a whole plan.
+    auto_start_to_gate(
+        &sb,
+        by_role(json!({
+            "lead": [lead_plan_entry(), lead_plan_entry()],
+            "plan-review": [plan_review_entry("approve", 0, 1), plan_review_entry("approve", 0, 2)],
+        })),
+    );
     let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
     let m = message_id_of(&gate);
     let prompt = open_note_prompt(&tg, &srv, &gate, 1);
@@ -1169,6 +1177,10 @@ fn return_lead_without_note() {
 
     let lead_prompt = last_lead_prompt(&sb);
     assert!(!lead_prompt.contains(NOTE_LINE), "prompt: {lead_prompt}");
+    assert!(
+        lead_prompt.contains("đã có sẵn khung (skeleton)"),
+        "prompt: {lead_prompt}"
+    );
     assert!(run_metrics(&sb, last_run_id(&sb, "lead"))
         .get("note")
         .map_or(true, Value::is_null));
@@ -1243,7 +1255,8 @@ fn cancel_and_too_long_note() {
     // After Huỷ a text is not a note.
     send_text(&tg, "abc");
     assert!(
-        tg.wait_call("sendMessage", Duration::from_secs(10), |r| text_of(r) == HELP)
+        tg.wait_call("sendMessage", Duration::from_secs(10), |r| text_of(r)
+            == HELP)
             .is_some(),
         "no help reply; records:\n{:#?}",
         tg.records()
@@ -1407,7 +1420,8 @@ fn kill_with_confirmation_and_cancel() {
     // Kill, then the confirming Kill.
     push_press(&tg, 9001, shown, &format!("k:1:1:{rev}"));
     assert!(
-        wait_until(Duration::from_secs(10), || confirm_edits(&tg, 9001).len() == 2),
+        wait_until(Duration::from_secs(10), || confirm_edits(&tg, 9001).len()
+            == 2),
         "{:#?}",
         tg.records()
     );
@@ -1432,7 +1446,8 @@ fn kill_with_confirmation_and_cancel() {
     assert!(!text_of(&done).contains("Xác nhận Kill"), "{done}");
     assert!(text_of(&done).starts_with(shown), "{done}");
     assert!(
-        stdout_of(&srv).contains("Telegram: Kill task 1 — Đã dừng run 1"),
+        wait_until(Duration::from_secs(5), || stdout_of(&srv)
+            .contains("Telegram: Kill task 1 — Đã dừng run 1")),
         "{}",
         stdout_of(&srv)
     );

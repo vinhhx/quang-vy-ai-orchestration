@@ -13,10 +13,12 @@
 //! dashboard's own `return_lead` / `relead` path as one argv element.
 
 use super::callback::{self, Callback, Op};
+use super::detect;
 use super::outbox::{Outgoing, Tracked};
 use super::render;
 use super::transport::{backoff_ms, base_backoff_ms, Body, CallError, LONG_POLL_SECS};
 use super::{sleep_or_stop, BotCtx, Channel};
+use crate::dashboard::api_runs::{kill_run, KillOutcome};
 use crate::dashboard::api_tasks::{
     load_task_state, normalize_note, run_control, run_task_action, ControlOutcome, TaskState,
 };
@@ -159,6 +161,39 @@ impl PollState {
     pub fn new() -> PollState {
         PollState::default()
     }
+}
+
+/// Takes the open note prompt off `state` when it has expired at `now_ms`.
+pub fn take_expired(state: &mut PollState, now_ms: i64) -> Option<PendingNote> {
+    if state.pending.as_ref().is_some_and(|p| p.expired(now_ms)) {
+        state.pending.take()
+    } else {
+        None
+    }
+}
+
+/// D-13: an unanswered prompt ends after `NOTE_PROMPT_SECS` and runs nothing.
+fn expire_prompt(ctx: &BotCtx, state: &mut PollState) {
+    if let Some(p) = take_expired(state, crate::db::now_ms()) {
+        edit(
+            ctx,
+            p.prompt_message_id,
+            NOTE_EXPIRED,
+            render::no_keyboard(),
+        );
+        audit("Trả về Lead", p.task_id, NOTE_EXPIRED);
+    }
+}
+
+/// The line added under a message while its `Kill` waits for confirmation (D-14).
+pub fn kill_confirm_suffix(run_id: i64) -> String {
+    format!("\n\nXác nhận Kill run {run_id}?")
+}
+
+/// `text` without the confirmation line of run `run_id`, when it ends with it.
+fn without_confirm(text: &str, run_id: i64) -> &str {
+    text.strip_suffix(kill_confirm_suffix(run_id).as_str())
+        .unwrap_or(text)
 }
 
 /// True when the stranger line for `id` should be printed now (at most once per
@@ -308,10 +343,12 @@ pub fn run_poll(ctx: &Arc<BotCtx>) {
                 es.failures = 0;
                 es.last_error = None;
                 ctx.health.ok(Channel::Poll);
+                expire_prompt(ctx, &mut state);
                 for (id, update) in sorted_updates(&v) {
                     if ctx.stop.load(Ordering::SeqCst) {
                         return;
                     }
+                    expire_prompt(ctx, &mut state);
                     // Never handle an update twice.
                     if state.offset.is_some_and(|off| id < off) {
                         continue;
@@ -480,6 +517,31 @@ pub fn note_prompt_text(task_id: i64) -> String {
 fn on_return_lead(ctx: &Arc<BotCtx>, state: &mut PollState, press: &Press, cb: &Callback) {
     match cb.op {
         Op::ReturnLead => ask_note(ctx, state, press, cb),
+        Op::NoNote | Op::CancelNote => {
+            // Only the buttons of the open prompt, for its task and rev.
+            let open = state.pending.as_ref().is_some_and(|p| {
+                p.task_id == cb.task_id
+                    && p.rev == cb.rev
+                    && p.prompt_message_id == press.message_id
+                    && !p.expired(crate::db::now_ms())
+            });
+            if !open {
+                answer(ctx, &press.id, INVALID_BUTTON, false);
+                return;
+            }
+            if cb.op == Op::NoNote {
+                perform_return(ctx, state, None, Some(&press.id));
+            } else if let Some(p) = state.pending.take() {
+                edit(
+                    ctx,
+                    p.prompt_message_id,
+                    NOTE_CANCELLED,
+                    render::no_keyboard(),
+                );
+                answer(ctx, &press.id, "Đã huỷ", false);
+                audit("Trả về Lead", p.task_id, NOTE_CANCELLED);
+            }
+        }
         _ => answer(ctx, &press.id, INVALID_BUTTON, false),
     }
 }
@@ -691,9 +753,167 @@ fn send_prompt(ctx: &BotCtx, text: &str, reply_to: i64, keyboard: Value) -> Opti
     }
 }
 
-/// `Kill` with its confirmation (plan 05.3-06).
-fn on_kill(ctx: &Arc<BotCtx>, press: &Press, _cb: &Callback) {
-    answer(ctx, &press.id, INVALID_BUTTON, false);
+/// True when `run_id` is a running run of the task (T-05.3-27).
+fn running_run_of(s: &TaskState, run_id: i64) -> bool {
+    s.runs
+        .iter()
+        .any(|r| r.id == run_id && r.status == "running")
+}
+
+/// `Kill` with its confirmation (D-14). The first press only asks; only the
+/// confirming press stops anything, and only through the dashboard's
+/// `kill_run` → `runner::cmd_kill` (D-02). No other path here stops a process.
+fn on_kill(ctx: &Arc<BotCtx>, press: &Press, cb: &Callback) {
+    let label = "Kill";
+    let task_id = cb.task_id;
+    let run_id = match cb.run_id {
+        Some(r) => r,
+        None => {
+            answer(ctx, &press.id, INVALID_BUTTON, false);
+            return;
+        }
+    };
+    let base = without_confirm(&press.text, run_id).to_string();
+
+    if cb.op == Op::KillCancel {
+        kill_cancel(ctx, press, task_id, &base);
+        return;
+    }
+
+    let s = match load_fresh(ctx, task_id) {
+        Loaded::State(s) => s,
+        Loaded::Gone => {
+            untrack(ctx, press.message_id);
+            stale(ctx, press, label, task_id);
+            return;
+        }
+        Loaded::Error => {
+            answer(ctx, &press.id, INTERNAL_TEXT, true);
+            return;
+        }
+    };
+    if cb.rev != s.rev || !running_run_of(&s, run_id) {
+        untrack(ctx, press.message_id);
+        stale(ctx, press, label, task_id);
+        return;
+    }
+
+    if cb.op == Op::KillAsk {
+        let keyboard = render::keyboard_json(&[
+            button_row("Kill", Op::KillConfirm, cb),
+            button_row("Huỷ", Op::KillCancel, cb),
+        ]);
+        edit(
+            ctx,
+            press.message_id,
+            &with_suffix(&base, &kill_confirm_suffix(run_id)),
+            keyboard,
+        );
+        answer(
+            ctx,
+            &press.id,
+            &format!("Xác nhận Kill run {run_id}?"),
+            false,
+        );
+        return;
+    }
+
+    // Op::KillConfirm: the second press.
+    let removed = untrack(ctx, press.message_id);
+    match kill_run(&ctx.st, run_id) {
+        Ok(KillOutcome::Done { ok, message }) => {
+            let text = with_suffix(
+                &base,
+                &render::result_suffix(&message, true, crate::db::now_ms()),
+            );
+            // The message's event still current (e.g. a stop): it keeps the
+            // remaining buttons with the fresh rev, and stays tracked.
+            let keyboard = match (removed, load_fresh(ctx, task_id)) {
+                (Some(t), Loaded::State(s)) => match detect::current_event(&s) {
+                    Some(ev) if ev.key == t.key => {
+                        let kb = render::keyboard_json(&render::buttons_for(&ev, &s));
+                        reinsert(
+                            ctx,
+                            Some(Tracked {
+                                text: text.clone(),
+                                keyboard: kb.clone(),
+                                ..t
+                            }),
+                        );
+                        kb
+                    }
+                    _ => render::no_keyboard(),
+                },
+                _ => render::no_keyboard(),
+            };
+            edit(ctx, press.message_id, &text, keyboard);
+            answer(ctx, &press.id, &message, !ok);
+            audit(label, task_id, &message);
+        }
+        Ok(KillOutcome::Refused(msg)) | Ok(KillOutcome::NotFound(msg)) => {
+            answer(ctx, &press.id, &msg, true);
+            edit(
+                ctx,
+                press.message_id,
+                &with_suffix(&base, &format!("\n\n{msg}")),
+                render::no_keyboard(),
+            );
+            audit(label, task_id, &msg);
+        }
+        Err(e) => {
+            crate::term::emit(&format!(
+                "Telegram: lỗi nội bộ khi Kill run {run_id} ({})",
+                e.message
+            ));
+            answer(ctx, &press.id, INTERNAL_TEXT, true);
+            let keyboard = removed
+                .as_ref()
+                .map(|t| t.keyboard.clone())
+                .unwrap_or_else(render::no_keyboard);
+            reinsert(ctx, removed);
+            edit(ctx, press.message_id, &base, keyboard);
+            audit(label, task_id, INTERNAL_TEXT);
+        }
+    }
+}
+
+/// `Huỷ` on a Kill confirmation: nothing is stopped; the message gets back the
+/// buttons its event allows now, or says the task has moved on.
+fn kill_cancel(ctx: &Arc<BotCtx>, press: &Press, task_id: i64, base: &str) {
+    let current = match load_fresh(ctx, task_id) {
+        Loaded::State(s) => detect::current_event(&s).map(|ev| {
+            let kb = render::keyboard_json(&render::buttons_for(&ev, &s));
+            (ev, kb)
+        }),
+        _ => None,
+    };
+    let (text, keyboard) = match current {
+        Some((ev, kb)) => {
+            // Still the message's event: it keeps following the task with
+            // these buttons. The lock is never held during a Telegram call.
+            let mut reg = ctx.registry.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(t) = reg.remove_by_message(press.message_id) {
+                if t.key == ev.key {
+                    reg.insert(Tracked {
+                        keyboard: kb.clone(),
+                        ..t
+                    });
+                }
+            }
+            (base.to_string(), kb)
+        }
+        None => {
+            untrack(ctx, press.message_id);
+            let sentence = format!("Task đã đổi trạng thái: {}", state_now(ctx, task_id));
+            (
+                with_suffix(base, &format!("\n\n{sentence}")),
+                render::no_keyboard(),
+            )
+        }
+    };
+    edit(ctx, press.message_id, &text, keyboard);
+    answer(ctx, &press.id, "Đã huỷ Kill", false);
+    audit("Kill", task_id, "Đã huỷ Kill");
 }
 
 /// Runs a control through the dashboard's own function (D-02), bound to the
