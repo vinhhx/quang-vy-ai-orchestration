@@ -8,7 +8,7 @@
     size: A4;
     margin: 18mm 16mm 18mm 16mm;
     @bottom-right { content: "Trang " counter(page) " / " counter(pages); font: 8.5pt "Noto Sans", sans-serif; color: #64748b; }
-    @bottom-left { content: "agent-brain 0.1.0 — Hướng dẫn sử dụng"; font: 8.5pt "Noto Sans", sans-serif; color: #64748b; }
+    @bottom-left { content: "agent-brain 0.1.0 — Hướng dẫn sử dụng (đến Phase 5.2)"; font: 8.5pt "Noto Sans", sans-serif; color: #64748b; }
   }
   @page :first { @bottom-right { content: none; } @bottom-left { content: none; } }
   :root { --ink:#0f172a; --muted:#475569; --line:#cbd5e1; --soft:#f1f5f9; --accent:#4338ca; --warn:#b45309; --bad:#b91c1c; --ok:#047857; }
@@ -40,7 +40,7 @@
   .cover .kicker { color: var(--accent); font-weight: 600; letter-spacing: .08em; text-transform: uppercase; font-size: 10pt; }
   .cover h1 { font-size: 34pt; margin: 6pt 0 4pt; }
   .cover .sub { font-size: 14pt; color: var(--muted); margin-bottom: 18pt; }
-  .cover .flow { display: flex; gap: 6pt; align-items: center; font-weight: 600; font-size: 11pt; margin-top: 10pt; }
+  .cover .flow { display: flex; flex-wrap: wrap; gap: 6pt; align-items: center; font-weight: 600; font-size: 11pt; margin-top: 10pt; }
   .cover .flow span.step { border: 2px solid var(--accent); color: var(--accent); border-radius: 6px; padding: 4pt 10pt; }
   .cover .meta { font-size: 9.5pt; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8pt; }
   .cover .meta table { font-size: 9.5pt; width: auto; }
@@ -69,15 +69,15 @@
   <div class="top">
     <div class="kicker">QuangVy Orchestration</div>
     <h1>agent-brain</h1>
-    <div class="sub">Hướng dẫn sử dụng — CLI và Dashboard web</div>
-    <p style="max-width:140mm">Một file binary duy nhất để giao việc cho AI agent theo giao thức Lead → <code>.plan.md</code> → Dev → QA: đúng dự án, đúng vai trò, kill sạch cây tiến trình, đo được token. Tài liệu này dành cho người dùng hằng ngày và cho việc review, báo lỗi, đề xuất nâng cấp.</p>
-    <div class="flow"><span class="step">Lead</span>→<span class="step">Duyệt plan</span>→<span class="step">Dev</span>→<span class="step">QA</span>→<span class="step">Bạn merge</span></div>
+    <div class="sub">Hướng dẫn sử dụng — CLI, Dashboard web, Quy trình và Autopilot</div>
+    <p style="max-width:140mm">Một file binary duy nhất để giao việc cho AI agent theo giao thức Lead → <code>.plan.md</code> → Dev → QA, nay có thêm hai vai trò review, chế độ Dev sửa theo báo cáo và autopilot chạy hết vòng lặp nhưng luôn dừng để bạn duyệt plan. Đúng dự án, đúng vai trò, kill sạch cây tiến trình, đo được token và chi phí. Tài liệu này dành cho người dùng hằng ngày và cho việc review, báo lỗi, đề xuất nâng cấp.</p>
+    <div class="flow"><span class="step">Plan ⇄ Review</span>→<span class="step">Bạn duyệt</span>→<span class="step">Code ⇄ Review</span>→<span class="step">QA ⇄ Sửa</span>→<span class="step">Bạn merge</span></div>
   </div>
   <div class="meta">
     <table>
       <tr><td>Phiên bản phần mềm</td><td><b>agent-brain 0.1.0</b> (binary tĩnh musl, Linux x86_64)</td></tr>
-      <tr><td>Phạm vi</td><td>Phase 1–3 (giao thức, lõi CLI) và Phase 5 (Dashboard nhúng)</td></tr>
-      <tr><td>Ngày</td><td>19/10/2026</td></tr>
+      <tr><td>Phạm vi</td><td>Phase 1–3 (giao thức, lõi CLI), Phase 5 (Dashboard nhúng), Phase 5.1 (Pipeline View) và Phase 5.2 (Quy trình và Autopilot) — <b>cập nhật đến Phase 5.2</b></td></tr>
+      <tr><td>Ngày</td><td>2026-10-21</td></tr>
       <tr><td>Mã nguồn</td><td>github.com/vinhhx/quang-vy-ai-orchestration</td></tr>
     </table>
   </div>
@@ -89,47 +89,69 @@
   <ol>
     <li><a href="#s1">Tổng quan: agent-brain làm gì</a></li>
     <li><a href="#s2">Cài đặt và kiểm tra</a></li>
-    <li><a href="#s3">Chuẩn bị: dự án, profile, cấu hình</a></li>
-    <li><a href="#s4">Quy trình chuẩn bằng CLI: Lead → Dev → QA</a></li>
+    <li><a href="#s3">Chuẩn bị: dự án, profile, cấu hình, quy trình (workflows.json)</a></li>
+    <li><a href="#s4">Làm việc bằng CLI: chạy tay, vai trò review và autopilot</a></li>
     <li><a href="#s5">Lệnh nhanh, dừng tiến trình và thống kê</a></li>
     <li><a href="#s6">Dashboard web: khởi động và đăng nhập</a></li>
-    <li><a href="#s7">Dashboard: năm màn hình</a></li>
-    <li><a href="#s8">Dữ liệu, file và an toàn</a></li>
+    <li><a href="#s7">Dashboard: năm màn hình (pipeline, autopilot, sổ lượt chạy)</a></li>
+    <li><a href="#s8">Dữ liệu, file và an toàn (guard, chế độ sửa)</a></li>
     <li><a href="#s9">Xử lý sự cố</a></li>
     <li><a href="#s10">Hạn chế đã biết (trước khi báo lỗi)</a></li>
     <li><a href="#s11">Review, báo lỗi và đề xuất nâng cấp</a></li>
     <li><a href="#s12">Phụ lục: mã thoát, khóa cấu hình, HTTP API</a></li>
   </ol>
   <div class="note"><b>Quy ước trong tài liệu</b>
-    <code>PROJECT</code> là tên, id hoặc alias dự án (gõ tiếng Việt có dấu hoặc không dấu đều được). <code>~</code> là thư mục home của bạn. Lệnh in trong khung tối là lệnh gõ ở terminal.</div>
+    <code>PROJECT</code> là tên, id hoặc alias dự án (gõ tiếng Việt có dấu hoặc không dấu đều được). <code>N</code> hoặc <code>TASK_ID</code> là số task. <code>~</code> là thư mục home của bạn. Lệnh in trong khung tối là lệnh gõ ở terminal. Chữ in nghiêng trong dấu nháy là chữ hiện đúng nguyên văn trên màn hình hoặc terminal.</div>
+  <div class="tip"><b>Có gì mới trong bản này (Phase 5.1 và 5.2)</b>
+    <ul>
+      <li><b>5.1 Pipeline View:</b> màn hình task có luồng pipeline dạng thẻ, chú thích trạng thái và <i>Sổ lượt chạy</i> theo chu kỳ (mục 7.3).</li>
+      <li><b>5.2 Quy trình:</b> mỗi task chạy theo một quy trình có tên (<code>mac-dinh</code>, <code>nhanh</code>, hoặc quy trình của bạn trong <code>workflows.json</code>) (mục 3.4).</li>
+      <li><b>5.2 Vai trò mới:</b> Review plan, Review code, và Dev ở chế độ sửa theo báo cáo (mục 4.2).</li>
+      <li><b>5.2 Autopilot:</b> chạy hết các vòng lặp trong giới hạn 3 vòng / 60 phút / $20, luôn dừng ở bước bạn duyệt plan (mục 4.3–4.5, 7.3).</li>
+    </ul>
+  </div>
 </section>
 
 <!-- ========== 1 ========== -->
 <section id="s1">
   <h2>1. Tổng quan: agent-brain làm gì</h2>
   <p><b>agent-brain</b> là bộ điều phối nhẹ, chạy bằng <b>một file binary</b>, dùng để giao việc cho AI agent (hiện tại là Claude Code CLI) trên các dự án của bạn. Nó thay thế bộ script Python <code>brain</code> cũ và dùng chung danh mục dự án với bộ script đó.</p>
-  <h3>Giao thức ba vai trò</h3>
+  <h3>Giao thức và các vai trò</h3>
+  <p>Mỗi task chạy theo một <b>quy trình</b> (workflow). Quy trình mặc định <code>mac-dinh</code> gồm ba vòng lặp và một cổng duyệt của bạn:</p>
   <div class="pipeline">
     <div><b>1. Lead</b>Đọc yêu cầu, tạo nhánh <code>task/&lt;slug&gt;</code>, viết <code>.plan.md</code> và commit <code>&lt;slug&gt;: plan</code>. Chỉ được ghi <code>.plan.md</code>.</div>
-    <div><b>2. Bạn duyệt plan</b>Đọc, sửa nếu cần bằng editor của bạn, commit lại. Không có bước nào tự chạy tiếp.</div>
-    <div><b>3. Dev</b>Sửa đúng các file trong bảng <i>Thay đổi</i> của plan. Sửa file ngoài danh sách là vi phạm giao thức (mã thoát 3).</div>
-    <div><b>4. QA</b>Kiểm tra <code>git diff</code> từ commit plan đến HEAD, ghi <code>.qa-report.md</code>: <i>Đạt</i> hoặc <i>Cần sửa</i>. Không sửa code.</div>
+    <div><b>2. Review plan</b>Đọc toàn repo (chỉ đọc), ghi <code>.plan-review.md</code>: <i>approve</i> hoặc <i>revise</i>. Khi <i>revise</i>, Lead sửa plan theo báo cáo (vòng 2, 3…).</div>
+    <div><b>3. Bạn duyệt plan</b>Autopilot <b>luôn dừng</b> ở đây. Bạn bấm <i>Duyệt plan</i>, hoặc <i>Trả về Lead</i> kèm ghi chú.</div>
   </div>
-  <p>Sau khi QA <b>Đạt</b>, bạn tự review và merge nhánh <code>task/&lt;slug&gt;</code>. agent-brain không tự merge.</p>
+  <div class="pipeline">
+    <div><b>4. Dev (Code)</b>Sửa đúng các file trong bảng <i>Thay đổi</i> của plan. Sửa file ngoài danh sách là vi phạm giao thức (mã thoát 3).</div>
+    <div><b>5. Review code</b>Đọc diff từ commit plan, ghi <code>.code-review.md</code>: <i>pass</i> hoặc <i>revise</i>. Khi <i>revise</i>, Dev sửa theo báo cáo.</div>
+    <div><b>6. QA</b>Kiểm tra <code>git diff</code>, ghi <code>.qa-report.md</code>: <i>Đạt</i> hoặc <i>Cần sửa</i>. Không sửa code.</div>
+    <div><b>7. Sửa</b>Dev ở chế độ sửa theo báo cáo QA, rồi QA chạy lại.</div>
+  </div>
+  <p>Sau khi QA <b>Đạt</b>, bạn tự review và merge nhánh <code>task/&lt;slug&gt;</code>. agent-brain không tự merge và không tự tạo PR (<i>PR nháp · chưa tự động</i>).</p>
+  <h3>Chạy tay hay autopilot</h3>
+  <table>
+    <tr><th style="width:22%">Cách</th><th>Hành vi</th></tr>
+    <tr><td><b>Chạy tay</b></td><td>Bạn bấm hoặc gõ lệnh cho từng bước. Quy trình <code>nhanh</code> mặc định chạy tay: plan → Bạn → code → QA, không review.</td></tr>
+    <tr><td><b>Autopilot</b></td><td>agent-brain tự chạy bước kế tiếp theo quy trình, trong giới hạn số vòng, phút và đô-la. Nó <b>luôn dừng ở bước bạn duyệt plan</b>. Khi chạm giới hạn hoặc gặp sự cố, nó dừng với một lý do bằng tiếng Việt và chờ bạn (mục 4.4).</td></tr>
+  </table>
   <h3>Những đảm bảo chính</h3>
   <ul>
     <li><b>Đúng dự án (Fallback Ask):</b> tên dự án khớp 0 hoặc nhiều hơn 1 dự án thì dừng và in danh sách để bạn chọn (mã thoát 2). Không bao giờ đoán.</li>
-    <li><b>Kill sạch:</b> mỗi lần chạy agent nằm trong process group riêng; <code>kill</code> dừng cả cây tiến trình con, kiểm tra PID chưa bị tái sử dụng trước khi gửi tín hiệu.</li>
-    <li><b>Đo được token:</b> mọi sự kiện stream-json được lưu vào SQLite; <code>stats</code> và màn hình Thống kê tổng hợp token và chi phí tương đương.</li>
+    <li><b>Đúng nhánh:</b> autopilot và lệnh duyệt có chạy tiếp từ chối chạy khi đang checkout nhánh của task khác (mục 4.5).</li>
+    <li><b>Kill sạch:</b> mỗi lần chạy agent nằm trong process group riêng; <code>kill</code> dừng cả cây tiến trình con và cả autopilot của task, kiểm tra PID chưa bị tái sử dụng trước khi gửi tín hiệu.</li>
+    <li><b>Đo được token và chi phí:</b> mọi sự kiện stream-json được lưu vào SQLite; <code>stats</code>, màn hình Thống kê và Sổ lượt chạy tổng hợp token và chi phí tương đương.</li>
     <li><b>Hai tài khoản tách biệt:</b> profile <code>work</code> (<code>~/.claude</code>) và <code>personal</code> (<code>~/.claude-orca</code>), gán theo dự án.</li>
   </ul>
   <h3>Hai cách dùng</h3>
   <table>
     <tr><th style="width:22%">Cách</th><th>Khi nào dùng</th></tr>
-    <tr><td><b>CLI</b> (<code>agent-brain run …</code>)</td><td>Làm việc trong terminal, script hóa, chạy trên máy không có trình duyệt.</td></tr>
-    <tr><td><b>Dashboard</b> (<code>agent-brain serve</code>)</td><td>Xem task và log trực tiếp, giao việc, bấm Kill, xem thống kê, sửa alias dự án. Chạy ngay trong binary, chỉ trên <code>127.0.0.1</code>.</td></tr>
+    <tr><td><b>CLI</b> (<code>agent-brain run …</code>, <code>auto</code>, <code>approve</code>)</td><td>Làm việc trong terminal, script hóa, chạy trên máy không có trình duyệt.</td></tr>
+    <tr><td><b>Dashboard</b> (<code>agent-brain serve</code>)</td><td>Xem pipeline và log trực tiếp, giao việc và chọn quy trình, duyệt plan, bật/dừng autopilot, bấm Kill, xem thống kê, sửa alias dự án. Chạy ngay trong binary, chỉ trên <code>127.0.0.1</code>.</td></tr>
   </table>
-  <p>Hai cách dùng chung một cơ sở dữ liệu: run khởi chạy ở terminal hiện lên dashboard ngay, và có thể Kill từ dashboard.</p>
+  <p>Hai cách dùng chung một cơ sở dữ liệu: run hoặc autopilot khởi chạy ở terminal hiện lên dashboard ngay, và có thể Kill từ dashboard.</p>
+  <p class="small">Chi phí thực tế ghi nhận khi nghiệm thu Phase 5.2 (repo thử nghiệm nhỏ, Claude thật): một vòng <code>mac-dinh</code> đầy đủ có một lần sửa plan (7 run: Lead, Review plan, Lead, Review plan, Dev, Review code, QA) tốn khoảng <b>$0.88–$1.02</b> (chi phí tương đương theo API). Task lớn hơn sẽ tốn hơn.</p>
 </section>
 
 <!-- ========== 2 ========== -->
@@ -153,24 +175,29 @@ install -m 755 agent-brain/target/x86_64-unknown-linux-musl/release/agent-brain 
 agent-brain --version        <span class="c"># agent-brain 0.1.0</span>
 agent-brain --help</pre>
   <p>Nếu máy không có <code>musl-gcc</code>, script build tự chuyển sang <code>gcc</code> và in cảnh báo; kết quả vẫn là binary tĩnh.</p>
+  <p>Lần đầu chạy bản 5.2 trên một <code>brain.db</code> cũ, cơ sở dữ liệu được nâng cấp tại chỗ (thêm cột quy trình, duyệt plan, autopilot) mà không mất dữ liệu. Task tạo trước Phase 5.2 vẫn xem được nhưng chạy tay như cũ (không có quy trình, không bật được autopilot).</p>
   <h3>Danh sách lệnh</h3>
   <table>
-    <tr><th style="width:24%">Lệnh</th><th>Việc làm</th></tr>
+    <tr><th style="width:26%">Lệnh</th><th>Việc làm</th></tr>
     <tr><td><code>projects scan</code></td><td>Quét thư mục gốc (độ sâu 1) tìm repo git, cập nhật danh mục. Giữ nguyên phần bạn đã sửa tay.</td></tr>
     <tr><td><code>projects add</code></td><td>Thêm thủ công một dự án (<code>--type code|media</code>).</td></tr>
-    <tr><td><code>run lead|dev|qa</code></td><td>Chạy một vai trò của giao thức.</td></tr>
+    <tr><td><code>run lead|dev|qa</code></td><td>Chạy một vai trò của giao thức (Lead lập plan, Dev code hoặc sửa, QA kiểm tra).</td></tr>
+    <tr><td><code>run plan-review</code></td><td><b>Mới (5.2).</b> Review plan, chỉ ghi <code>.plan-review.md</code>.</td></tr>
+    <tr><td><code>run code-review</code></td><td><b>Mới (5.2).</b> Review code, chỉ ghi <code>.code-review.md</code>.</td></tr>
+    <tr><td><code>auto</code></td><td><b>Mới (5.2).</b> Autopilot cho một task: chạy tiếp, chạy thêm 1 vòng, trả về Lead; hoặc <code>auto --start</code> để tạo task mới.</td></tr>
+    <tr><td><code>approve</code></td><td><b>Mới (5.2).</b> Duyệt plan của task; với quy trình autopilot thì chạy tiếp ngay trong terminal.</td></tr>
     <tr><td><code>status</code></td><td>Trạng thái git và run gần nhất. 0 token.</td></tr>
     <tr><td><code>inspect</code></td><td>Nhờ Claude đọc nhanh diff chưa commit (1 lượt, không lưu session).</td></tr>
-    <tr><td><code>kill</code></td><td>Dừng task đang chạy và cả cây tiến trình con.</td></tr>
+    <tr><td><code>kill</code></td><td>Dừng task đang chạy và cả cây tiến trình con; nếu task có autopilot, autopilot cũng dừng.</td></tr>
     <tr><td><code>stats</code></td><td>Thống kê token và chi phí tương đương.</td></tr>
     <tr><td><code>serve</code></td><td>Mở dashboard web.</td></tr>
-    <tr><td><code>guard</code></td><td>Hook nội bộ do Claude CLI gọi để chặn ghi file ngoài plan. Bạn không cần gọi trực tiếp.</td></tr>
+    <tr><td><code>guard</code></td><td>Hook nội bộ do Claude CLI gọi để chặn ghi file ngoài phạm vi và chặn lệnh Bash không an toàn. Bạn không cần gọi trực tiếp.</td></tr>
   </table>
 </section>
 
 <!-- ========== 3 ========== -->
 <section id="s3">
-  <h2>3. Chuẩn bị: dự án, profile, cấu hình</h2>
+  <h2>3. Chuẩn bị: dự án, profile, cấu hình, quy trình</h2>
   <h3>3.1 Danh mục dự án</h3>
   <p>File: <code>~/.config/agent-brain/projects_map.json</code>. Cách nhanh nhất là quét thư mục chứa các repo:</p>
   <pre>agent-brain projects scan --root ~/code --root ~/work
@@ -184,7 +211,8 @@ agent-brain projects add ~/code/kenh-video --type media</pre>
   "type": "code",
   "repo": null,
   "profile": "work",
-  "missing": false
+  "missing": false,
+  "workflow": "nhanh"          <span class="c">← không bắt buộc (5.2)</span>
 }</pre>
   <table>
     <tr><th style="width:18%">Trường</th><th>Ý nghĩa</th></tr>
@@ -192,63 +220,203 @@ agent-brain projects add ~/code/kenh-video --type media</pre>
     <tr><td><code>name_vi</code>, <code>aliases</code></td><td>Tên và biệt danh để gọi dự án. Có thể gõ có dấu hoặc không dấu. Sửa alias được trên dashboard (màn hình Dự án).</td></tr>
     <tr><td><code>profile</code></td><td><b>Bắt buộc</b>: <code>work</code> hoặc <code>personal</code>. Dự án có <code>profile: ""</code> sẽ bị từ chối chạy agent.</td></tr>
     <tr><td><code>missing</code></td><td><code>true</code> khi thư mục không còn trên đĩa; dự án này bị bỏ qua khi chọn.</td></tr>
+    <tr><td><code>workflow</code></td><td>Quy trình mặc định cho task mới của dự án (mục 3.4). Không ghi thì dùng <code>mac-dinh</code>. Chỉ sửa trong file; dashboard không sửa trường này.</td></tr>
   </table>
   <h3>3.2 Profile tài khoản</h3>
   <table>
     <tr><th style="width:15%">Profile</th><th>Thư mục cấu hình Claude</th><th>Ghi chú</th></tr>
     <tr><td><code>work</code></td><td><code>~/.claude</code> (mặc định)</td><td>Tài khoản công việc.</td></tr>
-    <tr><td><code>personal</code></td><td><code>~/.claude-orca</code></td><td><b>Tối đa 1 run cùng lúc</b> trên toàn hệ thống (quy tắc E-06), vì thư mục này có thể dùng chung với phiên Claude bạn đang mở.</td></tr>
+    <tr><td><code>personal</code></td><td><code>~/.claude-orca</code></td><td><b>Tối đa 1 run cùng lúc</b> trên toàn hệ thống (quy tắc E-06), vì thư mục này có thể dùng chung với phiên Claude bạn đang mở. Áp dụng cả cho autopilot.</td></tr>
   </table>
   <p>Khi chạy agent, agent-brain bỏ đặt <code>ANTHROPIC_API_KEY</code>, <code>ANTHROPIC_AUTH_TOKEN</code>, <code>ANTHROPIC_BASE_URL</code> để agent luôn dùng đúng tài khoản đã đăng nhập của profile.</p>
   <div class="warn"><b>Không ghi đè profile khi giao việc</b>Profile luôn lấy từ dự án. Muốn đổi tài khoản cho một dự án, sửa trường <code>profile</code> trong <code>projects_map.json</code> (dashboard không cho sửa trường này).</div>
   <h3>3.3 File cấu hình (tùy chọn)</h3>
-  <p>File <code>~/.config/agent-brain/config.json</code>. Không có file thì dùng mặc định nhúng sẵn. Các khóa hay chỉnh:</p>
+  <p>File <code>~/.config/agent-brain/config.json</code>. Không có file thì dùng mặc định nhúng sẵn. Các khóa hay chỉnh (danh sách đầy đủ ở Phụ lục B):</p>
   <table>
-    <tr><th style="width:26%">Khóa</th><th style="width:22%">Mặc định</th><th>Ý nghĩa</th></tr>
-    <tr><td><code>models</code></td><td>lead: opus, dev/qa: sonnet</td><td>Model theo vai trò.</td></tr>
-    <tr><td><code>timeout_seconds</code></td><td>lead/dev 1800, qa 1200, inspect 300</td><td>Thời gian chạy tối đa (giây); quá hạn thì run kết thúc <code>timed_out</code>.</td></tr>
+    <tr><th style="width:26%">Khóa</th><th style="width:26%">Mặc định</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>models</code></td><td>lead: opus, dev/qa: sonnet; plan-review / code-review: opus (khi không ghi)</td><td>Model theo vai trò. Ví dụ đổi review sang sonnet: <code>"plan-review": "sonnet"</code>.</td></tr>
+    <tr><td><code>timeout_seconds</code></td><td>lead/dev 1800, qa 1200, plan-review 1200, code-review 1500, inspect 300</td><td>Thời gian chạy tối đa của một run (giây); quá hạn thì run kết thúc <code>timed_out</code>. Vẫn là trần cứng khi autopilot chạy.</td></tr>
+    <tr><td><code>autopilot</code></td><td><code>max_rounds</code> 3, <code>budget_minutes</code> 60, <code>budget_usd</code> 20</td><td>Giới hạn mặc định cho mọi quy trình (mục 3.5).</td></tr>
+    <tr><td><code>pricing</code></td><td>bảng giá opus / sonnet / haiku</td><td>Dùng để ước tính chi phí của run không có kết quả cuối khi tính ngân sách (mục 3.5).</td></tr>
     <tr><td><code>kill_grace_secs</code></td><td>3</td><td>Chờ giữa SIGINT và SIGKILL khi dừng.</td></tr>
     <tr><td><code>dashboard_port</code></td><td>7437</td><td>Cổng dashboard.</td></tr>
     <tr><td><code>claude_bin</code></td><td><code>claude</code></td><td>Đường dẫn Claude CLI.</td></tr>
   </table>
-  <p>Biến môi trường: <code>AGENT_BRAIN_CONFIG</code> (file cấu hình khác), <code>AGENT_BRAIN_DB</code> (database khác, tiện để thử nghiệm cách ly). Danh sách đầy đủ ở Phụ lục.</p>
+  <p>Một <code>config.json</code> viết trước Phase 5.2 (không có khóa của hai vai trò review) vẫn dùng được: hai vai trò review nhận timeout 1200 và 1500 giây, model opus. Biến môi trường: <code>AGENT_BRAIN_CONFIG</code> (file cấu hình khác), <code>AGENT_BRAIN_DB</code> (database khác, tiện để thử nghiệm cách ly).</p>
+
+  <h3>3.4 Quy trình (workflows.json)</h3>
+  <p>Mỗi task chạy theo một quy trình có tên. Có sẵn hai quy trình nhúng trong binary:</p>
+  <table>
+    <tr><th style="width:14%">Tên</th><th style="width:38%">Giai đoạn</th><th style="width:26%">Tóm tắt (như dashboard hiện)</th><th>Chạy</th></tr>
+    <tr><td><code>mac-dinh</code></td><td><code>plan</code>, <code>plan-review</code>, <code>gate:you</code>, <code>implement</code>, <code>code-review</code>, <code>qa</code>, <code>fix</code> — ba vòng lặp</td><td>plan ⇄ review → Bạn → code ⇄ review → QA ⇄ sửa · 3 vòng · 60 phút · $20</td><td><b>autopilot</b> (<code>auto: true</code>)</td></tr>
+    <tr><td><code>nhanh</code></td><td><code>plan</code>, <code>gate:you</code>, <code>implement</code>, <code>qa</code></td><td>plan → Bạn → code → QA · 60 phút · $20</td><td><b>chạy tay</b> (<code>auto: false</code>)</td></tr>
+  </table>
+  <p><b>Thêm hoặc ghi đè quy trình</b> trong <code>~/.config/agent-brain/workflows.json</code> (khi đặt <code>XDG_CONFIG_HOME</code> thì là <code>$XDG_CONFIG_HOME/agent-brain/workflows.json</code>; <code>AGENT_BRAIN_CONFIG</code> không đổi vị trí file này). File không bắt buộc, tối đa 256 KiB, được đọc lại mỗi lần cần (không phải khởi động lại <code>serve</code>). Dashboard chỉ xem; sửa bằng editor.</p>
+  <table>
+    <tr><th style="width:20%">Khóa</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>stages</code> (bắt buộc)</td><td>Danh sách giai đoạn, chỉ gồm <code>plan</code>, <code>plan-review</code>, <code>gate:you</code>, <code>implement</code>, <code>code-review</code>, <code>qa</code>, <code>fix</code>; không lặp, đúng thứ tự đó.</td></tr>
+    <tr><td><code>loops</code></td><td>Chỉ nhận ba cặp <code>"plan": "plan-review"</code>, <code>"implement": "code-review"</code>, <code>"qa": "fix"</code>. Không ghi thì mỗi cặp có đủ hai giai đoạn tự thành vòng lặp.</td></tr>
+    <tr><td><code>max_rounds</code></td><td>Số vòng tối đa mỗi vòng lặp, số nguyên 1–10.</td></tr>
+    <tr><td><code>budget_minutes</code></td><td>Tổng phút của task, số nguyên 1–1440.</td></tr>
+    <tr><td><code>budget_usd</code></td><td>Tổng chi phí của task, lớn hơn 0, tối đa 1000.</td></tr>
+    <tr><td><code>auto</code></td><td><code>true</code>: Giao việc trên dashboard tự bật autopilot cho task mới. Mặc định <code>false</code>.</td></tr>
+  </table>
+  <p>Ba khóa giới hạn không ghi thì lấy từ khóa <code>autopilot</code> của <code>config.json</code>. Khóa nào ngoài danh sách là lỗi. Tên quy trình: chữ thường, số và dấu gạch ngang, tối đa 40 ký tự.</p>
+  <p><b>Luật cổng duyệt:</b> quy trình có <code>plan</code> hoặc <code>plan-review</code> mà còn bước sau (code, review code, QA, sửa) thì <b>bắt buộc</b> có <code>gate:you</code>. Không quy trình nào bỏ qua được bước bạn duyệt plan. <code>gate:you</code> cần có <code>plan</code>; <code>fix</code> cần có <code>qa</code>.</p>
+  <p><b>Ví dụ hợp lệ</b> — thêm quy trình <code>chi-phi-thap</code> và rút ngắn <code>nhanh</code> (ghi đè theo tên phải ghi lại đủ <code>stages</code>):</p>
+  <pre>{
+  "chi-phi-thap": {
+    "stages": ["plan", "plan-review", "gate:you", "implement", "qa"],
+    "max_rounds": 2,
+    "budget_usd": 3,
+    "auto": true
+  },
+  "nhanh": {
+    "stages": ["plan", "gate:you", "implement", "qa"],
+    "budget_minutes": 30,
+    "auto": false
+  }
+}</pre>
+  <p>Kết quả: <code>chi-phi-thap</code> = <i>plan ⇄ review → Bạn → code → QA · 2 vòng · 60 phút · $3</i>; <code>nhanh</code> thành <i>30 phút · $20</i>. Màn hình Dự án gắn nhãn <i>từ workflows.json</i> và <i>ghi đè quy trình có sẵn</i>.</p>
+  <p><b>Ví dụ không hợp lệ</b> — bỏ bước duyệt và số vòng ngoài khoảng:</p>
+  <pre>{
+  "bo-qua-duyet": {
+    "stages": ["plan", "implement", "qa"],
+    "max_rounds": 0
+  }
+}</pre>
+  <p>agent-brain bỏ riêng quy trình này và báo bằng tiếng Việt kèm số dòng:</p>
+  <pre>Dòng 3: quy trình "bo-qua-duyet" phải có "gate:you" giữa bước plan và bước code/QA — autopilot luôn dừng ở bước bạn duyệt plan.
+Dòng 4: "max_rounds" phải là số nguyên từ 1 đến 10.</pre>
+  <ul>
+    <li>File sai cú pháp JSON bị bỏ cả file: <i>"Dòng L, cột C: workflows.json không phải JSON hợp lệ."</i></li>
+    <li>Một bản ghi đè sai thì quy trình có sẵn giữ nguyên. Hai quy trình <code>mac-dinh</code> và <code>nhanh</code> <b>luôn dùng được</b>.</li>
+    <li><code>run lead</code> in mỗi lỗi thành dòng <i>"Cảnh báo workflows.json: …"</i>; Giao việc và Dự án hiện khung màu hổ phách <i>"workflows.json có lỗi"</i>.</li>
+  </ul>
+  <h3>Chọn quy trình cho một task</h3>
+  <p>Thứ tự ưu tiên: <b>cờ <code>--workflow</code></b> (CLI) hoặc lựa chọn ở ô <i>Quy trình</i> trên Giao việc → <b><code>workflow</code> của dự án</b> trong <code>projects_map.json</code> → <code>mac-dinh</code>.</p>
+  <ul>
+    <li>Tên truyền qua <code>--workflow</code> mà không tồn tại: lệnh báo lỗi <i>"Không có quy trình 'x' — các quy trình có: …"</i>, không tạo nhánh hay task.</li>
+    <li>Tên ghi ở dự án mà không tồn tại: dùng <code>mac-dinh</code> và báo <i>"Quy trình 'x' của dự án không có trong workflows.json — dùng mac-dinh."</i></li>
+    <li><b>Bản sao theo task:</b> khi tạo task, quy trình đã chọn (kèm giới hạn) được lưu cùng task. Sửa <code>workflows.json</code> sau đó <b>không</b> ảnh hưởng task đang có — kể cả khi bạn tăng ngân sách.</li>
+  </ul>
+
+  <h3>3.5 Giới hạn, ngân sách và bảng giá</h3>
+  <table>
+    <tr><th style="width:22%">Giới hạn</th><th style="width:14%">Mặc định</th><th>Cách tính</th></tr>
+    <tr><td>Số vòng (<code>max_rounds</code>)</td><td>3</td><td>Cho mỗi vòng lặp. Một vòng = một lần chạy của tác giả (Lead / Dev) cùng lần kiểm tra theo sau. Một bước review hoặc QA không có bước tác giả / Sửa đi kèm chỉ chạy 1 lần.</td></tr>
+    <tr><td>Phút (<code>budget_minutes</code>)</td><td>60</td><td>Tổng thời lượng mọi run của task (run đang chạy tính đến hiện tại; <code>inspect</code> không tính).</td></tr>
+    <tr><td>Đô-la (<code>budget_usd</code>)</td><td>20</td><td>Tổng chi phí tương đương của task. Run có kết quả cuối dùng chi phí Claude CLI báo; run bị Kill, lỗi hoặc chỉ có token một phần được ước tính từ token theo bảng <code>pricing</code>.</td></tr>
+  </table>
+  <p>Ngân sách được kiểm tra <b>trước khi bắt đầu mỗi bước</b>: run đang chạy luôn được chạy xong, rồi autopilot không bắt đầu bước mới. Dashboard ghi <i>sắp hết</i> từ 80 % và <i>đã hết</i> từ 100 % giới hạn.</p>
+  <p><b>Bảng giá mặc định</b> (USD cho mỗi triệu token, khóa <code>pricing</code> trong <code>config.json</code>):</p>
+  <table>
+    <tr><th>Họ model</th><th><code>input</code></th><th><code>output</code></th><th><code>cache_read</code></th><th><code>cache_write</code></th></tr>
+    <tr><td><code>opus</code></td><td>4.0</td><td>20.0</td><td>0.2</td><td>8.0</td></tr>
+    <tr><td><code>sonnet</code></td><td>2.0</td><td>10.0</td><td>0.1</td><td>4.0</td></tr>
+    <tr><td><code>haiku</code></td><td>0.1</td><td>0.5</td><td>0.005</td><td>0.2</td></tr>
+  </table>
+  <p>Ước tính = (input × giá input + output × giá output + cache_read × giá cache_read + cache_write × giá cache_write) / 1.000.000. Ghi đè từng họ trong <code>config.json</code> (phải đủ 4 số không âm); họ không ghi giữ giá mặc định. Model không khớp họ nào được tính theo họ đắt nhất để không vượt trần. Đây là bảng nhúng sẵn — hãy sửa nếu khác bảng giá bạn dùng.</p>
 </section>
 
 <!-- ========== 4 ========== -->
 <section id="s4">
-  <h2>4. Quy trình chuẩn bằng CLI: Lead → Dev → QA</h2>
-  <h3>Bước 1 — Lead viết plan</h3>
+  <h2>4. Làm việc bằng CLI: chạy tay, vai trò review và autopilot</h2>
+  <h3>4.1 Chạy tay từng bước (Lead → Dev → QA)</h3>
+  <p><b>Bước 1 — Lead viết plan</b></p>
   <pre>agent-brain run lead "web bán hàng" "Thêm nút xuất đơn hàng ra CSV ở trang quản trị"
-<span class="c"># tùy chọn: --name xuat-csv   (đặt slug cho task)
-#           --dry-run         (chạy thử, không sinh tác vụ)
-#           --verbose         (in chi tiết)</span></pre>
-  <p>Kết quả: nhánh <code>task/&lt;slug&gt;</code>, file <code>.plan.md</code> ở gốc repo và commit <code>&lt;slug&gt;: plan</code>. Terminal in cặp <b>task N, run M</b> — ghi lại số task để dùng khi kill hoặc báo lỗi.</p>
-  <p>Nếu tên dự án mơ hồ, lệnh dừng với mã 2 và in danh sách dự án khớp. Gõ lại với id chính xác.</p>
-  <h3>Bước 2 — Bạn duyệt plan</h3>
+<span class="c"># tùy chọn: --name xuat-csv      (đặt slug cho task)
+#           --workflow nhanh     (chọn quy trình cho task mới, mục 3.4)
+#           --dry-run            (chạy thử, không sinh tác vụ)
+#           --verbose            (in chi tiết)</span></pre>
+  <p>Kết quả: nhánh <code>task/&lt;slug&gt;</code>, file <code>.plan.md</code> ở gốc repo và commit <code>&lt;slug&gt;: plan</code>. Terminal in cặp <b>task N, run M</b> — ghi lại số task để dùng khi duyệt, chạy autopilot, kill hoặc báo lỗi. Tên dự án mơ hồ thì lệnh dừng với mã 2 và in danh sách dự án khớp. <code>run lead</code> chỉ chạy Lead; nó không bật autopilot (dùng <code>auto</code>, mục 4.3).</p>
+  <p><b>Bước 2 — Bạn duyệt plan</b></p>
   <ul>
     <li>Mở <code>.plan.md</code> trên nhánh task. Kiểm tra bảng <b>Thay đổi</b>: Dev chỉ được sửa các file liệt kê ở đây.</li>
-    <li>Nếu cần sửa plan: sửa bằng editor của bạn rồi <b>commit</b>. Plan có thay đổi chưa commit sẽ chặn bước Dev trên dashboard.</li>
+    <li>Cần sửa plan: sửa bằng editor rồi <b>commit</b>. Plan có thay đổi chưa commit sẽ chặn bước Dev và lệnh duyệt.</li>
+    <li>Ghi nhận duyệt: <code>agent-brain approve N</code> (mục 4.3). Với quy trình chạy tay, trên dashboard bấm <i>Chạy Dev</i> trực tiếp cũng được coi là đã duyệt.</li>
+    <li>Một commit plan mới sau khi duyệt (kể cả sửa tay) đưa cổng về <i>chờ bạn</i>: plan chưa được bạn xem thì không chạy tiếp.</li>
   </ul>
-  <h3>Bước 3 — Dev thực hiện</h3>
+  <p><b>Bước 3 — Dev thực hiện</b></p>
   <pre>agent-brain run dev "web bán hàng"</pre>
-  <p>Dev làm việc trên nhánh task hiện tại và chỉ được ghi các file trong plan (hook <code>guard</code> chặn ghi ngoài danh sách). Có hai kết thúc bất thường:</p>
+  <p>Dev làm việc trên nhánh task hiện tại và chỉ được ghi các file trong plan. Có hai kết thúc bất thường:</p>
   <ul>
     <li><b>Vướng mắc</b> (mã thoát 4): Dev thiếu thông tin, ghi mục <i>Vướng mắc</i> vào <code>.plan.md</code> và dừng an toàn. Bạn bổ sung plan, commit, rồi chạy lại Dev (hoặc chạy lại Lead).</li>
-    <li><b>Vi phạm giao thức</b> (mã thoát 3): có file ngoài plan bị sửa. Xem lại diff trước khi làm tiếp.</li>
+    <li><b>Vi phạm giao thức</b> (mã thoát 3): có file ngoài phạm vi bị sửa. Xem lại diff trước khi làm tiếp.</li>
   </ul>
-  <h3>Bước 4 — QA kiểm tra</h3>
+  <p><b>Bước 4 — QA kiểm tra</b></p>
   <pre>agent-brain run qa "web bán hàng"</pre>
-  <p>QA đọc <code>git diff</code> từ commit plan đến HEAD (bỏ qua <code>.plan.md</code>, <code>.qa-report.md</code>) và ghi <code>.qa-report.md</code>:</p>
-  <ul>
-    <li><b>Đạt</b> → bạn review và merge nhánh.</li>
-    <li><b>Cần sửa</b> → chạy lại Dev theo báo cáo, hoặc chạy lại Lead để làm lại plan.</li>
-  </ul>
+  <p>QA đọc <code>git diff</code> từ commit plan đến HEAD (bỏ qua các file giao thức <code>.plan.md</code>, <code>.qa-report.md</code>, <code>.plan-review.md</code>, <code>.code-review.md</code>) và ghi <code>.qa-report.md</code> với kết luận <b>Đạt</b> hoặc <b>Cần sửa</b>, kèm số liệu <code>specs</code> (số kiểm thử) và <code>failing</code> (số lỗi) ở đầu file. <b>Cần sửa</b> → chạy Dev ở chế độ sửa (<code>--fix qa</code>, mục 4.2) hoặc chạy lại Lead.</p>
   <div class="tip"><b>Mẹo</b>Trước khi chạy QA, dùng <code>agent-brain status PROJECT</code> (0 token) để xem nhánh và diffstat, hoặc <code>agent-brain inspect PROJECT</code> để nhờ Claude đọc nhanh diff chưa commit.</div>
-  <h3>Quy tắc chạy song song</h3>
+
+  <h3>4.2 Vai trò review và chế độ sửa</h3>
+  <table>
+    <tr><th style="width:36%">Lệnh</th><th>Việc làm</th></tr>
+    <tr><td><code>agent-brain run plan-review PROJECT</code></td><td>Review plan (mặc định opus). Đọc được toàn repo, <b>chỉ ghi <code>.plan-review.md</code></b>. Kết luận <code>approve</code> hoặc <code>revise</code>, kèm số mục <i>chặn</i> (<code>blocking</code>) và <i>góp ý</i> (<code>advisory</code>). <code>revise</code> chỉ hợp lệ khi có ít nhất một mục chặn. Báo cáo được commit.</td></tr>
+    <tr><td><code>agent-brain run code-review PROJECT</code></td><td>Review code (mặc định opus). Đọc diff code từ commit plan, <b>chỉ ghi <code>.code-review.md</code></b>: <code>pass</code> hoặc <code>revise</code>, kèm số mục chặn / góp ý. Từ chối chạy khi chưa có thay đổi code.</td></tr>
+    <tr><td><code>agent-brain run lead PROJECT "…" --name SLUG --review</code></td><td>Lead sửa trực tiếp <code>.plan.md</code> đã commit và phải xử lý mọi mục chặn trong <code>.plan-review.md</code> (cần báo cáo có kết luận <code>revise</code>).</td></tr>
+    <tr><td><code>agent-brain run lead PROJECT "…" --name SLUG --note="…"</code></td><td>Gửi ghi chú của bạn cho Lead khi lập lại plan (tối đa 500 ký tự, lưu cùng run). Dùng đúng dạng <code>--note=</code> để ghi chú bắt đầu bằng <code>-</code> vẫn đúng. Lập lại plan xóa bản duyệt cũ.</td></tr>
+    <tr><td><code>agent-brain run dev PROJECT --fix code-review</code></td><td>Dev ở chế độ sửa, đọc <code>.code-review.md</code> làm đầu vào. Sau đó chạy lại Review code.</td></tr>
+    <tr><td><code>agent-brain run dev PROJECT --fix qa</code></td><td>Dev ở chế độ sửa, đọc <code>.qa-report.md</code> làm đầu vào. Sau đó chạy lại QA.</td></tr>
+  </table>
+  <p>Terminal in kết luận, ví dụ <i>"Kết luận Review plan: revise (1 chặn, 1 góp ý)"</i>, <i>"Kết luận Review code: pass (0 chặn, 1 góp ý)"</i>, <i>"Kết luận QA: Đạt"</i>. Ở chế độ sửa, terminal in <i>"File được nêu trong &lt;báo cáo&gt;: …"</i> và một dòng <i>"Bỏ qua (không được phép): &lt;đường dẫn&gt; (&lt;mã&gt;)"</i> cho mỗi file bị từ chối. Phạm vi ghi của chế độ sửa ở mục 8.</p>
+
+  <h3>4.3 Autopilot bằng CLI</h3>
+  <pre><span class="c"># Tạo task mới và chạy autopilot luôn (dừng ở bước duyệt plan)</span>
+agent-brain auto --start --workflow mac-dinh --name xuat-csv -- "web bán hàng" "Thêm nút xuất CSV"
+
+<span class="c"># Duyệt plan rồi chạy tiếp Code → Review code → QA → Sửa ngay trong terminal này</span>
+agent-brain approve 12
+
+<span class="c"># Chạy tiếp task 12 từ chỗ dừng (ví dụ sau khi run lead tay, sau Ctrl+C, hoặc để bật lại)</span>
+agent-brain auto 12
+
+<span class="c"># Sau khi autopilot dừng: cho vòng vừa dừng thêm 1 vòng rồi chạy tiếp</span>
+agent-brain auto 12 --more-round
+
+<span class="c"># Trả về Lead (lập lại plan, xóa bản duyệt), kèm ghi chú</span>
+agent-brain auto 12 --replan --note="Tách bước 2 thành hai commit nhỏ"
+
+<span class="c"># Chỉ ghi duyệt, không chạy tiếp (ở nhánh nào cũng được)</span>
+agent-brain approve 12 --no-continue</pre>
+  <table>
+    <tr><th style="width:34%">Cờ</th><th>Ghi chú</th></tr>
+    <tr><td><code>auto --start [--name SLUG] [--workflow NAME] -- PROJECT REQUEST</code></td><td>Đặt dự án và yêu cầu sau <code>--</code>. <code>--name</code>, <code>--workflow</code> chỉ dùng với <code>--start</code>.</td></tr>
+    <tr><td><code>auto N --more-round</code></td><td>Chỉ khi autopilot đã dừng. Với <i>vi phạm giao thức</i>, <i>dừng bởi bạn</i>, <i>run lỗi</i>: chạy lại bước đó. Sau <i>hết ngân sách</i>: cho chạy vượt ngân sách đúng một bước tác giả và một bước kiểm tra, rồi giới hạn áp dụng lại.</td></tr>
+    <tr><td><code>auto N --replan [--note=TEXT]</code></td><td>Trả về Lead. <code>--note</code> chỉ dùng kèm <code>--replan</code>. Sau đó autopilot chạy lại vòng plan ⇄ review plan và lại dừng ở cổng.</td></tr>
+    <tr><td><code>approve N [--no-continue]</code></td><td>Ghi duyệt plan hiện tại (gắn với đúng commit plan). Từ chối khi plan chưa commit, <code>.plan.md</code> có sửa chưa commit, đang có run hoặc autopilot chạy, hoặc task tạo trước Phase 5.2.</td></tr>
+  </table>
+  <p>Mỗi bước autopilot in một dòng <i>"Autopilot · task N · plan-review vòng 1"</i>. Các dòng kết thúc:</p>
+  <table>
+    <tr><th style="width:56%">Terminal in</th><th style="width:12%">Mã thoát</th><th>Nghĩa</th></tr>
+    <tr><td><i>Autopilot dừng ở bước duyệt plan (task N) — duyệt: agent-brain approve N</i></td><td>0</td><td>Chờ bạn duyệt plan.</td></tr>
+    <tr><td><i>Autopilot xong: QA đạt (task N)</i></td><td>0</td><td>Xong; bạn review và merge.</td></tr>
+    <tr><td><i>Autopilot dừng · {lý do}: {chi tiết} (task N)</i></td><td>4</td><td>Dừng và chờ bạn (mục 4.4).</td></tr>
+    <tr><td><i>Autopilot đã dừng (bị ngắt) — task N; chạy tiếp: agent-brain auto N</i></td><td>130</td><td>Bị Ctrl+C / SIGTERM / SIGHUP.</td></tr>
+    <tr><td><i>Autopilot đã tắt cho task N — chỉ ghi nhận duyệt. Bật lại: agent-brain auto N</i></td><td>0</td><td>Bạn duyệt khi autopilot đã tắt (xem dưới).</td></tr>
+  </table>
+  <div class="note"><b>Duyệt plan chỉ chạy tiếp khi autopilot còn bật</b>Với quy trình <code>auto: true</code>, <code>approve</code> (hoặc nút <i>Duyệt plan</i>) chạy tiếp autopilot. Nếu bạn đã tắt autopilot cho task (<i>Dừng autopilot</i> lúc đang chờ ở cổng, hoặc <i>Dừng hẳn</i> sau một lần dừng), lệnh duyệt <b>chỉ ghi nhận</b> duyệt, không chạy gì. Bật lại bằng <code>agent-brain auto N</code> hoặc nút <i>Bật autopilot</i>; autopilot lại dừng ở cổng nếu plan chưa được duyệt.</div>
+  <p><b>Ctrl+C trong terminal của <code>auto</code></b> dừng êm: driver chuyển đúng một SIGTERM cho bước đang chạy (không dừng cưỡng bức), bước đó dừng Claude và ghi kết quả run, rồi driver thoát 130. Chạy lại bằng <code>agent-brain auto N</code>. Autopilot mà driver chết bất thường cũng được nhận lại bằng lệnh này.</p>
+
+  <h3>4.4 Lý do autopilot dừng và việc bạn nên làm</h3>
+  <p>Khi dừng, task vào nhóm <i>Chờ bạn</i> ở Tổng quan, màn hình task hiện biểu ngữ màu hổ phách <i>"Autopilot dừng · {lý do}"</i> với ba nút <b>Chạy thêm 1 vòng</b>, <b>Chạy lại Lead</b>, <b>Dừng hẳn</b>.</p>
+  <table>
+    <tr><th style="width:15%">Lý do</th><th style="width:40%">Chi tiết hiện ra (nguyên văn mẫu)</th><th>Nên làm</th></tr>
+    <tr><td><b>hết vòng</b></td><td><i>Review plan vẫn yêu cầu sửa lại sau N / cap vòng.</i> · <i>Review code vẫn yêu cầu sửa lại sau N / cap vòng.</i> · <i>QA vẫn kết luận Cần sửa sau N / cap vòng. Xem báo cáo QA bên dưới.</i></td><td>Đọc báo cáo review / QA cuối. Nếu thấy đang tiến gần: <b>Chạy thêm 1 vòng</b>. Nếu plan sai hướng: <b>Chạy lại Lead</b>. Muốn tự sửa: <b>Dừng hẳn</b>. Nếu dừng ở vòng plan, bạn vẫn có thể duyệt plan hiện tại.</td></tr>
+    <tr><td><b>hết ngân sách</b></td><td><i>Đã dùng M / B phút · $X / $Y. Run đang chạy đã xong; autopilot không bắt đầu bước nào nữa.</i></td><td><b>Chạy thêm 1 vòng</b> = vượt ngân sách đúng một lần (một bước tác giả + một bước kiểm tra). Sửa <code>workflows.json</code> không đổi ngân sách của task đang có. Hoặc <b>Dừng hẳn</b> và làm tay.</td></tr>
+    <tr><td><b>vi phạm giao thức</b></td><td><i>Run {id} ({vai trò}) vi phạm giao thức — xem log của run này.</i></td><td>Xem log và <code>git diff</code>; hoàn tác thay đổi ngoài phạm vi. Rồi <b>Chạy thêm 1 vòng</b> (chạy lại bước đó) hoặc <b>Chạy lại Lead</b>.</td></tr>
+    <tr><td><b>vướng mắc</b></td><td><i>Dev dừng vì vướng mắc. Sửa .plan.md trong editor của bạn rồi commit với message '{slug}: plan', hoặc chạy lại Lead.</i></td><td>Làm đúng hướng dẫn. Commit plan mới đưa cổng về <i>chờ bạn</i>: duyệt lại rồi chạy tiếp. Nút <i>Chạy thêm 1 vòng</i> bị khóa khi vướng mắc chưa xử lý.</td></tr>
+    <tr><td><b>dừng bởi bạn</b></td><td><i>Bạn đã dừng autopilot lúc HH:MM.</i></td><td>Bạn đã bấm Kill hoặc <code>agent-brain kill N</code>. Muốn tiếp: <b>Chạy thêm 1 vòng</b> (chạy lại bước bị dừng).</td></tr>
+    <tr><td><b>run lỗi</b></td><td><i>Run {id} ({vai trò}) lỗi hoặc quá thời gian — xem log của run này.</i> Hoặc dòng lỗi thật của bước, ví dụ <i>Không ở nhánh task '…' (nhánh hiện tại: '…') — không đoán</i>, <i>Working tree có thay đổi chưa commit: …</i>, <i>Lead đã chạy n vòng mà chưa có commit plan</i>.</td><td>Đọc chi tiết. Sai nhánh: <code>git checkout task/&lt;slug&gt;</code> trong repo. Working tree bẩn (thường là <code>.qa-report.md</code> không có kết luận): xóa hoặc commit file đó. Rồi <b>Chạy thêm 1 vòng</b>.</td></tr>
+  </table>
+  <p class="small">Ngoài ra driver tự dừng với <i>run lỗi</i> khi chạy quá 50 bước trong một lần, hoặc khi tiến trình của một bước thoát với mã lỗi sau khi run đã kết thúc (ví dụ commit bị hook từ chối) — chi tiết là dòng stderr cuối cùng của bước.</p>
+
+  <h3>4.5 Quy tắc chạy song song và quy tắc nhánh</h3>
   <ul>
-    <li>Mỗi dự án chỉ có <b>một run</b> tại một thời điểm.</li>
-    <li>Profile <code>personal</code> chỉ có <b>một run</b> trên toàn hệ thống.</li>
-    <li>Các dự án <code>work</code> khác nhau có thể chạy song song.</li>
+    <li>Mỗi dự án chỉ có <b>một run</b> tại một thời điểm. Profile <code>personal</code> chỉ có <b>một run</b> trên toàn hệ thống. Các dự án <code>work</code> khác nhau có thể chạy song song.</li>
+    <li>Mỗi task chỉ có <b>một autopilot</b>. Autopilot không bắt đầu khi dự án đang có run hoặc autopilot khác, hay khi profile <code>personal</code> đang bận.</li>
+    <li>Khi autopilot của một dự án đang sống (kể cả lúc nghỉ giữa hai bước), <code>run</code> tay trên dự án đó bị từ chối: <i>"Dự án … đang chạy autopilot cho task N — …"</i>; với <code>personal</code>: <i>"Profile personal đang chạy autopilot cho task N — …"</i>. Trên dashboard, Giao việc và nút chạy tay bị khóa với cùng lý do.</li>
+    <li><b>Luật nhánh:</b> mọi bước autopilot và mọi lần duyệt có chạy tiếp cần đang checkout <b>nhánh của task</b>. Khác nhánh thì từ chối: <i>"Không ở nhánh task 'task/&lt;slug&gt;' (nhánh hiện tại: '…') — không đoán"</i>. <code>approve --no-continue</code> và lần duyệt chỉ ghi nhận thì ở nhánh nào cũng được. Bước Dev, Review và QA do autopilot bật cũng tự từ chối chạy trên nhánh của task khác: <i>"Nhánh hiện tại '…' không phải nhánh của task autopilot N — dừng, không chạy"</i>.</li>
   </ul>
 </section>
 
@@ -261,20 +429,23 @@ agent-brain projects add ~/code/kenh-video --type media</pre>
   <h3>inspect — đọc nhanh diff</h3>
   <pre>agent-brain inspect "web bán hàng" [--verbose]</pre>
   <p>Gọi Claude đúng 1 lượt, không công cụ, không lưu session. Diff lớn hơn <code>inspect_max_diff_bytes</code> (100.000 byte) được cắt gọn và có thông báo.</p>
-  <h3>kill — dừng task</h3>
+  <h3>kill — dừng task (và autopilot)</h3>
   <pre>agent-brain kill 12        <span class="c"># 12 là TASK_ID</span></pre>
   <ol>
+    <li>Nếu task có autopilot đang chạy, ghi yêu cầu dừng trước, để autopilot dừng với lý do <i>dừng bởi bạn</i> thay vì chạy bước kế tiếp.</li>
     <li>Đọc PID và thời điểm khởi tạo của run từ database, đối chiếu với <code>/proc</code>. Nếu PID đã bị hệ điều hành tái sử dụng, <b>không</b> gửi tín hiệu.</li>
     <li>Gửi SIGINT tới cả process group, chờ <code>kill_grace_secs</code>, rồi SIGKILL những tiến trình còn sót.</li>
-    <li>Run được ghi <code>killed</code>; terminal đang chạy run đó thoát với mã 130.</li>
+    <li>Run được ghi <code>killed</code>; terminal đang chạy run đó thoát với mã 130, terminal đang chạy <code>auto</code> in <i>"Autopilot dừng · dừng bởi bạn: …"</i> và thoát 4.</li>
   </ol>
-  <p>Ở terminal đang chạy: <b>Ctrl+C một lần</b> = dừng mềm; <b>Ctrl+C hai lần nhanh</b> = dừng ngay (dưới 1 giây). Đóng cửa sổ terminal cũng dừng cả cây tiến trình.</p>
+  <p>Nếu autopilot đang ở giữa hai bước (không có run nào chạy), lệnh trả 0 với dòng <i>"Đã yêu cầu autopilot dừng (task N) …"</i>.</p>
+  <p>Ở terminal đang chạy <code>run</code>: <b>Ctrl+C một lần</b> = dừng mềm; <b>Ctrl+C hai lần nhanh</b> = dừng ngay (dưới 1 giây). Đóng cửa sổ terminal cũng dừng cả cây tiến trình. Ở terminal <code>auto</code>: Ctrl+C dừng êm (mục 4.3).</p>
   <p>Trạng thái kết thúc bất thường của run: <code>killed</code> (bị dừng có chủ đích), <code>timed_out</code> (quá thời gian), <code>lost</code> (tiến trình biến mất bất thường).</p>
+  <p>Báo cáo của Review plan, Review code và QA được tạo khung trước khi Claude chạy. Khi run đó lỗi, quá thời gian hoặc bị Kill, báo cáo được trả về như cũ và terminal in <i>"Đã dọn &lt;file&gt; của lượt chạy không thành công."</i>, để bước sau không bị chặn vì working tree bẩn. Báo cáo sai định dạng, báo cáo QA không có kết luận và run vi phạm giao thức thì <b>giữ nguyên</b> báo cáo làm bằng chứng (xem mục 10).</p>
   <h3>stats — token và chi phí</h3>
   <pre>agent-brain stats
 agent-brain stats --since 7d --profile work
 agent-brain stats --since 24h --json      <span class="c"># JSON: total, by_project, by_role</span></pre>
-  <p><code>--since</code> nhận <code>Nm</code>, <code>Nh</code>, <code>Nd</code> (phút, giờ, ngày). Chi phí là <b>ước tính tương đương USD</b> theo bảng giá chuẩn của từng model (input, output, cache read, cache creation) — không phải hóa đơn thật.</p>
+  <p><code>--since</code> nhận <code>Nm</code>, <code>Nh</code>, <code>Nd</code> (phút, giờ, ngày). Chi phí là <b>giá trị tương đương theo API</b> do Claude CLI báo trong kết quả của mỗi run — không phải hóa đơn thật. Run bị Kill hoặc chưa có kết quả không có số chi phí này (ngân sách autopilot ước tính riêng cho chúng, mục 3.5).</p>
 </section>
 
 <!-- ========== 6 ========== -->
@@ -288,8 +459,9 @@ agent-brain serve --port 8123  <span class="c"># cổng khác; --port 0 = hệ �
   <ol>
     <li>Mở <b>đúng URL đó</b> trong trình duyệt (dùng <code>127.0.0.1</code>, không dùng <code>localhost</code>).</li>
     <li>Server đổi token thành cookie phiên và chuyển bạn về <code>/</code>; thanh địa chỉ không còn token.</li>
-    <li>Giữ terminal mở. <b>Ctrl+C</b> dừng dashboard — các run do dashboard khởi chạy cũng dừng theo.</li>
+    <li>Giữ terminal mở. <b>Ctrl+C</b> dừng dashboard — các run <b>và các autopilot</b> do dashboard khởi chạy cũng dừng theo. Autopilot bật bằng <code>agent-brain auto</code> trong terminal khác thì vẫn chạy.</li>
   </ol>
+  <p>Terminal của <code>serve</code> cũng in các dòng <i>Autopilot …</i> của autopilot do dashboard bật.</p>
   <h3>Đặc điểm cần biết</h3>
   <ul>
     <li><b>Token mới mỗi lần khởi động</b>, không ghi xuống đĩa. Khởi động lại <code>serve</code> thì cookie cũ hết hiệu lực — mở URL mới.</li>
@@ -300,10 +472,11 @@ agent-brain serve --port 8123  <span class="c"># cổng khác; --port 0 = hệ �
   <div class="warn"><b>Không chia sẻ URL có token</b>Ai có token đều điều khiển được agent trên các dự án của bạn. Không dán URL vào chat, issue, log hay ảnh chụp màn hình.</div>
   <h3>Bố cục chung</h3>
   <ul>
-    <li><b>Thanh trên:</b> 5 mục điều hướng (Tổng quan, Giao việc, Thống kê, Dự án; Chi tiết task mở từ thẻ task), bộ lọc profile (<b>Tất cả / work / personal</b>) và nút đổi giao diện sáng/tối.</li>
+    <li><b>Thanh trên:</b> các mục điều hướng (Tổng quan, Giao việc, Thống kê, Dự án; Chi tiết task mở từ thẻ task), bộ lọc profile (<b>Tất cả / work / personal</b>) và nút đổi giao diện sáng/tối.</li>
     <li><b>Bộ lọc profile chỉ lọc những gì bạn thấy</b> (task, thống kê, gợi ý dự án). Nó không đổi tài khoản chạy task.</li>
-    <li>Dữ liệu tự cập nhật trực tiếp. Mất kết nối thì hiện thông báo <i>"Không cập nhật được — đang thử lại..."</i> và tự kết nối lại.</li>
-    <li>Dùng được bằng bàn phím: Tab giữa các điều khiển, Escape đóng hộp thoại.</li>
+    <li>Dữ liệu tự cập nhật (màn hình task mỗi 3 giây, Tổng quan mỗi 4 giây; log là trực tiếp). Mất kết nối thì hiện <i>"Không cập nhật được — đang thử lại..."</i> và tự kết nối lại.</li>
+    <li>Dùng được bằng bàn phím: Tab giữa các điều khiển, Escape đóng hộp thoại, focus quay về nút đã mở hộp thoại.</li>
+    <li>Nếu bấm một nút điều khiển trên dữ liệu đã cũ (task vừa đổi trạng thái), server từ chối và màn hình tự tải lại; xem lại rồi bấm lần nữa.</li>
   </ul>
 </section>
 
@@ -311,32 +484,76 @@ agent-brain serve --port 8123  <span class="c"># cổng khác; --port 0 = hệ �
 <section id="s7">
   <h2>7. Dashboard: năm màn hình</h2>
   <h3>7.1 Tổng quan <span class="tag">#/</span></h3>
-  <p>Task chia thành 4 nhóm: <b>Đang chạy</b>, <b>Chờ bạn</b> (ví dụ chờ duyệt plan), <b>Lỗi / cần xử lý</b> (Vướng mắc, Cần sửa, killed, timed_out…), <b>Xong</b>. Bấm thẻ task để mở Chi tiết. Dùng <i>Hiện thêm 10</i> để xem task cũ hơn.</p>
+  <p>Task chia thành 4 nhóm: <b>Đang chạy</b>, <b>Chờ bạn</b> (<i>Duyệt plan hoặc xử lý chỗ autopilot dừng</i>), <b>Lỗi / cần xử lý</b> (Vướng mắc, Cần sửa, killed, timed_out…), <b>Xong</b>. Bấm thẻ task để mở Chi tiết. Dùng <i>Hiện thêm 10</i> để xem task cũ hơn.</p>
+  <ul>
+    <li>Task chờ duyệt plan có nhãn <i>Chờ duyệt plan</i>.</li>
+    <li>Task autopilot đã dừng nằm trong <i>Chờ bạn</i> với nhãn <i>Chờ bạn · {lý do}</i> và một dòng thứ ba ghi chi tiết dừng (nguyên văn như bảng mục 4.4).</li>
+    <li>Task có autopilot đang chạy có thêm huy hiệu <b>◐ Autopilot</b> sau ba ô Lead / Dev / QA.</li>
+  </ul>
   <h3>7.2 Giao việc <span class="tag">#/assign</span></h3>
   <ol>
-    <li><b>Dự án:</b> gõ tên, alias hoặc tên không dấu rồi <b>chọn trong danh sách gợi ý</b> (chuột, hoặc ↑/↓ rồi Enter). Dự án <i>thiếu thư mục</i> hiện mờ và không chọn được.</li>
     <li><b>Yêu cầu (tiếng Việt):</b> mô tả việc cần làm.</li>
+    <li><b>Dự án:</b> gõ tên, alias hoặc tên không dấu rồi <b>chọn trong danh sách gợi ý</b> (chuột, hoặc ↑/↓ rồi Enter). Dự án <i>thiếu thư mục</i> hiện mờ và không chọn được.</li>
+    <li><b>Quy trình (mới, 5.2):</b> danh sách chọn, mỗi dòng có tên, nhãn (<i>mặc định của dự án</i>, <i>có sẵn</i>, <i>từ workflows.json</i>, <i>autopilot</i> / <i>chạy tay</i>), dòng giai đoạn và dòng giới hạn, ví dụ <i>plan ⇄ review → Bạn → code ⇄ review → QA ⇄ sửa</i> / <i>3 vòng · 60 phút · $20</i>. Mặc định chọn quy trình của dự án, không có thì <code>mac-dinh</code>. Đổi dự án sẽ chọn lại mặc định của dự án mới, trừ khi bạn đã tự chọn. Dòng dưới cho biết <i>"Quy trình này tự chạy autopilot và luôn dừng ở bước bạn duyệt plan."</i> hoặc <i>"Quy trình này chạy tay: bạn bấm từng bước."</i></li>
     <li><b>Tên task (slug):</b> tự tạo từ yêu cầu giống CLI; sửa được.</li>
-    <li>Kiểm tra khung thông tin (dự án, nhánh hiện tại, profile) rồi bấm <b>Giao việc</b> để chạy Lead.</li>
+    <li>Kiểm tra khung thông tin (dự án, nhánh hiện tại, profile) rồi bấm <b>Giao việc</b>. Quy trình autopilot chạy <code>agent-brain auto --start</code>; quy trình chạy tay chạy Lead.</li>
   </ol>
-  <p>Nếu tên khớp nhiều dự án, màn hình hiện <i>"Tên khớp nhiều dự án — chọn một"</i> và nút Giao việc bị khóa cho tới khi bạn chọn. Nút bị khóa luôn kèm lý do (dự án đang bận, đã có run personal…).</p>
+  <p>Tên khớp nhiều dự án thì màn hình hiện <i>"Tên khớp nhiều dự án — chọn một"</i> và nút Giao việc bị khóa. Nút bị khóa luôn kèm lý do (dự án đang bận, đang chạy autopilot, đã có run personal…). <code>workflows.json</code> có lỗi thì hiện khung hổ phách <i>"workflows.json có lỗi"</i>, hai quy trình có sẵn vẫn chọn được. Không tải được danh sách: <i>"Không tải được danh sách quy trình. Task sẽ chạy bằng quy trình mặc định của dự án."</i></p>
+
   <h3>7.3 Chi tiết task <span class="tag">#/task/N</span></h3>
+  <p>Thứ tự từ trên xuống: thẻ tiêu đề → <b>biểu ngữ dừng</b> (chỉ khi autopilot dừng) → <b>Pipeline</b> → khung Vướng mắc / Cần sửa → <b>Sổ lượt chạy</b> → Kế hoạch (.plan.md) → Báo cáo QA → Log realtime.</p>
+  <p><b>Đầu thẻ Pipeline</b></p>
   <ul>
-    <li><b>Stepper Lead → Dev → QA</b> cho biết bước hiện tại và kết quả từng bước.</li>
-    <li><b>Plan</b> và <b>báo cáo QA</b> hiển thị chỉ đọc. Sửa plan bằng editor của bạn rồi commit.</li>
-    <li><b>Nút hành động theo ngữ cảnh:</b> <i>Chạy Dev</i> (plan sẵn sàng và đã commit sạch), <i>Chạy QA</i> (Dev xong), <i>Chạy lại Lead</i> (Vướng mắc hoặc Cần sửa). Mỗi bước chỉ chạy khi bạn bấm — không có gì tự chạy tiếp.</li>
-    <li><b>Kill run:</b> hiện khi có run đang chạy. Hộp xác nhận mặc định chọn nút an toàn (<i>Giữ chạy tiếp</i>); <i>Chạy lại Lead</i> cũng có xác nhận (<i>Giữ plan hiện tại</i>).</li>
-    <li><b>Log trực tiếp:</b> tự cuộn theo dòng mới. Cuộn lên để tạm dừng, bấm <i>Về cuối (live)</i> để theo lại. Bấm một dòng log để xem JSON thô của sự kiện. Tải lại trang giữa chừng vẫn giữ log cũ và nhận tiếp log mới.</li>
-    <li>Run bị kill hiển thị chi phí <code>—</code> (không đủ dữ liệu để tính), kèm số token đã ghi được.</li>
+    <li><b>Huy hiệu autopilot:</b> <i>Autopilot: tắt</i> · <i>Autopilot: đang chạy</i> · <i>Autopilot: đang dừng</i> (chờ run hiện tại xong) · <i>Autopilot: chờ bạn duyệt plan</i> · <i>Autopilot: chờ bạn · {lý do}</i> · <i>Autopilot: đã dừng</i> (driver mất, ví dụ <code>serve</code> tắt giữa chừng — bấm <i>Bật autopilot</i> để chạy tiếp từ bước dở) · <i>Autopilot: xong</i>.</li>
+    <li><b>Nút Bật autopilot / Dừng autopilot</b> cạnh huy hiệu. <i>Dừng autopilot</i> là dừng mềm: run hiện tại chạy nốt rồi autopilot không bắt đầu bước mới (muốn dừng ngay: Kill). Khi autopilot đang chờ ở cổng, <i>Dừng autopilot</i> <b>tắt</b> autopilot cho task: <i>"Đã tắt autopilot cho task này — Duyệt plan giờ chỉ ghi nhận, không tự chạy tiếp. Bấm Bật autopilot để bật lại."</i></li>
+    <li><b>Dòng quy trình:</b> <i>Quy trình: mac-dinh · plan ⇄ review → Bạn → …</i>. Task tạo trước 5.2: <i>Quy trình: chưa có (task tạo trước Phase 5.2) — chạy tay từng bước.</i></li>
+    <li><b>Dòng ngân sách:</b> <i>Ngân sách: M / B phút · $X / $Y</i>, thêm <i>sắp hết</i> (≥ 80 %) hoặc <i>đã hết</i> (≥ 100 %). Có <b>≈</b> trước số tiền khi gồm chi phí ước tính từ token của run bị dừng; khi đó số này có thể lớn hơn <i>Tổng đến giờ</i> ở Sổ lượt chạy.</li>
   </ul>
+  <p><b>Luồng pipeline</b> vẽ theo bản sao quy trình của task: <i>Bắt đầu</i> → nhóm plan → <i>Bạn</i> → nhóm build → nhóm QA. Mỗi nhóm vòng lặp chứa hai thẻ xếp chồng và chân nhóm <i>⟲ vòng N / cap</i> (hoặc <i>chưa chạy</i>; quy trình không có vòng lặp chỉ ghi <i>⟲ vòng N</i>).</p>
+  <table>
+    <tr><th style="width:17%">Thẻ (vai trò)</th><th>Dòng kết quả có thể thấy</th><th style="width:22%">Dòng số liệu thêm</th></tr>
+    <tr><td>Bắt đầu</td><td><i>bạn đã giao</i></td><td>giờ giao</td></tr>
+    <tr><td>Lên plan (lead)</td><td><i>chưa bắt đầu</i> · <i>đang lập plan</i> · <i>plan đã commit</i> · <i>đã dừng</i> · <i>Lead lỗi</i> · <i>vi phạm giao thức</i></td><td>—</td></tr>
+    <tr><td>Review plan (plan-review)</td><td><i>đang review plan</i> · <i>duyệt</i> · <i>sửa lại</i> · <i>đã dừng</i> · <i>Review lỗi</i> · <i>vi phạm giao thức</i></td><td><i>b chặn · a góp ý</i></td></tr>
+    <tr><td>Bạn</td><td><i>chưa có plan</i> · <i>chờ review plan</i> · <i>chờ duyệt plan</i> · <i>đã duyệt plan</i></td><td>giờ</td></tr>
+    <tr><td>Code (dev)</td><td><i>đang code</i> · <i>đang sửa theo review</i> · <i>n lượt</i> · <i>vướng mắc</i> · <i>đã dừng</i> · <i>Dev lỗi</i> · <i>vi phạm giao thức</i></td><td>—</td></tr>
+    <tr><td>Review code (code-review)</td><td><i>đang review code</i> · <i>đạt</i> · <i>sửa lại</i> · <i>đã dừng</i> · <i>Review lỗi</i></td><td><i>b chặn · a góp ý</i></td></tr>
+    <tr><td>QA (qa)</td><td><i>đang kiểm tra</i> · <i>đạt</i> · <i>cần sửa</i> · <i>đã dừng</i> · <i>QA lỗi</i></td><td><i>s kiểm thử · f lỗi</i></td></tr>
+    <tr><td>Sửa (dev · fix)</td><td><i>không cần sửa</i> · <i>đang sửa</i> · <i>n lượt</i> · <i>vướng mắc</i> · <i>Dev lỗi</i></td><td>—</td></tr>
+  </table>
+  <ul>
+    <li>Mỗi thẻ có dòng <i>phút · chi phí</i> = tổng các run của thẻ đó. Số đếm không biết thì không hiện (không bao giờ hiện 0 thay cho “không biết”).</li>
+    <li><b>Đúng một thẻ có viền chàm</b>: bước đang chạy, bước sắp chạy, thẻ <i>Bạn</i> khi chờ duyệt, hoặc bước đã dừng. Nhóm nơi autopilot dừng có <b>viền hổ phách</b> và dòng lý do ở chân nhóm.</li>
+    <li><b>Chú thích (7 mục):</b> ✓ xong · ◐ đang chạy · ● chờ bạn · ■ đã dừng / lỗi · ◌ chưa bắt đầu · ◌ chưa tự động · ! vướng mắc / cần sửa / sửa lại. Hàng <i>Chưa tự động</i> chỉ còn <i>PR nháp · chưa tự động</i>.</li>
+    <li>Trên màn hình rộng luồng nằm một hàng; hẹp hơn 1024 px thì cuộn ngang trong khung <i>Pipeline của task</i>; dưới 640 px các nhóm xếp dọc.</li>
+  </ul>
+  <p><b>Thẻ Bạn (cổng duyệt plan)</b> — khi <i>chờ duyệt plan</i> có hai nút:</p>
+  <ul>
+    <li><b>Duyệt plan</b> (không có hộp xác nhận): ghi duyệt plan hiện tại. Autopilot còn bật → autopilot chạy tiếp Code, Review code, QA và Sửa (cần đúng nhánh task; nếu autopilot không bật được thì bản duyệt được hoàn lại). Autopilot đã tắt → chỉ ghi nhận.</li>
+    <li><b>Trả về Lead</b>: mở hộp <i>"Trả plan về Lead cho task {slug}?"</i> với ô <i>Ghi chú cho Lead (không bắt buộc)</i>, <b>tối đa 500 ký tự</b>. Nút <i>Trả về Lead</i> / <i>Giữ plan hiện tại</i>. Autopilot còn bật → chạy lại vòng plan ⇄ review plan; đã tắt → chạy Lead tay.</li>
+    <li>Dòng chú thích ngay dưới luồng giải thích cổng, ví dụ <i>"Autopilot dừng ở đây để bạn duyệt plan. Duyệt plan rồi autopilot tự chạy Code, Review code, QA và Sửa, tối đa 3 vòng mỗi bước, trong 60 phút hoặc $20."</i> Nếu vòng plan dừng trước khi review duyệt: <i>"Plan chưa qua review. Bạn có thể duyệt plan hiện tại hoặc trả về Lead."</i></li>
+    <li>Trong lúc autopilot chờ ở cổng, dải nút chạy tay ẩn <i>Chạy Dev</i> và <i>Chạy lại Lead</i>.</li>
+  </ul>
+  <p><b>Biểu ngữ dừng</b> (hổ phách): tiêu đề <i>Autopilot dừng · {lý do}</i>, chi tiết nguyên văn (mục 4.4), dòng ngân sách nếu lý do là <i>hết ngân sách</i>, và ba nút: <b>Chạy thêm 1 vòng</b> (với hết ngân sách có ghi <i>"Chạy vượt ngân sách một lần, chỉ cho vòng này."</i>), <b>Chạy lại Lead</b> (có hộp xác nhận), <b>Dừng hẳn</b> (không hộp xác nhận; bỏ biểu ngữ, autopilot tắt — <i>Bật autopilot</i> để chạy tiếp).</p>
+  <p><b>Dải hành động</b> (<i>Bước hiện tại: …</i>): các nút chạy tay <i>Chạy Dev</i>, <i>Chạy QA</i>, <i>Chạy lại Lead</i> và <b>Kill</b>. Mỗi nút bị khóa đều kèm lý do. Hộp Kill mặc định chọn nút an toàn (<i>Giữ chạy tiếp</i>); khi autopilot chạy, hộp ghi thêm <i>Autopilot cũng dừng với lý do "dừng bởi bạn".</i></p>
+  <p><b>Sổ lượt chạy</b> (mới từ 5.1, mở rộng ở 5.2)</p>
+  <ul>
+    <li>Nhóm theo chu kỳ: <i>Chu kỳ 1 · plan đầu tiên</i>, <i>Chu kỳ k · plan lại</i>, <i>Chu kỳ k · build</i>, <i>Chu kỳ k · QA</i>; nhóm plan ghi thêm <i>bạn đã duyệt</i> hoặc <i>chờ bạn</i> bên phải. Chu kỳ tăng mỗi lần Lead chạy lại sau build hoặc QA.</li>
+    <li>Mỗi dòng: <i>Vòng n · {plan | review plan | code | sửa theo review | review code | QA | sửa theo QA}: {kết luận}</i>; bên phải số đếm và số liệu, ví dụ <i>1 chặn · 4 góp ý · 41 lượt · 2 phút · $1.32</i>. Kết luận: <i>đang chạy, duyệt, đạt, sửa lại, cần sửa, vướng mắc, vi phạm giao thức, đã dừng, lỗi, xong</i>.</li>
+    <li>Bấm một dòng để xem log của run đó (dòng ghi <i>Đang xem</i>) và hiện dòng token <i>Token: vào X · ra Y · cache R / W</i>.</li>
+    <li>Dòng cuối <i>Tổng đến giờ — N lượt chạy claude · M phút · $X</i>. Run bị Kill hiện chi phí <i>—</i> và không cộng vào tổng; khi đó có dòng <i>"Chưa tính chi phí của k run bị dừng hoặc chưa có kết quả."</i> Hiện 20 run mới nhất; <i>Hiện thêm 20</i> để xem cũ hơn.</li>
+  </ul>
+  <p><b>Kế hoạch, báo cáo QA, log:</b> plan và báo cáo QA hiển thị chỉ đọc (sửa bằng editor rồi commit). Log tự cuộn theo dòng mới; cuộn lên để tạm dừng, <i>Về cuối (live)</i> để theo lại; bấm một dòng log để xem JSON thô.</p>
+
   <h3>7.4 Thống kê <span class="tag">#/stats</span></h3>
-  <p>Biểu đồ token và chi phí tương đương theo ngày, theo vai trò (lead, dev, qa, inspect), theo dự án và theo profile. Cùng số liệu với <code>agent-brain stats</code>; theo bộ lọc profile ở thanh trên.</p>
+  <p>Biểu đồ token và chi phí tương đương theo ngày, theo vai trò (gồm cả Review plan, Review code), theo dự án và theo profile. Cùng số liệu với <code>agent-brain stats</code>; theo bộ lọc profile ở thanh trên.</p>
   <h3>7.5 Dự án <span class="tag">#/projects</span></h3>
   <ul>
-    <li>Danh sách dự án trong <code>projects_map.json</code>, dự án mất thư mục được đánh dấu.</li>
-    <li><b>Sửa alias</b> rồi bấm <i>Lưu alias</i>. Alias trùng với dự án khác bị từ chối. Nếu danh mục vừa bị sửa ở nơi khác trong lúc bạn đang sửa, thay đổi của bạn không ghi đè: dashboard báo lỗi, tải lại dữ liệu mới, và bạn nhập lại alias.</li>
+    <li>Danh sách dự án trong <code>projects_map.json</code>, dự án mất thư mục được đánh dấu. Mỗi dự án có dòng <i>Quy trình mặc định: {tên}</i>; chú thích <i>"Profile và quy trình mặc định chỉ đổi trong projects_map.json"</i>.</li>
+    <li><b>Sửa alias</b> rồi bấm <i>Lưu alias</i>. Alias trùng với dự án khác bị từ chối. Nếu danh mục vừa bị sửa ở nơi khác, thay đổi của bạn không ghi đè: dashboard báo lỗi, tải lại dữ liệu mới, và bạn nhập lại alias.</li>
     <li><b>Quét lại</b> = <code>agent-brain projects scan</code>.</li>
-    <li>Không sửa được profile, id, đường dẫn hay loại dự án trên web (sửa trong file).</li>
+    <li><b>Thẻ Quy trình (mới, chỉ xem):</b> mỗi quy trình có tên, nhãn (<i>có sẵn</i> / <i>từ workflows.json</i> / <i>ghi đè quy trình có sẵn</i>, <i>autopilot</i> / <i>chạy tay</i>), dòng giai đoạn, giới hạn và <i>Mặc định của: {dự án}</i>. Sửa <code>workflows.json</code> trong editor rồi bấm <b>Đọc lại</b>. Lỗi của file hiện ở khung <i>workflows.json có lỗi</i>.</li>
+    <li>Không sửa được profile, quy trình mặc định, id, đường dẫn hay loại dự án trên web (sửa trong file).</li>
   </ul>
 </section>
 
@@ -346,20 +563,41 @@ agent-brain serve --port 8123  <span class="c"># cổng khác; --port 0 = hệ �
   <h3>Vị trí file</h3>
   <table>
     <tr><th style="width:42%">Đường dẫn</th><th>Nội dung</th></tr>
-    <tr><td><code>~/.config/agent-brain/projects_map.json</code></td><td>Danh mục dự án.</td></tr>
+    <tr><td><code>~/.config/agent-brain/projects_map.json</code></td><td>Danh mục dự án (kèm quy trình mặc định).</td></tr>
     <tr><td><code>~/.config/agent-brain/config.json</code></td><td>Cấu hình (tùy chọn).</td></tr>
-    <tr><td><code>~/.local/share/agent-brain/brain.db</code></td><td>SQLite: task, run, sự kiện, token. Quyền <code>0600</code>.</td></tr>
+    <tr><td><code>~/.config/agent-brain/workflows.json</code></td><td>Quy trình của bạn (tùy chọn).</td></tr>
+    <tr><td><code>~/.local/share/agent-brain/brain.db</code></td><td>SQLite: task (kèm bản sao quy trình, duyệt plan, trạng thái autopilot), run, sự kiện, token. Quyền <code>0600</code>.</td></tr>
     <tr><td><code>~/.local/share/agent-brain/runs/</code></td><td>Log chi tiết từng run. Quyền thư mục <code>0700</code>.</td></tr>
     <tr><td><code>serve.lock</code> (thư mục dữ liệu)</td><td>Khóa một-dashboard: PID, cổng, giờ khởi động. Không chứa token.</td></tr>
-    <tr><td><code>.plan.md</code>, <code>.qa-report.md</code> (gốc repo)</td><td>Plan của Lead và báo cáo của QA, trên nhánh task.</td></tr>
+    <tr><td><code>.plan.md</code>, <code>.plan-review.md</code>, <code>.code-review.md</code>, <code>.qa-report.md</code> (gốc repo)</td><td>Plan của Lead, báo cáo của hai vai trò review và của QA, trên nhánh task.</td></tr>
   </table>
   <p>Mọi dòng stream-json thô từ Claude được lưu nguyên vẹn (cột <code>raw_json</code> của bảng <code>events</code>) để kiểm tra lại bất cứ lúc nào.</p>
+  <h3>Phạm vi ghi của từng vai trò</h3>
+  <table>
+    <tr><th style="width:24%">Vai trò</th><th>Được ghi</th></tr>
+    <tr><td>Lead</td><td>Chỉ <code>.plan.md</code>.</td></tr>
+    <tr><td>Review plan / Review code</td><td>Đọc toàn repo; <b>chỉ ghi báo cáo của mình</b> (<code>.plan-review.md</code> / <code>.code-review.md</code>).</td></tr>
+    <tr><td>Dev (code)</td><td>Các file trong bảng <i>Thay đổi</i> của plan.</td></tr>
+    <tr><td>Dev chế độ sửa (<code>--fix</code>)</td><td>File của plan <b>cộng</b> file được báo cáo nêu tên: danh sách <code>files</code> ở front matter của báo cáo (có thể là file mới), và đường dẫn trong dấu backtick ở thân báo cáo — nhưng đường dẫn ở thân <b>chỉ được tính khi file đó đã thay đổi</b> từ commit plan. Tối đa 20 file.</td></tr>
+    <tr><td>QA</td><td>Chỉ <code>.qa-report.md</code>; không sửa code.</td></tr>
+  </table>
+  <p><b>Chế độ sửa không bao giờ được ghi</b> (không phân biệt hoa thường): file bí mật (<code>.env*</code>, <code>id_rsa*</code>, <code>id_ed25519*</code>, <code>*.pem</code>, <code>*.key</code>); file CI / hook / editor / build (<code>.github/</code>, <code>.gitlab/</code>, <code>.gitlab-ci.yml</code>, <code>.circleci/</code>, <code>.husky/</code>, <code>.githooks/</code>, <code>.gitmodules</code>, <code>.gitattributes</code>, <code>Makefile</code>, <code>package.json</code>, <code>.npmrc</code>, <code>.pre-commit-config.yaml</code>, <code>.vscode/</code>, <code>.devcontainer/</code>, <code>.claude/</code>); symlink hỏng hoặc trỏ tới file nhạy cảm; file đã có mà git không theo dõi. Vì vậy một báo cáo review không thể mở rộng quyền ghi sang CI, hook hay script build.</p>
+  <h3>Kiểm tra lệnh Bash (mọi vai trò)</h3>
+  <p>Hook <code>guard</code> kiểm tra mọi lệnh Bash agent muốn chạy:</p>
+  <ul>
+    <li><b>Một lệnh đơn trên một dòng:</b> không xuống dòng, không <code>;</code> <code>&amp;</code> <code>&amp;&amp;</code> <code>|</code> <code>( )</code> <code>{ }</code>, không chuyển hướng <code>&lt;</code> <code>&gt;</code>, không <code>$</code> (kể cả <code>$(…)</code>) hay dấu backtick, không gán biến môi trường ở đầu lệnh.</li>
+    <li><b>Git chỉ được:</b> <code>git diff</code>, <code>log</code>, <code>show</code>, <code>status</code>, <code>add</code>, <code>commit</code> (trước tên lệnh chỉ cho <code>--no-pager</code> / <code>-P</code>). Không ký tự đại diện <code>*</code> <code>?</code> <code>[</code> ngoài dấu nháy. Không gọi git qua lệnh bọc (<code>env</code>, <code>timeout</code>, <code>sh -c</code>, <code>xargs</code>, <code>find</code>, <code>sudo</code>, …) hay <code>git-&lt;lệnh&gt;</code>.</li>
+    <li><b>Tùy chọn bị cấm:</b> <code>diff</code>/<code>log</code>/<code>show</code> với <code>--output</code>, <code>--ext-diff</code>, <code>--textconv</code>, <code>--no-index</code>; <code>commit</code> với <code>--amend</code>, <code>-F</code>/<code>--file</code>, <code>-t</code>/<code>--template</code>, <code>--pathspec-from-file</code>, các dạng mở trình soạn thảo; <code>add</code> với <code>-f</code>, <code>-p</code>, <code>-i</code>, <code>-e</code>, <code>--pathspec-from-file</code>.</li>
+    <li><b>Commit phải có <code>-m</code> một dòng</b> (hoặc <code>-C</code> / <code>--reuse-message</code>).</li>
+    <li>Lệnh git bạn thêm vào <code>common_args</code> (ví dụ <code>git push</code>) vẫn bị hook từ chối.</li>
+  </ul>
   <h3>Nguyên tắc an toàn</h3>
   <ul>
+    <li>Không quy trình nào tắt được: Kill chỉ qua cơ chế <code>kill</code> của agent-brain; một run mỗi dự án; một run <code>personal</code>; phạm vi ghi của từng vai trò; agent không bao giờ chạy với <code>--dangerously-skip-permissions</code>; autopilot luôn dừng ở cổng duyệt plan.</li>
     <li>Token dashboard tương đương quyền chạy lệnh trên máy bạn — giữ kín (xem mục 6).</li>
     <li><b>Rủi ro đã chấp nhận:</b> cookie không tách theo cổng (RFC 6265). Một dịch vụ web khác đang chạy trên <code>127.0.0.1</code> về lý thuyết có thể nhận được cookie dashboard. Khi không dùng dashboard, hãy tắt <code>serve</code>; khi đang chạy, tránh mở trang của dịch vụ cục bộ lạ trên cùng trình duyệt.</li>
     <li>Agent không được gán API key: các biến <code>ANTHROPIC_*</code> bị bỏ đặt, agent dùng tài khoản đăng nhập của profile.</li>
-    <li>Không dừng tiến trình agent bằng <code>pkill</code>/<code>killall</code>; dùng <code>agent-brain kill</code> hoặc nút Kill để dọn sạch cây tiến trình và cập nhật database.</li>
+    <li>Không dừng tiến trình agent hay autopilot bằng <code>pkill</code>/<code>killall</code>; dùng <code>agent-brain kill</code> hoặc nút Kill để dọn sạch cây tiến trình và cập nhật database.</li>
   </ul>
 </section>
 
@@ -367,7 +605,7 @@ agent-brain serve --port 8123  <span class="c"># cổng khác; --port 0 = hệ �
 <section id="s9">
   <h2>9. Xử lý sự cố</h2>
   <table>
-    <tr><th style="width:32%">Hiện tượng</th><th>Cách xử lý</th></tr>
+    <tr><th style="width:34%">Hiện tượng</th><th>Cách xử lý</th></tr>
     <tr><td>Dashboard báo <b>401</b> / phiên hết hạn</td><td>Mở lại URL đầy đủ có <code>?token=</code> đang in ở terminal <code>serve</code>. Sau khi khởi động lại serve, token cũ không dùng được nữa.</td></tr>
     <tr><td><b>421</b> hoặc không đăng nhập được qua <code>localhost</code></td><td>Dùng đúng <code>http://127.0.0.1:PORT/…</code>.</td></tr>
     <tr><td><code>serve</code> báo đã có dashboard khác chạy</td><td>Dùng dashboard đó (PID và cổng được in ra), hoặc dừng nó bằng Ctrl+C ở terminal của nó.</td></tr>
@@ -376,7 +614,16 @@ agent-brain serve --port 8123  <span class="c"># cổng khác; --port 0 = hệ �
     <tr><td>Mã thoát <b>2</b> khi chạy lệnh</td><td>Tên dự án mơ hồ — dùng id trong danh sách được in ra.</td></tr>
     <tr><td>Mã thoát <b>1</b>, "Không tìm thấy .plan.md"</td><td>Chạy Lead trước, hoặc chuyển sang đúng nhánh <code>task/&lt;slug&gt;</code>.</td></tr>
     <tr><td>Dự án bị từ chối vì profile rỗng</td><td>Đặt <code>"profile": "work"</code> hoặc <code>"personal"</code> trong <code>projects_map.json</code>.</td></tr>
-    <tr><td>Nút Chạy Dev/QA bị khóa</td><td>Đọc lý do hiện cạnh nút: dự án đang bận, đã có run personal, plan chưa commit…</td></tr>
+    <tr><td><i>Không có quy trình 'x' — các quy trình có: …</i></td><td>Sửa tên trong <code>--workflow</code>, hoặc thêm quy trình vào <code>workflows.json</code>. Không có nhánh hay task nào được tạo.</td></tr>
+    <tr><td>Khung <i>workflows.json có lỗi</i> / dòng <i>Cảnh báo workflows.json: …</i></td><td>Sửa đúng dòng / khóa được nêu (mục 3.4), rồi bấm <i>Đọc lại</i> ở Dự án. Trong lúc đó <code>mac-dinh</code> và <code>nhanh</code> vẫn dùng được.</td></tr>
+    <tr><td><i>Không ở nhánh task 'task/…' (nhánh hiện tại: '…') — không đoán</i></td><td><code>git checkout task/&lt;slug&gt;</code> trong repo dự án rồi duyệt / chạy lại. Chỉ muốn ghi duyệt: <code>agent-brain approve N --no-continue</code>.</td></tr>
+    <tr><td><i>Dự án … đang chạy autopilot cho task N — …</i></td><td>Chờ autopilot dừng, hoặc bấm <i>Dừng autopilot</i> trên task N.</td></tr>
+    <tr><td>Autopilot dừng <i>run lỗi</i> với <i>Working tree có thay đổi chưa commit</i></td><td>Thường là báo cáo QA không có kết luận được giữ lại. Xem <code>git status</code>, đọc rồi xóa hoặc commit file đó, sau đó <i>Chạy thêm 1 vòng</i>.</td></tr>
+    <tr><td>Huy hiệu <i>Autopilot: đã dừng</i>, không có biểu ngữ</td><td><code>serve</code> đã tắt khi autopilot chạy. Bấm <i>Bật autopilot</i> hoặc <code>agent-brain auto N</code>.</td></tr>
+    <tr><td>Duyệt plan xong mà không chạy tiếp</td><td>Autopilot đang tắt cho task (đúng thiết kế). Bấm <i>Bật autopilot</i> hoặc <code>agent-brain auto N</code>.</td></tr>
+    <tr><td>Không duyệt được: <i>Task tạo trước Phase 5.2 — …</i></td><td>Task cũ không có cổng duyệt: bấm <i>Chạy Dev</i> để duyệt như trước.</td></tr>
+    <tr><td>Nút bấm báo dữ liệu cũ, màn hình tự tải lại</td><td>Task vừa đổi trạng thái. Xem trạng thái mới rồi bấm lại nếu vẫn cần.</td></tr>
+    <tr><td>Nút Chạy Dev/QA bị khóa hoặc không thấy</td><td>Đọc lý do cạnh nút: dự án đang bận, đã có run personal, plan chưa commit, autopilot đang chờ ở cổng…</td></tr>
     <tr><td>Run treo lâu</td><td>Bấm Kill (hoặc <code>agent-brain kill TASK_ID</code>). Run tự dừng khi quá <code>timeout_seconds</code>.</td></tr>
     <tr><td>Dữ liệu dashboard không cập nhật</td><td>Thấy thông báo "đang thử lại" thì chờ; vẫn không được thì tải lại trang (F5).</td></tr>
   </table>
@@ -385,22 +632,36 @@ agent-brain serve --port 8123  <span class="c"># cổng khác; --port 0 = hệ �
 <!-- ========== 10 ========== -->
 <section id="s10">
   <h2>10. Hạn chế đã biết (trước khi báo lỗi)</h2>
-  <p>Các mục dưới đây đã được ghi nhận ở lần review Phase 5 (file <code>.planning/phases/05-embedded-dashboard/05-REVIEW.md</code> và <code>05-UI-REVIEW.md</code>) và đang chờ sửa. Nếu bạn gặp đúng hiện tượng này, chỉ cần ghi thêm bằng chứng/ảnh hưởng thực tế, không cần báo mới.</p>
+  <p>Các mục dưới đây đã được ghi nhận ở các lần review Phase 5, 5.1 và 5.2 (file <code>*-REVIEW.md</code>, <code>*-REVIEW-DISPOSITION.md</code> trong <code>.planning/phases/</code>) và lần nghiệm thu 5.2 (<code>protocol-log/nghiem-thu-p5-2.md</code>), và đang để ngỏ hoặc hoãn. Nếu bạn gặp đúng hiện tượng này, chỉ cần ghi thêm bằng chứng / ảnh hưởng thực tế, không cần báo mới.</p>
+  <h3>Autopilot, quy trình, guard (Phase 5.2)</h3>
   <table>
-    <tr><th style="width:9%">Mã</th><th style="width:44%">Hiện tượng bạn có thể thấy</th><th>Ghi chú</th></tr>
-    <tr><td>WR-03</td><td>Đóng hộp thoại (Kill, Chạy lại Lead, JSON thô) xong, focus bàn phím không quay về nút đã mở nó.</td><td>Ảnh hưởng người dùng bàn phím.</td></tr>
+    <tr><th style="width:11%">Mã</th><th style="width:44%">Hiện tượng bạn có thể thấy</th><th>Ghi chú</th></tr>
+    <tr><td>QA-kết luận</td><td>Báo cáo QA không có kết luận được <b>giữ lại</b> làm bằng chứng, nên working tree bẩn và bước Lead / Dev sau bị chặn (autopilot dừng <i>run lỗi</i>).</td><td>Đọc, rồi xóa hoặc commit <code>.qa-report.md</code>; sau đó chạy tiếp.</td></tr>
+    <tr><td>Guard</td><td>Agent thử <code>git ls-files</code> hoặc chuỗi <code>ls … ; cat …</code> và bị guard từ chối.</td><td>Vô hại, chỉ tốn một lượt của agent; run vẫn tiếp tục. <code>git ls-files</code> (chỉ đọc) có thể được cho phép sau.</td></tr>
+    <tr><td>Ngân sách</td><td>Run bị Kill mà chưa ghi được token nào được tính <b>$0</b> vào ngân sách autopilot.</td><td>Ngân sách có thể thấp hơn chi phí thật một chút trong trường hợp này.</td></tr>
+    <tr><td>IN-08</td><td>Kill trên dashboard và driver autopilot có thể cùng gọi lệnh dừng trên một run.</td><td>Hoãn; review đánh giá vô hại.</td></tr>
+    <tr><td>IN-04</td><td>Mã nguồn bộ quyết định autopilot (<code>decide.rs</code>) rất dài, có vài trường không dùng.</td><td>Hoãn; chỉ là dọn mã, không ảnh hưởng hành vi.</td></tr>
+  </table>
+  <h3>Pipeline và Sổ lượt chạy (Phase 5.1)</h3>
+  <table>
+    <tr><th style="width:11%">Mã</th><th style="width:44%">Hiện tượng bạn có thể thấy</th><th>Ghi chú</th></tr>
+    <tr><td>5.1 IN-03</td><td>Chi phí trên thẻ pipeline chỉ cộng các run biết chi phí; run bị Kill không được cộng và thẻ không báo điều đó.</td><td>Sổ lượt chạy có dòng <i>Chưa tính chi phí của k run…</i>; dòng ngân sách có <b>≈</b>.</td></tr>
+    <tr><td>5.1 IN-06</td><td>Khi mở log của một run vừa bắt đầu, dòng trạng thái log có thể còn ghi vai trò / trạng thái của run trước trong vài giây.</td><td>Tự đúng lại ở lần cập nhật sau.</td></tr>
+  </table>
+  <h3>Dashboard (Phase 5)</h3>
+  <table>
+    <tr><th style="width:11%">Mã</th><th style="width:44%">Hiện tượng bạn có thể thấy</th><th>Ghi chú</th></tr>
     <tr><td>WR-04</td><td>Giao việc: gõ tên rồi nhấn Enter quá nhanh (&lt; 0,2 giây) có thể chọn từ danh sách gợi ý cũ.</td><td>Luôn kiểm tra dự án trong khung thông tin trước khi bấm Giao việc.</td></tr>
     <tr><td>WR-05</td><td>Hai lần giao việc cho hai dự án <code>personal</code> gần như cùng lúc có thể cùng được nhận.</td><td>Lớp chạy <code>run</code> kiểm tra lại; vẫn nên tránh.</td></tr>
     <tr><td>WR-06</td><td>Hai dự án có nhánh task trùng tên có thể làm sai trạng thái "đang chạy".</td><td>Hiếm.</td></tr>
     <tr><td>WR-11</td><td>Kill đúng lúc run đổi bước có thể dừng run mới của cùng task.</td><td>Cửa sổ vài mili giây.</td></tr>
-    <tr><td>WR-09/10</td><td>Chuyển màn hình hoặc mở JSON thô liên tục quá nhanh: phản hồi cũ có thể ghi đè màn hình mới.</td><td>Tải lại trang là hết.</td></tr>
+    <tr><td>WR-09/10</td><td>Chuyển màn hình hoặc mở JSON thô liên tục quá nhanh: phản hồi cũ có thể ghi đè màn hình mới.</td><td>Tải lại trang là hết. (Màn hình task đã có chặn phản hồi cũ.)</td></tr>
     <tr><td>WR-01</td><td>Giá trị <code>--since</code> cực lớn có thể cho kết quả sai.</td><td>Dùng giá trị hợp lý (ví dụ <code>90d</code>).</td></tr>
-    <tr><td>WR-13</td><td>Lỗi 500 của API có thể hiện thông báo kỹ thuật kèm đường dẫn nội bộ.</td><td>Xóa đường dẫn riêng tư trước khi dán vào issue.</td></tr>
-    <tr><td>WR-02</td><td>Mục "Danh mục HTTP API" trong <code>agent-brain/README.md</code> liệt kê sai vài route.</td><td>Danh sách đúng ở Phụ lục C.</td></tr>
-    <tr><td>UI</td><td>Mũi tên <code>→</code> giữa các bước trong stepper hơi mờ ở giao diện sáng.</td><td>Thẩm mỹ.</td></tr>
+    <tr><td>WR-13</td><td>Lỗi 500 của các API dự án, run và thống kê có thể hiện thông báo kỹ thuật kèm đường dẫn nội bộ. (API task và quy trình đã trả thông báo cố định.)</td><td>Xóa đường dẫn riêng tư trước khi dán vào issue.</td></tr>
     <tr><td>UI-04</td><td>Nhãn ngày trên biểu đồ Thống kê chưa được kiểm với dữ liệu &gt; 14 ngày.</td><td>Báo nếu thấy chữ chồng nhau.</td></tr>
   </table>
-  <p class="small">Chưa có: chạy engine khác ngoài Claude (Phase 6), tối ưu token bằng tóm tắt/handover (Phase 4), chỉnh plan trên web (chủ ý không làm).</p>
+  <p class="small">Đã sửa từ bản trước của tài liệu: focus bàn phím quay về nút sau khi đóng hộp thoại (WR-03), danh mục HTTP API trong README (WR-02), mũi tên stepper mờ (stepper đã thay bằng pipeline). Các lỗi 5.1 về cổng duyệt và pipeline (WR-01…WR-05) đã sửa trong Phase 5.2.</p>
+  <p class="small">Chưa có (chủ ý hoặc để phase sau): tự tạo PR nháp, QA tự viết và chạy kiểm thử mới, sửa quy trình trên dashboard, sửa plan trên web, thông báo desktop khi task cần bạn, chạy engine khác ngoài Claude (Phase 6), tối ưu token bằng tóm tắt/handover (Phase 4).</p>
 </section>
 
 <!-- ========== 11 ========== -->
@@ -409,12 +670,14 @@ agent-brain serve --port 8123  <span class="c"># cổng khác; --port 0 = hệ �
   <h3>11.1 Gợi ý review theo từng phần</h3>
   <table>
     <tr><th style="width:26%">Phần</th><th>Những điều nên thử</th></tr>
-    <tr><td>Giao việc &amp; định tuyến</td><td>Tên có dấu/không dấu, alias, tên khớp nhiều dự án, dự án mất thư mục.</td></tr>
-    <tr><td>Chất lượng plan</td><td>Plan có đủ bảng Thay đổi? Dev có làm đúng phạm vi? Có lần nào Vướng mắc vô lý?</td></tr>
-    <tr><td>QA</td><td>Báo cáo có bắt được lỗi thật? Có lần "Đạt" sai?</td></tr>
-    <tr><td>Kill &amp; độ bền</td><td>Kill giữa chừng, Ctrl+C, đóng terminal, tắt dashboard khi đang chạy; sau đó kiểm tra không còn tiến trình <code>claude</code> sót.</td></tr>
-    <tr><td>Dashboard</td><td>Log trực tiếp, tải lại trang giữa chừng, giao diện sáng/tối, màn hình hẹp (điện thoại, 480–768 px), dùng toàn bàn phím.</td></tr>
-    <tr><td>Token &amp; chi phí</td><td>Số liệu Thống kê khớp với cảm nhận? Vai trò nào tốn nhất? (Dữ liệu này là đầu vào cho Phase 4.)</td></tr>
+    <tr><td>Giao việc &amp; định tuyến</td><td>Tên có dấu/không dấu, alias, tên khớp nhiều dự án, dự án mất thư mục, chọn quy trình, quy trình mặc định của dự án.</td></tr>
+    <tr><td>Chất lượng plan &amp; Review plan</td><td>Plan có đủ bảng Thay đổi? Review plan có bắt được lỗi thật? Có lần <i>revise</i> vô lý hay <i>approve</i> sai? Lead có xử lý đủ mục chặn ở vòng 2?</td></tr>
+    <tr><td>Review code &amp; chế độ sửa</td><td>Review code có hữu ích? Dev <code>--fix</code> có sửa đúng phạm vi? Có file bị <i>Bỏ qua (không được phép)</i> mà lẽ ra nên cho?</td></tr>
+    <tr><td>QA</td><td>Báo cáo có bắt được lỗi thật? Có lần "Đạt" sai? Số <i>kiểm thử / lỗi</i> có đúng?</td></tr>
+    <tr><td>Autopilot</td><td>Có dừng đúng ở cổng duyệt? Lý do dừng và chi tiết có dễ hiểu? <i>Chạy thêm 1 vòng</i>, <i>Dừng hẳn</i>, <i>Bật autopilot</i> làm đúng? Ngân sách có khớp Sổ lượt chạy?</td></tr>
+    <tr><td>Kill &amp; độ bền</td><td>Kill giữa chừng (cả khi autopilot chạy), Ctrl+C ở terminal <code>auto</code>, đóng terminal, tắt dashboard khi đang chạy; sau đó kiểm tra không còn tiến trình <code>claude</code> sót.</td></tr>
+    <tr><td>Dashboard</td><td>Pipeline, Sổ lượt chạy, log trực tiếp, tải lại trang giữa chừng, giao diện sáng/tối, màn hình hẹp (480–768 px), dùng toàn bàn phím.</td></tr>
+    <tr><td>Token &amp; chi phí</td><td>Vai trò nào tốn nhất? Review có đáng tiền? Giới hạn 3 vòng / 60 phút / $20 có hợp lý với việc của bạn? (Dữ liệu này là đầu vào cho Phase 4.)</td></tr>
   </table>
   <h3>11.2 Thu thập thông tin trước khi báo</h3>
   <pre>agent-brain --version
@@ -422,17 +685,20 @@ agent-brain status PROJECT                <span class="c"># trạng thái repo, 
 agent-brain stats --since 24h --json      <span class="c"># nếu liên quan token/chi phí</span>
 claude --version                          <span class="c"># phiên bản Claude CLI</span></pre>
   <ul>
-    <li><b>Số task và số run</b> (in ở terminal, hoặc trên URL <code>#/task/N</code> của dashboard).</li>
+    <li><b>Số task và số run</b> (in ở terminal, hoặc trên URL <code>#/task/N</code> và Sổ lượt chạy của dashboard).</li>
+    <li><b>Quy trình</b> của task (dòng <i>Quy trình: …</i>) và, nếu có, dòng <i>Autopilot dừng · {lý do}: {chi tiết}</i> nguyên văn.</li>
     <li>Mã thoát của lệnh: <code>echo $?</code> ngay sau khi lệnh kết thúc.</li>
     <li>Log của run trong <code>~/.local/share/agent-brain/runs/</code> và phần stderr của terminal <code>serve</code> nếu lỗi ở dashboard.</li>
+    <li>Báo cáo liên quan (<code>.plan-review.md</code>, <code>.code-review.md</code>, <code>.qa-report.md</code>) nếu lỗi nằm ở kết luận.</li>
     <li>Ảnh chụp màn hình (đã che token) và kích thước cửa sổ trình duyệt nếu là lỗi giao diện.</li>
   </ul>
   <div class="warn"><b>Trước khi gửi: xóa thông tin nhạy cảm</b>Không đưa token dashboard (<code>?token=…</code>), cookie, API key, nội dung mã nguồn riêng của khách hàng hay đường dẫn home đầy đủ vào issue.</div>
   <h3>11.3 Mẫu báo lỗi</h3>
-  <pre>Tiêu đề: [dashboard|cli|plan|qa|kill|stats] Mô tả ngắn
+  <pre>Tiêu đề: [dashboard|cli|plan|review|qa|autopilot|kill|stats] Mô tả ngắn
 
 Phiên bản: agent-brain 0.1.0, claude x.y.z, trình duyệt …
 Profile: work | personal      Task/Run: task 12, run 31
+Quy trình: mac-dinh | nhanh | …    Autopilot: bật | tắt | dừng · {lý do}
 Mức độ: chặn | nặng | nhẹ | thẩm mỹ
 
 Các bước tái hiện:
@@ -440,21 +706,21 @@ Các bước tái hiện:
 2. …
 
 Kết quả mong đợi: …
-Kết quả thực tế: …  (mã thoát, thông báo lỗi)
+Kết quả thực tế: …  (mã thoát, thông báo lỗi, dòng "Autopilot dừng · …")
 Bằng chứng: log/ảnh (đã che token)
-Liên quan hạn chế đã biết? (WR-xx / không)</pre>
+Liên quan hạn chế đã biết? (WR-xx / IN-xx / không)</pre>
   <h3>11.4 Mẫu đề xuất nâng cấp</h3>
   <pre>Tiêu đề: [đề xuất] …
 Vấn đề hiện tại (đau ở đâu, bao lâu gặp một lần): …
 Đề xuất: …
-Lợi ích đo được (thời gian, token, số lần thao tác): …
-Phạm vi: CLI | dashboard | giao thức | cấu hình
+Lợi ích đo được (thời gian, token, chi phí, số lần thao tác): …
+Phạm vi: CLI | dashboard | giao thức | quy trình | autopilot | cấu hình
 Ưu tiên của bạn: cao | vừa | thấp</pre>
   <h3>11.5 Mức độ</h3>
   <table>
     <tr><th style="width:16%">Mức</th><th>Khi nào</th></tr>
-    <tr><td class="sev-b"><b>Chặn</b></td><td>Không chạy được Lead/Dev/QA, chạy nhầm dự án, mất dữ liệu, tiến trình sót sau Kill.</td></tr>
-    <tr><td class="sev-m"><b>Nặng</b></td><td>Sai trạng thái, sai số liệu, chức năng không làm đúng nhưng có cách vòng.</td></tr>
+    <tr><td class="sev-b"><b>Chặn</b></td><td>Không chạy được Lead/Dev/QA, chạy nhầm dự án hoặc nhầm nhánh, autopilot vượt cổng duyệt, mất dữ liệu, tiến trình sót sau Kill.</td></tr>
+    <tr><td class="sev-m"><b>Nặng</b></td><td>Sai trạng thái, sai số liệu hay ngân sách, chức năng không làm đúng nhưng có cách vòng.</td></tr>
     <tr><td><b>Nhẹ</b></td><td>Chậm, khó dùng, thông báo khó hiểu.</td></tr>
     <tr><td><b>Thẩm mỹ</b></td><td>Màu, chữ, khoảng cách, căn chỉnh.</td></tr>
   </table>
@@ -467,50 +733,63 @@ Phạm vi: CLI | dashboard | giao thức | cấu hình
   <h2>12. Phụ lục</h2>
   <h3>A. Mã thoát</h3>
   <table>
-    <tr><th style="width:10%">Mã</th><th style="width:22%">Tên</th><th>Ý nghĩa</th></tr>
-    <tr><td>0</td><td>EXIT_OK</td><td>Thành công (kể cả QA kết luận Đạt hoặc Cần sửa hợp lệ).</td></tr>
-    <tr><td>1</td><td>EXIT_ERROR</td><td>Lỗi thực thi, cấu hình sai, thiếu file, điều kiện git không thỏa.</td></tr>
+    <tr><th style="width:8%">Mã</th><th style="width:20%">Tên</th><th>Ý nghĩa</th></tr>
+    <tr><td>0</td><td>EXIT_OK</td><td>Thành công (kể cả QA Đạt / Cần sửa và review approve / revise hợp lệ). Với <code>auto</code> / <code>approve</code>: autopilot dừng ở cổng duyệt plan, chạy xong (QA đạt), hoặc chỉ ghi nhận duyệt.</td></tr>
+    <tr><td>1</td><td>EXIT_ERROR</td><td>Lỗi thực thi, cấu hình sai, thiếu file, điều kiện git không thỏa, quy trình không tồn tại, bị từ chối vì dự án / profile đang bận, hoặc <code>approve</code> bị từ chối (ví dụ sai nhánh). Khi autopilot đang chạy mà gặp sai nhánh thì là mã 4 (<i>run lỗi</i>).</td></tr>
     <tr><td>2</td><td>EXIT_ROUTING</td><td>Tên dự án khớp 0 hoặc nhiều hơn 1 dự án (Fallback Ask).</td></tr>
-    <tr><td>3</td><td>EXIT_PROTOCOL</td><td>Vi phạm giao thức: sửa file ngoài danh sách của plan.</td></tr>
-    <tr><td>4</td><td>EXIT_BLOCKED</td><td>Dev gặp Vướng mắc, đã ghi vào <code>.plan.md</code> và dừng an toàn.</td></tr>
-    <tr><td>130</td><td>EXIT_INTERRUPTED</td><td>Dừng bởi Ctrl+C hoặc <code>agent-brain kill</code>.</td></tr>
+    <tr><td>3</td><td>EXIT_PROTOCOL</td><td>Vi phạm giao thức: sửa file ngoài phạm vi được phép, hoặc báo cáo sai mẫu.</td></tr>
+    <tr><td>4</td><td>EXIT_BLOCKED</td><td><code>run dev</code>: Vướng mắc, đã ghi vào <code>.plan.md</code>. <code>auto</code> / <code>auto --start</code> / <code>approve</code>: <b>autopilot đã dừng và chờ bạn</b> (hết vòng, hết ngân sách, vi phạm giao thức, vướng mắc, dừng bởi bạn, run lỗi).</td></tr>
+    <tr><td>130</td><td>EXIT_INTERRUPTED</td><td>Dừng bởi Ctrl+C hoặc <code>agent-brain kill</code>. Với <code>auto</code>: driver bị ngắt (SIGINT / SIGTERM / SIGHUP), chạy tiếp bằng <code>agent-brain auto N</code>.</td></tr>
   </table>
-  <h3>B. Khóa cấu hình đầy đủ</h3>
+  <h3>B. Khóa cấu hình đầy đủ (<code>config.json</code>)</h3>
   <table>
-    <tr><th style="width:28%">Khóa</th><th style="width:28%">Mặc định</th><th>Ý nghĩa</th></tr>
+    <tr><th style="width:24%">Khóa</th><th style="width:30%">Mặc định</th><th>Ý nghĩa</th></tr>
     <tr><td><code>claude_bin</code></td><td><code>"claude"</code></td><td>Lệnh Claude CLI.</td></tr>
-    <tr><td><code>models</code></td><td>lead opus, dev sonnet, qa sonnet</td><td>Model theo vai trò.</td></tr>
+    <tr><td><code>models</code></td><td>lead opus, dev sonnet, qa sonnet; <code>plan-review</code> / <code>code-review</code> opus khi không ghi</td><td>Model theo vai trò.</td></tr>
     <tr><td><code>inspect_model</code></td><td><code>"sonnet"</code></td><td>Model cho <code>inspect</code>.</td></tr>
     <tr><td><code>profiles</code></td><td>work, personal</td><td><code>claude_config_dir</code> và các biến môi trường bị bỏ đặt cho từng profile.</td></tr>
     <tr><td><code>common_args</code></td><td><code>["--strict-mcp-config"]</code></td><td>Đối số chung cho Claude CLI.</td></tr>
-    <tr><td><code>max_turns</code></td><td>null (không giới hạn)</td><td>Giới hạn lượt theo vai trò.</td></tr>
-    <tr><td><code>timeout_seconds</code></td><td>1800 / 1800 / 1200 / 300</td><td>lead / dev / qa / inspect.</td></tr>
+    <tr><td><code>max_turns</code></td><td>null cho lead, dev, qa, plan-review, code-review</td><td>Giới hạn lượt theo vai trò (null = không giới hạn).</td></tr>
+    <tr><td><code>timeout_seconds</code></td><td>lead 1800, dev 1800, qa 1200, inspect 300, plan-review 1200, code-review 1500</td><td>Trần thời gian của một run (giây). Vai trò không có khóa dùng 1800.</td></tr>
+    <tr><td><code>autopilot.max_rounds</code></td><td>3</td><td>Số vòng tối đa mỗi vòng lặp (1–10).</td></tr>
+    <tr><td><code>autopilot.budget_minutes</code></td><td>60</td><td>Tổng phút của task (1–1440).</td></tr>
+    <tr><td><code>autopilot.budget_usd</code></td><td>20</td><td>Tổng chi phí tương đương của task (&gt; 0, ≤ 1000).</td></tr>
+    <tr><td><code>pricing</code></td><td>opus 4 / 20 / 0.2 / 8; sonnet 2 / 10 / 0.1 / 4; haiku 0.1 / 0.5 / 0.005 / 0.2</td><td>USD mỗi triệu token: <code>input</code> / <code>output</code> / <code>cache_read</code> / <code>cache_write</code>. Dùng ước tính chi phí run không có kết quả cuối.</td></tr>
     <tr><td><code>runs_dir</code></td><td>null → <code>~/.local/share/agent-brain/runs/</code></td><td>Thư mục log run.</td></tr>
     <tr><td><code>kill_grace_secs</code></td><td>3</td><td>Chờ giữa SIGINT và SIGKILL.</td></tr>
     <tr><td><code>inspect_max_diff_bytes</code></td><td>100000</td><td>Giới hạn diff gửi cho <code>inspect</code>.</td></tr>
     <tr><td><code>dashboard_port</code></td><td>7437</td><td>Ưu tiên: <code>--port</code> &gt; khóa này &gt; 7437.</td></tr>
   </table>
+  <p class="small">Giá trị autopilot ngoài khoảng làm lệnh báo lỗi cấu hình. Quy trình trong <code>workflows.json</code> có thể ghi đè <code>max_rounds</code>, <code>budget_minutes</code>, <code>budget_usd</code> cho riêng mình (mục 3.4).</p>
   <h3>C. HTTP API của dashboard</h3>
-  <p class="small">Mọi route cần cookie phiên (trừ <code>GET /?token=…</code> dùng để lấy cookie). Lệnh ghi (POST/PUT) còn kiểm tra Origin và Content-Type. Dành cho người phát triển; người dùng thường không cần gọi trực tiếp.</p>
+  <p class="small">Mọi route cần cookie phiên (trừ <code>GET /?token=…</code> dùng để lấy cookie). Lệnh ghi (POST/PUT) cần thân JSON và còn kiểm tra Origin và Content-Type; thân của route task có khóa lạ bị từ chối. Các nút điều khiển gửi <code>rev</code> của task đang hiển thị: <code>rev</code> cũ trả <code>409</code> (<code>"kind": "stale"</code>). Dành cho người phát triển; người dùng thường không cần gọi trực tiếp.</p>
   <table>
     <tr><th style="width:44%">Route</th><th>Việc làm</th></tr>
-    <tr><td><code>GET /api/tasks</code></td><td>Danh sách task, trạng thái bận của dự án (lọc <code>?profile=</code>).</td></tr>
-    <tr><td><code>POST /api/tasks</code></td><td>Tạo task và chạy Lead. Body: <code>project</code>, <code>request</code>, <code>name</code>.</td></tr>
-    <tr><td><code>GET /api/tasks/{id}</code></td><td>Chi tiết task: các bước, plan, báo cáo QA, nút được phép.</td></tr>
-    <tr><td><code>POST /api/tasks/{id}/dev|qa|relead</code></td><td>Chạy Dev, QA, hoặc chạy lại Lead.</td></tr>
+    <tr><td><code>GET /api/tasks</code></td><td>Danh sách task (nhóm, nhãn, trạng thái autopilot, lý do dừng) và trạng thái bận của dự án (lọc <code>?profile=</code>, <code>&amp;limit=</code>).</td></tr>
+    <tr><td><code>POST /api/tasks</code></td><td>Giao việc. Body: <code>project</code>, <code>request</code>, <code>name</code>, <code>workflow</code> (hai khóa sau không bắt buộc). Quy trình autopilot chạy <code>auto --start</code>, còn lại chạy Lead. Quy trình không tồn tại → <code>422</code>.</td></tr>
+    <tr><td><code>GET /api/tasks/{id}</code></td><td>Chi tiết task: các bước, plan, báo cáo QA, hành động và nút điều khiển kèm lý do khóa, trạng thái autopilot, <code>rev</code>.</td></tr>
+    <tr><td><code>GET /api/tasks/{id}/pipeline</code></td><td>Luồng pipeline theo quy trình: nhóm và thẻ, vòng / giới hạn, cổng duyệt, thẻ hiện tại, ngân sách, sổ lượt chạy.</td></tr>
+    <tr><td><code>POST /api/tasks/{id}/dev|qa|relead</code></td><td>Chạy Dev, QA, hoặc chạy lại Lead (autopilot còn bật thì <code>auto N --replan</code>).</td></tr>
+    <tr><td><code>POST /api/tasks/{id}/approve</code></td><td>Duyệt plan (<code>rev</code>); autopilot còn bật thì chạy tiếp.</td></tr>
+    <tr><td><code>POST /api/tasks/{id}/return</code></td><td>Trả về Lead (<code>note</code> ≤ 500 ký tự, <code>rev</code>).</td></tr>
+    <tr><td><code>POST /api/tasks/{id}/auto</code></td><td>Bật autopilot.</td></tr>
+    <tr><td><code>POST /api/tasks/{id}/auto/stop</code></td><td>Dừng autopilot (dừng mềm); ở cổng duyệt thì tắt autopilot cho task.</td></tr>
+    <tr><td><code>POST /api/tasks/{id}/auto/more-round</code></td><td>Chạy thêm 1 vòng sau khi autopilot dừng.</td></tr>
+    <tr><td><code>POST /api/tasks/{id}/auto/end</code></td><td>Dừng hẳn (bỏ biểu ngữ, tắt autopilot).</td></tr>
     <tr><td><code>GET /api/preflight</code></td><td>Kiểm tra trước khi giao việc (dự án, nhánh, profile, lý do khóa).</td></tr>
+    <tr><td><code>GET /api/slug?text=…</code></td><td>Tạo slug từ văn bản tiếng Việt.</td></tr>
     <tr><td><code>GET /api/jobs/{id}</code></td><td>Trạng thái job do dashboard khởi chạy.</td></tr>
-    <tr><td><code>GET /api/runs/{id}</code></td><td>Thông tin và sự kiện của run.</td></tr>
+    <tr><td><code>GET /api/runs/{id}</code></td><td>Thông tin run.</td></tr>
     <tr><td><code>GET /api/runs/{id}/stream</code></td><td>Log trực tiếp (Server-Sent Events).</td></tr>
     <tr><td><code>GET /api/runs/{id}/events/{seq}/raw</code></td><td>JSON thô của một sự kiện.</td></tr>
-    <tr><td><code>POST /api/runs/{id}/kill</code></td><td>Dừng run (qua cùng cơ chế với <code>agent-brain kill</code>).</td></tr>
-    <tr><td><code>GET /api/projects</code></td><td>Danh mục dự án kèm <code>etag</code>.</td></tr>
+    <tr><td><code>POST /api/runs/{id}/kill</code></td><td>Dừng run (cùng cơ chế với <code>agent-brain kill</code>); autopilot của task dừng với <i>dừng bởi bạn</i>.</td></tr>
+    <tr><td><code>GET /api/projects</code></td><td>Danh mục dự án (kèm quy trình mặc định) và <code>etag</code>.</td></tr>
     <tr><td><code>PUT /api/projects/{id}</code></td><td>Sửa alias. Body: <code>aliases</code>, <code>etag</code>.</td></tr>
     <tr><td><code>POST /api/projects/scan</code></td><td>Quét lại thư mục dự án.</td></tr>
     <tr><td><code>GET /api/projects/suggest?q=…</code></td><td>Gợi ý dự án theo độ khớp tên/alias.</td></tr>
     <tr><td><code>GET /api/projects/{id}/status</code></td><td>Trạng thái git nhanh (giống <code>status</code>).</td></tr>
     <tr><td><code>GET /api/stats?profile=…&amp;since=…</code></td><td>Thống kê token và chi phí.</td></tr>
-    <tr><td><code>GET /api/slug?text=…</code></td><td>Tạo slug từ văn bản tiếng Việt.</td></tr>
+    <tr><td><code>GET /api/workflows</code></td><td>Danh sách quy trình (có sẵn trước, rồi theo thứ tự trong file), lỗi của <code>workflows.json</code>, dự án nào dùng quy trình nào làm mặc định. Chỉ đọc.</td></tr>
   </table>
 </section>
 
