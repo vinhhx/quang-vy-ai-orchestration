@@ -1713,3 +1713,89 @@ fn running_run_adds_kill_button() {
     );
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+// ---------------------------------------------------------------------------
+// WR-03: a press on a message whose text Telegram no longer gives the bot
+// ---------------------------------------------------------------------------
+
+/// A press as Telegram sends it for a message the bot can no longer read:
+/// only `chat`, `message_id` and `date = 0` — no `text`.
+fn press_unreadable(tg: &FakeTelegram, rec: &Value, message_id: i64, label: &str) -> String {
+    let data = button_data(rec, label);
+    let mut up = tg.callback_update(PAIRED_CHAT, PAIRED_CHAT, message_id, "", &data);
+    up["callback_query"]["message"] = json!({
+        "message_id": message_id,
+        "date": 0,
+        "chat": {"id": PAIRED_CHAT, "type": "private"},
+    });
+    let id = up["callback_query"]["id"].as_str().unwrap().to_string();
+    tg.push_update(up);
+    id
+}
+
+#[test]
+fn press_without_text_keeps_tracked_text() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    protocol::setup_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+    nhanh_gate(&sb);
+    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    let m = message_id_of(&gate);
+    let shown = text_of(&gate).to_string();
+
+    let cb_id = press_unreadable(&tg, &gate, m, "Duyệt plan");
+    wait_answer(&tg, &srv, &cb_id);
+    // The edit keeps the original text (from the tracked entry), not only the result line.
+    let edit = wait_edit(&tg, &srv, m, |r| text_of(r).contains("✓ Đã duyệt plan"));
+    assert!(text_of(&edit).starts_with(&shown), "{edit}");
+    assert!(empty_keyboard(&edit), "{edit}");
+    assert!(approved_commit(&sb, 1).is_some());
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn press_without_text_untracked_sends_new_message() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    protocol::setup_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+    nhanh_gate(&sb);
+    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    // Not the gate's message id: the bot tracks nothing for it and gets no text.
+    let other: i64 = 9999;
+
+    let cb_id = press_unreadable(&tg, &gate, other, "Duyệt plan");
+    wait_answer(&tg, &srv, &cb_id);
+    let result = match tg.wait_call("sendMessage", Duration::from_secs(10), |r| {
+        text_of(r).contains("✓ Đã duyệt plan")
+    }) {
+        Some(r) => r,
+        None => panic!(
+            "no result message; records:\n{:#?}\nstderr:\n{}",
+            tg.records(),
+            stderr_of(&srv)
+        ),
+    };
+    assert_eq!(
+        result["json"]["reply_parameters"]["message_id"],
+        json!(other),
+        "{result}"
+    );
+    // The unreadable message is never overwritten with the result line alone.
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(edits_of(&tg, other).is_empty(), "{:#?}", tg.records());
+    let stripped = tg
+        .calls("editMessageReplyMarkup")
+        .into_iter()
+        .any(|r| r["json"]["message_id"].as_i64() == Some(other) && empty_keyboard(&r));
+    assert!(stripped, "{:#?}", tg.records());
+    assert!(approved_commit(&sb, 1).is_some());
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}

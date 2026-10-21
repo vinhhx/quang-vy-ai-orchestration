@@ -434,14 +434,27 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
             return;
         }
     };
+    // Telegram sends only `chat`, `message_id` and `date = 0` (no `text`) for a message
+    // the bot can no longer read (an old gate message). The text then comes from the
+    // tracked entry; if there is none, `text` stays empty and results go out as a new
+    // message instead of overwriting the pressed one (`edit_result`).
+    let shown = msg
+        .and_then(|m| m.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let text = if shown.trim().is_empty() {
+        ctx.registry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .text_of_message(message_id)
+            .unwrap_or_default()
+    } else {
+        shown.to_string()
+    };
     let press = Press {
         id,
         message_id,
-        text: msg
-            .and_then(|m| m.get("text"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        text,
     };
     match cb.op {
         Op::Approve => act(ctx, &press, &cb, "Duyệt plan", "approve"),
@@ -680,10 +693,11 @@ fn perform_return(
                 None => "Đã trả về Lead (không ghi chú)".to_string(),
             };
             let suffix = render::result_suffix(&what, true, crate::db::now_ms());
-            edit(
+            edit_result(
                 ctx,
                 p.origin_message_id,
-                &with_suffix(&p.origin_text, &suffix),
+                &p.origin_text,
+                &suffix,
                 render::no_keyboard(),
             );
             edit(ctx, p.prompt_message_id, NOTE_SENT, render::no_keyboard());
@@ -700,10 +714,11 @@ fn perform_return(
         Ok(ControlOutcome::Stale) | Ok(ControlOutcome::NotFound(_)) => {
             // The origin message stays untracked: it loses its buttons.
             let sentence = format!("Task đã đổi trạng thái: {}", state_now(ctx, task_id));
-            edit(
+            edit_result(
                 ctx,
                 p.origin_message_id,
-                &with_suffix(&p.origin_text, &format!("\n\n{sentence}")),
+                &p.origin_text,
+                &format!("\n\n{sentence}"),
                 render::no_keyboard(),
             );
             edit(ctx, p.prompt_message_id, NOTE_STALE, render::no_keyboard());
@@ -735,15 +750,17 @@ fn perform_return(
 /// Sends the note prompt as a reply to `reply_to`; the prompt's message id,
 /// or `None` when Telegram did not take it (one attempt).
 fn send_prompt(ctx: &BotCtx, text: &str, reply_to: i64, keyboard: Value) -> Option<i64> {
-    let body = json!({
+    let mut body = json!({
         "chat_id": ctx.cfg.chat_id,
         "text": text,
-        "reply_markup": keyboard,
         "reply_parameters": {
             "message_id": reply_to,
             "allow_sending_without_reply": true,
         },
     });
+    if keyboard != render::no_keyboard() {
+        body["reply_markup"] = keyboard;
+    }
     match ctx
         .tx
         .call("sendMessage", &Body::Json(body), REPLY_MAX_SECS)
@@ -803,10 +820,11 @@ fn on_kill(ctx: &Arc<BotCtx>, press: &Press, cb: &Callback) {
             button_row("Kill", Op::KillConfirm, cb),
             button_row("Huỷ", Op::KillCancel, cb),
         ]);
-        edit(
+        edit_result(
             ctx,
             press.message_id,
-            &with_suffix(&base, &kill_confirm_suffix(run_id)),
+            &base,
+            &kill_confirm_suffix(run_id),
             keyboard,
         );
         answer(
@@ -822,10 +840,8 @@ fn on_kill(ctx: &Arc<BotCtx>, press: &Press, cb: &Callback) {
     let removed = untrack(ctx, press.message_id);
     match kill_run(&ctx.st, run_id) {
         Ok(KillOutcome::Done { ok, message }) => {
-            let text = with_suffix(
-                &base,
-                &render::result_suffix(&message, true, crate::db::now_ms()),
-            );
+            let suffix = render::result_suffix(&message, true, crate::db::now_ms());
+            let text = with_suffix(&base, &suffix);
             // The message's event still current (e.g. a stop): it keeps the
             // remaining buttons with the fresh rev, and stays tracked.
             let keyboard = match (removed, load_fresh(ctx, task_id)) {
@@ -846,16 +862,17 @@ fn on_kill(ctx: &Arc<BotCtx>, press: &Press, cb: &Callback) {
                 },
                 _ => render::no_keyboard(),
             };
-            edit(ctx, press.message_id, &text, keyboard);
+            edit_result(ctx, press.message_id, &base, &suffix, keyboard);
             answer(ctx, &press.id, &message, !ok);
             audit(label, task_id, &message);
         }
         Ok(KillOutcome::Refused(msg)) | Ok(KillOutcome::NotFound(msg)) => {
             answer(ctx, &press.id, &msg, true);
-            edit(
+            edit_result(
                 ctx,
                 press.message_id,
-                &with_suffix(&base, &format!("\n\n{msg}")),
+                &base,
+                &format!("\n\n{msg}"),
                 render::no_keyboard(),
             );
             audit(label, task_id, &msg);
@@ -887,31 +904,35 @@ fn kill_cancel(ctx: &Arc<BotCtx>, press: &Press, task_id: i64, base: &str) {
         }),
         _ => None,
     };
-    let (text, keyboard) = match current {
+    match current {
         Some((ev, kb)) => {
             // Still the message's event: it keeps following the task with
             // these buttons. The lock is never held during a Telegram call.
-            let mut reg = ctx.registry.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(t) = reg.remove_by_message(press.message_id) {
-                if t.key == ev.key {
-                    reg.insert(Tracked {
-                        keyboard: kb.clone(),
-                        ..t
-                    });
+            {
+                let mut reg = ctx.registry.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(t) = reg.remove_by_message(press.message_id) {
+                    if t.key == ev.key {
+                        reg.insert(Tracked {
+                            keyboard: kb.clone(),
+                            ..t
+                        });
+                    }
                 }
             }
-            (base.to_string(), kb)
+            edit(ctx, press.message_id, base, kb);
         }
         None => {
             untrack(ctx, press.message_id);
             let sentence = format!("Task đã đổi trạng thái: {}", state_now(ctx, task_id));
-            (
-                with_suffix(base, &format!("\n\n{sentence}")),
+            edit_result(
+                ctx,
+                press.message_id,
+                base,
+                &format!("\n\n{sentence}"),
                 render::no_keyboard(),
-            )
+            );
         }
-    };
-    edit(ctx, press.message_id, &text, keyboard);
+    }
     answer(ctx, &press.id, "Đã huỷ Kill", false);
     audit("Kill", task_id, "Đã huỷ Kill");
 }
@@ -1026,10 +1047,11 @@ pub(crate) fn apply_outcome(
 
     answer(ctx, &press.id, &short, false);
     let suffix = render::result_suffix(&what, true, crate::db::now_ms());
-    edit(
+    edit_result(
         ctx,
         press.message_id,
-        &with_suffix(&press.text, &suffix),
+        &press.text,
+        &suffix,
         render::no_keyboard(),
     );
     audit(label, task_id, &what);
@@ -1040,10 +1062,11 @@ pub(crate) fn apply_outcome(
 pub(crate) fn stale(ctx: &Arc<BotCtx>, press: &Press, label: &str, task_id: i64) {
     let sentence = format!("Task đã đổi trạng thái: {}", state_now(ctx, task_id));
     answer(ctx, &press.id, &sentence, false);
-    edit(
+    edit_result(
         ctx,
         press.message_id,
-        &with_suffix(&press.text, &format!("\n\n{sentence}")),
+        &press.text,
+        &format!("\n\n{sentence}"),
         render::no_keyboard(),
     );
     audit(label, task_id, &sentence);
@@ -1074,12 +1097,43 @@ pub(crate) fn answer(ctx: &BotCtx, callback_id: &str, text: &str, alert: bool) {
 /// Replaces the text and buttons of a sent message in the paired chat. Goes
 /// through the outbox, which retries during an outage and treats "message is
 /// not modified" as success.
+///
+/// An empty `text` (the message's text is unknown) never reaches
+/// `editMessageText` — Telegram rejects it and the message would be left as is;
+/// only the buttons are replaced then.
 pub(crate) fn edit(ctx: &BotCtx, message_id: i64, text: &str, keyboard: Value) {
+    if text.trim().is_empty() {
+        ctx.outbox.push(Outgoing::Keyboard {
+            message_id,
+            keyboard,
+        });
+        return;
+    }
     ctx.outbox.push(Outgoing::Edit {
         message_id,
         text: text.to_string(),
         keyboard,
     });
+}
+
+/// Shows `suffix` (a result or a question) on message `message_id`: the message's
+/// `original` text with `suffix` appended. When `original` is unknown — Telegram sent no
+/// text for a message the bot can no longer read and nothing is tracked — the message is
+/// not overwritten with only the suffix: `suffix` goes out as a new reply (with `keyboard`),
+/// and the old message just loses its buttons when `keyboard` is empty.
+fn edit_result(ctx: &BotCtx, message_id: i64, original: &str, suffix: &str, keyboard: Value) {
+    if !original.trim().is_empty() {
+        edit(ctx, message_id, &with_suffix(original, suffix), keyboard);
+        return;
+    }
+    let strip = keyboard == render::no_keyboard();
+    send_prompt(ctx, suffix.trim(), message_id, keyboard);
+    if strip {
+        ctx.outbox.push(Outgoing::Keyboard {
+            message_id,
+            keyboard: render::no_keyboard(),
+        });
+    }
 }
 
 /// Sends `text` to the paired chat (one attempt; a failure is dropped).

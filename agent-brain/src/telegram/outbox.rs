@@ -197,6 +197,14 @@ impl Registry {
         self.by_task.remove(&task_id)
     }
 
+    /// The text the bot last sent or edited for `message_id`, when it is tracked.
+    pub fn text_of_message(&self, message_id: i64) -> Option<String> {
+        self.by_task
+            .values()
+            .find(|t| t.message_id == message_id)
+            .map(|t| t.text.clone())
+    }
+
     pub fn task_ids(&self) -> Vec<i64> {
         let mut ids: Vec<i64> = self.by_task.keys().copied().collect();
         ids.sort_unstable();
