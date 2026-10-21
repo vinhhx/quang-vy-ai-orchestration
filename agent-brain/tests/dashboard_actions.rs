@@ -7,7 +7,10 @@ mod common;
 #[path = "support/protocol.rs"]
 mod protocol;
 
-use agent_brain::dashboard::api_tasks::{load_task_state, run_control, ControlOutcome};
+use agent_brain::dashboard::api_runs::{kill_run, KillOutcome};
+use agent_brain::dashboard::api_tasks::{
+    lead_return_args, load_task_state, normalize_note, run_control, run_task_action, ControlOutcome,
+};
 use agent_brain::dashboard::jobs::JobManager;
 use agent_brain::dashboard::AppState;
 use common::Sandbox;
@@ -136,4 +139,139 @@ fn run_control_approves_in_process() {
         ControlOutcome::NotFound("Không tìm thấy task 999".to_string())
     );
     assert!(st.jobs.list().is_empty(), "no job started in process");
+}
+
+fn task_row() -> agent_brain::db::TaskRow {
+    agent_brain::db::TaskRow {
+        id: 7,
+        project_id: 1,
+        slug: "sua-app".to_string(),
+        title: "sửa app".to_string(),
+        branch: "ab/sua-app".to_string(),
+        base_branch: Some("main".to_string()),
+        base_commit: None,
+        status: "planned".to_string(),
+        created_at: 0,
+        updated_at: 0,
+    }
+}
+
+fn strings(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn lead_return_args_autopilot_replans() {
+    let task = task_row();
+    assert_eq!(
+        lead_return_args(&task, "web-ban-hang", true, None),
+        ("auto", strings(&["auto", "7", "--replan"]))
+    );
+    assert_eq!(
+        lead_return_args(&task, "web-ban-hang", true, Some("tách bước 2")),
+        (
+            "auto",
+            strings(&["auto", "7", "--replan", "--note=tách bước 2"])
+        )
+    );
+}
+
+#[test]
+fn lead_return_args_manual_lead() {
+    let task = task_row();
+    assert_eq!(
+        lead_return_args(&task, "web-ban-hang", false, None),
+        (
+            "lead",
+            strings(&[
+                "run",
+                "lead",
+                "--name",
+                "sua-app",
+                "--",
+                "web-ban-hang",
+                "sửa app"
+            ])
+        )
+    );
+    // Ghi chú bắt đầu bằng `-` vẫn là một phần tử argv `--note=…`, không thành cờ.
+    assert_eq!(
+        lead_return_args(&task, "web-ban-hang", false, Some("-x")),
+        (
+            "lead",
+            strings(&[
+                "run",
+                "lead",
+                "--name",
+                "sua-app",
+                "--note=-x",
+                "--",
+                "web-ban-hang",
+                "sửa app"
+            ])
+        )
+    );
+}
+
+#[test]
+fn normalize_note_trims_and_caps() {
+    assert_eq!(normalize_note(Some("  a  ")), Ok(Some("a".to_string())));
+    assert_eq!(normalize_note(Some("   ")), Ok(None));
+    assert_eq!(normalize_note(None), Ok(None));
+    assert_eq!(
+        normalize_note(Some(&"ă".repeat(500))),
+        Ok(Some("ă".repeat(500)))
+    );
+    assert_eq!(
+        normalize_note(Some(&"ă".repeat(501))),
+        Err("Ghi chú quá dài (tối đa 500 ký tự)".to_string())
+    );
+}
+
+#[test]
+fn return_lead_long_note_is_invalid() {
+    let sb = Sandbox::new();
+    let _repo = lead_task(&sb);
+    let st = app_state(&sb);
+    let long = "ă".repeat(501);
+    assert_eq!(
+        run_control(&st, 1, "return_lead", None, Some(&long)).unwrap(),
+        ControlOutcome::Invalid("Ghi chú quá dài (tối đa 500 ký tự)".to_string())
+    );
+    assert!(st.jobs.list().is_empty(), "no job started");
+}
+
+#[test]
+fn run_task_action_not_found_and_stale() {
+    let sb = Sandbox::new();
+    let _repo = lead_task(&sb);
+    let st = app_state(&sb);
+    assert_eq!(
+        run_task_action(&st, 999, "relead", "lead", None, None).unwrap(),
+        ControlOutcome::NotFound("Không tìm thấy task 999".to_string())
+    );
+    assert_eq!(
+        run_task_action(&st, 1, "relead", "lead", Some("0000000000000000"), None).unwrap(),
+        ControlOutcome::Stale
+    );
+    assert_eq!(
+        run_task_action(&st, 1, "relead", "lead", None, Some(&"ă".repeat(501))).unwrap(),
+        ControlOutcome::Invalid("Ghi chú quá dài (tối đa 500 ký tự)".to_string())
+    );
+    assert!(st.jobs.list().is_empty(), "no job started");
+}
+
+#[test]
+fn kill_run_refuses_finished_and_missing() {
+    let sb = Sandbox::new();
+    let _repo = lead_task(&sb);
+    let st = app_state(&sb);
+    assert_eq!(
+        kill_run(&st, 1).unwrap(),
+        KillOutcome::Refused("Run 1 không còn chạy (trạng thái succeeded)".to_string())
+    );
+    assert_eq!(
+        kill_run(&st, 999).unwrap(),
+        KillOutcome::NotFound("Không tìm thấy run 999".to_string())
+    );
 }
