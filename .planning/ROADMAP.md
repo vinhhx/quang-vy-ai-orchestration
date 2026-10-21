@@ -318,12 +318,12 @@ Plans:
 **Requirements**: TELE-01, TELE-02, TELE-03, TELE-04, TELE-05, TELE-06, TELE-07
 **Notes**: Mở lại một quyết định Out of Scope (truy cập từ xa) theo cách hẹp — xem PROJECT.md. Gọi Telegram qua `curl` của hệ thống (05.3-CONTEXT D-04), không thêm crate HTTPS.
 **UI hint**: no
-**Plans:** 8 plans
+**Plans:** 2/8 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 05.3-01-PLAN.md — Bot connects inside serve: telegram.json (0600), curl `-K -` transport, status line, fake Telegram (wave 1)
-- [ ] 05.3-02-PLAN.md — Shared action layer: run_control / run_task_action / kill_run extracted, dashboard responses unchanged (wave 1)
+- [x] 05.3-01-PLAN.md — Bot connects inside serve: telegram.json (0600), curl `-K -` transport, status line, fake Telegram (wave 1)
+- [x] 05.3-02-PLAN.md — Shared action layer: run_control / run_task_action / kill_run extracted, dashboard responses unchanged (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 05.3-03-PLAN.md — Notifications: gate (with plan document), stop, QA đạt, run lỗi via pump hints; once per event (wave 2)
