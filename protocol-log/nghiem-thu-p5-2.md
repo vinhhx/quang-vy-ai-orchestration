@@ -30,3 +30,22 @@
 | UI52-04 | Hàng tiêu đề Pipeline và huy hiệu autopilot ở 480 px | Hàng xuống dòng; chữ huy hiệu hiện đủ, không bị cắt |  |  |  |
 | UI52-05 | Độ tương phản sáng / tối: khung hổ phách `ring-2` của nhóm dừng, chữ lý do ở chân nhóm, huy hiệu Autopilot xanh nhấp nháy, nền lựa chọn ở ô Quy trình | Đọc rõ ở cả hai giao diện |  |  |  |
 | UI52-06 | Dấu tiếng Việt `Ế Ộ Ữ` ở tiêu đề task, dòng kết quả của thẻ và huy hiệu | Dấu ở dòng trên cùng và dòng cuối không bị cắt, ở 1024 và 480 px |  |  |  |
+
+## Chạy lại P5.2-01 sau gap closure (2026-10-21)
+
+Binary release dựng ở commit `af7b335` (sau 12 plan sửa 05.2-21 … 05.2-32, gồm guard lệnh Bash cho mọi vai trò), cùng môi trường cô lập P5.2-00. Kết quả: **Đạt**.
+
+- Task 14 (`p52-loop-r2`), lỗi cài vào plan: dòng `| 9 | src/khong_ton_tai.py | … |` (commit `5c950bc`).
+- SQL `SELECT id, role, stage, round, outcome, status, cost_usd, usage_source FROM runs WHERE task_id = 14 ORDER BY id`:
+  - `28 | lead | plan | 1 | None | succeeded | 0.2225278 | result`
+  - `29 | plan-review | plan-review | 1 | review:revise | succeeded | 0.1888858 | result`
+  - `30 | lead | plan | 2 | None | succeeded | 0.169456 | result`
+  - `31 | plan-review | plan-review | 2 | review:approve | succeeded | 0.1475436 | result`
+  - `32 | dev | implement | 1 | None | succeeded | 0.07100110000000001 | result`
+  - `33 | code-review | code-review | 1 | review:pass | succeeded | 0.145412 | result`
+  - `34 | qa | qa | 1 | qa:pass | succeeded | 0.08015090000000001 | result`
+- `auto_state | stop.reason | approved_commit` = `done | None | b118769147fd2479916e8a66d4da99516b2651ff`; `SUM(cost_usd)` = `1.0249772`.
+- Terminal: `Kết luận Review plan: revise (1 chặn, 1 góp ý)` → `plan vòng 2` → `approve (0 chặn, 1 góp ý)` → `Autopilot dừng ở bước duyệt plan (task 14)`, `exit=0`; `approve 14`: `Đã duyệt plan b118769 lúc 08:18 (task 14).` (một lần) → `implement` → `Review code: pass` → `QA: Đạt` → `Autopilot xong: QA đạt (task 14)`, `exit=0`.
+- Run Lead tay đầu tiên (28) giờ ghi `round = 1` (sửa IN-02).
+- Guard Bash chặn 4 lệnh, đều nằm ngoài danh sách công cụ được phép của vai trò (Claude cũng sẽ từ chối): hai lệnh `ls -la …; cat …` (Lead) và hai `git ls-files` (Lead, Review plan). Không lệnh hợp lệ nào bị chặn; vòng lặp vẫn tới QA đạt. Ghi chú: `git ls-files` chỉ đọc, có thể cân nhắc cho phép sau.
+- Dọn dẹp: đã xóa nhánh `task/p52-loop-r2`; `du-an-nhap` ở `main`, sạch.
