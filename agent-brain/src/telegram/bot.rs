@@ -55,6 +55,8 @@ const NOTE_STALE: &str = "Task đã đổi trạng thái — không làm gì.";
 const PROMPT_FAILED: &str = "Không gửi được yêu cầu ghi chú — bấm lại sau";
 
 /// Telegram's limit for an `answerCallbackQuery` text.
+/// Characters of a note shown in the result line of an edit.
+const NOTE_EXCERPT: usize = 80;
 const ANSWER_MAX: usize = 200;
 const ANSWER_MAX_SECS: u64 = 10;
 const REPLY_MAX_SECS: u64 = 20;
@@ -689,7 +691,17 @@ fn perform_return(
     match outcome {
         Ok(ControlOutcome::Started { .. }) => {
             let what = match note.as_deref() {
-                Some(n) => format!("Đã trả về Lead (ghi chú: «{n}»)"),
+                Some(n) => {
+                    // Only a short excerpt: the whole note (up to 500 characters) would
+                    // crowd the original text out of the edit.
+                    let shown: String = n.chars().take(NOTE_EXCERPT).collect();
+                    let dots = if n.chars().count() > NOTE_EXCERPT {
+                        "…"
+                    } else {
+                        ""
+                    };
+                    format!("Đã trả về Lead (ghi chú: «{shown}{dots}»)")
+                }
                 None => "Đã trả về Lead (không ghi chú)".to_string(),
             };
             let suffix = render::result_suffix(&what, true, crate::db::now_ms());
@@ -967,7 +979,7 @@ fn audit(label: &str, task_id: i64, result: &str) {
 
 /// The pressed message's text with `suffix` appended.
 fn with_suffix(original: &str, suffix: &str) -> String {
-    format!("{}{suffix}", render::clip(original, render::MAX_TEXT))
+    render::with_suffix(original, suffix)
 }
 
 pub(crate) fn apply_outcome(

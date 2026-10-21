@@ -11,6 +11,10 @@ use crate::dashboard::api_tasks::TaskState;
 use crate::db::RunRow;
 
 pub const MAX_TEXT: usize = 3900;
+/// Telegram's limit for the text of one message.
+pub const TELEGRAM_MAX: usize = 4096;
+/// Longest suffix `with_suffix` keeps whole; a longer one is clipped.
+const SUFFIX_MAX: usize = 1000;
 pub const MAX_FILES: usize = 15;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +42,17 @@ pub fn clip(text: &str, max: usize) -> String {
     let mut out: String = text.chars().take(max - 2).collect();
     out.push_str("\n…");
     out
+}
+
+/// `original` with `suffix` appended, the whole text within `TELEGRAM_MAX`
+/// characters: the suffix is kept (up to `SUFFIX_MAX`) and the original is
+/// clipped to what is left, so an edit never fails with "message is too long".
+pub fn with_suffix(original: &str, suffix: &str) -> String {
+    let suffix = clip(suffix, SUFFIX_MAX);
+    let room = TELEGRAM_MAX
+        .saturating_sub(suffix.chars().count())
+        .min(MAX_TEXT);
+    format!("{}{suffix}", clip(original, room))
 }
 
 fn running_run(s: &TaskState) -> Option<&RunRow> {
@@ -331,6 +346,27 @@ pub fn no_keyboard() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_suffix_stays_within_telegram_limit() {
+        let original = "ừ".repeat(MAX_TEXT);
+        for suffix_len in [0usize, 50, 196, 600, 1000, 5000] {
+            let suffix = format!("\n\n{}", "ă".repeat(suffix_len));
+            let out = with_suffix(&original, &suffix);
+            assert!(
+                out.chars().count() <= TELEGRAM_MAX,
+                "suffix {suffix_len}: {} chars",
+                out.chars().count()
+            );
+            assert!(out.starts_with('ừ'));
+        }
+        // A short suffix leaves the original whole and ends the text.
+        let out = with_suffix("Chờ duyệt plan", "\n\n✓ xong");
+        assert_eq!(out, "Chờ duyệt plan\n\n✓ xong");
+        // The suffix survives (clipped only past SUFFIX_MAX) when the original is cut.
+        let out = with_suffix(&original, "\n\n✓ Đã trả về Lead (ghi chú: «a»)");
+        assert!(out.ends_with("✓ Đã trả về Lead (ghi chú: «a»)"), "{out}");
+    }
 
     #[test]
     fn clip_counts_characters() {

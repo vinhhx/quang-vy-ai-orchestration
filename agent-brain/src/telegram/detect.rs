@@ -181,7 +181,7 @@ pub fn follow_tracked(
             let suffix = render::result_suffix(&render::state_line(s), false, now_ms);
             Some(Outgoing::Edit {
                 message_id: t.message_id,
-                text: format!("{}{suffix}", t.text),
+                text: render::with_suffix(&t.text, &suffix),
                 keyboard: render::no_keyboard(),
             })
         }
