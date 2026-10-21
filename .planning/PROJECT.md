@@ -47,6 +47,7 @@ Cổng qua phase (phase gates) nằm trong `ROADMAP.md` (mỗi phase có Success
 
 - Đăng nhập nhiều người dùng và truy cập từ xa qua internet — dashboard có thể chạy lệnh trên máy, chỉ cho phép `127.0.0.1` + token (nguồn: Phase 4 spec)
   - Ngoại lệ hẹp (quyết định người dùng 2026-10-20, Phase 5.3): bot Telegram long polling (không mở cổng vào), chỉ chat ID của người dùng, chỉ thông báo + hành động ở cổng duyệt/khi autopilot dừng (Duyệt plan, Trả về Lead, Chạy thêm 1 vòng, Dừng hẳn, Kill có xác nhận); không giao việc mới, không truy cập dashboard từ xa.
+  - Mở rộng (quyết định người dùng 2026-10-21, Phase 05.4): được giao việc mới qua Telegram (`/task` và chuyển tiếp tin nhắn → 1 task), dùng cùng hàm tạo task và preflight như Giao việc; plan của task tạo từ Telegram chỉ duyệt trên dashboard; vẫn không truy cập dashboard từ xa.
 - Tự động chuyển engine ngầm khi hết quota — chất lượng các engine khác nhau, phải hỏi xác nhận hoặc theo luật người dùng cấu hình (nguồn: Phase 5 spec)
 - Đưa file video nặng hàng GB vào Git worktree — làm nặng Orca/Git (nguồn: Phase 5 spec)
 - Chạy song song nhiều task — nguồn chỉ loại khỏi phạm vi Phase giao thức MVP, chưa có phase nào lên lịch; xem ghi chú trong `REQUIREMENTS.md`

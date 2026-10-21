@@ -323,18 +323,31 @@ Plans:
 Plans:
 - [ ] TBD (run /gsd-plan-phase 05.3 to break down)
 
-### Phase 05.4: Work Board (INSERTED)
+### Phase 05.4: Telegram Task Intake (INSERTED)
+
+**Goal**: Người dùng giao việc từ Telegram: lệnh `/task` (nhập yêu cầu → chọn dự án → chọn quy trình → xác nhận) và chuyển tiếp tin nhắn từ chat khác vào bot (gom tin đến trong một khoảng ngắn, chọn các tin cần bằng nút ☑/☐, gộp thành **một** task, trích dẫn kèm người gửi và thời gian) — dùng cùng hàm tạo task và preflight với màn Giao việc.
+**Source**: Quyết định người dùng 2026-10-21 (phase riêng sau 5.3; tin chuyển tiếp gộp thành 1 task; plan của task tạo từ Telegram chỉ duyệt trên dashboard)
+**Depends on**: Phase 05.3
+**Requirements**: TBD (định nghĩa khi /gsd-discuss-phase 05.4)
+**Notes**: Mở rộng ngoại lệ Telegram trong PROJECT.md. Ràng buộc an toàn đã chốt: plan của task tạo từ Telegram **chỉ duyệt trên dashboard** (tin cổng duyệt của các task này không có nút Duyệt plan). Đề xuất cho discuss: danh sách dự án cho phép (`telegram_projects`), giới hạn số task/ngày, nội dung chuyển tiếp được đánh dấu là dữ liệu không tin cậy trong prompt Lead và ghi nguồn trong plan. Tên lệnh Telegram chỉ gồm chữ thường, số, `_` (không dùng `/create-task`). Ảnh/tệp trong tin chuyển tiếp: làm sau.
+**UI hint**: no
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 05.4 to break down)
+
+### Phase 05.5: Work Board (INSERTED)
 
 **Goal**: Màn hình mới `#/board` (View 2 của Dashboard v2): các hạng mục công việc xếp theo wave (wave 0 không phụ thuộc, wave sau chỉ phụ thuộc wave trước), đường nối phụ thuộc, đường găng (critical path) tô nổi, bấm một hạng mục để làm sáng những gì nó chờ và những gì chờ nó, công tắc ẩn/thu gọn hạng mục đã xong — dữ liệu nhập từ `ROADMAP.md` + front matter plan của GSD (`wave`, `depends_on`) trước, chế độ epic của Lead làm sau.
-**Source**: Thiết kế Dashboard v2 (`05.1-DESIGN-REF.html`, "View 2 · Work board"; https://claude.ai/artifact/KdMc5CMNSMg4G5T9jLjFRK), quyết định người dùng 2026-10-19 (Phase C, nhập roadmap GSD trước) và 2026-10-20 (bảng công việc → 5.4)
+**Source**: Thiết kế Dashboard v2 (`05.1-DESIGN-REF.html`, "View 2 · Work board"; https://claude.ai/artifact/KdMc5CMNSMg4G5T9jLjFRK), quyết định người dùng 2026-10-19 (Phase C, nhập roadmap GSD trước) và 2026-10-20 (bảng công việc → 5.4), 2026-10-21 (nhận việc qua Telegram chen vào 5.4, bảng → 5.5)
 **Depends on**: Phase 05.2
-**Requirements**: TBD (định nghĩa khi /gsd-discuss-phase 05.4)
+**Requirements**: TBD (định nghĩa khi /gsd-discuss-phase 05.5)
 **Notes**: Tầng mới trên task: bảng `epics`, hạng mục, phụ thuộc; `GET /api/board?epic=&milestone=&profile=` trả hạng mục kèm trạng thái suy ra, wave, cờ critical và các cạnh. Giữ nguyên quy tắc Phase 5: `127.0.0.1` + token, Tailwind v4 build, Alpine CSP, không CDN, offline, tiếng Việt, sáng/tối, `dashboard-ui-lint.sh` phải qua.
 **UI hint**: yes
 **Plans:** 0 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 05.4 to break down)
+- [ ] TBD (run /gsd-plan-phase 05.5 to break down)
 
 ### Phase 6: Multi-engine & Media Branch
 
