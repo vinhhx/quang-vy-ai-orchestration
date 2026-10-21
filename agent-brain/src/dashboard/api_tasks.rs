@@ -1745,9 +1745,24 @@ async fn post_control(
                 }
             }
             "auto_stop" => {
-                // Dừng mềm: run đang chạy chạy xong, autopilot không bắt đầu bước mới.
-                crate::db::request_auto_stop(&conn, task_id, "soft")?;
-                Ok(json_resp(StatusCode::OK, serde_json::json!({ "ok": true })))
+                if state.driver_alive {
+                    // Dừng mềm: run đang chạy chạy xong, autopilot không bắt đầu bước mới.
+                    crate::db::request_auto_stop(&conn, task_id, "soft")?;
+                    return Ok(json_resp(StatusCode::OK, serde_json::json!({ "ok": true })));
+                }
+                // Autopilot chờ ở cổng duyệt plan (không có driver): tắt autopilot cho
+                // task (`ended`). Không bỏ qua cổng — vẫn phải bấm Duyệt plan (D-03);
+                // Bật autopilot bật lại. Chỉ ghi khi task vẫn `gate` (WR-04).
+                if !claim::end_autopilot(&conn, task_id, "gate", &state.aj)? {
+                    return Ok(json_resp(
+                        StatusCode::CONFLICT,
+                        serde_json::json!({ "error": STALE_MSG, "kind": "stale" }),
+                    ));
+                }
+                Ok(json_resp(
+                    StatusCode::OK,
+                    serde_json::json!({ "ok": true, "ended": true }),
+                ))
             }
             "auto_end" => {
                 // Dừng hẳn: giữ auto_json.stop làm lịch sử; Bật autopilot chạy lại sau.

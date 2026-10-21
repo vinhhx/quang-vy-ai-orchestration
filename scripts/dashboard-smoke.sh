@@ -751,8 +751,8 @@ if 'PR nháp · chưa tự động' not in parser.chips[0]['text']:
     print(f"Lỗi: Chip không chứa 'PR nháp · chưa tự động' (nội dung: '{parser.chips[0]['text']}')", file=sys.stderr)
     sys.exit(1)
 
-if 'ab-act-auto_start' not in parser.button_ids:
-    print(f"Lỗi: Thiếu nút ab-act-auto_start trong danh sách buttons: {parser.button_ids}", file=sys.stderr)
+if 'ab-act-auto_stop' not in parser.button_ids:
+    print(f"Lỗi: Thiếu nút ab-act-auto_stop trong danh sách buttons: {parser.button_ids}", file=sys.stderr)
     sys.exit(1)
 
 if len(parser.badges) != 1:

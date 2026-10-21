@@ -430,7 +430,11 @@ fn build_auto_start(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) 
     } else if f.task.status == "qa_pass" {
         enabled = false;
         reason = Some("Task đã xong (QA đạt).".to_string());
-    } else if a.gate == Some(GateState::Waiting) {
+    } else if a.gate == Some(GateState::Waiting)
+        && a.auto.and_then(|auto| auto.auto_state.as_deref()) != Some("ended")
+    {
+        // Cổng chờ duyệt: Duyệt plan chạy tiếp autopilot. Khi bạn đã tắt
+        // autopilot (`ended`), Bật autopilot bật lại và dừng lại ở cổng (D-14).
         enabled = false;
         reason =
             Some("Autopilot dừng ở bước duyệt plan — bấm Duyệt plan để chạy tiếp.".to_string());
@@ -703,7 +707,11 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
             controls.push(build_approve(f, a, running_run));
             controls.push(build_return_lead(f, a, running_run));
         }
-        if auto_state != "running" && auto_state != "stopping" {
+        if auto_state == "gate" {
+            // Autopilot đang chờ ở cổng duyệt plan: Dừng autopilot tắt autopilot
+            // cho task (không bỏ qua cổng — D-03); Bật autopilot bật lại.
+            controls.push(build_auto_stop(false));
+        } else if auto_state != "running" && auto_state != "stopping" {
             controls.push(build_auto_start(f, a, running_run));
         }
         if auto_state == "running" || auto_state == "stopping" {
@@ -1470,6 +1478,140 @@ mod tests {
         assert_eq!(view.controls[2].id, "auto_start");
         assert_eq!(
             view.controls[2].reason.as_deref(),
+            Some("Autopilot dừng ở bước duyệt plan — bấm Duyệt plan để chạy tiếp.")
+        );
+    }
+
+    fn gate_git(branch: &str) -> GitFacts {
+        GitFacts {
+            current_branch: Some(branch.to_string()),
+            dirty: vec![],
+            plan_exists: true,
+            plan_blockers: false,
+            plan_errors: vec![],
+            plan_commit: Some("abc".to_string()),
+            code_after_plan: false,
+        }
+    }
+
+    fn ids_of(list: &[ActionView]) -> Vec<&str> {
+        list.iter().map(|c| c.id.as_str()).collect()
+    }
+
+    #[test]
+    fn armed_gate_offers_stop() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+
+        let task = dummy_task("planned");
+        let git = gate_git("task/sua-app");
+        let facts = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 2000,
+        };
+        let auto = dummy_task_auto(Some("gate"), None);
+        let af = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let view = derive_with(&facts, &af);
+        assert_eq!(view.auto.state, "gate");
+        assert_eq!(
+            ids_of(&view.controls),
+            vec!["approve", "return_lead", "auto_stop"]
+        );
+        let stop = view.controls.iter().find(|c| c.id == "auto_stop").unwrap();
+        assert!(stop.enabled);
+        assert_eq!(stop.label, "Dừng autopilot");
+        assert_eq!(stop.reason, None);
+        assert!(!view.controls.iter().any(|c| c.id == "auto_start"));
+    }
+
+    #[test]
+    fn ended_gate_offers_start() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+
+        let task = dummy_task("planned");
+        let git = gate_git("task/sua-app");
+        let facts = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 2000,
+        };
+
+        // 1. autopilot turned off at the gate (`ended`): Bật autopilot enabled.
+        let ended = dummy_task_auto(Some("ended"), None);
+        let af = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&ended),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let view = derive_with(&facts, &af);
+        assert_eq!(view.auto.state, "off");
+        assert_eq!(
+            ids_of(&view.controls),
+            vec!["approve", "return_lead", "auto_start"]
+        );
+        let start = view.controls.iter().find(|c| c.id == "auto_start").unwrap();
+        assert!(start.enabled, "{start:?}");
+        assert_eq!(start.reason, None);
+
+        // 2. ended but busy: the busy reason still applies.
+        let facts_busy = TaskFacts {
+            busy: Some("Dự án x bận".to_string()),
+            ..facts
+        };
+        let v_busy = derive_with(&facts_busy, &af);
+        let start_busy = v_busy
+            .controls
+            .iter()
+            .find(|c| c.id == "auto_start")
+            .unwrap();
+        assert!(!start_busy.enabled);
+        assert_eq!(start_busy.reason.as_deref(), Some("Dự án x bận"));
+
+        // 3. auto_state NULL on mac-dinh: approval starts the autopilot there.
+        let facts = TaskFacts {
+            busy: None,
+            ..facts_busy
+        };
+        let null = dummy_task_auto(None, None);
+        let af_null = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&null),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let v_null = derive_with(&facts, &af_null);
+        let start_null = v_null
+            .controls
+            .iter()
+            .find(|c| c.id == "auto_start")
+            .unwrap();
+        assert!(!start_null.enabled);
+        assert_eq!(
+            start_null.reason.as_deref(),
             Some("Autopilot dừng ở bước duyệt plan — bấm Duyệt plan để chạy tiếp.")
         );
     }

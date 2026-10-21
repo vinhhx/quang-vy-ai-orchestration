@@ -541,15 +541,12 @@ fn task_detail_controls_and_auto() {
         .iter()
         .map(|c| c["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, vec!["approve", "return_lead", "auto_start"]);
+    assert_eq!(ids, vec!["approve", "return_lead", "auto_stop"]);
     assert_eq!(control(&t, "approve")["enabled"], true);
     assert_eq!(control(&t, "return_lead")["enabled"], true);
-    let start = control(&t, "auto_start");
-    assert_eq!(start["enabled"], false);
-    assert_eq!(
-        start["reason"],
-        "Autopilot dừng ở bước duyệt plan — bấm Duyệt plan để chạy tiếp."
-    );
+    let stop = control(&t, "auto_stop");
+    assert_eq!(stop["enabled"], true, "{stop}");
+    assert_eq!(stop["label"], "Dừng autopilot");
 
     assert_eq!(t["auto"]["state"], "gate");
     assert_eq!(t["workflow"]["name"], "mac-dinh");
@@ -1423,6 +1420,111 @@ fn auto_stop_soft() {
     assert!(
         !run_roles(&sb).iter().any(|r| r == "code-review"),
         "no stage after a soft stop"
+    );
+}
+
+fn control_ids(task: &Value) -> Vec<String> {
+    task["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Dừng autopilot ở cổng duyệt plan (task 1) với rev hiện tại; trả body 200.
+fn stop_at_gate(sb: &Sandbox, srv: &common::Serve) -> Value {
+    let t = srv.get("/api/tasks/1").json();
+    assert_eq!(t["auto"]["state"], "gate", "{}", t["auto"]);
+    let rev = t["rev"].as_str().unwrap().to_string();
+    let resp = srv.post_json("/api/tasks/1/auto/stop", &json!({ "rev": rev }));
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_eq!(task_auto_state(sb, 1).as_deref(), Some("ended"));
+    resp.json()
+}
+
+#[test]
+fn gate_stop_turns_autopilot_off() {
+    let sb = Sandbox::new();
+    let _repo = auto_to_gate(&sb);
+    let runs_before = run_count(&sb);
+    let srv = sb.serve(&[]);
+
+    let t = srv.get("/api/tasks/1").json();
+    assert_eq!(t["auto"]["state"], "gate");
+    let stop = control(&t, "auto_stop");
+    assert_eq!(stop["enabled"], true, "{stop}");
+
+    // A request on stale data changes nothing.
+    let stale = srv.post_json(
+        "/api/tasks/1/auto/stop",
+        &json!({"rev": "0000000000000000"}),
+    );
+    assert_eq!(stale.status, 409, "{}", stale.text());
+    assert_eq!(stale.json()["kind"], "stale");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+
+    let body = stop_at_gate(&sb, &srv);
+    assert_eq!(body["ok"], true, "{body}");
+    assert_eq!(body["ended"], true, "{body}");
+
+    let t = srv.get("/api/tasks/1").json();
+    assert_eq!(t["auto"]["state"], "off", "{}", t["auto"]);
+    assert_eq!(
+        control_ids(&t),
+        vec!["approve", "return_lead", "auto_start"],
+        "{}",
+        t["controls"]
+    );
+    let start = control(&t, "auto_start");
+    assert_eq!(start["enabled"], true, "{start}");
+    assert_eq!(control(&t, "approve")["enabled"], true);
+    assert_eq!(control(&t, "return_lead")["enabled"], true);
+
+    // Turning autopilot off neither approves nor starts anything (D-03).
+    assert_eq!(approved_commit(&sb, 1), None);
+    assert_eq!(srv.get("/api/jobs/1").status, 404, "no job started");
+    assert_eq!(run_count(&sb), runs_before, "no new run");
+
+    // A second stop: autopilot is no longer on.
+    let again = srv.post_json("/api/tasks/1/auto/stop", &json!({}));
+    assert_eq!(again.status, 409, "{}", again.text());
+    let body = again.json();
+    assert_eq!(body["kind"], "duplicate", "{body}");
+    assert_eq!(body["error"], "Autopilot không chạy");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("ended"));
+}
+
+#[test]
+fn ended_gate_rearm() {
+    let sb = Sandbox::new();
+    let _repo = auto_to_gate(&sb);
+    // The re-armed driver goes straight to the gate: no stage runs.
+    sb.write_scenario(by_role(json!({})));
+    let srv = sb.serve(&[]);
+    stop_at_gate(&sb, &srv);
+    let runs_before = run_count(&sb);
+
+    let t = srv.get("/api/tasks/1").json();
+    let rev = t["rev"].as_str().unwrap().to_string();
+    let resp = srv.post_json("/api/tasks/1/auto", &json!({ "rev": rev }));
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(job_role(&srv, job_id), "auto");
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+    assert_eq!(run_count(&sb), runs_before, "no new run");
+    assert_eq!(approved_commit(&sb, 1), None);
+
+    let t = srv.get("/api/tasks/1").json();
+    assert_eq!(t["auto"]["state"], "gate", "{}", t["auto"]);
+    assert_eq!(
+        control_ids(&t),
+        vec!["approve", "return_lead", "auto_stop"],
+        "{}",
+        t["controls"]
     );
 }
 
