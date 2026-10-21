@@ -329,3 +329,133 @@ fn pair(curl: &str, base: String, data_dir: &std::path::Path) -> i32 {
 pub fn cmd_test() -> i32 {
     fail("agent-brain telegram test chưa sẵn sàng")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(chat_id: i64, chat_type: &str, from_id: i64, text: &str) -> Value {
+        json!({
+            "update_id": 1,
+            "message": {
+                "message_id": 10,
+                "chat": {"id": chat_id, "type": chat_type},
+                "from": {"id": from_id, "is_bot": false},
+                "text": text
+            }
+        })
+    }
+
+    fn pairing() -> Pairing {
+        Pairing::new("123456".to_string(), 1_000_000)
+    }
+
+    #[test]
+    fn new_code_is_six_digits() {
+        for _ in 0..1000 {
+            let c = new_code().unwrap();
+            assert_eq!(c.len(), 6, "{c}");
+            assert!(c.bytes().all(|b| b.is_ascii_digit()), "{c}");
+        }
+    }
+
+    #[test]
+    fn exact_code_from_private_chat_pairs() {
+        let mut p = pairing();
+        assert_eq!(
+            p.on_update(&msg(5555, "private", 5555, "123456")),
+            PairStep::Paired(5555)
+        );
+        let mut p = pairing();
+        assert_eq!(
+            p.on_update(&msg(5555, "private", 5555, "  123456 \n")),
+            PairStep::Paired(5555)
+        );
+    }
+
+    #[test]
+    fn start_with_code_pairs_and_bare_start_is_ignored() {
+        let mut p = pairing();
+        assert_eq!(
+            p.on_update(&msg(5555, "private", 5555, "/start 123456")),
+            PairStep::Paired(5555)
+        );
+        let mut p = pairing();
+        assert_eq!(
+            p.on_update(&msg(5555, "private", 5555, "/start")),
+            PairStep::Ignore
+        );
+        assert_eq!(p.wrong, 0);
+    }
+
+    #[test]
+    fn group_chat_and_foreign_sender_are_ignored() {
+        let mut p = pairing();
+        assert_eq!(
+            p.on_update(&msg(-100123, "group", 5555, "123456")),
+            PairStep::Ignore
+        );
+        assert_eq!(
+            p.on_update(&msg(-100123, "supergroup", 5555, "000000")),
+            PairStep::Ignore
+        );
+        assert_eq!(
+            p.on_update(&msg(5555, "private", 6666, "123456")),
+            PairStep::Ignore
+        );
+        assert_eq!(p.wrong, 0);
+    }
+
+    #[test]
+    fn non_messages_and_other_text_are_ignored() {
+        let mut p = pairing();
+        let cb = json!({"update_id": 2, "callback_query": {"data": "123456"}});
+        assert_eq!(p.on_update(&cb), PairStep::Ignore);
+        for text in ["hello", "12345", "1234567", "12345a", ""] {
+            assert_eq!(
+                p.on_update(&msg(5555, "private", 5555, text)),
+                PairStep::Ignore,
+                "{text}"
+            );
+        }
+        let no_text = json!({"update_id": 3, "message": {
+            "chat": {"id": 5555, "type": "private"}, "from": {"id": 5555}}});
+        assert_eq!(p.on_update(&no_text), PairStep::Ignore);
+        assert_eq!(p.wrong, 0);
+    }
+
+    #[test]
+    fn five_wrong_codes_abort() {
+        let mut p = pairing();
+        for n in 1..=4 {
+            assert_eq!(
+                p.on_update(&msg(5555, "private", 5555, "000000")),
+                PairStep::Wrong,
+                "attempt {n}"
+            );
+        }
+        assert_eq!(
+            p.on_update(&msg(5555, "private", 5555, "000000")),
+            PairStep::TooMany
+        );
+        assert_eq!(p.wrong, MAX_WRONG);
+    }
+
+    #[test]
+    fn code_expires_after_ten_minutes() {
+        let now = 1_000_000;
+        let p = Pairing::new("123456".to_string(), now);
+        assert_eq!(p.deadline_ms, now + CODE_SECS * 1000);
+        assert!(!p.expired(now));
+        assert!(!p.expired(now + 599_999));
+        assert!(p.expired(now + 600_000));
+    }
+
+    #[test]
+    fn next_offset_moves_past_every_update() {
+        let v = json!([{"update_id": 7}, {"update_id": 3}, {"update_id": 9}]);
+        assert_eq!(next_offset(&v, 0), 10);
+        assert_eq!(next_offset(&json!([]), 4), 4);
+        assert_eq!(next_offset(&json!([{"update_id": 2}]), 5), 5);
+    }
+}

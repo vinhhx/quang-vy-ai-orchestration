@@ -197,3 +197,243 @@ fn setup_pairs_private_chat() {
     assert!(!out.contains(FAKE_TOKEN), "token on stdout");
     assert!(!err.contains(FAKE_TOKEN), "token on stderr");
 }
+
+/// Runs `pty_secret.py` with the sandbox environment plus `env`, returning its JSON line.
+fn run_pty(sb: &Sandbox, env: &[(String, String)], at_prompt: bool) -> serde_json::Value {
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let template = sb.command(&[], &env);
+    let mut cmd = std::process::Command::new("python3");
+    cmd.env_clear();
+    for (k, v) in template.get_envs() {
+        if let Some(v) = v {
+            cmd.env(k, v);
+        }
+    }
+    cmd.arg("-I")
+        .arg(common::repo_root().join("tests/fakes/pty_secret.py"));
+    if at_prompt {
+        cmd.arg("--sigint-at-prompt");
+    }
+    cmd.arg(FAKE_TOKEN)
+        .arg("--")
+        .arg(common::bin())
+        .arg("telegram")
+        .arg("setup");
+    cmd.stdin(Stdio::null());
+    let out = cmd.output().expect("run pty_secret.py");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        out.status.success(),
+        "pty_secret.py failed: {text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("bad JSON {e}: {text}"))
+}
+
+#[test]
+fn setup_prompt_hides_token_on_tty() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    let res = run_pty(&sb, &tg.env(), false);
+    let output = res["output"].as_str().unwrap_or("");
+    assert!(output.contains("Token bot"), "{res}");
+    assert!(output.contains("Mở Telegram"), "{res}");
+    assert!(!output.contains(FAKE_TOKEN), "token echoed: {res}");
+    assert_eq!(res["exit"].as_i64(), Some(130), "{res}");
+    assert_eq!(
+        res["echo"].as_bool(),
+        Some(true),
+        "echo not restored: {res}"
+    );
+    assert!(!telegram_json_path(&sb).exists());
+}
+
+#[test]
+fn setup_prompt_ctrl_c_restores_terminal() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    let res = run_pty(&sb, &tg.env(), true);
+    let output = res["output"].as_str().unwrap_or("");
+    assert!(output.contains("Token bot"), "{res}");
+    assert_eq!(res["exit"].as_i64(), Some(130), "{res}");
+    assert_eq!(res["echo"].as_bool(), Some(true), "echo left off: {res}");
+    assert!(!telegram_json_path(&sb).exists());
+    assert!(tg.calls("getMe").is_empty());
+}
+
+fn wrong_code_for(code: &str) -> &'static str {
+    if code == "000000" {
+        "111111"
+    } else {
+        "000000"
+    }
+}
+
+#[test]
+fn setup_ignores_group_and_counts_wrong_codes() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    let mut run = CliRun::spawn(&sb, &["telegram", "setup"], &tg.env(), &token_line());
+    let code = run.wait_code();
+    tg.push_update(tg.message_update(-100123, PAIRED_CHAT, "group", &code));
+    tg.push_update(tg.message_update(PAIRED_CHAT, PAIRED_CHAT, "private", "/start"));
+    tg.push_update(tg.message_update(6666, 6666, "private", wrong_code_for(&code)));
+    tg.push_update(tg.message_update(PAIRED_CHAT, PAIRED_CHAT, "private", &code));
+    let exit = run.wait_exit(Duration::from_secs(20));
+    let (out, err) = (run.stdout(), run.stderr());
+    assert_eq!(exit, 0, "stdout:\n{out}\nstderr:\n{err}");
+    assert!(err.contains("Mã sai (1/5)"), "{err}");
+    let v = read_json(&telegram_json_path(&sb));
+    assert_eq!(v["chat_id"].as_i64(), Some(PAIRED_CHAT));
+    // Nothing was sent to the group or to the stranger.
+    for r in tg.calls("sendMessage") {
+        assert_eq!(r["json"]["chat_id"].as_i64(), Some(PAIRED_CHAT), "{r}");
+    }
+}
+
+#[test]
+fn setup_too_many_wrong_codes() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    let mut run = CliRun::spawn(&sb, &["telegram", "setup"], &tg.env(), &token_line());
+    let code = run.wait_code();
+    for _ in 0..5 {
+        tg.push_update(tg.message_update(
+            PAIRED_CHAT,
+            PAIRED_CHAT,
+            "private",
+            wrong_code_for(&code),
+        ));
+    }
+    let exit = run.wait_exit(Duration::from_secs(20));
+    let err = run.stderr();
+    assert_eq!(exit, 1, "stdout:\n{}\nstderr:\n{err}", run.stdout());
+    assert!(err.contains("Quá nhiều mã sai"), "{err}");
+    assert!(!telegram_json_path(&sb).exists());
+    assert!(tg.calls("sendMessage").is_empty());
+}
+
+#[test]
+fn setup_rerun_replaces_pairing() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    tg::write_config(&sb, 1111, 0o600);
+    let mut run = CliRun::spawn(&sb, &["telegram", "setup"], &tg.env(), &token_line());
+    let code = run.wait_code();
+    tg.push_update(tg.message_update(PAIRED_CHAT, PAIRED_CHAT, "private", &code));
+    let exit = run.wait_exit(Duration::from_secs(20));
+    assert_eq!(
+        exit,
+        0,
+        "stdout:\n{}\nstderr:\n{}",
+        run.stdout(),
+        run.stderr()
+    );
+    let path = telegram_json_path(&sb);
+    assert_eq!(read_json(&path)["chat_id"].as_i64(), Some(PAIRED_CHAT));
+    assert_eq!(mode_of(&path), 0o600);
+}
+
+#[test]
+fn setup_refused_while_serve_runs() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    let mut srv = tg.serve(&sb, &[]);
+    let mut run = CliRun::spawn(&sb, &["telegram", "setup"], &tg.env(), &token_line());
+    let exit = run.wait_exit(Duration::from_secs(20));
+    let err = run.stderr();
+    assert_eq!(exit, 1, "stdout:\n{}\nstderr:\n{err}", run.stdout());
+    assert!(err.contains("agent-brain serve đang chạy"), "{err}");
+    assert!(err.contains(&format!("(pid {})", srv.child.id())), "{err}");
+    assert!(
+        !err.contains("Token bot"),
+        "prompted while serve runs: {err}"
+    );
+    assert!(!telegram_json_path(&sb).exists());
+    assert!(tg.records().is_empty(), "{:?}", tg.records());
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+}
+
+#[test]
+fn setup_bad_token() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    // An existing pairing survives every failed setup untouched.
+    tg::write_config(&sb, 1111, 0o600);
+    let path = telegram_json_path(&sb);
+    let before = std::fs::read(&path).unwrap();
+
+    let mut run = CliRun::spawn(&sb, &["telegram", "setup"], &tg.env(), "\n");
+    assert_eq!(run.wait_exit(Duration::from_secs(20)), 1);
+    assert!(run.stderr().contains("Chưa nhập token"), "{}", run.stderr());
+
+    let mut run = CliRun::spawn(&sb, &["telegram", "setup"], &tg.env(), "abc\n");
+    assert_eq!(run.wait_exit(Duration::from_secs(20)), 1);
+    let err = run.stderr();
+    assert!(err.contains("Token không đúng dạng"), "{err}");
+    assert!(!err.contains("abc"), "{err}");
+    assert!(tg.records().is_empty(), "bad shape reached Telegram");
+
+    tg.set_behavior(serde_json::json!([{"method": "getMe", "times": 1, "status": 401}]));
+    let mut run = CliRun::spawn(&sb, &["telegram", "setup"], &tg.env(), &token_line());
+    assert_eq!(run.wait_exit(Duration::from_secs(20)), 1);
+    let (out, err) = (run.stdout(), run.stderr());
+    assert!(err.contains("Telegram từ chối token (401)"), "{err}");
+    assert!(!err.contains(FAKE_TOKEN) && !out.contains(FAKE_TOKEN));
+    assert!(!out.contains("Mở Telegram"), "{out}");
+
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(mode_of(&path), 0o600);
+}
+
+#[test]
+fn setup_missing_curl() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    let mut env = tg.env();
+    env.push((
+        "AGENT_BRAIN_CURL".to_string(),
+        "/nonexistent/curl".to_string(),
+    ));
+    let mut run = CliRun::spawn(&sb, &["telegram", "setup"], &env, &token_line());
+    assert_eq!(run.wait_exit(Duration::from_secs(20)), 1);
+    let err = run.stderr();
+    assert!(err.contains("Không tìm thấy lệnh curl"), "{err}");
+    assert!(err.contains("agent-brain telegram setup"), "{err}");
+    assert!(!telegram_json_path(&sb).exists());
+}
+
+#[test]
+fn telegram_test_sends_message() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+
+    let mut run = CliRun::spawn(&sb, &["telegram", "test"], &tg.env(), "");
+    assert_eq!(run.wait_exit(Duration::from_secs(20)), 1);
+    assert!(
+        run.stderr().contains("Chưa ghép nối Telegram"),
+        "{}",
+        run.stderr()
+    );
+
+    tg::write_config(&sb, PAIRED_CHAT, 0o600);
+    let mut run = CliRun::spawn(&sb, &["telegram", "test"], &tg.env(), "");
+    let exit = run.wait_exit(Duration::from_secs(20));
+    let (out, err) = (run.stdout(), run.stderr());
+    assert_eq!(exit, 0, "stdout:\n{out}\nstderr:\n{err}");
+    assert!(out.contains("Đã gửi tin thử tới chat 5555."), "{out}");
+    let sent = tg.calls("sendMessage");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0]["json"]["chat_id"].as_i64(), Some(PAIRED_CHAT));
+    assert!(sent[0]["json"]["text"]
+        .as_str()
+        .unwrap_or("")
+        .starts_with("Tin thử từ agent-brain trên máy"));
+    assert!(!out.contains(FAKE_TOKEN) && !err.contains(FAKE_TOKEN));
+
+    tg::write_config(&sb, PAIRED_CHAT, 0o644);
+    let mut run = CliRun::spawn(&sb, &["telegram", "test"], &tg.env(), "");
+    assert_eq!(run.wait_exit(Duration::from_secs(20)), 1);
+    assert!(run.stderr().contains("chmod 600"), "{}", run.stderr());
+    assert_eq!(tg.calls("sendMessage").len(), 1);
+}
