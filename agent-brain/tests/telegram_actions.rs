@@ -1453,3 +1453,263 @@ fn kill_with_confirmation_and_cancel() {
     );
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+// ---------------------------------------------------------------------------
+// Plan 05.3-06 Task 3: messages follow the task
+// ---------------------------------------------------------------------------
+
+const OUTSIDE: &str = "xử lý ngoài Telegram (dashboard hoặc terminal)";
+
+/// Waits until the sender tracks the message it sent: the registry entry is
+/// written right after Telegram answered, before this stdout line.
+fn wait_sent_line(srv: &Serve, line: &str) {
+    assert!(
+        wait_until(Duration::from_secs(10), || stdout_of(srv).contains(line)),
+        "no {line:?} on stdout:\n{}\nstderr:\n{}",
+        stdout_of(srv),
+        stderr_of(srv)
+    );
+}
+
+/// nhanh gate message, tracked by the bot.
+fn nhanh_gate_message(tg: &FakeTelegram, srv: &Serve, sb: &Sandbox) -> Value {
+    nhanh_gate(sb);
+    let gate = wait_message(tg, srv, "Chờ duyệt plan · task 1");
+    wait_sent_line(srv, "Telegram: đã gửi tin chờ duyệt plan cho task 1");
+    gate
+}
+
+fn assert_outside_edit(tg: &FakeTelegram, srv: &Serve, gate: &Value) {
+    let m = message_id_of(gate);
+    let edit = match tg.wait_call("editMessageText", Duration::from_secs(5), |r| {
+        r["json"]["message_id"].as_i64() == Some(m) && text_of(r).contains(OUTSIDE)
+    }) {
+        Some(r) => r,
+        None => panic!(
+            "no moved-on edit of message {m}; records:\n{:#?}\nstderr:\n{}",
+            tg.records(),
+            stderr_of(srv)
+        ),
+    };
+    assert!(empty_keyboard(&edit), "{edit}");
+    let text = text_of(&edit);
+    assert!(text.starts_with(text_of(gate)), "{edit}");
+    assert!(!text.contains("từ Telegram"), "{edit}");
+    assert_eq!(edit["json"]["chat_id"], json!(PAIRED_CHAT), "{edit}");
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(edits_of(tg, m).len(), 1, "{:#?}", tg.records());
+}
+
+#[test]
+fn dashboard_action_edits_message() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    protocol::setup_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+    let gate = nhanh_gate_message(&tg, &srv, &sb);
+
+    let resp = srv.post_json("/api/tasks/1/approve", &json!({}));
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_outside_edit(&tg, &srv, &gate);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn terminal_action_edits_message() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    protocol::setup_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+    let gate = nhanh_gate_message(&tg, &srv, &sb);
+
+    let res = sb.run(&["approve", "1"], None);
+    assert_ok(&res, "approve 1");
+    assert_outside_edit(&tg, &srv, &gate);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn telegram_action_edited_once() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+    auto_start_to_gate(&sb, full_flow_scenario());
+    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    wait_sent_line(&srv, "Telegram: đã gửi tin chờ duyệt plan cho task 1");
+    let m = message_id_of(&gate);
+
+    let cb_id = press(&tg, PAIRED_CHAT, PAIRED_CHAT, &gate, "Duyệt plan");
+    wait_answer(&tg, &srv, &cb_id);
+    wait_edit(&tg, &srv, m, |r| text_of(r).contains("từ Telegram"));
+    std::thread::sleep(Duration::from_secs(5));
+
+    let edits = edits_of(&tg, m);
+    assert_eq!(edits.len(), 1, "{edits:#?}");
+    assert!(text_of(&edits[0]).contains("✓ Đã duyệt plan"), "{edits:#?}");
+    assert!(!text_of(&edits[0]).contains(OUTSIDE), "{edits:#?}");
+    assert!(
+        !tg.calls("editMessageReplyMarkup")
+            .iter()
+            .any(|r| r["json"]["message_id"].as_i64() == Some(m)),
+        "{:#?}",
+        tg.records()
+    );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+fn markups_of(tg: &FakeTelegram, message_id: i64) -> Vec<Value> {
+    tg.calls("editMessageReplyMarkup")
+        .into_iter()
+        .filter(|r| r["json"]["message_id"].as_i64() == Some(message_id))
+        .collect()
+}
+
+#[test]
+fn running_run_adds_kill_button() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+    plan_cap_stopped(&sb);
+    let stop = wait_message(&tg, &srv, "Autopilot dừng · hết vòng · task 1");
+    wait_sent_line(&srv, "Telegram: đã gửi tin autopilot dừng cho task 1");
+    let m = message_id_of(&stop);
+    let stop_labels = vec![
+        "Chạy thêm 1 vòng".to_string(),
+        "Trả về Lead".to_string(),
+        "Dừng hẳn".to_string(),
+    ];
+    assert_eq!(labels(&stop), stop_labels, "{stop}");
+
+    // Chạy Dev from the dashboard at the stop: a run that keeps running.
+    sb.write_scenario(json!({"by_role": {"dev": [{"sleep": 60, "ops": []}]}}));
+    let resp = srv.post_json("/api/tasks/1/dev", &json!({}));
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let mut dev_run = 0;
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            let id: Option<i64> = sb
+                .db()
+                .query_row(
+                    "SELECT MAX(id) FROM runs WHERE role = 'dev' AND status = 'running'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            dev_run = id.unwrap_or(0);
+            dev_run > 0
+        }),
+        "no running dev run; stderr:\n{}",
+        stderr_of(&srv)
+    );
+    // The fake claude of the dev run, stopped by its recorded PID if the test fails.
+    let claude_pid: i64 = sb
+        .db()
+        .query_row("SELECT pid FROM runs WHERE id = ?1", [dev_run], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let claude = agent_brain::procs::proc_id(claude_pid as i32).expect("dev run proc_id");
+    let _guard = common::ProcGuard(vec![claude]);
+
+    let kill_data = |rec: &Value| -> Option<String> {
+        buttons(rec)
+            .into_iter()
+            .find(|(l, _)| l == "Kill")
+            .map(|(_, d)| d)
+    };
+    let refresh = match tg.wait_call("editMessageReplyMarkup", Duration::from_secs(10), |r| {
+        r["json"]["message_id"].as_i64() == Some(m) && kill_data(r).is_some()
+    }) {
+        Some(r) => r,
+        None => panic!(
+            "no button refresh with Kill; records:\n{:#?}\nstderr:\n{}",
+            tg.records(),
+            stderr_of(&srv)
+        ),
+    };
+    let rev = srv.get("/api/tasks/1").json()["rev"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let data = kill_data(&refresh).unwrap();
+    assert_eq!(data, format!("k:1:{dev_run}:{rev}"), "{refresh}");
+    // Kill is last; the other buttons are what the stop allows while the run
+    // runs (no Trả về Lead while a run is busy).
+    let refreshed = labels(&refresh);
+    assert_eq!(
+        refreshed.last().map(String::as_str),
+        Some("Kill"),
+        "{refresh}"
+    );
+    assert!(
+        refreshed.contains(&"Chạy thêm 1 vòng".to_string()),
+        "{refresh}"
+    );
+    assert!(refreshed.contains(&"Dừng hẳn".to_string()), "{refresh}");
+    // Every button carries the task's current rev.
+    for (_, d) in buttons(&refresh) {
+        assert!(d.ends_with(&format!(":{rev}")), "{refresh}");
+    }
+    assert!(
+        edits_of(&tg, m).is_empty(),
+        "text untouched: {:#?}",
+        tg.records()
+    );
+
+    // Kill from the refreshed message, then confirm.
+    let shown = text_of(&stop).to_string();
+    let ask = push_press(&tg, m, &shown, &data);
+    wait_answer(&tg, &srv, &ask);
+    let confirm = wait_edit(&tg, &srv, m, |r| {
+        text_of(r).ends_with(&format!("Xác nhận Kill run {dev_run}?"))
+    });
+    let confirm_data = button_data(&confirm, "Kill");
+    assert_eq!(confirm_data, format!("K:1:{dev_run}:{rev}"));
+    assert_eq!(run_status(&sb, dev_run), "running");
+    let ok = push_press(&tg, m, text_of(&confirm), &confirm_data);
+    wait_answer(&tg, &srv, &ok);
+    assert!(
+        wait_until(Duration::from_secs(10), || run_status(&sb, dev_run)
+            == "killed"),
+        "dev run status {}",
+        run_status(&sb, dev_run)
+    );
+    let done = wait_edit(&tg, &srv, m, |r| {
+        text_of(r).contains(&format!("✓ Đã dừng run {dev_run}"))
+    });
+    assert!(text_of(&done).starts_with(&shown), "{done}");
+    assert!(!text_of(&done).contains("Xác nhận Kill"), "{done}");
+    // The stop is still current: its buttons stay (without Kill).
+    assert_eq!(labels(&done), stop_labels, "{done}");
+    let new_rev = srv.get("/api/tasks/1").json()["rev"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (_, d) in buttons(&done) {
+        assert!(d.ends_with(&format!(":{new_rev}")), "{done}");
+    }
+    // Nothing else edits the message afterwards (no moved-on edit, no refresh back).
+    std::thread::sleep(Duration::from_secs(2));
+    let newest = edits_of(&tg, m).pop().unwrap();
+    assert_eq!(newest, done, "{:#?}", tg.records());
+    assert!(
+        markups_of(&tg, m).iter().all(|r| r == &refresh),
+        "{:#?}",
+        tg.records()
+    );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}

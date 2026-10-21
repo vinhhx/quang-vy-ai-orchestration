@@ -5,9 +5,17 @@
 //! signature, and re-derives the task state only for tasks whose signature
 //! changed. Events are deduplicated in memory; the set is seeded at start-up so
 //! a serve restart never resends an event that already existed. The detector
-//! never calls Telegram: it only pushes `Outgoing::Notify` onto the outbox.
+//! never calls Telegram: it only pushes `Outgoing` items onto the outbox.
+//!
+//! Sent messages follow their task (D-11/D-12/D-15): when a tracked message's
+//! event is no longer current (the task was handled from the dashboard or a
+//! terminal), the message is edited to say so and loses its buttons; while
+//! the event is current, its buttons follow the task's runs and rev. A message
+//! the bot is acting on is taken out of the registry first, so a Telegram
+//! action is never edited twice.
 
-use super::outbox::Outgoing;
+use super::outbox::{Outgoing, Registry, Tracked};
+use super::render;
 use super::{sleep_or_stop, BotCtx};
 use crate::autopilot::decide::GateState;
 use crate::dashboard::api_tasks::{load_task_state, TaskState};
@@ -16,7 +24,7 @@ use crate::error::BrainResult;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast::error::TryRecvError;
@@ -129,9 +137,55 @@ pub struct Detector {
 }
 
 enum Eval {
-    Event(Option<Event>),
+    State(Box<TaskState>),
     Gone,
     Failed,
+}
+
+/// Edits for the tracked message of `s`'s task, if any (D-15, D-11/D-12).
+///
+/// - the event `current` is gone or another one: the entry is taken and the
+///   message gets `{state} — xử lý ngoài Telegram (dashboard hoặc terminal) lúc
+///   HH:MM` without buttons;
+/// - the same event with other buttons (a run started or ended, a new rev): only
+///   the buttons are replaced, and the entry remembers them.
+///
+/// The registry lock is taken only here, after the task state was loaded.
+pub fn follow_tracked(
+    registry: &Mutex<Registry>,
+    s: &TaskState,
+    current: Option<&Event>,
+    now_ms: i64,
+) -> Option<Outgoing> {
+    let mut reg = registry.lock().unwrap_or_else(|e| e.into_inner());
+    let tracked = reg.get(s.task.id)?;
+    match current {
+        Some(ev) if ev.key == tracked.key => {
+            let keyboard = render::keyboard_json(&render::buttons_for(ev, s));
+            if keyboard == tracked.keyboard {
+                return None;
+            }
+            let message_id = tracked.message_id;
+            let t = reg.take(s.task.id)?;
+            reg.insert(Tracked {
+                keyboard: keyboard.clone(),
+                ..t
+            });
+            Some(Outgoing::Keyboard {
+                message_id,
+                keyboard,
+            })
+        }
+        _ => {
+            let t = reg.take(s.task.id)?;
+            let suffix = render::result_suffix(&render::state_line(s), false, now_ms);
+            Some(Outgoing::Edit {
+                message_id: t.message_id,
+                text: format!("{}{suffix}", t.text),
+                keyboard: render::no_keyboard(),
+            })
+        }
+    }
 }
 
 impl Detector {
@@ -141,7 +195,7 @@ impl Detector {
 
     fn eval(&mut self, st: &AppState, conn: &Connection, task_id: i64) -> Eval {
         match load_task_state(st, conn, task_id) {
-            Ok(Ok(s)) => Eval::Event(current_event(&s)),
+            Ok(Ok(s)) => Eval::State(Box::new(s)),
             Ok(Err(_)) => Eval::Gone,
             Err(e) => {
                 if self.reported.insert(task_id) {
@@ -157,8 +211,8 @@ impl Detector {
     pub fn seed(&mut self, st: &AppState, conn: &Connection) -> BrainResult<()> {
         for (task_id, sig) in signatures(conn)? {
             match self.eval(st, conn, task_id) {
-                Eval::Event(ev) => {
-                    if let Some(ev) = ev {
+                Eval::State(s) => {
+                    if let Some(ev) = current_event(&s) {
                         self.seen.insert((ev.task_id, ev.key));
                     }
                     self.sigs.insert(task_id, sig);
@@ -173,13 +227,16 @@ impl Detector {
     }
 
     /// Evaluates tasks whose signature changed (or, when `full`, every task not
-    /// yet `qa_pass`) and returns the events not seen before.
+    /// yet `qa_pass`) and returns, in order, the edits of their tracked
+    /// messages (`follow_tracked`) and a `Notify` for each event not seen
+    /// before. A task's moved-on edit always comes before its new notification.
     pub fn scan(
         &mut self,
         st: &AppState,
         conn: &Connection,
         full: bool,
-    ) -> BrainResult<Vec<Event>> {
+        registry: &Mutex<Registry>,
+    ) -> BrainResult<Vec<Outgoing>> {
         let rows = signatures(conn)?;
         let present: HashSet<i64> = rows.iter().map(|(id, _)| *id).collect();
         self.sigs.retain(|id, _| present.contains(id));
@@ -191,11 +248,17 @@ impl Detector {
                 continue;
             }
             match self.eval(st, conn, task_id) {
-                Eval::Event(ev) => {
+                Eval::State(s) => {
                     self.sigs.insert(task_id, sig);
+                    let ev = current_event(&s);
+                    if let Some(item) =
+                        follow_tracked(registry, &s, ev.as_ref(), crate::db::now_ms())
+                    {
+                        out.push(item);
+                    }
                     if let Some(ev) = ev {
                         if self.seen.insert((ev.task_id, ev.key.clone())) {
-                            out.push(ev);
+                            out.push(Outgoing::Notify(ev));
                         }
                     }
                 }
@@ -278,11 +341,11 @@ fn run(ctx: Arc<BotCtx>) {
         if full {
             last_full = Instant::now();
         }
-        match det.scan(&ctx.st, &conn, full) {
-            Ok(events) => {
+        match det.scan(&ctx.st, &conn, full, &ctx.registry) {
+            Ok(items) => {
                 last_err = None;
-                for ev in events {
-                    ctx.outbox.push(Outgoing::Notify(ev));
+                for item in items {
+                    ctx.outbox.push(item);
                 }
             }
             Err(e) => {
