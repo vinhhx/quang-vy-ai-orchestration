@@ -120,6 +120,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         ));
     }
 
+    let mut named_list: Vec<String> = Vec::new();
     let (active_files, allowed, user_input, prompt_path, is_fix) = if let Some(fix) = opts.fix {
         let report_file = fix.report_file();
         let report_path = proj_path.join(report_file);
@@ -159,7 +160,13 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
             }
         }
 
-        let named = crate::report::named_files(&report_text, &proj_path);
+        // WR-06: body tokens only widen the write set for files already changed
+        // since the plan commit; front-matter `files` stay the explicit way (D-12).
+        let changed = match crate::roles::plan_commit_for(&ctx.conn, &proj.id, &proj_path, &task)? {
+            Some(pc) => crate::gitops::diff_code_names(&proj_path, &pc, "HEAD")?,
+            None => std::collections::BTreeSet::new(),
+        };
+        let named = crate::report::named_files_with(&report_text, &proj_path, Some(&changed));
         if named.files.is_empty() {
             crate::term::emit_out(&format!("File được nêu trong {report_file}: (không có)"));
         } else {
@@ -182,6 +189,8 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
                 fix_files.push(nf.clone());
             }
         }
+
+        named_list = named.files.clone();
 
         let mut allowed = dev_allowed_tools(&fix_files, Some(&proj_path));
         allowed.push(format!("Read(./{report_file})"));
@@ -354,7 +363,8 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
             stage: Some("fix".to_string()),
             round: opts.round,
             metrics: Some(serde_json::json!({
-                "fix_for": fix.metrics_value()
+                "fix_for": fix.metrics_value(),
+                "named_files": named_list,
             })),
         }
     } else {

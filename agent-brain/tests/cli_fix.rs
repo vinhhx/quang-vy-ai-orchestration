@@ -7,7 +7,26 @@ use protocol::{lead_scenario, setup_project};
 use std::path::PathBuf;
 
 fn setup_lead_and_dev(sb: &Sandbox) -> (PathBuf, String, String, String) {
+    setup_lead_and_dev_with(sb, &[])
+}
+
+/// Same as `setup_lead_and_dev`, with extra files committed before the plan.
+fn setup_lead_and_dev_with(
+    sb: &Sandbox,
+    extra: &[(&str, &str)],
+) -> (PathBuf, String, String, String) {
     let repo = setup_project(sb, "work");
+    if !extra.is_empty() {
+        for (rel, content) in extra {
+            let p = repo.join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&p, content).unwrap();
+            sb.git(&repo, &["add", rel]);
+        }
+        sb.git(&repo, &["commit", "-m", "add extra files"]);
+    }
 
     let sc_lead = lead_scenario(&[("src/app.py", "app()", "trả về 2", "demo")]);
     let res_lead = sb.run(
@@ -899,4 +918,107 @@ fn implement_stage_recorded() {
         .unwrap();
     assert_eq!(stage2.as_deref(), Some("implement"));
     assert_eq!(round2, None);
+}
+
+fn last_fix_metrics(sb: &Sandbox) -> serde_json::Value {
+    let conn = sb.db();
+    let metrics_json: Option<String> = conn
+        .query_row(
+            "SELECT metrics_json FROM runs WHERE role = 'dev' AND stage = 'fix' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&metrics_json.unwrap_or_default()).unwrap()
+}
+
+#[test]
+fn fix_body_token_outside_diff_not_writable() {
+    let sb = Sandbox::new();
+    let other_content = "def other(): pass\n";
+    let (repo, task, _plan_sha, _dev_sha) =
+        setup_lead_and_dev_with(&sb, &[("src/other.py", other_content)]);
+
+    let review_report = "\
+---
+verdict: revise
+blocking: 1
+advisory: 0
+files: [\"src/helper.py\"]
+---
+# Review code: sửa app
+## Mục chặn (blocking)
+- app trả về sai, xem thêm `src/other.py`
+## Góp ý (advisory)
+";
+    let sc_review = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".code-review.md",
+                "content": review_report,
+            }
+        ]
+    });
+    let res_review = sb.run(&["run", "code-review", "web-ban-hang"], Some(sc_review));
+    assert_eq!(
+        res_review.code, 0,
+        "code-review failed: stderr: {}\nstdout: {}",
+        res_review.stderr, res_review.stdout
+    );
+
+    let sc_fix = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "read", "path": ".code-review.md"},
+            {"op": "write", "path": "src/helper.py", "content": "def helper(): return 1\n"},
+            {"op": "write", "path": "src/other.py", "content": "def other(): return 99\n"},
+            {"op": "write", "path": "src/app.py", "content": "def app():\n    return 7\n"},
+            {"op": "git", "args": ["add", "src/app.py", "src/helper.py"]},
+            {"op": "git", "args": ["commit", "-m", format!("{task}: sửa theo review")]}
+        ]
+    });
+    let res_fix = sb.run(
+        &["run", "dev", "web-ban-hang", "--fix", "code-review"],
+        Some(sc_fix),
+    );
+    assert_eq!(
+        res_fix.code, 0,
+        "fix failed: stderr: {}\nstdout: {}",
+        res_fix.stderr, res_fix.stdout
+    );
+    assert!(
+        res_fix
+            .stdout
+            .lines()
+            .any(|l| l.trim_end() == "File được nêu trong .code-review.md: src/helper.py"),
+        "stdout: {}",
+        res_fix.stdout
+    );
+    assert!(
+        res_fix
+            .stdout
+            .contains("Bỏ qua (không được phép): src/other.py (not_in_diff:src/other.py)"),
+        "stdout: {}",
+        res_fix.stdout
+    );
+
+    let dev_rec = sb.records().pop().unwrap();
+    let blocked = dev_rec["blocked"].as_array().expect("blocked array");
+    assert!(
+        blocked.iter().any(|b| b["path"]
+            .as_str()
+            .map(|p| p.ends_with("src/other.py"))
+            .unwrap_or(false)),
+        "blocked missing src/other.py: {:?}",
+        blocked
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("src/other.py")).unwrap(),
+        other_content
+    );
+
+    let metrics = last_fix_metrics(&sb);
+    assert_eq!(metrics["fix_for"], "code_review");
+    assert_eq!(metrics["named_files"], serde_json::json!(["src/helper.py"]));
 }

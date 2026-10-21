@@ -211,13 +211,28 @@ pub struct NamedFiles {
 }
 
 pub fn named_files(report_text: &str, root: &std::path::Path) -> NamedFiles {
+    named_files_with(report_text, root, None)
+}
+
+/// Files a review / QA report names, for widening the fix-mode write set (D-12).
+///
+/// Front-matter `files` are the explicit way to name a file (new files included).
+/// Backticked body tokens are a heuristic: when `changed` is `Some`, a body token
+/// is kept only if that file already changed since the plan commit; otherwise it
+/// is rejected as `not_in_diff:{path}` (WR-06).
+pub fn named_files_with(
+    report_text: &str,
+    root: &std::path::Path,
+    changed: Option<&std::collections::BTreeSet<String>>,
+) -> NamedFiles {
     let fm_opt = front_matter(report_text);
-    let mut raw_candidates: Vec<String> = Vec::new();
+    // (path, from_body)
+    let mut raw_candidates: Vec<(String, bool)> = Vec::new();
 
     if let Some(ref fm) = fm_opt {
         if let Some(files_str) = fm.get("files") {
             if let Ok(files_list) = serde_json::from_str::<Vec<String>>(files_str) {
-                raw_candidates.extend(files_list);
+                raw_candidates.extend(files_list.into_iter().map(|f| (f, false)));
             }
         }
     }
@@ -252,26 +267,26 @@ pub fn named_files(report_text: &str, root: &std::path::Path) -> NamedFiles {
         if !s.contains(char::is_whitespace)
             && (s.contains('/') || KNOWN_EXTS.iter().any(|ext| s.ends_with(ext)))
         {
-            raw_candidates.push(s.to_string());
+            raw_candidates.push((s.to_string(), true));
         }
     }
 
     let mut seen = std::collections::HashSet::new();
     let mut candidates = Vec::new();
-    for raw in raw_candidates {
+    for (raw, from_body) in raw_candidates {
         let norm = crate::planfile::normalize_plan_path(&raw);
         if norm.is_empty() {
             continue;
         }
         if seen.insert(norm.clone()) {
-            candidates.push(norm);
+            candidates.push((norm, from_body));
         }
     }
 
     let mut files = Vec::new();
     let mut rejected = Vec::new();
 
-    for f in candidates {
+    for (f, from_body) in candidates {
         // 1. planfile::path_error
         if let Some(err) = crate::planfile::path_error(&f, Some(root)) {
             rejected.push((f, err));
@@ -294,14 +309,24 @@ pub fn named_files(report_text: &str, root: &std::path::Path) -> NamedFiles {
             continue;
         }
 
-        // 3. untracked
+        // 3. body tokens only for files already changed since the plan commit (WR-06)
+        if from_body {
+            if let Some(set) = changed {
+                if !set.contains(&f) {
+                    rejected.push((f.clone(), format!("not_in_diff:{f}")));
+                    continue;
+                }
+            }
+        }
+
+        // 4. untracked
         let p = root.join(&f);
         if std::fs::symlink_metadata(&p).is_ok() && !crate::gitops::is_tracked(root, &f) {
             rejected.push((f.clone(), format!("untracked:{f}")));
             continue;
         }
 
-        // 4. cap
+        // 5. cap
         if files.len() < MAX_NAMED_FILES {
             files.push(f);
         } else {
@@ -588,6 +613,41 @@ mod tests {
             ]
         );
         assert!(nf.rejected.is_empty(), "rejected was: {:?}", nf.rejected);
+    }
+
+    #[test]
+    fn named_files_body_needs_diff() {
+        let dir = test_repo();
+        let root = dir.path();
+        test_commit(root, &[("src/a.py", "# a"), ("src/b.py", "# b")], "init");
+
+        let report = "---\nverdict: revise\nblocking: 1\nadvisory: 0\nfiles: [\"src/new.py\"]\n---\nSửa `src/a.py:3` và `src/b.py`\n";
+        let changed: std::collections::BTreeSet<String> =
+            ["src/a.py".to_string()].into_iter().collect();
+
+        let nf = named_files_with(report, root, Some(&changed));
+        assert_eq!(
+            nf.files,
+            vec!["src/new.py".to_string(), "src/a.py".to_string()]
+        );
+        assert!(
+            nf.rejected
+                .contains(&("src/b.py".to_string(), "not_in_diff:src/b.py".to_string())),
+            "rejected was: {:?}",
+            nf.rejected
+        );
+
+        let nf_all = named_files_with(report, root, None);
+        assert_eq!(
+            nf_all.files,
+            vec![
+                "src/new.py".to_string(),
+                "src/a.py".to_string(),
+                "src/b.py".to_string()
+            ]
+        );
+        assert!(nf_all.rejected.is_empty());
+        assert_eq!(named_files(report, root), nf_all);
     }
 
     #[test]
