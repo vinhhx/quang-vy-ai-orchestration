@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 pub const DEFAULT_API: &str = "https://api.telegram.org";
 pub const LONG_POLL_SECS: u64 = 25;
+/// Upper bound for a 429 `retry_after`, so a malformed value cannot park the queue for hours.
+pub const MAX_RETRY_AFTER_SECS: u64 = 300;
 
 const LOOPBACK_HTTP: &str = "http://127.0.0.1:";
 
@@ -200,7 +202,7 @@ impl CallError {
                 if *code == 429 {
                     Some(
                         retry_after
-                            .map(|s| s.saturating_mul(1000))
+                            .map(|s| s.min(MAX_RETRY_AFTER_SECS) * 1000)
                             .unwrap_or_else(|| backoff_ms(failures, base_ms)),
                     )
                 } else if (400..500).contains(code) {

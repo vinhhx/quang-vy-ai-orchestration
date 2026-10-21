@@ -23,6 +23,9 @@ const CAPTION_MAX: usize = 1000;
 const DB_READ_ATTEMPTS: u32 = 3;
 const EDIT_MAX_SECS: u64 = 20;
 
+/// Most items the outbox holds (D-05): while Telegram is down events keep coming.
+pub const QUEUE_CAP: usize = 200;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outgoing {
     Notify(Event),
@@ -78,8 +81,15 @@ pub fn not_modified(e: &CallError) -> bool {
 }
 
 #[derive(Default)]
+struct Queue {
+    items: VecDeque<Outgoing>,
+    /// The "queue full" line was printed for the current overflow burst.
+    full_reported: bool,
+}
+
+#[derive(Default)]
 pub struct Outbox {
-    q: Mutex<VecDeque<Outgoing>>,
+    q: Mutex<Queue>,
     cv: Condvar,
 }
 
@@ -88,10 +98,32 @@ impl Outbox {
         Outbox::default()
     }
 
+    /// Appends `item` (FIFO). A full queue first drops its oldest `Notify`
+    /// (or its oldest item when it holds no `Notify`); the terminal line is
+    /// printed once per overflow burst, which ends when the queue is back
+    /// under half full.
     pub fn push(&self, item: Outgoing) {
-        let mut q = self.q.lock().unwrap_or_else(|e| e.into_inner());
-        q.push_back(item);
-        self.cv.notify_one();
+        let mut report = false;
+        {
+            let mut q = self.q.lock().unwrap_or_else(|e| e.into_inner());
+            if q.items.len() >= QUEUE_CAP {
+                let idx = q
+                    .items
+                    .iter()
+                    .position(|i| matches!(i, Outgoing::Notify(_)))
+                    .unwrap_or(0);
+                q.items.remove(idx);
+                if !q.full_reported {
+                    q.full_reported = true;
+                    report = true;
+                }
+            }
+            q.items.push_back(item);
+            self.cv.notify_one();
+        }
+        if report {
+            crate::term::emit("Telegram: hàng đợi đầy — bỏ thông báo cũ nhất");
+        }
     }
 
     /// Next item, or `None` after `ms` milliseconds without one.
@@ -99,7 +131,10 @@ impl Outbox {
         let deadline = Instant::now() + Duration::from_millis(ms);
         let mut q = self.q.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            if let Some(item) = q.pop_front() {
+            if let Some(item) = q.items.pop_front() {
+                if q.items.len() < QUEUE_CAP / 2 {
+                    q.full_reported = false;
+                }
                 return Some(item);
             }
             let now = Instant::now();
@@ -114,7 +149,7 @@ impl Outbox {
     }
 
     pub fn len(&self) -> usize {
-        self.q.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.q.lock().unwrap_or_else(|e| e.into_inner()).items.len()
     }
 
     pub fn is_empty(&self) -> bool {
