@@ -141,6 +141,10 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         .and_then(|m| m.get("request"))
         .and_then(|v| v.as_str())
         .unwrap_or(&task);
+    // WR-05: every failed exit from here on restores .qa-report.md.
+    let tracked = crate::gitops::git(&proj_path, &["cat-file", "-e", "HEAD:.qa-report.md"]).is_ok();
+    let mut restore =
+        crate::roles::review::ReportRestore::arm(&proj_path, ".qa-report.md", tracked);
     std::fs::write(&qa_path, crate::planfile::render_qa_skeleton(req, &qa_meta))?;
 
     let user_input = format!(
@@ -222,6 +226,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         for p in sorted_extra {
             crate::term::emit_out(&format!("  {p}"));
         }
+        restore.disarm();
         crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
         return Ok(crate::error::EXIT_PROTOCOL);
     }
@@ -235,11 +240,15 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
     let verdict = match verdict {
         Some(v) => v,
         None => {
+            // A report without a verdict is kept as evidence, like the
+            // reviewers' malformed report (protocol_violation).
+            restore.disarm();
             return Err(BrainError::error("QA chưa ghi Kết luận (Đạt / Cần sửa)"));
         }
     };
 
     crate::gitops::commit_paths(&proj_path, &[".qa-report.md"], &format!("{task}: qa"))?;
+    restore.disarm();
     crate::term::emit_out(&format!("Kết luận QA: {verdict}"));
 
     crate::db::merge_run_metrics(

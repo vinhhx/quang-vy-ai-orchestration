@@ -2,6 +2,7 @@ use crate::app::Ctx;
 use crate::error::{BrainError, BrainResult};
 use crate::report::ReviewKind;
 use crate::roles::RunOpts;
+use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
 pub const REVIEW_ALLOWED_BASE: [&str; 7] = [
@@ -15,6 +16,64 @@ pub const REVIEW_ALLOWED_BASE: [&str; 7] = [
 ];
 
 pub const REVIEW_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
+
+/// WR-05: a role writes its report skeleton before claude runs. While this
+/// guard is armed, dropping it puts the report back: `git checkout HEAD --`
+/// when the report is tracked at HEAD, removal when it is not. Only the
+/// role's own report is touched, and only on a failed run (the role disarms
+/// the guard on every path that keeps the report).
+pub(crate) struct ReportRestore {
+    root: PathBuf,
+    file: &'static str,
+    tracked: bool,
+    armed: bool,
+}
+
+impl ReportRestore {
+    pub(crate) fn arm(root: &Path, file: &'static str, tracked: bool) -> ReportRestore {
+        ReportRestore {
+            root: root.to_path_buf(),
+            file,
+            tracked,
+            armed: true,
+        }
+    }
+
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ReportRestore {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        let file = self.file;
+        let cleaned = if self.tracked {
+            match crate::gitops::git(&self.root, &["checkout", "HEAD", "--", file]) {
+                Ok(_) => true,
+                Err(e) => {
+                    crate::term::emit(&format!("Không khôi phục được {file}: {}", e.message));
+                    false
+                }
+            }
+        } else {
+            match std::fs::remove_file(self.root.join(file)) {
+                Ok(()) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(e) => {
+                    crate::term::emit(&format!("Không xoá được {file}: {e}"));
+                    false
+                }
+            }
+        };
+        if cleaned {
+            crate::term::emit(&format!("Đã dọn {file} của lượt chạy không thành công."));
+        }
+    }
+}
 
 pub fn render_review_skeleton(kind: ReviewKind, title: &str, meta: &serde_json::Value) -> String {
     let raw_first_line = title.lines().next().unwrap_or(title);
@@ -211,6 +270,8 @@ pub fn cmd_review(
         .and_then(|m| m.get("request"))
         .and_then(|v| v.as_str())
         .unwrap_or(&task);
+    // WR-05: every failed exit from here on restores the report.
+    let mut restore = ReportRestore::arm(&proj_path, file, has_prev);
     std::fs::write(
         &report_path,
         render_review_skeleton(kind, req, &review_meta),
@@ -294,6 +355,7 @@ pub fn cmd_review(
         for p in sorted_extra {
             crate::term::emit_out(&format!("  {p}"));
         }
+        restore.disarm();
         crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
         return Ok(crate::error::EXIT_PROTOCOL);
     }
@@ -313,6 +375,7 @@ pub fn cmd_review(
                 "Báo cáo {} không đúng định dạng: {reason}",
                 kind.file()
             ));
+            restore.disarm();
             crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
             return Ok(crate::error::EXIT_PROTOCOL);
         }
@@ -331,6 +394,7 @@ pub fn cmd_review(
             kind.file()
         ));
     }
+    restore.disarm();
 
     let metrics = crate::report::review_metrics(&report);
     crate::db::merge_run_metrics(&ctx.conn, role_run.run_id, &metrics)?;
