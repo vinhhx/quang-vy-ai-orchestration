@@ -11,7 +11,7 @@ mod protocol;
 mod tg;
 
 use common::{wait_until, RunOut, Sandbox, Serve};
-use protocol::lead_scenario;
+use protocol::{lead_scenario, setup_project};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -105,6 +105,63 @@ fn gate_scenario() -> Value {
     by_role(json!({
         "lead": [lead_plan_entry()],
         "plan-review": [plan_review_entry("approve", 0, 2)],
+    }))
+}
+
+fn lead_append_entry() -> Value {
+    json!({"ops": [{
+        "op": "write",
+        "path": ".plan.md",
+        "content": "\n<!-- v2 -->\n",
+        "append": true,
+    }]})
+}
+
+fn task_auto_json(sb: &Sandbox, task_id: i64) -> Value {
+    let aj: Option<String> = sb
+        .db()
+        .query_row(
+            "SELECT auto_json FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&aj.unwrap_or_else(|| "{}".to_string())).unwrap()
+}
+
+fn dev_impl_entry() -> Value {
+    json!({"ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "read", "path": "src/app.py"},
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+        {"op": "git", "args": ["add", "src/app.py"]},
+        {"op": "git", "args": ["commit", "-m", "sua-app: sửa app"]}
+    ]})
+}
+
+fn code_review_entry(verdict: &str, blocking: i64) -> Value {
+    json!({"ops": [{
+        "op": "write",
+        "path": ".code-review.md",
+        "content": review_report(verdict, blocking, 1),
+    }]})
+}
+
+fn qa_entry(verdict: &str) -> Value {
+    let report = format!(
+        "# QA: sửa app\n## Thay đổi có khớp plan không (từng mục)\n- src/app.py: đã xem.\n## Sửa ngoài plan (nếu có)\nKhông.\n## Rủi ro\nKhông.\n## Kết luận\n{verdict}\n"
+    );
+    json!({"ops": [{"op": "write", "path": ".qa-report.md", "content": report}]})
+}
+
+/// Every mac-dinh step: plan, plan review approves, dev, code review passes, QA passes.
+fn full_flow_scenario() -> Value {
+    by_role(json!({
+        "lead": [lead_plan_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 1)],
+        "dev": [dev_impl_entry()],
+        "code-review": [code_review_entry("pass", 0)],
+        "qa": [qa_entry("Đạt")],
     }))
 }
 
@@ -298,4 +355,216 @@ fn gate_from_terminal_autopilot_notifies_once() {
     assert_eq!(messages_starting(&tg, "Chờ duyệt plan").len(), 1);
     assert_eq!(tg.calls("sendDocument").len(), 1);
     assert_eq!(srv2.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// Task 2: stop, QA passed, run failed; profile shown; buttons by state
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stop_notifies_reason_and_buttons() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    // mac-dinh, plan review always revises: `hết vòng` at round 3 / 3.
+    let sc = by_role(json!({
+        "lead": [lead_plan_entry(), lead_append_entry()],
+        "plan-review": [
+            plan_review_entry("revise", 1, 0),
+            plan_review_entry("revise", 1, 1),
+            plan_review_entry("revise", 1, 2)
+        ],
+    }));
+    let res = sb.run(
+        &[
+            "auto",
+            "--start",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(sc),
+    );
+    assert_eq!(res.code, 4, "stderr: {}", res.stderr);
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("stopped"));
+    assert_eq!(task_auto_json(&sb, 1)["stop"]["reason"], "het_vong");
+
+    let msg = wait_message(&tg, &srv, "Autopilot dừng");
+    assert_eq!(first_line(&msg), "Autopilot dừng · hết vòng · task 1");
+    let text = text_of(&msg).to_string();
+    assert!(text.contains("sửa app"), "{text}");
+    assert!(
+        text.contains("Dự án: web-ban-hang · profile work · nhánh task/sua-app"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Review plan vẫn yêu cầu sửa lại sau 3 / 3 vòng."),
+        "{text}"
+    );
+    assert_eq!(
+        labels(&msg),
+        vec![
+            "Chạy thêm 1 vòng".to_string(),
+            "Trả về Lead".to_string(),
+            "Dừng hẳn".to_string()
+        ],
+        "{msg}"
+    );
+    let btns = buttons(&msg);
+    assert!(is_rev_data(&btns[0].1, "m:1:"), "{btns:?}");
+    assert!(is_rev_data(&btns[1].1, "r:1:"), "{btns:?}");
+    assert!(is_rev_data(&btns[2].1, "e:1:"), "{btns:?}");
+
+    // One message for the stop, no separate gate message (stop takes precedence).
+    std::thread::sleep(Duration::from_secs(3));
+    let all = tg.calls("sendMessage");
+    assert_eq!(all.len(), 1, "{all:#?}");
+    assert!(tg.calls("sendDocument").is_empty());
+    assert_plain_and_paired(&tg);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn qa_pass_notifies_summary() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    auto_start_to_gate(&sb, full_flow_scenario());
+    wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+
+    let res = sb.run(&["approve", "1"], Some(full_flow_scenario()));
+    assert_ok(&res, "approve 1");
+
+    let msg = wait_message(&tg, &srv, "QA đạt");
+    assert_eq!(first_line(&msg), "QA đạt · task 1");
+    let text = text_of(&msg).to_string();
+    assert!(text.contains("sửa app"), "{text}");
+    assert!(
+        text.contains("Dự án: web-ban-hang · profile work · nhánh task/sua-app"),
+        "{text}"
+    );
+    assert!(text.contains("Tổng: 5 run ·"), "{text}");
+    assert_eq!(
+        msg["json"]["reply_markup"]["inline_keyboard"],
+        json!([]),
+        "{msg}"
+    );
+
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(messages_starting(&tg, "Chờ duyệt plan").len(), 1);
+    assert_eq!(messages_starting(&tg, "QA đạt").len(), 1);
+    assert!(messages_starting(&tg, "Run lỗi").is_empty());
+    assert!(messages_starting(&tg, "Autopilot dừng").is_empty());
+    assert_plain_and_paired(&tg);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn run_failed_notifies() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+    );
+    assert_ok(&res, "run lead");
+    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    assert!(
+        text_of(&gate).contains("Review plan: không có trong quy trình nhanh"),
+        "{gate}"
+    );
+
+    let res = sb.run(&["approve", "1"], None);
+    assert_ok(&res, "approve 1");
+
+    let res = sb.run(
+        &["run", "dev", "--", "web-ban-hang"],
+        Some(json!({"exit_code": 1, "ops": []})),
+    );
+    assert_ne!(res.code, 0, "dev should fail: {}", res.stderr);
+    let (dev_id, dev_status): (i64, String) = sb
+        .db()
+        .query_row(
+            "SELECT id, status FROM runs WHERE role = 'dev' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(
+        dev_status == "failed" || dev_status == "timed_out",
+        "dev run status {dev_status}"
+    );
+
+    let msg = wait_message(&tg, &srv, "Run lỗi");
+    assert_eq!(first_line(&msg), "Run lỗi · task 1");
+    let text = text_of(&msg).to_string();
+    assert!(
+        text.contains(&format!(
+            "Run {dev_id} (dev) lỗi hoặc quá thời gian — xem log của run này."
+        )),
+        "{text}"
+    );
+    assert!(text.contains("Tổng: 2 run ·"), "{text}");
+    assert_eq!(labels(&msg), vec!["Trả về Lead".to_string()], "{msg}");
+    assert!(is_rev_data(&buttons(&msg)[0].1, "r:1:"), "{msg}");
+
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(messages_starting(&tg, "Run lỗi").len(), 1);
+    assert_eq!(tg.calls("sendMessage").len(), 2);
+    assert_plain_and_paired(&tg);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn gate_message_shows_personal_profile() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "personal");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    auto_start_to_gate(&sb, gate_scenario());
+
+    let msg = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    let text = text_of(&msg).to_string();
+    assert!(
+        text.contains("Dự án: web-ban-hang · profile personal · nhánh task/sua-app"),
+        "{text}"
+    );
+    assert_eq!(
+        labels(&msg),
+        vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()],
+        "{msg}"
+    );
+    assert_eq!(tg.calls("sendDocument").len(), 1);
+    assert_plain_and_paired(&tg);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
