@@ -611,6 +611,51 @@ fn more_round_after_het_vong() {
 }
 
 #[test]
+fn more_round_after_replan_past_cap() {
+    let sb = Sandbox::new();
+    let res = plan_cap_flow(&sb);
+    assert_eq!(res.code, 4, "stderr: {}", res.stderr);
+
+    // Trả về Lead sau 3 / 3: Lead chạy vòng 4 (quá trần), Review plan vẫn revise.
+    let sc = by_role(json!({
+        "lead": [lead_append_entry()],
+        "plan-review": [plan_review_entry("revise", 1, 0)],
+    }));
+    let res = sb.run(&["auto", "1", "--replan", "--note=thêm test"], Some(sc));
+    assert_eq!(res.code, 4, "stderr: {}", res.stderr);
+    assert_eq!(
+        runs(&sb)[6..].to_vec(),
+        vec![
+            rt("lead", "plan", 4, None),
+            rt("plan-review", "plan-review", 4, Some("review:revise")),
+        ]
+    );
+    let stop = &auto_json(&sb, 1)["stop"];
+    assert_eq!(stop["reason"], "het_vong");
+    assert_eq!(stop["round"], 4);
+    assert_eq!(stop["cap"], 3);
+
+    // G-01: Chạy thêm 1 vòng phải chạy vòng 5, không dừng lại ngay.
+    let sc = by_role(json!({
+        "lead": [lead_append_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 0)],
+    }));
+    let more = sb.run(&["auto", "1", "--more-round"], Some(sc));
+    assert_ok(&more, "auto 1 --more-round");
+    let all = runs(&sb);
+    assert_eq!(all.len(), 10);
+    assert_eq!(
+        all[8..].to_vec(),
+        vec![
+            rt("lead", "plan", 5, None),
+            rt("plan-review", "plan-review", 5, Some("review:approve")),
+        ]
+    );
+    let (state, _, _) = auto_state(&sb, 1);
+    assert_eq!(state.as_deref(), Some("gate"));
+}
+
+#[test]
 fn budget_stop_and_bypass() {
     let sb = Sandbox::new();
     setup_auto_project(&sb, "work");
