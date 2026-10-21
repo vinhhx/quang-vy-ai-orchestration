@@ -18,12 +18,26 @@ pub const MAX_RETRY_AFTER_SECS: u64 = 300;
 
 const LOOPBACK_HTTP: &str = "http://127.0.0.1:";
 
+/// `true` chỉ khi `v` là `http://127.0.0.1:<cổng>` (có thể kèm `/đường-dẫn`). Authority
+/// được phân tích chặt: userinfo (`127.0.0.1:1@evil`), host khác (`127.0.0.1:80.evil`)
+/// hay ký tự lạ đều bị từ chối, vì curl đọc phần trước `@` là user:password.
+pub fn is_loopback_http(v: &str) -> bool {
+    let Some(rest) = v.strip_prefix(LOOPBACK_HTTP) else {
+        return false;
+    };
+    let port = rest.split_once('/').map_or(rest, |(port, _)| port);
+    !port.is_empty()
+        && port.len() <= 5
+        && port.bytes().all(|b| b.is_ascii_digit())
+        && port.parse::<u16>().is_ok_and(|p| p > 0)
+}
+
 /// `AGENT_BRAIN_TELEGRAM_API` override (tests) or the real API. Only https:// or
 /// the loopback http base is accepted, so the token never leaves the machine in clear text.
 pub fn api_base() -> Result<String, String> {
     match std::env::var("AGENT_BRAIN_TELEGRAM_API") {
         Ok(v) if !v.is_empty() => {
-            if v.starts_with("https://") || v.starts_with(LOOPBACK_HTTP) {
+            if v.starts_with("https://") || is_loopback_http(&v) {
                 Ok(v.trim_end_matches('/').to_string())
             } else {
                 Err(
@@ -143,7 +157,7 @@ pub fn build_config(url: &str, body: &Body) -> String {
 /// curl argv. `-q` (must be first) skips any `~/.curlrc`, so a user curl config
 /// can never add tracing/logging of the request (which carries the token).
 pub fn curl_argv(max_secs: u64, base: &str) -> Vec<String> {
-    let proto = if base.starts_with(LOOPBACK_HTTP) {
+    let proto = if is_loopback_http(base) {
         "=http,https"
     } else {
         "=https"
@@ -529,6 +543,7 @@ mod tests {
         }
         assert!(curl_argv(5, DEFAULT_API).contains(&"=https".to_string()));
         assert!(curl_argv(5, "http://127.0.0.1:9").contains(&"=http,https".to_string()));
+        assert!(curl_argv(5, "http://127.0.0.1:1@evil.example").contains(&"=https".to_string()));
     }
 
     #[test]
@@ -624,6 +639,23 @@ mod tests {
         assert!(api_base().is_err());
         std::env::set_var("AGENT_BRAIN_TELEGRAM_API", "http://127.0.0.1:9/");
         assert_eq!(api_base().unwrap(), "http://127.0.0.1:9");
+        for bad in [
+            "http://127.0.0.1:1@evil.example/",
+            "http://127.0.0.1:1@evil.example",
+            "http://127.0.0.1:80.evil.example",
+            "http://127.0.0.1:9\\@evil.example/",
+            "http://127.0.0.1:9?@evil.example/",
+            "http://127.0.0.1:9#@evil.example/",
+            "http://127.0.0.1:",
+            "http://127.0.0.1:/x",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:99999",
+            "http://127.0.0.1:+9",
+            "http://127.0.0.1:9 @evil.example",
+        ] {
+            std::env::set_var("AGENT_BRAIN_TELEGRAM_API", bad);
+            assert!(api_base().is_err(), "phải từ chối {bad}");
+        }
         std::env::set_var("AGENT_BRAIN_TELEGRAM_API", "https://tg.example/");
         assert_eq!(api_base().unwrap(), "https://tg.example");
         std::env::remove_var("AGENT_BRAIN_TELEGRAM_API");
