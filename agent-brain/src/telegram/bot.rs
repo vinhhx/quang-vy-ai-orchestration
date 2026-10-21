@@ -995,6 +995,52 @@ mod tests {
         assert!(sorted_updates(&json!({"x": 1})).is_empty());
     }
 
+    fn pending(expires_at_ms: i64) -> PendingNote {
+        PendingNote {
+            task_id: 1,
+            rev: "0123456789abcdef".to_string(),
+            origin_message_id: 10,
+            origin_text: "Chờ duyệt plan · task 1".to_string(),
+            prompt_message_id: 11,
+            expires_at_ms,
+        }
+    }
+
+    #[test]
+    fn pending_note_expiry() {
+        let p = pending(1_000);
+        assert!(!p.expired(999));
+        assert!(p.expired(1_000));
+        assert!(p.expired(1_001));
+
+        // Only an expired prompt is taken off the poll state.
+        let mut st = PollState::new();
+        assert_eq!(take_expired(&mut st, 5_000), None);
+        st.pending = Some(pending(1_000));
+        assert_eq!(take_expired(&mut st, 999), None);
+        assert!(st.pending.is_some());
+        assert_eq!(take_expired(&mut st, 1_000), Some(pending(1_000)));
+        assert!(st.pending.is_none());
+    }
+
+    #[test]
+    fn kill_confirm_suffix_text() {
+        assert_eq!(kill_confirm_suffix(12), "\n\nXác nhận Kill run 12?");
+        let shown = format!("Run đang chạy{}", kill_confirm_suffix(3));
+        assert_eq!(without_confirm(&shown, 3), "Run đang chạy");
+        // Another run's suffix, or none, is left as it is.
+        assert_eq!(without_confirm(&shown, 4), shown);
+        assert_eq!(without_confirm("Run đang chạy", 3), "Run đang chạy");
+    }
+
+    #[test]
+    fn note_prompt_names_the_task() {
+        assert_eq!(
+            note_prompt_text(7),
+            "Ghi chú cho Lead (task 7): gửi tin nhắn kế tiếp làm ghi chú (tối đa 500 ký tự), hoặc bấm Không ghi chú. Hết hạn sau 10 phút."
+        );
+    }
+
     #[test]
     fn suffix_keeps_original_text() {
         let s = with_suffix("Chờ duyệt plan · task 1", "\n\n✓ x");

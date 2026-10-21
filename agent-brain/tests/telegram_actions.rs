@@ -1122,3 +1122,319 @@ fn return_lead_with_note_from_telegram() {
     );
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+// ---------------------------------------------------------------------------
+// Plan 05.3-06 Task 2: the other prompt paths and Kill with confirmation
+// ---------------------------------------------------------------------------
+
+const NOTE_TOO_LONG: &str =
+    "Ghi chú quá dài (tối đa 500 ký tự) — gửi lại ngắn hơn hoặc bấm Không ghi chú.";
+const NOTE_LINE: &str = "Ghi chú của người dùng";
+
+fn run_status(sb: &Sandbox, run_id: i64) -> String {
+    sb.db()
+        .query_row("SELECT status FROM runs WHERE id = ?1", [run_id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+/// Presses `label` on the prompt message `prompt`; returns the callback id.
+fn press_prompt(tg: &FakeTelegram, prompt: &Value, label: &str) -> String {
+    press(tg, PAIRED_CHAT, PAIRED_CHAT, prompt, label)
+}
+
+#[test]
+fn return_lead_without_note() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    auto_start_to_gate(&sb, return_scenario());
+    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    let m = message_id_of(&gate);
+    let prompt = open_note_prompt(&tg, &srv, &gate, 1);
+    let p = message_id_of(&prompt);
+
+    let cb_id = press_prompt(&tg, &prompt, "Không ghi chú");
+    let ans = wait_answer(&tg, &srv, &cb_id);
+    assert_eq!(ans["json"]["text"], json!("Đã trả về Lead"), "{ans}");
+    assert_eq!(wait_job_role(&srv, 1, Duration::from_secs(15)), "auto");
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], 0, "{job}");
+
+    let lead_prompt = last_lead_prompt(&sb);
+    assert!(!lead_prompt.contains(NOTE_LINE), "prompt: {lead_prompt}");
+    assert!(run_metrics(&sb, last_run_id(&sb, "lead"))
+        .get("note")
+        .map_or(true, Value::is_null));
+    let edit = wait_edit(&tg, &srv, m, |r| {
+        text_of(r).contains("✓ Đã trả về Lead (không ghi chú) — từ Telegram lúc ")
+    });
+    assert!(empty_keyboard(&edit), "{edit}");
+    wait_edit(&tg, &srv, p, |r| text_of(r) == "Đã gửi cho Lead.");
+    assert!(
+        stdout_of(&srv).contains("Telegram: Trả về Lead task 1 — đã giao (không ghi chú)"),
+        "{}",
+        stdout_of(&srv)
+    );
+    // Pressing Không ghi chú again: the prompt is closed.
+    let again = press_prompt(&tg, &prompt, "Không ghi chú");
+    let ans = wait_answer(&tg, &srv, &again);
+    assert_eq!(ans["json"]["text"], json!(INVALID), "{ans}");
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(srv.get("/api/jobs/2").status, 404, "a second job started");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn cancel_and_too_long_note() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    auto_start_to_gate(&sb, return_scenario());
+    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    let m = message_id_of(&gate);
+
+    // A second press replaces the open prompt.
+    let first = open_note_prompt(&tg, &srv, &gate, 1);
+    let p1 = message_id_of(&first);
+    let cb_id = press(&tg, PAIRED_CHAT, PAIRED_CHAT, &gate, "Trả về Lead");
+    wait_answer(&tg, &srv, &cb_id);
+    let replaced = wait_edit(&tg, &srv, p1, |r| {
+        text_of(r) == "Đã huỷ — có yêu cầu ghi chú mới."
+    });
+    assert!(empty_keyboard(&replaced), "{replaced}");
+    let prompt = match tg.wait_call("sendMessage", Duration::from_secs(10), |r| {
+        text_of(r).starts_with("Ghi chú cho Lead (task 1)") && message_id_of(r) != p1
+    }) {
+        Some(r) => r,
+        None => panic!("no second prompt; records:\n{:#?}", tg.records()),
+    };
+    let p = message_id_of(&prompt);
+    // The replaced prompt's buttons do nothing.
+    let old = press_prompt(&tg, &first, "Không ghi chú");
+    let ans = wait_answer(&tg, &srv, &old);
+    assert_eq!(ans["json"]["text"], json!(INVALID), "{ans}");
+
+    // 501 characters: refused, the prompt stays open.
+    send_text(&tg, &"ă".repeat(501));
+    let too_long = wait_message(&tg, &srv, NOTE_TOO_LONG);
+    assert_eq!(text_of(&too_long), NOTE_TOO_LONG);
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(srv.get("/api/jobs/1").status, 404);
+    assert!(edits_of(&tg, p).is_empty(), "{:#?}", tg.records());
+
+    let cb_id = press_prompt(&tg, &prompt, "Huỷ");
+    let ans = wait_answer(&tg, &srv, &cb_id);
+    assert_eq!(ans["json"]["text"], json!("Đã huỷ"), "{ans}");
+    let pe = wait_edit(&tg, &srv, p, |r| text_of(r) == "Đã huỷ — không làm gì.");
+    assert!(empty_keyboard(&pe), "{pe}");
+
+    // After Huỷ a text is not a note.
+    send_text(&tg, "abc");
+    assert!(
+        tg.wait_call("sendMessage", Duration::from_secs(10), |r| text_of(r) == HELP)
+            .is_some(),
+        "no help reply; records:\n{:#?}",
+        tg.records()
+    );
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(srv.get("/api/jobs/1").status, 404, "a job started");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+    // The gate message keeps its buttons: nothing was done.
+    assert!(edits_of(&tg, m).is_empty(), "{:#?}", tg.records());
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn relead_with_note_from_failed_run() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    protocol::setup_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(json!({"exit_code": 1, "ops": []})),
+    );
+    assert_ne!(res.code, 0, "lead should fail: {}", res.stderr);
+    let failed = wait_message(&tg, &srv, "Run lỗi · task 1");
+    assert_eq!(labels(&failed), vec!["Trả về Lead".to_string()], "{failed}");
+    let m = message_id_of(&failed);
+
+    sb.write_scenario(lead_plan_entry());
+    let prompt = open_note_prompt(&tg, &srv, &failed, 1);
+    let p = message_id_of(&prompt);
+    send_text(&tg, "thêm bước kiểm tra");
+
+    assert_eq!(
+        wait_job_role(&srv, 1, Duration::from_secs(15)),
+        "lead",
+        "the dashboard's Chạy lại Lead job"
+    );
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], 0, "{job}");
+    let lead_prompt = last_lead_prompt(&sb);
+    assert!(
+        lead_prompt.contains("Ghi chú của người dùng: thêm bước kiểm tra"),
+        "prompt: {lead_prompt}"
+    );
+    let edit = wait_edit(&tg, &srv, m, |r| {
+        text_of(r).contains("✓ Đã trả về Lead (ghi chú: «thêm bước kiểm tra») — từ Telegram")
+    });
+    assert!(empty_keyboard(&edit), "{edit}");
+    wait_edit(&tg, &srv, p, |r| text_of(r) == "Đã gửi cho Lead.");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+/// A press of `data` on the synthetic message `message_id` showing `text`.
+fn push_press(tg: &FakeTelegram, message_id: i64, text: &str, data: &str) -> String {
+    let up = tg.callback_update(PAIRED_CHAT, PAIRED_CHAT, message_id, text, data);
+    let id = up["callback_query"]["id"].as_str().unwrap().to_string();
+    tg.push_update(up);
+    id
+}
+
+fn confirm_edits(tg: &FakeTelegram, message_id: i64) -> Vec<Value> {
+    edits_of(tg, message_id)
+        .into_iter()
+        .filter(|r| text_of(r).ends_with("Xác nhận Kill run 1?"))
+        .collect()
+}
+
+#[test]
+fn kill_with_confirmation_and_cancel() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    let repo = sb.make_repo("web-ban-hang", &[("README.md", "# test\n")], None, None);
+    let entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    sb.write_map(json!([entry]), &[]);
+    sb.write_config(json!({
+        "claude_bin": Sandbox::fake_claude_tree().to_str().unwrap(),
+        "kill_grace_secs": 1,
+    }));
+
+    let pidfile = sb.root.join("tg_tree.pid");
+    let mut srv = tg.serve(
+        &sb,
+        &[
+            ("FAKE_TREE_PIDFILE", pidfile.to_str().unwrap()),
+            ("FAKE_TREE_MODE", "coop"),
+            ("FAKE_TREE_SLEEP", "317"),
+        ],
+    );
+    wait_polling(&tg, &srv);
+
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "web-ban-hang", "request": "chạy sleep kill tg", "name": "kill-tg"}),
+    );
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    let job_pid = srv.get(&format!("/api/jobs/{job_id}")).json()["pid"]
+        .as_i64()
+        .unwrap() as i32;
+    let job_proc = agent_brain::procs::proc_id(job_pid).expect("job proc_id");
+    let [fake_id, bash_id, sleep_id] =
+        common::tree_procs(&pidfile, Duration::from_secs(10)).expect("tree_procs");
+    let _guard = common::ProcGuard(vec![job_proc, fake_id, bash_id, sleep_id]);
+    assert_eq!(run_status(&sb, 1), "running");
+
+    let rev = srv.get("/api/tasks/1").json()["rev"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let shown = "Run đang chạy";
+
+    // First press: only the confirmation is shown.
+    let ask = push_press(&tg, 9001, shown, &format!("k:1:1:{rev}"));
+    let ans = wait_answer(&tg, &srv, &ask);
+    assert_eq!(ans["json"]["text"], json!("Xác nhận Kill run 1?"), "{ans}");
+    let confirm = wait_edit(&tg, &srv, 9001, |r| {
+        text_of(r).ends_with("Xác nhận Kill run 1?")
+    });
+    assert_eq!(text_of(&confirm), "Run đang chạy\n\nXác nhận Kill run 1?");
+    assert_eq!(
+        buttons(&confirm),
+        vec![
+            ("Kill".to_string(), format!("K:1:1:{rev}")),
+            ("Huỷ".to_string(), format!("x:1:1:{rev}")),
+        ],
+        "{confirm}"
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(run_status(&sb, 1), "running", "a single press killed");
+    assert!(agent_brain::procs::alive(sleep_id));
+
+    // Huỷ: the message loses the question, the run keeps running.
+    let cancel = push_press(&tg, 9001, text_of(&confirm), &format!("x:1:1:{rev}"));
+    let ans = wait_answer(&tg, &srv, &cancel);
+    assert_eq!(ans["json"]["text"], json!("Đã huỷ Kill"), "{ans}");
+    assert!(
+        wait_until(Duration::from_secs(10), || edits_of(&tg, 9001)
+            .last()
+            .is_some_and(|r| !text_of(r).contains("Xác nhận Kill"))),
+        "{:#?}",
+        tg.records()
+    );
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(run_status(&sb, 1), "running", "Huỷ killed");
+    assert!(agent_brain::procs::alive(fake_id));
+    assert!(agent_brain::procs::alive(sleep_id));
+
+    // Kill, then the confirming Kill.
+    push_press(&tg, 9001, shown, &format!("k:1:1:{rev}"));
+    assert!(
+        wait_until(Duration::from_secs(10), || confirm_edits(&tg, 9001).len() == 2),
+        "{:#?}",
+        tg.records()
+    );
+    let confirm = confirm_edits(&tg, 9001).pop().unwrap();
+    let ok = push_press(&tg, 9001, text_of(&confirm), &format!("K:1:1:{rev}"));
+    wait_answer(&tg, &srv, &ok);
+    assert!(
+        wait_until(Duration::from_secs(10), || run_status(&sb, 1) == "killed"),
+        "run 1 status {}",
+        run_status(&sb, 1)
+    );
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            !agent_brain::procs::alive(fake_id)
+                && !agent_brain::procs::alive(bash_id)
+                && !agent_brain::procs::alive(sleep_id)
+        }),
+        "process tree survived the Kill"
+    );
+    let done = wait_edit(&tg, &srv, 9001, |r| text_of(r).contains("✓ Đã dừng run 1"));
+    assert!(text_of(&done).contains("từ Telegram"), "{done}");
+    assert!(!text_of(&done).contains("Xác nhận Kill"), "{done}");
+    assert!(text_of(&done).starts_with(shown), "{done}");
+    assert!(
+        stdout_of(&srv).contains("Telegram: Kill task 1 — Đã dừng run 1"),
+        "{}",
+        stdout_of(&srv)
+    );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
