@@ -8,7 +8,9 @@ pub mod callback;
 pub mod config;
 pub mod detect;
 pub mod outbox;
+pub mod prompt;
 pub mod render;
+pub mod setup;
 pub mod transport;
 
 use crate::dashboard::AppState;

@@ -132,6 +132,19 @@ enum Commands {
         #[arg(long)]
         port: Option<u16>,
     },
+    /// Telegram: ghép nối bot và gửi tin thử (thông báo + nút duyệt/dừng)
+    Telegram {
+        #[command(subcommand)]
+        subcommand: TelegramCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TelegramCommands {
+    /// Ghép nối: nhập token bot (không hiện trên màn hình), gửi mã 6 số cho bot
+    Setup,
+    /// Gửi một tin thử tới chat đã ghép nối
+    Test,
 }
 
 #[derive(Subcommand, Debug)]
@@ -190,6 +203,13 @@ fn main() {
         std::process::exit(agent_brain::dashboard::cmd_serve(*port));
     }
 
+    if let Commands::Telegram { subcommand } = &cmd {
+        std::process::exit(match subcommand {
+            TelegramCommands::Setup => agent_brain::telegram::setup::cmd_setup(),
+            TelegramCommands::Test => agent_brain::telegram::setup::cmd_test(),
+        });
+    }
+
     let mut ctx = match app::open_ctx() {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -205,6 +225,7 @@ fn main() {
     let result = match cmd {
         Commands::Guard { .. } => unreachable!(),
         Commands::Serve { .. } => unreachable!(),
+        Commands::Telegram { .. } => unreachable!(),
         Commands::Projects { subcommand } => match subcommand {
             ProjectsCommands::Scan { roots } => projects::cmd_scan(&roots),
             ProjectsCommands::Add { path, r#type } => projects::cmd_add(&path, r#type.as_deref()),
