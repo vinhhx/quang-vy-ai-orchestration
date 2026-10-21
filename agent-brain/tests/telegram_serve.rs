@@ -343,3 +343,48 @@ fn transport_upload_reaches_stub() {
         "upload dir not cleaned: {leftovers:?}"
     );
 }
+
+/// TELE-03: a run of 409s from getUpdates prints exactly one conflict line,
+/// backs off instead of spinning, keeps the dashboard up and resumes polling
+/// once the conflict ends.
+#[test]
+fn conflict_409_one_warning() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    let n = 4usize;
+    tg.set_behavior(json!([{
+        "method": "getUpdates", "times": n, "status": 409,
+        "description": "Conflict: terminated by other getUpdates request"
+    }]));
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    let mut srv = tg.serve(&sb, &[]);
+
+    // Polling resumes: more getUpdates calls than the 409 budget.
+    assert!(
+        wait_until(Duration::from_secs(20), || tg.calls("getUpdates").len() > n),
+        "polling did not resume after {n} conflicts; calls={}\nstdout:\n{}\nstderr:\n{}",
+        tg.calls("getUpdates").len(),
+        stdout_of(&srv),
+        stderr_of(&srv)
+    );
+    assert!(
+        srv.child.try_wait().unwrap().is_none(),
+        "serve exited on 409"
+    );
+
+    let conflict = "Telegram: bot đang được đọc ở nơi khác (409) — ";
+    let all = format!("{}\n{}", stdout_of(&srv), stderr_of(&srv));
+    let count = all.lines().filter(|l| l.starts_with(conflict)).count();
+    assert_eq!(count, 1, "expected exactly one conflict line:\n{all}");
+
+    // Backoff, not a hot loop: the failures must be spread over time.
+    let first_failures = tg.calls("getUpdates").len();
+    assert!(
+        first_failures <= n + 5,
+        "suspiciously many calls: {first_failures}"
+    );
+
+    assert!(!all.contains(FAKE_TOKEN), "token leaked:\n{all}");
+    assert_eq!(srv.get("/").status, 200);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+}

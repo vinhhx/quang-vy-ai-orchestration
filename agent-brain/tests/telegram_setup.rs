@@ -437,3 +437,78 @@ fn telegram_test_sends_message() {
     assert!(run.stderr().contains("chmod 600"), "{}", run.stderr());
     assert_eq!(tg.calls("sendMessage").len(), 1);
 }
+
+#[test]
+fn setup_conflict_409() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    tg.set_behavior(serde_json::json!([{
+        "method": "getUpdates", "times": 100, "status": 409,
+        "description": "Conflict: can't use getUpdates method while webhook is active"
+    }]));
+    let mut run = CliRun::spawn(&sb, &["telegram", "setup"], &tg.env(), &token_line());
+    let exit = run.wait_exit(Duration::from_secs(20));
+    let (out, err) = (run.stdout(), run.stderr());
+    assert_eq!(exit, 1, "stdout:\n{out}\nstderr:\n{err}");
+    assert!(
+        err.contains("Bot đang được đọc ở nơi khác (409) — tắt webhook hoặc tiến trình đang dùng bot rồi chạy lại"),
+        "{err}"
+    );
+    assert!(!telegram_json_path(&sb).exists());
+    assert!(!out.contains(FAKE_TOKEN) && !err.contains(FAKE_TOKEN));
+}
+
+/// TELE-02: the token only ever lands in telegram.json, never in config.json
+/// or any other file of the sandbox config/data dirs.
+#[test]
+fn setup_never_writes_secret_to_config_json() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    let before = std::fs::read(&sb.config_path).expect("sandbox config.json");
+
+    let mut run = CliRun::spawn(&sb, &["telegram", "setup"], &tg.env(), &token_line());
+    let code = run.wait_code();
+    tg.push_update(tg.message_update(PAIRED_CHAT, PAIRED_CHAT, "private", &code));
+    assert_eq!(
+        run.wait_exit(Duration::from_secs(20)),
+        0,
+        "{}",
+        run.stderr()
+    );
+
+    // A serve start/stop with the paired config must not leak it either.
+    let mut srv = tg.serve(&sb, &[]);
+    assert!(wait_until(Duration::from_secs(10), || srv
+        .stdout
+        .lock()
+        .unwrap()
+        .contains("Telegram: đã kết nối")));
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+
+    assert_eq!(
+        std::fs::read(&sb.config_path).unwrap(),
+        before,
+        "config.json was modified"
+    );
+    let tg_json = telegram_json_path(&sb);
+    assert!(tg_json.is_file());
+
+    fn walk(dir: &std::path::Path, hits: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, hits);
+            } else if std::fs::read(&p)
+                .map(|b| String::from_utf8_lossy(&b).contains(FAKE_TOKEN))
+                .unwrap_or(false)
+            {
+                hits.push(p);
+            }
+        }
+    }
+    let mut hits = Vec::new();
+    walk(&sb.xdg_config, &mut hits);
+    walk(&sb.xdg_data, &mut hits);
+    walk(&sb.personal_dir, &mut hits);
+    assert_eq!(hits, vec![tg_json], "token found outside telegram.json");
+}
