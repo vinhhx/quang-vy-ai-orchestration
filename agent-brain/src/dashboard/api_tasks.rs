@@ -1333,147 +1333,141 @@ async fn get_pipeline(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i6
     }
 }
 
+/// Đối số của Trả về Lead / Chạy lại Lead (05.2 D-17 / D-30): autopilot còn bật
+/// thì `auto {id} --replan`, ngược lại Lead tay `run lead --name {slug} -- {dự án} {tiêu đề}`.
+/// Ghi chú (đã chuẩn hóa) luôn là một phần tử argv `--note=…`, không qua shell.
+pub fn lead_return_args(
+    task: &TaskRow,
+    project_id: &str,
+    autopilot: bool,
+    note: Option<&str>,
+) -> (&'static str, Vec<String>) {
+    if autopilot {
+        let mut a = vec![
+            "auto".to_string(),
+            task.id.to_string(),
+            "--replan".to_string(),
+        ];
+        if let Some(n) = note {
+            a.push(format!("--note={n}"));
+        }
+        ("auto", a)
+    } else {
+        let mut a = vec![
+            "run".to_string(),
+            "lead".to_string(),
+            "--name".to_string(),
+            task.slug.clone(),
+        ];
+        if let Some(n) = note {
+            a.push(format!("--note={n}"));
+        }
+        a.push("--".to_string());
+        a.push(project_id.to_string());
+        a.push(task.title.clone());
+        ("lead", a)
+    }
+}
+
+/// Hành động của task (Chạy Dev / Chạy QA / Chạy lại Lead). Trạng thái được đọc
+/// lại; chỉ chạy khi hành động có mặt và đang bật. `rev` (tùy chọn) phải khớp;
+/// ghi chú chỉ dùng cho `relead`. Dashboard truyền `None` cho cả hai.
+pub fn run_task_action(
+    st: &AppState,
+    task_id: i64,
+    action_id: &str,
+    role: &str,
+    rev: Option<&str>,
+    note: Option<&str>,
+) -> BrainResult<ControlOutcome> {
+    let note = match normalize_note(note) {
+        Ok(n) => n,
+        Err(msg) => return Ok(ControlOutcome::Invalid(msg)),
+    };
+
+    let conn = crate::db::open(&st.db_path)?;
+    let state = match load_task_state(st, &conn, task_id)? {
+        Ok(s) => s,
+        Err(msg) => return Ok(ControlOutcome::NotFound(msg)),
+    };
+
+    if let Some(r) = rev {
+        if r != state.rev {
+            return Ok(ControlOutcome::Stale);
+        }
+    }
+
+    let task = &state.task;
+    let project = &state.project;
+
+    let action = match state.view.actions.iter().find(|a| a.id == action_id) {
+        Some(a) => a.clone(),
+        None => {
+            return Ok(ControlOutcome::Refused {
+                reason: NOT_ALLOWED_MSG.to_string(),
+                kind: "not_allowed",
+            });
+        }
+    };
+
+    if !action.enabled {
+        let reason = action.reason.unwrap_or_default();
+        let is_busy = state.busy.as_ref().map_or(false, |b| b == &reason);
+        let kind = if is_busy { "busy" } else { "not_allowed" };
+        return Ok(ControlOutcome::Refused { reason, kind });
+    }
+    // Chạy lại Lead khi autopilot còn bật (quy trình `auto: true`, chưa `ended`):
+    // autopilot lập lại plan từ khung mới (`auto {id} --replan`) rồi review plan
+    // như thường; autopilot đã tắt thì chạy Lead tay.
+    let replan_auto = action_id == "relead"
+        && taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto));
+    let (role, args): (&str, Vec<String>) = match role {
+        "lead" => {
+            let note = if action_id == "relead" {
+                note.as_deref()
+            } else {
+                None
+            };
+            lead_return_args(task, &project.id, replan_auto, note)
+        }
+        "auto" => lead_return_args(task, &project.id, true, None),
+        "dev" => (
+            "dev",
+            vec![
+                "run".to_string(),
+                "dev".to_string(),
+                "--".to_string(),
+                project.id.clone(),
+            ],
+        ),
+        "qa" => (
+            "qa",
+            vec![
+                "run".to_string(),
+                "qa".to_string(),
+                "--".to_string(),
+                project.id.clone(),
+            ],
+        ),
+        other => (other, vec![]),
+    };
+
+    match start_job_outcome(st, task_job(&state, role, args)) {
+        Ok(job_id) => Ok(ControlOutcome::Started { job_id }),
+        Err(outcome) => Ok(outcome),
+    }
+}
+
 async fn post_task_action(
     st: Arc<AppState>,
     task_id: i64,
     action_id: &'static str,
     role: &'static str,
 ) -> Response {
-    let res = blocking(move || {
-        let conn = crate::db::open(&st.db_path)?;
-        let state = match load_task_state(&st, &conn, task_id)? {
-            Ok(s) => s,
-            Err(msg) => return Ok(json_error(StatusCode::NOT_FOUND, &msg)),
-        };
-        let task = &state.task;
-        let project = &state.project;
-        let busy_reason_str = state.busy.clone();
-
-        let target_action = state.view.actions.iter().find(|a| a.id == action_id);
-        let action = match target_action {
-            Some(a) => a.clone(),
-            None => {
-                return Ok((
-                    StatusCode::CONFLICT,
-                    [(
-                        axum::http::header::CONTENT_TYPE,
-                        "application/json; charset=utf-8",
-                    )],
-                    Json(serde_json::json!({
-                        "error": "Hành động không áp dụng cho trạng thái hiện tại",
-                        "kind": "not_allowed",
-                    })),
-                )
-                    .into_response());
-            }
-        };
-
-        if !action.enabled {
-            let reason = action.reason.unwrap_or_default();
-            let is_busy = busy_reason_str.as_ref().map_or(false, |b| b == &reason);
-            let kind = if is_busy { "busy" } else { "not_allowed" };
-            return Ok((
-                StatusCode::CONFLICT,
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/json; charset=utf-8",
-                )],
-                Json(serde_json::json!({
-                    "error": reason,
-                    "kind": kind,
-                })),
-            )
-                .into_response());
-        }
-        // Chạy lại Lead khi autopilot còn bật (quy trình `auto: true`, chưa `ended`):
-        // autopilot lập lại plan từ khung mới (`auto {id} --replan`, không ghi chú)
-        // rồi review plan như thường; autopilot đã tắt thì chạy Lead tay.
-        let replan_auto = action_id == "relead"
-            && taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto));
-        let role = if replan_auto { "auto" } else { role };
-        let args = match role {
-            "auto" => vec![
-                "auto".to_string(),
-                task.id.to_string(),
-                "--replan".to_string(),
-            ],
-            "dev" => vec![
-                "run".to_string(),
-                "dev".to_string(),
-                "--".to_string(),
-                project.id.clone(),
-            ],
-            "qa" => vec![
-                "run".to_string(),
-                "qa".to_string(),
-                "--".to_string(),
-                project.id.clone(),
-            ],
-            "lead" => vec![
-                "run".to_string(),
-                "lead".to_string(),
-                "--name".to_string(),
-                task.slug.clone(),
-                "--".to_string(),
-                project.id.clone(),
-                task.title.clone(),
-            ],
-            _ => vec![],
-        };
-
-        let spec = crate::dashboard::jobs::JobSpec {
-            role: role.to_string(),
-            project: project.id.clone(),
-            profile: project.profile.clone(),
-            branch: Some(task.branch.clone()),
-            task_id: Some(task.id),
-            args,
-        };
-
-        match st.jobs.start(spec) {
-            Ok(job_id) => Ok((
-                StatusCode::ACCEPTED,
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/json; charset=utf-8",
-                )],
-                Json(serde_json::json!({ "job_id": job_id })),
-            )
-                .into_response()),
-            Err(e) => {
-                if e.message.contains("Dashboard đang dừng") {
-                    Ok((
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        [(
-                            axum::http::header::CONTENT_TYPE,
-                            "application/json; charset=utf-8",
-                        )],
-                        Json(serde_json::json!({
-                            "error": "Dashboard đang dừng — không nhận việc mới"
-                        })),
-                    )
-                        .into_response())
-                } else {
-                    Ok((
-                        StatusCode::CONFLICT,
-                        [(
-                            axum::http::header::CONTENT_TYPE,
-                            "application/json; charset=utf-8",
-                        )],
-                        Json(serde_json::json!({
-                            "error": e.message,
-                            "kind": "busy",
-                        })),
-                    )
-                        .into_response())
-                }
-            }
-        }
-    })
-    .await;
+    let res = blocking(move || run_task_action(&st, task_id, action_id, role, None, None)).await;
 
     match res {
-        Ok(resp) => resp,
+        Ok(o) => control_response(o),
         Err(e) => internal_error("chạy hành động của task", &e),
     }
 }
@@ -1728,28 +1722,12 @@ pub fn run_control(
         "return_lead" => {
             // D-17 / D-30: lập lại plan (ghi chú là một phần tử argv); bỏ duyệt
             // chỉ sau khi job đã bắt đầu — job bị từ chối thì giữ nguyên duyệt (WR-04).
-            let (role, args) =
-                if taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)) {
-                    let mut a = vec!["auto".to_string(), id_str, "--replan".to_string()];
-                    if let Some(n) = note.as_deref() {
-                        a.push(format!("--note={n}"));
-                    }
-                    ("auto", a)
-                } else {
-                    let mut a = vec![
-                        "run".to_string(),
-                        "lead".to_string(),
-                        "--name".to_string(),
-                        state.task.slug.clone(),
-                    ];
-                    if let Some(n) = note.as_deref() {
-                        a.push(format!("--note={n}"));
-                    }
-                    a.push("--".to_string());
-                    a.push(state.project.id.clone());
-                    a.push(state.task.title.clone());
-                    ("lead", a)
-                };
+            let (role, args) = lead_return_args(
+                &state.task,
+                &state.project.id,
+                taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)),
+                note.as_deref(),
+            );
             match start_job_outcome(st, task_job(&state, role, args)) {
                 Ok(job_id) => {
                     crate::db::clear_task_approval(&conn, task_id)?;

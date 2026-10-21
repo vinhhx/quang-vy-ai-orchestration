@@ -2,6 +2,7 @@
 
 use crate::dashboard::sse::status_json;
 use crate::dashboard::{blocking, json_error, AppState};
+use crate::error::BrainResult;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -58,116 +59,79 @@ async fn get_run(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) -
     }
 }
 
+/// Kết quả của Kill (dashboard và bot Telegram dùng chung, 05.3 D-02).
+#[derive(Debug, Clone, PartialEq)]
+pub enum KillOutcome {
+    /// Run không có.
+    NotFound(String),
+    /// Từ chối: run không thuộc task, không còn chạy, hoặc `cmd_kill` báo lỗi.
+    Refused(String),
+    /// `cmd_kill` đã chạy; `ok: false` khi còn tiến trình sót.
+    Done { ok: bool, message: String },
+}
+
+/// Kill một run của task, chỉ qua `runner::cmd_kill` (PID + thời điểm bắt đầu,
+/// cây tiến trình đã ghi). Từ chối run không thuộc task nào và run không còn chạy.
+pub fn kill_run(st: &AppState, run_id: i64) -> BrainResult<KillOutcome> {
+    let id = run_id;
+    let conn = crate::db::open(&st.db_path)?;
+    let run = match crate::db::get_run(&conn, id)? {
+        Some(r) => r,
+        None => return Ok(KillOutcome::NotFound(format!("Không tìm thấy run {id}"))),
+    };
+
+    let task_id = match run.task_id {
+        Some(tid) => tid,
+        None => {
+            return Ok(KillOutcome::Refused(format!(
+                "Run {id} không thuộc task nào — không dừng được từ dashboard"
+            )));
+        }
+    };
+
+    if run.status != "running" {
+        return Ok(KillOutcome::Refused(format!(
+            "Run {id} không còn chạy (trạng thái {})",
+            run.status
+        )));
+    }
+
+    let mut ctx = crate::app::open_ctx_with(st.cfg.clone(), &st.map_path, &st.db_path)?;
+    match crate::runner::cmd_kill(&mut ctx, task_id) {
+        Ok(1) => Ok(KillOutcome::Done {
+            ok: false,
+            message: "CẢNH BÁO: còn tiến trình sót".to_string(),
+        }),
+        Ok(_) => Ok(KillOutcome::Done {
+            ok: true,
+            message: format!("Đã dừng run {id}"),
+        }),
+        Err(e) => Ok(KillOutcome::Refused(e.message)),
+    }
+}
+
 async fn post_kill_run(
     State(st): State<Arc<AppState>>,
     AxumPath(id): AxumPath<i64>,
     Json(_body): Json<KillBody>,
 ) -> Response {
-    let res = blocking(move || {
-        let conn = crate::db::open(&st.db_path)?;
-        let run = match crate::db::get_run(&conn, id)? {
-            Some(r) => r,
-            None => {
-                return Ok((
-                    StatusCode::NOT_FOUND,
-                    [(
-                        axum::http::header::CONTENT_TYPE,
-                        "application/json; charset=utf-8",
-                    )],
-                    Json(serde_json::json!({
-                        "error": format!("Không tìm thấy run {id}")
-                    })),
-                )
-                    .into_response());
-            }
-        };
-
-        let task_id = match run.task_id {
-            Some(tid) => tid,
-            None => {
-                return Ok((
-                    StatusCode::CONFLICT,
-                    [(
-                        axum::http::header::CONTENT_TYPE,
-                        "application/json; charset=utf-8",
-                    )],
-                    Json(serde_json::json!({
-                        "error": format!("Run {id} không thuộc task nào — không dừng được từ dashboard")
-                    })),
-                )
-                    .into_response());
-            }
-        };
-
-        if run.status != "running" {
-            return Ok((
-                StatusCode::CONFLICT,
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/json; charset=utf-8",
-                )],
-                Json(serde_json::json!({
-                    "error": format!("Run {id} không còn chạy (trạng thái {})", run.status)
-                })),
-            )
-                .into_response());
-        }
-
-        let mut ctx = crate::app::open_ctx_with(st.cfg.clone(), &st.map_path, &st.db_path)?;
-        match crate::runner::cmd_kill(&mut ctx, task_id) {
-            Ok(0) => Ok((
-                StatusCode::OK,
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/json; charset=utf-8",
-                )],
-                Json(serde_json::json!({
-                    "ok": true,
-                    "message": format!("Đã dừng run {id}")
-                })),
-            )
-                .into_response()),
-            Ok(1) => Ok((
-                StatusCode::OK,
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/json; charset=utf-8",
-                )],
-                Json(serde_json::json!({
-                    "ok": false,
-                    "message": "CẢNH BÁO: còn tiến trình sót"
-                })),
-            )
-                .into_response()),
-            Ok(_) => Ok((
-                StatusCode::OK,
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/json; charset=utf-8",
-                )],
-                Json(serde_json::json!({
-                    "ok": true,
-                    "message": format!("Đã dừng run {id}")
-                })),
-            )
-                .into_response()),
-            Err(e) => Ok((
-                StatusCode::CONFLICT,
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/json; charset=utf-8",
-                )],
-                Json(serde_json::json!({
-                    "error": e.message
-                })),
-            )
-                .into_response()),
-        }
-    })
-    .await;
+    let res = blocking(move || kill_run(&st, id)).await;
 
     match res {
-        Ok(resp) => resp,
+        Ok(KillOutcome::NotFound(msg)) => json_error(StatusCode::NOT_FOUND, &msg),
+        Ok(KillOutcome::Refused(msg)) => json_error(StatusCode::CONFLICT, &msg),
+        Ok(KillOutcome::Done { ok, message }) => (
+            StatusCode::OK,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "application/json; charset=utf-8",
+            )],
+            Json(serde_json::json!({
+                "ok": ok,
+                "message": message
+            })),
+        )
+            .into_response(),
         Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
     }
 }
