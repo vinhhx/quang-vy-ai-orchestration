@@ -235,6 +235,8 @@ pub fn is_tracked(root: &Path, rel: &str) -> bool {
     cmd.args(["ls-files", "--error-unmatch", "--", rel]);
     cmd.current_dir(root);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
     match cmd.status() {
         Ok(status) => status.success(),
         Err(_) => false,

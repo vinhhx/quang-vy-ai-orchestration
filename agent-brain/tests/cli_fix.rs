@@ -209,6 +209,79 @@ files: [\"src/util.py\"]
     assert_eq!(actual_read, expected_read);
 }
 
+/// 05.2-32: `gitops::is_tracked` must not leak `git ls-files` output (the
+/// tracked path on a line of its own) into the CLI's stdout.
+#[test]
+fn fix_run_prints_no_git_ls_files_line() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _plan_sha, _dev_sha) = setup_lead_and_dev(&sb);
+
+    let review_report = "\
+---
+verdict: revise
+blocking: 1
+advisory: 0
+files: [\"src/app.py\"]
+---
+# Review code: sửa app
+## Mục chặn (blocking)
+- `src/app.py:2` trả về sai
+## Góp ý (advisory)
+";
+    let sc_review = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".code-review.md",
+                "content": review_report,
+            }
+        ]
+    });
+    let res_review = sb.run(&["run", "code-review", "web-ban-hang"], Some(sc_review));
+    assert_eq!(
+        res_review.code, 0,
+        "code-review failed: stderr: {}\nstdout: {}",
+        res_review.stderr, res_review.stdout
+    );
+
+    let sc_fix = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "read", "path": ".code-review.md"},
+            {"op": "write", "path": "src/app.py", "content": "def app():\n    return 3\n"},
+            {"op": "git", "args": ["add", "src/app.py"]},
+            {"op": "git", "args": ["commit", "-m", "sua-app: sửa theo review"]}
+        ]
+    });
+    let res_fix = sb.run(
+        &["run", "dev", "web-ban-hang", "--fix", "code-review"],
+        Some(sc_fix),
+    );
+    assert_eq!(
+        res_fix.code, 0,
+        "fix failed: stderr: {}\nstdout: {}",
+        res_fix.stderr, res_fix.stdout
+    );
+    assert!(
+        res_fix
+            .stdout
+            .lines()
+            .any(|l| l.trim_end() == "File được nêu trong .code-review.md: src/app.py"),
+        "stdout: {}",
+        res_fix.stdout
+    );
+    assert!(
+        !res_fix.stdout.lines().any(|l| l.trim_end() == "src/app.py"),
+        "stray git ls-files line in stdout: {}",
+        res_fix.stdout
+    );
+    assert!(
+        !res_fix.stderr.lines().any(|l| l.trim_end() == "src/app.py"),
+        "stray git ls-files line in stderr: {}",
+        res_fix.stderr
+    );
+}
+
 #[test]
 fn fix_dry_run() {
     let sb = Sandbox::new();
