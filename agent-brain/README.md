@@ -363,7 +363,7 @@ Lệnh `agent-brain serve [--port N]` khởi động giao diện web nội bộ 
 1. **Tổng quan (`#/`)**: Hiển thị bảng tóm tắt nhanh số lượng task theo từng nhóm trạng thái (đang chạy, chờ duyệt plan, cần chú ý, hoàn tất) và danh sách thẻ task gần đây. Hỗ trợ lọc nhanh theo profile (`Tất cả`, `work`, `personal`).
 2. **Giao việc (`#/assign`)**: Ô nhập yêu cầu bằng tiếng Việt, chọn dự án thông qua ô tìm kiếm tự động gợi ý (tự động đề xuất slug chuẩn hóa). Nếu tên nhập vào bị mơ hồ hoặc trùng khớp nhiều dự án, giao diện hiển thị danh sách để người dùng chọn thay vì tự động chạy.
 3. **Chi tiết task (`#/task/:id`)**:
-   - Thanh tiến trình pipeline trực quan qua 3 vai trò Lead → Dev → QA (stepper).
+   - Luồng pipeline dạng thẻ theo quy trình của task (Phase 5.1/5.2): Bắt đầu → Lead/Review plan (vòng lặp) → thẻ **Bạn** (Duyệt plan / Trả về Lead) → Dev/Review code → QA/Sửa, kèm vòng hiện tại / giới hạn, huy hiệu và nút Bật/Dừng autopilot, dòng ngân sách, banner khi autopilot dừng và sổ lượt chạy. Task tạo trước 5.2 vẫn hiện luồng Lead → Dev → QA.
    - Hiển thị nội dung kế hoạch `.plan.md` ở chế độ chỉ đọc (read-only). Người dùng chỉnh sửa plan trực tiếp bằng trình soạn thảo mã nguồn ngoài và commit với cú pháp `<slug>: plan`.
    - Các nút hành động theo ngữ cảnh quy trình: `Chạy Dev` (khi plan đã sẵn sàng và commit sạch), `Chạy QA` (sau khi Dev hoàn thành), `Chạy lại Lead` (khi gặp Vướng mắc hoặc QA Cần sửa).
    - Nút **Kill** dừng ngay tiến trình khi cần.
@@ -372,7 +372,7 @@ Lệnh `agent-brain serve [--port N]` khởi động giao diện web nội bộ 
 5. **Dự án (`#/projects`)**: Danh sách toàn bộ dự án đã đăng ký trong `projects_map.json`. Cho phép chỉnh sửa danh sách `aliases` (biệt danh) trực tiếp với kiểm tra trùng lặp và nút **Quét lại** (`agent-brain projects scan`) để tự động cập nhật danh mục repo.
 
 ### Quy tắc điều phối & Hồ sơ (Pipeline & Profile Rules)
-- **Quy tắc pipeline**: Sau khi Lead chạy xong, task chuyển sang trạng thái `Chờ duyệt plan`. Các bước Dev và QA chỉ chạy khi người dùng chủ động bấm nút trên giao diện. Nội dung plan không chỉnh sửa trên web; nếu gặp `Vướng mắc` (dev:blocked) hoặc `Cần sửa` (qa:fix), giao diện cung cấp nút bấm để chạy lại Lead hoặc tiếp tục Dev sau khi người dùng sửa file và commit.
+- **Quy tắc pipeline**: Sau khi Lead chạy xong, task chuyển sang trạng thái `Chờ duyệt plan`. Với quy trình thủ công (ví dụ `nhanh`) hoặc khi autopilot đang tắt, các bước Dev và QA chỉ chạy khi người dùng chủ động bấm nút; với quy trình `auto` (ví dụ `mac-dinh`), autopilot tự chạy các bước sau khi bạn duyệt plan (xem mục Autopilot). Nội dung plan không chỉnh sửa trên web; nếu gặp `Vướng mắc` (dev:blocked) hoặc `Cần sửa` (qa:fix), giao diện cung cấp nút bấm để chạy lại Lead hoặc tiếp tục Dev sau khi người dùng sửa file và commit.
 - **Ràng buộc một run mỗi dự án**: Không cho phép khởi chạy song song hai tác vụ trên cùng một dự án. Nút chạy sẽ bị vô hiệu hóa kèm lý do thông báo nếu dự án đang bận.
 - **Ràng buộc tài khoản cá nhân (Personal Profile)**: Tuân thủ quy tắc E-06, toàn hệ thống chỉ cho phép tối đa 1 tác vụ chạy với profile `personal` tại một thời điểm để tránh xung đột `~/.claude-orca`.
 - **Bộ chuyển đổi Profile**: Bộ chọn profile trên giao diện (`Tất cả` / `work` / `personal`) chỉ có tác dụng lọc tầm nhìn (view filter) cho danh sách task, thống kê và bộ gợi ý dự án. Một task mới khi tạo sẽ luôn chạy dưới profile được cấu hình sẵn của dự án đó trong `projects_map.json`, giao diện không cho phép ghi đè profile khi giao việc.
