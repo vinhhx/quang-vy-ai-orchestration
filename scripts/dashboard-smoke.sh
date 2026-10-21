@@ -727,13 +727,12 @@ if 'Autopilot dừng ở đây để bạn duyệt plan.' not in parser.full_tex
     print("Lỗi: DOM không chứa ghi chú cổng 'Autopilot dừng ở đây để bạn duyệt plan.'", file=sys.stderr)
     sys.exit(1)
 
-if 'ab-act-run_dev' not in parser.button_ids:
-    print(f"Lỗi: Thiếu nút ab-act-run_dev trong danh sách buttons: {parser.button_ids}", file=sys.stderr)
-    sys.exit(1)
-
-if 'ab-act-relead' not in parser.button_ids:
-    print(f"Lỗi: Thiếu nút ab-act-relead trong danh sách buttons: {parser.button_ids}", file=sys.stderr)
-    sys.exit(1)
+# Autopilot waits at the gate (task 1): the manual Chạy Dev / Chạy lại Lead do
+# not compete with Duyệt plan / Trả về Lead (they return after Dừng autopilot).
+for bid in ('ab-act-run_dev', 'ab-act-relead'):
+    if bid in parser.button_ids:
+        print(f"Lỗi: Nút {bid} không được hiện khi autopilot chờ ở cổng duyệt", file=sys.stderr)
+        sys.exit(1)
 
 if len(parser.legend_items) != 7:
     print(f"Lỗi: Số lượng data-legend-item là {len(parser.legend_items)}, kỳ vọng 7", file=sys.stderr)
@@ -1145,5 +1144,6 @@ EOF
   fi
 
   stop_chrome
-  echo "Keys OK: combobox, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, picker, layout-5.2"
+  cat "$TMP/keys.out"
+  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, picker, layout-5.2"
 fi

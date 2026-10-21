@@ -1616,6 +1616,48 @@ fn approve_on_other_branch_refused() {
 }
 
 #[test]
+fn armed_gate_refuses_manual_dev() {
+    let sb = Sandbox::new();
+    let _repo = auto_to_gate(&sb);
+    sb.write_scenario(by_role(json!({ "dev": [dev_impl_entry()] })));
+    let srv = sb.serve(&[]);
+
+    let t = srv.get("/api/tasks/1").json();
+    let ids: Vec<&str> = t["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        !ids.contains(&"run_dev") && !ids.contains(&"relead"),
+        "{ids:?}"
+    );
+
+    // The server refuses a manual Dev beside an armed gate (stale page).
+    let resp = srv.post_json("/api/tasks/1/dev", &json!({}));
+    assert_eq!(resp.status, 409, "{}", resp.text());
+    assert_eq!(resp.json()["kind"], "not_allowed");
+    assert_eq!(srv.get("/api/jobs/1").status, 404, "no job started");
+    assert_eq!(run_roles(&sb), vec!["lead", "plan-review"]);
+
+    // After Dừng autopilot the manual path is back.
+    stop_at_gate(&sb, &srv);
+    let t = srv.get("/api/tasks/1").json();
+    assert_eq!(action(&t, "run_dev")["enabled"], true, "{}", t["actions"]);
+    assert_eq!(action(&t, "relead")["enabled"], true, "{}", t["actions"]);
+
+    let resp = srv.post_json("/api/tasks/1/dev", &json!({}));
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(job_role(&srv, job_id), "dev");
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "{job}");
+    assert_eq!(run_roles(&sb), vec!["lead", "plan-review", "dev"]);
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("ended"));
+}
+
+#[test]
 fn relead_auto_workflow_replans() {
     let sb = Sandbox::new();
     let _repo = auto_to_gate(&sb);

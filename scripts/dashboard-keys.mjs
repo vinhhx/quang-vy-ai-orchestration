@@ -192,6 +192,72 @@ async function main() {
   }
   console.log('OK combobox');
 
+  // Check gate-stop: autopilot waits at the Bạn gate on task 1. The header
+  // offers Dừng autopilot and the strip shows no manual Chạy Dev / Chạy lại
+  // Lead beside the gate. One click (one POST) turns autopilot off: Bật
+  // autopilot becomes enabled and Chạy lại Lead comes back, with no new run.
+  // This check never clicks Duyệt plan.
+  await evaluate('window.location.hash = "#/task/1"');
+  await waitFor(
+    'Boolean(document.querySelector(\'[data-screen="task"][data-loaded="yes"]\'))',
+    5000,
+    'gate-stop',
+    'Màn hình task/1 không tải kịp thời'
+  );
+
+  await waitFor(`
+    (() => {
+      const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const btn = document.getElementById("ab-act-auto_stop");
+      return vis(btn) && !btn.disabled && btn.textContent.trim() === "Dừng autopilot";
+    })()
+  `, 5000, 'gate-stop', 'Không thấy nút "Dừng autopilot" (#ab-act-auto_stop) hiển thị và đang bật');
+
+  const manualShown = await evaluate(`
+    (() => {
+      const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      return ["ab-act-run_dev", "ab-act-relead"].filter((id) => vis(document.getElementById(id)));
+    })()
+  `);
+  if (manualShown.length > 0) {
+    throw new Error(`LỖI gate-stop: nút ${manualShown.join(', ')} hiển thị khi autopilot chờ ở cổng duyệt`);
+  }
+
+  const gateRunsBefore = await evaluate(`
+    fetch('/api/tasks/1')
+      .then(r => r.json())
+      .then(d => (Array.isArray(d.runs) ? d.runs.length : 0))
+  `);
+
+  await evaluate(`
+    (() => {
+      const btn = document.getElementById("ab-act-auto_stop");
+      if (btn && !btn.disabled) btn.click();
+    })()
+  `);
+
+  await waitFor(`
+    (() => {
+      const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const start = document.getElementById("ab-act-auto_start");
+      const startOk = vis(start) && !start.disabled && start.textContent.trim() === "Bật autopilot";
+      const relead = Array.from(document.querySelectorAll("button")).some(
+        (b) => b.textContent.trim() === "Chạy lại Lead" && !b.disabled && vis(b)
+      );
+      return startOk && relead;
+    })()
+  `, 5000, 'gate-stop', 'Sau khi bấm Dừng autopilot không thấy nút "Bật autopilot" đang bật và nút "Chạy lại Lead" hiển thị');
+
+  const gateRunsAfter = await evaluate(`
+    fetch('/api/tasks/1')
+      .then(r => r.json())
+      .then(d => (Array.isArray(d.runs) ? d.runs.length : 0))
+  `);
+  if (gateRunsAfter !== gateRunsBefore) {
+    throw new Error(`LỖI gate-stop: runs.length đã đổi từ ${gateRunsBefore} sang ${gateRunsAfter}`);
+  }
+  console.log('OK gate-stop');
+
   // Check B, confirmation dialog
   const runsBefore = await evaluate(`
     fetch('/api/tasks/1')

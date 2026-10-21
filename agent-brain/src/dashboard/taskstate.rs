@@ -704,6 +704,12 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
                 }
             }
         }
+        if auto_state == "gate" {
+            // Autopilot chờ ở cổng duyệt plan: bước tiếp theo chỉ là Duyệt plan /
+            // Trả về Lead (hoặc Dừng autopilot). Chạy Dev / Chạy lại Lead tay quay
+            // lại sau khi tắt autopilot; server cũng từ chối POST (UI fix 2).
+            acts.retain(|act| act.id != "run_dev" && act.id != "relead");
+        }
         acts
     };
 
@@ -1633,6 +1639,72 @@ mod tests {
             start_null.reason.as_deref(),
             Some("Autopilot dừng ở bước duyệt plan — bấm Duyệt plan để chạy tiếp.")
         );
+    }
+
+    #[test]
+    fn armed_gate_hides_manual_actions() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+        let nhanh = wfs.get("nhanh").unwrap();
+
+        let task = dummy_task("planned");
+        let git = gate_git("task/sua-app");
+        let facts = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 2000,
+        };
+
+        // 1. autopilot armed at the gate: no manual Dev / relead beside it.
+        let gate = dummy_task_auto(Some("gate"), None);
+        let af = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&gate),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let view = derive_with(&facts, &af);
+        assert_eq!(view.auto.state, "gate");
+        assert!(
+            !view
+                .actions
+                .iter()
+                .any(|a| a.id == "run_dev" || a.id == "relead"),
+            "{:?}",
+            view.actions
+        );
+
+        // 2. autopilot turned off (`ended`): the manual path comes back.
+        let ended = dummy_task_auto(Some("ended"), None);
+        let af_ended = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&ended),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let view = derive_with(&facts, &af_ended);
+        assert_eq!(ids_of(&view.actions), vec!["run_dev", "relead"]);
+        assert!(view.actions.iter().all(|a| a.enabled), "{:?}", view.actions);
+
+        // 3. nhanh at the gate (auto_state NULL): unchanged.
+        let null = dummy_task_auto(None, None);
+        let af_nhanh = AutoFacts {
+            workflow: Some(nhanh),
+            auto: Some(&null),
+            gate: Some(GateState::Waiting),
+            ..Default::default()
+        };
+        let view = derive_with(&facts, &af_nhanh);
+        assert_eq!(ids_of(&view.actions), vec!["run_dev", "relead"]);
+        assert!(view.actions.iter().all(|a| a.enabled), "{:?}", view.actions);
     }
 
     #[test]
