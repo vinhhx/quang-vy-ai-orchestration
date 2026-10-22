@@ -1,43 +1,43 @@
 ---
 gsd_state_version: "1.0"
-current_phase: "05.3"
-current_phase_name: Telegram Notifications and Actions
-status: executing
-stopped_at: Phase 05.3 context gathered
-last_updated: "2026-10-21T16:38:03.088Z"
-last_activity: 2026-10-21
-last_activity_desc: Phase 05.3 execution resumed (wave continue)
-state_head: 6240484e3086bd80c835f060c06247844bc3e209
+current_phase: "05.4"
+current_phase_name: Telegram Task Intake
+status: planning
+stopped_at: Phase 05.3 complete, ready to discuss Phase 05.4
+last_updated: "2026-10-22T01:52:57.774Z"
+last_activity: 2026-10-22
+last_activity_desc: Phase 05.3 complete, transitioned to Phase 05.4
+state_head: 7f1c19c07e4b517ed67ea806c728d14489476b27
 progress:
   total_phases: 11
   completed_phases: 5
   total_plans: 80
   completed_plans: 80
-  percent: 45
+  percent: 67
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-19)
+See: .planning/PROJECT.md (updated 2026-10-22)
 
 **Core value:** Giao việc cho nhiều AI agent bằng giao thức Lead → `.plan.md` → Dev → QA một cách đáng tin cậy: đúng dự án, đúng vai trò, kill sạch cây tiến trình, đo được token.
-**Current focus:** Phase 05.3 — Telegram Notifications and Actions
+**Current focus:** Phase 05.4 — Telegram Task Intake
 
 ## Current Position
 
-Phase: 05.3 (Telegram Notifications and Actions) — EXECUTING
-Plan: 1 of 8
-Status: Executing Phase 05.3
-Last activity: 2026-10-21 — Phase 05.3 execution resumed (wave continue)
+Phase: 05.4 (Telegram Task Intake) — NOT STARTED
+Plan: Not started (no CONTEXT.md yet)
+Status: Ready to discuss
+Last activity: 2026-10-22 — Phase 05.3 complete (UAT 3/3, verification passed), transitioned to Phase 05.4
 
-Progress: [█████░░░░░] 45% (5/7 phases complete, 39/39 planned plans done)
+Progress: [███████░░░] 67% (5/7 phases complete, 39/39 planned plans done)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 71
+- Total plans completed: 80
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -51,6 +51,7 @@ Progress: [█████░░░░░] 45% (5/7 phases complete, 39/39 plann
 | 5 | 13 | - | - |
 | 05.1 | 5 | - | - |
 | 05.2 | 32 | - | - |
+| 05.3 | 9 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -78,6 +79,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Không có quyết đị
 - [Phase 05]: Dashboard `agent-brain serve` chỉ nghe 127.0.0.1 + token mỗi lần khởi động; cookie không tách theo port là rủi ro chấp nhận AR-5-01 (CR-01 deferred)
 - [Phase 05]: Kill từ UI chỉ đi qua `runner::cmd_kill`; job con `agent-brain run` có PDEATHSIG; live update bằng pump `PRAGMA data_version`
 - [Phase 05]: agy chạy với `--dangerously-skip-permissions` (người dùng duyệt cho Phase 5); kiểm UI tự động bằng `scripts/dashboard-smoke.sh --keys` (Chrome headless + CDP)
+- [Phase 05.3]: Bot Telegram chạy trong `serve`, gọi API qua `curl -K -` (token không lên argv), long polling, chỉ chat ID đã ghép; nút Telegram dùng chung hàm hành động với dashboard (`run_task_action`, `kill_run`); Kill phải xác nhận lần hai
 - [Phase 01]: S6/S7 engine facts for Phase 6: dsh headless is text-only and needs in-container kill; agy is headless with JSON but no turn limit — Observed in S6 (json_lines=0, container process survives client kill) and S7 (--max-turns rejected, exit 2)
 
 ### Pending Todos
@@ -106,6 +108,8 @@ Decisions are logged in PROJECT.md Key Decisions table. Không có quyết đị
 - [Open]: Tham chiếu ngoài bộ nạp chưa có tài liệu: "bảng kiến trúc gốc" #1–#11, định dạng `.gsd`, pipeline kịch bản whiteboard, Orca, Paperclip (không có yêu cầu di chuyển).
 - [Open]: `.planning/config.json` chưa tồn tại khi tạo roadmap; đã giả định granularity "standard" và ID phase tuần tự (`sequential`).
 
+- [Phase 05.3, follow-up không chặn]: Revoke token bot thử trong @BotFather (điều kiện AR-05.3-02, chỉ người dùng làm được). 05.3-REVIEW-DISPOSITION.md còn IN-01…IN-05 mở; IN-05: workflow tùy chỉnh có plan review nhưng không có plan loop thì `Chạy thêm 1 vòng` dừng lại ngay (chưa tái hiện). 05.3-UI-REVIEW.md (14/20): run-lỗi không nêu lý do, `Dừng hẳn` không xác nhận, tin thiếu tiêu đề nổi bật.
+
 ### Roadmap Evolution
 
 - Phase 05.1 inserted after Phase 5: Pipeline View — Dashboard v2 step A (autopilot-style task pipeline + run ledger from existing data)
@@ -125,6 +129,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-21T04:56:35.886Z
-Stopped at: Phase 05.3 context gathered
-Resume file: .planning/phases/05.3-telegram-notifications-and-actions/05.3-CONTEXT.md
+Last session: 2026-10-22
+Stopped at: Phase 05.3 complete, ready to discuss Phase 05.4
+Resume file: None

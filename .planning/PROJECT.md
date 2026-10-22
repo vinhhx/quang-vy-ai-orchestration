@@ -33,6 +33,7 @@ Cổng qua phase (phase gates) nằm trong `ROADMAP.md` (mỗi phase có Success
 - ✓ **Phase 1 — Kiểm chứng giả định** (SPK-01…10): 8 spike S1–S8 đã chạy thật, kết quả trong `spikes/spike-results.md` (S1–S4 Đạt, S5–S8 Một phần + follow-up); SPK-10 quyết định Work = `~/.claude`, Personal = `~/.claude-orca` — Phase 1
 - ✓ **Phase 5 — Dashboard nhúng** (DASH-01…12): `agent-brain serve` — Axum + SSE + Tailwind/Alpine CSP nhúng trong binary tĩnh, chỉ `127.0.0.1` + token mỗi lần khởi động, 5 màn hình (Tổng quan, Giao việc, Task, Thống kê, Dự án); nghiệm thu P4-01…P4-09 Đạt, P4-10 không áp dụng (không có Figma) — `protocol-log/nghiem-thu-p4.md` — Phase 5
 - ✓ **Phase 5.1 — Pipeline View** (PIPE-01…05): màn Chi tiết task kiểu "Autopilot" — thẻ giai đoạn có vòng, thời gian, chi phí, cổng "Bạn" suy ra từ git, sổ lượt chạy theo chu kỳ kèm tổng và phân trang; dựng từ dữ liệu runs có sẵn, không đổi schema/giao thức (bước A của Dashboard v2) — Phase 5.1
+- ✓ **Phase 5.3 — Thông báo và hành động qua Telegram** (TELE-01…07): bot long polling trong `agent-brain serve` gọi API bằng `curl -K -` (không thêm crate, không mở cổng), ghép nối `agent-brain telegram setup` (mã 6 số, `telegram.json` 0600), chỉ chat ID đã ghép; thông báo chờ duyệt plan / autopilot dừng / QA đạt / run lỗi mỗi sự kiện một lần, chịu được mất mạng (hàng đợi, backoff 5→60 s); nút Duyệt plan, Trả về Lead (kèm ghi chú), Chạy thêm 1 vòng, Dừng hẳn, Kill (xác nhận) dùng chung hàm hành động với dashboard; UAT thật 3/3 Đạt — Phase 5.3
 
 ### Active
 
@@ -132,4 +133,4 @@ Tài liệu này tiến hóa theo vòng đời dự án.
 4. Cập nhật Context theo hiện trạng
 
 ---
-*Last updated: 2026-10-20 after Phase 5.1*
+*Last updated: 2026-10-22 after Phase 5.3*
