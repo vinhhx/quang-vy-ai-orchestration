@@ -10,11 +10,16 @@
 //! flow, opening a flow closes an open `Trả về Lead` note prompt, and a flow
 //! expires `INTAKE_SECS` after the last interaction. The terminal audit lines
 //! carry counts, project, branch and job id, never the request text.
+//!
+//! After `Tạo task` the started job is watched from the poll thread (`tick`, no
+//! extra thread): the user is told the task id once its row exists, or the job's
+//! last output lines when it ends before any row exists (INTAKE-10).
 
 use super::bot::{self, PollState, HELP_TEXT, INVALID_BUTTON};
 use super::callback::{decode_intake, encode_intake, IntakeCb, IntakeOp};
 use super::compose;
 use super::render::{self, Button};
+use super::transport::LONG_POLL_SECS;
 use super::BotCtx;
 use crate::config::Config;
 use crate::dashboard::api_tasks::{start_new_task, Origin, StartInfo, StartOutcome, StartRequest};
@@ -44,6 +49,19 @@ pub const NO_FLOW: &str = "Không có yêu cầu nào đang mở.";
 pub const NO_ALLOWLIST: &str = "Chưa có telegram_projects trong projects_map.json — thêm id dự án được phép để giao việc từ Telegram.";
 pub const NONE_RUNNABLE: &str = "Không có dự án nào trong telegram_projects chạy được — kiểm tra id và đường dẫn trong projects_map.json.";
 pub const REFUSED_PREFIX: &str = "Không giao được: ";
+
+/// Most started jobs watched at once; the oldest is dropped first.
+pub const MAX_WATCH: usize = 20;
+/// A watched job without a task row is dropped after this long (10 minutes).
+pub const WATCH_MAX_MS: i64 = 600_000;
+/// Sent once the task row of a started job exists (`{id}`, `{branch}`).
+pub const CREATED_FMT: &str = "Đã tạo task {id} · {branch}. Plan đang được lập; khi xong sẽ có tin chờ duyệt — duyệt plan trên dashboard.";
+/// First line of the report of a job that ended before its task row existed.
+pub const FAILED_PREFIX: &str = "Không tạo được task ({branch}):";
+const NO_ERROR_LINES: &str = "(không có thông báo lỗi)";
+/// Output lines of a failed job sent to the chat, and the length of each.
+const FAILED_LINES: usize = 3;
+const FAILED_LINE_MAX: usize = 200;
 
 const INTERNAL: &str = "Lỗi nội bộ — xem terminal đang chạy agent-brain serve";
 const UNAVAILABLE: &str = "Dashboard đang dừng — không nhận việc mới";
@@ -92,6 +110,16 @@ pub struct Intake {
     /// The flow's message (edited through every stage).
     pub message_id: Option<i64>,
     pub expires_at_ms: i64,
+}
+
+/// A job started by `Tạo task`, watched until its task row exists or it ends.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Watch {
+    pub job_id: u64,
+    /// Project id (the `projects.slug` of the row).
+    pub project: String,
+    pub branch: String,
+    pub started_ms: i64,
 }
 
 impl Intake {
@@ -221,6 +249,16 @@ pub fn slug_candidates(request: &str) -> Vec<String> {
         out.push(format!("{}{suffix}", cut.trim_end_matches('-')));
     }
     out
+}
+
+/// The `getUpdates` timeout: 1 second while a started job is watched, so its
+/// outcome is reported within seconds; the normal long poll otherwise.
+pub fn poll_timeout_secs(state: &PollState) -> u64 {
+    if state.watch.is_empty() {
+        LONG_POLL_SECS
+    } else {
+        1
+    }
 }
 
 /// Takes the open flow off `state` when it has expired at `now_ms`.
@@ -521,8 +559,10 @@ enum Next {
     Advanced,
     /// Nothing changed (invalid press): the flow stays open as it was.
     Kept,
-    /// Over: cancelled, refused or created.
+    /// Over: cancelled or refused.
     Closed,
+    /// Over: a job started and is watched until its task row exists.
+    Started(Watch),
 }
 
 /// An `i…` button press of the paired chat.
@@ -562,7 +602,17 @@ pub(crate) fn on_callback(
         }
         Next::Kept => state.intake = Some(flow),
         Next::Closed => {}
+        Next::Started(w) => push_watch(state, w),
     }
+}
+
+/// Adds a started job to the watch list, dropping the oldest at `MAX_WATCH`.
+fn push_watch(state: &mut PollState, w: Watch) {
+    while state.watch.len() >= MAX_WATCH {
+        let old = state.watch.remove(0);
+        audit(&format!("thôi theo dõi job {} (quá nhiều job)", old.job_id));
+    }
+    state.watch.push(w);
 }
 
 fn press(ctx: &Arc<BotCtx>, f: &mut Intake, cq_id: &str, mid: i64, cb: &IntakeCb) -> Next {
@@ -728,7 +778,12 @@ fn confirm(ctx: &Arc<BotCtx>, f: &mut Intake, cq_id: &str, mid: i64) -> Next {
                 "đã giao job {job_id}: dự án {}, nhánh {}",
                 info.project.id, info.branch
             ));
-            Next::Closed
+            Next::Started(Watch {
+                job_id,
+                project: info.project.id,
+                branch: info.branch,
+                started_ms: crate::db::now_ms(),
+            })
         }
         Ok(other) => {
             let (reason, kind) = refusal_of(other);
@@ -744,7 +799,8 @@ pub(crate) fn on_forward(ctx: &Arc<BotCtx>, _state: &mut PollState, _msg: &Value
     bot::reply(ctx, HELP_TEXT);
 }
 
-/// Ends an expired flow (called after each `getUpdates` and before each update).
+/// Ends an expired flow and reports the outcome of watched jobs (called after
+/// each `getUpdates` and before each update, on the poll thread).
 pub(crate) fn tick(ctx: &Arc<BotCtx>, state: &mut PollState, now_ms: i64) {
     if let Some(f) = take_expired(state, now_ms) {
         if let Some(message_id) = f.message_id {
@@ -752,6 +808,97 @@ pub(crate) fn tick(ctx: &Arc<BotCtx>, state: &mut PollState, now_ms: i64) {
         }
         audit("hết hạn");
     }
+    watch_tick(ctx, state, now_ms);
+}
+
+/// Id of the task row of a watched job, if it exists.
+fn task_row_id(conn: &rusqlite::Connection, w: &Watch) -> Option<i64> {
+    let project = crate::db::project_row_id(conn, &w.project).ok()?;
+    crate::db::find_task_by_branch(conn, project, &w.branch)
+        .ok()
+        .flatten()
+        .map(|t| t.id)
+}
+
+/// `CREATED_FMT` for task `id` on `branch`.
+fn created_text(id: i64, branch: &str) -> String {
+    CREATED_FMT
+        .replace("{id}", &id.to_string())
+        .replace("{branch}", branch)
+}
+
+/// `FAILED_PREFIX` and the last (at most `FAILED_LINES`) non-empty output lines.
+fn failed_text(branch: &str, output: &[String]) -> String {
+    let mut lines: Vec<String> = output
+        .iter()
+        .rev()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .take(FAILED_LINES)
+        .map(|l| short(l, FAILED_LINE_MAX))
+        .collect();
+    lines.reverse();
+    let body = if lines.is_empty() {
+        NO_ERROR_LINES.to_string()
+    } else {
+        lines.join("\n")
+    };
+    format!("{}\n{body}", FAILED_PREFIX.replace("{branch}", branch))
+}
+
+/// One pass over the watched jobs: a task row → `Đã tạo task`; the job gone or
+/// exited without a row → the failure report; older than `WATCH_MAX_MS` →
+/// dropped. Each job gets at most one message.
+fn watch_tick(ctx: &Arc<BotCtx>, state: &mut PollState, now_ms: i64) {
+    if state.watch.is_empty() {
+        return;
+    }
+    let conn = match crate::db::open(&ctx.st.db_path) {
+        Ok(c) => {
+            state.watch_db_failed = false;
+            c
+        }
+        Err(e) => {
+            if !state.watch_db_failed {
+                crate::term::emit(&format!(
+                    "Telegram: lỗi mở CSDL khi theo dõi job giao việc ({})",
+                    e.message
+                ));
+                state.watch_db_failed = true;
+            }
+            return;
+        }
+    };
+    let mut keep = Vec::new();
+    for w in std::mem::take(&mut state.watch) {
+        if let Some(id) = task_row_id(&conn, &w) {
+            bot::send_message(ctx, &created_text(id, &w.branch), render::no_keyboard());
+            audit(&format!("job {} đã tạo task {id}", w.job_id));
+            continue;
+        }
+        let job = ctx.st.jobs.get(w.job_id);
+        if job.as_ref().is_none_or(|j| j.state == "exited") {
+            // The row may have been written just before the job ended.
+            if let Some(id) = task_row_id(&conn, &w) {
+                bot::send_message(ctx, &created_text(id, &w.branch), render::no_keyboard());
+                audit(&format!("job {} đã tạo task {id}", w.job_id));
+                continue;
+            }
+            let output = job.map(|j| j.output).unwrap_or_default();
+            bot::send_message(ctx, &failed_text(&w.branch, &output), render::no_keyboard());
+            audit(&format!("job {} dừng trước khi có task", w.job_id));
+            continue;
+        }
+        if now_ms.saturating_sub(w.started_ms) >= WATCH_MAX_MS {
+            audit(&format!(
+                "thôi theo dõi job {} (10 phút chưa có task)",
+                w.job_id
+            ));
+            continue;
+        }
+        keep.push(w);
+    }
+    state.watch = keep;
 }
 
 /// Closes the open flow, if any, showing `text` on its message without buttons.

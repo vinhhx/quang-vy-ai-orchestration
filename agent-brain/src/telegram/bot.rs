@@ -164,6 +164,10 @@ pub struct PollState {
     pub intake: Option<intake::Intake>,
     /// `telegram_projects` ids already reported as unknown to the map (once per serve).
     pub warned_ids: HashSet<String>,
+    /// Jobs started by `Tạo task` whose outcome is not reported yet (INTAKE-10).
+    pub watch: Vec<intake::Watch>,
+    /// The watcher could not open the database last time (its error is printed once).
+    pub watch_db_failed: bool,
 }
 
 impl PollState {
@@ -340,8 +344,9 @@ pub fn run_poll(ctx: &Arc<BotCtx>) {
         if ctx.stop.load(Ordering::SeqCst) {
             return;
         }
+        // Short polls while a started job is watched, so its outcome arrives quickly.
         let mut body = json!({
-            "timeout": LONG_POLL_SECS,
+            "timeout": intake::poll_timeout_secs(&state),
             "allowed_updates": ["message", "callback_query"],
         });
         if let Some(off) = state.offset {
