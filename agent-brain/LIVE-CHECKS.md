@@ -1107,3 +1107,378 @@ Cần chuẩn bị: một bot mới tạo bằng @BotFather (`/newbot`), điện
 2. Ghi xong `protocol-log/nghiem-thu-p5-3.md`, chạy kiểm tra dạng token trên file đó (không có dòng nào dạng token bot), rồi xóa toàn bộ môi trường: `rm -rf "$LIVE"` (gồm `telegram.json` có token, `brain.db`, hai repo nháp và log run).
 3. Không bắt buộc: thu hồi token của bot thử trong @BotFather (`/revoke`), hoặc giữ bot và sau này chạy `agent-brain telegram setup` (không đặt `XDG_CONFIG_HOME`) để ghép nối cấu hình thật của bạn. Khi đó, tắt `serve` thật trước (setup từ chối khi `serve` đang chạy trên cùng thư mục dữ liệu) và chạy lại nó sau.
 4. Không lệnh nào trong phần này ghi vào `~/.local/share/agent-brain`, `~/.config/agent-brain` hay `~/.claude-orca`, và `serve` cổng 7437 của bạn không bị gửi tín hiệu.
+
+---
+
+## 6. Nghiệm thu Phase 5.4 (Telegram giao việc, INTAKE-11)
+
+Nghiệm thu giao việc qua Telegram với **bot thật của bạn** trên `api.telegram.org` và **điện thoại của bạn**: menu lệnh, `/task` tới khi có task, duyệt plan chỉ trên dashboard, `/task` không kèm chữ và `/huy`, nút cũ, chuyển tiếp nhiều tin thành một task, tin chuyển tiếp là dữ liệu, danh sách `telegram_projects` và giới hạn mỗi ngày. Mọi ca chạy trong môi trường cô lập như mục 5: thư mục cấu hình, dữ liệu và `brain.db` riêng trong `$LIVE`, dashboard cổng 7439, hai repo nháp mới tạo, và **fake claude** (`tests/fakes/fake_claude.py`) thay cho `claude` thật nên không tốn tiền. `brain.db` thật, `~/.config/agent-brain`, `~/.claude-orca` và `agent-brain serve` đang chạy của bạn (cổng 7437) không bị đụng tới. Kết quả ghi vào [`protocol-log/nghiem-thu-p5-4.md`](../protocol-log/nghiem-thu-p5-4.md).
+
+Cần chuẩn bị: bot thử của Phase 5.3 (nếu token cũ đã bị thu hồi bằng `/revoke`, lấy token mới bằng `/token` trong @BotFather) hoặc một bot mới tạo bằng `/newbot`; điện thoại có Telegram; một chat khác (chat với bạn bè, một nhóm hoặc một kênh) có vài tin chữ để chuyển tiếp, một tin bắt đầu bằng `/task` (bạn có thể tự gửi tin đó vào chat kia) và một ảnh không có chú thích. Thời gian khoảng 30–45 phút.
+
+> [!CAUTION]
+> **An toàn token, nội dung chuyển tiếp, tiến trình và tài khoản**:
+> - Token bot chỉ được **bạn** gõ / dán vào `agent-brain telegram setup` trong terminal của bạn. Không dán token vào chat với Claude, không in `$XDG_CONFIG_HOME/agent-brain/telegram.json` (`cat`, `less`, `jq`…), không chụp màn hình có token. Chỉ được xem quyền của file: `stat -c %a`.
+> - Chat ID của bạn **không** được chép vào kết quả: ghi `đã ghép (ẩn)`. Tin chuyển tiếp là tin của người khác: kết quả ghi người gửi là `người gửi 1`, `người gửi 2`, `người gửi 3` và chỉ tóm tắt nội dung (ví dụ `tin chữ ngắn về lịch họp`), không chép nguyên văn tin hay tên thật. Khi kiểm tra bản ghi của fake claude, chỉ in cấu trúc (số khối, số dòng tiêu đề) như lệnh ở P5.4-04, không in lời nhắn.
+> - Chỉ dừng tiến trình bằng `$AB kill <task_id>`, Ctrl+C trong terminal của chính tiến trình đó, hoặc `kill -INT <PID>` với PID đã ghi lại. Không dùng `pkill`, `killall` hay lệnh dừng theo tên. Không gửi tín hiệu nào cho `serve` cổng 7437 của bạn.
+> - `ps` chỉ dùng để đọc (`ps -p <PID,...>`, `ps --ppid <PID>`, `ps -eo pid,ppid,pgid,args`).
+> - Mỗi bot chỉ được một nơi đọc (`getUpdates`): trong lúc nghiệm thu không chạy `serve` hay `telegram setup` nào khác với cùng bot.
+
+---
+
+### P5.4-00: Chuẩn bị môi trường cô lập
+- **Mục tiêu**: Dựng binary release, môi trường riêng `$LIVE` (cấu hình, dữ liệu, `brain.db`, `config.json` dùng fake claude, hai repo nháp có trong `telegram_projects`, hai kịch bản), và chứng minh môi trường chạy được mà chưa cần điện thoại: `serve` cổng 7439 chạy, chưa có dòng `Telegram` nào (chưa ghép nối), `telegram test` từ chối gọn, `brain.db` mới có lược đồ 3.
+- **Tiền điều kiện**: cổng 7439 trống (`ss -ltn | grep :7439` không in gì); `curl` và `python3` có trong `PATH`.
+- **Chuẩn bị** (chạy từ gốc repo; Claude dùng thư mục scratchpad của phiên làm `$LIVE`, chạy tay thì dùng `mktemp`):
+  1. Dựng binary và tạo thư mục (quyền `0700`):
+     ```bash
+     cd /mnt/data/IDE/QuangVy-Orchestration
+     cargo build --release --manifest-path agent-brain/Cargo.toml --offline --locked
+     REPO="$PWD"; AB="$REPO/agent-brain/target/release/agent-brain"
+     LIVE="$(mktemp -d /tmp/p54-live.XXXXXX)"      # hoặc <scratchpad của phiên>/p54-live
+     (umask 077; mkdir -p "$LIVE/xdg/agent-brain" "$LIVE/data/agent-brain" "$LIVE/repos" "$LIVE/scenarios")
+     ```
+  2. Ghi `$LIVE/env.sh` (các biến cô lập và ba hàm trợ giúp như mục 5: `q` đọc `brain.db` của đợt này, `use_sc` chọn kịch bản fake claude, `dash_post` gửi POST tới dashboard 7439 với token dashboard chỉ đi qua stdin của curl):
+     ```bash
+     cat > "$LIVE/env.sh" <<EOF
+     export LIVE="$LIVE"
+     export REPO="$REPO"
+     export AB="$AB"
+     export XDG_CONFIG_HOME="\$LIVE/xdg"
+     export XDG_DATA_HOME="\$LIVE/data"
+     export AGENT_BRAIN_DB="\$LIVE/data/agent-brain/brain.db"
+     export AGENT_BRAIN_CONFIG="\$LIVE/config.json"
+     export GIT_CONFIG_GLOBAL="\$LIVE/gitconfig"
+     export GIT_CONFIG_NOSYSTEM=1
+     export FAKE_CLAUDE_SCENARIO="\$LIVE/scenario.json"
+     export FAKE_CLAUDE_RECORD="\$LIVE/claude-record.jsonl"
+     unset AGENT_BRAIN_TELEGRAM_API AGENT_BRAIN_CURL AGENT_BRAIN_TELEGRAM_BACKOFF_MS AGENT_BRAIN_TELEGRAM_INTAKE_QUIET_MS
+     q() { python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1], timeout=10); [print(*r, sep=" | ") for r in c.execute(sys.argv[2], [int(a) if a.isdigit() else a for a in sys.argv[3:]])]' "\$AGENT_BRAIN_DB" "\$@"; }
+     use_sc() { cp "\$LIVE/scenarios/\$1.json" "\$LIVE/scenario.json" && rm -f "\$LIVE/scenario.json.state.json" && echo "kịch bản: \$1"; }
+     dash_post() { local tok; tok=\$(sed -n 's/^agent-brain dashboard: .*token=\([0-9a-f]*\).*/\1/p' "\$LIVE/serve.out" | tail -1); printf 'header = "Cookie: agent_brain_token=%s"\n' "\$tok" | curl -q -sS -K - -H 'Origin: http://127.0.0.1:7439' -H 'Content-Type: application/json' --data-raw "\${2:-{\}}" "http://127.0.0.1:7439\$1"; echo; }
+     EOF
+     chmod 600 "$LIVE/env.sh"; source "$LIVE/env.sh"
+     ```
+     Mỗi terminal mới của đợt nghiệm thu (kể cả terminal của bạn ở P5.4-01) chạy `source <đường dẫn $LIVE>/env.sh` trước tiên. `AGENT_BRAIN_TELEGRAM_API` bị bỏ đặt: bot nói chuyện với `api.telegram.org` thật. `AGENT_BRAIN_TELEGRAM_INTAKE_QUIET_MS` bị bỏ đặt: cửa sổ gom tin chuyển tiếp là mặc định 2 giây.
+  3. `gitconfig` riêng và `config.json` = `agent-brain/assets/config.default.json` với `claude_bin` là đường dẫn tuyệt đối của fake claude và `kill_grace_secs` 1 (không ghi `telegram_max_tasks_per_day`: mặc định 10):
+     ```bash
+     printf '[user]\n  name = P54 Live\n  email = p54-live@example.com\n[commit]\n  gpgsign = false\n[init]\n  defaultBranch = main\n' > "$LIVE/gitconfig"
+     python3 - "$REPO/agent-brain/assets/config.default.json" "$REPO/tests/fakes/fake_claude.py" "$LIVE/config.json" <<'PY'
+     import json, os, sys
+     cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+     cfg["claude_bin"] = os.path.realpath(sys.argv[2])
+     cfg["kill_grace_secs"] = 1
+     with open(sys.argv[3], "w", encoding="utf-8") as f:
+         json.dump(cfg, f, ensure_ascii=False, indent=2)
+     print("config.json:", cfg["claude_bin"], cfg["kill_grace_secs"])
+     PY
+     ```
+  4. Hai repo nháp và danh mục dự án riêng (`demo-tele` không ghi `workflow` nên dùng mặc định của server `mac-dinh`; `demo-tele-nhanh` dùng `nhanh`; cả hai profile `work`; cả hai có trong `telegram_projects`):
+     ```bash
+     for r in demo-tele demo-tele-nhanh; do
+       mkdir -p "$LIVE/repos/$r/src"
+       git -C "$LIVE/repos/$r" init -q -b main
+       printf 'def app():\n    return 1\n' > "$LIVE/repos/$r/src/app.py"
+       printf '# %s\n\nRepo nháp cho nghiệm thu Telegram (P5.4).\n' "$r" > "$LIVE/repos/$r/README.md"
+       git -C "$LIVE/repos/$r" add src/app.py README.md
+       git -C "$LIVE/repos/$r" commit -q -m init
+     done
+     python3 - "$LIVE" <<'PY'
+     import json, os, sys
+     live = sys.argv[1]
+     def entry(pid, workflow=None):
+         e = {"id": pid, "path": os.path.join(live, "repos", pid), "name_vi": pid,
+              "aliases": [], "type": "code", "repo": None, "profile": "work", "missing": False}
+         if workflow:
+             e["workflow"] = workflow
+         return e
+     data = {"scan_roots": [], "projects": [entry("demo-tele"), entry("demo-tele-nhanh", "nhanh")],
+             "telegram_projects": ["demo-tele", "demo-tele-nhanh"]}
+     with open(os.path.join(live, "xdg", "agent-brain", "projects_map.json"), "w", encoding="utf-8") as f:
+         json.dump(data, f, ensure_ascii=False, indent=2)
+     PY
+     ```
+  5. Hai kịch bản fake claude trong `$LIVE/scenarios/`, cùng dạng `by_role` với `gate_scenario` và `full_flow_scenario` của `agent-brain/tests/telegram_intake.rs` (mỗi vai trò lấy lần lượt các mục của nó, mục cuối được dùng lại):
+     - `gate.json`: Lead viết plan `Sửa app() trả về 2` (bảng `Thay đổi`: `src/app.py`), Review plan `approve` → task dừng ở cổng duyệt.
+     - `full.json`: như `gate.json`, cộng Dev sửa `src/app.py` và commit, Review code `pass`, QA `Đạt`.
+     ```bash
+     python3 - "$LIVE/scenarios" <<'PY'
+     import json, os, sys
+     out = sys.argv[1]
+     def plan_text():
+         lines = ["# Plan: Sửa app() trả về 2", "## Mục tiêu", "Hàm app() trả về 2.",
+                  "## Thay đổi", "| # | File | Dòng / hàm | Sửa gì | Lý do |", "|---|---|---|---|---|",
+                  "| 1 | src/app.py | app() | trả về 2 | demo |",
+                  "## Không được đụng tới", "", "## Cách kiểm tra", "python3 -c 'import src.app'",
+                  "## Vướng mắc (Dev ghi vào đây nếu có)", "", ""]
+         return "\n".join(lines)
+     def lead_plan():
+         return {"ops": [{"op": "read", "path": ".plan.md"}, {"op": "read", "path": "src/app.py"},
+                         {"op": "write", "path": ".plan.md", "content": plan_text(), "keep_meta": True}]}
+     def review(verdict, blocking, advisory):
+         body = f"---\nverdict: {verdict}\nblocking: {blocking}\nadvisory: {advisory}\nfiles: []\n---\n# Review: sửa app\n## Mục chặn (blocking)\n"
+         body += "".join(f"- mục chặn {i + 1}\n" for i in range(blocking))
+         body += "## Góp ý (advisory)\n" + "".join(f"- góp ý {i + 1}\n" for i in range(advisory))
+         return body
+     def plan_review(verdict, blocking, advisory):
+         return {"ops": [{"op": "write", "path": ".plan-review.md", "content": review(verdict, blocking, advisory)}]}
+     def code_review(verdict, blocking):
+         return {"ops": [{"op": "write", "path": ".code-review.md", "content": review(verdict, blocking, 1)}]}
+     def dev_impl():
+         return {"ops": [{"op": "read", "path": ".plan.md"}, {"op": "read", "path": "src/app.py"},
+                         {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+                         {"op": "git", "args": ["add", "src/app.py"]},
+                         {"op": "git", "args": ["commit", "-m", "sua app"]}]}
+     def qa(verdict):
+         report = ("# QA: sửa app\n## Thay đổi có khớp plan không (từng mục)\n- src/app.py: đã xem.\n"
+                   f"## Sửa ngoài plan (nếu có)\nKhông.\n## Rủi ro\nKhông.\n## Kết luận\n{verdict}\n")
+         return {"ops": [{"op": "write", "path": ".qa-report.md", "content": report}]}
+     sc = {
+         "gate": {"by_role": {"lead": [lead_plan()], "plan-review": [plan_review("approve", 0, 2)]}},
+         "full": {"by_role": {"lead": [lead_plan()], "plan-review": [plan_review("approve", 0, 1)],
+                              "dev": [dev_impl()], "code-review": [code_review("pass", 0)],
+                              "qa": [qa("Đạt")]}},
+     }
+     for name, v in sc.items():
+         with open(os.path.join(out, name + ".json"), "w", encoding="utf-8") as f:
+             json.dump(v, f, ensure_ascii=False, indent=2)
+     print("scenarios:", ", ".join(sorted(sc)))
+     PY
+     use_sc full
+     ```
+- **Lệnh thực hiện** (kiểm tra môi trường, chưa ghép nối):
+  ```bash
+  "$AB" status demo-tele                       # đường dẫn nhanh: nhánh main, sạch
+  sha256sum "$AB"
+  (umask 077; "$AB" serve --port 7439 > "$LIVE/serve.out" 2>&1 < /dev/null & echo $! > "$LIVE/serve.pid")
+  SERVE_PID=$(cat "$LIVE/serve.pid"); echo "serve pid $SERVE_PID"
+  python3 -c 'import time; time.sleep(2)'
+  sed 's/token=[0-9a-f]*/token=<ẩn>/' "$LIVE/serve.out"
+  grep -c '^Telegram' "$LIVE/serve.out"        # 0: chưa ghép nối thì không có bot
+  "$AB" telegram test; echo "exit=$?"
+  python3 -c 'import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute("PRAGMA user_version").fetchone()[0])' "$AGENT_BRAIN_DB"
+  kill -INT "$SERVE_PID"; python3 -c 'import time; time.sleep(2)'; ps -p "$SERVE_PID" -o pid,args
+  ```
+- **Kết quả mong đợi**:
+  1. `status` in `Nhánh: main` và `(sạch)`.
+  2. `serve.out` có dòng `agent-brain dashboard: http://127.0.0.1:7439/?token=…` và dòng `Mở URL trên trong trình duyệt. …`; đếm dòng `Telegram` được `0`.
+  3. `telegram test` in `Chưa ghép nối Telegram — chạy agent-brain telegram setup` và `exit=1`.
+  4. `PRAGMA user_version` in `3`.
+  5. Sau SIGINT, `serve.out` có `Đã dừng dashboard.` và `ps -p` chỉ in dòng tiêu đề. `serve` cổng 7437 của bạn (nếu đang chạy) vẫn chạy, không bị gửi tín hiệu.
+- **Ghi nhận**: Điền phần `Môi trường (P5.4-00)` ở đầu `protocol-log/nghiem-thu-p5-4.md`: commit của repo, sha256 của binary, ngày, và kết quả năm mục trên.
+- **Dọn dẹp**: Không. Giữ `$LIVE` cho các ca sau; `serve` đã dừng (setup ở P5.4-01 từ chối khi `serve` đang chạy).
+
+---
+
+### P5.4-01: Ghép nối bot và menu lệnh
+- **Mục tiêu**: Ghép nối như P5.3-01 trong môi trường `$LIVE`; khi `serve` bật bot, menu lệnh của chat có `/task` và `/huy` (INTAKE-01).
+- **Tiền điều kiện**: P5.4-00 xong; không có `serve` nào của `$LIVE` đang chạy; bạn có token của bot thử.
+- **Lệnh thực hiện**:
+  1. **Bạn**, trong terminal của bạn:
+     ```bash
+     source <đường dẫn $LIVE>/env.sh
+     "$AB" telegram setup
+     ```
+     Dán token sau dòng `Token bot (từ @BotFather): ` rồi Enter (không có ký tự nào hiện ra). Trên điện thoại, mở chat riêng với bot và nhắn đúng mã 6 số setup in ra.
+  2. Kiểm tra (Claude, cùng `env.sh`; không in nội dung file):
+     ```bash
+     stat -c %a "$XDG_CONFIG_HOME/agent-brain/telegram.json"
+     "$AB" telegram test; echo "exit=$?"
+     ```
+  3. Bật dashboard có bot và ghi PID:
+     ```bash
+     (umask 077; "$AB" serve --port 7439 > "$LIVE/serve.out" 2>&1 < /dev/null & echo $! > "$LIVE/serve.pid")
+     SERVE_PID=$(cat "$LIVE/serve.pid"); echo "serve pid $SERVE_PID"
+     python3 -c 'import time; time.sleep(5)'; grep '^Telegram' "$LIVE/serve.out"
+     ```
+  4. **Bạn**: trong chat với bot, gõ `/` (hoặc bấm nút Menu cạnh ô nhập). Nếu menu chưa hiện, đóng rồi mở lại chat.
+- **Kết quả mong đợi**:
+  1. Setup in `Đã ghép nối với chat … (@<tên bot>). …` và thoát `0`; điện thoại nhận tin `Đã ghép nối agent-brain với chat này. …`.
+  2. `stat` in `600`; `telegram test` in `Đã gửi tin thử tới chat ….`, `exit=0`, và điện thoại nhận tin thử.
+  3. `serve.out` có `Telegram: đã kết nối (@<tên bot>)`.
+  4. Menu lệnh có `/task` và `/huy`.
+- **Ghi nhận**: Dòng `P5.4-01`: tên bot (`@…`, không phải token), kết quả `stat`, tin thử, dòng `Telegram: đã kết nối`, hai lệnh trong menu. Chat: `đã ghép (ẩn)`.
+- **Dọn dẹp**: Không. Giữ `serve` (PID `$SERVE_PID`) cho các ca sau.
+
+---
+
+### P5.4-02: `/task` tới khi có task; duyệt plan chỉ trên dashboard
+- **Mục tiêu**: `/task sửa app` → dự án → quy trình → `Tạo task` tạo đúng một task có nguồn `telegram` (INTAKE-01); tin chờ duyệt của task không có `Duyệt plan` và nói duyệt trên dashboard; duyệt trên dashboard 7439 ghi `approved_commit` và mở bước tiếp theo (INTAKE-07); `brain.db` có lược đồ 3.
+- **Tiền điều kiện**: P5.4-01 xong, `serve` đang chạy; `demo-tele-nhanh` ở `main`, sạch; kịch bản `full`.
+- **Lệnh thực hiện**:
+  1. **Bạn**: gửi `/task sửa app`. Bấm `demo-tele-nhanh · work`, rồi `Mặc định (nhanh)`, rồi `Tạo task`.
+  2. Claude, sau khi bạn thấy tin chờ duyệt:
+     ```bash
+     grep '^Telegram' "$LIVE/serve.out" | tail -8
+     q "SELECT id, slug, branch, origin, approved_commit, substr(title, 1, 60) FROM tasks"
+     q "PRAGMA user_version"
+     ```
+  3. Duyệt trên dashboard (cùng hàm với nút `Duyệt plan` của dashboard; hoặc bạn bấm `Duyệt plan` trên trang `http://127.0.0.1:7439/#/task/1`, mở bằng URL có token trong `serve.out`), rồi chạy bước tiếp theo của quy trình `nhanh`:
+     ```bash
+     dash_post /api/tasks/1/approve
+     q "SELECT id, approved_commit FROM tasks WHERE id = 1"
+     dash_post /api/tasks/1/dev                  # hoặc bấm Chạy Dev trên dashboard
+     python3 -c 'import time; time.sleep(5)'
+     q "SELECT id, role, status FROM runs WHERE task_id = 1 ORDER BY id"
+     ```
+- **Kết quả mong đợi**:
+  1. Trên cùng một tin, lần lượt: `Chọn dự án cho task:` / `«sửa app»` với nút `demo-tele · work`, `demo-tele-nhanh · work`, `Huỷ` (nhãn nút là `<name_vi> · <profile>`); `Chọn quy trình · dự án demo-tele-nhanh` với `Mặc định (nhanh)`, các quy trình khác, `Huỷ`; `Xác nhận giao việc` với `Dự án: demo-tele-nhanh · profile work`, `Quy trình: nhanh (tay)`, `Nhánh: task/sua-app`, `Yêu cầu: sửa app`, `Plan của task giao từ Telegram chỉ duyệt trên dashboard.`; sau `Tạo task`: `Đã nhận — đang lập plan · dự án demo-tele-nhanh · nhánh task/sua-app`.
+  2. Một tin mới `Đã tạo task 1 · task/sua-app. Plan đang được lập; khi xong sẽ có tin chờ duyệt — duyệt plan trên dashboard.`, rồi file `sua-app.plan.md` và tin `Chờ duyệt plan · task 1` có dòng `Task giao từ Telegram — duyệt plan trên dashboard.`; nút chỉ có `Trả về Lead` (không có `Duyệt plan`).
+  3. `serve.out` có các dòng `Telegram: giao việc — mở yêu cầu (7 ký tự)`, `… — đã giao job 1: dự án demo-tele-nhanh, nhánh task/sua-app`, `… — job 1 đã tạo task 1` và `Telegram: đã gửi tin chờ duyệt plan cho task 1`; không dòng `Telegram` nào có chữ `sửa app`.
+  4. SQL: `1 | sua-app | task/sua-app | telegram | None | sửa app`; `PRAGMA user_version` = `3`.
+  5. `approve` trả thành công; `approved_commit` không còn `None`; `dev` trả `{"job_id":…}` và có một run `dev` `succeeded` sau run `lead`.
+- **Ghi nhận**: Dòng `P5.4-02`: nguyên văn các màn hình và tin (chat `đã ghép (ẩn)`), các dòng `Telegram: giao việc`, kết quả SQL, `approved_commit` (7 ký tự đầu), run Dev.
+- **Dọn dẹp**: Không.
+
+---
+
+### P5.4-03: `/task` không kèm chữ, `/huy`, nút cũ
+- **Mục tiêu**: `/task` một mình hỏi yêu cầu và tin chữ kế tiếp đi tiếp; `/huy` huỷ; nút của yêu cầu không còn mở (ở đây: sau khi `serve` khởi động lại) chỉ trả lời câu hết hạn và mất nút (INTAKE-01, INTAKE-08).
+- **Tiền điều kiện**: `serve` đang chạy với bot.
+- **Lệnh thực hiện**:
+  1. **Bạn**: gửi `/task`; khi bot hỏi, gửi `thêm nút đăng xuất`; khi màn hình chọn dự án hiện ra, gửi `/huy`.
+  2. **Bạn**: gửi `/task sửa footer` (màn hình chọn dự án hiện ra; **chưa** bấm gì). Claude khởi động lại `serve` (yêu cầu chỉ nằm trong bộ nhớ của `serve`):
+     ```bash
+     kill -INT "$SERVE_PID"; python3 -c 'import time; time.sleep(3)'; ps -p "$SERVE_PID" -o pid,args
+     (umask 077; "$AB" serve --port 7439 > "$LIVE/serve.out" 2>&1 < /dev/null & echo $! > "$LIVE/serve.pid")
+     SERVE_PID=$(cat "$LIVE/serve.pid"); echo "serve pid $SERVE_PID"
+     python3 -c 'import time; time.sleep(5)'; grep '^Telegram' "$LIVE/serve.out"
+     ```
+  3. **Bạn**, sau khi Claude báo `serve` đã kết nối lại: bấm nút `demo-tele · work` trên tin `sửa footer` cũ.
+  4. Claude: `q "SELECT COUNT(*) FROM tasks"` (vẫn `1`).
+- **Kết quả mong đợi**:
+  1. `/task` → `Gửi yêu cầu cho task mới (một tin nhắn), hoặc bấm Huỷ. Hết hạn sau 10 phút.` với nút `Huỷ`; tin chữ kế tiếp → cùng tin đó thành `Chọn dự án cho task:` / `«thêm nút đăng xuất»`; `/huy` → tin thành `Đã huỷ — không tạo task.` và mất nút.
+  2. Sau khi `serve` khởi động lại, bấm nút cũ → điện thoại hiện `Yêu cầu đã hết hạn — gõ /task để bắt đầu lại`, tin mất nút; không có task mới (`COUNT(*)` = `1`).
+- **Ghi nhận**: Dòng `P5.4-03`: các câu bot trả lời, các dòng `Telegram: giao việc` (`mở yêu cầu (0 ký tự)` cho `/task` không kèm chữ; `/huy` không in dòng nào, chỉ nút `Huỷ` in `… — đã huỷ`), số task, PID `serve` mới.
+- **Dọn dẹp**: Không. Ghi lại `SERVE_PID` mới.
+
+---
+
+### P5.4-04: Chuyển tiếp ba tin thành một task
+- **Mục tiêu**: Ba tin chuyển tiếp cùng lúc cho ra **đúng một** danh sách chọn (xác nhận hay bác bỏ giả định A5 của research: điện thoại gửi một lần chuyển tiếp nhiều tin thành các update cách nhau ít hơn 2 giây); bỏ chọn một tin, `Tiếp tục` và thêm việc cần làm tạo **một** task có tiêu đề bắt đầu bằng `[Telegram · 2 tin chuyển tiếp]`; lời nhắn gửi Lead có một khối `TIN_CHUYEN_TIEP` với dòng `[i] người gửi · thời gian` cho mỗi tin; tin chờ duyệt không có `Duyệt plan` (INTAKE-05, INTAKE-06, INTAKE-07).
+- **Tiền điều kiện**: `serve` đang chạy với bot; `demo-tele` ở `main`, sạch; một chat khác có ít nhất ba tin chữ.
+- **Lệnh thực hiện**:
+  1. Claude: `use_sc gate`.
+  2. **Bạn**: ở chat kia, giữ một tin rồi chọn thêm hai tin (tổng ba tin chữ), bấm Chuyển tiếp và chọn chat với bot (một lần chuyển tiếp).
+  3. **Bạn**: trên danh sách, bấm nút của tin thứ hai (thành `☐ 2 · …`), rồi `Tiếp tục (2 tin)`, `demo-tele · work`, `Mặc định (mac-dinh)`. Ở màn hình xác nhận, gửi một tin chữ `sửa app theo tin`, rồi bấm `Tạo task`.
+  4. Claude, sau khi bạn thấy tin chờ duyệt:
+     ```bash
+     grep '^Telegram' "$LIVE/serve.out" | tail -12
+     q "SELECT id, slug, branch, origin, approved_commit, substr(title, 1, 60) FROM tasks"
+     python3 - "$FAKE_CLAUDE_RECORD" <<'PY'
+     import json, re, sys
+     recs = [json.loads(l) for l in open(sys.argv[1], encoding="utf-8") if l.strip()]
+     def arg(a, flag):
+         return a[a.index(flag) + 1] if flag in a else ""
+     leads = [r["argv"] for r in recs if arg(r["argv"], "--append-system-prompt").startswith("Bạn là Lead")]
+     a = leads[-1]
+     p, sysp = arg(a, "-p"), arg(a, "--append-system-prompt")
+     lines = p.splitlines()
+     opens = [l for l in lines if l.startswith("<<<TIN_CHUYEN_TIEP ")]
+     closes = [l for l in lines if l.startswith("<<<HET_TIN_CHUYEN_TIEP ")]
+     heads = [l for l in lines if re.match(r"^\[\d+\] .+ · \d{4}-\d{2}-\d{2} \d{2}:\d{2}", l)]
+     tag = re.search(r"\[Telegram · \d+ tin chuyển tiếp\]", p)
+     print("nguồn:", tag.group(0) if tag else None)
+     print("dòng mở / đóng khối:", len(opens), "/", len(closes))
+     print("cùng mã:", bool(opens) and bool(closes) and opens[0].split()[1] == closes[0].split()[1])
+     print("dòng [i] người gửi · thời gian:", len(heads))
+     print("lời nhắn hệ thống có quy tắc dữ liệu không tin cậy:", "<<<TIN_CHUYEN_TIEP" in sysp)
+     PY
+     ```
+  5. **Bạn hoặc Claude**: mở task 2 trên dashboard 7439 (URL có token trong `serve.out`, rồi `#/task/2`) và đọc tiêu đề task.
+- **Kết quả mong đợi**:
+  1. Đúng **một** tin `Đã nhận 3 tin chuyển tiếp — chọn tin cần gộp thành một task:` với ba dòng `[i] <người gửi> · <YYYY-MM-DD HH:MM> · <60 ký tự đầu>`; nút `☑ 1 · …`, `☑ 2 · …`, `☑ 3 · …`, `Chọn hết`, `Bỏ hết`, `Tiếp tục (3 tin)`, `Huỷ`. `serve.out` có đúng một dòng `Telegram: giao việc — mở danh sách 3 tin chuyển tiếp`. Hai danh sách trở lên (hay danh sách ít hơn 3 tin) = A5 bị bác bỏ.
+  2. Sau khi bấm tin 2: `☐ 2 · …` và `Tiếp tục (2 tin)`. Màn hình xác nhận: `Dự án: demo-tele · profile work`, `Quy trình: mac-dinh (tự động)`, `Tin chuyển tiếp: 2 tin đã chọn`, `Việc cần làm: Đọc các tin nhắn dưới đây …`, `Gửi một tin chữ để thêm việc cần làm …`; sau tin `sửa app theo tin`: `Việc cần làm: sửa app theo tin` và `Nhánh: task/sua-app-theo-tin`.
+  3. `Đã nhận — đang lập plan · dự án demo-tele · nhánh task/sua-app-theo-tin`, rồi `Đã tạo task 2 · task/sua-app-theo-tin. …`, rồi file plan và tin `Chờ duyệt plan · task 2` có dòng `Task giao từ Telegram — duyệt plan trên dashboard.` và không có nút `Duyệt plan`.
+  4. SQL: task 2 `sua-app-theo-tin | task/sua-app-theo-tin | telegram | None | [Telegram · 2 tin chuyển tiếp] sửa app theo tin`; tiêu đề task 2 trên dashboard bắt đầu bằng `[Telegram · 2 tin chuyển tiếp]`.
+  5. Lệnh python in: `nguồn: [Telegram · 2 tin chuyển tiếp]`, `dòng mở / đóng khối: 1 / 1`, `cùng mã: True`, `dòng [i] người gửi · thời gian: 2`, `lời nhắn hệ thống có quy tắc dữ liệu không tin cậy: True`.
+  6. Không dòng `Telegram` nào trong `serve.out` có nội dung tin chuyển tiếp hay `sửa app theo tin`.
+- **Ghi nhận**: Dòng `P5.4-04`: số danh sách nhận được (A5), các dòng danh sách với người gửi ghi `người gửi 1/2/3` và nội dung tóm tắt, nhãn nút, màn hình xác nhận, kết quả SQL, tiêu đề trên dashboard, năm dòng của lệnh python. Khoảng cách thời gian giữa các update không có trong `serve.out`: ghi `không thấy được` trừ khi có cách đo khác.
+- **Dọn dẹp**: Không.
+
+---
+
+### P5.4-05: Tin chuyển tiếp bắt đầu bằng `/task`, ảnh không chú thích
+- **Mục tiêu**: Tin chuyển tiếp có chữ bắt đầu bằng `/task` được gom như dữ liệu, không chạy như lệnh; ảnh không chú thích bị bỏ và được đếm (INTAKE-05, INTAKE-09).
+- **Tiền điều kiện**: `serve` đang chạy với bot; ở chat kia có một tin chữ bắt đầu bằng `/task` và một ảnh không chú thích.
+- **Lệnh thực hiện**:
+  1. Claude: `q "SELECT COUNT(*) FROM tasks"` (ghi lại).
+  2. **Bạn**: ở chat kia chọn tin `/task …` và ảnh, chuyển tiếp cả hai cho bot trong một lần.
+  3. **Bạn**: đọc danh sách rồi bấm `Huỷ`.
+  4. Claude: `grep '^Telegram' "$LIVE/serve.out" | tail -5`; `q "SELECT COUNT(*) FROM tasks"`.
+- **Kết quả mong đợi**:
+  1. Một tin `Đã nhận 1 tin chuyển tiếp — chọn tin cần gộp thành một task:` với một dòng `[1] … · … · /task …` và dòng `(bỏ qua 1 tin không có chữ)`; không có màn hình `Chọn dự án cho task:` nào mở ra cho chữ `/task …`.
+  2. `Huỷ` → `Đã huỷ — không tạo task.`; số task không đổi.
+  3. `serve.out` có `Telegram: giao việc — mở danh sách 1 tin chuyển tiếp` và `… — đã huỷ`, không có `mở yêu cầu`.
+- **Ghi nhận**: Dòng `P5.4-05`: nguyên văn hai dòng của danh sách (nội dung sau `/task` tóm tắt, người gửi `người gửi 1`), dòng bỏ qua, số task trước / sau.
+- **Dọn dẹp**: Không.
+
+---
+
+### P5.4-06: Danh sách `telegram_projects`
+- **Mục tiêu**: Bỏ một dự án khỏi `telegram_projects` thì dự án đó không còn được đưa ra; bỏ cả khóa thì giao việc bị từ chối với câu hướng dẫn sửa (INTAKE-03). Không cần khởi động lại `serve`.
+- **Tiền điều kiện**: `serve` đang chạy với bot.
+- **Lệnh thực hiện**:
+  1. Claude, chỉ giữ `demo-tele-nhanh`:
+     ```bash
+     python3 - "$XDG_CONFIG_HOME/agent-brain/projects_map.json" '["demo-tele-nhanh"]' <<'PY'
+     import json, sys
+     p = sys.argv[1]; d = json.load(open(p, encoding="utf-8"))
+     v = json.loads(sys.argv[2])
+     if v is None:
+         d.pop("telegram_projects", None)
+     else:
+         d["telegram_projects"] = v
+     json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+     print("telegram_projects:", d.get("telegram_projects"))
+     PY
+     ```
+  2. **Bạn**: gửi `/task x`; đọc màn hình chọn dự án rồi bấm `Huỷ`.
+  3. Claude: chạy lại lệnh ở bước 1 với `'null'` thay cho `'["demo-tele-nhanh"]'` (bỏ khóa).
+  4. **Bạn**: gửi `/task x`.
+  5. Claude: chạy lại lệnh ở bước 1 với `'["demo-tele", "demo-tele-nhanh"]'` (trả lại như cũ).
+- **Kết quả mong đợi**:
+  1. Bước 2: `Chọn dự án cho task:` / `«x»` chỉ có nút `demo-tele-nhanh · work` và `Huỷ`.
+  2. Bước 4: bot trả lời `Chưa có telegram_projects trong projects_map.json — thêm id dự án được phép để giao việc từ Telegram.`; không có màn hình nào mở. Lời từ chối của `/task` vì danh sách không in dòng `Telegram: giao việc` nào (chỉ tin chuyển tiếp bị từ chối mới in `… — từ chối (telegram_projects)`).
+- **Ghi nhận**: Dòng `P5.4-06`: các nút ở bước 2, câu trả lời ở bước 4, các dòng `Telegram` mới trong `serve.out` (nếu có).
+- **Dọn dẹp**: Bước 5 trả `telegram_projects` về như cũ.
+
+---
+
+### P5.4-07: Giới hạn mỗi ngày
+- **Mục tiêu**: Với `telegram_max_tasks_per_day` bằng số task đã giao từ Telegram hôm nay, sau khi khởi động lại `serve`, `/task` bị từ chối với câu báo giới hạn (INTAKE-04; số đếm lấy từ `brain.db` nên còn sau khi khởi động lại).
+- **Tiền điều kiện**: `serve` đang chạy với bot; P5.4-02 và P5.4-04 đã tạo task.
+- **Lệnh thực hiện**:
+  1. Claude:
+     ```bash
+     N=$(q "SELECT COUNT(*) FROM tasks WHERE origin = 'telegram'"); echo "task giao từ Telegram: $N"
+     python3 - "$AGENT_BRAIN_CONFIG" "$N" <<'PY'
+     import json, sys
+     p = sys.argv[1]; d = json.load(open(p, encoding="utf-8"))
+     d["telegram_max_tasks_per_day"] = int(sys.argv[2])
+     json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+     print("telegram_max_tasks_per_day:", d["telegram_max_tasks_per_day"])
+     PY
+     kill -INT "$SERVE_PID"; python3 -c 'import time; time.sleep(3)'; ps -p "$SERVE_PID" -o pid,args
+     (umask 077; "$AB" serve --port 7439 > "$LIVE/serve.out" 2>&1 < /dev/null & echo $! > "$LIVE/serve.pid")
+     SERVE_PID=$(cat "$LIVE/serve.pid"); echo "serve pid $SERVE_PID"
+     python3 -c 'import time; time.sleep(5)'; grep '^Telegram' "$LIVE/serve.out"
+     ```
+  2. **Bạn**, sau khi Claude báo `serve` đã kết nối: gửi `/task x`.
+  3. Claude: `grep '^Telegram' "$LIVE/serve.out" | tail -3`; `q "SELECT COUNT(*) FROM tasks"`.
+- **Kết quả mong đợi**: Bot trả lời `Đã đủ N task giao từ Telegram hôm nay — giao tiếp trên dashboard hoặc chờ sang ngày mai.` (N = số ở bước 1, thường là `2`); không có màn hình nào mở; `serve.out` có `Telegram: giao việc — từ chối (giới hạn ngày)`; số task không đổi.
+- **Ghi nhận**: Dòng `P5.4-07`: N, câu trả lời, dòng `serve.out`, PID `serve` mới.
+- **Dọn dẹp**: Không bắt buộc: bỏ khóa `telegram_max_tasks_per_day` khỏi `$LIVE/config.json` (môi trường sẽ bị xóa ở phần Dọn dẹp).
+
+---
+
+### Dọn dẹp
+1. Dừng `serve` của đợt nghiệm thu bằng PID đã ghi và kiểm tra:
+   ```bash
+   q "SELECT COUNT(*) FROM runs WHERE status = 'running'"   # 0 (nếu khác 0: $AB kill <task_id> trước)
+   kill -INT "$SERVE_PID"; python3 -c 'import time; time.sleep(3)'
+   ps -p "$SERVE_PID" -o pid,args                 # chỉ dòng tiêu đề
+   ```
+2. Ghi xong `protocol-log/nghiem-thu-p5-4.md`, chạy kiểm tra dạng token trên file đó (`git diff --name-only -G"[0-9]{8,10}:[A-Za-z0-9_-]{35}" -- protocol-log` không nêu file nào) và đọc lại để chắc không có chat ID, tên thật hay nguyên văn tin chuyển tiếp, rồi xóa toàn bộ môi trường: `rm -rf "$LIVE"` (gồm `telegram.json` có token, `brain.db`, bản ghi fake claude có nội dung tin chuyển tiếp, hai repo nháp và log run).
+3. Không bắt buộc: thu hồi token của bot thử trong @BotFather (`/revoke`).
+4. Không lệnh nào trong phần này ghi vào `~/.local/share/agent-brain`, `~/.config/agent-brain` hay `~/.claude-orca`, và `serve` cổng 7437 của bạn không bị gửi tín hiệu. `brain.db` thật chỉ được nâng lên lược đồ 3 khi bạn cài binary mới theo README (mục 2, sao lưu `brain.db.bak-pre-5.4-<ngày>` trước).
