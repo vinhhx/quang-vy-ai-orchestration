@@ -9,7 +9,7 @@ mod protocol;
 
 use agent_brain::dashboard::api_runs::{kill_run, KillOutcome};
 use agent_brain::dashboard::api_tasks::{
-    lead_return_args, load_task_state, normalize_note, run_control, run_task_action,
+    lead_return_args, load_task_state, new_task_args, normalize_note, run_control, run_task_action,
     start_new_task, ControlOutcome, Origin, StartOutcome, StartRequest,
 };
 use agent_brain::dashboard::jobs::JobManager;
@@ -389,4 +389,245 @@ fn start_new_task_dry_run_ready() {
         .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
         .unwrap_or(0);
     assert_eq!(rows, 0, "dry run creates no task row");
+}
+
+fn dry_run(
+    st: &AppState,
+    project: &str,
+    request: &str,
+    name: Option<&str>,
+    workflow: Option<&str>,
+    origin: Origin,
+) -> StartOutcome {
+    start_new_task(
+        st,
+        &StartRequest {
+            project,
+            request,
+            name,
+            workflow,
+            origin,
+            dry_run: true,
+        },
+    )
+    .expect("start_new_task")
+}
+
+#[test]
+fn new_task_args_vectors() {
+    let lead = |origin| new_task_args(false, "sua-app", "nhanh", "web-ban-hang", "sửa app", origin);
+    let auto = |origin| {
+        new_task_args(
+            true,
+            "sua-app",
+            "mac-dinh",
+            "web-ban-hang",
+            "sửa app",
+            origin,
+        )
+    };
+    assert_eq!(
+        lead(Origin::Dashboard),
+        (
+            "lead",
+            strings(&[
+                "run",
+                "lead",
+                "--name",
+                "sua-app",
+                "--workflow",
+                "nhanh",
+                "--",
+                "web-ban-hang",
+                "sửa app"
+            ])
+        )
+    );
+    assert_eq!(
+        auto(Origin::Dashboard),
+        (
+            "auto",
+            strings(&[
+                "auto",
+                "--start",
+                "--name",
+                "sua-app",
+                "--workflow",
+                "mac-dinh",
+                "--",
+                "web-ban-hang",
+                "sửa app"
+            ])
+        )
+    );
+    assert_eq!(
+        lead(Origin::Telegram),
+        (
+            "lead",
+            strings(&[
+                "run",
+                "lead",
+                "--name",
+                "sua-app",
+                "--workflow",
+                "nhanh",
+                "--origin",
+                "telegram",
+                "--",
+                "web-ban-hang",
+                "sửa app"
+            ])
+        )
+    );
+    assert_eq!(
+        auto(Origin::Telegram),
+        (
+            "auto",
+            strings(&[
+                "auto",
+                "--start",
+                "--name",
+                "sua-app",
+                "--workflow",
+                "mac-dinh",
+                "--origin",
+                "telegram",
+                "--",
+                "web-ban-hang",
+                "sửa app"
+            ])
+        )
+    );
+    // A request that looks like a flag stays the last element, after `--`.
+    for origin in [Origin::Dashboard, Origin::Telegram] {
+        let (_, args) = new_task_args(false, "x", "nhanh", "web-ban-hang", "-x", origin);
+        assert_eq!(args.last().map(String::as_str), Some("-x"));
+        let dashes = args.iter().position(|a| a == "--").expect("--");
+        assert_eq!(args.len() - dashes, 3, "chỉ dự án và yêu cầu sau `--`");
+    }
+}
+
+#[test]
+fn start_new_task_refusals() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+    let st = app_state(&sb);
+    let d = Origin::Dashboard;
+
+    assert_eq!(
+        dry_run(&st, "web-ban-hang", "", None, None, d),
+        StartOutcome::Invalid("Yêu cầu không được để trống".to_string())
+    );
+    assert_eq!(
+        dry_run(&st, "web-ban-hang", &"a".repeat(20_001), None, None, d),
+        StartOutcome::Invalid("Yêu cầu quá dài (tối đa 20000 ký tự)".to_string())
+    );
+    assert_eq!(
+        dry_run(&st, "web-ban-hang", "!!!", None, None, d),
+        StartOutcome::Invalid(
+            "Không thể tạo tên task từ yêu cầu — hãy truyền cờ --name <slug>".to_string()
+        )
+    );
+    match dry_run(&st, "khong-co", "sửa app", None, None, d) {
+        StartOutcome::ProjectRefused { status, body } => {
+            assert_eq!(status, 409);
+            assert_eq!(body["kind"], "none");
+        }
+        other => panic!("nhận {other:?}"),
+    }
+    match dry_run(&st, "web-ban-hang", "sửa app", None, Some("khong-co"), d) {
+        StartOutcome::Invalid(_) => {}
+        other => panic!("nhận {other:?}"),
+    }
+
+    // Working tree bẩn (tệp chưa theo dõi) → dirty.
+    std::fs::write(repo.join("scratch.txt"), "x\n").unwrap();
+    match dry_run(&st, "web-ban-hang", "sửa app", None, None, d) {
+        StartOutcome::PreflightRefused { kind, .. } => assert_eq!(kind, "dirty"),
+        other => panic!("nhận {other:?}"),
+    }
+    std::fs::remove_file(repo.join("scratch.txt")).unwrap();
+
+    // Nhánh đã có nhưng chưa checkout → branch_exists.
+    sb.git(&repo, &["branch", "task/sua-app"]);
+    match dry_run(&st, "web-ban-hang", "sửa app", None, None, d) {
+        StartOutcome::PreflightRefused { kind, .. } => assert_eq!(kind, "branch_exists"),
+        other => panic!("nhận {other:?}"),
+    }
+    assert!(st.jobs.list().is_empty());
+}
+
+#[test]
+fn start_new_task_telegram_exists() {
+    let sb = Sandbox::new();
+    let repo = lead_task(&sb);
+    let st = app_state(&sb);
+
+    // Repo đang ở task/sua-app: dashboard lập lại plan, Telegram thì không.
+    match dry_run(
+        &st,
+        "web-ban-hang",
+        "sửa app",
+        None,
+        None,
+        Origin::Dashboard,
+    ) {
+        StartOutcome::Ready(info) => assert!(info.replan),
+        other => panic!("nhận {other:?}"),
+    }
+    match dry_run(&st, "web-ban-hang", "sửa app", None, None, Origin::Telegram) {
+        StartOutcome::PreflightRefused { reason, kind } => {
+            assert_eq!(kind, "exists");
+            assert!(
+                reason.starts_with("Nhánh task/sua-app đang được checkout"),
+                "{reason}"
+            );
+        }
+        other => panic!("nhận {other:?}"),
+    }
+
+    // Nhánh bị xoá nhưng hàng `tasks` còn: dashboard giữ hành vi cũ, Telegram từ chối.
+    sb.git(&repo, &["checkout", "main"]);
+    sb.git(&repo, &["branch", "-D", "task/sua-app"]);
+    match dry_run(
+        &st,
+        "web-ban-hang",
+        "sửa app",
+        None,
+        None,
+        Origin::Dashboard,
+    ) {
+        StartOutcome::Ready(info) => assert!(!info.replan),
+        other => panic!("nhận {other:?}"),
+    }
+    assert_eq!(
+        dry_run(&st, "web-ban-hang", "sửa app", None, None, Origin::Telegram),
+        StartOutcome::PreflightRefused {
+            reason: "Đã có task cho nhánh task/sua-app — dùng tên khác".to_string(),
+            kind: "exists".to_string(),
+        }
+    );
+    assert!(st.jobs.list().is_empty());
+}
+
+#[test]
+fn start_new_task_unavailable_after_shutdown() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    let st = app_state(&sb);
+    st.jobs.shutdown(std::time::Duration::ZERO);
+    let outcome = start_new_task(
+        &st,
+        &StartRequest {
+            project: "web-ban-hang",
+            request: "sửa app",
+            name: None,
+            workflow: None,
+            origin: Origin::Dashboard,
+            dry_run: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(outcome, StartOutcome::Unavailable);
+    assert!(st.jobs.list().is_empty());
 }
