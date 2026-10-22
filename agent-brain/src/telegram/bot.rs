@@ -37,9 +37,9 @@ pub const STRANGER_LOG_SECS: u64 = 600;
 /// Most unknown IDs remembered for the log limit (stranger spam cannot grow memory).
 const STRANGER_CAP: usize = 1024;
 
-/// The single reply to any text from the paired chat (D-01).
-pub const HELP_TEXT: &str =
-    "Bot chỉ nhận nút bấm trên tin thông báo — không giao việc mới qua Telegram.";
+/// The reply to a text the bot does not take (no open note prompt or `/task`
+/// flow waiting for it) and to an unknown command (Phase 05.4).
+pub const HELP_TEXT: &str = "Gõ /task <yêu cầu> để giao việc mới (hoặc /task rồi gửi yêu cầu), /huy để huỷ yêu cầu đang mở. Nút trên tin thông báo dùng như trước.";
 pub const INVALID_BUTTON: &str = "Nút không hợp lệ.";
 const UNAVAILABLE_TEXT: &str = "Dashboard đang dừng — không nhận việc mới";
 const INTERNAL_TEXT: &str = "Lỗi nội bộ — xem terminal đang chạy agent-brain serve";

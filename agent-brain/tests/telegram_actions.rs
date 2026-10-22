@@ -258,7 +258,7 @@ fn commit_with_subject(sb: &Sandbox, repo: &Path, subject: &str) -> String {
 // ---------------------------------------------------------------------------
 
 const CONNECTED: &str = "Telegram: đã kết nối (@ab_fake_bot)";
-const HELP: &str = "Bot chỉ nhận nút bấm trên tin thông báo — không giao việc mới qua Telegram.";
+const HELP: &str = agent_brain::telegram::bot::HELP_TEXT;
 const INVALID: &str = "Nút không hợp lệ.";
 
 fn stdout_of(srv: &Serve) -> String {
