@@ -5,8 +5,9 @@
 //! update is checked against the paired chat ID before anything else is read
 //! (`authz`); strangers get no reply and no callback answer. Buttons run the
 //! dashboard's own `run_control`, which re-reads the task and checks the `rev`
-//! the message was rendered with, so a stale button never acts. No update can
-//! create a task or start new work (task intake is Phase 05.4).
+//! the message was rendered with, so a stale button never acts. A typed `/task`
+//! (Phase 05.4) creates work only through `intake` and the dashboard's own
+//! `start_new_task`; no other update starts new work.
 //!
 //! `Trả về Lead` asks for an optional note (D-13): while one prompt is open and
 //! not expired, the paired chat's next text message is the note, passed to the
@@ -14,6 +15,7 @@
 
 use super::callback::{self, Callback, Op};
 use super::detect;
+use super::intake;
 use super::outbox::{Outgoing, Tracked};
 use super::render;
 use super::transport::{backoff_ms, base_backoff_ms, Body, CallError, LONG_POLL_SECS};
@@ -25,7 +27,7 @@ use crate::dashboard::api_tasks::{
 };
 use crate::error::BrainResult;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -158,6 +160,10 @@ pub struct PollState {
     pub strangers: HashMap<i64, Instant>,
     /// The open note prompt of `Trả về Lead`, if any.
     pub pending: Option<PendingNote>,
+    /// The open `/task` flow, if any (Phase 05.4). Never open together with `pending`.
+    pub intake: Option<intake::Intake>,
+    /// `telegram_projects` ids already reported as unknown to the map (once per serve).
+    pub warned_ids: HashSet<String>,
 }
 
 impl PollState {
@@ -347,11 +353,13 @@ pub fn run_poll(ctx: &Arc<BotCtx>) {
                 es.last_error = None;
                 ctx.health.ok(Channel::Poll);
                 expire_prompt(ctx, &mut state);
+                intake::tick(ctx, &mut state, crate::db::now_ms());
                 for (id, update) in sorted_updates(&v) {
                     if ctx.stop.load(Ordering::SeqCst) {
                         return;
                     }
                     expire_prompt(ctx, &mut state);
+                    intake::tick(ctx, &mut state, crate::db::now_ms());
                     // Never handle an update twice.
                     if state.offset.is_some_and(|off| id < off) {
                         continue;
@@ -393,9 +401,7 @@ pub fn handle_update(ctx: &Arc<BotCtx>, state: &mut PollState, update: &Value) {
 
     // Same precedence as `authz`: a message first, then a callback query.
     if let Some(msg) = update.get("message") {
-        if let Some(text) = msg.get("text").and_then(Value::as_str) {
-            on_text(ctx, state, text);
-        }
+        on_message(ctx, state, msg);
         return;
     }
     if let Some(cq) = update.get("callback_query") {
@@ -403,7 +409,32 @@ pub fn handle_update(ctx: &Arc<BotCtx>, state: &mut PollState, update: &Value) {
     }
 }
 
-/// A text from the paired chat. Nothing creates a task (D-01). While a note
+/// A message from the paired chat, routed in this order: a forward (data, never a
+/// command), no text, a command, the request a `/task` flow waits for, and last
+/// the note / help path of `on_text`.
+fn on_message(ctx: &Arc<BotCtx>, state: &mut PollState, msg: &Value) {
+    if intake::is_forwarded(msg) {
+        intake::on_forward(ctx, state, msg);
+        return;
+    }
+    let text = match msg.get("text").and_then(Value::as_str) {
+        Some(t) => t,
+        None => return,
+    };
+    if text.trim_start().starts_with('/') {
+        match intake::parse_command(text) {
+            Some((name, rest)) => intake::on_command(ctx, state, &name, &rest),
+            None => reply(ctx, HELP_TEXT),
+        }
+        return;
+    }
+    if intake::on_text(ctx, state, text) {
+        return;
+    }
+    on_text(ctx, state, text);
+}
+
+/// A plain text from the paired chat. While a note
 /// prompt is open and not expired, the text is the note of `Trả về Lead`
 /// (D-13); otherwise the help line is the only reply.
 fn on_text(ctx: &Arc<BotCtx>, state: &mut PollState, text: &str) {
@@ -430,6 +461,11 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
         .and_then(|m| m.get("message_id"))
         .and_then(Value::as_i64);
     let data = cq.get("data").and_then(Value::as_str).unwrap_or("");
+    // `/task` intake buttons have their own grammar; none of the 05.3 codes is `i`.
+    if data.starts_with('i') {
+        intake::on_callback(ctx, state, &id, message_id, data);
+        return;
+    }
     let (message_id, cb) = match (message_id, callback::decode(data)) {
         (Some(m), Some(cb)) => (m, cb),
         _ => {
@@ -586,7 +622,8 @@ fn ask_note(ctx: &Arc<BotCtx>, state: &mut PollState, press: &Press, cb: &Callba
         answer(ctx, &press.id, NOT_APPLICABLE, true);
         return;
     }
-    // One prompt at a time: a new press replaces the open one.
+    // One interaction at a time: a new press replaces the open prompt and an open flow.
+    intake::close(ctx, state, intake::REPLACED);
     if let Some(old) = state.pending.take() {
         edit(
             ctx,
@@ -763,7 +800,7 @@ fn perform_return(
 
 /// Sends the note prompt as a reply to `reply_to`; the prompt's message id,
 /// or `None` when Telegram did not take it (one attempt).
-fn send_prompt(ctx: &BotCtx, text: &str, reply_to: i64, keyboard: Value) -> Option<i64> {
+pub(crate) fn send_prompt(ctx: &BotCtx, text: &str, reply_to: i64, keyboard: Value) -> Option<i64> {
     let mut body = json!({
         "chat_id": ctx.cfg.chat_id,
         "text": text,
@@ -771,6 +808,25 @@ fn send_prompt(ctx: &BotCtx, text: &str, reply_to: i64, keyboard: Value) -> Opti
             "message_id": reply_to,
             "allow_sending_without_reply": true,
         },
+    });
+    if keyboard != render::no_keyboard() {
+        body["reply_markup"] = keyboard;
+    }
+    match ctx
+        .tx
+        .call("sendMessage", &Body::Json(body), REPLY_MAX_SECS)
+    {
+        Ok(v) => v.get("message_id").and_then(Value::as_i64),
+        Err(_) => None,
+    }
+}
+
+/// Sends `text` (with `keyboard` unless it is empty) to the paired chat; the new
+/// message's id, or `None` when Telegram did not take it (one attempt).
+pub(crate) fn send_message(ctx: &BotCtx, text: &str, keyboard: Value) -> Option<i64> {
+    let mut body = json!({
+        "chat_id": ctx.cfg.chat_id,
+        "text": text,
     });
     if keyboard != render::no_keyboard() {
         body["reply_markup"] = keyboard;

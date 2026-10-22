@@ -592,3 +592,149 @@ fn gate_title_is_first_line() {
     assert!(text_of(&gate).contains(ORIGIN_LINE), "{gate}");
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+// ---------------------------------------------------------------------------
+// Plan 05.4-05: `/task` intake (typed request -> project -> workflow -> confirm)
+// ---------------------------------------------------------------------------
+
+/// Sets the top-level `telegram_projects` allowlist of projects_map.json (OD-1).
+fn allow_projects(sb: &Sandbox, ids: &[&str]) {
+    let mut map = sb.read_map();
+    map["telegram_projects"] = json!(ids);
+    std::fs::write(sb.map_path(), serde_json::to_string_pretty(&map).unwrap()).expect("write map");
+}
+
+/// A plain text message from the paired user in the paired chat.
+fn send_text(tg: &FakeTelegram, text: &str) {
+    tg.push_update(tg.message_update(PAIRED_CHAT, PAIRED_CHAT, "private", text));
+}
+
+/// Pushes a press of `data` on message `message_id`; returns the callback id.
+fn press_data(tg: &FakeTelegram, message_id: i64, text: &str, data: &str) -> String {
+    let up = tg.callback_update(PAIRED_CHAT, PAIRED_CHAT, message_id, text, data);
+    let id = up["callback_query"]["id"].as_str().unwrap().to_string();
+    tg.push_update(up);
+    id
+}
+
+/// Presses button `label` of `rec` (a sent message or an edit); returns the callback id.
+fn press_on(tg: &FakeTelegram, message_id: i64, rec: &Value, label: &str) -> String {
+    press_data(tg, message_id, text_of(rec), &button_data(rec, label))
+}
+
+fn is_flow_id(s: &str) -> bool {
+    s.len() == 8 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The 8-hex flow id inside `iP:{flow}:0` style data.
+fn flow_of(data: &str) -> String {
+    data.split(':').nth(1).unwrap_or("").to_string()
+}
+
+fn task_row(sb: &Sandbox, task_id: i64) -> (Option<String>, String) {
+    sb.db()
+        .query_row(
+            "SELECT origin, title FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)),
+        )
+        .unwrap()
+}
+
+/// Serve output lines (stdout and stderr) that start with `Telegram:`.
+fn telegram_lines(srv: &Serve) -> Vec<String> {
+    format!("{}\n{}", stdout_of(srv), stderr_of(srv))
+        .lines()
+        .filter(|l| l.starts_with("Telegram:"))
+        .map(|l| l.to_string())
+        .collect()
+}
+
+#[test]
+fn task_command_full_flow() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+    allow_projects(&sb, &["web-ban-hang"]);
+    sb.write_scenario(lead_plan_entry());
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    send_text(&tg, "/task sửa app");
+    let screen = wait_message(&tg, &srv, "Chọn dự án cho task:");
+    assert!(text_of(&screen).contains("«sửa app»"), "{screen}");
+    let b = buttons(&screen);
+    assert_eq!(b.len(), 2, "{screen}");
+    let flow = flow_of(&b[0].1);
+    assert!(is_flow_id(&flow), "{screen}");
+    assert_eq!(
+        b,
+        vec![
+            ("Web bán hàng · work".to_string(), format!("iP:{flow}:0")),
+            ("Huỷ".to_string(), format!("iX:{flow}")),
+        ]
+    );
+    let mid = message_id_of(&screen);
+
+    // Project -> workflow screen with the project's default first.
+    press_on(&tg, mid, &screen, "Web bán hàng · work");
+    let wf_screen = wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).starts_with("Chọn quy trình · dự án web-ban-hang")
+    });
+    assert_eq!(
+        labels(&wf_screen).first().map(String::as_str),
+        Some("Mặc định (nhanh)"),
+        "{wf_screen}"
+    );
+
+    // Workflow -> confirm screen.
+    press_on(&tg, mid, &wf_screen, "Mặc định (nhanh)");
+    let confirm = wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).starts_with("Xác nhận giao việc")
+    });
+    assert!(
+        text_of(&confirm).contains("Nhánh: task/sua-app"),
+        "{confirm}"
+    );
+    assert!(
+        text_of(&confirm).contains("Plan của task giao từ Telegram chỉ duyệt trên dashboard."),
+        "{confirm}"
+    );
+    assert_eq!(
+        labels(&confirm),
+        vec!["Tạo task".to_string(), "Huỷ".to_string()]
+    );
+    assert_eq!(task_count(&sb), 0, "nothing is created before Tạo task");
+
+    // Tạo task -> exactly one Telegram-origin job.
+    press_on(&tg, mid, &confirm, "Tạo task");
+    let done = wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).starts_with("Đã nhận — đang lập plan · dự án web-ban-hang · nhánh task/sua-app")
+    });
+    assert!(empty_keyboard(&done), "{done}");
+
+    assert_eq!(job_role(&srv, 1), "lead");
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    assert_eq!(srv.get("/api/jobs/2").status, 404);
+    assert_eq!(task_count(&sb), 1);
+    let (origin, title) = task_row(&sb, 1);
+    assert_eq!(origin.as_deref(), Some("telegram"));
+    assert_eq!(title, "sửa app");
+    assert!(
+        last_lead_prompt(&sb).contains("Yêu cầu: sửa app"),
+        "{}",
+        last_lead_prompt(&sb)
+    );
+
+    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    assert_eq!(labels(&gate), vec!["Trả về Lead".to_string()], "{gate}");
+
+    // The request text is never printed on the terminal.
+    for line in telegram_lines(&srv) {
+        assert!(!line.contains("sửa app"), "request leaked: {line}");
+    }
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
