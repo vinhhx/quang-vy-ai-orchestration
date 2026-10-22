@@ -350,7 +350,7 @@ Plans:
 **Requirements**: INTAKE-01, INTAKE-02, INTAKE-03, INTAKE-04, INTAKE-05, INTAKE-06, INTAKE-07, INTAKE-08, INTAKE-09, INTAKE-10, INTAKE-11, INTAKE-12 (đề xuất từ 05.4-RESEARCH.md; đăng ký vào REQUIREMENTS.md ở plan 05.4-01 Task 3)
 **Notes**: Mở rộng ngoại lệ Telegram trong PROJECT.md. Ràng buộc an toàn đã chốt: plan của task tạo từ Telegram **chỉ duyệt trên dashboard** (tin cổng duyệt của các task này không có nút Duyệt plan). Đề xuất cho discuss: danh sách dự án cho phép (`telegram_projects`), giới hạn số task/ngày, nội dung chuyển tiếp được đánh dấu là dữ liệu không tin cậy trong prompt Lead và ghi nguồn trong plan. Tên lệnh Telegram chỉ gồm chữ thường, số, `_` (không dùng `/create-task`). Ảnh/tệp trong tin chuyển tiếp: làm sau.
 **UI hint**: no
-**Plans:** 2/8 plans executed
+**Plans:** 4/8 plans executed
 
 Plans:
 **Wave 1**
@@ -358,8 +358,8 @@ Plans:
 - [x] 05.4-02-PLAN.md — Durable `tasks.origin` (schema v3, decision gate), hidden `--origin telegram`, daily count (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 05.4-03-PLAN.md — Dashboard-only approval: no Duyệt plan button for Telegram tasks, forged approve refused (wave 2)
-- [ ] 05.4-04-PLAN.md — Forwarded text as untrusted data: nonce-delimited block, Lead rules from origin, source tag in plan title (wave 2)
+- [x] 05.4-03-PLAN.md — Dashboard-only approval: no Duyệt plan button for Telegram tasks, forged approve refused (wave 2)
+- [x] 05.4-04-PLAN.md — Forwarded text as untrusted data: nonce-delimited block, Lead rules from origin, source tag in plan title (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 05.4-05-PLAN.md — `/task` flow: request → allowlisted project → workflow → confirm; cancel/expiry; callback grammar (wave 3)
