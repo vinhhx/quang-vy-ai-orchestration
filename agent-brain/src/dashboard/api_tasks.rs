@@ -559,7 +559,7 @@ pub fn new_task_args(
     workflow: &str,
     project_id: &str,
     request: &str,
-    _origin: Origin,
+    origin: Origin,
 ) -> (&'static str, Vec<String>) {
     let (role, head): (&'static str, [&str; 2]) = if auto {
         ("auto", ["auto", "--start"])
@@ -568,18 +568,16 @@ pub fn new_task_args(
     };
     let mut args: Vec<String> = head.iter().map(|s| s.to_string()).collect();
     args.extend(
-        [
-            "--name",
-            slug,
-            "--workflow",
-            workflow,
-            "--",
-            project_id,
-            request,
-        ]
-        .iter()
-        .map(|s| s.to_string()),
+        ["--name", slug, "--workflow", workflow]
+            .iter()
+            .map(|s| s.to_string()),
     );
+    // Nguồn task đi theo argv (trước `--`) để `run lead` / `auto --start` lưu vào brain.db.
+    if origin == Origin::Telegram {
+        args.push("--origin".to_string());
+        args.push("telegram".to_string());
+    }
+    args.extend(["--", project_id, request].iter().map(|s| s.to_string()));
     (role, args)
 }
 
@@ -637,6 +635,29 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
     }
 
     let branch = format!("task/{slug}");
+    // OD-8: a Telegram request may neither re-plan a checked-out task branch nor
+    // reuse a branch that already has a task row; the dashboard keeps both.
+    if req.origin == Origin::Telegram {
+        if pf.replan {
+            return Ok(StartOutcome::PreflightRefused {
+                reason: format!(
+                    "Nhánh {branch} đang được checkout — task giao từ Telegram không lập lại plan của task có sẵn"
+                ),
+                kind: "exists".to_string(),
+            });
+        }
+        // An Err here means the project has no row yet, so it has no task either.
+        let has_task = match crate::db::project_row_id(&conn, &project.id) {
+            Ok(pid) => crate::db::find_task_by_branch(&conn, pid, &branch)?.is_some(),
+            Err(_) => false,
+        };
+        if has_task {
+            return Ok(StartOutcome::PreflightRefused {
+                reason: format!("Đã có task cho nhánh {branch} — dùng tên khác"),
+                kind: "exists".to_string(),
+            });
+        }
+    }
     let info = StartInfo {
         project,
         slug,
