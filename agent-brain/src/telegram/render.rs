@@ -16,6 +16,8 @@ pub const TELEGRAM_MAX: usize = 4096;
 /// Longest suffix `with_suffix` keeps whole; a longer one is clipped.
 const SUFFIX_MAX: usize = 1000;
 pub const MAX_FILES: usize = 15;
+/// Gate line of a task created from Telegram: its plan is approved on the dashboard (05.4 INTAKE-07).
+pub const TELEGRAM_ORIGIN_LINE: &str = "Task giao từ Telegram — duyệt plan trên dashboard.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Button {
@@ -70,6 +72,18 @@ fn has_control(s: &TaskState, id: &str) -> bool {
     s.view.controls.iter().any(|c| c.id == id)
 }
 
+/// True when the task was created from Telegram (`tasks.origin = telegram`).
+pub fn is_telegram_origin(s: &TaskState) -> bool {
+    s.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
+}
+
+/// `Duyệt plan` is offered only when the task allows it and it was not created
+/// from Telegram. Hiding is not the guard (the shared approve action refuses a
+/// Telegram approval too); it just avoids a button that can only be refused.
+fn approve_offered(s: &TaskState) -> bool {
+    has_control(s, "approve") && !is_telegram_origin(s)
+}
+
 fn has_action(s: &TaskState, id: &str) -> bool {
     s.view.actions.iter().any(|a| a.id == id)
 }
@@ -80,6 +94,27 @@ pub fn project_line(s: &TaskState) -> String {
         "Dự án: {} · profile {} · nhánh {}",
         s.project.id, s.project.profile, s.task.branch
     )
+}
+
+/// Longest task title line shown in a notification.
+const TITLE_MAX: usize = 120;
+
+/// The task title as one line (05.4 Pitfall 8): the first line, at most
+/// `TITLE_MAX` characters, `…` when cut. A long forwarded request cannot push
+/// the plan section out of the message.
+pub fn title_line(s: &TaskState) -> String {
+    title_line_of(&s.task.title)
+}
+
+/// Pure part of `title_line`.
+pub fn title_line_of(text: &str) -> String {
+    let first = text.lines().next().unwrap_or("").trim_end();
+    if first.chars().count() <= TITLE_MAX {
+        return first.to_string();
+    }
+    let mut out: String = first.chars().take(TITLE_MAX - 1).collect();
+    out.push('…');
+    out
 }
 
 /// Verdict and round of the newest plan review.
@@ -198,8 +233,11 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
     match ev.kind {
         EventKind::Gate => {
             lines.push(format!("Chờ duyệt plan · task {id}"));
-            lines.push(s.task.title.clone());
+            lines.push(title_line(s));
             lines.push(project_line(s));
+            if is_telegram_origin(s) {
+                lines.push(TELEGRAM_ORIGIN_LINE.to_string());
+            }
             plan_lines(s, &mut lines);
             lines.push(plan_review_line(s));
             if let Some(r) = running_run(s) {
@@ -216,7 +254,7 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
                 .or_else(|| stop.map(|i| crate::autopilot::view::reason_word(i.reason).to_string()))
                 .unwrap_or_default();
             lines.push(format!("Autopilot dừng · {word} · task {id}"));
-            lines.push(s.task.title.clone());
+            lines.push(title_line(s));
             lines.push(project_line(s));
             let detail = s
                 .view
@@ -233,13 +271,13 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
         }
         EventKind::QaPass => {
             lines.push(format!("QA đạt · task {id}"));
-            lines.push(s.task.title.clone());
+            lines.push(title_line(s));
             lines.push(project_line(s));
             lines.push(summary_line(s, now_ms));
         }
         EventKind::RunFailed => {
             lines.push(format!("Run lỗi · task {id}"));
-            lines.push(s.task.title.clone());
+            lines.push(title_line(s));
             lines.push(project_line(s));
             if let Some(r) = failed_run(ev, s) {
                 lines.push(format!(
@@ -271,7 +309,7 @@ pub fn buttons_for(ev: &Event, s: &TaskState) -> Vec<Vec<Button>> {
     let return_lead = has_control(s, "return_lead") || has_action(s, "relead");
     match ev.kind {
         EventKind::Gate => {
-            if has_control(s, "approve") {
+            if approve_offered(s) {
                 rows.push(button("Duyệt plan", Op::Approve, s, None));
             }
             if has_control(s, "return_lead") {
@@ -290,7 +328,7 @@ pub fn buttons_for(ev: &Event, s: &TaskState) -> Vec<Vec<Button>> {
             }
         }
         EventKind::RunFailed => {
-            if has_control(s, "approve") {
+            if approve_offered(s) {
                 rows.push(button("Duyệt plan", Op::Approve, s, None));
             }
             if return_lead {
@@ -397,6 +435,17 @@ mod tests {
             keyboard_json(&rows),
             serde_json::json!({"inline_keyboard": [[{"text": "Duyệt plan", "callback_data": "a:1:0123456789abcdef"}]]})
         );
+    }
+
+    #[test]
+    fn title_line_of_one_line_and_cut() {
+        assert_eq!(title_line_of("sửa app"), "sửa app");
+        assert_eq!(title_line_of("dòng một\ndòng hai"), "dòng một");
+        let exact = "ă".repeat(120);
+        assert_eq!(title_line_of(&exact), exact);
+        let cut = title_line_of(&"ă".repeat(121));
+        assert_eq!(cut, format!("{}…", "ă".repeat(119)));
+        assert_eq!(cut.chars().count(), 120);
     }
 
     #[test]

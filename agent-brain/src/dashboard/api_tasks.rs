@@ -947,6 +947,8 @@ pub struct TaskState {
     pub gate: Option<GateState>,
     pub view: TaskView,
     pub rev: String,
+    /// `tasks.origin` (05.4): `Some("telegram")` khi task do Telegram giao.
+    pub origin: Option<String>,
 }
 
 /// Token đổi khi trạng thái task, run mới nhất, autopilot, cờ dừng, duyệt hoặc commit plan đổi.
@@ -1118,6 +1120,7 @@ pub fn load_task_state(
 
     let latest = runs.iter().max_by_key(|r| (r.started_at, r.id));
     let rev = task_rev(&task, &auto, latest, git.plan_commit.as_deref());
+    let origin = crate::db::task_origin(conn, task.id)?;
 
     Ok(Ok(TaskState {
         task,
@@ -1136,6 +1139,7 @@ pub fn load_task_state(
         gate,
         view,
         rev,
+        origin,
     }))
 }
 
@@ -1751,6 +1755,30 @@ pub fn run_control(
     rev: Option<&str>,
     note: Option<&str>,
 ) -> BrainResult<ControlOutcome> {
+    run_control_as(st, task_id, control, rev, note, ActionSource::Dashboard)
+}
+
+/// Nơi một hành động task đến từ đâu (05.4): dashboard (127.0.0.1 + token) hoặc
+/// bot Telegram. Chỉ mã phía máy chủ chọn nguồn; không có trường request nào chọn nó.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionSource {
+    Dashboard,
+    Telegram,
+}
+
+/// Lý do từ chối duyệt plan của task do Telegram giao khi việc duyệt đến từ Telegram.
+pub const TELEGRAM_APPROVE_REFUSED: &str = "Task giao từ Telegram — chỉ duyệt plan trên dashboard";
+
+/// Như `run_control`, nhưng biết nguồn hành động: duyệt plan của task do Telegram giao
+/// bị từ chối khi đến từ Telegram (05.4 INTAKE-07); dashboard và CLI vẫn duyệt được.
+pub fn run_control_as(
+    st: &AppState,
+    task_id: i64,
+    control: &str,
+    rev: Option<&str>,
+    note: Option<&str>,
+    source: ActionSource,
+) -> BrainResult<ControlOutcome> {
     // Ghi chú (chỉ Trả về Lead): cắt khoảng trắng, rỗng = không có ghi chú.
     let note = match normalize_note(note) {
         Ok(n) => n,
@@ -1789,6 +1817,14 @@ pub fn run_control(
     let id_str = task_id.to_string();
     match control {
         "approve" => {
+            if source == ActionSource::Telegram
+                && state.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
+            {
+                return Ok(ControlOutcome::Refused {
+                    reason: TELEGRAM_APPROVE_REFUSED.to_string(),
+                    kind: "not_allowed",
+                });
+            }
             let plan_commit = match claim::approve_check(&conn, &state.task, &state.root) {
                 Ok(pc) => pc,
                 Err(reason) => {
