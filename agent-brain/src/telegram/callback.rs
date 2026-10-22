@@ -119,6 +119,125 @@ pub fn decode(data: &str) -> Option<Callback> {
     })
 }
 
+/// Operations of the `/task` intake buttons (Phase 05.4). They live in their own
+/// grammar (`decode_intake`), so `decode` and the 05.3 buttons stay as they were.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntakeOp {
+    Project,
+    Workflow,
+    Toggle,
+    All,
+    None,
+    Go,
+    Confirm,
+    Cancel,
+}
+
+pub const ALL_INTAKE_OPS: [IntakeOp; 8] = [
+    IntakeOp::Project,
+    IntakeOp::Workflow,
+    IntakeOp::Toggle,
+    IntakeOp::All,
+    IntakeOp::None,
+    IntakeOp::Go,
+    IntakeOp::Confirm,
+    IntakeOp::Cancel,
+];
+
+impl IntakeOp {
+    pub fn code(self) -> char {
+        match self {
+            IntakeOp::Project => 'P',
+            IntakeOp::Workflow => 'W',
+            IntakeOp::Toggle => 'T',
+            IntakeOp::All => 'A',
+            IntakeOp::None => 'N',
+            IntakeOp::Go => 'G',
+            IntakeOp::Confirm => 'C',
+            IntakeOp::Cancel => 'X',
+        }
+    }
+
+    pub fn from_code(c: char) -> Option<IntakeOp> {
+        ALL_INTAKE_OPS.iter().copied().find(|op| op.code() == c)
+    }
+
+    /// Choosing from a server-held list carries the index into it.
+    pub fn needs_index(self) -> bool {
+        matches!(
+            self,
+            IntakeOp::Project | IntakeOp::Workflow | IntakeOp::Toggle
+        )
+    }
+}
+
+/// Largest index an intake button can carry.
+pub const MAX_INTAKE_INDEX: usize = 99;
+const FLOW_LEN: usize = 8;
+
+/// `i{op}:{flow}` or `i{op}:{flow}:{index}`: `flow` is the 8-hex id of the open
+/// flow, `index` a position in a list the server holds (never text).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntakeCb {
+    pub op: IntakeOp,
+    pub flow: String,
+    pub index: Option<usize>,
+}
+
+pub fn encode_intake(cb: &IntakeCb) -> String {
+    match (cb.op.needs_index(), cb.index) {
+        (true, Some(n)) => format!("i{}:{}:{}", cb.op.code(), cb.flow, n),
+        _ => format!("i{}:{}", cb.op.code(), cb.flow),
+    }
+}
+
+fn valid_flow(s: &str) -> bool {
+    s.len() == FLOW_LEN && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Decimal `0..=99`, no sign, no leading zero (except `0` itself).
+fn parse_intake_index(s: &str) -> Option<usize> {
+    if s.is_empty() || s.len() > 2 || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if s.len() == 2 && s.starts_with('0') {
+        return None;
+    }
+    let v: usize = s.parse().ok()?;
+    (v <= MAX_INTAKE_INDEX).then_some(v)
+}
+
+/// Strict parse: anything not produced by `encode_intake` returns `None`.
+pub fn decode_intake(data: &str) -> Option<IntakeCb> {
+    if data.is_empty() || data.len() > MAX_LEN {
+        return None;
+    }
+    let parts: Vec<&str> = data.split(':').collect();
+    let head = parts.first()?;
+    let mut chars = head.chars();
+    if chars.next()? != 'i' {
+        return None;
+    }
+    let op = IntakeOp::from_code(chars.next()?)?;
+    if chars.next().is_some() {
+        return None;
+    }
+    let want = if op.needs_index() { 3 } else { 2 };
+    if parts.len() != want || !valid_flow(parts[1]) {
+        return None;
+    }
+    let index = if op.needs_index() {
+        Some(parse_intake_index(parts[2])?)
+    } else {
+        None
+    };
+    Some(IntakeCb {
+        op,
+        flow: parts[1].to_string(),
+        index,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +323,76 @@ mod tests {
         ] {
             assert_eq!(decode(bad), None, "{bad:?}");
         }
+    }
+
+    const FLOW: &str = "0123abcd";
+
+    #[test]
+    fn intake_round_trip_every_op() {
+        for op in ALL_INTAKE_OPS {
+            let indexes: &[Option<usize>] = if op.needs_index() {
+                &[Some(0), Some(7), Some(99)]
+            } else {
+                &[None]
+            };
+            for index in indexes {
+                let cb = IntakeCb {
+                    op,
+                    flow: FLOW.to_string(),
+                    index: *index,
+                };
+                let data = encode_intake(&cb);
+                assert!(data.len() <= MAX_LEN, "{data}");
+                assert_eq!(decode_intake(&data), Some(cb), "{data}");
+            }
+            assert_eq!(IntakeOp::from_code(op.code()), Some(op));
+        }
+        assert_eq!(
+            encode_intake(&IntakeCb {
+                op: IntakeOp::Project,
+                flow: FLOW.to_string(),
+                index: Some(3)
+            }),
+            "iP:0123abcd:3"
+        );
+        assert_eq!(
+            encode_intake(&IntakeCb {
+                op: IntakeOp::Cancel,
+                flow: FLOW.to_string(),
+                index: None
+            }),
+            "iX:0123abcd"
+        );
+    }
+
+    #[test]
+    fn intake_rejects_malformed() {
+        for bad in [
+            "iP:0123abcd",
+            "iC:0123abcd:1",
+            "iZ:0123abcd",
+            "ip:0123abcd:1",
+            "iP:0123ABCD:1",
+            "iP:0123abc:1",
+            "iP:0123abcd:01",
+            "iP:0123abcd:100",
+            "iP:0123abcd:-1",
+            "i:0123abcd",
+            "iP:0123abcd:1:2",
+            "iPP:0123abcd:1",
+            "iP:0123abcd:+1",
+            "iP:0123abcd:",
+            "iX:0123abcd:",
+            "iP:0123abcde:1",
+            "",
+        ] {
+            assert_eq!(decode_intake(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn intake_grammar_is_separate_from_the_05_3_grammar() {
+        assert_eq!(decode("iP:0123abcd:1"), None);
+        assert_eq!(decode_intake("a:1:0123456789abcdef"), None);
     }
 }
