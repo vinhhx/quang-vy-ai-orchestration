@@ -464,7 +464,7 @@ fn db_open_creates_schema_with_private_modes() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 2);
+    assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     let journal_mode: String = conn
         .pragma_query_value(None, "journal_mode", |r| r.get(0))
@@ -503,7 +503,7 @@ fn db_open_creates_schema_with_private_modes() {
     let user_ver2: i64 = conn2
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver2, 2);
+    assert_eq!(user_ver2, agent_brain::db::SCHEMA_VERSION);
 }
 
 #[test]

@@ -139,7 +139,7 @@ fn v1_db_upgrades_in_place_keeping_events() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 2);
+    assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     let fk: i64 = conn
         .pragma_query_value(None, "foreign_keys", |r| r.get(0))
@@ -199,6 +199,7 @@ fn v1_db_upgrades_in_place_keeping_events() {
         "auto_stop_at",
         "auto_stop_kind",
         "auto_json",
+        "origin",
     ] {
         assert!(
             task_cols.contains(&col.to_string()),
@@ -316,7 +317,7 @@ fn fresh_db_is_v2() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 2);
+    assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     let mut stmt = conn.prepare("PRAGMA table_info(runs)").unwrap();
     let run_cols: Vec<String> = stmt
@@ -344,6 +345,7 @@ fn fresh_db_is_v2() {
         "auto_stop_at",
         "auto_stop_kind",
         "auto_json",
+        "origin",
     ] {
         assert!(task_cols.contains(&col.to_string()));
     }
@@ -356,7 +358,8 @@ fn newer_version_is_refused_and_unchanged() {
     build_v1(&db_path);
 
     let raw_conn = rusqlite::Connection::open(&db_path).unwrap();
-    raw_conn.pragma_update(None, "user_version", 3).unwrap();
+    let newer = agent_brain::db::SCHEMA_VERSION + 1;
+    raw_conn.pragma_update(None, "user_version", newer).unwrap();
     let mut stmt = raw_conn
         .prepare("SELECT name FROM sqlite_master ORDER BY name")
         .unwrap();
@@ -371,20 +374,22 @@ fn newer_version_is_refused_and_unchanged() {
     let res = agent_brain::db::open(&db_path);
     assert!(res.is_err());
     let err_msg = res.unwrap_err().to_string();
+    let want_newer = format!("có phiên bản {newer}");
+    let want_supported = format!("hỗ trợ tới {}", agent_brain::db::SCHEMA_VERSION);
     assert!(
-        err_msg.contains("có phiên bản 3"),
-        "error message should contain 'có phiên bản 3': {err_msg}"
+        err_msg.contains(&want_newer),
+        "error message should contain '{want_newer}': {err_msg}"
     );
     assert!(
-        err_msg.contains("hỗ trợ tới 2"),
-        "error message should contain 'hỗ trợ tới 2': {err_msg}"
+        err_msg.contains(&want_supported),
+        "error message should contain '{want_supported}': {err_msg}"
     );
 
     let raw_conn = rusqlite::Connection::open(&db_path).unwrap();
     let ver_after: i64 = raw_conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(ver_after, 3);
+    assert_eq!(ver_after, newer);
 
     let mut stmt = raw_conn
         .prepare("SELECT name FROM sqlite_master ORDER BY name")
@@ -434,7 +439,7 @@ fn concurrent_open_of_v1_both_succeed() {
     let final_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(final_ver, 2);
+    assert_eq!(final_ver, agent_brain::db::SCHEMA_VERSION);
 
     let ev_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
@@ -756,5 +761,107 @@ fn auto_driver_rows_lists_running_only() {
             auto_pid: Some(100),
             auto_pid_start: Some(200),
         }
+    );
+}
+
+fn build_v2(path: &Path) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    conn.execute_batch(agent_brain::db::MIGRATIONS[0]).unwrap();
+    conn.execute_batch(agent_brain::db::MIGRATIONS[1]).unwrap();
+    conn.pragma_update(None, "user_version", 2).unwrap();
+    conn.execute(
+        "INSERT INTO projects (id, slug, path, name_vi, aliases_json, type, profile, repo, missing)
+         VALUES (1, 'proj-1', '/path/1', 'Dự án 1', '[]', 'code', 'work', NULL, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at)
+         VALUES (1, 1, 'task-1', 'Task 1', 'task/1', 'main', 'base1', 'open', 1000, 1000)",
+        [],
+    )
+    .unwrap();
+}
+
+fn insert_task_row(conn: &rusqlite::Connection, n: i64, origin: Option<&str>, created_at: i64) {
+    conn.execute(
+        "INSERT INTO tasks (project_id, slug, title, branch, status, created_at, updated_at, origin)
+         VALUES (1, ?1, 'T', ?2, 'open', ?3, ?3, ?4)",
+        rusqlite::params![format!("t-{n}"), format!("task/t-{n}"), created_at, origin],
+    )
+    .unwrap();
+}
+
+#[test]
+fn v2_db_gains_origin_column() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v2(&db_path);
+
+    let conn = agent_brain::db::open(&db_path).expect("open v2 DB upgrades to v3");
+
+    let user_ver: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(user_ver, 3);
+    assert_eq!(agent_brain::db::SCHEMA_VERSION, 3);
+
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1);
+    let origin: Option<String> = conn
+        .query_row("SELECT origin FROM tasks WHERE id = 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(origin, None);
+    assert_eq!(agent_brain::db::task_origin(&conn, 1).unwrap(), None);
+}
+
+#[test]
+fn origin_helpers_round_trip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v2(&db_path);
+    let conn = agent_brain::db::open(&db_path).unwrap();
+
+    assert!(agent_brain::db::mark_task_origin(&conn, 1, agent_brain::db::ORIGIN_TELEGRAM).unwrap());
+    assert_eq!(
+        agent_brain::db::task_origin(&conn, 1).unwrap().as_deref(),
+        Some("telegram")
+    );
+    // Monotonic: a second mark neither changes the row nor the value.
+    assert!(!agent_brain::db::mark_task_origin(&conn, 1, "x").unwrap());
+    assert!(
+        !agent_brain::db::mark_task_origin(&conn, 1, agent_brain::db::ORIGIN_TELEGRAM).unwrap()
+    );
+    assert_eq!(
+        agent_brain::db::task_origin(&conn, 1).unwrap().as_deref(),
+        Some("telegram")
+    );
+    // Missing task.
+    assert_eq!(agent_brain::db::task_origin(&conn, 999).unwrap(), None);
+    assert!(!agent_brain::db::mark_task_origin(&conn, 999, "telegram").unwrap());
+}
+
+#[test]
+fn count_tasks_since_counts_origin_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v2(&db_path);
+    let conn = agent_brain::db::open(&db_path).unwrap();
+
+    let now = agent_brain::db::now_ms();
+    insert_task_row(&conn, 10, Some("telegram"), now);
+    insert_task_row(&conn, 11, Some("telegram"), 1000);
+    insert_task_row(&conn, 12, None, now);
+
+    assert_eq!(
+        agent_brain::db::count_tasks_since(&conn, "telegram", now - 60_000).unwrap(),
+        1
+    );
+    assert_eq!(
+        agent_brain::db::count_tasks_since(&conn, "telegram", 0).unwrap(),
+        2
     );
 }

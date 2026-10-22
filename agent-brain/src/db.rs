@@ -645,6 +645,20 @@ pub fn set_task_workflow_if_null(conn: &Connection, task_id: i64, json: &str) ->
     Ok(changes == 1)
 }
 
+pub const ORIGIN_TELEGRAM: &str = "telegram";
+
+pub fn task_origin(_conn: &Connection, _task_id: i64) -> BrainResult<Option<String>> {
+    Ok(None)
+}
+
+pub fn mark_task_origin(_conn: &Connection, _task_id: i64, _origin: &str) -> BrainResult<bool> {
+    Ok(false)
+}
+
+pub fn count_tasks_since(_conn: &Connection, _origin: &str, _since_ms: i64) -> BrainResult<i64> {
+    Ok(0)
+}
+
 pub fn set_task_approval(
     conn: &Connection,
     task_id: i64,
