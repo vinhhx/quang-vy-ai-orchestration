@@ -350,7 +350,7 @@ Plans:
 **Requirements**: INTAKE-01, INTAKE-02, INTAKE-03, INTAKE-04, INTAKE-05, INTAKE-06, INTAKE-07, INTAKE-08, INTAKE-09, INTAKE-10, INTAKE-11, INTAKE-12 (đề xuất từ 05.4-RESEARCH.md; đăng ký vào REQUIREMENTS.md ở plan 05.4-01 Task 3)
 **Notes**: Mở rộng ngoại lệ Telegram trong PROJECT.md. Ràng buộc an toàn đã chốt: plan của task tạo từ Telegram **chỉ duyệt trên dashboard** (tin cổng duyệt của các task này không có nút Duyệt plan). Đề xuất cho discuss: danh sách dự án cho phép (`telegram_projects`), giới hạn số task/ngày, nội dung chuyển tiếp được đánh dấu là dữ liệu không tin cậy trong prompt Lead và ghi nguồn trong plan. Tên lệnh Telegram chỉ gồm chữ thường, số, `_` (không dùng `/create-task`). Ảnh/tệp trong tin chuyển tiếp: làm sau.
 **UI hint**: no
-**Plans:** 4/8 plans executed
+**Plans:** 7/8 plans executed
 
 Plans:
 **Wave 1**
@@ -362,13 +362,13 @@ Plans:
 - [x] 05.4-04-PLAN.md — Forwarded text as untrusted data: nonce-delimited block, Lead rules from origin, source tag in plan title (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 05.4-05-PLAN.md — `/task` flow: request → allowlisted project → workflow → confirm; cancel/expiry; callback grammar (wave 3)
+- [x] 05.4-05-PLAN.md — `/task` flow: request → allowlisted project → workflow → confirm; cancel/expiry; callback grammar (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 05.4-06-PLAN.md — Outcome messages, daily cap, `/task` + `/huy` command menu (wave 4)
+- [x] 05.4-06-PLAN.md — Outcome messages, daily cap, `/task` + `/huy` command menu (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 05.4-07-PLAN.md — Forwards: collection window, ☑/☐ selection, one task quoting sender and time (wave 5)
+- [x] 05.4-07-PLAN.md — Forwards: collection window, ☑/☐ selection, one task quoting sender and time (wave 5)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 05.4-08-PLAN.md — Docs, PROJECT.md exception, live check with the user's bot and phone (user checkpoints) (wave 6)
