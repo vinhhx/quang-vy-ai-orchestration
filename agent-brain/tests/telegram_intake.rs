@@ -557,3 +557,38 @@ fn forged_approve_refused() {
     assert_eq!(job["exit_code"], json!(0), "{job}");
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+#[test]
+fn gate_title_is_first_line() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--origin",
+            "telegram",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "dòng một\ndòng hai",
+        ],
+        Some(lead_plan_entry()),
+    );
+    assert_ok(&res, "run lead --origin telegram");
+
+    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    let lines: Vec<&str> = text_of(&gate).lines().collect();
+    assert_eq!(lines.get(1).copied(), Some("dòng một"), "{gate}");
+    assert!(!lines.iter().any(|l| *l == "dòng hai"), "{gate}");
+    assert_eq!(labels(&gate), vec!["Trả về Lead".to_string()], "{gate}");
+    assert!(text_of(&gate).contains(ORIGIN_LINE), "{gate}");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}

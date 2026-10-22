@@ -96,6 +96,27 @@ pub fn project_line(s: &TaskState) -> String {
     )
 }
 
+/// Longest task title line shown in a notification.
+const TITLE_MAX: usize = 120;
+
+/// The task title as one line (05.4 Pitfall 8): the first line, at most
+/// `TITLE_MAX` characters, `…` when cut. A long forwarded request cannot push
+/// the plan section out of the message.
+pub fn title_line(s: &TaskState) -> String {
+    title_line_of(&s.task.title)
+}
+
+/// Pure part of `title_line`.
+pub fn title_line_of(text: &str) -> String {
+    let first = text.lines().next().unwrap_or("").trim_end();
+    if first.chars().count() <= TITLE_MAX {
+        return first.to_string();
+    }
+    let mut out: String = first.chars().take(TITLE_MAX - 1).collect();
+    out.push('…');
+    out
+}
+
 /// Verdict and round of the newest plan review.
 pub fn plan_review_line(s: &TaskState) -> String {
     let newest = s
@@ -212,7 +233,7 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
     match ev.kind {
         EventKind::Gate => {
             lines.push(format!("Chờ duyệt plan · task {id}"));
-            lines.push(s.task.title.clone());
+            lines.push(title_line(s));
             lines.push(project_line(s));
             if is_telegram_origin(s) {
                 lines.push(TELEGRAM_ORIGIN_LINE.to_string());
@@ -233,7 +254,7 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
                 .or_else(|| stop.map(|i| crate::autopilot::view::reason_word(i.reason).to_string()))
                 .unwrap_or_default();
             lines.push(format!("Autopilot dừng · {word} · task {id}"));
-            lines.push(s.task.title.clone());
+            lines.push(title_line(s));
             lines.push(project_line(s));
             let detail = s
                 .view
@@ -250,13 +271,13 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
         }
         EventKind::QaPass => {
             lines.push(format!("QA đạt · task {id}"));
-            lines.push(s.task.title.clone());
+            lines.push(title_line(s));
             lines.push(project_line(s));
             lines.push(summary_line(s, now_ms));
         }
         EventKind::RunFailed => {
             lines.push(format!("Run lỗi · task {id}"));
-            lines.push(s.task.title.clone());
+            lines.push(title_line(s));
             lines.push(project_line(s));
             if let Some(r) = failed_run(ev, s) {
                 lines.push(format!(
@@ -414,6 +435,17 @@ mod tests {
             keyboard_json(&rows),
             serde_json::json!({"inline_keyboard": [[{"text": "Duyệt plan", "callback_data": "a:1:0123456789abcdef"}]]})
         );
+    }
+
+    #[test]
+    fn title_line_of_one_line_and_cut() {
+        assert_eq!(title_line_of("sửa app"), "sửa app");
+        assert_eq!(title_line_of("dòng một\ndòng hai"), "dòng một");
+        let exact = "ă".repeat(120);
+        assert_eq!(title_line_of(&exact), exact);
+        let cut = title_line_of(&"ă".repeat(121));
+        assert_eq!(cut, format!("{}…", "ă".repeat(119)));
+        assert_eq!(cut.chars().count(), 120);
     }
 
     #[test]
