@@ -57,6 +57,9 @@ enum Commands {
         /// Quy trình (workflow) cho task mới
         #[arg(long)]
         workflow: Option<String>,
+        /// Nguồn của task (nội bộ: bot Telegram)
+        #[arg(long, hide = true, value_parser = ["telegram"])]
+        origin: Option<String>,
     },
     /// Trạng thái nhanh của dự án
     Status {
@@ -117,6 +120,9 @@ enum Commands {
         /// Ghi chú cho Lead khi lập lại plan (dùng --note=NỘI DUNG)
         #[arg(long, allow_hyphen_values = true)]
         note: Option<String>,
+        /// Nguồn của task (nội bộ: bot Telegram)
+        #[arg(long, hide = true, value_parser = ["telegram"])]
+        origin: Option<String>,
     },
     /// Duyệt plan hiện tại của task (autopilot chạy tiếp nếu quy trình bật auto)
     Approve {
@@ -242,6 +248,7 @@ fn main() {
             review,
             note,
             workflow,
+            origin,
         } => {
             let opts = roles::RunOpts {
                 name,
@@ -252,6 +259,7 @@ fn main() {
                 review,
                 note,
                 workflow,
+                origin,
             };
             roles::cmd_run(&mut ctx, role, &project, request.as_deref(), &opts)
         }
@@ -268,6 +276,7 @@ fn main() {
             more_round,
             replan,
             note,
+            origin,
         } => {
             let opts = autopilot::AutoOpts {
                 start,
@@ -277,6 +286,7 @@ fn main() {
                 more_round,
                 replan,
                 note,
+                origin,
             };
             autopilot::cmd_auto(&mut ctx, &opts)
         }

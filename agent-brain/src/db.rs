@@ -55,9 +55,10 @@ ALTER TABLE tasks ADD COLUMN auto_pid_start INTEGER;
 ALTER TABLE tasks ADD COLUMN auto_stop_at INTEGER;
 ALTER TABLE tasks ADD COLUMN auto_stop_kind TEXT;
 ALTER TABLE tasks ADD COLUMN auto_json TEXT;"#,
+    "ALTER TABLE tasks ADD COLUMN origin TEXT;",
 ];
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -643,6 +644,36 @@ pub fn set_task_workflow_if_null(conn: &Connection, task_id: i64, json: &str) ->
         params![json, task_id],
     )?;
     Ok(changes == 1)
+}
+
+pub const ORIGIN_TELEGRAM: &str = "telegram";
+
+/// Origin of a task (`None` for a missing task or a NULL origin).
+pub fn task_origin(conn: &Connection, task_id: i64) -> BrainResult<Option<String>> {
+    let mut stmt = conn.prepare("SELECT origin FROM tasks WHERE id = ?1")?;
+    let mut rows = stmt.query(params![task_id])?;
+    match rows.next()? {
+        Some(r) => Ok(r.get(0)?),
+        None => Ok(None),
+    }
+}
+
+/// Sets the origin only while it is still NULL: origin is monotonic and never cleared.
+pub fn mark_task_origin(conn: &Connection, task_id: i64, origin: &str) -> BrainResult<bool> {
+    let changes = conn.execute(
+        "UPDATE tasks SET origin = ?2 WHERE id = ?1 AND origin IS NULL",
+        params![task_id, origin],
+    )?;
+    Ok(changes == 1)
+}
+
+pub fn count_tasks_since(conn: &Connection, origin: &str, since_ms: i64) -> BrainResult<i64> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE origin = ?1 AND created_at >= ?2",
+        params![origin, since_ms],
+        |r| r.get(0),
+    )?;
+    Ok(n)
 }
 
 pub fn set_task_approval(

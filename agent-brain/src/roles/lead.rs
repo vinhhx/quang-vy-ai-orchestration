@@ -276,6 +276,11 @@ pub fn cmd_lead(
         base_commit.as_deref(),
     )?;
 
+    // INTAKE-07: the origin is recorded before the Lead agent starts and never cleared.
+    if opts.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM) {
+        crate::db::mark_task_origin(&ctx.conn, task_id, crate::db::ORIGIN_TELEGRAM)?;
+    }
+
     let set =
         crate::db::set_task_workflow_if_null(&ctx.conn, task_id, &resolved.workflow.to_snapshot())?;
     if !set && opts.workflow.is_some() {
