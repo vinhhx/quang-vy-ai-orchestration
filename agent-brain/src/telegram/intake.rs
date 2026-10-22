@@ -762,3 +762,216 @@ pub(crate) fn close(ctx: &Arc<BotCtx>, state: &mut PollState, text: &str) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn flow(expires_at_ms: i64) -> Intake {
+        Intake {
+            id: "0123abcd".to_string(),
+            stage: Stage::Project,
+            source: Source::Typed("sửa app".to_string()),
+            offers: Vec::new(),
+            project: None,
+            default_workflow: String::new(),
+            workflows: Vec::new(),
+            workflow: None,
+            slug: None,
+            message_id: Some(9),
+            expires_at_ms,
+        }
+    }
+
+    fn cmd(name: &str, rest: &str) -> Option<(String, String)> {
+        Some((name.to_string(), rest.to_string()))
+    }
+
+    #[test]
+    fn parse_command_rules() {
+        assert_eq!(parse_command("/task sửa app"), cmd("task", "sửa app"));
+        assert_eq!(parse_command("/task@ab_fake_bot x y"), cmd("task", "x y"));
+        assert_eq!(parse_command("/task"), cmd("task", ""));
+        assert_eq!(parse_command("/task\ndòng 2"), cmd("task", "dòng 2"));
+        assert_eq!(parse_command("/huy"), cmd("huy", ""));
+        assert_eq!(parse_command("  /huy  "), cmd("huy", ""));
+        assert_eq!(
+            parse_command("/task dòng 1\ndòng 2"),
+            cmd("task", "dòng 1\ndòng 2")
+        );
+        let long = format!("/{}", "a".repeat(33));
+        let max = format!("/{}", "a".repeat(32));
+        assert_eq!(parse_command(&max), cmd(&"a".repeat(32), ""));
+        for bad in [
+            "/Task x",
+            "/create-task x",
+            "/",
+            "task x",
+            long.as_str(),
+            "/task@ x",
+            "/task@bad-bot x",
+            "/tásk x",
+            "",
+        ] {
+            assert_eq!(parse_command(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn slug_candidates_rules() {
+        assert_eq!(
+            slug_candidates("sửa app"),
+            vec![
+                "sua-app",
+                "sua-app-2",
+                "sua-app-3",
+                "sua-app-4",
+                "sua-app-5"
+            ]
+        );
+        // Only the first line names the branch.
+        assert_eq!(slug_candidates("sửa app\nchi tiết")[0], "sua-app");
+        let emoji = slug_candidates("🙂");
+        assert_eq!(emoji[0], DEFAULT_SLUG);
+        assert!(emoji[0].starts_with("viec-tu-telegram"));
+        assert_eq!(emoji[4], "viec-tu-telegram-5");
+
+        let request = "sửa trang thanh toán của web bán hàng cho khách lẻ ngay";
+        let request = format!("{request}{}", "x".repeat(60 - request.chars().count()));
+        assert_eq!(request.chars().count(), 60);
+        let all = slug_candidates(&request);
+        assert_eq!(all.len(), 5);
+        for (i, s) in all.iter().enumerate() {
+            assert!(s.len() <= crate::routing::SLUG_MAX_LEN, "{s}");
+            let stem = if i == 0 {
+                s.as_str()
+            } else {
+                s.strip_suffix(&format!("-{}", i + 1)).expect("suffix")
+            };
+            assert!(!stem.is_empty() && !stem.ends_with('-'), "{s}");
+        }
+        // A cut that lands on a hyphen drops it before the suffix.
+        let hyphen = format!("{}-b", "a".repeat(46));
+        assert_eq!(slug_candidates(&hyphen)[1], format!("{}-2", "a".repeat(46)));
+    }
+
+    #[test]
+    fn take_expired_uses_clock() {
+        let mut st = PollState::default();
+        assert!(take_expired(&mut st, 5_000).is_none());
+        st.intake = Some(flow(1_000));
+        assert!(take_expired(&mut st, 999).is_none());
+        assert!(st.intake.is_some());
+        let taken = take_expired(&mut st, 1_000).expect("expired at its deadline");
+        assert_eq!(taken.id, "0123abcd");
+        assert!(st.intake.is_none());
+        assert!(flow(1_000).expired(1_001));
+        assert!(!flow(1_000).expired(999));
+    }
+
+    fn git_repo(dir: &std::path::Path) {
+        let status = std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(dir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .expect("git init");
+        assert!(status.success());
+    }
+
+    fn entry(id: &str, path: &std::path::Path, kind: &str, missing: bool) -> Value {
+        json!({
+            "id": id,
+            "path": path.to_str().unwrap(),
+            "name_vi": id,
+            "aliases": [],
+            "type": kind,
+            "profile": "work",
+            "missing": missing,
+        })
+    }
+
+    #[test]
+    fn allowed_projects_rules() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let m = tempfile::tempdir().unwrap();
+        let plain = tempfile::tempdir().unwrap();
+        git_repo(a.path());
+        git_repo(b.path());
+        git_repo(m.path());
+        let projects = json!([
+            entry("a", a.path(), "code", false),
+            entry("b-missing", b.path(), "code", true),
+            entry("media-x", m.path(), "media", false),
+            entry("not-a-repo", plain.path(), "code", false),
+        ]);
+
+        // Fail closed: no key, an empty list, a non-array or no string entries.
+        let no_key = json!({"scan_roots": [], "projects": projects});
+        assert_eq!(
+            allowed_projects(&no_key, &cfg).unwrap_err(),
+            NO_ALLOWLIST.to_string()
+        );
+        for list in [json!([]), json!("a"), json!([1, null])] {
+            let map = json!({"projects": projects, "telegram_projects": list});
+            assert_eq!(
+                allowed_projects(&map, &cfg).unwrap_err(),
+                NO_ALLOWLIST.to_string(),
+                "{list}"
+            );
+        }
+
+        let map = json!({
+            "projects": projects,
+            "telegram_projects": ["a", "khong-co", "b-missing"],
+        });
+        let (offers, unknown) = allowed_projects(&map, &cfg).unwrap();
+        assert_eq!(
+            offers.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec!["a"]
+        );
+        assert_eq!(unknown, vec!["khong-co".to_string()]);
+
+        // Media and unrunnable projects are never offered.
+        let map = json!({
+            "projects": projects,
+            "telegram_projects": ["khong-co", "b-missing", "media-x", "not-a-repo"],
+        });
+        assert_eq!(
+            allowed_projects(&map, &cfg).unwrap_err(),
+            NONE_RUNNABLE.to_string()
+        );
+        let map = json!({"projects": projects, "telegram_projects": ["khong-co"]});
+        assert_eq!(
+            allowed_projects(&map, &cfg).unwrap_err(),
+            NONE_RUNNABLE.to_string()
+        );
+    }
+
+    #[test]
+    fn help_text_tells_how_to_give_work() {
+        assert!(HELP_TEXT.contains("/task"), "{HELP_TEXT}");
+        assert!(HELP_TEXT.contains("/huy"), "{HELP_TEXT}");
+        assert!(
+            !HELP_TEXT.contains("không giao việc mới"),
+            "the help line still says the bot takes no new work: {HELP_TEXT}"
+        );
+    }
+
+    #[test]
+    fn forwarded_needs_an_origin_object() {
+        assert!(is_forwarded(
+            &json!({"text": "/task x", "forward_origin": {"type": "user"}})
+        ));
+        assert!(!is_forwarded(&json!({"text": "/task x"})));
+        assert!(!is_forwarded(
+            &json!({"text": "/task x", "forward_origin": "user"})
+        ));
+    }
+}
