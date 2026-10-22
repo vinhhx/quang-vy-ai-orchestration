@@ -347,13 +347,31 @@ Plans:
 **Goal**: Người dùng giao việc từ Telegram: lệnh `/task` (nhập yêu cầu → chọn dự án → chọn quy trình → xác nhận) và chuyển tiếp tin nhắn từ chat khác vào bot (gom tin đến trong một khoảng ngắn, chọn các tin cần bằng nút ☑/☐, gộp thành **một** task, trích dẫn kèm người gửi và thời gian) — dùng cùng hàm tạo task và preflight với màn Giao việc.
 **Source**: Quyết định người dùng 2026-10-21 (phase riêng sau 5.3; tin chuyển tiếp gộp thành 1 task; plan của task tạo từ Telegram chỉ duyệt trên dashboard)
 **Depends on**: Phase 05.3
-**Requirements**: TBD (định nghĩa khi /gsd-discuss-phase 05.4)
+**Requirements**: INTAKE-01, INTAKE-02, INTAKE-03, INTAKE-04, INTAKE-05, INTAKE-06, INTAKE-07, INTAKE-08, INTAKE-09, INTAKE-10, INTAKE-11, INTAKE-12 (đề xuất từ 05.4-RESEARCH.md; đăng ký vào REQUIREMENTS.md ở plan 05.4-01 Task 3)
 **Notes**: Mở rộng ngoại lệ Telegram trong PROJECT.md. Ràng buộc an toàn đã chốt: plan của task tạo từ Telegram **chỉ duyệt trên dashboard** (tin cổng duyệt của các task này không có nút Duyệt plan). Đề xuất cho discuss: danh sách dự án cho phép (`telegram_projects`), giới hạn số task/ngày, nội dung chuyển tiếp được đánh dấu là dữ liệu không tin cậy trong prompt Lead và ghi nguồn trong plan. Tên lệnh Telegram chỉ gồm chữ thường, số, `_` (không dùng `/create-task`). Ảnh/tệp trong tin chuyển tiếp: làm sau.
 **UI hint**: no
-**Plans:** 0 plans
+**Plans:** 8 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 05.4 to break down)
+**Wave 1**
+- [ ] 05.4-01-PLAN.md — Shared `start_new_task` extracted from Giao việc (dashboard responses unchanged); INTAKE-01..12 registered in REQUIREMENTS.md (wave 1)
+- [ ] 05.4-02-PLAN.md — Durable `tasks.origin` (schema v3, decision gate), hidden `--origin telegram`, daily count (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 05.4-03-PLAN.md — Dashboard-only approval: no Duyệt plan button for Telegram tasks, forged approve refused (wave 2)
+- [ ] 05.4-04-PLAN.md — Forwarded text as untrusted data: nonce-delimited block, Lead rules from origin, source tag in plan title (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 05.4-05-PLAN.md — `/task` flow: request → allowlisted project → workflow → confirm; cancel/expiry; callback grammar (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 05.4-06-PLAN.md — Outcome messages, daily cap, `/task` + `/huy` command menu (wave 4)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 05.4-07-PLAN.md — Forwards: collection window, ☑/☐ selection, one task quoting sender and time (wave 5)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 05.4-08-PLAN.md — Docs, PROJECT.md exception, live check with the user's bot and phone (user checkpoints) (wave 6)
 
 ### Phase 05.5: Work Board (INSERTED)
 
