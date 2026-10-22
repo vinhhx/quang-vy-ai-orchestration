@@ -8,6 +8,7 @@ pub mod callback;
 pub mod compose;
 pub mod config;
 pub mod detect;
+pub mod forward;
 pub mod intake;
 pub mod outbox;
 pub mod prompt;
