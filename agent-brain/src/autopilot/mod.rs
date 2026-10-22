@@ -57,6 +57,7 @@ pub struct AutoOpts {
     pub more_round: bool,
     pub replan: bool,
     pub note: Option<String>,
+    pub origin: Option<String>,
 }
 
 /// Kết quả một tiến trình con.
@@ -554,6 +555,9 @@ fn claim_task(ctx: &mut Ctx, task_id: i64, opts: &ClaimOpts) -> BrainResult<Auto
 /// `agent-brain auto` — `--start` tạo task bằng bước Lead đầu tiên, còn lại tiếp tục task có sẵn.
 pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
     install_signal_handlers();
+    if !opts.start && opts.origin.is_some() {
+        return Err(BrainError::error("--origin chỉ dùng với --start"));
+    }
     if opts.start {
         if opts.more_round || opts.replan || opts.note.is_some() {
             return Err(BrainError::error(
@@ -601,7 +605,7 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
             None => 0,
         };
 
-        let args: Vec<String> = [
+        let mut args: Vec<String> = [
             "run",
             "lead",
             "--name",
@@ -610,12 +614,16 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
             &resolved.workflow.name,
             "--round",
             "1",
-            "--",
-            &project.id,
-            request,
         ]
         .map(String::from)
         .to_vec();
+        if let Some(origin) = opts.origin.as_deref() {
+            args.push("--origin".to_string());
+            args.push(origin.to_string());
+        }
+        args.push("--".to_string());
+        args.push(project.id.clone());
+        args.push(request.to_string());
         crate::term::emit(&format!("Autopilot · task mới {slug} · plan vòng 1"));
         let outcome = spawn_stage(ctx, None, &args)?;
 

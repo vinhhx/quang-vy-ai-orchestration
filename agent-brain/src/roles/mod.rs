@@ -352,6 +352,7 @@ pub struct RunOpts {
     pub review: bool,
     pub note: Option<String>,
     pub workflow: Option<String>,
+    pub origin: Option<String>,
 }
 
 pub fn execute_role(
@@ -614,6 +615,10 @@ pub fn cmd_run(
         return Err(BrainError::error(
             "--review, --note và --workflow chỉ dùng với vai trò lead",
         ));
+    }
+
+    if opts.origin.is_some() && role != Role::Lead {
+        return Err(BrainError::error("--origin chỉ dùng với vai trò lead"));
     }
 
     match role {
