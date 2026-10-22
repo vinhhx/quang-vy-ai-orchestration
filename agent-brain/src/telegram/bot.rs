@@ -20,7 +20,8 @@ use super::transport::{backoff_ms, base_backoff_ms, Body, CallError, LONG_POLL_S
 use super::{sleep_or_stop, BotCtx, Channel};
 use crate::dashboard::api_runs::{kill_run, KillOutcome};
 use crate::dashboard::api_tasks::{
-    load_task_state, normalize_note, run_control, run_task_action, ControlOutcome, TaskState,
+    load_task_state, normalize_note, run_control_as, run_task_action, ActionSource, ControlOutcome,
+    TaskState,
 };
 use crate::error::BrainResult;
 use serde_json::{json, Value};
@@ -657,12 +658,13 @@ fn perform_return(
         Loaded::State(s) if s.rev != p.rev => Ok(ControlOutcome::Stale),
         Loaded::State(s) => {
             if has_control(&s, "return_lead") {
-                run_control(
+                run_control_as(
                     &ctx.st,
                     task_id,
                     "return_lead",
                     Some(&p.rev),
                     note.as_deref(),
+                    ActionSource::Telegram,
                 )
             } else if has_action(&s, "relead") {
                 run_task_action(
@@ -958,7 +960,14 @@ fn act(ctx: &Arc<BotCtx>, press: &Press, cb: &Callback, label: &str, control: &s
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove_by_message(press.message_id);
-    let outcome = run_control(&ctx.st, cb.task_id, control, Some(&cb.rev), None);
+    let outcome = run_control_as(
+        &ctx.st,
+        cb.task_id,
+        control,
+        Some(&cb.rev),
+        None,
+        ActionSource::Telegram,
+    );
     apply_outcome(ctx, press, cb, label, control, outcome, removed);
 }
 
