@@ -14,10 +14,18 @@
 //! After `Tạo task` the started job is watched from the poll thread (`tick`, no
 //! extra thread): the user is told the task id once its row exists, or the job's
 //! last output lines when it ends before any row exists (INTAKE-10).
+//!
+//! Forwarded messages (INTAKE-05/06) open a flow too: they are collected in a
+//! short window (`Collecting`, closed by `tick`), shown as one ☑/☐ list
+//! (`Select`), then go through the same project, workflow and confirm steps. The
+//! request is composed at `Tạo task` by `compose::compose_forwarded`, which puts
+//! the forwarded text in a nonce-delimited untrusted block; a text typed on the
+//! confirm screen is the optional instruction, outside the block.
 
 use super::bot::{self, PollState, HELP_TEXT, INVALID_BUTTON};
 use super::callback::{decode_intake, encode_intake, IntakeCb, IntakeOp};
 use super::compose;
+use super::forward::{self, ForwardItem};
 use super::render::{self, Button};
 use super::transport::LONG_POLL_SECS;
 use super::BotCtx;
@@ -49,6 +57,9 @@ pub const NO_FLOW: &str = "Không có yêu cầu nào đang mở.";
 pub const NO_ALLOWLIST: &str = "Chưa có telegram_projects trong projects_map.json — thêm id dự án được phép để giao việc từ Telegram.";
 pub const NONE_RUNNABLE: &str = "Không có dự án nào trong telegram_projects chạy được — kiểm tra id và đường dẫn trong projects_map.json.";
 pub const REFUSED_PREFIX: &str = "Không giao được: ";
+/// Confirm-screen line of a forwarded flow: a typed text becomes the instruction.
+pub const ASK_INSTRUCTION: &str =
+    "Gửi một tin chữ để thêm việc cần làm (không bắt buộc), hoặc bấm Tạo task.";
 
 /// Most started jobs watched at once; the oldest is dropped first.
 pub const MAX_WATCH: usize = 20;
@@ -81,15 +92,36 @@ const LAST_SUFFIX: usize = 5;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stage {
     AwaitRequest,
+    /// Forwarded messages are being collected; no message is shown yet.
+    Collecting {
+        first_ms: i64,
+        last_ms: i64,
+    },
+    /// The ☑/☐ list of collected forwarded messages is shown.
+    Select,
     Project,
     Workflow,
     Confirm,
 }
 
-/// Where the request text came from. Plan 05.4-07 adds collected forwards.
+/// Where the request text came from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Source {
     Typed(String),
+    /// Forwarded messages (untrusted data), composed into one request at confirm.
+    Forwarded {
+        items: Vec<ForwardItem>,
+        /// Forwarded messages without text or caption.
+        skipped: usize,
+        /// `forward::OVER_CAP` was already sent for this flow.
+        over_cap_told: bool,
+        /// The text typed on the confirm screen, outside the untrusted block.
+        instruction: Option<String>,
+        /// Nonce of the block delimiters.
+        nonce: String,
+        /// When the first forward arrived (names the default branch).
+        started_ms: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,10 +165,58 @@ impl Intake {
         now_ms >= self.expires_at_ms
     }
 
-    fn request(&self) -> &str {
+    /// The request handed to `start_new_task`: the typed text, or the selected
+    /// forwarded messages composed into the untrusted block.
+    fn request(&self) -> Result<String, String> {
         match &self.source {
-            Source::Typed(text) => text,
+            Source::Typed(text) => Ok(text.clone()),
+            Source::Forwarded {
+                items,
+                instruction,
+                nonce,
+                ..
+            } => compose::compose_forwarded(
+                &forward::to_quotes(items),
+                instruction.as_deref(),
+                nonce,
+            ),
         }
+    }
+
+    /// One line describing the request on the project screen.
+    fn preview(&self) -> String {
+        match &self.source {
+            Source::Typed(text) => short(first_line(text), TITLE_MAX),
+            Source::Forwarded { items, .. } => {
+                compose::source_tag(items.iter().filter(|i| i.selected).count())
+            }
+        }
+    }
+
+    /// The text the branch name is made from: the typed request, the forwarded
+    /// flow's instruction, else `tin chuyen tiep {YYYYMMDD} {HHMM}`.
+    fn slug_source(&self) -> String {
+        match &self.source {
+            Source::Typed(text) => text.clone(),
+            Source::Forwarded {
+                instruction: Some(text),
+                ..
+            } => text.clone(),
+            Source::Forwarded { started_ms, .. } => {
+                let stamp = chrono::DateTime::from_timestamp_millis(*started_ms)
+                    .map(|dt| {
+                        dt.with_timezone(&chrono::Local)
+                            .format("%Y%m%d %H%M")
+                            .to_string()
+                    })
+                    .unwrap_or_default();
+                format!("tin chuyen tiep {stamp}")
+            }
+        }
+    }
+
+    fn is_forwarded(&self) -> bool {
+        matches!(self.source, Source::Forwarded { .. })
     }
 
     fn project_id(&self) -> Option<&str> {
@@ -257,10 +337,15 @@ pub fn slug_candidates(request: &str) -> Vec<String> {
     out
 }
 
-/// The `getUpdates` timeout: 1 second while a started job is watched, so its
-/// outcome is reported within seconds; the normal long poll otherwise.
+/// The `getUpdates` timeout: 1 second while a started job is watched (so its
+/// outcome is reported within seconds) or forwarded messages are being collected
+/// (so the quiet window is checked about once a second); the long poll otherwise.
 pub fn poll_timeout_secs(state: &PollState) -> u64 {
-    if state.watch.is_empty() {
+    let collecting = state
+        .intake
+        .as_ref()
+        .is_some_and(|f| matches!(f.stage, Stage::Collecting { .. }));
+    if state.watch.is_empty() && !collecting {
         LONG_POLL_SECS
     } else {
         1
@@ -355,10 +440,7 @@ fn cancel_row(flow: &str) -> Vec<Button> {
 }
 
 fn project_screen(f: &Intake) -> (String, Value) {
-    let text = format!(
-        "{CHOOSE_PROJECT}\n«{}»",
-        short(first_line(f.request()), TITLE_MAX)
-    );
+    let text = format!("{CHOOSE_PROJECT}\n«{}»", f.preview());
     let mut rows: Vec<Vec<Button>> = f
         .offers
         .iter()
@@ -397,10 +479,30 @@ fn confirm_screen(f: &Intake, info: &StartInfo) -> (String, Value) {
             if info.auto { "tự động" } else { "tay" }
         ),
         format!("Nhánh: {}", info.branch),
-        format!("Yêu cầu: {}", short(first_line(f.request()), TITLE_MAX)),
     ];
+    match &f.source {
+        Source::Typed(text) => {
+            lines.push(format!("Yêu cầu: {}", short(first_line(text), TITLE_MAX)));
+        }
+        Source::Forwarded {
+            items, instruction, ..
+        } => {
+            let k = items.iter().filter(|i| i.selected).count();
+            let todo = instruction
+                .as_deref()
+                .unwrap_or(compose::DEFAULT_INSTRUCTION);
+            lines.push(format!("Tin chuyển tiếp: {k} tin đã chọn"));
+            lines.push(format!(
+                "Việc cần làm: {}",
+                short(first_line(todo), TITLE_MAX)
+            ));
+        }
+    }
     if let Some(w) = &info.warning {
         lines.push(format!("Lưu ý: {w}"));
+    }
+    if f.is_forwarded() {
+        lines.push(ASK_INSTRUCTION.to_string());
     }
     lines.push(CONFIRM_FOOTER.to_string());
     let keyboard = render::keyboard_json(&[
@@ -438,11 +540,12 @@ fn refusal_of(outcome: StartOutcome) -> (String, String) {
 /// Dry runs over the slug candidates (OD-8): the first one whose branch and task
 /// row are free. A taken name moves on; every other refusal ends the search.
 fn find_slug(ctx: &BotCtx, f: &Intake, project_id: &str) -> Result<(String, StartInfo), String> {
-    let candidates = slug_candidates(f.request());
+    let candidates = slug_candidates(&f.slug_source());
+    let request = f.request()?;
     for candidate in &candidates {
         let req = StartRequest {
             project: project_id,
-            request: f.request(),
+            request: &request,
             name: Some(candidate),
             workflow: f.workflow_name(),
             origin: Origin::Telegram,
@@ -474,35 +577,24 @@ fn audit(text: &str) {
 pub(crate) fn on_command(ctx: &Arc<BotCtx>, state: &mut PollState, name: &str, rest: &str) {
     match name {
         "task" => start_flow(ctx, state, rest),
-        "huy" => {
-            if state.intake.is_some() {
+        "huy" => match state.intake.as_ref().map(|f| f.message_id.is_some()) {
+            Some(true) => close(ctx, state, CANCELLED),
+            // Forwards still being collected have no message to edit yet.
+            Some(false) => {
                 close(ctx, state, CANCELLED);
-            } else {
-                bot::reply(ctx, NO_FLOW);
+                bot::reply(ctx, CANCELLED);
             }
-        }
+            None => bot::reply(ctx, NO_FLOW),
+        },
         _ => bot::reply(ctx, HELP_TEXT),
     }
 }
 
-/// Opens a typed flow: `/task <request>` or bare `/task`.
-fn start_flow(ctx: &Arc<BotCtx>, state: &mut PollState, rest: &str) {
-    // The daily cap is checked before anything is shown (OD-2).
-    if let Some(refusal) = cap_refusal(ctx, state) {
-        close(ctx, state, REPLACED);
-        bot::reply(ctx, &refusal);
-        audit("từ chối (giới hạn ngày)");
-        return;
-    }
-    let map = match load_map(&ctx.st.map_path) {
-        Ok(m) => m,
-        Err(e) => {
-            close(ctx, state, REPLACED);
-            bot::reply(ctx, &format!("{REFUSED_PREFIX}{}", e.message));
-            return;
-        }
-    };
-    // An id the map does not know is warned once per serve (INTAKE-03).
+/// The projects a new flow may offer (OD-1), as buttons. The error is the text
+/// to reply. A `telegram_projects` id the map does not know is warned once per
+/// serve (INTAKE-03).
+fn allowed_offers(ctx: &BotCtx, state: &mut PollState) -> Result<Vec<Offer>, String> {
+    let map = load_map(&ctx.st.map_path).map_err(|e| format!("{REFUSED_PREFIX}{}", e.message))?;
     let fresh: Vec<String> = unknown_ids(&map)
         .into_iter()
         .filter(|id| !state.warned_ids.contains(id))
@@ -514,8 +606,34 @@ fn start_flow(ctx: &Arc<BotCtx>, state: &mut PollState, rest: &str) {
         ));
         state.warned_ids.extend(fresh);
     }
-    let projects = match allowed_projects(&map, &ctx.st.cfg) {
-        Ok((projects, _)) => projects,
+    let (projects, _) = allowed_projects(&map, &ctx.st.cfg)?;
+    Ok(projects
+        .iter()
+        .map(|p| {
+            let name = if p.name_vi.trim().is_empty() {
+                &p.id
+            } else {
+                &p.name_vi
+            };
+            Offer {
+                id: p.id.clone(),
+                label: short(&format!("{name} · {}", p.profile), LABEL_MAX),
+            }
+        })
+        .collect())
+}
+
+/// Opens a typed flow: `/task <request>` or bare `/task`.
+fn start_flow(ctx: &Arc<BotCtx>, state: &mut PollState, rest: &str) {
+    // The daily cap is checked before anything is shown (OD-2).
+    if let Some(refusal) = cap_refusal(ctx, state) {
+        close(ctx, state, REPLACED);
+        bot::reply(ctx, &refusal);
+        audit("từ chối (giới hạn ngày)");
+        return;
+    }
+    let offers = match allowed_offers(ctx, state) {
+        Ok(offers) => offers,
         Err(msg) => {
             close(ctx, state, REPLACED);
             bot::reply(ctx, &msg);
@@ -538,20 +656,6 @@ fn start_flow(ctx: &Arc<BotCtx>, state: &mut PollState, rest: &str) {
     close(ctx, state, REPLACED);
 
     let request = rest.trim().to_string();
-    let offers: Vec<Offer> = projects
-        .iter()
-        .map(|p| {
-            let name = if p.name_vi.trim().is_empty() {
-                &p.id
-            } else {
-                &p.name_vi
-            };
-            Offer {
-                id: p.id.clone(),
-                label: short(&format!("{name} · {}", p.profile), LABEL_MAX),
-            }
-        })
-        .collect();
     let awaiting = request.is_empty();
     let mut flow = Intake {
         id: flow_id,
@@ -585,9 +689,23 @@ fn start_flow(ctx: &Arc<BotCtx>, state: &mut PollState, rest: &str) {
     }
 }
 
-/// The request of a flow waiting for it. `true` when `text` was taken.
+/// The request of a flow waiting for it, or the instruction of a forwarded flow
+/// on its confirm screen. `true` when `text` was taken.
 pub(crate) fn on_text(ctx: &Arc<BotCtx>, state: &mut PollState, text: &str) -> bool {
     let now = crate::db::now_ms();
+    let instructing = state
+        .intake
+        .as_ref()
+        .is_some_and(|f| f.is_forwarded() && f.stage == Stage::Confirm && !f.expired(now));
+    if instructing {
+        let instruction = text.trim();
+        if !instruction.is_empty() {
+            if let Some(flow) = state.intake.take() {
+                state.intake = set_instruction(ctx, flow, instruction);
+            }
+        }
+        return true;
+    }
     let waiting = state
         .intake
         .as_ref()
@@ -607,6 +725,51 @@ pub(crate) fn on_text(ctx: &Arc<BotCtx>, state: &mut PollState, text: &str) -> b
         audit(&format!("mở yêu cầu ({} ký tự)", request.chars().count()));
     }
     true
+}
+
+/// OD-7: `instruction` becomes the forwarded flow's instruction (outside the
+/// untrusted block); the branch is looked up again from it and the confirm screen
+/// is redrawn. Returns the flow when it stays open.
+fn set_instruction(ctx: &Arc<BotCtx>, mut f: Intake, instruction: &str) -> Option<Intake> {
+    let (mid, project_id) = match (f.message_id, f.project_id()) {
+        (Some(m), Some(p)) => (m, p.to_string()),
+        _ => return Some(f),
+    };
+    let old = match &mut f.source {
+        Source::Forwarded { instruction: i, .. } => i.replace(instruction.to_string()),
+        Source::Typed(_) => return Some(f),
+    };
+    // A request over the size limit keeps the old instruction (never truncated).
+    if let Err(reason) = f.request() {
+        if let Source::Forwarded { instruction: i, .. } = &mut f.source {
+            *i = old;
+        }
+        bot::reply(ctx, &reason);
+        return Some(f);
+    }
+    match find_slug(ctx, &f, &project_id) {
+        Ok((slug, info)) => {
+            f.slug = Some(slug);
+            f.expires_at_ms = deadline(crate::db::now_ms());
+            let (text, keyboard) = confirm_screen(&f, &info);
+            bot::edit(ctx, mid, &text, keyboard);
+            audit(&format!(
+                "thêm việc cần làm ({} ký tự)",
+                instruction.chars().count()
+            ));
+            Some(f)
+        }
+        Err(reason) => {
+            bot::edit(
+                ctx,
+                mid,
+                &format!("{REFUSED_PREFIX}{reason}"),
+                render::no_keyboard(),
+            );
+            audit("từ chối (preflight)");
+            None
+        }
+    }
 }
 
 /// What a press did to the flow.
@@ -686,6 +849,10 @@ fn press(
             audit("đã huỷ");
             Next::Closed
         }
+        (IntakeOp::Toggle, Stage::Select) => select(ctx, f, cq_id, mid, Pick::One(cb.index)),
+        (IntakeOp::All, Stage::Select) => select(ctx, f, cq_id, mid, Pick::All(true)),
+        (IntakeOp::None, Stage::Select) => select(ctx, f, cq_id, mid, Pick::All(false)),
+        (IntakeOp::Go, Stage::Select) => go(ctx, f, cq_id, mid),
         (IntakeOp::Project, Stage::Project) => pick_project(ctx, f, cq_id, mid, cb.index),
         (IntakeOp::Workflow, Stage::Workflow) => pick_workflow(ctx, f, cq_id, mid, cb.index),
         (IntakeOp::Confirm, Stage::Confirm) => confirm(ctx, state, f, cq_id, mid),
@@ -694,6 +861,88 @@ fn press(
             Next::Kept
         }
     }
+}
+
+/// A change to the ☑/☐ state of a forwarded flow.
+enum Pick {
+    /// Flip one message (its index).
+    One(Option<usize>),
+    /// Select (`true`) or clear every message.
+    All(bool),
+}
+
+/// The selection message of a forwarded flow, redrawn from the server-held list.
+fn show_selection(ctx: &BotCtx, f: &Intake, mid: i64) {
+    if let Source::Forwarded { items, skipped, .. } = &f.source {
+        bot::edit(
+            ctx,
+            mid,
+            &forward::selection_text(items, *skipped),
+            render::keyboard_json(&forward::selection_keyboard(&f.id, items)),
+        );
+    }
+}
+
+fn select(ctx: &BotCtx, f: &mut Intake, cq_id: &str, mid: i64, pick: Pick) -> Next {
+    let items = match &mut f.source {
+        Source::Forwarded { items, .. } => items,
+        Source::Typed(_) => {
+            bot::answer(ctx, cq_id, INVALID_BUTTON, false);
+            return Next::Kept;
+        }
+    };
+    let answer = match pick {
+        Pick::One(index) => match index.and_then(|i| items.get_mut(i)) {
+            Some(item) => {
+                item.selected = !item.selected;
+                if item.selected {
+                    "Đã chọn"
+                } else {
+                    "Đã bỏ chọn"
+                }
+            }
+            None => {
+                bot::answer(ctx, cq_id, INVALID_BUTTON, false);
+                return Next::Kept;
+            }
+        },
+        Pick::All(on) => {
+            for item in items.iter_mut() {
+                item.selected = on;
+            }
+            if on {
+                "Đã chọn hết"
+            } else {
+                "Đã bỏ hết"
+            }
+        }
+    };
+    show_selection(ctx, f, mid);
+    bot::answer(ctx, cq_id, answer, false);
+    Next::Advanced
+}
+
+/// `Tiếp tục`: at least one message selected and the composed request within
+/// the size limit, then the project screen.
+fn go(ctx: &BotCtx, f: &mut Intake, cq_id: &str, mid: i64) -> Next {
+    let k = match &f.source {
+        Source::Forwarded { items, .. } => items.iter().filter(|i| i.selected).count(),
+        Source::Typed(_) => 0,
+    };
+    if k == 0 {
+        bot::answer(ctx, cq_id, compose::NONE_SELECTED, true);
+        return Next::Kept;
+    }
+    if let Err(reason) = f.request() {
+        bot::answer(ctx, cq_id, &reason, true);
+        return Next::Kept;
+    }
+    f.stage = Stage::Project;
+    let (text, keyboard) = project_screen(f);
+    bot::edit(ctx, mid, &text, keyboard);
+    bot::answer(ctx, cq_id, &format!("Đã chọn {k} tin"), false);
+    audit(&format!("đã chọn {k} tin chuyển tiếp"));
+    Next::Advanced
 }
 
 /// Ends the flow with a refusal shown on its message.
@@ -814,7 +1063,10 @@ fn confirm(ctx: &Arc<BotCtx>, state: &PollState, f: &mut Intake, cq_id: &str, mi
         return Next::Closed;
     }
 
-    let request = f.request().to_string();
+    let request = match f.request() {
+        Ok(r) => r,
+        Err(reason) => return refuse(ctx, cq_id, mid, &reason, "yêu cầu"),
+    };
     let mut req = StartRequest {
         project: &project_id,
         request: &request,
@@ -863,13 +1115,172 @@ fn confirm(ctx: &Arc<BotCtx>, state: &PollState, f: &mut Intake, cq_id: &str, mi
     }
 }
 
-/// A forwarded message: data, never a command. Collection arrives in plan 05.4-07;
-/// until then the help line is the only reply.
-pub(crate) fn on_forward(ctx: &Arc<BotCtx>, _state: &mut PollState, _msg: &Value) {
-    bot::reply(ctx, HELP_TEXT);
+/// A forwarded message: data, never a command (it may start with `/task`). It is
+/// added to the open forwarded flow while that flow collects or shows its list;
+/// otherwise it opens a new forwarded flow (OD-4).
+pub(crate) fn on_forward(ctx: &Arc<BotCtx>, state: &mut PollState, msg: &Value) {
+    let now = crate::db::now_ms();
+    let item = forward::item_of(msg);
+    let open = state.intake.as_ref().is_some_and(|f| {
+        f.is_forwarded()
+            && !f.expired(now)
+            && matches!(f.stage, Stage::Collecting { .. } | Stage::Select)
+    });
+    if !open {
+        start_forwarded(ctx, state, item, now);
+        return;
+    }
+    let f = match state.intake.as_mut() {
+        Some(f) => f,
+        None => return,
+    };
+    let mut changed = false;
+    let mut tell_over_cap = false;
+    if let Source::Forwarded {
+        items,
+        skipped,
+        over_cap_told,
+        ..
+    } = &mut f.source
+    {
+        match item {
+            Some(item) if items.len() < forward::MAX_FORWARDS => {
+                items.push(item);
+                changed = true;
+            }
+            Some(_) => {
+                tell_over_cap = !*over_cap_told;
+                *over_cap_told = true;
+            }
+            None => {
+                *skipped += 1;
+                changed = true;
+            }
+        }
+    }
+    if tell_over_cap {
+        bot::reply(ctx, forward::OVER_CAP);
+    }
+    f.expires_at_ms = deadline(now);
+    match &mut f.stage {
+        Stage::Collecting { last_ms, .. } => *last_ms = now,
+        _ => {
+            if let (true, Some(mid)) = (changed, f.message_id) {
+                show_selection(ctx, f, mid);
+            }
+        }
+    }
 }
 
-/// Ends an expired flow and reports the outcome of watched jobs (called after
+/// Opens a forwarded flow with its first message (or one skipped message). The
+/// allowlist and the daily cap are checked when the window closes (`tick`).
+fn start_forwarded(ctx: &Arc<BotCtx>, state: &mut PollState, item: Option<ForwardItem>, now: i64) {
+    let ids = compose::new_hex_id().and_then(|flow| Ok((flow, compose::new_hex_id()?)));
+    let (flow_id, nonce) = match ids {
+        Ok(ids) => ids,
+        Err(e) => {
+            crate::term::emit(&format!("Telegram: lỗi tạo mã yêu cầu ({e})"));
+            bot::reply(ctx, INTERNAL);
+            return;
+        }
+    };
+    // One interaction at a time (OD-5): the open note prompt and flow end here.
+    if let Some(p) = state.pending.take() {
+        bot::edit(ctx, p.prompt_message_id, REPLACED, render::no_keyboard());
+    }
+    close(ctx, state, REPLACED);
+    let skipped = usize::from(item.is_none());
+    state.intake = Some(Intake {
+        id: flow_id,
+        stage: Stage::Collecting {
+            first_ms: now,
+            last_ms: now,
+        },
+        source: Source::Forwarded {
+            items: item.into_iter().collect(),
+            skipped,
+            over_cap_told: false,
+            instruction: None,
+            nonce,
+            started_ms: now,
+        },
+        offers: Vec::new(),
+        project: None,
+        default_workflow: String::new(),
+        workflows: Vec::new(),
+        workflow: None,
+        slug: None,
+        message_id: None,
+        expires_at_ms: deadline(now),
+    });
+    audit("nhận tin chuyển tiếp");
+}
+
+/// Closes the collection window of a forwarded flow after `forward::quiet_ms()`
+/// without a new forward, or `COLLECT_MAX_MS` after the first one: nothing usable
+/// → one reply; refused by the cap or the allowlist → one reply; otherwise the
+/// selection message is sent (synchronously, to learn its id).
+fn close_window(ctx: &Arc<BotCtx>, state: &mut PollState, now_ms: i64) {
+    let due = state.intake.as_ref().is_some_and(|f| match f.stage {
+        Stage::Collecting { first_ms, last_ms } => {
+            now_ms.saturating_sub(last_ms) >= forward::quiet_ms() as i64
+                || now_ms.saturating_sub(first_ms) >= forward::COLLECT_MAX_MS
+        }
+        _ => false,
+    });
+    if !due {
+        return;
+    }
+    let mut f = match state.intake.take() {
+        Some(f) => f,
+        None => return,
+    };
+    let (n, skipped) = match &f.source {
+        Source::Forwarded { items, skipped, .. } => (items.len(), *skipped),
+        Source::Typed(_) => return,
+    };
+    if n == 0 {
+        bot::reply(
+            ctx,
+            &forward::NOTHING_USABLE_FMT.replace("{k}", &skipped.to_string()),
+        );
+        audit(&format!("bỏ qua {skipped} tin chuyển tiếp không có chữ"));
+        return;
+    }
+    if let Some(refusal) = cap_refusal(ctx, state) {
+        bot::reply(ctx, &refusal);
+        audit("từ chối (giới hạn ngày)");
+        return;
+    }
+    f.offers = match allowed_offers(ctx, state) {
+        Ok(offers) => offers,
+        Err(msg) => {
+            bot::reply(ctx, &msg);
+            audit("từ chối (telegram_projects)");
+            return;
+        }
+    };
+    let (text, keyboard) = match &f.source {
+        Source::Forwarded { items, skipped, .. } => (
+            forward::selection_text(items, *skipped),
+            render::keyboard_json(&forward::selection_keyboard(&f.id, items)),
+        ),
+        Source::Typed(_) => return,
+    };
+    match bot::send_message(ctx, &text, keyboard) {
+        Some(message_id) => {
+            f.message_id = Some(message_id);
+            f.stage = Stage::Select;
+            f.expires_at_ms = deadline(now_ms);
+            state.intake = Some(f);
+            audit(&format!("mở danh sách {n} tin chuyển tiếp"));
+        }
+        None => audit("không gửi được danh sách tin chuyển tiếp"),
+    }
+}
+
+/// Ends an expired flow, closes the collection window of forwarded messages and
+/// reports the outcome of watched jobs (called after
 /// each `getUpdates` and before each update, on the poll thread).
 pub(crate) fn tick(ctx: &Arc<BotCtx>, state: &mut PollState, now_ms: i64) {
     if let Some(f) = take_expired(state, now_ms) {
@@ -878,6 +1289,7 @@ pub(crate) fn tick(ctx: &Arc<BotCtx>, state: &mut PollState, now_ms: i64) {
         }
         audit("hết hạn");
     }
+    close_window(ctx, state, now_ms);
     watch_tick(ctx, state, now_ms);
 }
 

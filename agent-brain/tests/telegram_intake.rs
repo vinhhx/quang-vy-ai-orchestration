@@ -1135,18 +1135,17 @@ fn forwarded_task_is_not_a_command() {
     setup_project(&sb, "work");
     allow_projects(&sb, &["web-ban-hang"]);
 
-    let mut srv = tg.serve(&sb, &[]);
+    let mut srv = tg.serve(&sb, &[QUIET]);
     wait_polling(&tg, &srv);
 
     let mut up = tg.message_update(PAIRED_CHAT, PAIRED_CHAT, "private", "/task sửa app");
     up["message"]["forward_origin"] =
         json!({"type": "hidden_user", "sender_user_name": "Khách", "date": 1});
     tg.push_update(up);
-    assert!(
-        wait_until(Duration::from_secs(10), || sent_texts(&tg, HELP) == 1),
-        "{:#?}",
-        tg.records()
-    );
+    // Plan 05.4-07: the forward is collected as data, not run as `/task`.
+    let selection = wait_message(&tg, &srv, "Đã nhận 1 tin chuyển tiếp");
+    assert!(text_of(&selection).contains("/task sửa app"), "{selection}");
+    assert_eq!(sent_texts(&tg, HELP), 0, "{:#?}", tg.records());
     assert_eq!(flow_messages(&tg), 0, "{:#?}", tg.records());
     for line in telegram_lines(&srv) {
         assert!(!line.contains("sửa app"), "forwarded text leaked: {line}");
@@ -1490,5 +1489,865 @@ fn commands_registered() {
         .position(|r| r["method"] == "setMyCommands")
         .unwrap();
     assert!(me < set, "{records:#?}");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// Plan 05.4-07: forwarded messages become one task
+// ---------------------------------------------------------------------------
+
+/// Serve env: the forward collection window closes after 300 ms without a new forward.
+const QUIET: (&str, &str) = ("AGENT_BRAIN_TELEGRAM_INTAKE_QUIET_MS", "300");
+const OVER_CAP: &str = "Chỉ nhận tối đa 20 tin một lần — các tin sau bị bỏ qua.";
+const D1: i64 = 1_792_600_000;
+const D2: i64 = D1 + 60;
+const D3: i64 = D1 + 120;
+
+/// A message forwarded by the paired user into chat `chat`. Without `text` it is
+/// a photo (no file is ever fetched) with the optional `caption`.
+fn forward_update(
+    tg: &FakeTelegram,
+    chat: i64,
+    text: Option<&str>,
+    caption: Option<&str>,
+    origin: Value,
+) -> Value {
+    let mut up = tg.message_update(chat, chat, "private", text.unwrap_or(""));
+    let m = up["message"].as_object_mut().unwrap();
+    if text.is_none() {
+        m.remove("text");
+        m.insert(
+            "photo".to_string(),
+            json!([{"file_id": "f1", "file_unique_id": "u1", "width": 1, "height": 1}]),
+        );
+        if let Some(c) = caption {
+            m.insert("caption".to_string(), json!(c));
+        }
+    }
+    m.insert("forward_origin".to_string(), origin);
+    up
+}
+
+fn user_origin(first: &str, last: &str, username: &str, date: i64) -> Value {
+    json!({"type": "user", "date": date, "sender_user": {
+        "id": 4242, "is_bot": false, "first_name": first, "last_name": last, "username": username}})
+}
+
+fn hidden_origin(name: &str, date: i64) -> Value {
+    json!({"type": "hidden_user", "date": date, "sender_user_name": name})
+}
+
+fn channel_origin(title: &str, signature: &str, date: i64) -> Value {
+    json!({"type": "channel", "date": date, "message_id": 77,
+        "chat": {"id": -1001234, "type": "channel", "title": title},
+        "author_signature": signature})
+}
+
+/// A text forward from a hidden user (the shortest helper for bursts).
+fn fwd(tg: &FakeTelegram, text: &str) -> Value {
+    forward_update(tg, PAIRED_CHAT, Some(text), None, hidden_origin("Bình", D2))
+}
+
+/// Appends `updates` to the fake's update log in one step (a new file renamed
+/// over the old one), so a burst reaches serve in a single getUpdates answer and
+/// the quiet window cannot close in the middle of it, however loaded the machine.
+fn push_burst(tg: &FakeTelegram, updates: Vec<Value>) -> Vec<i64> {
+    use std::io::Write;
+    let path = tg.dir.join("updates.jsonl");
+    let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut next = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| v["update_id"].as_i64())
+        .max()
+        .unwrap_or(0);
+    let mut ids = Vec::new();
+    for mut up in updates {
+        next += 1;
+        up["update_id"] = json!(next);
+        ids.push(next);
+        text.push_str(&serde_json::to_string(&up).unwrap());
+        text.push('\n');
+    }
+    let tmp = tg.dir.join("updates.jsonl.burst");
+    let mut f = std::fs::File::create(&tmp).expect("create burst file");
+    f.write_all(text.as_bytes()).expect("write burst");
+    f.sync_all().expect("sync burst");
+    std::fs::rename(&tmp, &path).expect("replace updates.jsonl");
+    ids
+}
+
+/// `--append-system-prompt` of the fake claude's last Lead call.
+fn last_lead_system_prompt(sb: &Sandbox) -> String {
+    let rec = sb
+        .records()
+        .into_iter()
+        .filter(|r| {
+            let argv = r["argv"].as_array().unwrap();
+            argv.iter()
+                .position(|a| a.as_str() == Some("--append-system-prompt"))
+                .map(|i| {
+                    argv[i + 1]
+                        .as_str()
+                        .unwrap_or("")
+                        .starts_with("Bạn là Lead")
+                })
+                .unwrap_or(false)
+        })
+        .last()
+        .expect("a Lead record");
+    let argv = rec["argv"].as_array().unwrap();
+    let i = argv
+        .iter()
+        .position(|a| a.as_str() == Some("--append-system-prompt"))
+        .unwrap();
+    argv[i + 1].as_str().unwrap_or("").to_string()
+}
+
+fn when(secs: i64) -> String {
+    agent_brain::telegram::forward::when_label(secs)
+}
+
+fn task_branch(sb: &Sandbox, task_id: i64) -> String {
+    sb.db()
+        .query_row("SELECT branch FROM tasks WHERE id = ?1", [task_id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+/// Presses `Tiếp tục ({k} tin)` on the selection, then the first project and
+/// the default workflow (`default_label`); returns the confirm screen.
+fn forward_to_confirm(
+    tg: &FakeTelegram,
+    srv: &Serve,
+    mid: i64,
+    selection: &Value,
+    k: usize,
+    default_label: &str,
+) -> Value {
+    press_on(tg, mid, selection, &format!("Tiếp tục ({k} tin)"));
+    let projects = wait_edit(tg, srv, mid, |r| text_of(r).starts_with(CHOOSE_PROJECT));
+    assert!(
+        text_of(&projects).contains(&format!("«[Telegram · {k} tin chuyển tiếp]»")),
+        "{projects}"
+    );
+    let project = labels(&projects)[0].clone();
+    press_on(tg, mid, &projects, &project);
+    let wf = wait_edit(tg, srv, mid, |r| text_of(r).starts_with("Chọn quy trình"));
+    press_on(tg, mid, &wf, default_label);
+    let confirm = wait_edit(tg, srv, mid, |r| {
+        text_of(r).starts_with("Xác nhận giao việc")
+    });
+    assert!(
+        text_of(&confirm).contains(&format!("Tin chuyển tiếp: {k} tin đã chọn")),
+        "{confirm}"
+    );
+    confirm
+}
+
+/// `Tạo task` on the confirm screen; waits for the accepted edit and the job.
+fn create_from_confirm(tg: &FakeTelegram, srv: &Serve, mid: i64, confirm: &Value) {
+    press_on(tg, mid, confirm, "Tạo task");
+    let done = wait_edit(tg, srv, mid, |r| {
+        text_of(r).starts_with("Đã nhận — đang lập plan")
+    });
+    assert!(empty_keyboard(&done), "{done}");
+}
+
+/// Lines of `prompt` from the opening delimiter to the closing one.
+fn block_lines(prompt: &str) -> Vec<&str> {
+    let lines: Vec<&str> = prompt.lines().collect();
+    let open = lines
+        .iter()
+        .position(|l| l.starts_with("<<<TIN_CHUYEN_TIEP "))
+        .unwrap_or_else(|| panic!("no opening delimiter in {prompt}"));
+    let close = lines
+        .iter()
+        .position(|l| l.starts_with("<<<HET_TIN_CHUYEN_TIEP "))
+        .unwrap_or_else(|| panic!("no closing delimiter in {prompt}"));
+    assert!(open < close, "{prompt}");
+    lines[open..=close].to_vec()
+}
+
+#[test]
+fn forward_burst_one_task() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+    allow_projects(&sb, &["web-ban-hang"]);
+    sb.write_scenario(lead_plan_entry());
+
+    let mut srv = tg.serve(&sb, &[QUIET]);
+    wait_polling(&tg, &srv);
+
+    push_burst(
+        &tg,
+        vec![
+            forward_update(
+                &tg,
+                PAIRED_CHAT,
+                Some("Sửa nút đăng nhập trên trang chủ"),
+                None,
+                user_origin("Nguyễn", "An", "an_ng", D1),
+            ),
+            forward_update(
+                &tg,
+                PAIRED_CHAT,
+                Some("Thêm kiểm tra email"),
+                None,
+                hidden_origin("Bình", D2),
+            ),
+            forward_update(
+                &tg,
+                PAIRED_CHAT,
+                Some("Hạn chót thứ sáu"),
+                None,
+                channel_origin("Kênh Dự án", "Chi", D3),
+            ),
+        ],
+    );
+    let selection = wait_message(&tg, &srv, "Đã nhận 3 tin chuyển tiếp");
+    let lines: Vec<&str> = text_of(&selection).lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "Đã nhận 3 tin chuyển tiếp — chọn tin cần gộp thành một task:".to_string(),
+            format!(
+                "[1] Nguyễn An (@an_ng) · {} · Sửa nút đăng nhập trên trang chủ",
+                when(D1)
+            ),
+            format!("[2] Bình · {} · Thêm kiểm tra email", when(D2)),
+            format!("[3] Kênh Dự án (Chi) · {} · Hạn chót thứ sáu", when(D3)),
+        ],
+        "{selection}"
+    );
+    assert_eq!(
+        labels(&selection),
+        vec![
+            "☑ 1 · Nguyễn An (@an_ng)",
+            "☑ 2 · Bình",
+            "☑ 3 · Kênh Dự án (Chi)",
+            "Chọn hết",
+            "Bỏ hết",
+            "Tiếp tục (3 tin)",
+            "Huỷ",
+        ],
+        "{selection}"
+    );
+    // Callback data: the flow id and an index only.
+    let flow = flow_of(&button_data(&selection, "Huỷ"));
+    assert!(is_flow_id(&flow), "{selection}");
+    assert_eq!(
+        button_data(&selection, "☑ 2 · Bình"),
+        format!("iT:{flow}:1")
+    );
+    assert_eq!(
+        button_data(&selection, "Tiếp tục (3 tin)"),
+        format!("iG:{flow}")
+    );
+    let mid = message_id_of(&selection);
+
+    let confirm = forward_to_confirm(&tg, &srv, mid, &selection, 3, "Mặc định (nhanh)");
+    assert!(
+        text_of(&confirm).contains(&format!(
+            "Việc cần làm: {}",
+            agent_brain::telegram::compose::DEFAULT_INSTRUCTION
+        )),
+        "{confirm}"
+    );
+    assert!(
+        text_of(&confirm).contains("Nhánh: task/tin-chuyen-tiep-"),
+        "{confirm}"
+    );
+    assert!(
+        text_of(&confirm)
+            .contains("Gửi một tin chữ để thêm việc cần làm (không bắt buộc), hoặc bấm Tạo task."),
+        "{confirm}"
+    );
+    assert_eq!(task_count(&sb), 0, "nothing is created before Tạo task");
+    create_from_confirm(&tg, &srv, mid, &confirm);
+
+    assert_eq!(job_role(&srv, 1), "lead");
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    assert_eq!(srv.get("/api/jobs/2").status, 404);
+    assert_eq!(task_count(&sb), 1);
+    let (origin, title) = task_row(&sb, 1);
+    assert_eq!(origin.as_deref(), Some("telegram"));
+    assert!(
+        title
+            .lines()
+            .next()
+            .unwrap_or("")
+            .starts_with("[Telegram · 3 tin chuyển tiếp]"),
+        "{title}"
+    );
+    assert!(
+        task_branch(&sb, 1).starts_with("task/tin-chuyen-tiep-"),
+        "{}",
+        task_branch(&sb, 1)
+    );
+
+    let prompt = last_lead_prompt(&sb);
+    let opens = prompt
+        .lines()
+        .filter(|l| l.starts_with("<<<TIN_CHUYEN_TIEP "))
+        .count();
+    assert_eq!(opens, 1, "{prompt}");
+    let block = block_lines(&prompt);
+    for want in [
+        format!("[1] Nguyễn An (@an_ng) · {}", when(D1)),
+        format!("[2] Bình · {}", when(D2)),
+        format!("[3] Kênh Dự án (Chi) · {}", when(D3)),
+        "Sửa nút đăng nhập trên trang chủ".to_string(),
+        "Thêm kiểm tra email".to_string(),
+        "Hạn chót thứ sáu".to_string(),
+    ] {
+        assert!(block.contains(&want.as_str()), "{want:?} not in {block:#?}");
+    }
+    assert_eq!(
+        last_lead_system_prompt(&sb),
+        agent_brain::roles::lead_untrusted_prompt()
+    );
+
+    // Still exactly one selection message, seconds after the window closed.
+    assert_eq!(sent_starting(&tg, "Đã nhận"), 1, "{:#?}", tg.records());
+    assert!(tg.calls("getFile").is_empty());
+    for line in telegram_lines(&srv) {
+        for text in ["Sửa nút", "kiểm tra email", "Hạn chót", "Nguyễn"] {
+            assert!(!line.contains(text), "forwarded text leaked: {line}");
+        }
+    }
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// Plan 05.4-07 Task 2: selection behaviours
+// ---------------------------------------------------------------------------
+
+const NONE_SELECTED: &str = "Chọn ít nhất một tin";
+const TOO_LONG: &str = "Quá dài — bỏ bớt tin (tối đa 20000 ký tự)";
+
+/// The three forwards of the tracer: user, hidden user, channel.
+fn three_forwards(tg: &FakeTelegram) -> Vec<Value> {
+    vec![
+        forward_update(
+            tg,
+            PAIRED_CHAT,
+            Some("Sửa nút đăng nhập trên trang chủ"),
+            None,
+            user_origin("Nguyễn", "An", "an_ng", D1),
+        ),
+        forward_update(
+            tg,
+            PAIRED_CHAT,
+            Some("Thêm kiểm tra email"),
+            None,
+            hidden_origin("Bình", D2),
+        ),
+        forward_update(
+            tg,
+            PAIRED_CHAT,
+            Some("Hạn chót thứ sáu"),
+            None,
+            channel_origin("Kênh Dự án", "Chi", D3),
+        ),
+    ]
+}
+
+/// Allowlisted nhanh project, Lead scenario, serve with the short quiet window.
+fn forward_sandbox() -> (Sandbox, FakeTelegram, Serve) {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+    allow_projects(&sb, &["web-ban-hang"]);
+    sb.write_scenario(lead_plan_entry());
+    let srv = tg.serve(&sb, &[QUIET]);
+    wait_polling(&tg, &srv);
+    (sb, tg, srv)
+}
+
+fn has_label(rec: &Value, label: &str) -> bool {
+    labels(rec).iter().any(|l| l == label)
+}
+
+fn toggles(rec: &Value) -> Vec<String> {
+    labels(rec)
+        .into_iter()
+        .filter(|l| l.starts_with('☑') || l.starts_with('☐'))
+        .collect()
+}
+
+#[test]
+fn forward_toggle_and_select_all() {
+    let (sb, tg, mut srv) = forward_sandbox();
+    push_burst(&tg, three_forwards(&tg));
+    let selection = wait_message(&tg, &srv, "Đã nhận 3 tin chuyển tiếp");
+    let mid = message_id_of(&selection);
+
+    // One toggle flips one message.
+    let cb = press_on(&tg, mid, &selection, "☑ 2 · Bình");
+    let toggled = wait_edit(&tg, &srv, mid, |r| has_label(r, "Tiếp tục (2 tin)"));
+    assert_eq!(
+        toggles(&toggled),
+        vec![
+            "☑ 1 · Nguyễn An (@an_ng)",
+            "☐ 2 · Bình",
+            "☑ 3 · Kênh Dự án (Chi)"
+        ],
+        "{toggled}"
+    );
+    assert!(text_of(&toggled).starts_with("Đã nhận 3 tin chuyển tiếp"));
+    assert_eq!(
+        wait_answer(&tg, &srv, &cb)["json"]["show_alert"],
+        json!(false)
+    );
+
+    // `Bỏ hết` clears every message; `Tiếp tục (0 tin)` is refused with an alert.
+    press_on(&tg, mid, &toggled, "Bỏ hết");
+    let none = wait_edit(&tg, &srv, mid, |r| has_label(r, "Tiếp tục (0 tin)"));
+    assert!(toggles(&none).iter().all(|l| l.starts_with('☐')), "{none}");
+    assert_eq!(toggles(&none).len(), 3, "{none}");
+    let cb = press_on(&tg, mid, &none, "Tiếp tục (0 tin)");
+    let ans = wait_answer(&tg, &srv, &cb);
+    assert_eq!(ans["json"]["text"], json!(NONE_SELECTED), "{ans}");
+    assert_eq!(ans["json"]["show_alert"], json!(true), "{ans}");
+
+    // `Chọn hết` selects every message again (its edit follows any earlier one).
+    press_on(&tg, mid, &none, "Chọn hết");
+    let all = wait_edit(&tg, &srv, mid, |r| has_label(r, "Tiếp tục (3 tin)"));
+    assert!(toggles(&all).iter().all(|l| l.starts_with('☑')), "{all}");
+    assert!(
+        !edits_of(&tg, mid)
+            .iter()
+            .any(|r| text_of(r).starts_with(CHOOSE_PROJECT)),
+        "{:#?}",
+        tg.records()
+    );
+    assert_eq!(task_count(&sb), 0);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn forward_append_while_selecting() {
+    let (_sb, tg, mut srv) = forward_sandbox();
+    let mut burst = three_forwards(&tg);
+    let late = burst.pop().unwrap();
+    push_burst(&tg, burst);
+    let selection = wait_message(&tg, &srv, "Đã nhận 2 tin chuyển tiếp");
+    let mid = message_id_of(&selection);
+
+    // A forward while the list is open is appended (☑) to the same message.
+    tg.push_update(late);
+    let edited = wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).starts_with("Đã nhận 3 tin chuyển tiếp")
+    });
+    assert!(
+        text_of(&edited).contains(&format!("[3] Kênh Dự án (Chi) · {}", when(D3))),
+        "{edited}"
+    );
+    assert!(has_label(&edited, "☑ 3 · Kênh Dự án (Chi)"), "{edited}");
+    assert!(has_label(&edited, "Tiếp tục (3 tin)"), "{edited}");
+    assert_eq!(sent_starting(&tg, "Đã nhận"), 1, "{:#?}", tg.records());
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn forward_cap_20() {
+    let (_sb, tg, mut srv) = forward_sandbox();
+    let burst: Vec<Value> = (1..=22).map(|i| fwd(&tg, &format!("tin số {i}"))).collect();
+    push_burst(&tg, burst);
+    let selection = wait_message(&tg, &srv, "Đã nhận 20 tin chuyển tiếp");
+    let text = text_of(&selection);
+    assert!(text.contains("\n[20] Bình · "), "{text}");
+    assert!(!text.contains("[21]"), "{text}");
+    assert!(!text.contains("tin số 21"), "{text}");
+    assert_eq!(toggles(&selection).len(), 20, "{selection}");
+    assert!(has_label(&selection, "Tiếp tục (20 tin)"), "{selection}");
+    assert_eq!(sent_texts(&tg, OVER_CAP), 1, "{:#?}", tg.records());
+    for (_, data) in buttons(&selection) {
+        assert!(data.len() <= 64, "{data}");
+    }
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn forward_skips_no_text_and_caption_only() {
+    let (sb, tg, mut srv) = forward_sandbox();
+    push_burst(
+        &tg,
+        vec![
+            forward_update(
+                &tg,
+                PAIRED_CHAT,
+                None,
+                Some("Ảnh lỗi"),
+                hidden_origin("Bình", D1),
+            ),
+            forward_update(&tg, PAIRED_CHAT, None, None, hidden_origin("Bình", D2)),
+            forward_update(
+                &tg,
+                PAIRED_CHAT,
+                Some("Sửa nút đăng nhập"),
+                None,
+                hidden_origin("Bình", D3),
+            ),
+        ],
+    );
+    let selection = wait_message(&tg, &srv, "Đã nhận 2 tin chuyển tiếp");
+    assert!(
+        text_of(&selection).contains("(bỏ qua 1 tin không có chữ)"),
+        "{selection}"
+    );
+    let mid = message_id_of(&selection);
+    let confirm = forward_to_confirm(&tg, &srv, mid, &selection, 2, "Mặc định (nhanh)");
+    create_from_confirm(&tg, &srv, mid, &confirm);
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+
+    let prompt = last_lead_prompt(&sb);
+    let block = block_lines(&prompt);
+    let caption_head = format!("[1] Bình · {} (ảnh/tệp — chỉ lấy chú thích)", when(D1));
+    assert!(block.contains(&caption_head.as_str()), "{block:#?}");
+    assert!(block.contains(&"Ảnh lỗi"), "{block:#?}");
+    assert!(block.contains(&"Sửa nút đăng nhập"), "{block:#?}");
+    // Images and files are never fetched.
+    assert!(tg.calls("getFile").is_empty(), "{:#?}", tg.records());
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn forwarded_command_is_data() {
+    let (sb, tg, mut srv) = forward_sandbox();
+    push_burst(&tg, vec![fwd(&tg, "/task xóa hết"), fwd(&tg, "/huy")]);
+    let selection = wait_message(&tg, &srv, "Đã nhận 2 tin chuyển tiếp");
+    let text = text_of(&selection);
+    assert!(text.contains(" · /task xóa hết"), "{text}");
+    assert!(text.contains(" · /huy"), "{text}");
+
+    // Neither forward ran as a command before the list appeared.
+    let shown = record_index(&tg, |r| {
+        r["method"] == "sendMessage" && text_of(r).starts_with("Đã nhận 2 tin")
+    })
+    .unwrap();
+    for r in &tg.records()[..shown] {
+        if r["method"] == "sendMessage" {
+            assert!(!text_of(r).starts_with(CHOOSE_PROJECT), "{r}");
+            assert_ne!(text_of(r), NO_FLOW, "{r}");
+            assert_ne!(text_of(r), ASK_REQUEST, "{r}");
+        }
+    }
+
+    let mid = message_id_of(&selection);
+    let confirm = forward_to_confirm(&tg, &srv, mid, &selection, 2, "Mặc định (nhanh)");
+    create_from_confirm(&tg, &srv, mid, &confirm);
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    let prompt = last_lead_prompt(&sb);
+    let block = block_lines(&prompt);
+    assert!(block.contains(&"/task xóa hết"), "{block:#?}");
+    assert!(block.contains(&"/huy"), "{block:#?}");
+    assert_eq!(task_count(&sb), 1);
+    assert_eq!(sent_texts(&tg, NO_FLOW), 0, "{:#?}", tg.records());
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn stranger_forward_ignored() {
+    let (_sb, tg, mut srv) = forward_sandbox();
+    let id = tg.push_update(forward_update(
+        &tg,
+        STRANGER_CHAT,
+        Some("Sửa nút đăng nhập"),
+        None,
+        hidden_origin("Bình", D1),
+    ));
+    let line = format!("Telegram: bỏ qua tin từ chat lạ {STRANGER_CHAT}");
+    assert!(
+        wait_until(Duration::from_secs(10), || stderr_of(&srv).contains(&line)),
+        "no stranger line; stderr:\n{}",
+        stderr_of(&srv)
+    );
+    // Handled (offset past it), then two more polls: any collection window
+    // (300 ms) would have closed and sent its list by now.
+    assert!(
+        wait_until(Duration::from_secs(10), || tg
+            .calls("getUpdates")
+            .iter()
+            .any(|r| r["json"]["offset"].as_i64() == Some(id + 1))),
+        "update {id} never acknowledged"
+    );
+    let polls = tg.calls("getUpdates").len();
+    assert!(
+        wait_until(Duration::from_secs(10), || tg.calls("getUpdates").len()
+            >= polls + 2),
+        "no further polls"
+    );
+    assert_eq!(sent_starting(&tg, "Đã nhận"), 0, "{:#?}", tg.records());
+    assert!(tg.calls("sendMessage").is_empty(), "{:#?}", tg.records());
+    assert_eq!(count_lines(&stderr_of(&srv), &line), 1);
+
+    // The paired user's own forward still works, and counts only itself.
+    tg.push_update(fwd(&tg, "Thêm kiểm tra email"));
+    let selection = wait_message(&tg, &srv, "Đã nhận ");
+    assert!(
+        text_of(&selection).starts_with("Đã nhận 1 tin chuyển tiếp"),
+        "{selection}"
+    );
+    assert!(!text_of(&selection).contains("Sửa nút"), "{selection}");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn forward_instruction_outside_block() {
+    let (sb, tg, mut srv) = forward_sandbox();
+    let mut burst = three_forwards(&tg);
+    burst.pop();
+    push_burst(&tg, burst);
+    let selection = wait_message(&tg, &srv, "Đã nhận 2 tin chuyển tiếp");
+    let mid = message_id_of(&selection);
+    forward_to_confirm(&tg, &srv, mid, &selection, 2, "Mặc định (nhanh)");
+
+    // A text on the confirm screen is the instruction and names the branch.
+    send_text(&tg, "Làm theo tin 1");
+    let confirm = wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).contains("Việc cần làm: Làm theo tin 1")
+    });
+    assert!(
+        text_of(&confirm).contains("Nhánh: task/lam-theo-tin-1"),
+        "{confirm}"
+    );
+    assert_eq!(
+        labels(&confirm),
+        vec!["Tạo task".to_string(), "Huỷ".to_string()]
+    );
+    assert_eq!(sent_texts(&tg, HELP), 0, "{:#?}", tg.records());
+
+    create_from_confirm(&tg, &srv, mid, &confirm);
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    assert_eq!(task_branch(&sb, 1), "task/lam-theo-tin-1");
+    let prompt = last_lead_prompt(&sb);
+    assert!(
+        prompt.contains("Yêu cầu: [Telegram · 2 tin chuyển tiếp] Làm theo tin 1\n"),
+        "{prompt}"
+    );
+    let open = prompt
+        .find("<<<TIN_CHUYEN_TIEP ")
+        .unwrap_or_else(|| panic!("no block in {prompt}"));
+    assert!(prompt[..open].contains("Làm theo tin 1"), "{prompt}");
+    assert!(!prompt[open..].contains("Làm theo tin 1"), "{prompt}");
+    for line in telegram_lines(&srv) {
+        assert!(!line.contains("Làm theo"), "instruction leaked: {line}");
+    }
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn forward_too_long_refused() {
+    let (_sb, tg, mut srv) = forward_sandbox();
+    let burst: Vec<Value> = (1..=6)
+        .map(|i| {
+            let head = format!("tin dài {i} ");
+            let text = format!("{head}{}", "x".repeat(3900 - head.chars().count()));
+            assert_eq!(text.chars().count(), 3900);
+            fwd(&tg, &text)
+        })
+        .collect();
+    push_burst(&tg, burst);
+    let selection = wait_message(&tg, &srv, "Đã nhận 6 tin chuyển tiếp");
+    let mid = message_id_of(&selection);
+
+    // Over 20,000 characters once composed: refused with an alert, list kept.
+    let cb = press_on(&tg, mid, &selection, "Tiếp tục (6 tin)");
+    let ans = wait_answer(&tg, &srv, &cb);
+    assert_eq!(ans["json"]["text"], json!(TOO_LONG), "{ans}");
+    assert_eq!(ans["json"]["show_alert"], json!(true), "{ans}");
+
+    // Untick two: the same list still works and four messages fit.
+    press_on(&tg, mid, &selection, "☑ 5 · Bình");
+    let five = wait_edit(&tg, &srv, mid, |r| has_label(r, "Tiếp tục (5 tin)"));
+    press_on(&tg, mid, &five, "☑ 6 · Bình");
+    let four = wait_edit(&tg, &srv, mid, |r| has_label(r, "Tiếp tục (4 tin)"));
+    assert!(
+        !edits_of(&tg, mid)
+            .iter()
+            .any(|r| text_of(r).starts_with(CHOOSE_PROJECT)),
+        "the refused press moved on: {:#?}",
+        tg.records()
+    );
+    press_on(&tg, mid, &four, "Tiếp tục (4 tin)");
+    let projects = wait_edit(&tg, &srv, mid, |r| text_of(r).starts_with(CHOOSE_PROJECT));
+    assert!(
+        text_of(&projects).contains("«[Telegram · 4 tin chuyển tiếp]»"),
+        "{projects}"
+    );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn forward_after_continue_starts_new_flow() {
+    let (_sb, tg, mut srv) = forward_sandbox();
+    let mut burst = three_forwards(&tg);
+    let late = burst.pop().unwrap();
+    push_burst(&tg, burst);
+    let selection = wait_message(&tg, &srv, "Đã nhận 2 tin chuyển tiếp");
+    let mid = message_id_of(&selection);
+    press_on(&tg, mid, &selection, "Tiếp tục (2 tin)");
+    wait_edit(&tg, &srv, mid, |r| text_of(r).starts_with(CHOOSE_PROJECT));
+
+    // A forward after `Tiếp tục` replaces the flow and starts a new list.
+    tg.push_update(late);
+    let replaced = wait_edit(&tg, &srv, mid, |r| text_of(r) == REPLACED);
+    assert!(empty_keyboard(&replaced), "{replaced}");
+    let second = wait_new_message(&tg, &srv, "Đã nhận 1 tin chuyển tiếp", &[mid]);
+    assert!(
+        text_of(&second).contains(&format!("[1] Kênh Dự án (Chi) · {}", when(D3))),
+        "{second}"
+    );
+    assert_ne!(
+        flow_of(&button_data(&second, "Huỷ")),
+        flow_of(&button_data(&selection, "Huỷ"))
+    );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// Plan 05.4-07 Task 3: the framing survives re-plans; help text
+// ---------------------------------------------------------------------------
+
+/// mac-dinh gate, then one more Lead round (append) that plan review approves
+/// (the shape of telegram_actions.rs `return_scenario`).
+fn return_scenario() -> Value {
+    by_role(json!({
+        "lead": [lead_plan_entry(), lead_append_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 1), plan_review_entry("approve", 0, 2)],
+    }))
+}
+
+/// The nonce of the opening delimiter line in a Lead prompt.
+fn nonce_of(prompt: &str) -> String {
+    prompt
+        .lines()
+        .find_map(|l| l.strip_prefix("<<<TIN_CHUYEN_TIEP "))
+        .and_then(|rest| rest.strip_suffix(">>>"))
+        .unwrap_or_else(|| panic!("no opening delimiter in {prompt}"))
+        .to_string()
+}
+
+fn lead_records(sb: &Sandbox) -> usize {
+    sb.records()
+        .iter()
+        .filter(|r| {
+            let argv = r["argv"].as_array().unwrap();
+            argv.iter()
+                .position(|a| a.as_str() == Some("--append-system-prompt"))
+                .is_some_and(|i| {
+                    argv[i + 1]
+                        .as_str()
+                        .unwrap_or("")
+                        .starts_with("Bạn là Lead")
+                })
+        })
+        .count()
+}
+
+#[test]
+fn untrusted_block_survives_return_lead() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+    allow_projects(&sb, &["web-ban-hang"]);
+    sb.write_scenario(return_scenario());
+
+    let mut srv = tg.serve(&sb, &[QUIET]);
+    wait_polling(&tg, &srv);
+
+    let mut burst = three_forwards(&tg);
+    burst.pop();
+    push_burst(&tg, burst);
+    let selection = wait_message(&tg, &srv, "Đã nhận 2 tin chuyển tiếp");
+    let mid = message_id_of(&selection);
+    let confirm = forward_to_confirm(&tg, &srv, mid, &selection, 2, "Mặc định (mac-dinh)");
+    create_from_confirm(&tg, &srv, mid, &confirm);
+    assert_eq!(job_role(&srv, 1), "auto");
+
+    // The gate message: no approve button, the one-line title, dashboard only.
+    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    assert_eq!(labels(&gate), vec!["Trả về Lead".to_string()], "{gate}");
+    let lines: Vec<&str> = text_of(&gate).lines().collect();
+    assert!(
+        lines
+            .get(1)
+            .is_some_and(|l| l.starts_with("[Telegram · 2 tin chuyển tiếp]")),
+        "{gate}"
+    );
+    assert!(text_of(&gate).contains(ORIGIN_LINE), "{gate}");
+    assert!(text_of(&gate).chars().count() <= 3900, "{gate}");
+    assert!(!text_of(&gate).contains("<<<"), "{gate}");
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+
+    let first = last_lead_prompt(&sb);
+    let nonce = nonce_of(&first);
+    assert_eq!(
+        last_lead_system_prompt(&sb),
+        agent_brain::roles::lead_untrusted_prompt()
+    );
+    assert_eq!(lead_records(&sb), 1);
+
+    // `Trả về Lead` with a note: the next Lead run keeps the same framing.
+    let cb = press(&tg, PAIRED_CHAT, PAIRED_CHAT, &gate, "Trả về Lead");
+    let ans = wait_answer(&tg, &srv, &cb);
+    assert_eq!(ans["json"]["text"], json!(NOTE_ASK), "{ans}");
+    wait_message(&tg, &srv, "Ghi chú cho Lead (task 1)");
+    send_text(&tg, "tách bước 2");
+    let job = wait_for_job(&srv, 2);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    assert_eq!(job_role(&srv, 2), "auto");
+    assert_eq!(lead_records(&sb), 2);
+
+    let second = last_lead_prompt(&sb);
+    assert!(
+        second.contains(&format!("<<<TIN_CHUYEN_TIEP {nonce}>>>")),
+        "{second}"
+    );
+    assert!(
+        second.contains(&format!("<<<HET_TIN_CHUYEN_TIEP {nonce}>>>")),
+        "{second}"
+    );
+    assert!(
+        second.contains("Ghi chú của người dùng: tách bước 2"),
+        "{second}"
+    );
+    assert_eq!(
+        last_lead_system_prompt(&sb),
+        agent_brain::roles::lead_untrusted_prompt()
+    );
+    assert_eq!(approved_commit(&sb, 1), None);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn help_text_mentions_forwarding() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    send_text(&tg, "xin chào");
+    let reply = wait_message(&tg, &srv, "Gõ /task");
+    assert_eq!(text_of(&reply), agent_brain::telegram::bot::HELP_TEXT);
+    assert!(text_of(&reply).contains("/task"), "{reply}");
+    assert!(text_of(&reply).contains("Chuyển tiếp tin nhắn"), "{reply}");
+    assert!(buttons(&reply).is_empty(), "{reply}");
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
