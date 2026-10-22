@@ -1449,3 +1449,46 @@ fn daily_cap_zero_disables() {
     assert_eq!(flow_messages(&tg), 0, "{:#?}", tg.records());
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+#[test]
+fn commands_registered() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let calls = tg.calls("setMyCommands");
+    assert_eq!(calls.len(), 1, "{:#?}", tg.records());
+    let commands = &calls[0]["json"]["commands"];
+    assert_eq!(
+        commands,
+        &json!([
+            {"command": "task", "description": "Giao việc mới cho agent-brain"},
+            {"command": "huy", "description": "Huỷ yêu cầu giao việc đang mở"},
+        ]),
+        "{:#?}",
+        calls[0]
+    );
+    for c in commands.as_array().unwrap() {
+        let name = c["command"].as_str().unwrap();
+        assert!(
+            (1..=32).contains(&name.len())
+                && name
+                    .bytes()
+                    .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_')),
+            "{name}"
+        );
+    }
+    // Registered after getMe, before the first long poll.
+    let records = tg.records();
+    let me = records.iter().position(|r| r["method"] == "getMe").unwrap();
+    let set = records
+        .iter()
+        .position(|r| r["method"] == "setMyCommands")
+        .unwrap();
+    assert!(me < set, "{records:#?}");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}

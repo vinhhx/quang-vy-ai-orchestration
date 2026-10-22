@@ -248,7 +248,7 @@ def result_for(method: str, params: dict):
             "ok": True,
             "result": {"message_id": params.get("message_id"), "chat": chat_of(params)},
         }
-    if method in ("answerCallbackQuery", "deleteWebhook"):
+    if method in ("answerCallbackQuery", "deleteWebhook", "setMyCommands"):
         return 200, {"ok": True, "result": True}
     return 404, {"ok": False, "error_code": 404, "description": "Not Found"}
 

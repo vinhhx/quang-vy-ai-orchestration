@@ -198,6 +198,15 @@ fn poll_thread(ctx: Arc<BotCtx>) {
                 ctx.health.ok_quiet(Channel::Poll);
                 let username = me.get("username").and_then(|u| u.as_str()).unwrap_or("?");
                 crate::term::emit_out(&format!("Telegram: đã kết nối (@{username})"));
+                // The `/task` / `/huy` command menu (INTAKE-01): once, a failure is ignored.
+                let _ = ctx.tx.call(
+                    "setMyCommands",
+                    &transport::Body::Json(serde_json::json!({"commands": [
+                        {"command": "task", "description": "Giao việc mới cho agent-brain"},
+                        {"command": "huy", "description": "Huỷ yêu cầu giao việc đang mở"},
+                    ]})),
+                    20,
+                );
                 // Same thread: curl's PDEATHSIG stays tied to a long-lived thread.
                 bot::run_poll(&ctx);
                 return;
