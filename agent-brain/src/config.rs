@@ -332,6 +332,18 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         }
     }
 
+    let telegram_max_tasks_per_day = match obj.get("telegram_max_tasks_per_day") {
+        None => DEFAULT_TELEGRAM_MAX_TASKS_PER_DAY,
+        Some(val) => match val.as_u64() {
+            Some(n) if n <= 1000 => n as u32,
+            _ => {
+                return Err(BrainError::error(
+                    "Cấu hình telegram_max_tasks_per_day phải là số nguyên từ 0 đến 1000",
+                ))
+            }
+        },
+    };
+
     let mut pricing = default_pricing();
     if let Some(p_val) = obj.get("pricing") {
         if let Some(p_obj) = p_val.as_object() {
@@ -373,7 +385,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         dashboard_port,
         autopilot,
         pricing,
-        telegram_max_tasks_per_day: DEFAULT_TELEGRAM_MAX_TASKS_PER_DAY,
+        telegram_max_tasks_per_day,
     })
 }
 

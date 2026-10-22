@@ -268,13 +268,46 @@ pub fn poll_timeout_secs(state: &PollState) -> u64 {
 }
 
 /// Start of the local day of `now`, in ms (the earliest instant when ambiguous).
+/// A day whose midnight falls in a DST gap starts at the first hour that exists.
 pub fn local_midnight_ms(now: chrono::DateTime<chrono::Local>) -> i64 {
-    now.timestamp_millis()
+    use chrono::TimeZone;
+    let date = now.date_naive();
+    (0..=3)
+        .filter_map(|h| date.and_hms_opt(h, 0, 0))
+        .find_map(|t| chrono::Local.from_local_datetime(&t).earliest())
+        .map(|t| t.timestamp_millis())
+        .unwrap_or_else(|| now.timestamp_millis())
 }
 
-/// Why a new Telegram task is refused by the daily cap, if it is (OD-2).
-pub fn cap_refusal(_ctx: &BotCtx, _state: &PollState) -> Option<String> {
-    None
+/// Why a new Telegram task is refused by the daily cap, if it is (OD-2): the
+/// cap is 0, or the Telegram-origin rows created since local midnight plus the
+/// watched jobs without a row yet reach it. A database error refuses too.
+pub fn cap_refusal(ctx: &BotCtx, state: &PollState) -> Option<String> {
+    let cap = ctx.st.cfg.telegram_max_tasks_per_day;
+    if cap == 0 {
+        return Some(CAP_OFF.to_string());
+    }
+    let counted = crate::db::open(&ctx.st.db_path).and_then(|conn| {
+        let since = local_midnight_ms(chrono::Local::now());
+        let rows = crate::db::count_tasks_since(&conn, crate::db::ORIGIN_TELEGRAM, since)?;
+        let starting = state
+            .watch
+            .iter()
+            .filter(|w| task_row_id(&conn, w).is_none())
+            .count();
+        Ok(rows.saturating_add(starting as i64))
+    });
+    match counted {
+        Ok(n) if n >= i64::from(cap) => Some(CAP_REACHED_FMT.replace("{N}", &cap.to_string())),
+        Ok(_) => None,
+        Err(e) => {
+            crate::term::emit(&format!(
+                "Telegram: lỗi đếm task giao từ Telegram hôm nay ({})",
+                e.message
+            ));
+            Some(INTERNAL.to_string())
+        }
+    }
 }
 
 /// Takes the open flow off `state` when it has expired at `now_ms`.
@@ -454,6 +487,13 @@ pub(crate) fn on_command(ctx: &Arc<BotCtx>, state: &mut PollState, name: &str, r
 
 /// Opens a typed flow: `/task <request>` or bare `/task`.
 fn start_flow(ctx: &Arc<BotCtx>, state: &mut PollState, rest: &str) {
+    // The daily cap is checked before anything is shown (OD-2).
+    if let Some(refusal) = cap_refusal(ctx, state) {
+        close(ctx, state, REPLACED);
+        bot::reply(ctx, &refusal);
+        audit("từ chối (giới hạn ngày)");
+        return;
+    }
     let map = match load_map(&ctx.st.map_path) {
         Ok(m) => m,
         Err(e) => {
@@ -611,7 +651,7 @@ pub(crate) fn on_callback(
         Some(f) => f,
         None => return,
     };
-    match press(ctx, &mut flow, cq_id, message_id, &cb) {
+    match press(ctx, state, &mut flow, cq_id, message_id, &cb) {
         Next::Advanced => {
             flow.expires_at_ms = deadline(crate::db::now_ms());
             state.intake = Some(flow);
@@ -631,7 +671,14 @@ fn push_watch(state: &mut PollState, w: Watch) {
     state.watch.push(w);
 }
 
-fn press(ctx: &Arc<BotCtx>, f: &mut Intake, cq_id: &str, mid: i64, cb: &IntakeCb) -> Next {
+fn press(
+    ctx: &Arc<BotCtx>,
+    state: &PollState,
+    f: &mut Intake,
+    cq_id: &str,
+    mid: i64,
+    cb: &IntakeCb,
+) -> Next {
     match (cb.op, f.stage.clone()) {
         (IntakeOp::Cancel, _) => {
             bot::edit(ctx, mid, CANCELLED, render::no_keyboard());
@@ -641,7 +688,7 @@ fn press(ctx: &Arc<BotCtx>, f: &mut Intake, cq_id: &str, mid: i64, cb: &IntakeCb
         }
         (IntakeOp::Project, Stage::Project) => pick_project(ctx, f, cq_id, mid, cb.index),
         (IntakeOp::Workflow, Stage::Workflow) => pick_workflow(ctx, f, cq_id, mid, cb.index),
-        (IntakeOp::Confirm, Stage::Confirm) => confirm(ctx, f, cq_id, mid),
+        (IntakeOp::Confirm, Stage::Confirm) => confirm(ctx, state, f, cq_id, mid),
         _ => {
             bot::answer(ctx, cq_id, INVALID_BUTTON, false);
             Next::Kept
@@ -733,9 +780,10 @@ fn pick_workflow(
     }
 }
 
-/// `Tạo task`: the allowlist is re-read, a last dry run checks the stored slug,
-/// then exactly one job starts through `start_new_task`.
-fn confirm(ctx: &Arc<BotCtx>, f: &mut Intake, cq_id: &str, mid: i64) -> Next {
+/// `Tạo task`: the allowlist is re-read, the daily cap is checked again, a last
+/// dry run checks the stored slug, then exactly one job starts through
+/// `start_new_task`.
+fn confirm(ctx: &Arc<BotCtx>, state: &PollState, f: &mut Intake, cq_id: &str, mid: i64) -> Next {
     let (project_id, slug) = match (f.project_id(), f.slug.clone()) {
         (Some(p), Some(s)) => (p.to_string(), s),
         _ => {
@@ -758,6 +806,12 @@ fn confirm(ctx: &Arc<BotCtx>, f: &mut Intake, cq_id: &str, mid: i64) -> Next {
             &format!("{project_id} không còn trong telegram_projects"),
             "allowlist",
         );
+    }
+    if let Some(refusal) = cap_refusal(ctx, state) {
+        bot::edit(ctx, mid, &refusal, render::no_keyboard());
+        bot::answer(ctx, cq_id, &refusal, true);
+        audit("từ chối (giới hạn ngày)");
+        return Next::Closed;
     }
 
     let request = f.request().to_string();
