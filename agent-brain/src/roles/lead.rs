@@ -16,6 +16,17 @@ pub const LEAD_ALLOWED_TOOLS: [&str; 9] = [
 pub const LEAD_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
 pub const MAX_NOTE_CHARS: usize = 500;
 
+/// Opening / closing delimiter lines of the forwarded-text block (followed by the nonce and `>>>`).
+/// `telegram::compose` writes them, `cmd_lead` looks for them.
+pub const UNTRUSTED_OPEN: &str = "<<<TIN_CHUYEN_TIEP ";
+pub const UNTRUSTED_CLOSE: &str = "<<<HET_TIN_CHUYEN_TIEP ";
+
+/// INTAKE-06: the Lead gets the untrusted-data rules only for a Telegram-origin task
+/// whose request carries the forwarded block.
+pub fn wants_untrusted_prompt(origin: Option<&str>, request: &str) -> bool {
+    origin == Some(crate::db::ORIGIN_TELEGRAM) && request.contains(UNTRUSTED_OPEN)
+}
+
 /// IN-02 / CONTEXT O7: round của một Lead chạy tay (không có `--round`) = round hiệu lực
 /// mà `effective_rounds` tính cho run mới khi thêm nó vào cuối các run của task.
 fn manual_round(conn: &rusqlite::Connection, task_id: i64) -> BrainResult<i64> {
@@ -161,7 +172,16 @@ pub fn cmd_lead(
                 "<run_dir/settings.json>".to_string(),
             ],
         };
-        let argv = crate::roles::build_command(&spec_dry, &ctx.cfg)?;
+        let untrusted = wants_untrusted_prompt(opts.origin.as_deref(), request);
+        let argv = if untrusted {
+            crate::roles::build_command_with_prompt(
+                &spec_dry,
+                &ctx.cfg,
+                &crate::roles::lead_untrusted_prompt(),
+            )?
+        } else {
+            crate::roles::build_command(&spec_dry, &ctx.cfg)?
+        };
         let p_prof = &proj.profile;
         let p_desc = crate::profile::describe_profile(p_prof, &ctx.cfg.profiles);
         let model = ctx.cfg.model_for("lead")?;
@@ -177,7 +197,14 @@ pub fn cmd_lead(
         ));
         crate::term::emit_out(&format!(
             "Command: {}",
-            crate::roles::display_argv(&argv, "assets/prompts/lead.md")
+            crate::roles::display_argv(
+                &argv,
+                if untrusted {
+                    "assets/prompts/lead.md + lead-untrusted.md"
+                } else {
+                    "assets/prompts/lead.md"
+                }
+            )
         ));
         return Ok(crate::error::EXIT_OK);
     }
@@ -310,7 +337,18 @@ pub fn cmd_lead(
         ],
     };
 
-    let argv = crate::roles::build_command(&spec, &ctx.cfg)?;
+    // INTAKE-06: chosen from the durable origin on every Lead run, so re-plans keep the rules.
+    let origin = crate::db::task_origin(&ctx.conn, task_id)?;
+    let argv = if wants_untrusted_prompt(origin.as_deref(), request) {
+        crate::term::emit("Lead: yêu cầu có tin chuyển tiếp — dùng quy tắc dữ liệu không tin cậy");
+        crate::roles::build_command_with_prompt(
+            &spec,
+            &ctx.cfg,
+            &crate::roles::lead_untrusted_prompt(),
+        )?
+    } else {
+        crate::roles::build_command(&spec, &ctx.cfg)?
+    };
     let model = ctx.cfg.model_for("lead")?;
     let timeout = ctx.cfg.timeout_for("lead");
 

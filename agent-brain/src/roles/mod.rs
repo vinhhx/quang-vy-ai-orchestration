@@ -34,6 +34,9 @@ impl Role {
 }
 
 pub const LEAD_PROMPT: &str = include_str!("../../assets/prompts/lead.md");
+/// Extra Lead rules for requests that carry forwarded (untrusted) text; appended to
+/// `LEAD_PROMPT` at run time by `lead_untrusted_prompt`, never a full copy of lead.md.
+pub const LEAD_UNTRUSTED_RULES: &str = include_str!("../../assets/prompts/lead-untrusted.md");
 pub const DEV_PROMPT: &str = include_str!("../../assets/prompts/dev.md");
 pub const DEV_FIX_PROMPT: &str = include_str!("../../assets/prompts/dev-fix.md");
 pub const QA_PROMPT: &str = include_str!("../../assets/prompts/qa.md");
@@ -77,6 +80,15 @@ pub fn prompt_for(role: Role) -> &'static str {
         Role::PlanReview => PLAN_REVIEW_PROMPT,
         Role::CodeReview => CODE_REVIEW_PROMPT,
     }
+}
+
+/// `LEAD_PROMPT` (trailing newlines trimmed) + a blank line + the untrusted-data rules.
+pub fn lead_untrusted_prompt() -> String {
+    format!(
+        "{}\n\n{}",
+        LEAD_PROMPT.trim_end_matches('\n'),
+        LEAD_UNTRUSTED_RULES
+    )
 }
 
 pub fn check_forbidden_args(args: &[String]) -> BrainResult<()> {
