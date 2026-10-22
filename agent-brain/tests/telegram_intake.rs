@@ -2214,3 +2214,140 @@ fn forward_after_continue_starts_new_flow() {
     );
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+// ---------------------------------------------------------------------------
+// Plan 05.4-07 Task 3: the framing survives re-plans; help text
+// ---------------------------------------------------------------------------
+
+/// mac-dinh gate, then one more Lead round (append) that plan review approves
+/// (the shape of telegram_actions.rs `return_scenario`).
+fn return_scenario() -> Value {
+    by_role(json!({
+        "lead": [lead_plan_entry(), lead_append_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 1), plan_review_entry("approve", 0, 2)],
+    }))
+}
+
+/// The nonce of the opening delimiter line in a Lead prompt.
+fn nonce_of(prompt: &str) -> String {
+    prompt
+        .lines()
+        .find_map(|l| l.strip_prefix("<<<TIN_CHUYEN_TIEP "))
+        .and_then(|rest| rest.strip_suffix(">>>"))
+        .unwrap_or_else(|| panic!("no opening delimiter in {prompt}"))
+        .to_string()
+}
+
+fn lead_records(sb: &Sandbox) -> usize {
+    sb.records()
+        .iter()
+        .filter(|r| {
+            let argv = r["argv"].as_array().unwrap();
+            argv.iter()
+                .position(|a| a.as_str() == Some("--append-system-prompt"))
+                .is_some_and(|i| {
+                    argv[i + 1]
+                        .as_str()
+                        .unwrap_or("")
+                        .starts_with("Bạn là Lead")
+                })
+        })
+        .count()
+}
+
+#[test]
+fn untrusted_block_survives_return_lead() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+    allow_projects(&sb, &["web-ban-hang"]);
+    sb.write_scenario(return_scenario());
+
+    let mut srv = tg.serve(&sb, &[QUIET]);
+    wait_polling(&tg, &srv);
+
+    let mut burst = three_forwards(&tg);
+    burst.pop();
+    push_burst(&tg, burst);
+    let selection = wait_message(&tg, &srv, "Đã nhận 2 tin chuyển tiếp");
+    let mid = message_id_of(&selection);
+    let confirm = forward_to_confirm(&tg, &srv, mid, &selection, 2, "Mặc định (mac-dinh)");
+    create_from_confirm(&tg, &srv, mid, &confirm);
+    assert_eq!(job_role(&srv, 1), "auto");
+
+    // The gate message: no approve button, the one-line title, dashboard only.
+    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    assert_eq!(labels(&gate), vec!["Trả về Lead".to_string()], "{gate}");
+    let lines: Vec<&str> = text_of(&gate).lines().collect();
+    assert!(
+        lines
+            .get(1)
+            .is_some_and(|l| l.starts_with("[Telegram · 2 tin chuyển tiếp]")),
+        "{gate}"
+    );
+    assert!(text_of(&gate).contains(ORIGIN_LINE), "{gate}");
+    assert!(text_of(&gate).chars().count() <= 3900, "{gate}");
+    assert!(!text_of(&gate).contains("<<<"), "{gate}");
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+
+    let first = last_lead_prompt(&sb);
+    let nonce = nonce_of(&first);
+    assert_eq!(
+        last_lead_system_prompt(&sb),
+        agent_brain::roles::lead_untrusted_prompt()
+    );
+    assert_eq!(lead_records(&sb), 1);
+
+    // `Trả về Lead` with a note: the next Lead run keeps the same framing.
+    let cb = press(&tg, PAIRED_CHAT, PAIRED_CHAT, &gate, "Trả về Lead");
+    let ans = wait_answer(&tg, &srv, &cb);
+    assert_eq!(ans["json"]["text"], json!(NOTE_ASK), "{ans}");
+    wait_message(&tg, &srv, "Ghi chú cho Lead (task 1)");
+    send_text(&tg, "tách bước 2");
+    let job = wait_for_job(&srv, 2);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    assert_eq!(job_role(&srv, 2), "auto");
+    assert_eq!(lead_records(&sb), 2);
+
+    let second = last_lead_prompt(&sb);
+    assert!(
+        second.contains(&format!("<<<TIN_CHUYEN_TIEP {nonce}>>>")),
+        "{second}"
+    );
+    assert!(
+        second.contains(&format!("<<<HET_TIN_CHUYEN_TIEP {nonce}>>>")),
+        "{second}"
+    );
+    assert!(
+        second.contains("Ghi chú của người dùng: tách bước 2"),
+        "{second}"
+    );
+    assert_eq!(
+        last_lead_system_prompt(&sb),
+        agent_brain::roles::lead_untrusted_prompt()
+    );
+    assert_eq!(approved_commit(&sb, 1), None);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn help_text_mentions_forwarding() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    send_text(&tg, "xin chào");
+    let reply = wait_message(&tg, &srv, "Gõ /task");
+    assert_eq!(text_of(&reply), agent_brain::telegram::bot::HELP_TEXT);
+    assert!(text_of(&reply).contains("/task"), "{reply}");
+    assert!(text_of(&reply).contains("Chuyển tiếp tin nhắn"), "{reply}");
+    assert!(buttons(&reply).is_empty(), "{reply}");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}

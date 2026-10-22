@@ -39,7 +39,7 @@ const STRANGER_CAP: usize = 1024;
 
 /// The reply to a text the bot does not take (no open note prompt or `/task`
 /// flow waiting for it) and to an unknown command (Phase 05.4).
-pub const HELP_TEXT: &str = "Gõ /task <yêu cầu> để giao việc mới (hoặc /task rồi gửi yêu cầu), /huy để huỷ yêu cầu đang mở. Nút trên tin thông báo dùng như trước.";
+pub const HELP_TEXT: &str = "Gõ /task <yêu cầu> để giao việc mới (hoặc /task rồi gửi yêu cầu), /huy để huỷ yêu cầu đang mở. Chuyển tiếp tin nhắn vào đây để gộp thành một task. Nút trên tin thông báo dùng như trước.";
 pub const INVALID_BUTTON: &str = "Nút không hợp lệ.";
 const UNAVAILABLE_TEXT: &str = "Dashboard đang dừng — không nhận việc mới";
 const INTERNAL_TEXT: &str = "Lỗi nội bộ — xem terminal đang chạy agent-brain serve";
