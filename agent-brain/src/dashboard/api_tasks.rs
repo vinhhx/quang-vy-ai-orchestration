@@ -499,169 +499,258 @@ struct PreflightQuery {
     slug: Option<String>,
 }
 
-async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>) -> Response {
-    let trimmed_req = body.request.trim();
+/// Nơi giao việc: dashboard (Giao việc) hay Telegram. Chỉ mã phía máy chủ chọn giá
+/// trị này; thân yêu cầu HTTP không có trường nào để một trình duyệt tự nhận là Telegram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    Dashboard,
+    Telegram,
+}
+
+/// Đầu vào của đường tạo task dùng chung (dashboard và bot Telegram).
+#[derive(Debug, Clone)]
+pub struct StartRequest<'a> {
+    pub project: &'a str,
+    pub request: &'a str,
+    pub name: Option<&'a str>,
+    pub workflow: Option<&'a str>,
+    pub origin: Origin,
+    /// Chạy mọi kiểm tra tới hết `lead_preflight` rồi dừng, không bắt đầu job nào.
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StartInfo {
+    pub project: Project,
+    pub slug: String,
+    pub branch: String,
+    pub workflow: String,
+    pub auto: bool,
+    pub warning: Option<String>,
+    pub replan: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StartOutcome {
+    /// Dry run: mọi kiểm tra đạt, chưa có job.
+    Ready(StartInfo),
+    Started {
+        job_id: u64,
+        info: StartInfo,
+    },
+    Invalid(String),
+    ProjectRefused {
+        status: u16,
+        body: serde_json::Value,
+    },
+    PreflightRefused {
+        reason: String,
+        kind: String,
+    },
+    Busy(String),
+    Unavailable,
+}
+
+/// Vector đối số của job giao việc; positional (dự án, yêu cầu) luôn sau `--` nên một
+/// yêu cầu bắt đầu bằng `-` vẫn là dữ liệu.
+pub fn new_task_args(
+    auto: bool,
+    slug: &str,
+    workflow: &str,
+    project_id: &str,
+    request: &str,
+    _origin: Origin,
+) -> (&'static str, Vec<String>) {
+    let (role, head): (&'static str, [&str; 2]) = if auto {
+        ("auto", ["auto", "--start"])
+    } else {
+        ("lead", ["run", "lead"])
+    };
+    let mut args: Vec<String> = head.iter().map(|s| s.to_string()).collect();
+    args.extend(
+        [
+            "--name",
+            slug,
+            "--workflow",
+            workflow,
+            "--",
+            project_id,
+            request,
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
+    (role, args)
+}
+
+/// Toàn bộ đường Giao việc: kiểm tra đầu vào → dự án → quy trình → preflight → job.
+/// Hàm thường (không có kiểu axum) để dashboard và bot Telegram dùng chung.
+pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOutcome> {
+    let trimmed_req = req.request.trim();
     if trimmed_req.is_empty() {
-        return json_error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "Yêu cầu không được để trống",
-        );
+        return Ok(StartOutcome::Invalid(
+            "Yêu cầu không được để trống".to_string(),
+        ));
     }
     if trimmed_req.chars().count() > MAX_REQUEST_CHARS {
-        return json_error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            &format!("Yêu cầu quá dài (tối đa {MAX_REQUEST_CHARS} ký tự)"),
-        );
+        return Ok(StartOutcome::Invalid(format!(
+            "Yêu cầu quá dài (tối đa {MAX_REQUEST_CHARS} ký tự)"
+        )));
     }
 
-    let name_or_req = body.name.as_deref().unwrap_or(trimmed_req);
+    let name_or_req = req.name.unwrap_or(trimmed_req);
     let slug = crate::routing::slugify(name_or_req);
     if slug.is_empty() {
-        return json_error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "Không thể tạo tên task từ yêu cầu — hãy truyền cờ --name <slug>",
-        );
+        return Ok(StartOutcome::Invalid(
+            "Không thể tạo tên task từ yêu cầu — hãy truyền cờ --name <slug>".to_string(),
+        ));
     }
 
-    let trimmed_req = trimmed_req.to_string();
-    let res = blocking(move || {
-        let map = crate::projects::load_map(&st.map_path)?;
-        let (project, proj_root) = match resolve_project(&map, &st.cfg, &body.project) {
-            Ok(p) => p,
-            Err(refusal) => return Ok(refusal.into_response()),
-        };
+    let map = crate::projects::load_map(&st.map_path)?;
+    let (project, proj_root) = match resolve_project(&map, &st.cfg, req.project) {
+        Ok(p) => p,
+        Err(refusal) => {
+            return Ok(StartOutcome::ProjectRefused {
+                status: refusal.status.as_u16(),
+                body: refusal.body,
+            });
+        }
+    };
 
-        // D-14 / D-24: body > project default > mac-dinh; an unknown name is
-        // refused before any job starts.
-        let loaded = crate::workflows::load(&st.cfg);
-        let project_default = crate::projects::workflow_of(&map, &project.id);
-        let workflow = match crate::workflows::resolve(
-            &loaded,
-            body.workflow.as_deref(),
-            project_default.as_deref(),
-        ) {
+    // D-14 / D-24: body > project default > mac-dinh; an unknown name is
+    // refused before any job starts.
+    let loaded = crate::workflows::load(&st.cfg);
+    let project_default = crate::projects::workflow_of(&map, &project.id);
+    let workflow =
+        match crate::workflows::resolve(&loaded, req.workflow, project_default.as_deref()) {
             Ok(r) => r.workflow,
-            Err(e) => {
-                return Ok(json_error(StatusCode::UNPROCESSABLE_ENTITY, &e.message));
-            }
+            Err(e) => return Ok(StartOutcome::Invalid(e.message)),
         };
 
-        let conn = crate::db::open(&st.db_path)?;
-        let pf = lead_preflight(&conn, &st.jobs, &project, &proj_root, &slug)?;
-        if !pf.can_start {
-            return Ok((
-                StatusCode::CONFLICT,
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/json; charset=utf-8",
-                )],
-                Json(serde_json::json!({
-                    "error": pf.reason.unwrap_or_default(),
-                    "kind": pf.kind.unwrap_or_default(),
-                })),
-            )
-                .into_response());
-        }
+    let conn = crate::db::open(&st.db_path)?;
+    let pf = lead_preflight(&conn, &st.jobs, &project, &proj_root, &slug)?;
+    if !pf.can_start {
+        return Ok(StartOutcome::PreflightRefused {
+            reason: pf.reason.unwrap_or_default(),
+            kind: pf.kind.unwrap_or_default(),
+        });
+    }
 
-        let branch = format!("task/{slug}");
-        // Argument vector, positionals after `--` (a request starting with `-` stays data).
-        let (role, args) = if workflow.auto {
-            (
-                "auto",
-                vec![
-                    "auto".to_string(),
-                    "--start".to_string(),
-                    "--name".to_string(),
-                    slug.clone(),
-                    "--workflow".to_string(),
-                    workflow.name.clone(),
-                    "--".to_string(),
-                    project.id.clone(),
-                    trimmed_req,
-                ],
-            )
-        } else {
-            (
-                "lead",
-                vec![
-                    "run".to_string(),
-                    "lead".to_string(),
-                    "--name".to_string(),
-                    slug.clone(),
-                    "--workflow".to_string(),
-                    workflow.name.clone(),
-                    "--".to_string(),
-                    project.id.clone(),
-                    trimmed_req,
-                ],
-            )
-        };
-        let spec = crate::dashboard::jobs::JobSpec {
-            role: role.to_string(),
-            project: project.id.clone(),
-            profile: project.profile.clone(),
-            branch: Some(branch.clone()),
-            task_id: None,
-            args,
-        };
+    let branch = format!("task/{slug}");
+    let info = StartInfo {
+        project,
+        slug,
+        branch,
+        workflow: workflow.name.clone(),
+        auto: workflow.auto,
+        warning: pf.warning,
+        replan: pf.replan,
+    };
+    if req.dry_run {
+        return Ok(StartOutcome::Ready(info));
+    }
 
-        match st.jobs.start(spec) {
-            Ok(job_id) => {
-                let mut resp_val = serde_json::json!({
-                    "job_id": job_id,
-                    "project": project.id,
-                    "slug": slug,
-                    "branch": branch,
-                    "workflow": workflow.name,
-                    "auto": workflow.auto,
-                });
-                if let Some(w) = pf.warning {
-                    resp_val["warning"] = serde_json::json!(w);
-                }
-                Ok((
-                    StatusCode::ACCEPTED,
-                    [(
-                        axum::http::header::CONTENT_TYPE,
-                        "application/json; charset=utf-8",
-                    )],
-                    Json(resp_val),
-                )
-                    .into_response())
-            }
-            Err(e) => {
-                if e.message.contains("Dashboard đang dừng") {
-                    Ok((
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        [(
-                            axum::http::header::CONTENT_TYPE,
-                            "application/json; charset=utf-8",
-                        )],
-                        Json(serde_json::json!({
-                            "error": "Dashboard đang dừng — không nhận việc mới"
-                        })),
-                    )
-                        .into_response())
-                } else {
-                    Ok((
-                        StatusCode::CONFLICT,
-                        [(
-                            axum::http::header::CONTENT_TYPE,
-                            "application/json; charset=utf-8",
-                        )],
-                        Json(serde_json::json!({
-                            "error": e.message,
-                            "kind": "busy",
-                        })),
-                    )
-                        .into_response())
-                }
+    let (role, args) = new_task_args(
+        workflow.auto,
+        &info.slug,
+        &workflow.name,
+        &info.project.id,
+        trimmed_req,
+        req.origin,
+    );
+    let spec = crate::dashboard::jobs::JobSpec {
+        role: role.to_string(),
+        project: info.project.id.clone(),
+        profile: info.project.profile.clone(),
+        branch: Some(info.branch.clone()),
+        task_id: None,
+        args,
+    };
+
+    match st.jobs.start(spec) {
+        Ok(job_id) => Ok(StartOutcome::Started { job_id, info }),
+        Err(e) => {
+            if e.message.contains("Dashboard đang dừng") {
+                Ok(StartOutcome::Unavailable)
+            } else {
+                Ok(StartOutcome::Busy(e.message))
             }
         }
+    }
+}
+
+fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
+    (
+        status,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/json; charset=utf-8",
+        )],
+        Json(body),
+    )
+        .into_response()
+}
+
+/// Ánh xạ kết quả `start_new_task` sang đúng các mã trạng thái và thân JSON của
+/// `POST /api/tasks` trước khi tách hàm.
+fn start_response(outcome: StartOutcome) -> Response {
+    match outcome {
+        StartOutcome::Started { job_id, info } => {
+            let mut resp_val = serde_json::json!({
+                "job_id": job_id,
+                "project": info.project.id,
+                "slug": info.slug,
+                "branch": info.branch,
+                "workflow": info.workflow,
+                "auto": info.auto,
+            });
+            if let Some(w) = info.warning {
+                resp_val["warning"] = serde_json::json!(w);
+            }
+            json_response(StatusCode::ACCEPTED, resp_val)
+        }
+        StartOutcome::Ready(_) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Lỗi nội bộ: dry run trong giao việc",
+        ),
+        StartOutcome::Invalid(m) => json_error(StatusCode::UNPROCESSABLE_ENTITY, &m),
+        StartOutcome::ProjectRefused { status, body } => json_response(
+            StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            body,
+        ),
+        StartOutcome::PreflightRefused { reason, kind } => json_response(
+            StatusCode::CONFLICT,
+            serde_json::json!({ "error": reason, "kind": kind }),
+        ),
+        StartOutcome::Busy(m) => json_response(
+            StatusCode::CONFLICT,
+            serde_json::json!({ "error": m, "kind": "busy" }),
+        ),
+        StartOutcome::Unavailable => json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": "Dashboard đang dừng — không nhận việc mới" }),
+        ),
+    }
+}
+
+async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>) -> Response {
+    let res = blocking(move || {
+        start_new_task(
+            &st,
+            &StartRequest {
+                project: &body.project,
+                request: &body.request,
+                name: body.name.as_deref(),
+                workflow: body.workflow.as_deref(),
+                origin: Origin::Dashboard,
+                dry_run: false,
+            },
+        )
     })
     .await;
 
     match res {
-        Ok(resp) => resp,
+        Ok(outcome) => start_response(outcome),
         Err(e) => internal_error("giao việc", &e),
     }
 }

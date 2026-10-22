@@ -9,7 +9,8 @@ mod protocol;
 
 use agent_brain::dashboard::api_runs::{kill_run, KillOutcome};
 use agent_brain::dashboard::api_tasks::{
-    lead_return_args, load_task_state, normalize_note, run_control, run_task_action, ControlOutcome,
+    lead_return_args, load_task_state, normalize_note, run_control, run_task_action,
+    start_new_task, ControlOutcome, Origin, StartOutcome, StartRequest,
 };
 use agent_brain::dashboard::jobs::JobManager;
 use agent_brain::dashboard::AppState;
@@ -344,4 +345,48 @@ fn kill_run_single_running_run_reaches_cmd_kill() {
         other => panic!("nhận {other:?}"),
     }
     assert_eq!(status_of(&sb, a), "lost");
+}
+
+#[test]
+fn start_new_task_dry_run_ready() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+    let st = app_state(&sb);
+    let before = sb.git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+
+    let outcome = start_new_task(
+        &st,
+        &StartRequest {
+            project: "web-ban-hang",
+            request: "  sửa app  ",
+            name: None,
+            workflow: None,
+            origin: Origin::Dashboard,
+            dry_run: true,
+        },
+    )
+    .unwrap();
+    match outcome {
+        StartOutcome::Ready(info) => {
+            assert_eq!(info.slug, "sua-app");
+            assert_eq!(info.branch, "task/sua-app");
+            assert_eq!(info.workflow, "nhanh");
+            assert!(!info.auto);
+            assert!(!info.replan);
+            assert_eq!(info.project.id, "web-ban-hang");
+        }
+        other => panic!("phải là Ready, nhận {other:?}"),
+    }
+
+    assert!(st.jobs.list().is_empty(), "dry run starts no job");
+    assert_eq!(
+        sb.git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        before,
+        "dry run leaves the repo on its branch"
+    );
+    let rows: i64 = sb
+        .db()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap_or(0);
+    assert_eq!(rows, 0, "dry run creates no task row");
 }
