@@ -5,6 +5,9 @@ use std::time::Duration;
 
 pub const DEFAULT_CONFIG_JSON: &str = include_str!("../assets/config.default.json");
 pub const DEFAULT_DASHBOARD_PORT: u16 = 7437;
+/// Telegram-created tasks allowed per local day when config.json has no
+/// `telegram_max_tasks_per_day` (OD-2).
+pub const DEFAULT_TELEGRAM_MAX_TASKS_PER_DAY: u32 = 10;
 pub const REVIEW_MODEL_DEFAULT: &str = "opus";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -86,6 +89,8 @@ pub struct Config {
     pub dashboard_port: u16,
     pub autopilot: AutopilotDefaults,
     pub pricing: BTreeMap<String, Price>,
+    /// Tasks the Telegram bot may create per local day; 0 turns `/task` off.
+    pub telegram_max_tasks_per_day: u32,
 }
 
 impl Config {
@@ -327,6 +332,18 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         }
     }
 
+    let telegram_max_tasks_per_day = match obj.get("telegram_max_tasks_per_day") {
+        None => DEFAULT_TELEGRAM_MAX_TASKS_PER_DAY,
+        Some(val) => match val.as_u64() {
+            Some(n) if n <= 1000 => n as u32,
+            _ => {
+                return Err(BrainError::error(
+                    "Cấu hình telegram_max_tasks_per_day phải là số nguyên từ 0 đến 1000",
+                ))
+            }
+        },
+    };
+
     let mut pricing = default_pricing();
     if let Some(p_val) = obj.get("pricing") {
         if let Some(p_obj) = p_val.as_object() {
@@ -368,6 +385,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         dashboard_port,
         autopilot,
         pricing,
+        telegram_max_tasks_per_day,
     })
 }
 
@@ -660,5 +678,39 @@ mod tests {
             err.message,
             "Cấu hình pricing.sonnet không hợp lệ (cần input, output, cache_read, cache_write là số không âm)"
         );
+    }
+
+    const TELEGRAM_CAP_ERR: &str =
+        "Cấu hình telegram_max_tasks_per_day phải là số nguyên từ 0 đến 1000";
+
+    #[test]
+    fn telegram_max_tasks_per_day_default_and_range() {
+        let base: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        assert!(base.get("telegram_max_tasks_per_day").is_none());
+        assert_eq!(
+            config_from_value(&base).unwrap().telegram_max_tasks_per_day,
+            10
+        );
+        for n in [0u32, 1, 1000] {
+            let mut v = base.clone();
+            v["telegram_max_tasks_per_day"] = serde_json::json!(n);
+            assert_eq!(
+                config_from_value(&v).unwrap().telegram_max_tasks_per_day,
+                n,
+                "{n}"
+            );
+        }
+        for bad in [
+            serde_json::json!(1001),
+            serde_json::json!(-1),
+            serde_json::json!("5"),
+            serde_json::json!(2.5),
+            serde_json::json!(null),
+        ] {
+            let mut v = base.clone();
+            v["telegram_max_tasks_per_day"] = bad.clone();
+            let err = config_from_value(&v).unwrap_err();
+            assert_eq!(err.message, TELEGRAM_CAP_ERR, "{bad}");
+        }
     }
 }

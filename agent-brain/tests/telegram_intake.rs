@@ -789,8 +789,23 @@ fn flow_messages(tg: &FakeTelegram) -> usize {
 
 /// `/task sửa app` up to the confirm screen; returns the flow message id and the screen.
 fn reach_confirm(tg: &FakeTelegram, srv: &Serve) -> (i64, Value) {
-    send_text(tg, "/task sửa app");
-    let screen = wait_message(tg, srv, CHOOSE_PROJECT);
+    reach_confirm_for(tg, srv, "sửa app")
+}
+
+/// Ids of every message the bot has sent so far.
+fn sent_ids(tg: &FakeTelegram) -> Vec<i64> {
+    tg.calls("sendMessage")
+        .iter()
+        .filter_map(|r| r["response"]["result"]["message_id"].as_i64())
+        .collect()
+}
+
+/// `/task {request}` -> first project -> default workflow; returns the flow
+/// message id and the confirm screen. Works for a second flow in the same test.
+fn reach_confirm_for(tg: &FakeTelegram, srv: &Serve, request: &str) -> (i64, Value) {
+    let seen = sent_ids(tg);
+    send_text(tg, &format!("/task {request}"));
+    let screen = wait_new_message(tg, srv, CHOOSE_PROJECT, &seen);
     let mid = message_id_of(&screen);
     press_on(tg, mid, &screen, "Web bán hàng · work");
     let wf = wait_edit(tg, srv, mid, |r| text_of(r).starts_with("Chọn quy trình"));
@@ -1136,5 +1151,344 @@ fn forwarded_task_is_not_a_command() {
     for line in telegram_lines(&srv) {
         assert!(!line.contains("sửa app"), "forwarded text leaked: {line}");
     }
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// Plan 05.4-06: outcome report, daily cap, command menu
+// ---------------------------------------------------------------------------
+
+const ACCEPTED_EDIT: &str = "Đã nhận — đang lập plan · dự án web-ban-hang · nhánh task/sua-app";
+const CREATED_TEXT: &str = "Đã tạo task 1 · task/sua-app. Plan đang được lập; khi xong sẽ có tin chờ duyệt — duyệt plan trên dashboard.";
+const FAILED_START: &str = "Không tạo được task (task/sua-app):";
+
+/// `/task {request}` -> project 0 -> default workflow -> `Tạo task`; waits for the
+/// `Đã nhận …` edit and returns the flow message id.
+fn confirm_task(tg: &FakeTelegram, srv: &Serve, request: &str) -> i64 {
+    let (mid, confirm) = reach_confirm_for(tg, srv, request);
+    press_on(tg, mid, &confirm, "Tạo task");
+    let done = wait_edit(tg, srv, mid, |r| {
+        text_of(r).starts_with("Đã nhận — đang lập plan")
+    });
+    assert!(empty_keyboard(&done), "{done}");
+    mid
+}
+
+fn sent_starting(tg: &FakeTelegram, prefix: &str) -> usize {
+    tg.calls("sendMessage")
+        .iter()
+        .filter(|r| text_of(r).starts_with(prefix))
+        .count()
+}
+
+/// Index in the record log of the first record matching `pred`.
+fn record_index(tg: &FakeTelegram, pred: impl Fn(&Value) -> bool) -> Option<usize> {
+    tg.records().iter().position(pred)
+}
+
+#[test]
+fn outcome_reported_created() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+    allow_projects(&sb, &["web-ban-hang"]);
+    sb.write_scenario(lead_plan_entry());
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let mid = confirm_task(&tg, &srv, "sửa app");
+    let created = wait_message(&tg, &srv, "Đã tạo task 1 · task/sua-app.");
+    assert_eq!(text_of(&created), CREATED_TEXT);
+    assert!(buttons(&created).is_empty(), "{created}");
+
+    // The `Đã nhận …` edit came first, then the report.
+    let accepted_at = record_index(&tg, |r| {
+        r["method"] == "editMessageText"
+            && r["json"]["message_id"].as_i64() == Some(mid)
+            && text_of(r) == ACCEPTED_EDIT
+    })
+    .expect("accepted edit");
+    let created_at = record_index(&tg, |r| {
+        r["method"] == "sendMessage" && text_of(r) == CREATED_TEXT
+    })
+    .expect("created message");
+    assert!(accepted_at < created_at, "{:#?}", tg.records());
+
+    // Short polls while watching, the long poll again after the report.
+    let records = tg.records();
+    assert!(
+        records[..created_at]
+            .iter()
+            .any(|r| r["method"] == "getUpdates" && r["json"]["timeout"] == json!(1)),
+        "no 1-second poll while watching: {records:#?}"
+    );
+    assert!(
+        wait_until(Duration::from_secs(10), || tg.records()[created_at..]
+            .iter()
+            .any(|r| r["method"] == "getUpdates")),
+        "no poll after the report"
+    );
+
+    // Exactly one report, even a few seconds later.
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(sent_starting(&tg, "Đã tạo task"), 1, "{:#?}", tg.records());
+    assert_eq!(sent_starting(&tg, "Không tạo được task"), 0);
+    let after: Vec<Value> = tg.records()[created_at..]
+        .iter()
+        .filter(|r| r["method"] == "getUpdates")
+        .cloned()
+        .collect();
+    assert!(!after.is_empty());
+    for r in &after {
+        assert_eq!(r["json"]["timeout"], json!(25), "{r}");
+    }
+    assert_eq!(task_count(&sb), 1);
+    for line in telegram_lines(&srv) {
+        assert!(!line.contains("sửa app"), "request leaked: {line}");
+    }
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn outcome_reported_failed() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    let repo = setup_project(&sb, "work");
+    allow_projects(&sb, &["web-ban-hang"]);
+    sb.write_scenario(lead_plan_entry());
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let (mid, confirm) = reach_confirm(&tg, &srv);
+    // A ref lock makes `git checkout -b task/sua-app` fail before any task row,
+    // while the branch still does not exist for the last dry run.
+    let refs = repo.join(".git/refs/heads/task");
+    std::fs::create_dir_all(&refs).expect("refs dir");
+    std::fs::write(refs.join("sua-app.lock"), "").expect("ref lock");
+
+    press_on(&tg, mid, &confirm, "Tạo task");
+    wait_edit(&tg, &srv, mid, |r| text_of(r) == ACCEPTED_EDIT);
+    let failed = wait_message(&tg, &srv, FAILED_START);
+    let lines: Vec<&str> = text_of(&failed).lines().collect();
+    assert_eq!(lines[0], FAILED_START, "{failed}");
+    assert!(
+        (2..=4).contains(&lines.len()),
+        "prefix plus 1..3 lines: {failed}"
+    );
+    for l in &lines[1..] {
+        assert!(!l.trim().is_empty() && l.chars().count() <= 200, "{failed}");
+    }
+    assert!(buttons(&failed).is_empty(), "{failed}");
+
+    let job = wait_for_job(&srv, 1);
+    assert_ne!(job["exit_code"], json!(0), "{job}");
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(
+        sent_starting(&tg, "Không tạo được task"),
+        1,
+        "{:#?}",
+        tg.records()
+    );
+    assert_eq!(sent_starting(&tg, "Đã tạo task"), 0, "{:#?}", tg.records());
+    assert_eq!(task_count(&sb), 0);
+    let out = stdout_of(&srv);
+    assert_eq!(
+        count_lines(&out, "Telegram: giao việc — job 1 dừng trước khi có task"),
+        1,
+        "{out}"
+    );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+fn cap_text(n: u32) -> String {
+    format!("Đã đủ {n} task giao từ Telegram hôm nay — giao tiếp trên dashboard hoặc chờ sang ngày mai.")
+}
+const CAP_OFF: &str =
+    "Giao việc từ Telegram đang tắt (telegram_max_tasks_per_day = 0 trong config.json).";
+
+/// Allowlisted nhanh project, Lead scenario, `telegram_max_tasks_per_day = cap`.
+fn cap_sandbox(cap: u32) -> (Sandbox, FakeTelegram, PathBuf) {
+    let sb = Sandbox::new();
+    sb.write_config(json!({"telegram_max_tasks_per_day": cap}));
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    let repo = setup_project(&sb, "work");
+    allow_projects(&sb, &["web-ban-hang"]);
+    sb.write_scenario(lead_plan_entry());
+    (sb, tg, repo)
+}
+
+/// Like `wait_polling`, for a serve started after `polls_before` getUpdates calls
+/// (a restart): waits for a long poll of the new serve.
+fn wait_polling_again(tg: &FakeTelegram, srv: &Serve, polls_before: usize) {
+    assert!(
+        wait_until(Duration::from_secs(10), || stdout_of(srv)
+            .contains(CONNECTED)),
+        "no connected line; stderr:\n{}",
+        stderr_of(srv)
+    );
+    assert!(
+        wait_until(Duration::from_secs(10), || tg.calls("getUpdates")
+            [polls_before..]
+            .iter()
+            .any(|r| r["json"]["timeout"].as_i64().unwrap_or(0) > 0)),
+        "no long poll after the restart; stderr:\n{}",
+        stderr_of(srv)
+    );
+}
+
+#[test]
+fn daily_cap_refuses_at_start() {
+    let (sb, tg, _repo) = cap_sandbox(1);
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    confirm_task(&tg, &srv, "sửa app");
+    wait_message(&tg, &srv, "Đã tạo task 1 · task/sua-app.");
+    assert_eq!(flow_messages(&tg), 1);
+
+    send_text(&tg, "/task việc khác");
+    let refusal = wait_message(&tg, &srv, "Đã đủ");
+    assert_eq!(text_of(&refusal), cap_text(1));
+    assert!(buttons(&refusal).is_empty(), "{refusal}");
+    assert_eq!(flow_messages(&tg), 1, "{:#?}", tg.records());
+    assert_eq!(task_count(&sb), 1);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn daily_cap_refuses_at_confirm() {
+    let (sb, tg, _repo) = cap_sandbox(1);
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let (mid, confirm) = reach_confirm(&tg, &srv);
+    // A Telegram-origin task appears while the confirm screen is open.
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--origin",
+            "telegram",
+            "--name",
+            "khac",
+            "--",
+            "web-ban-hang",
+            "việc khác",
+        ],
+        Some(lead_plan_entry()),
+    );
+    assert_ok(&res, "run lead --origin telegram");
+    assert_eq!(task_count(&sb), 1);
+
+    let cb = press_on(&tg, mid, &confirm, "Tạo task");
+    let refused = wait_edit(&tg, &srv, mid, |r| text_of(r) == cap_text(1));
+    assert!(empty_keyboard(&refused), "{refused}");
+    wait_answer(&tg, &srv, &cb);
+    assert_eq!(srv.get("/api/jobs/1").status, 404);
+    assert_eq!(task_count(&sb), 1);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn daily_cap_counts_only_telegram() {
+    let (sb, tg, _repo) = cap_sandbox(1);
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "web-ban-hang", "request": "việc dashboard", "name": "viec-dashboard"}),
+    );
+    assert_eq!(resp.status, 202, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().expect("job_id");
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    assert_eq!(task_count(&sb), 1);
+
+    send_text(&tg, "/task sửa app");
+    let screen = wait_message(&tg, &srv, CHOOSE_PROJECT);
+    assert!(text_of(&screen).contains("«sửa app»"), "{screen}");
+    assert_eq!(sent_starting(&tg, "Đã đủ"), 0, "{:#?}", tg.records());
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn daily_cap_survives_restart() {
+    let (sb, tg, _repo) = cap_sandbox(1);
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+    confirm_task(&tg, &srv, "sửa app");
+    wait_message(&tg, &srv, "Đã tạo task 1 · task/sua-app.");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+
+    let polls = tg.calls("getUpdates").len();
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling_again(&tg, &srv, polls);
+    send_text(&tg, "/task x");
+    let refusal = wait_message(&tg, &srv, "Đã đủ");
+    assert_eq!(text_of(&refusal), cap_text(1));
+    assert_eq!(flow_messages(&tg), 1, "{:#?}", tg.records());
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn daily_cap_zero_disables() {
+    let (sb, tg, _repo) = cap_sandbox(0);
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    send_text(&tg, "/task x");
+    let refusal = wait_message(&tg, &srv, "Giao việc từ Telegram đang tắt");
+    assert_eq!(text_of(&refusal), CAP_OFF);
+    assert!(buttons(&refusal).is_empty(), "{refusal}");
+    assert_eq!(flow_messages(&tg), 0, "{:#?}", tg.records());
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn commands_registered() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let calls = tg.calls("setMyCommands");
+    assert_eq!(calls.len(), 1, "{:#?}", tg.records());
+    let commands = &calls[0]["json"]["commands"];
+    assert_eq!(
+        commands,
+        &json!([
+            {"command": "task", "description": "Giao việc mới cho agent-brain"},
+            {"command": "huy", "description": "Huỷ yêu cầu giao việc đang mở"},
+        ]),
+        "{:#?}",
+        calls[0]
+    );
+    for c in commands.as_array().unwrap() {
+        let name = c["command"].as_str().unwrap();
+        assert!(
+            (1..=32).contains(&name.len())
+                && name
+                    .bytes()
+                    .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_')),
+            "{name}"
+        );
+    }
+    // Registered after getMe, before the first long poll.
+    let records = tg.records();
+    let me = records.iter().position(|r| r["method"] == "getMe").unwrap();
+    let set = records
+        .iter()
+        .position(|r| r["method"] == "setMyCommands")
+        .unwrap();
+    assert!(me < set, "{records:#?}");
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }

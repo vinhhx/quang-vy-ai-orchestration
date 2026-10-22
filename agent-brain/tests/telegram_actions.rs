@@ -583,7 +583,7 @@ fn stranger_chat_ignored() {
         assert!(
             matches!(
                 method,
-                "getMe" | "getUpdates" | "sendDocument" | "sendMessage"
+                "getMe" | "getUpdates" | "sendDocument" | "sendMessage" | "setMyCommands"
             ),
             "unexpected request: {r}"
         );
