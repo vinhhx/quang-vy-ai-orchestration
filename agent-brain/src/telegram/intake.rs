@@ -59,6 +59,12 @@ pub const CREATED_FMT: &str = "Đã tạo task {id} · {branch}. Plan đang đư
 /// First line of the report of a job that ended before its task row existed.
 pub const FAILED_PREFIX: &str = "Không tạo được task ({branch}):";
 const NO_ERROR_LINES: &str = "(không có thông báo lỗi)";
+/// Refusal when the daily cap is reached (`{N}` = the cap).
+pub const CAP_REACHED_FMT: &str =
+    "Đã đủ {N} task giao từ Telegram hôm nay — giao tiếp trên dashboard hoặc chờ sang ngày mai.";
+/// Refusal when the daily cap is 0.
+pub const CAP_OFF: &str =
+    "Giao việc từ Telegram đang tắt (telegram_max_tasks_per_day = 0 trong config.json).";
 /// Output lines of a failed job sent to the chat, and the length of each.
 const FAILED_LINES: usize = 3;
 const FAILED_LINE_MAX: usize = 200;
@@ -259,6 +265,16 @@ pub fn poll_timeout_secs(state: &PollState) -> u64 {
     } else {
         1
     }
+}
+
+/// Start of the local day of `now`, in ms (the earliest instant when ambiguous).
+pub fn local_midnight_ms(now: chrono::DateTime<chrono::Local>) -> i64 {
+    now.timestamp_millis()
+}
+
+/// Why a new Telegram task is refused by the daily cap, if it is (OD-2).
+pub fn cap_refusal(_ctx: &BotCtx, _state: &PollState) -> Option<String> {
+    None
 }
 
 /// Takes the open flow off `state` when it has expired at `now_ms`.
@@ -1109,6 +1125,21 @@ mod tests {
             !HELP_TEXT.contains("không giao việc mới"),
             "the help line still says the bot takes no new work: {HELP_TEXT}"
         );
+    }
+
+    #[test]
+    fn local_midnight_is_start_of_local_day() {
+        use chrono::TimeZone;
+        let at = |h, m, sec| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, 22, h, m, sec)
+                .earliest()
+                .expect("a local time")
+        };
+        let midnight = at(0, 0, 0).timestamp_millis();
+        assert_eq!(local_midnight_ms(at(14, 3, 0)), midnight);
+        assert_eq!(local_midnight_ms(at(23, 59, 59)), midnight);
+        assert_eq!(local_midnight_ms(at(0, 0, 0)), midnight);
     }
 
     #[test]
