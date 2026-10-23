@@ -2,11 +2,22 @@ use crate::error::{BrainError, BrainResult};
 use std::collections::BTreeSet;
 use std::path::Path;
 
-pub fn git(root: &Path, args: &[&str]) -> BrainResult<String> {
+/// Every git process agent-brain spawns. `GIT_OPTIONAL_LOCKS=0` keeps
+/// background reads (`git status` from the dashboard and the Telegram bot)
+/// from taking `.git/index.lock`, which would make a concurrent `git add` or
+/// `git commit` from an agent run fail. Locks that write commands need are
+/// not affected.
+fn git_cmd(root: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
-    cmd.args(args);
     cmd.current_dir(root);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    cmd
+}
+
+pub fn git(root: &Path, args: &[&str]) -> BrainResult<String> {
+    let mut cmd = git_cmd(root);
+    cmd.args(args);
 
     let output = cmd
         .output()
@@ -115,10 +126,8 @@ pub fn ancestry(root: &Path, ancestor: &str, descendant: &str) -> Option<bool> {
         return None;
     }
 
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = git_cmd(root);
     cmd.args(["merge-base", "--is-ancestor", ancestor, descendant]);
-    cmd.current_dir(root);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
 
     let status = cmd.status().ok()?;
     match status.code() {
@@ -153,10 +162,8 @@ pub fn plan_commit_on_branch(
     }
     args.push("--");
 
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = git_cmd(root);
     cmd.args(&args);
-    cmd.current_dir(root);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
 
     let output = cmd.output().map_err(|_| ())?;
     if !output.status.success() {
@@ -231,10 +238,8 @@ pub fn diff_code_names(root: &Path, a: &str, b: &str) -> BrainResult<BTreeSet<St
 }
 
 pub fn is_tracked(root: &Path, rel: &str) -> bool {
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = git_cmd(root);
     cmd.args(["ls-files", "--error-unmatch", "--", rel]);
-    cmd.current_dir(root);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
     match cmd.status() {
