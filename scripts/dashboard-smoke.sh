@@ -118,6 +118,74 @@ mkdir -p "$REPO_DIR/src"
   git init -b main >/dev/null 2>&1
   echo "# Web ban hang" > README.md
   printf 'def app():\n    return 1\n' > src/app.py
+  # GSD fixture for the work board (#/board): epic 02 is the default view.
+  mkdir -p .planning/phases/01-nen-tang .planning/phases/02-xuat-bao-cao
+  cat << 'ROADMAP_EOF' > .planning/ROADMAP.md
+# Roadmap: Web bán hàng
+
+## Phases
+
+- [x] **Phase 1: Nền tảng** - định dạng và truy vấn
+- [ ] **Phase 2: Xuất báo cáo** - xuất CSV
+- [ ] **Phase 3: Hướng dẫn** - tài liệu cho cửa hàng
+
+## Phase Details
+
+### Phase 1: Nền tảng
+**Depends on**: Nothing (first phase)
+Plans:
+- [x] 01-01-PLAN.md — Chốt định dạng CSV
+- [x] 01-02-PLAN.md — Truy vấn đơn hàng theo khoảng ngày
+
+### Phase 2: Xuất báo cáo
+**Depends on**: Phase 1
+Plans:
+- [ ] 02-01-PLAN.md — Bộ ghi CSV theo luồng
+- [ ] 02-02-PLAN.md — API xuất đơn hàng
+- [ ] 02-03-PLAN.md — Nút Xuất CSV ở trang đơn hàng
+
+### Phase 3: Hướng dẫn
+**Depends on**: Nothing (làm song song)
+Plans: TBD
+ROADMAP_EOF
+  cat << 'STATE_EOF' > .planning/STATE.md
+---
+current_phase: "02"
+current_phase_name: Xuất báo cáo
+---
+
+# Project State
+STATE_EOF
+  smoke_plan() {
+    # smoke_plan FILE PHASE_DIR PLAN WAVE DEPENDS_ON
+    cat << PLAN_EOF > "$1"
+---
+phase: $2
+plan: $3
+type: execute
+wave: $4
+depends_on: $5
+files_modified:
+  - src/app.py
+autonomous: true
+requirements: [SMK-01]
+must_haves:
+  truths:
+    - "Smoke fixture plan $2-$3"
+---
+
+<objective>
+Smoke fixture plan $2-$3 for the work board.
+</objective>
+PLAN_EOF
+  }
+  smoke_plan .planning/phases/01-nen-tang/01-01-PLAN.md 01-nen-tang 01 1 '[]'
+  printf '# Summary\n' > .planning/phases/01-nen-tang/01-01-SUMMARY.md
+  smoke_plan .planning/phases/01-nen-tang/01-02-PLAN.md 01-nen-tang 02 2 '[01-01]'
+  printf '# Summary\n' > .planning/phases/01-nen-tang/01-02-SUMMARY.md
+  smoke_plan .planning/phases/02-xuat-bao-cao/02-01-PLAN.md 02-xuat-bao-cao 01 1 '["01-02"]'
+  smoke_plan .planning/phases/02-xuat-bao-cao/02-02-PLAN.md 02-xuat-bao-cao 02 2 '[02-01]'
+  smoke_plan .planning/phases/02-xuat-bao-cao/02-03-PLAN.md 02-xuat-bao-cao 03 2 '[02-01]'
   git add -A
   git commit -m "init" >/dev/null 2>&1
 )
@@ -417,6 +485,7 @@ for s in "${SCREENS[@]}"; do
     task-stop) HASH="#/task/2"; SCREEN_NAME="task" ;;
     stats) HASH="#/stats" ;;
     projects) HASH="#/projects" ;;
+    board) HASH="#/board" ;;
     *)
       echo "Lỗi: Màn hình không xác định: $s" >&2
       exit 1
@@ -884,7 +953,7 @@ EOF
   fi
 
   # DOM assertions for the Giao việc, Dự án and Tổng quan screens (Phase 5.2).
-  if [[ "$s" == "assign" || "$s" == "projects" || "$s" == "overview" ]]; then
+  if [[ "$s" == "assign" || "$s" == "projects" || "$s" == "overview" || "$s" == "board" ]]; then
     if ! python3 - "$DOM_OUT" "$s" <<'EOF'
 import sys
 from html.parser import HTMLParser
@@ -1075,6 +1144,41 @@ if screen == 'overview':
     if [b for b in badges if not b.hidden()]:
         fail("Badge Autopilot hiện dù không có autopilot nào đang chạy")
     print("Overview DOM OK")
+    sys.exit(0)
+
+if screen == 'board':
+    def collapse(txt):
+        return ' '.join(txt.split())
+
+    cards = {n.attrs['data-item-key']: n for n in root.find(lambda n: 'data-item-key' in n.attrs) if not n.hidden()}
+    if sorted(cards) != ['02-01', '02-02', '02-03']:
+        fail(f"Các thẻ hiện ra là {sorted(cards)}, kỳ vọng 02-01, 02-02, 02-03")
+    if 'sẵn sàng' not in collapse(cards['02-01'].text()):
+        fail(f"Thẻ 02-01 thiếu 'sẵn sàng' (nội dung: '{collapse(cards['02-01'].text())}')")
+    for key in ('02-02', '02-03'):
+        if 'bị chặn' not in collapse(cards[key].text()):
+            fail(f"Thẻ {key} thiếu 'bị chặn' (nội dung: '{collapse(cards[key].text())}')")
+    edges = {n.attrs['data-edge'] for n in root.find(lambda n: 'data-edge' in n.attrs)}
+    for e in ('02-01__02-02', '02-01__02-03'):
+        if e not in edges:
+            fail(f"Thiếu cạnh {e} (có: {sorted(edges)})")
+    waves = sorted(n.attrs['data-wave-head'] for n in root.find(lambda n: 'data-wave-head' in n.attrs))
+    if waves != ['0', '1']:
+        fail(f"Các wave là {waves}, kỳ vọng ['0', '1']")
+    legends = root.find(lambda n: 'data-board-legend' in n.attrs)
+    if len(legends) != 1:
+        fail(f"Số phần tử data-board-legend là {len(legends)}, kỳ vọng 1")
+    legend_text = collapse(legends[0].text())
+    for needle in ('xong 0', 'sẵn sàng 1', 'bị chặn 2'):
+        if needle not in legend_text:
+            fail(f"Chú giải thiếu '{needle}' (nội dung: '{legend_text}')")
+    for attr in ('data-board-empty', 'data-board-error'):
+        els = root.find(lambda n, a=attr: a in n.attrs)
+        if len(els) != 1:
+            fail(f"Số phần tử {attr} là {len(els)}, kỳ vọng 1")
+        if not els[0].hidden():
+            fail(f"{attr} đang hiện")
+    print("Board DOM OK")
     sys.exit(0)
 
 print(f"Không có kiểm tra DOM cho {screen}")
