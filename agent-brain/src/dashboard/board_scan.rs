@@ -4,8 +4,11 @@
 //! Mọi byte đi qua `open_regular`: `symlink_metadata` phải báo file thường, mở bằng
 //! `O_NOFOLLOW | O_NONBLOCK`, kiểm tra lại trên handle đã mở, đọc qua `Read::take`.
 
-use crate::dashboard::board::{clean_text, Facts, PhaseFact, PhaseNum, PlanFact, Warning};
+use crate::dashboard::board::{
+    clean_text, Facts, PhaseFact, PhaseNum, PlanFact, RoadmapPlanLine, Warning,
+};
 use regex::Regex;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -360,6 +363,58 @@ fn phase_heading_re() -> &'static Regex {
     })
 }
 
+fn checkbox_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^-\s+\[( |x|X)\]\s+\*\*Phase\s+(\d+(?:\.\d+)*):").expect("checkbox regex")
+    })
+}
+
+fn depends_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^\*\*Depends on(?:\*\*:?|:\*\*)\s*(.*)$").expect("depends regex")
+    })
+}
+
+fn phase_ref_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"Phase\s+(\d+(?:\.\d+)*)").expect("phase ref regex"))
+}
+
+fn plan_line_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^\s*-\s+\[( |x|X)\]\s+(\d+(?:\.\d+)*-\d+)(?:-PLAN\.md)?(.*)$")
+            .expect("plan line regex")
+    })
+}
+
+fn wave_suffix_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\s*(?:[—–-]\s*wave\s+\d+|\(wave\s+\d+\))\s*$").expect("wave suffix regex")
+    })
+}
+
+fn summary_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"<summary>(.*?)</summary>").expect("summary regex"))
+}
+
+fn summary_milestone_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b(v\d+(?:\.\d+)*)\s+(.*)$").expect("summary milestone regex"))
+}
+
+fn milestone_heading_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^###\s+\S*\s*(v\d+(?:\.\d+)*)\s+(.+?)(?:\s+\(.*\))?$")
+            .expect("milestone heading regex")
+    })
+}
+
 fn push_warning(warnings: &mut Vec<Warning>, path: &str, message: &str) {
     warnings.push(Warning {
         path: clean_text(path, WARNING_MAX_CHARS),
@@ -367,9 +422,43 @@ fn push_warning(warnings: &mut Vec<Warning>, path: &str, message: &str) {
     });
 }
 
+/// `<summary>✅ v1.0 MVP (Phases 1-2) - SHIPPED …</summary>` → `v1.0 MVP`.
+fn milestone_from_summary(line: &str) -> Option<String> {
+    let inner = summary_re().captures(line)?.get(1)?.as_str();
+    let caps = summary_milestone_re().captures(inner)?;
+    let version = caps.get(1)?.as_str();
+    let rest = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+    let cut = [rest.find('('), rest.find(" - ")]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(rest.len());
+    let full = format!("{version} {}", rest[..cut].trim());
+    Some(clean_text(&full, TITLE_MAX_CHARS))
+}
+
+/// `### 🚧 v1.1 Xuất báo cáo (In Progress)` → `v1.1 Xuất báo cáo`.
+fn milestone_from_heading(line: &str) -> Option<String> {
+    let caps = milestone_heading_re().captures(line)?;
+    let full = format!("{} {}", caps.get(1)?.as_str(), caps.get(2)?.as_str());
+    Some(clean_text(&full, TITLE_MAX_CHARS))
+}
+
+/// Chữ của dòng plan trong ROADMAP: bỏ dấu phân cách đầu và hậu tố `— wave N` / `(wave N)`.
+fn plan_line_title(rest: &str) -> String {
+    let t = rest.trim().trim_start_matches(|c: char| {
+        c == ':' || c == '—' || c == '–' || c == '-' || c.is_whitespace()
+    });
+    let t = wave_suffix_re().replace(t, "");
+    clean_text(t.trim(), TITLE_MAX_CHARS)
+}
+
 pub fn parse_roadmap(text: &str) -> RoadmapScan {
     let mut phases: Vec<PhaseFact> = Vec::new();
     let mut warnings: Vec<Warning> = Vec::new();
+    let mut top_checks: Vec<(PhaseNum, bool)> = Vec::new();
+    let mut milestone: Option<String> = None;
+    let mut current: Option<usize> = None;
     for (idx, line) in text.lines().enumerate() {
         if line.chars().count() > LINE_MAX_CHARS {
             push_warning(
@@ -379,27 +468,115 @@ pub fn parse_roadmap(text: &str) -> RoadmapScan {
             );
             continue;
         }
-        let Some(caps) = phase_heading_re().captures(line) else {
+        if line.contains("<summary>") {
+            if let Some(m) = milestone_from_summary(line) {
+                milestone = Some(m);
+                current = None;
+            }
+            continue;
+        }
+        if line.contains("</details>") {
+            milestone = None;
+            current = None;
+            continue;
+        }
+        if let Some(caps) = phase_heading_re().captures(line) {
+            let Some(num) = caps.get(1).and_then(|m| PhaseNum::parse(m.as_str())) else {
+                current = None;
+                continue;
+            };
+            let raw_name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let name = raw_name
+                .strip_suffix("(INSERTED)")
+                .unwrap_or(raw_name)
+                .trim();
+            phases.push(PhaseFact {
+                num,
+                name: clean_text(name, TITLE_MAX_CHARS),
+                milestone: milestone.clone(),
+                depends_on: Vec::new(),
+                checkbox: None,
+                roadmap_plans: Vec::new(),
+            });
+            current = Some(phases.len() - 1);
+            continue;
+        }
+        if let Some(m) = milestone_from_heading(line) {
+            milestone = Some(m);
+            current = None;
+            continue;
+        }
+        if let Some(caps) = checkbox_re().captures(line) {
+            let checked = caps.get(1).map(|m| m.as_str() != " ").unwrap_or(false);
+            if let Some(num) = caps.get(2).and_then(|m| PhaseNum::parse(m.as_str())) {
+                top_checks.push((num, checked));
+            }
+            continue;
+        }
+        let Some(cur) = current else {
             continue;
         };
-        let Some(num) = caps.get(1).and_then(|m| PhaseNum::parse(m.as_str())) else {
+        if let Some(caps) = depends_re().captures(line) {
+            let rest = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            // Chỉ đọc phần trước dấu `(` đầu tiên: phần trong ngoặc nhắc phase khác.
+            let head = rest.split('(').next().unwrap_or("");
+            if head.trim_start().starts_with("Nothing") {
+                continue;
+            }
+            for found in phase_ref_re().captures_iter(head) {
+                let raw = found.get(1).map(|m| m.as_str()).unwrap_or("");
+                match PhaseNum::parse(raw) {
+                    Some(n) => phases[cur].depends_on.push(n),
+                    None => push_warning(
+                        &mut warnings,
+                        ROADMAP_REL,
+                        &format!("số phase không hợp lệ: {raw}"),
+                    ),
+                }
+            }
             continue;
-        };
-        let raw_name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-        let name = raw_name
-            .strip_suffix("(INSERTED)")
-            .unwrap_or(raw_name)
-            .trim();
-        phases.push(PhaseFact {
-            num,
-            name: clean_text(name, TITLE_MAX_CHARS),
-            milestone: None,
-            depends_on: Vec::new(),
-            checkbox: None,
-            roadmap_plans: Vec::new(),
-        });
+        }
+        if let Some(caps) = plan_line_re().captures(line) {
+            let checked = caps.get(1).map(|m| m.as_str() != " ").unwrap_or(false);
+            let id = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let rest = caps.get(3).map(|m| m.as_str()).unwrap_or("");
+            phases[cur].roadmap_plans.push(RoadmapPlanLine {
+                id: id.to_string(),
+                title: plan_line_title(rest),
+                checked,
+            });
+        }
+    }
+    for ph in &mut phases {
+        if let Some((_, checked)) = top_checks.iter().find(|(n, _)| *n == ph.num) {
+            ph.checkbox = Some(*checked);
+        }
     }
     RoadmapScan { phases, warnings }
+}
+
+/// Câu đầu của `<objective>`: dòng không trống đầu tiên sau dòng chứa `<objective>`, bỏ dấu
+/// backtick, gộp khoảng trắng, cắt tại `. ` đầu tiên hoặc 120 ký tự.
+fn objective_title(head: &str) -> Option<String> {
+    let mut lines = head.lines();
+    lines.find(|l| l.contains("<objective>"))?;
+    let line = lines.find(|l| !l.trim().is_empty())?;
+    if line.trim_start().starts_with("</objective>") {
+        return None;
+    }
+    let plain: String = line.chars().filter(|c| *c != '`').collect();
+    let collapsed = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    let first = match collapsed.find(". ") {
+        Some(i) => &collapsed[..i],
+        None => collapsed.as_str(),
+    };
+    let cut: String = first.chars().take(120).collect();
+    let cut = cut.trim();
+    if cut.is_empty() {
+        None
+    } else {
+        Some(cut.to_string())
+    }
 }
 
 /// `current_phase` trong front matter của STATE.md (cột 0, có hoặc không có nháy).
@@ -446,6 +623,16 @@ pub fn scan(root: &Path, caps: &Caps, deadline: Instant) -> Result<Facts, ScanRe
             }
         })?;
     let rs = parse_roadmap(&roadmap_text);
+    let known_phases: HashSet<PhaseNum> = rs.phases.iter().map(|p| p.num.clone()).collect();
+    let mut roadmap_titles: HashMap<String, String> = HashMap::new();
+    for line in rs.phases.iter().flat_map(|p| p.roadmap_plans.iter()) {
+        if !line.title.is_empty() {
+            roadmap_titles
+                .entry(line.id.clone())
+                .or_insert_with(|| line.title.clone());
+        }
+    }
+    let mut unlisted_dirs: HashSet<String> = HashSet::new();
     let mut facts = Facts {
         phases: rs.phases,
         warnings: rs.warnings,
@@ -571,6 +758,16 @@ pub fn scan(root: &Path, caps: &Caps, deadline: Instant) -> Result<Facts, ScanRe
             };
             plan_count += 1;
 
+            if !known_phases.contains(&phase) && unlisted_dirs.insert(dir.clone()) {
+                push_warning(
+                    &mut facts.warnings,
+                    &rel_dir,
+                    &format!(
+                        "thư mục phase {dir} không có trong ROADMAP.md (vẫn hiện thành epic riêng)"
+                    ),
+                );
+            }
+
             let mut fm_wave = None;
             let mut depends_on = Vec::new();
             let mut requirements = Vec::new();
@@ -600,8 +797,19 @@ pub fn scan(root: &Path, caps: &Caps, deadline: Instant) -> Result<Facts, ScanRe
                 .map(|m| m.file_type().is_file() && !m.file_type().is_symlink())
                 .unwrap_or(false);
 
+            // Tiêu đề: dòng plan trong ROADMAP, rồi câu đầu của <objective>, rồi mã plan.
+            let raw_title = roadmap_titles
+                .get(&id)
+                .cloned()
+                .or_else(|| objective_title(&head))
+                .unwrap_or_else(|| id.clone());
+            let mut title = clean_text(&raw_title, TITLE_MAX_CHARS);
+            if title.is_empty() {
+                title = clean_text(&id, TITLE_MAX_CHARS);
+            }
+
             facts.plans.push(PlanFact {
-                title: clean_text(&id, TITLE_MAX_CHARS),
+                title,
                 id,
                 phase,
                 number,
@@ -866,5 +1074,198 @@ mod tests {
         std::os::unix::fs::symlink(&target, dir.path().join(".planning/ROADMAP.md")).unwrap();
         let err = scan(dir.path(), &Caps::default(), far()).expect_err("symlink");
         assert!(err.detail.starts_with("không phải file thường"));
+    }
+
+    fn nums(list: &[PhaseNum]) -> Vec<String> {
+        list.iter().map(|n| n.display()).collect()
+    }
+
+    #[test]
+    fn roadmap_depends_on_ignores_parentheticals() {
+        let text = "### Phase 3: Ba\n**Depends on**: Phase 2 (và kết quả S1, S4, S5, S8 + quyết định tài khoản từ Phase 1)\n### Phase 1: Một\n**Depends on**: Nothing (first phase)\n### Phase 4: Bốn\n**Depends on:** Phase 3, Phase 05.2 (ghi chú Phase 1)\n### Phase 5: Năm\n**Depends on**: Phase 4 (kết quả Phase 2)\n**Depends on**: Phase 3\n";
+        let rs = parse_roadmap(text);
+        assert!(rs.warnings.is_empty());
+        let by = |n: &str| {
+            rs.phases
+                .iter()
+                .find(|p| p.num.display() == n)
+                .expect("phase")
+        };
+        assert_eq!(nums(&by("03").depends_on), ["02"]);
+        assert!(by("01").depends_on.is_empty());
+        assert_eq!(nums(&by("04").depends_on), ["03", "05.2"]);
+        assert_eq!(nums(&by("05").depends_on), ["04", "03"]);
+    }
+
+    #[test]
+    fn roadmap_depends_on_bad_number_is_a_warning() {
+        let text = "### Phase 2: Hai\n**Depends on**: Phase 1234567\n";
+        let rs = parse_roadmap(text);
+        assert!(rs.phases[0].depends_on.is_empty());
+        assert_eq!(rs.warnings.len(), 1);
+        assert_eq!(rs.warnings[0].message, "số phase không hợp lệ: 1234567");
+        assert_eq!(rs.warnings[0].path, ".planning/ROADMAP.md");
+    }
+
+    #[test]
+    fn roadmap_checkboxes_top_list() {
+        let text = "## Phases\n\n- [x] **Phase 1: Một** - xong\n- [ ] **Phase 2: Hai** - đang làm\n- [X] **Phase 3: Ba**\n\n### Phase 1: Một\n### Phase 2: Hai\n### Phase 3: Ba\n### Phase 4: Bốn\n";
+        let rs = parse_roadmap(text);
+        let boxes: Vec<(String, Option<bool>)> = rs
+            .phases
+            .iter()
+            .map(|p| (p.num.display(), p.checkbox))
+            .collect();
+        assert_eq!(
+            boxes,
+            [
+                ("01".to_string(), Some(true)),
+                ("02".to_string(), Some(false)),
+                ("03".to_string(), Some(true)),
+                ("04".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn roadmap_plan_lines_both_shapes() {
+        let text = "### Phase 5.4: X\nPlans:\n- [x] 05.4-01-PLAN.md — Shared tiện ích (wave 1)\n- [x] 02-01-PLAN.md — Tracer: đường chạy đầu — wave 1\n- [x] 05.2-32-PLAN.md\n- [ ] 01-01: Mô tả mẫu\n- [ ] 01-02 - Chữ sau gạch\n- [ ] ghi chú không phải plan\n";
+        let rs = parse_roadmap(text);
+        let lines: Vec<(String, String, bool)> = rs.phases[0]
+            .roadmap_plans
+            .iter()
+            .map(|l| (l.id.clone(), l.title.clone(), l.checked))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("05.4-01".to_string(), "Shared tiện ích".to_string(), true),
+                (
+                    "02-01".to_string(),
+                    "Tracer: đường chạy đầu".to_string(),
+                    true
+                ),
+                ("05.2-32".to_string(), String::new(), true),
+                ("01-01".to_string(), "Mô tả mẫu".to_string(), false),
+                ("01-02".to_string(), "Chữ sau gạch".to_string(), false),
+            ]
+        );
+        // Dòng plan trước mọi tiêu đề phase không thuộc phase nào.
+        let early = parse_roadmap("- [x] 01-01: sớm\n### Phase 1: A\n");
+        assert!(early.phases[0].roadmap_plans.is_empty());
+    }
+
+    #[test]
+    fn roadmap_milestones_details_and_headings() {
+        let text = "<details>\n<summary>✅ v1.0 MVP (Phases 1-2) - SHIPPED 2026-10-01</summary>\n\n### Phase 1: Một\n### Phase 2: Hai\n\n</details>\n\n### 🚧 v1.1 Xuất báo cáo (In Progress)\n\n#### Phase 3: Ba\n#### Phase 4: Bốn\n\n### Phase 9: Ngoài\n";
+        let rs = parse_roadmap(text);
+        let ms: Vec<(String, Option<String>)> = rs
+            .phases
+            .iter()
+            .map(|p| (p.num.display(), p.milestone.clone()))
+            .collect();
+        assert_eq!(
+            ms,
+            [
+                ("01".to_string(), Some("v1.0 MVP".to_string())),
+                ("02".to_string(), Some("v1.0 MVP".to_string())),
+                ("03".to_string(), Some("v1.1 Xuất báo cáo".to_string())),
+                ("04".to_string(), Some("v1.1 Xuất báo cáo".to_string())),
+                ("09".to_string(), Some("v1.1 Xuất báo cáo".to_string())),
+            ]
+        );
+        // </details> xoá milestone đang đặt.
+        let cleared = parse_roadmap("<details><summary>v2.0 Lớn - xong</summary>\n### Phase 1: A\n</details>\n### Phase 2: B\n");
+        assert_eq!(cleared.phases[0].milestone.as_deref(), Some("v2.0 Lớn"));
+        assert_eq!(cleared.phases[1].milestone, None);
+        // Không có phần milestone nào: không phase nào có milestone.
+        let none = parse_roadmap(
+            "### Phase 1: A\n<details><summary>Chi tiết</summary>\n</details>\n### Phase 2: B\n",
+        );
+        assert!(none.phases.iter().all(|p| p.milestone.is_none()));
+    }
+
+    #[test]
+    fn roadmap_heading_levels_and_inserted() {
+        let text = "## Phase 1: sai cấp\n### Phase 2: Ba cấp\n#### Phase 2.1: Bốn cấp (INSERTED)\n##### Phase 3: năm cấp\n### Phase 05.10: Thập phân\n";
+        let rs = parse_roadmap(text);
+        let seen: Vec<(String, String)> = rs
+            .phases
+            .iter()
+            .map(|p| (p.num.display(), p.name.clone()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("02".to_string(), "Ba cấp".to_string()),
+                ("02.1".to_string(), "Bốn cấp".to_string()),
+                ("05.10".to_string(), "Thập phân".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn title_chain_roadmap_objective_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let phase = dir.path().join(".planning/phases/01-a");
+        std::fs::create_dir_all(&phase).unwrap();
+        std::fs::write(
+            dir.path().join(".planning/ROADMAP.md"),
+            "### Phase 1: A\n- [ ] 01-01-PLAN.md — Tiêu đề từ ROADMAP — wave 1\n- [ ] 01-02-PLAN.md\n- [ ] 01-03-PLAN.md\n",
+        )
+        .unwrap();
+        let fm = "---\nwave: 1\ndepends_on: []\n---\n\n";
+        std::fs::write(
+            phase.join("01-01-PLAN.md"),
+            format!("{fm}<objective>\nKhông dùng. Vì ROADMAP thắng.\n</objective>\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            phase.join("01-02-PLAN.md"),
+            format!(
+                "{fm}<objective>\n\n  Ghi   luồng `CSV`\ttheo lô. Chi tiết khác.\n</objective>\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            phase.join("01-03-PLAN.md"),
+            format!("{fm}không có mục tiêu\n"),
+        )
+        .unwrap();
+        let facts = scan(dir.path(), &Caps::default(), far()).expect("scan");
+        let titles: Vec<(String, String)> = facts
+            .plans
+            .iter()
+            .map(|p| (p.id.clone(), p.title.clone()))
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                ("01-01".to_string(), "Tiêu đề từ ROADMAP".to_string()),
+                ("01-02".to_string(), "Ghi luồng CSV theo lô".to_string()),
+                ("01-03".to_string(), "01-03".to_string()),
+            ]
+        );
+        let long = format!("{fm}<objective>\n{}\n", "x".repeat(300));
+        assert_eq!(objective_title(&long).unwrap().chars().count(), 120);
+        assert_eq!(objective_title("<objective>\n</objective>\n"), None);
+        assert_eq!(objective_title("không có thẻ\n"), None);
+    }
+
+    #[test]
+    fn scan_warns_once_for_dir_missing_from_roadmap() {
+        let dir = tree(2);
+        let other = dir.path().join(".planning/phases/07-ngoai");
+        std::fs::create_dir_all(&other).unwrap();
+        for n in ["07-01-PLAN.md", "07-02-PLAN.md"] {
+            std::fs::write(other.join(n), "---\nwave: 1\ndepends_on: []\n---\n").unwrap();
+        }
+        let facts = scan(dir.path(), &Caps::default(), far()).expect("scan");
+        assert_eq!(facts.plans.len(), 4);
+        assert_eq!(facts.warnings.len(), 1);
+        assert_eq!(facts.warnings[0].path, ".planning/phases/07-ngoai");
+        let msg = &facts.warnings[0].message;
+        assert!(msg.starts_with("thư mục phase 07-ngoai không có trong ROADMAP.md"));
+        assert!(msg.ends_with("(vẫn hiện thành epic riêng)"));
     }
 }
