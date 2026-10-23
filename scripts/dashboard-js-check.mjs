@@ -1089,6 +1089,293 @@ const sections = [
     },
   },
   {
+    name: 'board-select',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      const boardJsPath = path.join(repoRoot, 'agent-brain/assets/dashboard/js/board.js');
+      vm.runInContext(fs.readFileSync(boardJsPath, 'utf8'), ctx, { filename: 'board.js' });
+
+      check('board-select: factory registered', typeof factories.board === 'function', 'factories.board not found');
+      if (typeof factories.board !== 'function') return;
+
+      async function step(name, fn) {
+        try {
+          await fn();
+        } catch (err) {
+          check(name, false, `threw: ${err && err.message ? err.message : err}`);
+        }
+      }
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      const keysOf = (set) => Object.keys(set).sort();
+      const mk = (key, epic, wave, status, extra) => Object.assign({
+        key, title: 'Việc ' + key, epic, epic_name: 'Xuất báo cáo đơn hàng', milestone: null, wave, fm_wave: null,
+        status, critical: false, placeholder: false, requirements: [], plan_path: null,
+        waits_on: [], waited_by: [],
+      }, extra || {});
+
+      // SHOP fixture of plan 05.5-03 (plans 01-01 ... 01-14, 01-01 and 01-02 done), epic=all.
+      const DEPS = {
+        '01-01': [], '01-02': [], '01-03': [], '01-04': ['01-01'], '01-05': ['01-01', '01-02'],
+        '01-06': [], '01-07': ['01-03', '01-04'], '01-08': ['01-07', '01-06'], '01-09': ['01-08'],
+        '01-10': ['01-07'], '01-11': ['01-05', '01-07'], '01-12': ['01-08'], '01-13': ['01-09', '01-11'],
+        '01-14': ['01-09'],
+      };
+      const WAVE = {
+        '01-01': 0, '01-02': 0, '01-03': 0, '01-04': 1, '01-05': 1, '01-06': 0, '01-07': 2,
+        '01-08': 3, '01-09': 4, '01-10': 3, '01-11': 3, '01-12': 4, '01-13': 5, '01-14': 5,
+      };
+      const STATUS = {
+        '01-01': 'xong', '01-02': 'xong', '01-03': 'san_sang', '01-04': 'san_sang', '01-05': 'san_sang', '01-06': 'san_sang',
+      };
+      const CRIT_ITEMS = ['01-04', '01-07', '01-08', '01-09', '01-13'];
+      const CRIT_EDGES = ['01-04__01-07', '01-07__01-08', '01-08__01-09', '01-09__01-13'];
+      const ORDER = Object.keys(DEPS);
+      const waitedBy = (k) => ORDER.filter((o) => DEPS[o].indexOf(k) !== -1);
+      const shopItems = ORDER
+        .slice()
+        .sort((a, b) => WAVE[a] - WAVE[b] || ORDER.indexOf(a) - ORDER.indexOf(b))
+        .map((k) => mk(k, '01', WAVE[k], STATUS[k] || 'bi_chan', {
+          critical: CRIT_ITEMS.indexOf(k) !== -1,
+          requirements: k === '01-07' ? ['BOARD-12', 'BOARD-09'] : [],
+          plan_path: '.planning/phases/01-xuat-bao-cao/' + k + '-PLAN.md',
+          waits_on: DEPS[k],
+          waited_by: waitedBy(k),
+        }));
+      const shopEdges = [];
+      ORDER.forEach((to) => DEPS[to].forEach((from) => {
+        shopEdges.push({ from, to, kind: 'plan', critical: CRIT_EDGES.indexOf(from + '__' + to) !== -1 });
+      }));
+      const PROJECT = { id: 'web-ban-hang', name_vi: 'Web bán hàng', profile: 'work', type: 'code' };
+      const baseOk = (over) => Object.assign({
+        state: 'ok', reason: null, message: null, expected_path: '/x/.planning/ROADMAP.md',
+        project: PROJECT, projects: [{ id: 'web-ban-hang', name_vi: 'Web bán hàng', profile: 'work', has_board: true }],
+        epic: 'all', default_epic: '02', epics: [], milestone: null, milestones: [], items: [], edges: [], external: [],
+        counts: { total: 0, xong: 0, san_sang: 0, bi_chan: 0, waves: 0 }, warnings: [], truncated: false,
+      }, over || {});
+      const SHOP = baseOk({ items: shopItems, edges: shopEdges, counts: { total: 14, xong: 2, san_sang: 4, bi_chan: 8, waves: 6 } });
+      // Smoke-fixture default view (epic 02) with its one neighbour outside the view.
+      const SMOKE_02 = baseOk({
+        epic: '02',
+        items: [
+          mk('02-01', '02', 0, 'san_sang', { epic_name: 'Xuất báo cáo', waits_on: ['01-02'], waited_by: ['02-02', '02-03'], plan_path: '.planning/phases/02-xuat-bao-cao/02-01-PLAN.md' }),
+          mk('02-02', '02', 1, 'bi_chan', { epic_name: 'Xuất báo cáo', waits_on: ['02-01'] }),
+          mk('02-03', '02', 1, 'bi_chan', { epic_name: 'Xuất báo cáo', waits_on: ['02-01'] }),
+        ],
+        edges: [
+          { from: '02-01', to: '02-02', kind: 'plan', critical: false },
+          { from: '02-01', to: '02-03', kind: 'plan', critical: false },
+        ],
+        external: [{ key: '01-02', title: 'Truy vấn đơn hàng', epic: '01', status: 'xong' }],
+        counts: { total: 3, xong: 0, san_sang: 1, bi_chan: 2, waves: 2 },
+      });
+
+      const savedApi = ctx.AB.api;
+      const savedFocus = ctx.AB.focusLater;
+      const savedStorage = ctx.localStorage;
+      const focused = [];
+      ctx.AB.focusLater = function (id, fallback) { focused.push(id + (fallback ? '|' + fallback : '')); };
+      ctx.localStorage = {
+        getItem() { return null; },
+        setItem() {},
+        removeItem() {},
+      };
+      ctx.AB.api = function () { return Promise.resolve({ ok: true, status: 200, data: SHOP }); };
+      const make = (data) => {
+        const c = factories.board();
+        c.apply(data);
+        return c;
+      };
+      const card = (c, key) => c.cards.find((k) => k.key === key);
+      const edge = (c, id) => c.edgeViews.find((e) => e.id === id);
+      const classOf = (c, key) => c.cardClass(card(c, key));
+
+      try {
+        await step('board-select: ABBoard.related', async () => {
+          const B = ctx.ABBoard;
+          check('board-select: related is exported', typeof B.related === 'function');
+          const c = make(SHOP);
+          const lit = B.related('01-07', c.upMap, c.downMap);
+          const want = ['01-01', '01-03', '01-04', '01-07', '01-08', '01-09', '01-10', '01-11', '01-12', '01-13', '01-14'];
+          check('board-select: related(01-07) is the eleven keys of the golden', same(keysOf(lit), want), JSON.stringify(keysOf(lit)));
+          const lit12 = B.related('01-12', c.upMap, c.downMap);
+          check('board-select: related(01-12) is its seven-key chain', same(keysOf(lit12), ['01-01', '01-03', '01-04', '01-06', '01-07', '01-08', '01-12']), JSON.stringify(keysOf(lit12)));
+          check('board-select: related of an isolated key is just itself', same(keysOf(B.related('x', {}, {})), ['x']));
+          check('board-select: a key named constructor is not lit by inheritance', B.related('x', {}, {}).constructor === undefined);
+
+          const N = 3000;
+          const up = {};
+          const down = {};
+          for (let i = 0; i < N; i++) {
+            up['n' + i] = i > 0 ? ['n' + (i - 1)] : [];
+            down['n' + i] = i < N - 1 ? ['n' + (i + 1)] : [];
+          }
+          const big = B.related('n1500', up, down);
+          check('board-select: 3,000-node chain closes without a stack overflow', Object.keys(big).length === N, `got ${Object.keys(big).length}`);
+          const cyc = B.related('a', { a: ['b'], b: ['a'] }, { a: ['b'], b: ['a'] });
+          check('board-select: a cycle terminates', same(keysOf(cyc), ['a', 'b']), JSON.stringify(keysOf(cyc)));
+        });
+
+        await step('board-select: maps are restricted to visible cards', async () => {
+          const c = make(SMOKE_02);
+          check('board-select: upMap drops a neighbour outside the view', same(c.upMap['02-01'], []), JSON.stringify(c.upMap['02-01']));
+          check('board-select: downMap keeps visible waiters', same(c.downMap['02-01'], ['02-02', '02-03']), JSON.stringify(c.downMap['02-01']));
+        });
+
+        await step('board-select: select(01-07) lights the chain and dims the rest', async () => {
+          const c = make(SHOP);
+          check('board-select: no selection at first', c.sel === '' && c.hasSelection === false && c.selectedItem === null);
+          check('board-select: no card is dimmed or ringed before a selection', c.cards.every((k) => !c.cardClass(k).includes('opacity-25') && !c.cardClass(k).includes('ring-cyan')));
+          check('board-select: edges keep their classes before a selection', c.edgeClass(edge(c, '01-07__01-08')).includes('stroke-yellow-600') && c.edgeClass(edge(c, '01-02__01-05')).includes('stroke-slate-400') && !c.edgeClass(edge(c, '01-02__01-05')).includes('opacity-25'));
+          c.select('01-07');
+          check('board-select: sel is 01-07', c.sel === '01-07' && c.hasSelection === true && c.selectedItem.key === '01-07');
+          check('board-select: pressed is true only for 01-07', c.cards.every((k) => c.pressed(k) === (k.key === '01-07' ? 'true' : 'false')));
+          check('board-select: selected card has the cyan ring', classOf(c, '01-07').includes('ring-2 ring-cyan-600 dark:ring-cyan-400'), classOf(c, '01-07'));
+          check('board-select: the ring is only on the selected card', c.cards.every((k) => k.key === '01-07' || !c.cardClass(k).includes('ring-cyan')));
+          for (const k of ['01-02', '01-05', '01-06']) {
+            check(`board-select: ${k} is dimmed`, classOf(c, k).includes('opacity-25'), classOf(c, k));
+          }
+          for (const k of ['01-01', '01-03', '01-04', '01-07', '01-08', '01-09', '01-10', '01-11', '01-12', '01-13', '01-14']) {
+            check(`board-select: ${k} is lit`, !classOf(c, k).includes('opacity-25'), classOf(c, k));
+          }
+          check('board-select: a chain edge is cyan', c.edgeClass(edge(c, '01-07__01-08')).includes('stroke-cyan-600') && c.edgeClass(edge(c, '01-07__01-08')).includes('dark:stroke-cyan-400') && c.edgeClass(edge(c, '01-07__01-08')).includes('stroke-2'), c.edgeClass(edge(c, '01-07__01-08')));
+          check('board-select: a chain edge is not dimmed', !c.edgeClass(edge(c, '01-07__01-08')).includes('opacity-25'));
+          check('board-select: an edge outside the chain is dimmed', c.edgeClass(edge(c, '01-02__01-05')).includes('opacity-25') && c.edgeClass(edge(c, '01-02__01-05')).includes('stroke-slate-400'), c.edgeClass(edge(c, '01-02__01-05')));
+          check('board-select: a chain edge is raised, an outside edge is not', c.edgeZ(edge(c, '01-07__01-08')) === 'z-10' && c.edgeZ(edge(c, '01-02__01-05')) === 'z-0', `${c.edgeZ(edge(c, '01-07__01-08'))}/${c.edgeZ(edge(c, '01-02__01-05'))}`);
+          check('board-select: a lit non-critical edge is raised', c.edgeZ(edge(c, '01-07__01-10')) === 'z-10');
+          check('board-select: critical edge 04 to 07 is cyan when the chain holds it', c.edgeClass(edge(c, '01-04__01-07')).includes('stroke-cyan-600') && !c.edgeClass(edge(c, '01-04__01-07')).includes('stroke-yellow'));
+          c.select('01-07');
+          check('board-select: selecting 01-07 again clears the selection', c.sel === '' && c.hasSelection === false && c.selectedItem === null && c.cards.every((k) => c.pressed(k) === 'false'));
+          check('board-select: after clearing no card class has opacity-25', c.cards.every((k) => !c.cardClass(k).includes('opacity-25')));
+          check('board-select: after clearing edges are back to normal', c.edgeClass(edge(c, '01-07__01-08')).includes('stroke-yellow-600') && !c.edgeClass(edge(c, '01-02__01-05')).includes('opacity-25') && c.edgeZ(edge(c, '01-07__01-10')) === 'z-0');
+          check('board-select: select ignores a key that is not on screen', (() => { c.select('99-99'); return c.sel === ''; })());
+        });
+
+        await step('board-select: critical edges in focus mode', async () => {
+          const c = make(SHOP);
+          c.select('01-12');
+          check('board-select: 01-12 lights seven keys', same(keysOf(c.lit), ['01-01', '01-03', '01-04', '01-06', '01-07', '01-08', '01-12']), JSON.stringify(keysOf(c.lit)));
+          const out = c.edgeClass(edge(c, '01-09__01-13'));
+          check('board-select: critical edge outside the chain keeps yellow and is dimmed', out.includes('stroke-yellow-600') && out.includes('dark:stroke-yellow-400') && out.includes('opacity-25'), out);
+          check('board-select: critical edge outside the chain stays at z-10', c.edgeZ(edge(c, '01-09__01-13')) === 'z-10');
+          const inn = c.edgeClass(edge(c, '01-07__01-08'));
+          check('board-select: critical edge inside the chain is cyan', inn.includes('stroke-cyan-600') && !inn.includes('stroke-yellow'), inn);
+          check('board-select: no card gets a yellow ring', c.cards.every((k) => !c.cardClass(k).includes('ring-yellow')));
+        });
+
+        await step('board-select: panel fields', async () => {
+          const c = make(SHOP);
+          check('board-select: panel getters are quiet with no selection', c.panelKey === '' && c.panelDeps.length === 0 && c.panelWaiters.length === 0 && c.hasPanelDeps === false && c.hasPanelWaiters === false);
+          c.select('01-07');
+          check('board-select: panelKey', c.panelKey === '01-07', c.panelKey);
+          check('board-select: panelTitle', c.panelTitle === 'Việc 01-07', c.panelTitle);
+          check('board-select: panelEpic', c.panelEpic === '01 · Xuất báo cáo đơn hàng', c.panelEpic);
+          check('board-select: panelMilestone falls back to a dash', c.panelMilestone === '—', c.panelMilestone);
+          check('board-select: panelWave', c.panelWave === '2', c.panelWave);
+          check('board-select: panelStatus is glyph and word', c.panelStatus === '⟳︎ bị chặn', c.panelStatus);
+          check('board-select: panelCritical is có', c.panelCritical === 'có', c.panelCritical);
+          check('board-select: panelRequirements', c.panelRequirements === 'BOARD-12, BOARD-09', c.panelRequirements);
+          check('board-select: panelPath is repo-relative', c.panelPath === '.planning/phases/01-xuat-bao-cao/01-07-PLAN.md', c.panelPath);
+          check('board-select: panelDeps keys', same(c.panelDeps.map((d) => d.key), ['01-03', '01-04']), JSON.stringify(c.panelDeps));
+          check('board-select: panelDeps are all in view', c.panelDeps.every((d) => d.inView === true));
+          check('board-select: panelDeps text is key and word', same(c.panelDeps.map((d) => d.text), ['01-03 · sẵn sàng', '01-04 · sẵn sàng']), JSON.stringify(c.panelDeps.map((d) => d.text)));
+          check('board-select: panelWaiters keys', same(c.panelWaiters.map((d) => d.key), ['01-08', '01-10', '01-11']), JSON.stringify(c.panelWaiters));
+          check('board-select: hasPanelDeps and hasPanelWaiters', c.hasPanelDeps === true && c.hasPanelWaiters === true);
+          c.select('01-01');
+          check('board-select: panelCritical is không for a non-critical item', c.panelCritical === 'không');
+          check('board-select: no requirements reads as a dash', c.panelRequirements === '—');
+          check('board-select: 01-01 has no dependencies', c.hasPanelDeps === false && c.panelDeps.length === 0);
+          c.select('01-14');
+          check('board-select: a leaf has no waiters', c.hasPanelWaiters === false && c.panelWaiters.length === 0);
+        });
+
+        await step('board-select: stand-in item', async () => {
+          const c = make(baseOk({ items: [mk('03', '03', 0, 'san_sang', { placeholder: true })], counts: { total: 1, xong: 0, san_sang: 1, bi_chan: 0, waves: 1 } }));
+          c.select('03');
+          check('board-select: stand-in panelPath', c.panelPath === '— (phase chưa có plan)', c.panelPath);
+          check('board-select: milestone on a plain item is a dash', c.panelMilestone === '—');
+          c.apply(baseOk({ items: [mk('03', '03', 0, 'san_sang', { milestone: 'v1.1', placeholder: true })] }));
+          check('board-select: panelMilestone shows the milestone', c.panelMilestone === 'v1.1', c.panelMilestone);
+        });
+
+        await step('board-select: neighbours outside the view', async () => {
+          const c = make(SMOKE_02);
+          c.select('02-01');
+          check('board-select: out-of-view dependency is named', same(c.panelDeps, [{ key: '01-02', inView: false, text: '01-02 · xong · phase 01 (ngoài bộ lọc)' }]), JSON.stringify(c.panelDeps));
+          check('board-select: in-view waiters are buttons', same(c.panelWaiters.map((d) => [d.key, d.inView]), [['02-02', true], ['02-03', true]]), JSON.stringify(c.panelWaiters));
+          c.focusItem('01-02');
+          check('board-select: focusItem ignores a key outside the view', c.sel === '02-01', `sel ${c.sel}`);
+          const d = make(baseOk({ items: [mk('02-01', '02', 0, 'san_sang', { waits_on: ['ghost'] })] }));
+          d.select('02-01');
+          check('board-select: an unknown neighbour is still listed', same(d.panelDeps, [{ key: 'ghost', inView: false, text: 'ghost (ngoài bộ lọc)' }]), JSON.stringify(d.panelDeps));
+        });
+
+        await step('board-select: focus return', async () => {
+          const c = make(SHOP);
+          focused.length = 0;
+          c.clearSelection();
+          check('board-select: clearSelection with nothing selected does nothing', focused.length === 0 && c.sel === '');
+          c.select('01-07');
+          check('board-select: select does not move focus', focused.length === 0, JSON.stringify(focused));
+          c.clearSelection();
+          check('board-select: clearSelection clears', c.sel === '' && c.selectedItem === null && same(Object.keys(c.lit), []));
+          check('board-select: clearSelection refocuses the card', same(focused, ['board-item-01-07']), JSON.stringify(focused));
+          focused.length = 0;
+          c.select('01-07');
+          c.focusItem('01-04');
+          check('board-select: focusItem selects the neighbour', c.sel === '01-04' && c.pressed(card(c, '01-04')) === 'true' && c.pressed(card(c, '01-07')) === 'false');
+          check('board-select: focusItem moves focus', same(focused, ['board-item-01-04']), JSON.stringify(focused));
+          focused.length = 0;
+          c.focusItem('01-04');
+          check('board-select: focusItem keeps an already selected card selected', c.sel === '01-04' && same(focused, ['board-item-01-04']), `${c.sel} ${JSON.stringify(focused)}`);
+          c.clearSelection();
+          check('board-select: Esc returns to the last selected card', same(focused, ['board-item-01-04', 'board-item-01-04']), JSON.stringify(focused));
+        });
+
+        await step('board-select: selection survives the collapse switch and a reload', async () => {
+          const c = make(SHOP);
+          c.select('01-07');
+          const before = keysOf(c.lit);
+          c.toggleCollapse();
+          check('board-select: toggleCollapse keeps the selection', c.sel === '01-07' && c.selectedItem.key === '01-07' && same(keysOf(c.lit), before));
+          check('board-select: the kept selection points at the rebuilt card', c.selectedItem === card(c, '01-07'));
+          c.toggleCollapse();
+          check('board-select: toggling back keeps it too', c.sel === '01-07' && classOf(c, '01-02').includes('opacity-25'));
+          c.apply(SHOP);
+          check('board-select: a reload that still has the key keeps the selection', c.sel === '01-07' && c.hasSelection === true && same(keysOf(c.lit), before));
+          c.apply(baseOk({ items: [mk('01-01', '01', 0, 'xong')] }));
+          check('board-select: a response without the key clears the selection', c.sel === '' && c.hasSelection === false && c.selectedItem === null && same(Object.keys(c.lit), []));
+          const d = make(SHOP);
+          d.select('01-07');
+          await d.load();
+          check('board-select: load() with the key present keeps it', d.sel === '01-07');
+        });
+
+        await step('board-select: card label', async () => {
+          const c = make(SHOP);
+          check('board-select: critical card label ends with the road text', c.cardLabel(card(c, '01-07')).endsWith(', trên đường găng'), c.cardLabel(card(c, '01-07')));
+          check('board-select: plain card label has no road text', !c.cardLabel(card(c, '01-01')).includes('đường găng'));
+        });
+      } finally {
+        ctx.AB.api = savedApi;
+        ctx.AB.focusLater = savedFocus;
+        ctx.localStorage = savedStorage;
+      }
+
+      // --- source checks ---
+      const src = fs.readFileSync(boardJsPath, 'utf8');
+      const html = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/screens/board.html'), 'utf8');
+      check('board-select: board.js says ngoài bộ lọc and trên đường găng', src.includes('ngoài bộ lọc') && src.includes('trên đường găng'));
+      check('board-select: no arrow function or template literal in board.js', src.indexOf('=' + '>') === -1 && src.indexOf(String.fromCharCode(96)) === -1);
+      check('board-select: only read-only handlers in board.html', !/@click="(?!focusItem|clearSelection|select|reload|load|toggleCollapse)/.test(html), 'unexpected @click handler');
+      check('board-select: the panel holds no form field', !/<aside[\s\S]*?<(input|textarea|select|form)\b[\s\S]*?<\/aside>/.test(html));
+    },
+  },
+  {
     name: 'task-cards',
     async run(ctx) {
       const factories = {};

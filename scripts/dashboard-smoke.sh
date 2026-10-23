@@ -512,6 +512,20 @@ for s in "${SCREENS[@]}"; do
     done
   fi
 
+  # Board race, same cause: Alpine shows an x-show block a frame after the state
+  # changes, and virtual time can dump the DOM between the two, leaving the board
+  # layout hidden or the cards not drawn yet. Retry while no card is drawn or the
+  # layout is still hidden (at most 3 attempts, fresh profile each time).
+  if [[ "$s" == "board" ]]; then
+    ATTEMPT=1
+    while { ! grep -qE '[[:space:]]data-item-key="02-01"' "$DOM_OUT" || grep -qE 'data-board-layout[^>]*display: none' "$DOM_OUT"; } && (( ATTEMPT < 3 )); do
+      ATTEMPT=$((ATTEMPT + 1))
+      echo "Thử lại board (lần $ATTEMPT)" >&2
+      sleep 1
+      dump_dom "$TARGET_URL" "$DOM_OUT" "$TMP/chrome-$s-$ATTEMPT"
+    done
+  fi
+
   if ! grep -q "data-screen=\"$SCREEN_NAME\"" "$DOM_OUT" || ! grep -q 'data-loaded="yes"' "$DOM_OUT"; then
     echo "Lỗi: Màn hình $s không render thành công (thiếu data-screen=\"$SCREEN_NAME\" hoặc data-loaded=\"yes\")" >&2
     echo "--- 40 dòng đầu của DOM ---" >&2
@@ -1209,6 +1223,31 @@ if screen == 'board':
     for needle in ('Tổng 3 · 2 wave', 'đường găng'):
         if needle not in legend_text:
             fail(f"Chú giải thiếu '{needle}' (nội dung: '{legend_text}')")
+
+    # Side panel and critical path on screen (plan 05.5-05): the panel starts hidden,
+    # the critical edge is a yellow line, the other edge stays slate, no yellow ring on cards.
+    panels = root.find(lambda n: 'data-board-panel' in n.attrs)
+    if len(panels) != 1 or not panels[0].hidden():
+        fail(f"Bảng bên data-board-panel phải có đúng 1 phần tử và bị ẩn khi chưa chọn thẻ (số phần tử: {len(panels)})")
+
+    def edge_path_class(edge_id):
+        svgs = root.find(lambda n, e=edge_id: n.tag == 'svg' and n.attrs.get('data-edge') == e)
+        if len(svgs) != 1:
+            fail(f"Số svg data-edge={edge_id} là {len(svgs)}, kỳ vọng 1")
+        paths = svgs[0].find(lambda n: n.tag == 'path')
+        if len(paths) != 1:
+            fail(f"svg data-edge={edge_id} có {len(paths)} path, kỳ vọng 1")
+        return paths[0].attrs.get('class') or ''
+
+    crit_class = edge_path_class('02-01__02-02')
+    if 'stroke-yellow-600' not in crit_class:
+        fail(f"Cạnh đường găng 02-01__02-02 thiếu stroke-yellow-600 (class: '{crit_class}')")
+    plain_class = edge_path_class('02-01__02-03')
+    if 'stroke-slate-400' not in plain_class or 'stroke-yellow' in plain_class:
+        fail(f"Cạnh thường 02-01__02-03 phải là stroke-slate-400, không vàng (class: '{plain_class}')")
+    for key, node in cards.items():
+        if 'ring-yellow' in (node.attrs.get('class') or ''):
+            fail(f"Thẻ {key} có vòng vàng ring-yellow; đường găng chỉ vẽ bằng đường kẻ")
     print("Board DOM OK")
     sys.exit(0)
 
@@ -1318,5 +1357,5 @@ EOF
 
   stop_chrome
   cat "$TMP/keys.out"
-  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, picker, layout-5.2"
+  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, picker, layout-5.2, board-keys, board-layout"
 fi
