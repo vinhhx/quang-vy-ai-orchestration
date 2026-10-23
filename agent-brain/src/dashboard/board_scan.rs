@@ -1498,6 +1498,142 @@ mod tests {
     }
 
     #[test]
+    fn fm_bom_and_crlf() {
+        let plain = "---\nphase: 01-x\nplan: 01\nwave: 2\ndepends_on: [01-01, \"01-02\"]\nrequirements: [A-1]\n---\n\n<objective>x</objective>\n";
+        let crlf = format!("\u{feff}{}", plain.replace('\n', "\r\n"));
+        let a = parse_plan_front_matter(plain).unwrap();
+        let b = parse_plan_front_matter(&crlf).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(b.wave, Some(2));
+        assert_eq!(b.depends_on, ["01-01", "01-02"]);
+        assert_eq!(b.phase.as_deref(), Some("01-x"));
+    }
+
+    #[test]
+    fn fm_block_list() {
+        let text = "---\ndepends_on:\n  - 01-01\n  - \"01-02\"\nrequirements:\n- 'R-1'\n- R-2 # ghi chú\nwave: 3\n---\n";
+        let fm = parse_plan_front_matter(text).unwrap();
+        assert_eq!(fm.depends_on, ["01-01", "01-02"]);
+        assert_eq!(fm.requirements, ["R-1", "R-2"]);
+        assert_eq!(fm.wave, Some(3));
+        // khoá trống không có mục nào theo sau là danh sách rỗng
+        let empty = parse_plan_front_matter("---\ndepends_on:\nwave: 1\n---\n").unwrap();
+        assert!(empty.depends_on.is_empty());
+        assert_eq!(empty.wave, Some(1));
+    }
+
+    #[test]
+    fn fm_single_quotes_and_no_space() {
+        let q = parse_plan_front_matter("---\ndepends_on: ['x-01']\n---\n").unwrap();
+        assert_eq!(q.depends_on, ["x-01"]);
+        let tight = parse_plan_front_matter("---\nrequirements: [SPK-01,SPK-02]\n---\n").unwrap();
+        assert_eq!(tight.requirements, ["SPK-01", "SPK-02"]);
+        let comma = parse_plan_front_matter("---\ndepends_on: [\"a, b\", 'c']\n---\n").unwrap();
+        assert_eq!(comma.depends_on, ["a, b", "c"]);
+    }
+
+    #[test]
+    fn fm_inline_list_over_lines() {
+        let two = parse_plan_front_matter("---\ndepends_on: [01-01,\n  01-02]\n---\n").unwrap();
+        assert_eq!(two.depends_on, ["01-01", "01-02"]);
+        let bad = |closing_line: usize| {
+            let mut text = String::from("---\ndepends_on: [01-01,\n");
+            for i in 1..=closing_line {
+                if i == closing_line {
+                    text.push_str("  01-09]\n");
+                } else {
+                    text.push_str("  01-02,\n");
+                }
+            }
+            text.push_str("---\n");
+            parse_plan_front_matter(&text)
+        };
+        assert!(bad(20).is_ok());
+        assert_eq!(bad(21), Err(FmError::BadList("depends_on".to_string())));
+        assert_eq!(
+            parse_plan_front_matter("---\ndepends_on: [01-01\nwave: 2\n---\n"),
+            Err(FmError::BadList("depends_on".to_string()))
+        );
+    }
+
+    #[test]
+    fn fm_comments_and_null() {
+        let c = parse_plan_front_matter("---\ndepends_on: [01-01] # ghi chú\nwave: 2 # hai\n---\n")
+            .unwrap();
+        assert_eq!(c.depends_on, ["01-01"]);
+        assert_eq!(c.wave, Some(2));
+        let n = parse_plan_front_matter("---\ndepends_on: null\nrequirements: ~\n---\n").unwrap();
+        assert!(n.depends_on.is_empty());
+        assert!(n.requirements.is_empty());
+        let hash_in_quotes = parse_plan_front_matter("---\ndepends_on: [\"a #b\"]\n---\n").unwrap();
+        assert_eq!(hash_in_quotes.depends_on, ["a #b"]);
+    }
+
+    #[test]
+    fn fm_nested_blocks_ignored() {
+        let text = "---\nphase: 01-x\nwave: 1\ndepends_on: [01-01]\nmust_haves:\n  truths:\n    - \"dòng có: dấu hai chấm\"\n    - \"--- trong ngoặc\"\n  depends_on: [9-9]\n  wave: 7\nestimate:\n  tokens: 100\n  wave: 8\nuser_setup:\n  - service: \"x: y\"\n    depends_on: [8-8]\nrequirements: [A-1]\n---\n";
+        let fm = parse_plan_front_matter(text).unwrap();
+        assert_eq!(fm.wave, Some(1));
+        assert_eq!(fm.depends_on, ["01-01"]);
+        assert_eq!(fm.requirements, ["A-1"]);
+        assert_eq!(fm.phase.as_deref(), Some("01-x"));
+        assert!(fm.notes.is_empty());
+    }
+
+    #[test]
+    fn fm_missing_and_unterminated() {
+        assert_eq!(
+            parse_plan_front_matter("wave: 1\n---\n"),
+            Err(FmError::NoFrontMatter)
+        );
+        assert_eq!(parse_plan_front_matter(""), Err(FmError::NoFrontMatter));
+        assert_eq!(
+            parse_plan_front_matter("---\nwave: 1\ndepends_on: []\n"),
+            Err(FmError::Unterminated)
+        );
+    }
+
+    #[test]
+    fn fm_wave_not_integer() {
+        let fm = parse_plan_front_matter("---\nwave: 2a\ndepends_on: [01-01]\n---\n").unwrap();
+        assert_eq!(fm.wave, None);
+        assert_eq!(fm.notes, ["wave không phải số nguyên: 2a"]);
+        assert_eq!(fm.depends_on, ["01-01"]);
+    }
+
+    #[test]
+    fn fm_duplicate_key_first_wins() {
+        let fm = parse_plan_front_matter(
+            "---\nwave: 1\nwave: 9\ndepends_on: [01-01]\ndepends_on: [01-02]\n---\n",
+        )
+        .unwrap();
+        assert_eq!(fm.wave, Some(1));
+        assert_eq!(fm.depends_on, ["01-01"]);
+    }
+
+    #[test]
+    fn state_quoted_bare_body() {
+        let phase = |t: &str| parse_state(t).map(|p| p.display());
+        assert_eq!(
+            phase("---\ncurrent_phase: \"05.5\"\n---\nPhase: 03\n").as_deref(),
+            Some("05.5")
+        );
+        assert_eq!(phase("---\ncurrent_phase: 5\n---\n").as_deref(), Some("05"));
+        assert_eq!(
+            phase("---\nname: x\n---\n# State\n\nPhase: 05.5 — Work Board (INSERTED)\n").as_deref(),
+            Some("05.5")
+        );
+        assert_eq!(phase("# State\nPhase: 2\nPlan: 1\n").as_deref(), Some("02"));
+        assert_eq!(
+            phase("---\ncurrent_phase: tam\n---\nPhase: 4 — x\n").as_deref(),
+            Some("04")
+        );
+        assert_eq!(phase("---\nname: x\n---\nkhông có gì\n"), None);
+        assert_eq!(phase("Phase: tam\n"), None);
+        assert_eq!(phase("\u{0}\u{1}\u{2}"), None);
+    }
+
+    #[test]
     fn scan_warns_once_for_dir_missing_from_roadmap() {
         let dir = tree(2);
         let other = dir.path().join(".planning/phases/07-ngoai");

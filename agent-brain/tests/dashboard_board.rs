@@ -918,3 +918,105 @@ fn board05_symlink_secret_never_leaks() {
 
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
 }
+
+#[test]
+fn board07_broken_parts_listed_rest_intact() {
+    let sb = Sandbox::new();
+    let d = "01-nen-tang";
+    let dup = "01-zz-ban-sao";
+    let files = vec![
+        (
+            ".planning/ROADMAP.md".to_string(),
+            "### Phase 1: Nền tảng\n".to_string(),
+        ),
+        (
+            format!(".planning/phases/{d}/01-01-PLAN.md"),
+            plan_md(d, "01", 1, "[]"),
+        ),
+        (
+            // không có dòng --- đóng
+            format!(".planning/phases/{d}/01-02-PLAN.md"),
+            "---\nphase: 01-nen-tang\nplan: 02\nwave: 1\ndepends_on: []\n\n<objective>\nHỏng. Còn lại.\n</objective>\n".to_string(),
+        ),
+        (
+            format!(".planning/phases/{d}/01-03-PLAN.md"),
+            plan_md(d, "03", 1, "[01-99]"),
+        ),
+        (
+            format!(".planning/phases/{d}/01-04-PLAN.md"),
+            plan_md(d, "04", 2, "[01-05]"),
+        ),
+        (
+            format!(".planning/phases/{d}/01-05-PLAN.md"),
+            plan_md(d, "05", 1, "[01-04]"),
+        ),
+        (
+            format!(".planning/phases/{d}/01-06-PLAN.md"),
+            plan_md(d, "06", 5, "[]"),
+        ),
+        (
+            format!(".planning/phases/{dup}/01-01-PLAN.md"),
+            plan_md(dup, "01", 1, "[]"),
+        ),
+    ];
+    let repo = sb.make_repo("hu-hong", &as_refs(&files), None, None);
+    sb.write_map(json!([sb.project_entry(&repo, "hu-hong", "work")]), &[]);
+    let mut srv = sb.serve(&[]);
+
+    let r = srv.get("/api/board?project=hu-hong&epic=all");
+    assert_eq!(r.status, 200);
+    let j = r.json();
+    assert_eq!(j["state"], "ok");
+
+    let mut keys = item_keys(&j);
+    keys.sort();
+    assert_eq!(keys, ["01-01", "01-02", "01-03", "01-04", "01-05", "01-06"]);
+    assert_eq!(
+        item(&j, "01-01")["plan_path"],
+        ".planning/phases/01-nen-tang/01-01-PLAN.md"
+    );
+    assert_eq!(item(&j, "01-02")["status"], "san_sang");
+    assert_eq!(item(&j, "01-03")["status"], "san_sang");
+    assert_eq!(item(&j, "01-04")["status"], "bi_chan");
+    assert_eq!(item(&j, "01-05")["status"], "san_sang");
+
+    let warnings = j["warnings"].as_array().unwrap();
+    let has = |path: &str, needle: &str| {
+        warnings
+            .iter()
+            .any(|w| w["path"] == path && w["message"].as_str().unwrap_or("").contains(needle))
+    };
+    let p = |name: &str| format!(".planning/phases/{d}/{name}-PLAN.md");
+    assert!(
+        has(&p("01-02"), "front matter lỗi"),
+        "cảnh báo: {warnings:?}"
+    );
+    assert!(
+        has(&p("01-03"), "depends_on trỏ tới plan không tồn tại: 01-99"),
+        "cảnh báo: {warnings:?}"
+    );
+    assert!(
+        has(
+            &p("01-05"),
+            "vòng phụ thuộc: 01-04 cần 01-05 cần 01-04 — đã bỏ phụ thuộc của 01-05 vào 01-04"
+        ),
+        "cảnh báo: {warnings:?}"
+    );
+    assert!(
+        has(
+            &format!(".planning/phases/{dup}/01-01-PLAN.md"),
+            "mã plan 01-01 trùng với .planning/phases/01-nen-tang/01-01-PLAN.md"
+        ),
+        "cảnh báo: {warnings:?}"
+    );
+    assert!(
+        has(&p("01-06"), "wave: ghi 5, tính ra 1"),
+        "cảnh báo: {warnings:?}"
+    );
+    for w in warnings {
+        let path = w["path"].as_str().unwrap();
+        assert!(path.starts_with(".planning/"), "đường dẫn cảnh báo: {path}");
+    }
+
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+}
