@@ -381,11 +381,11 @@ Plans:
 **Requirements**: BOARD-01, BOARD-02, BOARD-03, BOARD-04, BOARD-05, BOARD-06, BOARD-07, BOARD-08, BOARD-09, BOARD-10, BOARD-11, BOARD-12, BOARD-13, BOARD-14
 **Notes**: Phase này chỉ làm nửa đầu của bước C: bảng chỉ đọc, đọc trực tiếp `ROADMAP.md`, `STATE.md` và front matter plan GSD trong `.planning/` của dự án mỗi lần gọi `GET /api/board?project=&epic=&milestone=` (không bảng `epics`, không migration — 05.5-CONTEXT D-05); bảng `epics`/hạng mục/phụ thuộc, chế độ epic của Lead, sửa tay và "bắt đầu hạng mục thành task" làm ở phase sau, giữ cùng dạng phản hồi. Đường găng chỉ tính hạng mục chưa xong (quyết định 2026-10-23). Giữ nguyên quy tắc Phase 5: `127.0.0.1` + token, Tailwind v4 build, Alpine CSP, không CDN, offline, tiếng Việt, sáng/tối, `dashboard-ui-lint.sh` phải qua.
 **UI hint**: yes
-**Plans:** 6 plans
+**Plans:** 1/6 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 05.5-01-PLAN.md — Tracer: live read of `.planning/` → token-gated GET-only `/api/board`, JSON contract, empty states, default epic; BOARD-01..14 registered in REQUIREMENTS.md (wave 1)
+- [x] 05.5-01-PLAN.md — Tracer: live read of `.planning/` → token-gated GET-only `/api/board`, JSON contract, empty states, default epic; BOARD-01..14 registered in REQUIREMENTS.md (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 05.5-02-PLAN.md — `#/board` screen: waves, cards, per-edge SVG, "Thu gọn mục đã xong", filters, Đọc lại, warnings box, nav, app.css (wave 2)
