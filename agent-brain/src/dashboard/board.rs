@@ -328,12 +328,65 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
         })
         .collect();
 
-    // Epic đang xem. EpicSel::Default cũng là "all" ở bước này.
-    let (selected, epic_str): (Option<PhaseNum>, String) = match &filter.epic {
-        EpicSel::Phase(p) => (Some(p.clone()), p.display()),
-        EpicSel::All | EpicSel::Default => (None, "all".to_string()),
+    // Danh sách epic (tổng và số đã xong tính trên toàn bộ đồ thị, không theo bộ lọc).
+    let epics: Vec<EpicView> = epic_info
+        .iter()
+        .map(|(num, (name, milestone))| {
+            let members: Vec<usize> = (0..n).filter(|&i| &nodes[i].epic == num).collect();
+            EpicView {
+                id: num.display(),
+                name: name.clone(),
+                milestone: milestone.clone(),
+                total: members.len(),
+                done: members
+                    .iter()
+                    .filter(|&&i| status[i] == STATUS_XONG)
+                    .count(),
+                placeholder: members.len() == 1 && nodes[members[0]].placeholder,
+            }
+        })
+        .collect();
+
+    // Epic mặc định (D-10): current_phase của STATE.md nếu là một epic, nếu không thì epic đầu
+    // tiên (theo số phase) chưa xong hết, nếu không còn thì "all".
+    let default_sel: Option<PhaseNum> = facts
+        .current_phase
+        .clone()
+        .filter(|p| epic_info.contains_key(p))
+        .or_else(|| {
+            epic_info
+                .keys()
+                .zip(epics.iter())
+                .find(|(_, e)| e.done < e.total)
+                .map(|(num, _)| num.clone())
+        });
+    let default_epic = default_sel
+        .as_ref()
+        .map(PhaseNum::display)
+        .unwrap_or_else(|| "all".to_string());
+
+    // Epic đang xem. Epic đúng dạng nhưng không tồn tại: rơi về mặc định kèm cảnh báo.
+    let mut extra_warnings: Vec<Warning> = Vec::new();
+    let selected: Option<PhaseNum> = match &filter.epic {
+        EpicSel::All => None,
+        EpicSel::Default => default_sel.clone(),
+        EpicSel::Phase(p) if epic_info.contains_key(p) => Some(p.clone()),
+        EpicSel::Phase(p) => {
+            extra_warnings.push(Warning {
+                path: ".planning/ROADMAP.md".to_string(),
+                message: format!(
+                    "Không có epic {} — đang xem epic mặc định {}",
+                    p.display(),
+                    default_epic
+                ),
+            });
+            default_sel.clone()
+        }
     };
-    let default_epic = "all".to_string();
+    let epic_str = selected
+        .as_ref()
+        .map(PhaseNum::display)
+        .unwrap_or_else(|| "all".to_string());
     let visible: Vec<bool> = nodes
         .iter()
         .map(|nd| match &selected {
@@ -406,24 +459,6 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
         })
         .collect();
 
-    let epics: Vec<EpicView> = epic_info
-        .iter()
-        .map(|(num, (name, milestone))| {
-            let members: Vec<usize> = (0..n).filter(|&i| &nodes[i].epic == num).collect();
-            EpicView {
-                id: num.display(),
-                name: name.clone(),
-                milestone: milestone.clone(),
-                total: members.len(),
-                done: members
-                    .iter()
-                    .filter(|&&i| status[i] == STATUS_XONG)
-                    .count(),
-                placeholder: members.len() == 1 && nodes[members[0]].placeholder,
-            }
-        })
-        .collect();
-
     let count_of = |s: &str| items.iter().filter(|it| it.status == s).count();
     let waves: BTreeSet<u32> = items.iter().map(|it| it.wave).collect();
     let counts = Counts {
@@ -434,7 +469,8 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
         waves: waves.len(),
     };
 
-    let mut warnings = facts.warnings.clone();
+    let mut warnings = extra_warnings;
+    warnings.extend(facts.warnings.iter().cloned());
     warnings.truncate(MAX_WARNINGS);
 
     View {

@@ -402,6 +402,24 @@ pub fn parse_roadmap(text: &str) -> RoadmapScan {
     RoadmapScan { phases, warnings }
 }
 
+/// `current_phase` trong front matter của STATE.md (cột 0, có hoặc không có nháy).
+pub fn parse_state(text: &str) -> Option<PhaseNum> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut lines = text.lines();
+    if lines.next()?.trim_end() != "---" {
+        return None;
+    }
+    for line in lines {
+        if line.trim_end() == "---" {
+            return None;
+        }
+        if let Some(rest) = line.strip_prefix("current_phase:") {
+            return PhaseNum::parse(&scalar(rest));
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone)]
 pub struct ScanRefusal {
     pub reason: &'static str,
@@ -433,6 +451,16 @@ pub fn scan(root: &Path, caps: &Caps, deadline: Instant) -> Result<Facts, ScanRe
         warnings: rs.warnings,
         ..Facts::default()
     };
+
+    match read_head(&planning.join("STATE.md"), caps.state_read_bytes) {
+        Ok(text) => facts.current_phase = parse_state(&text),
+        Err(ReadError::Missing) => {}
+        Err(_) => push_warning(
+            &mut facts.warnings,
+            ".planning/STATE.md",
+            "STATE.md không đọc được — dùng phase đầu tiên chưa xong",
+        ),
+    }
 
     let phases_dir = planning.join("phases");
     match std::fs::symlink_metadata(&phases_dir) {
@@ -693,6 +721,25 @@ mod tests {
     }
 
     #[test]
+    fn state_current_phase_quoted_bare_and_absent() {
+        let phase = |t: &str| parse_state(t).map(|p| p.display());
+        assert_eq!(
+            phase("---\ncurrent_phase: \"05.5\"\ncurrent_phase_name: x\n---\n").as_deref(),
+            Some("05.5")
+        );
+        assert_eq!(phase("---\ncurrent_phase: 2\n---\n").as_deref(), Some("02"));
+        assert_eq!(
+            phase("---\ncurrent_phase: '3' # ghi chú\n---\n").as_deref(),
+            Some("03")
+        );
+        assert_eq!(phase("---\ncurrent_phase_name: x\n---\n"), None);
+        assert_eq!(phase("current_phase: 2\n"), None);
+        assert_eq!(phase("---\nname: x\n---\ncurrent_phase: 2\n"), None);
+        assert_eq!(phase("---\ncurrent_phase: tam\n---\n"), None);
+        assert_eq!(phase(""), None);
+    }
+
+    #[test]
     fn open_regular_refuses_symlink_and_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
         let real = dir.path().join("real.md");
@@ -713,5 +760,111 @@ mod tests {
         let dir_link = dir.path().join("dlink");
         std::os::unix::fs::symlink(dir.path(), &dir_link).unwrap();
         assert!(!is_real_dir(&dir_link));
+    }
+
+    fn tree(plans: usize) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let phase = dir.path().join(".planning/phases/01-a");
+        std::fs::create_dir_all(&phase).unwrap();
+        std::fs::write(dir.path().join(".planning/ROADMAP.md"), "### Phase 1: A\n").unwrap();
+        for i in 1..=plans {
+            std::fs::write(
+                phase.join(format!("01-{i:02}-PLAN.md")),
+                "---\nwave: 1\ndepends_on: []\n---\n",
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    fn far() -> Instant {
+        Instant::now() + Duration::from_secs(60)
+    }
+
+    #[test]
+    fn scan_stops_at_plan_file_cap() {
+        let dir = tree(5);
+        let caps = Caps {
+            max_plan_files: 3,
+            ..Caps::default()
+        };
+        let facts = scan(dir.path(), &caps, far()).expect("scan");
+        assert_eq!(facts.plans.len(), 3);
+        assert!(facts.truncated);
+        assert!(facts
+            .warnings
+            .iter()
+            .any(|w| w.message == "dừng quét: quá 3 file plan"));
+    }
+
+    #[test]
+    fn scan_stops_after_deadline() {
+        let dir = tree(2);
+        let facts = scan(dir.path(), &Caps::default(), Instant::now()).expect("scan");
+        assert!(facts.plans.is_empty());
+        assert!(facts.truncated);
+        assert!(facts
+            .warnings
+            .iter()
+            .any(|w| w.message.starts_with("dừng quét: quá thời gian đọc 2 giây")));
+    }
+
+    #[test]
+    fn scan_skips_symlinked_phase_dir_and_summary() {
+        let dir = tree(1);
+        let phases = dir.path().join(".planning/phases");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(
+            outside.path().join("09-01-PLAN.md"),
+            "---\nwave: 1\ndepends_on: []\n---\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), phases.join("09-out")).unwrap();
+        // SUMMARY là symlink thì tính là chưa xong
+        let secret = outside.path().join("s.md");
+        std::fs::write(&secret, "x").unwrap();
+        std::os::unix::fs::symlink(&secret, phases.join("01-a/01-01-SUMMARY.md")).unwrap();
+
+        let facts = scan(dir.path(), &Caps::default(), far()).expect("scan");
+        assert_eq!(facts.plans.len(), 1);
+        assert_eq!(facts.plans[0].id, "01-01");
+        assert!(!facts.plans[0].done);
+        assert!(facts.warnings.iter().any(|w| {
+            w.path == ".planning/phases/09-out"
+                && w.message == "bỏ qua thư mục: symlink hoặc không phải thư mục thật"
+        }));
+    }
+
+    #[test]
+    fn scan_keeps_plan_with_bad_front_matter() {
+        let dir = tree(1);
+        std::fs::write(
+            dir.path().join(".planning/phases/01-a/01-01-PLAN.md"),
+            "không có front matter\n",
+        )
+        .unwrap();
+        let facts = scan(dir.path(), &Caps::default(), far()).expect("scan");
+        assert_eq!(facts.plans.len(), 1);
+        assert!(facts.plans[0].depends_on.is_empty());
+        assert_eq!(facts.warnings.len(), 1);
+        assert_eq!(
+            facts.warnings[0].path,
+            ".planning/phases/01-a/01-01-PLAN.md"
+        );
+        assert!(facts.warnings[0].message.starts_with("front matter lỗi: "));
+    }
+
+    #[test]
+    fn scan_refuses_missing_or_symlinked_roadmap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".planning")).unwrap();
+        let err = scan(dir.path(), &Caps::default(), far()).expect_err("missing");
+        assert_eq!(err.reason, "unreadable");
+        assert_eq!(err.detail, "không tìm thấy file");
+        let target = dir.path().join("elsewhere.md");
+        std::fs::write(&target, "### Phase 1: X\n").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".planning/ROADMAP.md")).unwrap();
+        let err = scan(dir.path(), &Caps::default(), far()).expect_err("symlink");
+        assert!(err.detail.starts_with("không phải file thường"));
     }
 }
