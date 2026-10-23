@@ -1500,4 +1500,262 @@ mod tests {
         assert_eq!(v.warnings[0].message, "lỗi 0");
         assert_eq!(v.warnings[199].message, "lỗi 199");
     }
+
+    fn ph_after(num: &str, name: &str, after: &[&str]) -> PhaseFact {
+        let mut p = ph(num, name);
+        p.depends_on = after.iter().map(|a| pn(a)).collect();
+        p
+    }
+
+    fn with_milestone(mut p: PhaseFact, milestone: &str) -> PhaseFact {
+        p.milestone = Some(milestone.to_string());
+        p
+    }
+
+    fn edge_kinds(v: &View) -> Vec<(&str, &str, &str)> {
+        v.edges
+            .iter()
+            .map(|e| (e.from.as_str(), e.to.as_str(), e.kind))
+            .collect()
+    }
+
+    /// Phase 1 (01-01, 01-02 cần 01-01), phase 2 sau phase 1 (02-01, 02-02), phase 3 sau phase 2, không plan.
+    fn linked_facts() -> Facts {
+        Facts {
+            phases: vec![
+                ph("1", "Một"),
+                ph_after("2", "Hai", &["1"]),
+                ph_after("3", "Ba", &["2"]),
+            ],
+            plans: vec![
+                plan("1", 1, &[], false),
+                plan("1", 2, &["01-01"], false),
+                plan("2", 1, &[], false),
+                plan("2", 2, &[], false),
+            ],
+            ..Facts::default()
+        }
+    }
+
+    #[test]
+    fn phase_links_sinks_to_roots() {
+        let v = derive(&linked_facts(), &all());
+        assert_eq!(
+            edge_kinds(&v),
+            [
+                ("01-01", "01-02", "plan"),
+                ("01-02", "02-01", "phase"),
+                ("01-02", "02-02", "phase"),
+                ("02-01", "03", "phase"),
+                ("02-02", "03", "phase"),
+            ]
+        );
+        for (key, w) in [
+            ("01-01", 0),
+            ("01-02", 1),
+            ("02-01", 2),
+            ("02-02", 2),
+            ("03", 3),
+        ] {
+            assert_eq!(wave_of(&v, key), w, "{key}");
+        }
+        assert_eq!(status_of(&v, "01-01"), STATUS_SAN_SANG);
+        for key in ["01-02", "02-01", "02-02", "03"] {
+            assert_eq!(status_of(&v, key), STATUS_BI_CHAN, "{key}");
+        }
+        assert!(v.warnings.is_empty(), "{:?}", v.warnings);
+    }
+
+    #[test]
+    fn phase_links_explicit_cross_phase_suppresses_root() {
+        let mut f = linked_facts();
+        f.plans[2] = plan("2", 1, &["01-01"], false);
+        let v = derive(&f, &all());
+        assert_eq!(
+            edge_kinds(&v),
+            [
+                ("01-01", "01-02", "plan"),
+                ("01-01", "02-01", "plan"),
+                ("01-02", "02-02", "phase"),
+                ("02-01", "03", "phase"),
+                ("02-02", "03", "phase"),
+            ]
+        );
+        assert_eq!(wave_of(&v, "02-01"), 1);
+        assert_eq!(wave_of(&v, "02-02"), 2);
+        assert_eq!(status_of(&v, "02-01"), STATUS_BI_CHAN);
+    }
+
+    #[test]
+    fn phase_links_unknown_phase_warns() {
+        let f = Facts {
+            phases: vec![ph("1", "Một"), ph_after("2", "Hai", &["9", "2"])],
+            plans: vec![plan("1", 1, &[], false), plan("2", 1, &[], false)],
+            ..Facts::default()
+        };
+        let v = derive(&f, &all());
+        assert!(v.edges.is_empty());
+        assert_eq!(v.warnings.len(), 2, "{:?}", v.warnings);
+        assert!(warning_at(
+            &v,
+            ".planning/ROADMAP.md",
+            "Phase 02: Depends on nhắc phase 09 không có trong ROADMAP.md (bỏ qua)"
+        ));
+        assert!(warning_at(
+            &v,
+            ".planning/ROADMAP.md",
+            "Phase 02: Depends on nhắc chính phase 02 (bỏ qua)"
+        ));
+        assert_eq!(status_of(&v, "02-01"), STATUS_SAN_SANG);
+    }
+
+    #[test]
+    fn phase_links_fanout_cap() {
+        let mut plans = Vec::new();
+        for i in 1..=17u64 {
+            plans.push(plan("1", i, &[], false));
+        }
+        for i in 1..=16u64 {
+            plans.push(plan("2", i, &[], false));
+        }
+        let f = Facts {
+            phases: vec![ph("1", "Rộng"), ph_after("2", "Sau", &["1"])],
+            plans,
+            ..Facts::default()
+        };
+        let v = derive(&f, &all());
+        assert!(v.edges.is_empty());
+        assert_eq!(v.warnings.len(), 1, "{:?}", v.warnings);
+        assert!(warning_at(
+            &v,
+            ".planning/ROADMAP.md",
+            "Phase 02: liên kết từ phase 01 có 272 cặp (giới hạn 256) — bỏ qua liên kết này"
+        ));
+    }
+
+    #[test]
+    fn items_external_and_neighbours() {
+        let mut f = linked_facts();
+        f.plans[0].done = true;
+        f.plans[1].done = true;
+        let sel = Filter {
+            epic: EpicSel::Phase(pn("2")),
+            milestone: None,
+        };
+        let v = derive(&f, &sel);
+        assert_eq!(v.items.len(), 2);
+        assert_eq!(wave_of(&v, "02-01"), 0);
+        assert_eq!(wave_of(&v, "02-02"), 0);
+        assert!(v.edges.is_empty());
+        let ext: Vec<(&str, &str, &str, &str)> = v
+            .external
+            .iter()
+            .map(|e| (e.key.as_str(), e.title.as_str(), e.epic.as_str(), e.status))
+            .collect();
+        assert_eq!(
+            ext,
+            [
+                ("01-02", "01-02", "01", STATUS_XONG),
+                ("03", "Ba", "03", STATUS_BI_CHAN)
+            ]
+        );
+        let first = v.items.iter().find(|i| i.key == "02-01").unwrap();
+        assert_eq!(first.waits_on, ["01-02"]);
+        assert_eq!(first.waited_by, ["03"]);
+        assert_eq!(status_of(&v, "02-01"), STATUS_SAN_SANG);
+        // Mọi epic: cùng danh sách láng giềng, không còn mục ngoài khung nhìn.
+        let all_view = derive(&f, &all());
+        assert!(all_view.external.is_empty());
+        let third = all_view.items.iter().find(|i| i.key == "03").unwrap();
+        assert_eq!(third.waits_on, ["02-01", "02-02"]);
+        assert!(third.waited_by.is_empty());
+    }
+
+    fn milestone_facts() -> Facts {
+        Facts {
+            phases: vec![
+                with_milestone(ph("1", "Một"), "v1.0 MVP"),
+                with_milestone(ph("2", "Hai"), "v1.0 MVP"),
+                with_milestone(ph("3", "Ba"), "v1.1 Xuất báo cáo"),
+            ],
+            plans: vec![plan("1", 1, &[], true), plan("2", 1, &["01-01"], false)],
+            ..Facts::default()
+        }
+    }
+
+    #[test]
+    fn milestones_list_and_filter() {
+        let f = milestone_facts();
+        let v = derive(&f, &all());
+        assert_eq!(v.milestones, ["v1.0 MVP", "v1.1 Xuất báo cáo"]);
+        assert_eq!(v.milestone, None);
+        assert_eq!(v.items.len(), 3);
+        assert_eq!(v.items[0].milestone.as_deref(), Some("v1.0 MVP"));
+        let sel = Filter {
+            epic: EpicSel::All,
+            milestone: Some("v1.0 MVP".to_string()),
+        };
+        let v = derive(&f, &sel);
+        assert_eq!(v.milestone.as_deref(), Some("v1.0 MVP"));
+        assert_eq!(v.milestones, ["v1.0 MVP", "v1.1 Xuất báo cáo"]);
+        let keys: Vec<&str> = v.items.iter().map(|i| i.key.as_str()).collect();
+        assert_eq!(keys, ["01-01", "02-01"]);
+        assert!(v.warnings.is_empty(), "{:?}", v.warnings);
+        let epic_ms: Vec<Option<&str>> = v.epics.iter().map(|e| e.milestone.as_deref()).collect();
+        assert_eq!(
+            epic_ms,
+            [
+                Some("v1.0 MVP"),
+                Some("v1.0 MVP"),
+                Some("v1.1 Xuất báo cáo")
+            ]
+        );
+    }
+
+    #[test]
+    fn milestones_single_is_hidden() {
+        let mut f = milestone_facts();
+        f.phases[2].milestone = Some("v1.0 MVP".to_string());
+        let v = derive(&f, &all());
+        assert!(v.milestones.is_empty());
+        let none = derive(&tracer_facts(), &all());
+        assert!(none.milestones.is_empty());
+        assert_eq!(none.milestone, None);
+    }
+
+    #[test]
+    fn milestones_unknown_warns() {
+        let sel = Filter {
+            epic: EpicSel::All,
+            milestone: Some("v9".to_string()),
+        };
+        let v = derive(&milestone_facts(), &sel);
+        assert_eq!(v.milestone, None);
+        assert_eq!(v.items.len(), 3);
+        assert!(warning_at(
+            &v,
+            ".planning/ROADMAP.md",
+            "Không có milestone v9 — đang xem mọi milestone"
+        ));
+    }
+
+    #[test]
+    fn items_decimal_phase_order() {
+        assert!(PhaseNum::parse("05.9") < PhaseNum::parse("05.10"));
+        assert_eq!(PhaseNum::parse("5.4"), PhaseNum::parse("05.4"));
+        assert_eq!(pn("05.10").display(), "05.10");
+        assert_eq!(pn("1").display(), "01");
+        assert_eq!(PhaseNum::parse("1234567"), None);
+        assert_eq!(PhaseNum::parse("5..4"), None);
+        let f = Facts {
+            phases: vec![ph("5.10", "Mười"), ph("5.9", "Chín")],
+            plans: vec![plan("5.10", 1, &[], false), plan("5.9", 1, &[], false)],
+            ..Facts::default()
+        };
+        let v = derive(&f, &all());
+        let keys: Vec<&str> = v.items.iter().map(|i| i.key.as_str()).collect();
+        assert_eq!(keys, ["05.9-01", "05.10-01"]);
+        let epics: Vec<&str> = v.epics.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(epics, ["05.9", "05.10"]);
+    }
 }
