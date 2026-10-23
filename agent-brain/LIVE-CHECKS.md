@@ -1349,7 +1349,7 @@ Cần chuẩn bị: bot thử của Phase 5.3 (nếu token cũ đã bị thu h�
 - **Kết quả mong đợi**:
   1. `/task` → `Gửi yêu cầu cho task mới (một tin nhắn), hoặc bấm Huỷ. Hết hạn sau 10 phút.` với nút `Huỷ`; tin chữ kế tiếp → cùng tin đó thành `Chọn dự án cho task:` / `«thêm nút đăng xuất»`; `/huy` → tin thành `Đã huỷ — không tạo task.` và mất nút.
   2. Sau khi `serve` khởi động lại, bấm nút cũ → điện thoại hiện `Yêu cầu đã hết hạn — gõ /task để bắt đầu lại`, tin mất nút; không có task mới (`COUNT(*)` = `1`).
-- **Ghi nhận**: Dòng `P5.4-03`: các câu bot trả lời, các dòng `Telegram: giao việc` (`mở yêu cầu (0 ký tự)` cho `/task` không kèm chữ; `/huy` không in dòng nào, chỉ nút `Huỷ` in `… — đã huỷ`), số task, PID `serve` mới.
+- **Ghi nhận**: Dòng `P5.4-03`: các câu bot trả lời, các dòng `Telegram: giao việc` (`mở yêu cầu (0 ký tự)` cho `/task` không kèm chữ; `/huy` và nút `Huỷ` đều in `… — đã huỷ`), số task, PID `serve` mới.
 - **Dọn dẹp**: Không. Ghi lại `SERVE_PID` mới.
 
 ---
