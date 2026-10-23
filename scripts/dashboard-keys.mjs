@@ -735,9 +735,41 @@ async function main() {
   // a panel neighbour moves selection and focus, Esc clears and returns focus.
   const BVIS = 'const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));';
   const boardCard = (key) => `document.querySelector('[data-item-key="${key}"]')`;
+  // Same as waitFor, but a timeout also reports the state of the board, so a failure under load
+  // names what the page really looked like.
+  const boardSnapshot = () => evaluate(`
+    JSON.stringify({
+      active: document.activeElement ? document.activeElement.tagName + '#' + document.activeElement.id : null,
+      hasFocus: document.hasFocus(),
+      pressed: Array.from(document.querySelectorAll('[data-item-key]')).map(c => c.dataset.itemKey + '=' + c.getAttribute('aria-pressed')),
+      panel: (() => { const p = document.querySelector('[data-board-panel]'); return p ? p.style.display || 'shown' : 'none'; })(),
+      deps: Array.from(document.querySelectorAll('[data-panel-dep]')).map(l => l.dataset.panelDep),
+    })
+  `);
+  const waitBoard = async (expr, ms, name, detail) => {
+    try {
+      return await waitFor(expr, ms, name, detail);
+    } catch (err) {
+      let snap = '';
+      try { snap = ' ' + await boardSnapshot(); } catch (_) {}
+      throw new Error(err.message + snap);
+    }
+  };
+  // Alpine shows an x-show element a frame after the state changes (requestAnimationFrame), so an
+  // element can exist before it is visible and focus() on it is silently ignored. Poll until the
+  // element is visible and really holds focus; only then press a key on it.
+  const focusBoardEl = (elExpr, label) => waitBoard(`
+    (() => {
+      ${BVIS}
+      const el = ${elExpr};
+      if (!vis(el)) return false;
+      el.focus();
+      return document.activeElement === el;
+    })()
+  `, 5000, 'board-keys', `${label} không hiện ra hoặc không nhận được focus`);
 
   await evaluate('window.location.hash = "#/board"');
-  await waitFor(`
+  await waitBoard(`
     (() => {
       ${BVIS}
       if (!document.querySelector('[data-screen="board"][data-loaded="yes"]')) return false;
@@ -750,16 +782,16 @@ async function main() {
     throw new Error(`LỖI board-keys: board-epic là "${boardEpic}", kỳ vọng "02"`);
   }
 
-  await evaluate('document.getElementById("board-item-02-02").focus()');
+  await focusBoardEl('document.getElementById("board-item-02-02")', 'Thẻ 02-02');
   await pressKeyText('Enter', 'Enter', 13, '\r');
-  await waitFor(`
+  await waitBoard(`
     (() => {
       ${BVIS}
       const c = ${boardCard('02-02')};
       const panel = document.querySelector('[data-board-panel]');
       return c && c.getAttribute('aria-pressed') === 'true' && vis(panel) && panel.textContent.includes('02-02');
     })()
-  `, 3000, 'board-keys', 'Enter trên thẻ 02-02 không chọn thẻ hoặc không mở bảng bên (data-board-panel)');
+  `, 5000, 'board-keys', 'Enter trên thẻ 02-02 không chọn thẻ hoặc không mở bảng bên (data-board-panel)');
 
   const dimInfo = await evaluate(`
     (() => ({
@@ -778,44 +810,42 @@ async function main() {
     throw new Error('LỖI board-keys: thẻ 02-02 được chọn thiếu vòng ring-cyan-600');
   }
 
+  // Put focus on the panel's Đóng button first: with focus already on the card, "focus is back on
+  // the card" would hold before Esc did anything, and AB.focusLater (which runs on a timer) could
+  // still fire after the next step has moved focus on.
+  await focusBoardEl(`Array.from(document.querySelectorAll('[data-board-panel] button')).find(b => b.textContent.trim() === 'Đóng')`, 'Nút Đóng của bảng bên');
   await pressKey('Escape', 'Escape', 27);
-  await waitFor(`
+  await waitBoard(`
     (() => {
       ${BVIS}
       const cards = Array.from(document.querySelectorAll('[data-item-key]'));
       const none = cards.length > 0 && cards.every(c => c.getAttribute('aria-pressed') === 'false');
       return none && !vis(document.querySelector('[data-board-panel]')) && document.activeElement && document.activeElement.id === 'board-item-02-02';
     })()
-  `, 3000, 'board-keys', 'Esc không bỏ chọn, không đóng bảng bên hoặc focus không trở về thẻ board-item-02-02');
+  `, 5000, 'board-keys', 'Esc không bỏ chọn, không đóng bảng bên hoặc focus không trở về thẻ board-item-02-02');
 
-  await evaluate('document.getElementById("board-item-02-03").focus()');
+  await focusBoardEl('document.getElementById("board-item-02-03")', 'Thẻ 02-03');
   await pressKeyText(' ', 'Space', 32, ' ');
-  await waitFor(`${boardCard('02-03')}.getAttribute('aria-pressed') === 'true'`, 3000, 'board-keys', 'Space trên thẻ 02-03 không chọn thẻ');
+  await waitBoard(`${boardCard('02-03')}.getAttribute('aria-pressed') === 'true'`, 5000, 'board-keys', 'Space trên thẻ 02-03 không chọn thẻ');
 
-  await waitFor(`Boolean(document.querySelector('[data-panel-dep="02-01"] button'))`, 3000, 'board-keys', 'Bảng bên của 02-03 không có nút Phụ thuộc 02-01');
-  await evaluate('document.querySelector(\'[data-panel-dep="02-01"] button\').focus()');
+  await focusBoardEl('document.querySelector(\'[data-panel-dep="02-01"] button\')', 'Nút Phụ thuộc 02-01 của bảng bên');
   await pressKeyText('Enter', 'Enter', 13, '\r');
-  await waitFor(`
+  await waitBoard(`
     ${boardCard('02-01')}.getAttribute('aria-pressed') === 'true'
       && ${boardCard('02-03')}.getAttribute('aria-pressed') === 'false'
       && document.activeElement && document.activeElement.id === 'board-item-02-01'
-  `, 3000, 'board-keys', 'Nút Phụ thuộc 02-01 không chuyển chọn và focus sang thẻ 02-01');
+  `, 5000, 'board-keys', 'Nút Phụ thuộc 02-01 không chuyển chọn và focus sang thẻ 02-01');
 
   // Esc from inside the panel must land on the card, not on <body>.
-  await evaluate(`
-    (() => {
-      const close = Array.from(document.querySelectorAll('[data-board-panel] button')).find(b => b.textContent.trim() === 'Đóng');
-      close.focus();
-    })()
-  `);
+  await focusBoardEl(`Array.from(document.querySelectorAll('[data-board-panel] button')).find(b => b.textContent.trim() === 'Đóng')`, 'Nút Đóng của bảng bên');
   await pressKey('Escape', 'Escape', 27);
-  await waitFor(`
+  await waitBoard(`
     (() => {
       ${BVIS}
       const none = Array.from(document.querySelectorAll('[data-item-key]')).every(c => c.getAttribute('aria-pressed') === 'false');
       return none && !vis(document.querySelector('[data-board-panel]')) && document.activeElement && document.activeElement.id === 'board-item-02-01';
     })()
-  `, 3000, 'board-keys', 'Esc từ nút Đóng của bảng bên không đưa focus về thẻ board-item-02-01');
+  `, 5000, 'board-keys', 'Esc từ nút Đóng của bảng bên không đưa focus về thẻ board-item-02-01');
   console.log('OK board-keys');
 
   // Check K, board layout at 1024 / 768 / 480 px with every epic and the panel open.
@@ -826,7 +856,7 @@ async function main() {
       sel.dispatchEvent(new Event('change', { bubbles: true }));
     })()
   `);
-  await waitFor(`
+  await waitBoard(`
     (() => {
       ${BVIS}
       const cards = Array.from(document.querySelectorAll('[data-item-key]')).filter(vis);
@@ -834,14 +864,14 @@ async function main() {
     })()
   `, 8000, 'board-layout', 'Mọi epic không hiện đủ sáu thẻ và một cột thu gọn [data-rail="1"]');
 
-  await evaluate('document.getElementById("board-item-02-01").focus()');
+  await focusBoardEl('document.getElementById("board-item-02-01")', 'Thẻ 02-01');
   await pressKeyText('Enter', 'Enter', 13, '\r');
-  await waitFor(`
+  await waitBoard(`
     (() => {
       ${BVIS}
       return ${boardCard('02-01')}.getAttribute('aria-pressed') === 'true' && vis(document.querySelector('[data-board-panel]'));
     })()
-  `, 3000, 'board-layout', 'Không chọn được thẻ 02-01 để mở bảng bên');
+  `, 5000, 'board-layout', 'Không chọn được thẻ 02-01 để mở bảng bên');
 
   for (const width of [1024, 768, 480]) {
     await cdp('Emulation.setDeviceMetricsOverride', {
@@ -895,6 +925,13 @@ async function main() {
 
   await cdp('Emulation.clearDeviceMetricsOverride');
   await pressKey('Escape', 'Escape', 27);
+  await waitBoard(`
+    (() => {
+      ${BVIS}
+      const none = Array.from(document.querySelectorAll('[data-item-key]')).every(c => c.getAttribute('aria-pressed') === 'false');
+      return none && !vis(document.querySelector('[data-board-panel]')) && document.activeElement && document.activeElement.id === 'board-item-02-01';
+    })()
+  `, 5000, 'board-layout', 'Esc cuối không bỏ chọn, không đóng bảng bên hoặc focus không về thẻ board-item-02-01');
   console.log('OK board-layout');
 
   ws.close();

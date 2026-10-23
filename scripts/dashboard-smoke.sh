@@ -512,6 +512,20 @@ for s in "${SCREENS[@]}"; do
     done
   fi
 
+  # Board race, same cause: Alpine shows an x-show block a frame after the state
+  # changes, and virtual time can dump the DOM between the two, leaving the board
+  # layout hidden or the cards not drawn yet. Retry while no card is drawn or the
+  # layout is still hidden (at most 3 attempts, fresh profile each time).
+  if [[ "$s" == "board" ]]; then
+    ATTEMPT=1
+    while { ! grep -qE '[[:space:]]data-item-key="02-01"' "$DOM_OUT" || grep -qE 'data-board-layout[^>]*display: none' "$DOM_OUT"; } && (( ATTEMPT < 3 )); do
+      ATTEMPT=$((ATTEMPT + 1))
+      echo "Thử lại board (lần $ATTEMPT)" >&2
+      sleep 1
+      dump_dom "$TARGET_URL" "$DOM_OUT" "$TMP/chrome-$s-$ATTEMPT"
+    done
+  fi
+
   if ! grep -q "data-screen=\"$SCREEN_NAME\"" "$DOM_OUT" || ! grep -q 'data-loaded="yes"' "$DOM_OUT"; then
     echo "Lỗi: Màn hình $s không render thành công (thiếu data-screen=\"$SCREEN_NAME\" hoặc data-loaded=\"yes\")" >&2
     echo "--- 40 dòng đầu của DOM ---" >&2
