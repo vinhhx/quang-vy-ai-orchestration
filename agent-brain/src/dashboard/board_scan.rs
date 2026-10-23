@@ -1252,6 +1252,251 @@ mod tests {
         assert_eq!(objective_title("không có thẻ\n"), None);
     }
 
+    const FM_OK: &str = "---\nwave: 1\ndepends_on: []\n---\n";
+
+    #[test]
+    fn read_symlink_and_dir_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("that.md");
+        std::fs::write(&real, "noi dung").unwrap();
+        let link = dir.path().join("link.md");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(open_regular(&link).err(), Some(ReadError::NotRegular));
+        assert_eq!(open_regular(dir.path()).err(), Some(ReadError::NotRegular));
+        assert_eq!(
+            open_regular(&dir.path().join("khong-co.md")).err(),
+            Some(ReadError::Missing)
+        );
+        assert!(open_regular(&real).is_ok());
+    }
+
+    #[test]
+    fn read_fifo_refused_without_blocking() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tree(2);
+        let fifo = dir.path().join(".planning/phases/01-a/01-03-PLAN.md");
+        let c_path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).expect("cstring");
+        // SAFETY: `c_path` là chuỗi C hợp lệ, sống suốt lời gọi.
+        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "mkfifo");
+        let began = Instant::now();
+        assert_eq!(read_head(&fifo, 100), Err(ReadError::NotRegular));
+        let facts = scan(dir.path(), &Caps::default(), far()).expect("scan");
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "scan bị treo vì FIFO"
+        );
+        let ids: Vec<&str> = facts.plans.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["01-01", "01-02"]);
+        let on_fifo: Vec<&Warning> = facts
+            .warnings
+            .iter()
+            .filter(|w| w.path == ".planning/phases/01-a/01-03-PLAN.md")
+            .collect();
+        assert_eq!(on_fifo.len(), 1);
+        assert!(on_fifo[0].message.contains("không phải file thường"));
+    }
+
+    #[test]
+    fn read_head_caps_at_32k() {
+        let dir = tree(2);
+        let phase = dir.path().join(".planning/phases/01-a");
+        // 40 KiB, front matter đóng trong 2 KiB đầu: đọc được
+        let filler = "x".repeat(40 * 1024);
+        std::fs::write(
+            phase.join("01-01-PLAN.md"),
+            format!("---\nwave: 3\ndepends_on: [01-02]\n---\n{filler}\n"),
+        )
+        .unwrap();
+        // dòng --- đóng nằm sau byte 32.768: lỗi front matter, hạng mục vẫn còn
+        std::fs::write(
+            phase.join("01-02-PLAN.md"),
+            format!(
+                "---\nwave: 3\ndepends_on: [01-01]\nghi_chu: {}\n---\n",
+                "y".repeat(33_000)
+            ),
+        )
+        .unwrap();
+        let head = read_head(&phase.join("01-01-PLAN.md"), PLAN_READ_BYTES).unwrap();
+        assert_eq!(head.len() as u64, PLAN_READ_BYTES);
+        let facts = scan(dir.path(), &Caps::default(), far()).expect("scan");
+        let p1 = &facts.plans[0];
+        assert_eq!((p1.id.as_str(), p1.fm_wave), ("01-01", Some(3)));
+        assert_eq!(p1.depends_on, ["01-02"]);
+        let p2 = &facts.plans[1];
+        assert_eq!(p2.id, "01-02");
+        assert!(p2.depends_on.is_empty());
+        assert!(facts.warnings.iter().any(|w| {
+            w.path == ".planning/phases/01-a/01-02-PLAN.md"
+                && w.message.starts_with("front matter lỗi")
+        }));
+    }
+
+    #[test]
+    fn read_whole_too_large() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let big = dir.path().join("lon.md");
+        std::fs::write(&big, vec![b'a'; 1_048_577]).unwrap();
+        assert_eq!(
+            read_whole(&big, ROADMAP_MAX_BYTES),
+            Err(ReadError::TooLarge)
+        );
+        let exact = dir.path().join("vua.md");
+        std::fs::write(&exact, vec![b'a'; 1_048_576]).unwrap();
+        assert_eq!(
+            read_whole(&exact, ROADMAP_MAX_BYTES).unwrap().len(),
+            1_048_576
+        );
+    }
+
+    #[test]
+    fn caps_plan_files_truncate() {
+        let dir = tree(5);
+        let caps = Caps {
+            max_plan_files: 3,
+            ..Caps::default()
+        };
+        let facts = scan(dir.path(), &caps, far()).expect("scan");
+        assert_eq!(facts.plans.len(), 3);
+        assert!(facts.truncated);
+        assert!(facts
+            .warnings
+            .iter()
+            .any(|w| w.message == "dừng quét: quá 3 file plan"));
+    }
+
+    #[test]
+    fn caps_phase_dirs_truncate() {
+        let dir = tree(1);
+        let second = dir.path().join(".planning/phases/02-b");
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(second.join("02-01-PLAN.md"), FM_OK).unwrap();
+        let caps = Caps {
+            max_phase_dirs: 1,
+            ..Caps::default()
+        };
+        let facts = scan(dir.path(), &caps, far()).expect("scan");
+        let ids: Vec<&str> = facts.plans.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["01-01"]);
+        assert!(facts.truncated);
+        assert!(facts
+            .warnings
+            .iter()
+            .any(|w| w.message == "dừng quét: quá 1 thư mục phase"));
+    }
+
+    #[test]
+    fn caps_deadline_truncates() {
+        let dir = tree(3);
+        let facts = scan(dir.path(), &Caps::default(), Instant::now()).expect("scan");
+        assert!(facts.plans.is_empty());
+        assert!(facts.truncated);
+        assert!(facts
+            .warnings
+            .iter()
+            .any(|w| w.message.starts_with("dừng quét: quá thời gian đọc 2 giây")));
+    }
+
+    #[test]
+    fn roadmap_long_line_skipped() {
+        let long = format!("### Phase 9: {}", "n".repeat(5_000));
+        let text = format!("### Phase 1: Một\n{long}\n### Phase 2: Hai\n");
+        let rs = parse_roadmap(&text);
+        let seen: Vec<String> = rs.phases.iter().map(|p| p.num.display()).collect();
+        assert_eq!(seen, ["01", "02"]);
+        assert_eq!(rs.warnings.len(), 1);
+        assert_eq!(rs.warnings[0].message, "bỏ qua dòng 2: dài hơn 4096 ký tự");
+        assert_eq!(rs.warnings[0].path, ".planning/ROADMAP.md");
+    }
+
+    #[test]
+    fn fm_list_caps() {
+        let many = |n: usize, p: &str| {
+            (0..n)
+                .map(|i| format!("{p}-{i:02}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let text = format!(
+            "---\ndepends_on: [{}]\nrequirements: [{}]\n---\n",
+            many(70, "01"),
+            many(60, "REQ")
+        );
+        let fm = parse_plan_front_matter(&text).unwrap();
+        assert_eq!(fm.depends_on.len(), 64);
+        assert_eq!(fm.requirements.len(), 50);
+        assert_eq!(fm.depends_on[63], "01-63");
+        assert_eq!(fm.requirements[49], "REQ-49");
+        assert_eq!(
+            fm.notes,
+            [
+                "depends_on có hơn 64 mục — chỉ dùng 64 mục đầu",
+                "requirements có hơn 50 mục — chỉ dùng 50 mục đầu"
+            ]
+        );
+    }
+
+    #[test]
+    fn title_control_chars_and_cap() {
+        let dir = tree(3);
+        let phase = dir.path().join(".planning/phases/01-a");
+        std::fs::write(
+            dir.path().join(".planning/ROADMAP.md"),
+            format!(
+                "### Phase 1: A\n- [ ] 01-01-PLAN.md — chữ\u{7}điều\tkhiển\n- [ ] 01-02-PLAN.md — {}\n",
+                "y".repeat(300)
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            phase.join("01-03-PLAN.md"),
+            format!("{FM_OK}\n<objective>\nGhi\u{1}luồng. Câu sau.\n</objective>\n"),
+        )
+        .unwrap();
+        let facts = scan(dir.path(), &Caps::default(), far()).expect("scan");
+        assert_eq!(facts.plans[0].title, "chữ điều khiển");
+        assert_eq!(facts.plans[1].title.chars().count(), 200);
+        assert_eq!(facts.plans[2].title, "Ghi luồng");
+        assert!(facts
+            .plans
+            .iter()
+            .all(|p| !p.title.chars().any(|c| c.is_control())));
+    }
+
+    #[test]
+    fn scan_phase_dir_symlink_ignored() {
+        let dir = tree(1);
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("09-01-PLAN.md"), FM_OK).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join(".planning/phases/09-out"))
+            .unwrap();
+        let facts = scan(dir.path(), &Caps::default(), far()).expect("scan");
+        let ids: Vec<&str> = facts.plans.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["01-01"]);
+        assert!(facts.warnings.iter().any(|w| {
+            w.path == ".planning/phases/09-out"
+                && w.message == "bỏ qua thư mục: symlink hoặc không phải thư mục thật"
+        }));
+    }
+
+    #[test]
+    fn scan_summary_symlink_counts_absent() {
+        let dir = tree(2);
+        let phase = dir.path().join(".planning/phases/01-a");
+        let outside = tempfile::tempdir().expect("outside");
+        let real = outside.path().join("tom-tat.md");
+        std::fs::write(&real, "# xong\n").unwrap();
+        std::os::unix::fs::symlink(&real, phase.join("01-01-SUMMARY.md")).unwrap();
+        std::fs::write(phase.join("01-02-SUMMARY.md"), "# xong\n").unwrap();
+        let facts = scan(dir.path(), &Caps::default(), far()).expect("scan");
+        let done: Vec<(&str, bool)> = facts
+            .plans
+            .iter()
+            .map(|p| (p.id.as_str(), p.done))
+            .collect();
+        assert_eq!(done, [("01-01", false), ("01-02", true)]);
+    }
+
     #[test]
     fn scan_warns_once_for_dir_missing_from_roadmap() {
         let dir = tree(2);

@@ -843,3 +843,78 @@ fn board04_milestones_from_roadmap() {
 
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
 }
+
+const SENTINEL: &str = "BI-MAT-KHONG-DUOC-LO-7f3a";
+
+#[test]
+fn board05_symlink_secret_never_leaks() {
+    let sb = Sandbox::new();
+    let files = vec![
+        (
+            ".planning/ROADMAP.md".to_string(),
+            "### Phase 1: X\n### Phase 2: Liên kết\n".to_string(),
+        ),
+        (
+            ".planning/phases/01-x/01-01-PLAN.md".to_string(),
+            plan_md("01-x", "01", 1, "[]"),
+        ),
+    ];
+    let repo = sb.make_repo("hostile", &as_refs(&files), None, None);
+
+    // File và thư mục ngoài repo chứa chuỗi bí mật ở depends_on, requirements và objective.
+    let secret_plan = format!(
+        "---\nphase: bi-mat\nplan: 02\nwave: 1\ndepends_on: [{SENTINEL}]\nrequirements: [{SENTINEL}]\n---\n\n<objective>\n{SENTINEL}. Câu sau.\n</objective>\n"
+    );
+    let secret_file = sb.root.join("bi-mat.txt");
+    std::fs::write(&secret_file, &secret_plan).unwrap();
+    let outside_dir = sb.root.join("ngoai-thu-muc");
+    std::fs::create_dir_all(&outside_dir).unwrap();
+    std::fs::write(outside_dir.join("02-01-PLAN.md"), &secret_plan).unwrap();
+
+    // Ba loại symlink: file plan, thư mục phase, file SUMMARY.
+    std::os::unix::fs::symlink(
+        &secret_file,
+        repo.join(".planning/phases/01-x/01-02-PLAN.md"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&outside_dir, repo.join(".planning/phases/02-lien-ket")).unwrap();
+    std::os::unix::fs::symlink(
+        &secret_file,
+        repo.join(".planning/phases/01-x/01-01-SUMMARY.md"),
+    )
+    .unwrap();
+
+    sb.write_map(json!([sb.project_entry(&repo, "hostile", "work")]), &[]);
+    let mut srv = sb.serve(&[]);
+
+    let r = srv.get("/api/board?project=hostile&epic=all");
+    assert_eq!(r.status, 200);
+    assert!(
+        !r.text().contains(SENTINEL),
+        "chuỗi bí mật lọt vào phản hồi"
+    );
+    let j = r.json();
+    assert_eq!(j["state"], "ok");
+    let keys = item_keys(&j);
+    assert!(keys.contains(&"01-01".to_string()), "khoá: {keys:?}");
+    assert_ne!(item(&j, "01-01")["status"], "xong");
+    assert!(!keys.contains(&"01-02".to_string()));
+    assert!(!keys.contains(&"02-01".to_string()));
+
+    let warnings = j["warnings"].as_array().unwrap();
+    for path in [
+        ".planning/phases/01-x/01-02-PLAN.md",
+        ".planning/phases/02-lien-ket",
+    ] {
+        assert!(
+            warnings.iter().any(|w| w["path"] == path),
+            "thiếu cảnh báo ở {path}: {warnings:?}"
+        );
+    }
+    for w in warnings {
+        let path = w["path"].as_str().unwrap();
+        assert!(!path.starts_with('/'), "đường dẫn tuyệt đối: {path}");
+    }
+
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+}
