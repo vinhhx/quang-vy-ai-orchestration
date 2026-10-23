@@ -718,6 +718,376 @@ const sections = [
     },
   },
   {
+    name: 'board',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      const boardJsPath = path.join(repoRoot, 'agent-brain/assets/dashboard/js/board.js');
+      const boardJsSrc = fs.readFileSync(boardJsPath, 'utf8');
+      vm.runInContext(boardJsSrc, ctx, { filename: 'board.js' });
+
+      check('board: factory registered', typeof factories.board === 'function', 'factories.board not found');
+      if (typeof factories.board !== 'function') return;
+
+      let gate = null;
+      // Run one named step; a thrown error is a failed check, not a crash.
+      async function step(name, fn) {
+        try {
+          await fn();
+        } catch (err) {
+          gate = null;
+          check(name, false, `threw: ${err && err.message ? err.message : err}`);
+        }
+      }
+      const settle = async () => {
+        for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
+      };
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+      // Smoke-fixture board, epic=all (waves 01-01:0, 03:0, 01-02:1, 02-01:2, 02-02:3, 02-03:3).
+      const mk = (key, epic, wave, status, extra) => Object.assign({
+        key, title: key, epic, epic_name: 'Phase ' + epic, milestone: null, wave, fm_wave: null,
+        status, critical: false, placeholder: false, requirements: [], plan_path: null,
+        waits_on: [], waited_by: [],
+      }, extra || {});
+      const ITEMS_ALL = [
+        mk('01-01', '01', 0, 'xong'),
+        mk('03', '03', 0, 'san_sang', { placeholder: true }),
+        mk('01-02', '01', 1, 'xong'),
+        mk('02-01', '02', 2, 'san_sang'),
+        mk('02-02', '02', 3, 'bi_chan'),
+        mk('02-03', '02', 3, 'bi_chan'),
+      ];
+      const EDGES_ALL = [
+        { from: '01-01', to: '01-02', kind: 'plan', critical: false },
+        { from: '01-02', to: '02-01', kind: 'plan', critical: false },
+        { from: '02-01', to: '02-02', kind: 'plan', critical: false },
+        { from: '02-01', to: '02-03', kind: 'plan', critical: false },
+      ];
+      const EPICS = [
+        { id: '01', name: 'Nền tảng', milestone: null, total: 2, done: 2, placeholder: false },
+        { id: '02', name: 'Xuất báo cáo', milestone: null, total: 3, done: 0, placeholder: false },
+        { id: '03', name: 'Hướng dẫn', milestone: null, total: 1, done: 0, placeholder: true },
+      ];
+      const PROJECTS = [
+        { id: 'web-ban-hang', name_vi: 'Web bán hàng', profile: 'work', has_board: true },
+        { id: 'khac', name_vi: 'Dự án khác', profile: 'work', has_board: true },
+        { id: 'khong-co', name_vi: 'Không có bảng', profile: 'work', has_board: false },
+      ];
+      const PROJECT = { id: 'web-ban-hang', name_vi: 'Web bán hàng', profile: 'work', type: 'code' };
+      const baseOk = (over) => Object.assign({
+        state: 'ok', reason: null, message: null, expected_path: '/x/.planning/ROADMAP.md',
+        project: PROJECT, projects: PROJECTS, epic: '02', default_epic: '02', epics: EPICS,
+        milestone: null, milestones: [], items: [], edges: [], external: [],
+        counts: { total: 0, xong: 0, san_sang: 0, bi_chan: 0, waves: 0 },
+        warnings: [], truncated: false,
+      }, over || {});
+      const BOARD_ALL = baseOk({
+        epic: 'all', items: ITEMS_ALL, edges: EDGES_ALL,
+        counts: { total: 6, xong: 2, san_sang: 2, bi_chan: 2, waves: 4 },
+      });
+      const BOARD_02 = baseOk({
+        items: [mk('02-01', '02', 0, 'san_sang'), mk('02-02', '02', 1, 'bi_chan'), mk('02-03', '02', 1, 'bi_chan')],
+        edges: [
+          { from: '02-01', to: '02-02', kind: 'plan', critical: false },
+          { from: '02-01', to: '02-03', kind: 'plan', critical: false },
+        ],
+        counts: { total: 3, xong: 0, san_sang: 1, bi_chan: 2, waves: 2 },
+      });
+
+      // --- pure layout and geometry (golden numbers of the plan) ---
+      await step('board: layout', async () => {
+        const B = ctx.ABBoard;
+        check('board: ABBoard exported', Boolean(B) && typeof B.layout === 'function' && typeof B.edgeGeometry === 'function' && typeof B.domId === 'function');
+        check('board: constants', B.COL_W === 216 && B.RAIL_W === 96 && B.GAP_X === 32 && B.HEAD_H === 48 && B.ROW_GAP === 8 && B.CARD_H === 64 && B.CHIP_H === 32);
+        const on = B.layout(ITEMS_ALL, true);
+        check('board: collapse on columns', same(on.cols.map((c) => [c.x, c.w, c.rail]), [[0, 216, false], [248, 96, true], [376, 216, false], [624, 216, false]]), JSON.stringify(on.cols));
+        const p = on.pos;
+        check('board: collapse on 01-01 is a chip', p['01-01'].y === 56 && p['01-01'].h === 32 && p['01-01'].chip === true, JSON.stringify(p['01-01']));
+        check('board: collapse on 03 is a card', p['03'].y === 96 && p['03'].h === 64 && p['03'].chip === false, JSON.stringify(p['03']));
+        check('board: collapse on 01-02 is a rail chip', p['01-02'].y === 56 && p['01-02'].h === 32 && p['01-02'].rail === true, JSON.stringify(p['01-02']));
+        check('board: collapse on 02-01/02-02/02-03', p['02-01'].y === 56 && p['02-01'].h === 64 && p['02-02'].y === 56 && p['02-03'].y === 128, JSON.stringify([p['02-01'], p['02-02'], p['02-03']]));
+        check('board: collapse on width and height', on.width === 840 && on.height === 192, `${on.width}x${on.height}`);
+        check('board: column counts', same(on.cols.map((c) => [c.wave, c.done, c.total]), [[0, 1, 2], [1, 1, 1], [2, 0, 1], [3, 0, 2]]), JSON.stringify(on.cols));
+        const off = B.layout(ITEMS_ALL, false);
+        check('board: collapse off columns', same(off.cols.map((c) => [c.x, c.w]), [[0, 216], [248, 216], [496, 216], [744, 216]]), JSON.stringify(off.cols));
+        check('board: collapse off every card is 64 high', Object.keys(off.pos).every((k) => off.pos[k].h === 64 && off.pos[k].chip === false));
+        check('board: collapse off 03 at y 128', off.pos['03'].y === 128, `${off.pos['03'].y}`);
+        check('board: collapse off width and height', off.width === 960 && off.height === 192, `${off.width}x${off.height}`);
+        const none = B.layout([], true);
+        check('board: empty layout', none.width === 0 && none.height === 0 && none.cols.length === 0);
+
+        const g = B.edgeGeometry(on.pos['01-01'], on.pos['01-02']);
+        check('board: edge boxStyle', same(g.boxStyle, { left: '216px', top: '70px', width: '32px', height: '4px' }), JSON.stringify(g.boxStyle));
+        check('board: edge path', g.d === 'M0 2 C16 2 16 2 32 2', g.d);
+        check('board: domId', B.domId('05.4-03') === 'board-item-05_4-03' && B.domId('a b/c') === 'board-item-a_b_c', `${B.domId('05.4-03')}`);
+      });
+
+      // --- harness: Map-backed localStorage, call recorder, timer counters ---
+      const store = new Map();
+      const savedStorage = ctx.localStorage;
+      const savedApi = ctx.AB.api;
+      const savedInterval = ctx.setInterval;
+      const savedEvery = ctx.AB.every;
+      const calls = [];
+      let intervalCalls = 0;
+      let everyCalls = 0;
+      let answer = (url) => {
+        if (url.indexOf('project=gone') !== -1) return { ok: false, status: 404, data: { error: 'Không tìm thấy dự án gone' } };
+        if (url.indexOf('epic=all') !== -1) return { ok: true, status: 200, data: BOARD_ALL };
+        return { ok: true, status: 200, data: BOARD_02 };
+      };
+      ctx.localStorage = {
+        getItem(k) { return store.has(k) ? store.get(k) : null; },
+        setItem(k, v) { store.set(k, String(v)); },
+        removeItem(k) { store.delete(k); },
+      };
+      ctx.setInterval = function () { intervalCalls++; return savedInterval.apply(null, arguments); };
+      ctx.AB.every = function () { everyCalls++; return savedEvery.apply(ctx.AB, arguments); };
+      ctx.AB.api = function (method, url) {
+        calls.push(method + ' ' + url);
+        const res = answer(url);
+        if (gate) {
+          const g = gate;
+          gate = null;
+          return g.then(() => res);
+        }
+        return Promise.resolve(res);
+      };
+      const reset = () => { calls.length = 0; };
+      const urls = () => calls.map((c) => c.replace(/^GET /, ''));
+
+      try {
+        // --- first load: one call, default epic, collapse default on ---
+        await step('board: init', async () => {
+          reset();
+          const c = factories.board();
+          check('board: collapse defaults to true', c.collapse === true, `got ${c.collapse}`);
+          check('board: not loaded before init', c.loaded === false && c.isLoading === true);
+          c.init();
+          check('board: init makes exactly one call', calls.length === 1 && calls[0].startsWith('GET /api/board'), JSON.stringify(calls));
+          await settle();
+          check('board: loaded after the answer', c.loaded === true && c.loadedAttr === 'yes' && c.isLoading === false);
+          check('board: epicSel takes the server epic', c.epicSel === '02', `got "${c.epicSel}"`);
+          check('board: projectSel takes the server project', c.projectSel === 'web-ban-hang', `got "${c.projectSel}"`);
+          check('board: hasBoard', c.hasBoard === true && c.isEmpty === false && c.noItems === false);
+          check('board: three cards', c.cards.length === 3, `got ${c.cards.length}`);
+          check('board: card ids and keys', c.cards[0].domId === 'board-item-02-01' && c.cards[0].key === '02-01');
+          check('board: card status text', c.cards[0].statusText === '▶︎ sẵn sàng' && c.cards[1].statusText === '⟳︎ bị chặn', `${c.cards[0].statusText} / ${c.cards[1].statusText}`);
+          check('board: card label', c.cardLabel(c.cards[0]) === '02-01 02-01, sẵn sàng, wave 0', c.cardLabel(c.cards[0]));
+          check('board: card label critical', c.cardLabel(Object.assign({}, c.cards[0], { critical: true })).endsWith(', trên đường găng'));
+          check('board: two edge views', c.edgeViews.length === 2 && c.edgeViews[0].id === '02-01__02-02' && c.edgeViews.every((e) => parseFloat(e.boxStyle.width) > 0), JSON.stringify(c.edgeViews.map((e) => e.id)));
+          check('board: edge classes', c.edgeClass({ critical: false }).includes('stroke-slate-400') && c.edgeClass({ critical: true }).includes('stroke-yellow-600'));
+          check('board: head labels', same(c.cols.map((k) => [k.title, k.sub, k.waveAttr, k.railAttr]), [['Wave 0', '0/1', '0', '0'], ['Wave 1', '0/2', '1', '0']]), JSON.stringify(c.cols));
+          check('board: legend', same(c.legend.map((l) => l.text), ['✓︎ xong 0', '▶︎ sẵn sàng 1', '⟳︎ bị chặn 2']), JSON.stringify(c.legend));
+          check('board: legendTotal', c.legendTotal === 'Tổng 3 · 2 wave', c.legendTotal);
+        });
+
+        await step('board: profile in the url', async () => {
+          reset();
+          store.set('ab.profile', 'work');
+          const c = factories.board();
+          c.init();
+          await settle();
+          check('board: profile=work in the url', calls.length === 1 && calls[0].includes('profile=work'), JSON.stringify(calls));
+          store.delete('ab.profile');
+        });
+
+        // --- collapse switch ---
+        await step('board: collapse switch', async () => {
+          store.delete('ab.board.collapse');
+          const c = factories.board();
+          check('board: collapse stored 0 reads false', (() => { store.set('ab.board.collapse', '0'); const d = factories.board(); store.delete('ab.board.collapse'); return d.collapse === false; })());
+          check('board: collapse stored 1 reads true', (() => { store.set('ab.board.collapse', '1'); const d = factories.board(); store.delete('ab.board.collapse'); return d.collapse === true; })());
+          answer = () => ({ ok: true, status: 200, data: BOARD_ALL });
+          await c.load();
+          reset();
+          check('board: collapseAttr on', c.collapseAttr === 'true' && c.collapseWord === 'bật', `${c.collapseAttr}/${c.collapseWord}`);
+          const first = c.cards.find((k) => k.key === '01-01');
+          check('board: 01-01 is a chip while collapsed', first.chip === true && first.style.height === '32px', JSON.stringify(first.style));
+          check('board: 01-02 is a rail chip', c.cards.find((k) => k.key === '01-02').rail === true);
+          check('board: rail column head', c.cols[1].railAttr === '1' && c.cols[1].sub === '1/1 ✓︎', JSON.stringify(c.cols[1]));
+          c.toggleCollapse();
+          check('board: toggle flips to false', c.collapse === false && c.collapseAttr === 'false' && c.collapseWord === 'tắt');
+          check('board: toggle stores 0', store.get('ab.board.collapse') === '0', `got ${store.get('ab.board.collapse')}`);
+          const open = c.cards.find((k) => k.key === '01-01');
+          check('board: 01-01 is a full card when off', open.chip === false && open.style.height === '64px', JSON.stringify(open.style));
+          check('board: nothing is a rail when off', c.cards.every((k) => k.rail === false) && c.cols.every((k) => k.railAttr === '0'));
+          c.toggleCollapse();
+          check('board: toggle back stores 1', c.collapse === true && store.get('ab.board.collapse') === '1');
+          check('board: switch makes no api call', calls.length === 0, JSON.stringify(calls));
+          store.delete('ab.board.collapse');
+          answer = (url) => (url.indexOf('epic=all') !== -1 ? { ok: true, status: 200, data: BOARD_ALL } : { ok: true, status: 200, data: BOARD_02 });
+        });
+
+        // --- Đọc lại ---
+        await step('board: reload', async () => {
+          const c = factories.board();
+          await c.load();
+          reset();
+          check('board: reloadLabel idle', c.reloadLabel === 'Đọc lại' && c.reloading === false, `${c.reloadLabel}`);
+          let release;
+          gate = new Promise((r) => { release = r; });
+          const pending = c.reload();
+          check('board: reload sets the in-flight label', c.reloadLabel === 'Đang đọc...' && c.reloading === true, `${c.reloadLabel}`);
+          c.reload();
+          check('board: second reload makes no extra call', calls.length === 1, JSON.stringify(calls));
+          release();
+          await pending;
+          check('board: reload clears the flag', c.reloading === false && c.reloadLabel === 'Đọc lại');
+          check('board: reload made exactly one call', calls.length === 1 && calls[0].startsWith('GET /api/board'), JSON.stringify(calls));
+        });
+
+        // --- filters ---
+        await step('board: epic filter', async () => {
+          const c = factories.board();
+          await c.load();
+          reset();
+          c.epicSel = 'all';
+          c.epicChanged();
+          await settle();
+          check('board: epicChanged sends epic=all', calls.length === 1 && urls()[0].includes('epic=all'), JSON.stringify(calls));
+          check('board: epic all shows six cards', c.cards.length === 6, `got ${c.cards.length}`);
+          check('board: epic all keeps epicSel all', c.epicSel === 'all', `got "${c.epicSel}"`);
+        });
+
+        await step('board: milestone filter', async () => {
+          const c = factories.board();
+          await c.load();
+          reset();
+          c.milestoneSel = 'v1.0';
+          c.milestoneChanged();
+          await settle();
+          check('board: milestoneChanged sends milestone=v1.0', calls.length === 1 && urls()[0].includes('milestone=v1.0'), JSON.stringify(calls));
+        });
+
+        await step('board: project filter', async () => {
+          store.delete('ab.board.project');
+          const c = factories.board();
+          await c.load();
+          reset();
+          c.projectSel = 'khac';
+          c.projectChanged();
+          await settle();
+          check('board: projectChanged stores the id', store.get('ab.board.project') === 'khac', `got ${store.get('ab.board.project')}`);
+          check('board: projectChanged sends project=khac without epic', calls.length === 1 && urls()[0].includes('project=khac') && !urls()[0].includes('epic='), JSON.stringify(calls));
+        });
+
+        await step('board: stored project', async () => {
+          store.set('ab.board.project', 'khac');
+          reset();
+          const c = factories.board();
+          c.init();
+          await settle();
+          check('board: stored project is sent on the first call', calls.length >= 1 && urls()[0].includes('project=khac'), JSON.stringify(calls));
+          store.delete('ab.board.project');
+        });
+
+        await step('board: stale stored project', async () => {
+          store.set('ab.board.project', 'gone');
+          reset();
+          const c = factories.board();
+          c.init();
+          await settle();
+          check('board: 404 for a stored project retries once without project=', calls.length === 2 && urls()[0].includes('project=gone') && !urls()[1].includes('project='), JSON.stringify(calls));
+          check('board: 404 removes the stored project', !store.has('ab.board.project'), `got ${store.get('ab.board.project')}`);
+          check('board: retry ends with a board', c.hasBoard === true && c.loaded === true && c.hasError === false);
+          reset();
+          c.projectSel = 'gone';
+          await c.load();
+          check('board: the retry happens once per component', calls.length === 1 && c.hasError === true, JSON.stringify(calls));
+        });
+
+        await step('board: failed request', async () => {
+          const keep = answer;
+          answer = () => ({ ok: false, status: 500, data: { error: 'Lỗi nội bộ' } });
+          const c = factories.board();
+          await c.load();
+          check('board: failed request shows the error card', c.hasError === true && c.loaded === true && c.errorBody.startsWith('Lỗi nội bộ'), `${c.errorBody}`);
+          answer = keep;
+          await c.load();
+          check('board: Thử lại clears the error', c.hasError === false && c.hasBoard === true);
+        });
+
+        // --- toolbar getters ---
+        await step('board: toolbar getters', async () => {
+          const c = factories.board();
+          check('board: no milestones hides the control', c.showMilestones === false);
+          c.milestones = [];
+          check('board: zero milestones', c.showMilestones === false);
+          c.milestones = ['v1.0'];
+          check('board: one milestone', c.showMilestones === false);
+          c.milestones = ['v1.0', 'v1.1'];
+          check('board: two milestones', c.showMilestones === true);
+          await c.load();
+          check('board: boardProjects lists projects with a board', same(c.boardProjects.map((p) => p.id), ['web-ban-hang', 'khac']), JSON.stringify(c.boardProjects.map((p) => p.id)));
+          check('board: hasProjects', c.hasProjects === true);
+          c.project = { id: 'khong-co', name_vi: 'Không có bảng', profile: 'work', type: 'code' };
+          check('board: boardProjects keeps the current project', same(c.boardProjects.map((p) => p.id), ['web-ban-hang', 'khac', 'khong-co']), JSON.stringify(c.boardProjects.map((p) => p.id)));
+          check('board: projectLabel', c.projectLabel({ id: 'a', name_vi: 'Tên' }) === 'Tên' && c.projectLabel({ id: 'a' }) === 'a');
+          check('board: epicLabel', c.epicLabel(EPICS[1]) === '02 · Xuất báo cáo (0/3)', c.epicLabel(EPICS[1]));
+          c.projectSel = 'khac';
+          c.epicSel = 'all';
+          c.milestoneSel = 'v1.1';
+          check('board: isProjectSel', c.isProjectSel(PROJECTS[1]) === true && c.isProjectSel(PROJECTS[0]) === false);
+          check('board: isEpicSel', c.isEpicSel('all') === true && c.isEpicSel('02') === false);
+          check('board: isMilestoneSel', c.isMilestoneSel('v1.1') === true && c.isMilestoneSel('') === false);
+        });
+
+        // --- warnings ---
+        await step('board: warnings', async () => {
+          const c = factories.board();
+          check('board: no warnings', c.hasWarnings === false);
+          const ws = [];
+          for (let i = 1; i <= 12; i++) ws.push({ path: `.planning/p${i}.md`, message: `lỗi ${i}` });
+          c.apply(baseOk({ warnings: ws }));
+          check('board: hasWarnings', c.hasWarnings === true);
+          check('board: warningLines has 11 entries', c.warningLines.length === 11, `got ${c.warningLines.length}`);
+          check('board: first warning line', c.warningLines[0] === '.planning/p1.md — lỗi 1', `got "${c.warningLines[0]}"`);
+          check('board: warning remainder', c.warningLines[10] === '… và 2 cảnh báo khác', `got "${c.warningLines[10]}"`);
+          c.apply(baseOk({ warnings: ws.slice(0, 3) }));
+          check('board: three warnings are all shown', c.warningLines.length === 3 && c.warningLines[2] === '.planning/p3.md — lỗi 3');
+          c.apply(baseOk());
+          check('board: zero warnings', c.hasWarnings === false && c.warningLines.length === 0);
+        });
+
+        // --- empty state and empty board ---
+        await step('board: empty state', async () => {
+          const c = factories.board();
+          c.apply({
+            state: 'empty', reason: 'no_roadmap', message: 'Dự án này chưa có bảng công việc. Cần file /x/.planning/ROADMAP.md.',
+            expected_path: '/x/.planning/ROADMAP.md', project: null, projects: [],
+          });
+          check('board: empty state', c.isEmpty === true && c.hasBoard === false && c.cards.length === 0);
+          check('board: empty message verbatim', c.message === 'Dự án này chưa có bảng công việc. Cần file /x/.planning/ROADMAP.md.', c.message);
+          check('board: empty expected path', c.expectedPath === '/x/.planning/ROADMAP.md');
+          check('board: empty state has no project', c.projectSel === '' && c.hasProjects === false);
+          c.apply(baseOk());
+          check('board: ok with no items', c.hasBoard === true && c.noItems === true && c.isEmpty === false);
+        });
+
+        // --- no polling, no stream ---
+        check('board: no interval timer was created', intervalCalls === 0, `setInterval calls: ${intervalCalls}`);
+        check('board: no AB.every polling', everyCalls === 0, `AB.every calls: ${everyCalls}`);
+        check('board: only GET /api/board was requested', calls.concat([]).every((x) => x.startsWith('GET /api/board')), JSON.stringify(calls));
+      } finally {
+        ctx.localStorage = savedStorage;
+        ctx.AB.api = savedApi;
+        ctx.setInterval = savedInterval;
+        ctx.AB.every = savedEvery;
+      }
+
+      // --- source checks ---
+      check('board: no arrow function in board.js', boardJsSrc.indexOf('=' + '>') === -1, 'found an arrow function');
+      check('board: no template literal in board.js', boardJsSrc.indexOf(String.fromCharCode(96)) === -1, 'found a backtick');
+      check('board: no timer or stream in board.js', !/setInterval|AB\.every|EventSource/.test(boardJsSrc), 'found a timer or stream');
+    },
+  },
+  {
     name: 'task-cards',
     async run(ctx) {
       const factories = {};
@@ -2414,12 +2784,22 @@ const sections = [
   },
 ];
 
+// A promise that never settles would let node exit 0 with no output; fail loudly instead.
+let finished = false;
+process.on('exit', (code) => {
+  if (!finished && code === 0) {
+    console.error('LỖI JS check dừng sớm: có promise không bao giờ hoàn thành');
+    process.exitCode = 1;
+  }
+});
+
 async function main() {
   const ctx = makeContext();
   for (const section of sections) {
     await section.run(ctx);
   }
 
+  finished = true;
   if (failures.length > 0) {
     for (const f of failures) {
       console.error(`LỖI ${f.name}: ${f.detail}`);
