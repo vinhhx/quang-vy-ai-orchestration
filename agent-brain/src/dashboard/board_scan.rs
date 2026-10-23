@@ -247,19 +247,76 @@ fn split_list(inner: &str) -> Vec<String> {
         .collect()
 }
 
-fn list_value(key: &str, raw: &str) -> Result<Vec<String>, FmError> {
-    let v = strip_comment(raw).trim();
-    if v.is_empty() || v == "null" || v == "~" {
-        return Ok(Vec::new());
+/// Số dòng nối tiếp tối đa của một danh sách `[a,\n b]` trải trên nhiều dòng.
+const FM_LIST_CONTINUATION_MAX: usize = 20;
+
+/// Dòng cột 0 dạng `khoá:` — bắt đầu một khoá mới của front matter.
+fn looks_like_key(line: &str) -> bool {
+    let mut chars = line.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
     }
-    if let Some(rest) = v.strip_prefix('[') {
-        return match rest.strip_suffix(']') {
-            Some(inner) => Ok(split_list(inner)),
-            None => Err(FmError::BadList(key.to_string())),
-        };
+    for c in chars {
+        if c == ':' {
+            return true;
+        }
+        if !(c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            return false;
+        }
+    }
+    false
+}
+
+/// Đọc giá trị danh sách của `key`: `[a, b]` một hoặc nhiều dòng, khối `- mục` ở các dòng sau,
+/// `null` / `~` / rỗng là danh sách rỗng. Trả về danh sách và số dòng tiếp theo đã dùng.
+fn list_value(key: &str, raw: &str, rest: &[&str]) -> Result<(Vec<String>, usize), FmError> {
+    let v = strip_comment(raw).trim();
+    if v.is_empty() {
+        // Danh sách dạng khối: các dòng `- mục` ngay sau khoá (thụt vào hoặc sát lề).
+        let mut items: Vec<String> = Vec::new();
+        let mut used = 0usize;
+        for line in rest {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('#') {
+                used += 1;
+                continue;
+            }
+            match t.strip_prefix('-') {
+                Some(item) if item.is_empty() || item.starts_with(char::is_whitespace) => {
+                    let value = scalar(item);
+                    if !value.is_empty() {
+                        items.push(value);
+                    }
+                    used += 1;
+                }
+                _ => break,
+            }
+        }
+        return Ok((items, used));
+    }
+    if v == "null" || v == "~" {
+        return Ok((Vec::new(), 0));
+    }
+    if v.starts_with('[') {
+        let mut text = v.to_string();
+        let mut used = 0usize;
+        while !text.ends_with(']') {
+            let next = rest.get(used).copied();
+            match next {
+                Some(line) if used < FM_LIST_CONTINUATION_MAX && !looks_like_key(line) => {
+                    text.push(' ');
+                    text.push_str(strip_comment(line).trim());
+                    used += 1;
+                }
+                _ => return Err(FmError::BadList(key.to_string())),
+            }
+        }
+        let inner = &text[1..text.len() - 1];
+        return Ok((split_list(inner), used));
     }
     // Giá trị đơn không có ngoặc: một phần tử.
-    Ok(vec![unquote(v)])
+    Ok((vec![unquote(v)], 0))
 }
 
 fn cap_list(key: &str, mut list: Vec<String>, cap: usize, notes: &mut Vec<String>) -> Vec<String> {
@@ -293,7 +350,10 @@ pub fn parse_plan_front_matter(text: &str) -> Result<PlanFm, FmError> {
 
     let mut fm = PlanFm::default();
     let mut seen: Vec<&str> = Vec::new();
-    for line in block {
+    let mut at = 0usize;
+    while at < block.len() {
+        let line = block[at];
+        at += 1;
         let first = match line.chars().next() {
             Some(c) => c,
             None => continue,
@@ -339,11 +399,13 @@ pub fn parse_plan_front_matter(text: &str) -> Result<PlanFm, FmError> {
                 }
             }
             "depends_on" => {
-                let list = list_value(name, value)?;
+                let (list, used) = list_value(name, value, &block[at..])?;
+                at += used;
                 fm.depends_on = cap_list(name, list, MAX_DEPS_PER_PLAN, &mut fm.notes);
             }
             _ => {
-                let list = list_value(name, value)?;
+                let (list, used) = list_value(name, value, &block[at..])?;
+                at += used;
                 fm.requirements = cap_list(name, list, MAX_REQS_PER_PLAN, &mut fm.notes);
             }
         }
@@ -579,19 +641,32 @@ fn objective_title(head: &str) -> Option<String> {
     }
 }
 
-/// `current_phase` trong front matter của STATE.md (cột 0, có hoặc không có nháy).
+fn state_body_phase_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^Phase:\s*(\d+(?:\.\d+)*)\b").expect("state phase regex"))
+}
+
+/// Phase hiện tại trong STATE.md: khoá `current_phase` của front matter (cột 0, có hoặc không có
+/// nháy); không có thì dòng thân `Phase: 05.5 — …`; không đọc được gì thì `None`.
 pub fn parse_state(text: &str) -> Option<PhaseNum> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut lines = text.lines();
-    if lines.next()?.trim_end() != "---" {
-        return None;
+    let mut lines = text.lines().peekable();
+    if lines.peek().is_some_and(|l| l.trim_end() == "---") {
+        lines.next();
+        for line in lines.by_ref() {
+            if line.trim_end() == "---" {
+                break;
+            }
+            if let Some(rest) = line.strip_prefix("current_phase:") {
+                if let Some(num) = PhaseNum::parse(&scalar(rest)) {
+                    return Some(num);
+                }
+            }
+        }
     }
     for line in lines {
-        if line.trim_end() == "---" {
-            return None;
-        }
-        if let Some(rest) = line.strip_prefix("current_phase:") {
-            return PhaseNum::parse(&scalar(rest));
+        if let Some(caps) = state_body_phase_re().captures(line) {
+            return caps.get(1).and_then(|m| PhaseNum::parse(m.as_str()));
         }
     }
     None
