@@ -410,6 +410,64 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
         wave[v] = w;
     }
 
+    // Đường găng trên đồ thị con nhìn thấy (D-09): chuỗi dài nhất qua các hạng mục chưa xong,
+    // mỗi hạng mục chưa xong tính 1, hạng mục đã xong tính 0. Hòa thì lấy hạng mục đứng trước
+    // theo thứ tự hạng mục (so sánh lớn hơn hẳn), không đệ quy.
+    let mut outs: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for to in 0..n {
+        if !visible[to] {
+            continue;
+        }
+        for &from in &deps[to] {
+            if visible[from] {
+                outs[from].push(to);
+            }
+        }
+    }
+    let mut longest = vec![0u32; n];
+    let mut next: Vec<Option<usize>> = vec![None; n];
+    for &v in topo.iter().rev() {
+        if !visible[v] {
+            continue;
+        }
+        let mut best = 0u32;
+        let mut nx = None;
+        for &o in &outs[v] {
+            if longest[o] > best {
+                best = longest[o];
+                nx = Some(o);
+            }
+        }
+        longest[v] = best + u32::from(status[v] != STATUS_XONG);
+        next[v] = nx;
+    }
+    let mut start: Option<usize> = None;
+    let mut best_len = 0u32;
+    for v in 0..n {
+        let is_root = visible[v] && deps[v].iter().all(|&d| !visible[d]);
+        if is_root && longest[v] > best_len {
+            best_len = longest[v];
+            start = Some(v);
+        }
+    }
+    let mut chain: Vec<usize> = Vec::new();
+    let mut cursor = start;
+    while let Some(v) = cursor {
+        chain.push(v);
+        cursor = next[v];
+    }
+    // Chỉ tô hạng mục chưa xong trên chuỗi, và cạnh nối hai hạng mục liên tiếp cùng được tô.
+    let mut crit_node = vec![false; n];
+    for &v in &chain {
+        crit_node[v] = status[v] != STATUS_XONG;
+    }
+    let mut crit_edge: HashSet<(usize, usize)> = HashSet::new();
+    for pair in chain.windows(2) {
+        if crit_node[pair[0]] && crit_node[pair[1]] {
+            crit_edge.insert((pair[0], pair[1]));
+        }
+    }
+
     let mut order: Vec<usize> = (0..n).filter(|&i| visible[i]).collect();
     order.sort_by_key(|&i| (wave[i], i));
     let items: Vec<ItemView> = order
@@ -430,7 +488,7 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
                 wave: wave[i],
                 fm_wave: nd.fm_wave,
                 status: status[i],
-                critical: false,
+                critical: crit_node[i],
                 placeholder: nd.placeholder,
                 requirements: nd.requirements.clone(),
                 plan_path: nd.plan_path.clone(),
@@ -455,7 +513,7 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
             from: nodes[from].key.clone(),
             to: nodes[to].key.clone(),
             kind: "plan",
-            critical: false,
+            critical: crit_edge.contains(&(from, to)),
         })
         .collect();
 
@@ -778,5 +836,240 @@ mod tests {
         assert_eq!(v.epic, "02");
         assert_eq!(v.default_epic, "01");
         assert!(v.warnings.is_empty());
+    }
+
+    /// Dữ liệu SHOP của bản mẫu thiết kế (SHOP-01..14 thành 01-01..01-14), 01-01 và 01-02 đã xong.
+    fn shop_facts() -> Facts {
+        let table: [(u64, &[&str]); 14] = [
+            (1, &[]),
+            (2, &[]),
+            (3, &[]),
+            (4, &["01-01"]),
+            (5, &["01-01", "01-02"]),
+            (6, &[]),
+            (7, &["01-03", "01-04"]),
+            (8, &["01-07", "01-06"]),
+            (9, &["01-08"]),
+            (10, &["01-07"]),
+            (11, &["01-05", "01-07"]),
+            (12, &["01-08"]),
+            (13, &["01-09", "01-11"]),
+            (14, &["01-09"]),
+        ];
+        Facts {
+            phases: vec![ph("1", "Xuất báo cáo đơn hàng")],
+            plans: table
+                .iter()
+                .map(|(num, deps)| plan("1", *num, deps, *num <= 2))
+                .collect(),
+            ..Facts::default()
+        }
+    }
+
+    fn critical_keys(v: &View) -> Vec<&str> {
+        let mut keys: Vec<&str> = v
+            .items
+            .iter()
+            .filter(|i| i.critical)
+            .map(|i| i.key.as_str())
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    fn critical_edges(v: &View) -> Vec<(&str, &str)> {
+        let mut edges: Vec<(&str, &str)> = v
+            .edges
+            .iter()
+            .filter(|e| e.critical)
+            .map(|e| (e.from.as_str(), e.to.as_str()))
+            .collect();
+        edges.sort_unstable();
+        edges
+    }
+
+    #[test]
+    fn critical_shop_golden() {
+        let v = derive(&shop_facts(), &all());
+        let waves: Vec<(&str, u32)> = [
+            "01-01", "01-02", "01-03", "01-04", "01-05", "01-06", "01-07",
+        ]
+        .iter()
+        .chain(
+            [
+                "01-08", "01-09", "01-10", "01-11", "01-12", "01-13", "01-14",
+            ]
+            .iter(),
+        )
+        .map(|k| (*k, wave_of(&v, k)))
+        .collect();
+        assert_eq!(
+            waves,
+            [
+                ("01-01", 0),
+                ("01-02", 0),
+                ("01-03", 0),
+                ("01-04", 1),
+                ("01-05", 1),
+                ("01-06", 0),
+                ("01-07", 2),
+                ("01-08", 3),
+                ("01-09", 4),
+                ("01-10", 3),
+                ("01-11", 3),
+                ("01-12", 4),
+                ("01-13", 5),
+                ("01-14", 5),
+            ]
+        );
+        for k in ["01-01", "01-02"] {
+            assert_eq!(status_of(&v, k), STATUS_XONG, "{k}");
+        }
+        for k in ["01-03", "01-04", "01-05", "01-06"] {
+            assert_eq!(status_of(&v, k), STATUS_SAN_SANG, "{k}");
+        }
+        for k in [
+            "01-07", "01-08", "01-09", "01-10", "01-11", "01-12", "01-13", "01-14",
+        ] {
+            assert_eq!(status_of(&v, k), STATUS_BI_CHAN, "{k}");
+        }
+        assert_eq!(
+            critical_keys(&v),
+            ["01-04", "01-07", "01-08", "01-09", "01-13"]
+        );
+        assert_eq!(
+            critical_edges(&v),
+            [
+                ("01-04", "01-07"),
+                ("01-07", "01-08"),
+                ("01-08", "01-09"),
+                ("01-09", "01-13"),
+            ]
+        );
+
+        let json = serde_json::to_value(&v).unwrap();
+        let items = json["items"].as_array().unwrap();
+        let keys: Vec<&str> = items.iter().map(|i| i["key"].as_str().unwrap()).collect();
+        assert_eq!(
+            &keys[..6],
+            ["01-01", "01-02", "01-03", "01-06", "01-04", "01-05"]
+        );
+        let crit_json: Vec<&str> = items
+            .iter()
+            .filter(|i| i["critical"] == true)
+            .map(|i| i["key"].as_str().unwrap())
+            .collect();
+        let mut crit_json_sorted = crit_json.clone();
+        crit_json_sorted.sort_unstable();
+        assert_eq!(
+            crit_json_sorted,
+            ["01-04", "01-07", "01-08", "01-09", "01-13"]
+        );
+        let done_on_chain = items.iter().find(|i| i["key"] == "01-01").unwrap();
+        assert_eq!(done_on_chain["critical"], false);
+        let crit_edges_json = json["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["critical"] == true)
+            .count();
+        assert_eq!(crit_edges_json, 4);
+        let edge_0104 = json["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["from"] == "01-01" && e["to"] == "01-04")
+            .unwrap();
+        assert_eq!(edge_0104["critical"], false);
+    }
+
+    #[test]
+    fn critical_tie_goes_to_earliest() {
+        let f = Facts {
+            phases: vec![ph("1", "A")],
+            plans: vec![
+                plan("1", 1, &[], false),
+                plan("1", 2, &["01-01"], false),
+                plan("1", 3, &[], false),
+                plan("1", 4, &["01-03"], false),
+            ],
+            ..Facts::default()
+        };
+        let v = derive(&f, &all());
+        assert_eq!(critical_keys(&v), ["01-01", "01-02"]);
+        assert_eq!(critical_edges(&v), [("01-01", "01-02")]);
+    }
+
+    #[test]
+    fn critical_all_done_is_empty() {
+        let mut f = shop_facts();
+        for p in &mut f.plans {
+            p.done = true;
+        }
+        let v = derive(&f, &all());
+        assert!(critical_keys(&v).is_empty());
+        assert!(critical_edges(&v).is_empty());
+    }
+
+    #[test]
+    fn critical_follows_the_view() {
+        // 01-08..01-14 của SHOP đổi thành 02-01..02-07 trong phase 02, giữ nguyên phụ thuộc.
+        let mut f = shop_facts();
+        f.phases.push(ph("2", "Giai đoạn hai"));
+        let moved: [(u64, &[&str]); 7] = [
+            (1, &["01-07", "01-06"]),
+            (2, &["02-01"]),
+            (3, &["01-07"]),
+            (4, &["01-05", "01-07"]),
+            (5, &["02-01"]),
+            (6, &["02-02", "02-04"]),
+            (7, &["02-02"]),
+        ];
+        f.plans.truncate(7);
+        for (num, deps) in moved {
+            f.plans.push(plan("2", num, deps, false));
+        }
+        let sel = Filter {
+            epic: EpicSel::Phase(pn("2")),
+            milestone: None,
+        };
+        let v = derive(&f, &sel);
+        assert_eq!(v.items.len(), 7);
+        assert_eq!(critical_keys(&v), ["02-01", "02-02", "02-06"]);
+        assert_eq!(critical_edges(&v), [("02-01", "02-02"), ("02-02", "02-06")]);
+    }
+
+    #[test]
+    fn critical_deterministic() {
+        let a = serde_json::to_string(&derive(&shop_facts(), &all())).unwrap();
+        let b = serde_json::to_string(&derive(&shop_facts(), &all())).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn critical_deep_chain_small_stack() {
+        let handle = std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(|| {
+                let mut plans = vec![plan("1", 1, &[], false)];
+                for i in 2..=2_400u64 {
+                    let prev = format!("01-{:02}", i - 1);
+                    plans.push(plan("1", i, &[prev.as_str()], false));
+                }
+                let f = Facts {
+                    phases: vec![ph("1", "Chuỗi dài")],
+                    plans,
+                    ..Facts::default()
+                };
+                let v = derive(&f, &all());
+                let last = v.items.iter().map(|i| i.wave).max().unwrap();
+                let crit = v.items.iter().filter(|i| i.critical).count();
+                (v.items.len(), last, crit)
+            })
+            .unwrap();
+        let (items, last_wave, crit) = handle.join().expect("derive không được tràn stack");
+        assert_eq!(items, 2_400);
+        assert_eq!(last_wave, 2_399);
+        assert_eq!(crit, 2_400);
     }
 }
