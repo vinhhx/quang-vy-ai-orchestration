@@ -1178,6 +1178,37 @@ if screen == 'board':
             fail(f"Số phần tử {attr} là {len(els)}, kỳ vọng 1")
         if not els[0].hidden():
             fail(f"{attr} đang hiện")
+
+    # Toolbar, switch, nav link and legend extras (plan 05.5-02 Task 3).
+    nav = root.find(lambda n: n.tag == 'a' and n.attrs.get('href') == '#/board')
+    if len(nav) != 1 or nav[0].attrs.get('aria-current') != 'page':
+        fail(f"Liên kết menu #/board thiếu aria-current=page (nhận được: {[n.attrs.get('aria-current') for n in nav]})")
+    switches = root.find(lambda n: n.attrs.get('role') == 'switch')
+    if len(switches) != 1 or switches[0].attrs.get('aria-checked') != 'true':
+        fail(f"Công tắc role=switch thiếu aria-checked=true (nhận được: {[n.attrs.get('aria-checked') for n in switches]})")
+    if 'Thu gọn mục đã xong' not in collapse(switches[0].text()):
+        fail(f"Công tắc thiếu nhãn 'Thu gọn mục đã xong' (nội dung: '{collapse(switches[0].text())}')")
+    for bid in ('board-reload', 'board-collapse'):
+        if not root.find(lambda n, b=bid: n.tag == 'button' and n.attrs.get('id') == b):
+            fail(f"Thiếu nút id={bid}")
+    for sid in ('board-project', 'board-epic'):
+        if not root.find(lambda n, b=sid: n.tag == 'select' and n.attrs.get('id') == b):
+            fail(f"Thiếu select id={sid}")
+    epic_select = root.find(lambda n: n.tag == 'select' and n.attrs.get('id') == 'board-epic')[0]
+    options = {o.attrs.get('value'): collapse(o.text()) for o in epic_select.find(lambda n: n.tag == 'option')}
+    if options.get('all') != 'Mọi epic':
+        fail(f"Select board-epic thiếu option all = 'Mọi epic' (có: {options})")
+    if '02' not in options:
+        fail(f"Select board-epic thiếu option 02 (có: {options})")
+    ms = root.find(lambda n: n.tag == 'select' and n.attrs.get('id') == 'board-milestone')
+    if len(ms) != 1 or not ms[0].hidden():
+        fail("Select board-milestone phải bị ẩn khi dự án chỉ có một milestone")
+    warns = root.find(lambda n: 'data-board-warnings' in n.attrs)
+    if len(warns) != 1 or not warns[0].hidden():
+        fail("Hộp data-board-warnings phải bị ẩn khi không có cảnh báo")
+    for needle in ('Tổng 3 · 2 wave', 'đường găng'):
+        if needle not in legend_text:
+            fail(f"Chú giải thiếu '{needle}' (nội dung: '{legend_text}')")
     print("Board DOM OK")
     sys.exit(0)
 
