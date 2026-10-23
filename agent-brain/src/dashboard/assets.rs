@@ -85,6 +85,16 @@ pub static ASSETS: &[Asset] = &[
         mime: "text/html; charset=utf-8",
         body: include_bytes!("../../assets/dashboard/screens/projects.html"),
     },
+    Asset {
+        path: "/js/board.js",
+        mime: "text/javascript; charset=utf-8",
+        body: include_bytes!("../../assets/dashboard/js/board.js"),
+    },
+    Asset {
+        path: "/screens/board.html",
+        mime: "text/html; charset=utf-8",
+        body: include_bytes!("../../assets/dashboard/screens/board.html"),
+    },
 ];
 
 pub fn lookup(path: &str) -> Option<&'static Asset> {

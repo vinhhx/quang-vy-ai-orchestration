@@ -1,0 +1,108 @@
+<section data-screen="board" x-data="board" :data-loaded="loadedAttr" class="space-y-6">
+  <div class="flex flex-wrap items-center gap-4">
+    <h1 class="text-2xl font-semibold leading-[1.2]">Bảng công việc</h1>
+    <button type="button" id="board-reload" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="reloading" @click="reload" x-text="reloadLabel">Đọc lại</button>
+  </div>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đọc từ .planning/ của dự án (ROADMAP.md, STATE.md, front matter của các PLAN.md). Sửa file rồi bấm Đọc lại; bảng chỉ xem.</p>
+
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isLoading">Đang tải...</p>
+
+  <div data-board-toolbar class="flex flex-wrap items-end gap-4" x-show="hasProjects">
+    <div class="flex flex-col gap-1">
+      <label for="board-project" class="text-sm font-semibold leading-normal">Dự án</label>
+      <select id="board-project" class="min-h-12 w-auto max-w-full rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="projectSel" @change="projectChanged">
+        <template x-for="p in boardProjects" :key="p.id">
+          <option :value="p.id" :selected="isProjectSel(p)" x-text="projectLabel(p)"></option>
+        </template>
+      </select>
+    </div>
+    <div class="flex flex-col gap-1" x-show="hasBoard">
+      <label for="board-epic" class="text-sm font-semibold leading-normal">Epic</label>
+      <select id="board-epic" class="min-h-12 w-auto max-w-full rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="epicSel" @change="epicChanged">
+        <option value="all" :selected="isEpicSel('all')">Mọi epic</option>
+        <template x-for="e in epics" :key="e.id">
+          <option :value="e.id" :selected="isEpicSel(e.id)" x-text="epicLabel(e)"></option>
+        </template>
+      </select>
+    </div>
+    <div class="flex flex-col gap-1" x-show="showMilestones">
+      <label for="board-milestone" class="text-sm font-semibold leading-normal">Milestone</label>
+      <select id="board-milestone" class="min-h-12 w-auto max-w-full rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="milestoneSel" @change="milestoneChanged">
+        <option value="" :selected="isMilestoneSel('')">Mọi milestone</option>
+        <template x-for="m in milestones" :key="m">
+          <option :value="m" :selected="isMilestoneSel(m)" x-text="m"></option>
+        </template>
+      </select>
+    </div>
+    <button type="button" id="board-collapse" role="switch" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold ring-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="collapseClass" :aria-checked="collapseAttr" @click="toggleCollapse">
+      <span>Thu gọn mục đã xong</span>
+      <span x-text="collapseWord"></span>
+    </button>
+  </div>
+
+  <div data-board-warnings class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="hasWarnings">
+    <p class="font-semibold leading-normal">Dữ liệu GSD có lỗi</p>
+    <template x-for="(line, i) in warningLines" :key="i">
+      <p class="text-sm font-normal leading-normal break-words" x-text="line"></p>
+    </template>
+  </div>
+
+  <div data-board-error class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="hasError">
+    <h2 class="text-xl font-semibold leading-[1.2]">Không tải được dữ liệu</h2>
+    <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100 break-words" x-text="errorBody"></p>
+    <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="load">Thử lại</button>
+  </div>
+
+  <div data-board-empty class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="isEmpty">
+    <h2 class="text-xl font-semibold leading-[1.2]">Chưa có bảng công việc</h2>
+    <p class="text-base font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="message"></p>
+    <p class="font-mono text-sm font-normal leading-normal break-all text-slate-600 dark:text-slate-400" x-show="expectedPath" x-text="expectedPath"></p>
+  </div>
+
+  <div data-board-layout class="flex flex-col gap-6 lg:flex-row lg:items-start" x-show="hasBoard">
+    <div data-board-card class="min-w-0 flex-1 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <ul data-board-legend class="flex flex-wrap items-center gap-4 text-sm font-normal leading-normal">
+        <template x-for="l in legend" :key="l.id">
+          <li :class="l.cls" x-text="l.text"></li>
+        </template>
+        <li class="text-slate-600 dark:text-slate-400" x-text="legendTotal"></li>
+        <li class="inline-flex items-center gap-2 text-slate-600 dark:text-slate-400">
+          <span class="inline-block h-1 w-6 rounded-full bg-yellow-600 dark:bg-yellow-400" aria-hidden="true"></span>
+          <span>đường găng</span>
+        </li>
+      </ul>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noItems">Không có hạng mục nào khớp bộ lọc.</p>
+      <div data-board-region role="region" aria-label="Bảng công việc" tabindex="0" class="overflow-x-auto pb-2 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="!noItems">
+        <div data-board-canvas class="relative" :style="canvasStyle">
+          <template x-for="c in cols" :key="c.waveAttr">
+            <div role="group" class="absolute top-0 flex h-12 flex-col leading-normal" :style="c.headStyle" :data-wave-head="c.waveAttr" :data-rail="c.railAttr" :aria-label="c.label">
+              <span class="truncate text-sm font-semibold leading-normal" x-text="c.title"></span>
+              <span class="truncate font-mono text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="c.sub"></span>
+            </div>
+          </template>
+          <template x-for="e in edgeViews" :key="e.id">
+            <svg aria-hidden="true" class="pointer-events-none absolute overflow-visible" :class="e.zClass" :data-edge="e.id" :style="e.boxStyle">
+              <path fill="none" :d="e.d" :class="edgeClass(e)"></path>
+            </svg>
+          </template>
+          <template x-for="it in cards" :key="it.key">
+            <button type="button" class="absolute z-20 flex overflow-hidden rounded-xl border text-left motion-safe:transition-opacity focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :id="it.domId" :data-item-key="it.key" :class="cardClass(it)" :style="it.style" :aria-label="cardLabel(it)">
+              <span class="flex w-full min-w-0 flex-col gap-1" x-show="!it.chip">
+                <span class="flex w-full items-center gap-2">
+                  <span class="truncate font-mono text-sm font-semibold leading-normal text-slate-900 dark:text-slate-100" x-text="it.key"></span>
+                  <span class="ml-auto shrink-0 text-sm font-semibold leading-normal" :class="it.textClass" x-text="it.statusText"></span>
+                </span>
+                <span class="truncate text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="it.title"></span>
+              </span>
+              <span class="flex w-full min-w-0 items-center gap-2" x-show="it.chip">
+                <span class="truncate font-mono text-sm font-semibold leading-normal text-slate-900 dark:text-slate-100" x-text="it.key"></span>
+                <span class="shrink-0 text-sm font-semibold leading-normal" :class="it.textClass" x-text="it.glyph"></span>
+                <span class="truncate text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="!it.rail" x-text="it.title"></span>
+              </span>
+            </button>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

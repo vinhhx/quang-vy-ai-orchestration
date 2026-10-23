@@ -16,6 +16,8 @@
     duyet: BADGE + ' bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
     sua_lai: BADGE + ' bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200',
     chua_tu_dong: BADGE + ' border border-dashed border-slate-400 text-slate-600 dark:border-slate-500 dark:text-slate-400',
+    san_sang: BADGE + ' bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
+    bi_chan: BADGE + ' border border-dashed border-slate-400 text-slate-600 dark:border-slate-500 dark:text-slate-400',
   };
 
   var STEP_GLYPHS = {
@@ -32,6 +34,8 @@
     duyet: '✓\uFE0E',
     sua_lai: '!\uFE0E',
     chua_tu_dong: '◌\uFE0E',
+    san_sang: '▶\uFE0E',
+    bi_chan: '⟳\uFE0E',
   };
 
   var STATE_TEXT = {
@@ -48,6 +52,8 @@
     vi_pham: 'text-rose-700 dark:text-rose-300',
     cho: 'text-slate-600 dark:text-slate-400',
     chua_tu_dong: 'text-slate-600 dark:text-slate-400',
+    san_sang: 'text-emerald-700 dark:text-emerald-300',
+    bi_chan: 'text-slate-600 dark:text-slate-400',
   };
 
   var STATE_CARD = {
@@ -64,6 +70,8 @@
     vi_pham: 'border-rose-300 bg-rose-50 dark:border-rose-700 dark:bg-rose-900/20',
     cho: 'border-dashed border-slate-500 bg-white dark:border-slate-400 dark:bg-slate-800',
     chua_tu_dong: 'border-dashed border-slate-400 bg-transparent dark:border-slate-500 dark:bg-transparent',
+    san_sang: 'border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-800',
+    bi_chan: 'border-dashed border-slate-400 bg-white dark:border-slate-500 dark:bg-slate-800',
   };
 
   var STATE_WORDS = {
@@ -80,6 +88,8 @@
     vi_pham: 'vi phạm giao thức',
     cho: 'chưa bắt đầu',
     chua_tu_dong: 'chưa tự động',
+    san_sang: 'sẵn sàng',
+    bi_chan: 'bị chặn',
   };
 
   var PROFILE_CLASSES = {
@@ -395,6 +405,7 @@
       task: 'Chi tiết task',
       stats: 'Thống kê',
       projects: 'Dự án',
+      board: 'Bảng công việc',
     };
 
     function parseHash(hash) {
@@ -410,6 +421,9 @@
       }
       if (h === '#/projects') {
         return { name: 'projects', params: {} };
+      }
+      if (h === '#/board') {
+        return { name: 'board', params: {} };
       }
       var m = h.match(/^#\/task\/(\d+)$/);
       if (m) {
