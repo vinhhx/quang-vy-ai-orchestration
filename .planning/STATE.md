@@ -1,43 +1,43 @@
 ---
 gsd_state_version: "1.0"
-current_phase: "05.4"
-current_phase_name: Telegram Task Intake (INSERTED)
-status: executing
-stopped_at: Phase 05.3 complete, ready to discuss Phase 05.4
-last_updated: "2026-10-22T07:37:18.894Z"
-last_activity: 2026-10-22
-last_activity_desc: Phase 05.4 execution started
-state_head: 0e3f0afe7659857c3fe450440232bb2113c06617
+current_phase: "05.5"
+current_phase_name: Work Board (INSERTED)
+status: planning
+stopped_at: Phase 05.4 complete, ready to discuss Phase 05.5
+last_updated: "2026-10-23T03:36:57.774Z"
+last_activity: 2026-10-23
+last_activity_desc: Phase 05.4 complete, transitioned to Phase 05.5
+state_head: cdcde844d1bea52066177b05c7de58d853ca245f
 progress:
   total_phases: 11
   completed_phases: 5
   total_plans: 88
-  completed_plans: 80
-  percent: 45
+  completed_plans: 88
+  percent: 67
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-22)
+See: .planning/PROJECT.md (updated 2026-10-23)
 
 **Core value:** Giao việc cho nhiều AI agent bằng giao thức Lead → `.plan.md` → Dev → QA một cách đáng tin cậy: đúng dự án, đúng vai trò, kill sạch cây tiến trình, đo được token.
-**Current focus:** Phase 05.4 — Telegram Task Intake (INSERTED)
+**Current focus:** Phase 05.5 — Work Board (INSERTED)
 
 ## Current Position
 
-Phase: 05.4 (Telegram Task Intake (INSERTED)) — EXECUTING
-Plan: 1 of 8
-Status: Executing Phase 05.4
-Last activity: 2026-10-22 — Phase 05.4 execution started
+Phase: 05.5 — Work Board (INSERTED)
+Plan: Not started
+Status: Ready to discuss (no requirements yet)
+Last activity: 2026-10-23 — Phase 05.4 complete (UAT 44/44, VERIFICATION passed, threats_open 0); Phase 4 still waits for ≥ 2 weeks of runs data (~2026-10-30)
 
-Progress: [█████░░░░░] 45% (5/7 phases complete, 39/39 planned plans done)
+Progress: [████████████████████] 88/88 plans (100% of planned plans); main phases 5/7 complete (Phase 4 and 6 open), inserted 05.1–05.4 complete, 05.5 not planned
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 80
+- Total plans completed: 88
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -52,6 +52,7 @@ Progress: [█████░░░░░] 45% (5/7 phases complete, 39/39 plann
 | 05.1 | 5 | - | - |
 | 05.2 | 32 | - | - |
 | 05.3 | 9 | - | - |
+| 05.4 | 8 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -80,6 +81,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Không có quyết đị
 - [Phase 05]: Kill từ UI chỉ đi qua `runner::cmd_kill`; job con `agent-brain run` có PDEATHSIG; live update bằng pump `PRAGMA data_version`
 - [Phase 05]: agy chạy với `--dangerously-skip-permissions` (người dùng duyệt cho Phase 5); kiểm UI tự động bằng `scripts/dashboard-smoke.sh --keys` (Chrome headless + CDP)
 - [Phase 05.3]: Bot Telegram chạy trong `serve`, gọi API qua `curl -K -` (token không lên argv), long polling, chỉ chat ID đã ghép; nút Telegram dùng chung hàm hành động với dashboard (`run_task_action`, `kill_run`); Kill phải xác nhận lần hai
+- [Phase 05.4]: Giao việc qua Telegram (`/task`, chuyển tiếp tin → 1 task) đi qua chung `start_new_task` với Giao việc; `tasks.origin` (lược đồ v3) là nguồn sự thật để plan của task Telegram chỉ duyệt trên dashboard (chặn phía máy chủ); danh sách `telegram_projects` mặc định đóng, giới hạn `telegram_max_tasks_per_day` (mặc định 10); tin chuyển tiếp là dữ liệu không tin cậy (khối có mã riêng, quy tắc Lead bổ sung), rủi ro AR-05.4-01 chấp nhận
 - [Phase 01]: S6/S7 engine facts for Phase 6: dsh headless is text-only and needs in-container kill; agy is headless with JSON but no turn limit — Observed in S6 (json_lines=0, container process survives client kill) and S7 (--max-turns rejected, exit 2)
 
 ### Pending Todos
@@ -109,6 +111,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Không có quyết đị
 - [Open]: `.planning/config.json` chưa tồn tại khi tạo roadmap; đã giả định granularity "standard" và ID phase tuần tự (`sequential`).
 
 - [Phase 05.3, follow-up không chặn]: Revoke token bot thử trong @BotFather (điều kiện AR-05.3-02, chỉ người dùng làm được). 05.3-REVIEW-DISPOSITION.md còn IN-01…IN-05 mở; IN-05: workflow tùy chỉnh có plan review nhưng không có plan loop thì `Chạy thêm 1 vòng` dừng lại ngay (chưa tái hiện). 05.3-UI-REVIEW.md (14/20): run-lỗi không nêu lý do, `Dừng hẳn` không xác nhận, tin thiếu tiêu đề nổi bật.
+- [Phase 05.4, follow-up không chặn]: 05.4-REVIEW-DISPOSITION.md còn 10 finding mở — WR-03 (ghi chú `Trả về Lead` / yêu cầu `/task` bắt đầu bằng `/` bị coi là lệnh lạ, hồi quy so với 5.3), WR-01 (câu từ chối không cắt về 4096 ký tự → sửa tin thất bại, nút cũ còn sống), WR-02 (tin `Đã tạo task` / job lỗi gửi một lần, không thử lại), WR-04 (`/task` bị từ chối vẫn đóng luồng đang mở); IN-01…06. Ưu tiên WR-03, WR-01 → một fix plan.
+- [Ops 2026-10-23]: Bot thử mới @quang_vy_bot (token cũ của 5.3 đã thu hồi); môi trường nghiệm thu 5.4 đã xóa; `~/.config/agent-brain` thật vẫn chưa có `telegram.json`; binary cài đặt chưa nâng lên 5.4 (cài bản mới sẽ migrate brain.db lên lược đồ v3 — sao lưu `brain.db.bak-pre-5.4-<ngày>` trước, xem README).
+- [Quick 2026-10-23]: Sửa flaky `index.lock` — `gitops::git_cmd` đặt `GIT_OPTIONAL_LOCKS=0` cho mọi lệnh git (a78fdac); kế hoạch ở `.planning/quick/git-optional-locks.plan.md`.
 
 ### Roadmap Evolution
 
@@ -129,6 +134,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-22
-Stopped at: Phase 05.3 complete, ready to discuss Phase 05.4
+Last session: 2026-10-23
+Stopped at: Phase 05.4 complete, ready to discuss Phase 05.5
 Resume file: None

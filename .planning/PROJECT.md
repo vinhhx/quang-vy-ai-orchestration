@@ -34,6 +34,7 @@ Cổng qua phase (phase gates) nằm trong `ROADMAP.md` (mỗi phase có Success
 - ✓ **Phase 5 — Dashboard nhúng** (DASH-01…12): `agent-brain serve` — Axum + SSE + Tailwind/Alpine CSP nhúng trong binary tĩnh, chỉ `127.0.0.1` + token mỗi lần khởi động, 5 màn hình (Tổng quan, Giao việc, Task, Thống kê, Dự án); nghiệm thu P4-01…P4-09 Đạt, P4-10 không áp dụng (không có Figma) — `protocol-log/nghiem-thu-p4.md` — Phase 5
 - ✓ **Phase 5.1 — Pipeline View** (PIPE-01…05): màn Chi tiết task kiểu "Autopilot" — thẻ giai đoạn có vòng, thời gian, chi phí, cổng "Bạn" suy ra từ git, sổ lượt chạy theo chu kỳ kèm tổng và phân trang; dựng từ dữ liệu runs có sẵn, không đổi schema/giao thức (bước A của Dashboard v2) — Phase 5.1
 - ✓ **Phase 5.3 — Thông báo và hành động qua Telegram** (TELE-01…07): bot long polling trong `agent-brain serve` gọi API bằng `curl -K -` (không thêm crate, không mở cổng), ghép nối `agent-brain telegram setup` (mã 6 số, `telegram.json` 0600), chỉ chat ID đã ghép; thông báo chờ duyệt plan / autopilot dừng / QA đạt / run lỗi mỗi sự kiện một lần, chịu được mất mạng (hàng đợi, backoff 5→60 s); nút Duyệt plan, Trả về Lead (kèm ghi chú), Chạy thêm 1 vòng, Dừng hẳn, Kill (xác nhận) dùng chung hàm hành động với dashboard; UAT thật 3/3 Đạt — Phase 5.3
+- ✓ **Phase 5.4 — Giao việc qua Telegram** (INTAKE-01…12): `/task` (yêu cầu → dự án → quy trình → xác nhận) và chuyển tiếp nhiều tin → danh sách ☑/☐ → **một** task trích dẫn người gửi và thời gian, cùng hàm `start_new_task` với màn Giao việc; `tasks.origin` (lược đồ v3) khiến plan của task Telegram chỉ duyệt trên dashboard; `telegram_projects` (mặc định đóng), `telegram_max_tasks_per_day`; nội dung chuyển tiếp là dữ liệu không tin cậy với Lead; nghiệm thu thật P5.4-01…07 + UX-01 Đạt, UAT 44/44 — Phase 5.4
 
 ### Active
 
@@ -114,6 +115,8 @@ Không có ADR trong bộ tài liệu nạp, nên **không có quyết định n
 | Nhánh Media chạy ở thư mục riêng ngoài Git worktree, render là tiến trình riêng do runner quản lý (Phase 5 spec §2.4) | File video hàng GB làm nặng Orca/Git | — Pending |
 | Work = `~/.claude` (Team seat), Personal = `~/.claude-orca` (Pro) — SPK-10, người dùng miễn xác nhận chính sách công ty (Phase 1) | Hai profile tách biệt theo tài khoản; rủi ro tuân thủ đã chấp nhận (AR-1-01) | ✓ Accepted — S5 live test trên profile Personal chưa chạy |
 | Phân công: Claude phân tích/lập kế hoạch/review, Antigravity (`agy`) thực thi (CLAUDE.md, sau Phase 1) | Tách người lập kế hoạch và người làm; agy headless được (S7) | ✓ Good — Phase 5: 13 plan + 4 fix plan qua agy với `--dangerously-skip-permissions` (người dùng duyệt cho Phase 5); review của Claude bắt được 2 lỗi UI khi chạy thật |
+| Task tạo từ Telegram chỉ duyệt plan trên dashboard; nguồn task lưu bền ở `tasks.origin` (quyết định người dùng 2026-10-21, Phase 5.4) | Phiên Telegram bị chiếm không được vừa tạo task vừa duyệt cho Dev chạy code | ✓ Good — Phase 5.4: chặn phía máy chủ trong `run_control_as`, nghiệm thu thật không có nút Duyệt plan |
+| Phase 5.4 thực thi bằng gsd-executor thay cho agy (quota agy hết; người dùng chọn 2026-10-22) | Không chặn tiến độ khi agy không chạy được | ✓ Good — 8 plan, Claude vẫn review diff và chạy lại test trước khi merge |
 
 ## Evolution
 
@@ -133,4 +136,4 @@ Tài liệu này tiến hóa theo vòng đời dự án.
 4. Cập nhật Context theo hiện trạng
 
 ---
-*Last updated: 2026-10-22 after Phase 5.3*
+*Last updated: 2026-10-23 after Phase 5.4*

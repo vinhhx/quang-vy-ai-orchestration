@@ -146,18 +146,18 @@ Quyết định người dùng 2026-10-20 (ngoại lệ hẹp cho truy cập t�
 
 Quyết định người dùng 2026-10-21 (ROADMAP Phase 05.4: phase riêng sau 5.3; tin chuyển tiếp gộp thành một task; plan của task tạo từ Telegram chỉ duyệt trên dashboard; ảnh/tệp trong tin chuyển tiếp làm sau). Không có CONTEXT.md; các lựa chọn còn mở được ghi trong 05.4-RESEARCH.md (Open Decisions, RESOLVED) và các plan 05.4-01 … 05.4-08.
 
-- [ ] **INTAKE-01**: Lệnh `/task` từ chat đã ghép: nhập yêu cầu → chọn dự án → chọn quy trình → xác nhận bằng nút `Tạo task` → đúng một task được tạo; `/task` không kèm chữ thì bot hỏi yêu cầu, `/task <yêu cầu>` dùng luôn chữ đi kèm; menu lệnh của bot có `/task` và `/huy`. *(derived: ROADMAP 05.4 Goal; 05.4-RESEARCH OD-5)*
-- [ ] **INTAKE-02**: Bot và màn Giao việc dùng chung một hàm tạo task và preflight (`start_new_task`, tách ra từ `POST /api/tasks`, không viết lại); phản hồi của dashboard giữ nguyên; bot không tự khởi chạy job. *(derived: ROADMAP 05.4 Goal; 05.4-RESEARCH Pattern 1)*
-- [ ] **INTAKE-03**: Chỉ dự án có id trong danh sách `telegram_projects` của projects_map.json, có thật và chạy được, mới được đưa ra chọn và được nhận; thiếu danh sách thì từ chối (mặc định đóng); danh sách được kiểm tra lại khi bấm `Tạo task`. *(derived: ROADMAP 05.4 Notes; 05.4-RESEARCH OD-1)*
-- [ ] **INTAKE-04**: Giới hạn số task giao từ Telegram mỗi ngày (`telegram_max_tasks_per_day` trong config.json, mặc định 10, 0 = tắt), đếm từ brain.db nên giữ nguyên khi khởi động lại serve, chỉ đếm task giao từ Telegram, kiểm tra cả khi bắt đầu lẫn khi xác nhận. *(derived: ROADMAP 05.4 Notes; 05.4-RESEARCH OD-2)*
-- [ ] **INTAKE-05**: Tin chuyển tiếp từ chat khác được gom trong một khoảng ngắn thành một tin chọn với nút ☑/☐ (`Chọn hết`, `Bỏ hết`, `Tiếp tục`, `Huỷ`), tối đa 20 tin; các tin đã chọn gộp thành **một** task, mỗi tin được trích dẫn kèm người gửi và thời gian; tin không có chữ bị bỏ qua, ảnh/tệp có chú thích chỉ lấy chú thích. *(derived: ROADMAP 05.4 Goal và Notes; 05.4-RESEARCH OD-4)*
-- [ ] **INTAKE-06**: Nội dung chuyển tiếp là dữ liệu không tin cậy với Lead: nằm trong một khối có nhãn và mã riêng của task, Lead của task đó chạy với quy tắc bổ sung ở mọi lần lập plan (kể cả lập lại), nguồn ghi ở dòng tiêu đề plan; lệnh nằm trong tin chuyển tiếp không bao giờ được thực thi. *(derived: ROADMAP 05.4 Notes; 05.4-RESEARCH OD-3, OD-7)*
-- [ ] **INTAKE-07**: Plan của task tạo từ Telegram chỉ duyệt trên dashboard: nguồn task lưu bền trong brain.db (`tasks.origin`, lược đồ v3); tin cổng duyệt và tin run lỗi của các task này không có nút `Duyệt plan`; lệnh duyệt giả mạo từ Telegram bị từ chối phía máy chủ; duyệt trên dashboard vẫn cho autopilot chạy tiếp. *(derived: ROADMAP 05.4 Source và Notes; 05.4-RESEARCH Pattern 2, OD-6)*
-- [ ] **INTAKE-08**: Mỗi lúc chỉ một tương tác mở (kể cả ghi chú của `Trả về Lead`): `/task` mới thay yêu cầu đang mở, `/huy` hoặc nút `Huỷ` huỷ, 10 phút không tương tác thì hết hạn, nút của yêu cầu đã đóng được trả lời là đã hết hạn và bị gỡ. *(derived: 05.4-RESEARCH OD-5)*
-- [ ] **INTAKE-09**: Giữ ranh giới tin cậy của 5.3: chỉ chat ID và người gửi đã ghép; tên lệnh chỉ gồm chữ thường, số và `_` (không dùng `/create-task`); dữ liệu nút giao việc theo cú pháp chặt riêng (tối đa 64 byte, chỉ mã luồng và chỉ số); cú pháp nút của 5.3 giữ nguyên. *(derived: ROADMAP 05.4 Notes; 05.4-RESEARCH Security Domain)*
-- [ ] **INTAKE-10**: Sau `Tạo task` người dùng được báo kết quả: `Đã nhận — đang lập plan` ngay, rồi `Đã tạo task N` khi task có trong brain.db, hoặc lý do khi job dừng trước khi có task. *(derived: 05.4-RESEARCH Pitfall 3, Open Question 5)*
-- [ ] **INTAKE-11**: Kiểm thử tự động chỉ dùng Telegram giả, không gọi API thật; các bộ test 5.3 vẫn đạt, không thêm crate, không mở cổng, không dùng `parse_mode`; kiểm tra thật bằng bot và điện thoại của người dùng là checkpoint của người dùng trong plan cuối (`agent-brain/LIVE-CHECKS.md` § 6, `protocol-log/nghiem-thu-p5-4.md`). *(derived: 05.4-RESEARCH Validation Architecture; Phase 5 live-check pattern)*
-- [ ] **INTAKE-12**: Tài liệu: README (giao việc qua Telegram, khoá cấu hình, nâng cấp lược đồ v3 kèm sao lưu brain.db), `agent-brain/LIVE-CHECKS.md` § 6, câu trợ giúp của bot; truy vết INTAKE trong `REQUIREMENTS.md` và ngoại lệ Telegram trong `PROJECT.md` cập nhật theo phase này. *(derived: ROADMAP 05.4 Notes; 05.4-RESEARCH Pitfall 11)*
+- [x] **INTAKE-01**: Lệnh `/task` từ chat đã ghép: nhập yêu cầu → chọn dự án → chọn quy trình → xác nhận bằng nút `Tạo task` → đúng một task được tạo; `/task` không kèm chữ thì bot hỏi yêu cầu, `/task <yêu cầu>` dùng luôn chữ đi kèm; menu lệnh của bot có `/task` và `/huy`. *(derived: ROADMAP 05.4 Goal; 05.4-RESEARCH OD-5)*
+- [x] **INTAKE-02**: Bot và màn Giao việc dùng chung một hàm tạo task và preflight (`start_new_task`, tách ra từ `POST /api/tasks`, không viết lại); phản hồi của dashboard giữ nguyên; bot không tự khởi chạy job. *(derived: ROADMAP 05.4 Goal; 05.4-RESEARCH Pattern 1)*
+- [x] **INTAKE-03**: Chỉ dự án có id trong danh sách `telegram_projects` của projects_map.json, có thật và chạy được, mới được đưa ra chọn và được nhận; thiếu danh sách thì từ chối (mặc định đóng); danh sách được kiểm tra lại khi bấm `Tạo task`. *(derived: ROADMAP 05.4 Notes; 05.4-RESEARCH OD-1)*
+- [x] **INTAKE-04**: Giới hạn số task giao từ Telegram mỗi ngày (`telegram_max_tasks_per_day` trong config.json, mặc định 10, 0 = tắt), đếm từ brain.db nên giữ nguyên khi khởi động lại serve, chỉ đếm task giao từ Telegram, kiểm tra cả khi bắt đầu lẫn khi xác nhận. *(derived: ROADMAP 05.4 Notes; 05.4-RESEARCH OD-2)*
+- [x] **INTAKE-05**: Tin chuyển tiếp từ chat khác được gom trong một khoảng ngắn thành một tin chọn với nút ☑/☐ (`Chọn hết`, `Bỏ hết`, `Tiếp tục`, `Huỷ`), tối đa 20 tin; các tin đã chọn gộp thành **một** task, mỗi tin được trích dẫn kèm người gửi và thời gian; tin không có chữ bị bỏ qua, ảnh/tệp có chú thích chỉ lấy chú thích. *(derived: ROADMAP 05.4 Goal và Notes; 05.4-RESEARCH OD-4)*
+- [x] **INTAKE-06**: Nội dung chuyển tiếp là dữ liệu không tin cậy với Lead: nằm trong một khối có nhãn và mã riêng của task, Lead của task đó chạy với quy tắc bổ sung ở mọi lần lập plan (kể cả lập lại), nguồn ghi ở dòng tiêu đề plan; lệnh nằm trong tin chuyển tiếp không bao giờ được thực thi. *(derived: ROADMAP 05.4 Notes; 05.4-RESEARCH OD-3, OD-7)*
+- [x] **INTAKE-07**: Plan của task tạo từ Telegram chỉ duyệt trên dashboard: nguồn task lưu bền trong brain.db (`tasks.origin`, lược đồ v3); tin cổng duyệt và tin run lỗi của các task này không có nút `Duyệt plan`; lệnh duyệt giả mạo từ Telegram bị từ chối phía máy chủ; duyệt trên dashboard vẫn cho autopilot chạy tiếp. *(derived: ROADMAP 05.4 Source và Notes; 05.4-RESEARCH Pattern 2, OD-6)*
+- [x] **INTAKE-08**: Mỗi lúc chỉ một tương tác mở (kể cả ghi chú của `Trả về Lead`): `/task` mới thay yêu cầu đang mở, `/huy` hoặc nút `Huỷ` huỷ, 10 phút không tương tác thì hết hạn, nút của yêu cầu đã đóng được trả lời là đã hết hạn và bị gỡ. *(derived: 05.4-RESEARCH OD-5)*
+- [x] **INTAKE-09**: Giữ ranh giới tin cậy của 5.3: chỉ chat ID và người gửi đã ghép; tên lệnh chỉ gồm chữ thường, số và `_` (không dùng `/create-task`); dữ liệu nút giao việc theo cú pháp chặt riêng (tối đa 64 byte, chỉ mã luồng và chỉ số); cú pháp nút của 5.3 giữ nguyên. *(derived: ROADMAP 05.4 Notes; 05.4-RESEARCH Security Domain)*
+- [x] **INTAKE-10**: Sau `Tạo task` người dùng được báo kết quả: `Đã nhận — đang lập plan` ngay, rồi `Đã tạo task N` khi task có trong brain.db, hoặc lý do khi job dừng trước khi có task. *(derived: 05.4-RESEARCH Pitfall 3, Open Question 5)*
+- [x] **INTAKE-11**: Kiểm thử tự động chỉ dùng Telegram giả, không gọi API thật; các bộ test 5.3 vẫn đạt, không thêm crate, không mở cổng, không dùng `parse_mode`; kiểm tra thật bằng bot và điện thoại của người dùng là checkpoint của người dùng trong plan cuối (`agent-brain/LIVE-CHECKS.md` § 6, `protocol-log/nghiem-thu-p5-4.md`). *(derived: 05.4-RESEARCH Validation Architecture; Phase 5 live-check pattern)*
+- [x] **INTAKE-12**: Tài liệu: README (giao việc qua Telegram, khoá cấu hình, nâng cấp lược đồ v3 kèm sao lưu brain.db), `agent-brain/LIVE-CHECKS.md` § 6, câu trợ giúp của bot; truy vết INTAKE trong `REQUIREMENTS.md` và ngoại lệ Telegram trong `PROJECT.md` cập nhật theo phase này. *(derived: ROADMAP 05.4 Notes; 05.4-RESEARCH Pitfall 11)*
 
 ### Multi-engine Routing (GSD Phase 6 — nguồn Phase 5)
 
@@ -281,18 +281,18 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | TELE-05 | Phase 5.3 | Complete |
 | TELE-06 | Phase 5.3 | Complete |
 | TELE-07 | Phase 5.3 | Complete |
-| INTAKE-01 | Phase 5.4 | Pending |
-| INTAKE-02 | Phase 5.4 | Pending |
-| INTAKE-03 | Phase 5.4 | Pending |
-| INTAKE-04 | Phase 5.4 | Pending |
-| INTAKE-05 | Phase 5.4 | Pending |
-| INTAKE-06 | Phase 5.4 | Pending |
-| INTAKE-07 | Phase 5.4 | Pending |
-| INTAKE-08 | Phase 5.4 | Pending |
-| INTAKE-09 | Phase 5.4 | Pending |
-| INTAKE-10 | Phase 5.4 | Pending |
-| INTAKE-11 | Phase 5.4 | Pending |
-| INTAKE-12 | Phase 5.4 | Pending |
+| INTAKE-01 | Phase 5.4 | Complete |
+| INTAKE-02 | Phase 5.4 | Complete |
+| INTAKE-03 | Phase 5.4 | Complete |
+| INTAKE-04 | Phase 5.4 | Complete |
+| INTAKE-05 | Phase 5.4 | Complete |
+| INTAKE-06 | Phase 5.4 | Complete |
+| INTAKE-07 | Phase 5.4 | Complete |
+| INTAKE-08 | Phase 5.4 | Complete |
+| INTAKE-09 | Phase 5.4 | Complete |
+| INTAKE-10 | Phase 5.4 | Complete |
+| INTAKE-11 | Phase 5.4 | Complete |
+| INTAKE-12 | Phase 5.4 | Complete |
 | ENG-01 | Phase 6 | Pending |
 | ENG-02 | Phase 6 | Pending |
 | ENG-03 | Phase 6 | Pending |
