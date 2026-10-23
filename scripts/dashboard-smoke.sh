@@ -1209,6 +1209,31 @@ if screen == 'board':
     for needle in ('Tổng 3 · 2 wave', 'đường găng'):
         if needle not in legend_text:
             fail(f"Chú giải thiếu '{needle}' (nội dung: '{legend_text}')")
+
+    # Side panel and critical path on screen (plan 05.5-05): the panel starts hidden,
+    # the critical edge is a yellow line, the other edge stays slate, no yellow ring on cards.
+    panels = root.find(lambda n: 'data-board-panel' in n.attrs)
+    if len(panels) != 1 or not panels[0].hidden():
+        fail(f"Bảng bên data-board-panel phải có đúng 1 phần tử và bị ẩn khi chưa chọn thẻ (số phần tử: {len(panels)})")
+
+    def edge_path_class(edge_id):
+        svgs = root.find(lambda n, e=edge_id: n.tag == 'svg' and n.attrs.get('data-edge') == e)
+        if len(svgs) != 1:
+            fail(f"Số svg data-edge={edge_id} là {len(svgs)}, kỳ vọng 1")
+        paths = svgs[0].find(lambda n: n.tag == 'path')
+        if len(paths) != 1:
+            fail(f"svg data-edge={edge_id} có {len(paths)} path, kỳ vọng 1")
+        return paths[0].attrs.get('class') or ''
+
+    crit_class = edge_path_class('02-01__02-02')
+    if 'stroke-yellow-600' not in crit_class:
+        fail(f"Cạnh đường găng 02-01__02-02 thiếu stroke-yellow-600 (class: '{crit_class}')")
+    plain_class = edge_path_class('02-01__02-03')
+    if 'stroke-slate-400' not in plain_class or 'stroke-yellow' in plain_class:
+        fail(f"Cạnh thường 02-01__02-03 phải là stroke-slate-400, không vàng (class: '{plain_class}')")
+    for key, node in cards.items():
+        if 'ring-yellow' in (node.attrs.get('class') or ''):
+            fail(f"Thẻ {key} có vòng vàng ring-yellow; đường găng chỉ vẽ bằng đường kẻ")
     print("Board DOM OK")
     sys.exit(0)
 
@@ -1318,5 +1343,5 @@ EOF
 
   stop_chrome
   cat "$TMP/keys.out"
-  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, picker, layout-5.2, board-keys"
+  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, picker, layout-5.2, board-keys, board-layout"
 fi

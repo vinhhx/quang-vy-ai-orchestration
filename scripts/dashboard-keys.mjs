@@ -818,6 +818,85 @@ async function main() {
   `, 3000, 'board-keys', 'Esc từ nút Đóng của bảng bên không đưa focus về thẻ board-item-02-01');
   console.log('OK board-keys');
 
+  // Check K, board layout at 1024 / 768 / 480 px with every epic and the panel open.
+  await evaluate(`
+    (() => {
+      const sel = document.getElementById('board-epic');
+      sel.value = 'all';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    })()
+  `);
+  await waitFor(`
+    (() => {
+      ${BVIS}
+      const cards = Array.from(document.querySelectorAll('[data-item-key]')).filter(vis);
+      return cards.length === 6 && Boolean(document.querySelector('[data-rail="1"]'));
+    })()
+  `, 8000, 'board-layout', 'Mọi epic không hiện đủ sáu thẻ và một cột thu gọn [data-rail="1"]');
+
+  await evaluate('document.getElementById("board-item-02-01").focus()');
+  await pressKeyText('Enter', 'Enter', 13, '\r');
+  await waitFor(`
+    (() => {
+      ${BVIS}
+      return ${boardCard('02-01')}.getAttribute('aria-pressed') === 'true' && vis(document.querySelector('[data-board-panel]'));
+    })()
+  `, 3000, 'board-layout', 'Không chọn được thẻ 02-01 để mở bảng bên');
+
+  for (const width of [1024, 768, 480]) {
+    await cdp('Emulation.setDeviceMetricsOverride', {
+      width,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await new Promise(r => setTimeout(r, 400));
+
+    const info = await evaluate(`
+      (() => {
+        ${BVIS}
+        const root = document.documentElement;
+        const pageOverflow = root.scrollWidth > root.clientWidth;
+        const region = document.querySelector('[data-board-region]');
+        const regionScrolls = region ? region.scrollWidth > region.clientWidth : false;
+        const panelVisible = vis(document.querySelector('[data-board-panel]'));
+
+        let widest = '';
+        let maxRight = 0;
+        const all = document.querySelectorAll('*');
+        for (let i = 0; i < all.length; i++) {
+          const el = all[i];
+          const rect = el.getBoundingClientRect();
+          if (rect.right > maxRight) {
+            maxRight = rect.right;
+            const tag = el.tagName.toLowerCase();
+            const id = el.id ? '#' + el.id : '';
+            const cls = el.className && typeof el.className === 'string'
+              ? '.' + el.className.trim().split(/\\s+/).slice(0, 3).join('.')
+              : '';
+            widest = tag + id + cls;
+          }
+        }
+
+        return { pageOverflow, regionScrolls, panelVisible, widest };
+      })()
+    `);
+
+    if (info.pageOverflow) {
+      throw new Error(`LỖI board-layout: ${width}px trang bị tràn ngang (phần tử rộng nhất: ${info.widest})`);
+    }
+    if (!info.panelVisible) {
+      throw new Error(`LỖI board-layout: ${width}px bảng bên [data-board-panel] không hiển thị`);
+    }
+    if (width === 480 && !info.regionScrolls) {
+      throw new Error('LỖI board-layout: 480px vùng [data-board-region] không tự cuộn ngang (scrollWidth không lớn hơn clientWidth)');
+    }
+  }
+
+  await cdp('Emulation.clearDeviceMetricsOverride');
+  await pressKey('Escape', 'Escape', 27);
+  console.log('OK board-layout');
+
   ws.close();
 }
 
