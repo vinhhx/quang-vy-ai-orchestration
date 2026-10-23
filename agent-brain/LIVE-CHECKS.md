@@ -1482,3 +1482,132 @@ Cần chuẩn bị: bot thử của Phase 5.3 (nếu token cũ đã bị thu h�
 2. Ghi xong `protocol-log/nghiem-thu-p5-4.md`, chạy kiểm tra dạng token trên file đó (`git diff --name-only -G"[0-9]{8,10}:[A-Za-z0-9_-]{35}" -- protocol-log` không nêu file nào) và đọc lại để chắc không có chat ID, tên thật hay nguyên văn tin chuyển tiếp, rồi xóa toàn bộ môi trường: `rm -rf "$LIVE"` (gồm `telegram.json` có token, `brain.db`, bản ghi fake claude có nội dung tin chuyển tiếp, hai repo nháp và log run).
 3. Không bắt buộc: thu hồi token của bot thử trong @BotFather (`/revoke`).
 4. Không lệnh nào trong phần này ghi vào `~/.local/share/agent-brain`, `~/.config/agent-brain` hay `~/.claude-orca`, và `serve` cổng 7437 của bạn không bị gửi tín hiệu. `brain.db` thật chỉ được nâng lên lược đồ 3 khi bạn cài binary mới theo README (mục 2, sao lưu `brain.db.bak-pre-5.4-<ngày>` trước).
+
+---
+
+## 7. Nghiệm thu Phase 5.5 (Bảng công việc, BOARD-13/14)
+
+Nghiệm thu màn hình `Bảng công việc` (`#/board`) bằng **binary thật** đọc **lộ trình GSD thật của repo này** và **bảng mẫu SHOP** (14 plan của bản thiết kế, mục tiêu là nhìn thấy đường găng màu vàng và chế độ tập trung trên đúng ví dụ đã duyệt). Phần tự động (P5.5-00) kiểm tra cấu trúc dữ liệu của `GET /api/board`; phần nhìn bằng mắt (P5.5-01 … P5.5-06) là việc của bạn trong trình duyệt thật, ở cả giao diện sáng và tối.
+
+Mọi ca chạy trong môi trường cô lập do `scripts/board-live-check.sh` dựng: `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `AGENT_BRAIN_DB`, `AGENT_BRAIN_CONFIG` nằm trong một thư mục tạm riêng, `serve` chạy ở cổng ngẫu nhiên (`--port 0`) với khóa `serve.lock` riêng. Repo này được đăng ký chỉ để **đọc** (`serve` chỉ đọc `.planning/` qua bộ quét của bảng, không ghi gì); bảng mẫu SHOP được tạo trong thư mục tạm và bị xóa khi script dừng. `brain.db` thật, `~/.config/agent-brain`, `~/.claude-orca` và `agent-brain serve` đang chạy của bạn (cổng 7437) không bị đụng tới.
+
+> [!CAUTION]
+> **An toàn token và tiến trình**:
+> - URL do `--keep` in ra có token của phiên: chỉ mở trong trình duyệt của bạn, không dán vào chat hay file ghi kết quả.
+> - Chỉ dừng `serve` bằng Ctrl+C trong terminal của script (script gửi tín hiệu tới đúng PID đã ghi) hoặc `kill -INT <PID>` với PID đó. Không dùng `pkill`, `killall` hay lệnh dừng theo tên.
+
+---
+
+### P5.5-00: Kiểm tra tự động
+- **Mục tiêu**: Binary thật trả đúng bảng của repo này và của bảng mẫu SHOP (BOARD-09, BOARD-10, BOARD-14): `epic=all` không cảnh báo, không bị cắt bớt, tám plan `05.4-*` đều `xong`, phase `04` và `06` là mục thay thế chưa xong, có cạnh phase `05.4-08` → `05.5-01`, mọi mục và mọi đầu cạnh găng chưa xong, chế độ xem mặc định là `current_phase` của `.planning/STATE.md`; bảng mẫu SHOP có đúng wave, trạng thái, năm mục găng và bốn cạnh găng của bản thiết kế; mọi yêu cầu trả lời dưới 2 giây; repo này không bị thay đổi.
+- **Tiền điều kiện**: `python3` và `curl` có trong `PATH`.
+- **Lệnh thực hiện** (từ gốc repo):
+  ```bash
+  cargo build --manifest-path agent-brain/Cargo.toml --offline --locked
+  TRUOC="$(mktemp)"
+  git status --porcelain > "$TRUOC"
+  bash scripts/board-live-check.sh
+  git status --porcelain | diff "$TRUOC" - && echo "repo không đổi"
+  rm -f "$TRUOC"
+  ```
+- **Kết quả mong đợi**: Script in các dòng `LIVE OK: …` cho `repo_all`, `repo_default`, `shop_all`, rồi `Board live check OK` và thoát `0`; `diff` không in gì và in `repo không đổi`. Một dòng bắt đầu bằng `LỖI live:` nghĩa là một điều kiện sai (script dừng ở điều kiện đầu tiên sai).
+- **Ghi nhận**: Dòng `P5.5-00`: các dòng `LIVE OK:` (đặc biệt số hạng mục của repo và đường găng của repo), `Board live check OK`, `repo không đổi`.
+- **Dọn dẹp**: Không (script tự xóa thư mục tạm và dừng `serve` của nó khi kết thúc).
+
+---
+
+### P5.5-01: Dự án này, chế độ xem mặc định
+- **Mục tiêu**: Bảng của repo này mở đúng phase hiện tại, thẻ và trạng thái khớp với các plan của phase đó, `Đọc lại` đọc lại file mà không lỗi và không có khung cảnh báo (BOARD-10, D-06).
+- **Tiền điều kiện**: P5.5-00 đã đạt; trình duyệt Chrome hoặc Firefox.
+- **Lệnh thực hiện**:
+  1. Trong một terminal (từ gốc repo), giữ nguyên terminal này tới hết mục 7:
+     ```bash
+     bash scripts/board-live-check.sh --keep
+     ```
+  2. Sau dòng `Board live check OK`, script in một URL kết thúc bằng `#/board`. Mở URL đó trong trình duyệt.
+  3. Chọn dự án `Điều phối Quang Vy` (nếu chưa chọn), để `Epic` ở giá trị mặc định, bấm `Đọc lại`.
+- **Kết quả mong đợi**:
+  1. Màn hình `Bảng công việc` mở; ô `Epic` hiện phase hiện tại (giá trị `current_phase` của `.planning/STATE.md`).
+  2. Các thẻ là các plan của phase đó, mỗi thẻ có mã plan, tên, glyph và chữ trạng thái (`xong`, `sẵn sàng`, `bị chặn`); plan có `*-SUMMARY.md` là `xong`.
+  3. `Đọc lại` chạy xong không báo lỗi, bảng vẫn giữ nguyên lựa chọn.
+  4. Không có khung `Dữ liệu GSD có lỗi`.
+- **Ghi nhận**: Dòng `P5.5-01`: phase hiện ở ô `Epic`, số thẻ, đạt hoặc không đạt cho từng ý.
+- **Dọn dẹp**: Không. Giữ `serve` cho các ca sau.
+
+---
+
+### P5.5-02: Mọi epic và Thu gọn mục đã xong
+- **Mục tiêu**: `Mọi epic` cho một đồ thị liền mạch nhiều phase; `Thu gọn mục đã xong` (bật mặc định) thu các wave đã xong thành cột hẹp (BOARD-10, BOARD-11, D-11).
+- **Tiền điều kiện**: P5.5-01 xong, `serve` đang chạy.
+- **Lệnh thực hiện**:
+  1. Ở ô `Epic` chọn `Mọi epic`.
+  2. Quan sát các wave đã xong, các đường nối giữa các phase, và cuộn ngang bảng.
+  3. Tắt `Thu gọn mục đã xong`, rồi bật lại.
+- **Kết quả mong đợi**:
+  1. Wave đã xong hoàn toàn hiện thành cột hẹp `Wave N` và `k/k ✓︎`; mục đã xong trong wave còn việc là chip một dòng.
+  2. Các đường phụ thuộc nối các phase với nhau (ví dụ từ phase `05.4` sang phase `05.5`); các đường vào cột hẹp vẫn nhìn thấy.
+  3. Bảng chỉ cuộn ngang **bên trong khung của nó**; trang không cuộn ngang.
+  4. Tắt công tắc: mọi mục hiện thẻ đầy đủ; bật lại: thu gọn như trước.
+- **Ghi nhận**: Dòng `P5.5-02`: đạt hoặc không đạt cho từng ý; ghi mọi chỗ khó đọc.
+- **Dọn dẹp**: Không.
+
+---
+
+### P5.5-03: Bảng mẫu SHOP — đường găng và chế độ tập trung
+- **Mục tiêu**: Trên ví dụ đã duyệt, đường găng vàng và chế độ tập trung cho cảm giác đúng như bản thiết kế (BOARD-09, BOARD-12, D-09, D-12).
+- **Tiền điều kiện**: P5.5-02 xong, `serve` đang chạy.
+- **Lệnh thực hiện**:
+  1. Chọn dự án `Bảng mẫu SHOP`, `Epic` là `Mọi epic`.
+  2. Quan sát đường vàng.
+  3. Bấm thẻ `01-07`.
+  4. Trong bảng bên (panel), bấm một mục ở `Phụ thuộc`, ví dụ `01-04`.
+- **Kết quả mong đợi**:
+  1. Đường vàng đi qua `01-04` → `01-07` → `01-08` → `01-09` → `01-13`; không thẻ nào có viền vàng.
+  2. Sau khi bấm `01-07`: thẻ `01-07` có vòng cyan 2px; chuỗi của nó sáng: phía trước `01-01`, `01-03`, `01-04`, phía sau `01-08`, `01-09`, `01-10`, `01-11`, `01-12`, `01-13`, `01-14`; `01-02`, `01-05`, `01-06` bị mờ; các đường trong chuỗi chuyển cyan.
+  3. Bảng bên hiện mã, tên, phase, milestone, wave tính được (`2`), trạng thái `bị chặn`, đường găng, yêu cầu (`SHOP-07`), danh sách `Phụ thuộc` (`01-03`, `01-04`) và `Được chờ bởi`, đường dẫn `PLAN.md` tương đối; không có nội dung plan, không có nút sửa.
+  4. Bấm `01-04` trong `Phụ thuộc` chuyển lựa chọn và focus sang thẻ `01-04`.
+- **Ghi nhận**: Dòng `P5.5-03`: đạt hoặc không đạt cho từng ý; cảm nhận về độ rõ của chuỗi so với phần bị mờ.
+- **Dọn dẹp**: Không.
+
+---
+
+### P5.5-04: Bàn phím
+- **Mục tiêu**: Dùng bảng chỉ bằng bàn phím (BOARD-12, D-12).
+- **Tiền điều kiện**: P5.5-03 xong.
+- **Lệnh thực hiện**:
+  1. Bấm `Esc` để bỏ lựa chọn. Dùng `Tab` tới một thẻ, bấm `Enter`.
+  2. `Tab` tới thẻ khác, bấm `Space`.
+  3. Bấm `Esc`.
+- **Kết quả mong đợi**:
+  1. `Enter` chọn thẻ (vòng cyan, chuỗi sáng, panel mở); thẻ có vòng focus nhìn thấy khi `Tab`.
+  2. `Space` chọn thẻ thứ hai mà trang không cuộn xuống.
+  3. `Esc` bỏ lựa chọn, đóng panel, và focus **vẫn nằm trên thẻ** vừa chọn (không rơi về đầu trang).
+- **Ghi nhận**: Dòng `P5.5-04`: đạt hoặc không đạt cho từng ý.
+- **Dọn dẹp**: Không.
+
+---
+
+### P5.5-05: Giao diện tối
+- **Mục tiêu**: Đường vàng, vòng và đường cyan, thẻ bị mờ và panel đọc rõ ở giao diện tối (BOARD-13).
+- **Tiền điều kiện**: P5.5-03 xong.
+- **Lệnh thực hiện**: Đổi giao diện sang tối (nút đổi giao diện trên thanh đầu trang, hoặc đổi chế độ màu của hệ điều hành), lặp lại P5.5-03 trên `Bảng mẫu SHOP`, rồi mở bảng của `Điều phối Quang Vy` với `Mọi epic`.
+- **Kết quả mong đợi**: Đường vàng và đường cyan đọc rõ trên nền tối; các đường chạy **dưới** thẻ (thẻ che đường, không có chữ nằm đè lên đường); thẻ bị mờ vẫn đọc được mã; panel đủ tương phản.
+- **Ghi nhận**: Dòng `P5.5-05`: đạt hoặc không đạt; ghi chỗ tương phản yếu nếu có.
+- **Dọn dẹp**: Không.
+
+---
+
+### P5.5-06: Độ rộng 1024 / 768 / 480 px
+- **Mục tiêu**: Không cuộn ngang trang ở ba độ rộng, kể cả khi `Mọi epic` và panel đang mở (BOARD-13).
+- **Tiền điều kiện**: P5.5-03 xong.
+- **Lệnh thực hiện**: Mở công cụ nhà phát triển của trình duyệt, bật chế độ thiết bị, đặt độ rộng 1024, 768 rồi 480 px; ở mỗi độ rộng chọn `Mọi epic`, bấm một thẻ để mở panel.
+- **Kết quả mong đợi**: Ở cả ba độ rộng trang không có thanh cuộn ngang; bảng cuộn ngang trong khung của nó; dưới 1024 px panel nằm **dưới** bảng và vẫn nhìn thấy.
+- **Ghi nhận**: Dòng `P5.5-06`: đạt hoặc không đạt ở từng độ rộng.
+- **Dọn dẹp**: Không.
+
+---
+
+### Dọn dẹp
+1. Trong terminal của script nhấn Ctrl+C: script gửi tín hiệu tới đúng PID `serve` đã ghi, chờ tối đa 10 giây rồi mới buộc dừng PID đó, và xóa thư mục tạm (gồm bảng mẫu SHOP, `brain.db` riêng và token của phiên).
+2. Kiểm tra `serve` của bạn ở cổng 7437 (nếu đang chạy) vẫn chạy bình thường và `git status --porcelain` của repo này không có thay đổi mới do đợt nghiệm thu.
+3. Không lệnh nào trong phần này ghi vào `~/.local/share/agent-brain`, `~/.config/agent-brain` hay `~/.claude-orca`, và `.planning/` của repo này chỉ bị đọc.
