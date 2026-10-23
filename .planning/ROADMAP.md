@@ -377,14 +377,26 @@ Plans:
 
 **Goal**: Màn hình mới `#/board` (View 2 của Dashboard v2): các hạng mục công việc xếp theo wave (wave 0 không phụ thuộc, wave sau chỉ phụ thuộc wave trước), đường nối phụ thuộc, đường găng (critical path) tô nổi, bấm một hạng mục để làm sáng những gì nó chờ và những gì chờ nó, công tắc ẩn/thu gọn hạng mục đã xong — dữ liệu nhập từ `ROADMAP.md` + front matter plan của GSD (`wave`, `depends_on`) trước, chế độ epic của Lead làm sau.
 **Source**: Thiết kế Dashboard v2 (`05.1-DESIGN-REF.html`, "View 2 · Work board"; https://claude.ai/artifact/KdMc5CMNSMg4G5T9jLjFRK), quyết định người dùng 2026-10-19 (Phase C, nhập roadmap GSD trước) và 2026-10-20 (bảng công việc → 5.4), 2026-10-21 (nhận việc qua Telegram chen vào 5.4, bảng → 5.5)
-**Depends on**: Phase 05.2
-**Requirements**: TBD (định nghĩa khi /gsd-discuss-phase 05.5)
-**Notes**: Tầng mới trên task: bảng `epics`, hạng mục, phụ thuộc; `GET /api/board?epic=&milestone=&profile=` trả hạng mục kèm trạng thái suy ra, wave, cờ critical và các cạnh. Giữ nguyên quy tắc Phase 5: `127.0.0.1` + token, Tailwind v4 build, Alpine CSP, không CDN, offline, tiếng Việt, sáng/tối, `dashboard-ui-lint.sh` phải qua.
+**Depends on**: Phase 05.4
+**Requirements**: BOARD-01, BOARD-02, BOARD-03, BOARD-04, BOARD-05, BOARD-06, BOARD-07, BOARD-08, BOARD-09, BOARD-10, BOARD-11, BOARD-12, BOARD-13, BOARD-14
+**Notes**: Phase này chỉ làm nửa đầu của bước C: bảng chỉ đọc, đọc trực tiếp `ROADMAP.md`, `STATE.md` và front matter plan GSD trong `.planning/` của dự án mỗi lần gọi `GET /api/board?project=&epic=&milestone=` (không bảng `epics`, không migration — 05.5-CONTEXT D-05); bảng `epics`/hạng mục/phụ thuộc, chế độ epic của Lead, sửa tay và "bắt đầu hạng mục thành task" làm ở phase sau, giữ cùng dạng phản hồi. Đường găng chỉ tính hạng mục chưa xong (quyết định 2026-10-23). Giữ nguyên quy tắc Phase 5: `127.0.0.1` + token, Tailwind v4 build, Alpine CSP, không CDN, offline, tiếng Việt, sáng/tối, `dashboard-ui-lint.sh` phải qua.
 **UI hint**: yes
-**Plans:** 0 plans
+**Plans:** 6 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 05.5 to break down)
+**Wave 1**
+- [ ] 05.5-01-PLAN.md — Tracer: live read of `.planning/` → token-gated GET-only `/api/board`, JSON contract, empty states, default epic; BOARD-01..14 registered in REQUIREMENTS.md (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 05.5-02-PLAN.md — `#/board` screen: waves, cards, per-edge SVG, "Thu gọn mục đã xong", filters, Đọc lại, warnings box, nav, app.css (wave 2)
+- [ ] 05.5-03-PLAN.md — Derive rules in `board.rs`: trimmed critical path, warnings + cycle break, wave mismatch, phase links, milestones, caps (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 05.5-04-PLAN.md — Scanner: roadmap parsing, hostile-repo tests (symlinks, FIFO, caps), broken-data warnings over HTTP (wave 3)
+- [ ] 05.5-05-PLAN.md — Focus mode, read-only side panel, Enter/Space/Esc in headless Chrome, layout at 1024/768/480 (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 05.5-06-PLAN.md — Live check on this repo + SHOP demo, README, LIVE-CHECKS §7, full regression, browser check (wave 4)
 
 ### Phase 6: Multi-engine & Media Branch
 
