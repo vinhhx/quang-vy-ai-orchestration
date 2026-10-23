@@ -663,4 +663,84 @@ mod tests {
         assert_eq!(v.epics[0].id, "07");
         assert_eq!(v.epics[0].name, "07");
     }
+
+    fn default_filter() -> Filter {
+        Filter {
+            epic: EpicSel::Default,
+            milestone: None,
+        }
+    }
+
+    #[test]
+    fn default_epic_from_state() {
+        let mut f = tracer_facts();
+        f.current_phase = Some(pn("2"));
+        let v = derive(&f, &default_filter());
+        assert_eq!(v.default_epic, "02");
+        assert_eq!(v.epic, "02");
+        assert_eq!(v.items.len(), 2);
+
+        f.current_phase = Some(pn("1"));
+        let v = derive(&f, &default_filter());
+        assert_eq!(v.default_epic, "01");
+        assert_eq!(v.epic, "01");
+    }
+
+    #[test]
+    fn default_epic_first_not_done() {
+        let mut f = tracer_facts();
+        // current_phase không phải epic nào: dùng epic đầu tiên chưa xong.
+        f.current_phase = Some(pn("9"));
+        let v = derive(&f, &default_filter());
+        assert_eq!(v.default_epic, "02");
+        assert_eq!(v.epic, "02");
+
+        f.current_phase = None;
+        let v = derive(&f, &default_filter());
+        assert_eq!(v.default_epic, "02");
+    }
+
+    #[test]
+    fn default_epic_all_done_is_all() {
+        let mut f = tracer_facts();
+        for p in &mut f.plans {
+            p.done = true;
+        }
+        f.phases[2].checkbox = Some(true);
+        let v = derive(&f, &default_filter());
+        assert_eq!(v.default_epic, "all");
+        assert_eq!(v.epic, "all");
+        assert_eq!(v.items.len(), 5);
+    }
+
+    #[test]
+    fn default_epic_unknown_falls_back() {
+        let f = tracer_facts();
+        let sel = Filter {
+            epic: EpicSel::Phase(pn("9")),
+            milestone: None,
+        };
+        let v = derive(&f, &sel);
+        assert_eq!(v.epic, v.default_epic);
+        assert_eq!(v.epic, "02");
+        assert!(v.warnings.iter().any(|w| {
+            w.message == "Không có epic 09 — đang xem epic mặc định 02"
+                && w.path == ".planning/ROADMAP.md"
+        }));
+        assert_eq!(v.items.len(), 2);
+    }
+
+    #[test]
+    fn explicit_epic_does_not_follow_default() {
+        let mut f = tracer_facts();
+        f.current_phase = Some(pn("1"));
+        let sel = Filter {
+            epic: EpicSel::Phase(pn("2")),
+            milestone: None,
+        };
+        let v = derive(&f, &sel);
+        assert_eq!(v.epic, "02");
+        assert_eq!(v.default_epic, "01");
+        assert!(v.warnings.is_empty());
+    }
 }
