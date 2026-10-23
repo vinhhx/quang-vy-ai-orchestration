@@ -13,7 +13,7 @@ pub const STATUS_BI_CHAN: &str = "bi_chan";
 
 pub const MAX_ITEMS: usize = 2_500;
 pub const MAX_EDGES: usize = 20_000;
-pub const MAX_PHASE_LINK_PAIRS: usize = 256; // áp dụng ở plan 05.5-03
+pub const MAX_PHASE_LINK_PAIRS: usize = 256;
 pub const MAX_WARNINGS: usize = 200;
 
 /// Số phase dạng `5`, `5.4`, `05.10`: so sánh từng thành phần theo số, không bao giờ qua f64.
@@ -358,6 +358,95 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
         }
     }
 
+    // D-10: `Depends on: Phase X` của ROADMAP nối mỗi hạng mục cuối của X (không hạng mục nào
+    // trong X chờ nó) với mỗi hạng mục gốc của phase này (không có cạnh tường minh đi vào).
+    // Hạng mục giữ chỗ vừa là gốc vừa là cuối. Cạnh phase đứng sau cạnh tường minh.
+    {
+        let mut has_in = vec![false; n];
+        let mut has_dependent_in_epic = vec![false; n];
+        let mut present: HashSet<(usize, usize)> = HashSet::new();
+        for &(from, to, _) in &edge_list {
+            has_in[to] = true;
+            if nodes[from].epic == nodes[to].epic {
+                has_dependent_in_epic[from] = true;
+            }
+            present.insert((from, to));
+        }
+        let mut members: HashMap<&PhaseNum, Vec<usize>> = HashMap::new();
+        for (i, nd) in nodes.iter().enumerate() {
+            members.entry(&nd.epic).or_default().push(i);
+        }
+        let known: HashSet<&PhaseNum> = facts.phases.iter().map(|p| &p.num).collect();
+        let mut phase_order: Vec<&PhaseFact> = facts.phases.iter().collect();
+        phase_order.sort_by(|a, b| a.num.cmp(&b.num));
+        let mut phase_done: HashSet<&PhaseNum> = HashSet::new();
+        for p in phase_order {
+            if !phase_done.insert(&p.num) {
+                continue;
+            }
+            let mut linked: HashSet<&PhaseNum> = HashSet::new();
+            for x in &p.depends_on {
+                if !linked.insert(x) {
+                    continue;
+                }
+                let message = if x == &p.num {
+                    format!(
+                        "Phase {}: Depends on nhắc chính phase {} (bỏ qua)",
+                        p.num.display(),
+                        x.display()
+                    )
+                } else if !known.contains(x) {
+                    format!(
+                        "Phase {}: Depends on nhắc phase {} không có trong ROADMAP.md (bỏ qua)",
+                        p.num.display(),
+                        x.display()
+                    )
+                } else {
+                    String::new()
+                };
+                if !message.is_empty() {
+                    notes.push(Warning {
+                        path: ".planning/ROADMAP.md".to_string(),
+                        message,
+                    });
+                    continue;
+                }
+                let roots: Vec<usize> = members
+                    .get(&p.num)
+                    .map(|m| m.iter().copied().filter(|&i| !has_in[i]).collect())
+                    .unwrap_or_default();
+                let sinks: Vec<usize> = members
+                    .get(x)
+                    .map(|m| {
+                        m.iter()
+                            .copied()
+                            .filter(|&i| !has_dependent_in_epic[i])
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let pairs = sinks.len() * roots.len();
+                if pairs > MAX_PHASE_LINK_PAIRS {
+                    notes.push(Warning {
+                        path: ".planning/ROADMAP.md".to_string(),
+                        message: format!(
+                            "Phase {}: liên kết từ phase {} có {pairs} cặp (giới hạn {MAX_PHASE_LINK_PAIRS}) — bỏ qua liên kết này",
+                            p.num.display(),
+                            x.display()
+                        ),
+                    });
+                    continue;
+                }
+                for &s in &sinks {
+                    for &r in &roots {
+                        if present.insert((s, r)) {
+                            edge_list.push((s, r, true));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if edge_list.len() > MAX_EDGES {
         edge_list.truncate(MAX_EDGES);
         truncated = true;
@@ -548,11 +637,44 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
         .as_ref()
         .map(PhaseNum::display)
         .unwrap_or_else(|| "all".to_string());
+    // Milestone (D-04b): các milestone riêng biệt theo thứ tự xuất hiện trong ROADMAP; lọc theo
+    // milestone chỉ áp dụng khi tên khớp một milestone có thật, nếu không thì bỏ qua kèm cảnh báo.
+    let mut distinct_milestones: Vec<String> = Vec::new();
+    for ph in &facts.phases {
+        if let Some(m) = &ph.milestone {
+            if !distinct_milestones.contains(m) {
+                distinct_milestones.push(m.clone());
+            }
+        }
+    }
+    let applied_milestone: Option<String> = match &filter.milestone {
+        Some(m) if distinct_milestones.contains(m) => Some(m.clone()),
+        Some(m) => {
+            extra_warnings.push(Warning {
+                path: ".planning/ROADMAP.md".to_string(),
+                message: format!(
+                    "Không có milestone {} — đang xem mọi milestone",
+                    clean_text(m, 64)
+                ),
+            });
+            None
+        }
+        None => None,
+    };
     let visible: Vec<bool> = nodes
         .iter()
-        .map(|nd| match &selected {
-            Some(p) => &nd.epic == p,
-            None => true,
+        .map(|nd| {
+            let in_epic = match &selected {
+                Some(p) => &nd.epic == p,
+                None => true,
+            };
+            let in_milestone = match &applied_milestone {
+                Some(m) => {
+                    epic_info.get(&nd.epic).and_then(|(_, ms)| ms.as_deref()) == Some(m.as_str())
+                }
+                None => true,
+            };
+            in_epic && in_milestone
         })
         .collect();
 
@@ -629,6 +751,31 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
         }
     }
 
+    // Láng giềng trên đồ thị đầy đủ sau khi phá vòng, theo thứ tự hạng mục.
+    let mut full_outs: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for to in 0..n {
+        for &from in &deps[to] {
+            full_outs[from].push(to);
+        }
+    }
+    let keys_of =
+        |list: &[usize]| -> Vec<String> { list.iter().map(|&i| nodes[i].key.clone()).collect() };
+    // Láng giềng trực tiếp nằm ngoài khung nhìn, không trùng, theo thứ tự hạng mục.
+    let mut outside: BTreeSet<usize> = BTreeSet::new();
+    for v in (0..n).filter(|&v| visible[v]) {
+        outside.extend(deps[v].iter().copied().filter(|&d| !visible[d]));
+        outside.extend(full_outs[v].iter().copied().filter(|&o| !visible[o]));
+    }
+    let external: Vec<ExternalView> = outside
+        .iter()
+        .map(|&i| ExternalView {
+            key: nodes[i].key.clone(),
+            title: nodes[i].title.clone(),
+            epic: nodes[i].epic.display(),
+            status: status[i],
+        })
+        .collect();
+
     let mut order: Vec<usize> = (0..n).filter(|&i| visible[i]).collect();
     order.sort_by_key(|&i| (wave[i], i));
     let items: Vec<ItemView> = order
@@ -653,8 +800,8 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
                 placeholder: nd.placeholder,
                 requirements: nd.requirements.clone(),
                 plan_path: nd.plan_path.clone(),
-                waits_on: Vec::new(),
-                waited_by: Vec::new(),
+                waits_on: keys_of(&deps[i]),
+                waited_by: keys_of(&full_outs[i]),
             }
         })
         .collect();
@@ -673,7 +820,11 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
         .map(|&(from, to)| EdgeView {
             from: nodes[from].key.clone(),
             to: nodes[to].key.clone(),
-            kind: "plan",
+            kind: if phase_edges.contains(&(from, to)) {
+                "phase"
+            } else {
+                "plan"
+            },
             critical: crit_edge.contains(&(from, to)),
         })
         .collect();
@@ -698,11 +849,15 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
         epic: epic_str,
         default_epic,
         epics,
-        milestone: None,
-        milestones: Vec::new(),
+        milestone: applied_milestone,
+        milestones: if distinct_milestones.len() >= 2 {
+            distinct_milestones
+        } else {
+            Vec::new()
+        },
         items,
         edges,
-        external: Vec::new(),
+        external,
         counts,
         warnings,
         truncated: facts.truncated || truncated,
