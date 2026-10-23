@@ -11,8 +11,8 @@ pub const STATUS_XONG: &str = "xong";
 pub const STATUS_SAN_SANG: &str = "san_sang";
 pub const STATUS_BI_CHAN: &str = "bi_chan";
 
-pub const MAX_ITEMS: usize = 2_500; // áp dụng ở plan 05.5-03
-pub const MAX_EDGES: usize = 20_000; // áp dụng ở plan 05.5-03
+pub const MAX_ITEMS: usize = 2_500;
+pub const MAX_EDGES: usize = 20_000;
 pub const MAX_PHASE_LINK_PAIRS: usize = 256; // áp dụng ở plan 05.5-03
 pub const MAX_WARNINGS: usize = 200;
 
@@ -203,6 +203,22 @@ struct Node {
     depends: Vec<String>,
 }
 
+/// Đường dẫn dùng trong cảnh báo: file plan, hoặc ROADMAP cho hạng mục giữ chỗ.
+fn node_path(nd: &Node) -> String {
+    nd.plan_path
+        .clone()
+        .unwrap_or_else(|| ".planning/ROADMAP.md".to_string())
+}
+
+/// Mã plan đúng dạng `^\d+(\.\d+)*-\d+$`, không dùng regex để khỏi phụ thuộc vào đầu vào lạ.
+fn is_plan_id(s: &str) -> bool {
+    let Some((phase, number)) = s.rsplit_once('-') else {
+        return false;
+    };
+    let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    digits(number) && phase.split('.').all(digits)
+}
+
 pub fn derive(facts: &Facts, filter: &Filter) -> View {
     // Epic: mỗi phase một epic; phase chỉ có trong thư mục plan được tạo tên từ số phase.
     let mut epic_info: BTreeMap<PhaseNum, (String, Option<String>)> = BTreeMap::new();
@@ -247,15 +263,57 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
             fm_wave: None,
             requirements: Vec::new(),
             placeholder: true,
-            done: ph.checkbox == Some(true),
+            // Giữ chỗ xong khi ô đầu danh sách là [x], hoặc (A7) khi mục phase trong ROADMAP
+            // có ít nhất một dòng plan và mọi dòng đều [x] (phase thập phân không có ô đầu danh sách).
+            done: ph.checkbox == Some(true)
+                || (!ph.roadmap_plans.is_empty() && ph.roadmap_plans.iter().all(|l| l.checked)),
             plan_path: None,
             depends: Vec::new(),
         });
     }
     nodes.sort_by(|a, b| (&a.epic, a.number, &a.key).cmp(&(&b.epic, b.number, &b.key)));
-    // Khoá trùng: giữ hạng mục đầu theo thứ tự (cảnh báo trùng khoá thêm ở plan 05.5-03).
-    let mut seen_keys: HashSet<String> = HashSet::new();
-    nodes.retain(|n| seen_keys.insert(n.key.clone()));
+
+    // Cảnh báo của derive theo đúng thứ tự bước (cảnh báo của scanner đứng trước khi trả về).
+    let mut notes: Vec<Warning> = Vec::new();
+    let mut truncated = false;
+
+    // Khoá trùng: giữ hạng mục đầu theo thứ tự, cảnh báo ở đường dẫn của file bị bỏ.
+    let mut first_path: HashMap<String, String> = HashMap::new();
+    let mut kept: Vec<Node> = Vec::with_capacity(nodes.len());
+    for nd in nodes {
+        match first_path.get(&nd.key) {
+            Some(first) => {
+                if let Some(path) = &nd.plan_path {
+                    notes.push(Warning {
+                        path: clean_text(path, 300),
+                        message: format!(
+                            "mã plan {} trùng với {} — bỏ qua file này",
+                            nd.key,
+                            clean_text(first, 300)
+                        ),
+                    });
+                }
+            }
+            None => {
+                first_path.insert(nd.key.clone(), nd.plan_path.clone().unwrap_or_default());
+                kept.push(nd);
+            }
+        }
+    }
+    let mut nodes = kept;
+
+    // Giới hạn số hạng mục; khoá bị bỏ được nhớ để phụ thuộc trỏ tới chúng không bị cảnh báo.
+    let mut dropped_keys: HashSet<String> = HashSet::new();
+    if nodes.len() > MAX_ITEMS {
+        for nd in nodes.drain(MAX_ITEMS..) {
+            dropped_keys.insert(nd.key);
+        }
+        truncated = true;
+        notes.push(Warning {
+            path: ".planning".to_string(),
+            message: format!("quá {MAX_ITEMS} hạng mục — chỉ hiện {MAX_ITEMS} hạng mục đầu"),
+        });
+    }
     let n = nodes.len();
 
     let index: HashMap<&str, usize> = nodes
@@ -264,28 +322,75 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
         .map(|(i, nd)| (nd.key.as_str(), i))
         .collect();
 
-    // Cạnh tường minh: deps[i] = các hạng mục mà i phải chờ.
-    let mut deps: Vec<Vec<usize>> = vec![Vec::new(); n];
+    // Cạnh tường minh theo thứ tự chèn: (hạng mục bị chờ, hạng mục chờ, cạnh nối phase?).
+    let mut edge_list: Vec<(usize, usize, bool)> = Vec::new();
     for (i, nd) in nodes.iter().enumerate() {
+        let mut seen: HashSet<usize> = HashSet::new();
         for raw in &nd.depends {
             let name = raw.trim().trim_matches(|c| c == '"' || c == '\'').trim();
-            if let Some(&d) = index.get(name) {
-                if d != i && !deps[i].contains(&d) {
-                    deps[i].push(d);
+            if name == nd.key {
+                notes.push(Warning {
+                    path: node_path(nd),
+                    message: format!("depends_on chứa chính plan {} (bỏ qua)", nd.key),
+                });
+                continue;
+            }
+            let found = if is_plan_id(name) {
+                index.get(name).copied()
+            } else {
+                None
+            };
+            match found {
+                Some(d) => {
+                    if seen.insert(d) {
+                        edge_list.push((d, i, false));
+                    }
                 }
+                None if dropped_keys.contains(name) => {}
+                None => notes.push(Warning {
+                    path: node_path(nd),
+                    message: format!(
+                        "depends_on trỏ tới plan không tồn tại: {} (bỏ qua cạnh này)",
+                        clean_text(name, 64)
+                    ),
+                }),
             }
         }
-        deps[i].sort_unstable();
     }
 
-    // Thứ tự topo bằng DFS tuần tự; cạnh quay về nút đang trên stack bị bỏ (cảnh báo ở 05.5-03).
+    if edge_list.len() > MAX_EDGES {
+        edge_list.truncate(MAX_EDGES);
+        truncated = true;
+        notes.push(Warning {
+            path: ".planning".to_string(),
+            message: format!("quá {MAX_EDGES} cạnh — bỏ các cạnh sau"),
+        });
+    }
+
+    // deps[i] = các hạng mục mà i phải chờ, theo thứ tự hạng mục.
+    let mut deps: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut phase_edges: HashSet<(usize, usize)> = HashSet::new();
+    for &(from, to, by_phase) in &edge_list {
+        deps[to].push(from);
+        if by_phase {
+            phase_edges.insert((from, to));
+        }
+    }
+    for d in &mut deps {
+        d.sort_unstable();
+    }
+
+    // Thứ tự topo bằng DFS tuần tự; cạnh quay về nút đang trên stack bị bỏ, mỗi vòng mất đúng
+    // một cạnh và có một cảnh báo.
     let mut state = vec![0u8; n]; // 0 mới, 1 đang trên stack, 2 xong
+    let mut stack_pos = vec![0usize; n];
     let mut topo: Vec<usize> = Vec::with_capacity(n);
     for root in 0..n {
         if state[root] != 0 {
             continue;
         }
         state[root] = 1;
+        stack_pos[root] = 0;
         let mut stack: Vec<(usize, usize)> = vec![(root, 0)];
         while let Some(&(v, i)) = stack.last() {
             if i < deps[v].len() {
@@ -293,6 +398,31 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
                 match state[d] {
                     1 => {
                         deps[v].remove(i);
+                        phase_edges.remove(&(d, v));
+                        let names: Vec<&str> = stack[stack_pos[d]..]
+                            .iter()
+                            .map(|&(u, _)| nodes[u].key.as_str())
+                            .collect();
+                        let chain = if names.len() > 6 {
+                            format!(
+                                "{} cần {} cần {} cần … cần {} cần {}",
+                                names[0],
+                                names[1],
+                                names[2],
+                                names[names.len() - 2],
+                                names[names.len() - 1]
+                            )
+                        } else {
+                            names.join(" cần ")
+                        };
+                        notes.push(Warning {
+                            path: node_path(&nodes[v]),
+                            message: format!(
+                                "vòng phụ thuộc: {chain} cần {dep} — đã bỏ phụ thuộc của {item} vào {dep}",
+                                dep = nodes[d].key,
+                                item = nodes[v].key
+                            ),
+                        });
                     }
                     2 => {
                         if let Some(top) = stack.last_mut() {
@@ -304,6 +434,7 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
                             top.1 += 1;
                         }
                         state[d] = 1;
+                        stack_pos[d] = stack.len();
                         stack.push((d, 0));
                     }
                 }
@@ -311,6 +442,36 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
                 state[v] = 2;
                 topo.push(v);
                 stack.pop();
+            }
+        }
+    }
+
+    // D-08: wave ghi trong front matter (tính từ 1) so với đường dài nhất qua cạnh plan cùng
+    // phase + 1, trên toàn đồ thị, không phụ thuộc bộ lọc. Chỉ cảnh báo, không dời hạng mục.
+    let mut intra = vec![0u32; n];
+    for &v in &topo {
+        if nodes[v].placeholder {
+            continue;
+        }
+        for &d in &deps[v] {
+            if !nodes[d].placeholder
+                && nodes[d].epic == nodes[v].epic
+                && !phase_edges.contains(&(d, v))
+            {
+                intra[v] = intra[v].max(intra[d] + 1);
+            }
+        }
+    }
+    for v in 0..n {
+        if let Some(w) = nodes[v].fm_wave {
+            let expected = intra[v] + 1;
+            if w != expected {
+                notes.push(Warning {
+                    path: node_path(&nodes[v]),
+                    message: format!(
+                        "wave: ghi {w}, tính ra {expected} — chỉ cảnh báo, hạng mục giữ vị trí tính từ phụ thuộc"
+                    ),
+                });
             }
         }
     }
@@ -527,8 +688,10 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
         waves: waves.len(),
     };
 
+    // Cảnh báo chọn epic (đặt đầu để không bị cắt), rồi của scanner, rồi của derive theo bước.
     let mut warnings = extra_warnings;
     warnings.extend(facts.warnings.iter().cloned());
+    warnings.extend(notes);
     warnings.truncate(MAX_WARNINGS);
 
     View {
@@ -542,7 +705,7 @@ pub fn derive(facts: &Facts, filter: &Filter) -> View {
         external: Vec::new(),
         counts,
         warnings,
-        truncated: facts.truncated,
+        truncated: facts.truncated || truncated,
     }
 }
 
