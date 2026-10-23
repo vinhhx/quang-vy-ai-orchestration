@@ -381,7 +381,7 @@ Plans:
 **Requirements**: BOARD-01, BOARD-02, BOARD-03, BOARD-04, BOARD-05, BOARD-06, BOARD-07, BOARD-08, BOARD-09, BOARD-10, BOARD-11, BOARD-12, BOARD-13, BOARD-14
 **Notes**: Phase này chỉ làm nửa đầu của bước C: bảng chỉ đọc, đọc trực tiếp `ROADMAP.md`, `STATE.md` và front matter plan GSD trong `.planning/` của dự án mỗi lần gọi `GET /api/board?project=&epic=&milestone=` (không bảng `epics`, không migration — 05.5-CONTEXT D-05); bảng `epics`/hạng mục/phụ thuộc, chế độ epic của Lead, sửa tay và "bắt đầu hạng mục thành task" làm ở phase sau, giữ cùng dạng phản hồi. Đường găng chỉ tính hạng mục chưa xong (quyết định 2026-10-23). Giữ nguyên quy tắc Phase 5: `127.0.0.1` + token, Tailwind v4 build, Alpine CSP, không CDN, offline, tiếng Việt, sáng/tối, `dashboard-ui-lint.sh` phải qua.
 **UI hint**: yes
-**Plans:** 5/6 plans executed
+**Plans:** 6/6 plans executed
 
 Plans:
 **Wave 1**
@@ -396,7 +396,7 @@ Plans:
 - [x] 05.5-05-PLAN.md — Focus mode, read-only side panel, Enter/Space/Esc in headless Chrome, layout at 1024/768/480 (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 05.5-06-PLAN.md — Live check on this repo + SHOP demo, README, LIVE-CHECKS §7, full regression, browser check (wave 4)
+- [x] 05.5-06-PLAN.md — Live check on this repo + SHOP demo, README, LIVE-CHECKS §7, full regression, browser check (wave 4)
 
 ### Phase 6: Multi-engine & Media Branch
 
