@@ -18,6 +18,9 @@
   var CHIP_LAYOUT = 'flex-row items-center gap-2 px-2 py-1';
   var EDGE_DEFAULT = 'stroke-slate-400 dark:stroke-slate-500 stroke-1';
   var EDGE_CRITICAL = 'stroke-yellow-600 dark:stroke-yellow-400 stroke-2';
+  var EDGE_HOT = 'stroke-cyan-600 dark:stroke-cyan-400 stroke-2';
+  var CARD_SELECTED = 'ring-2 ring-cyan-600 dark:ring-cyan-400';
+  var DIM = 'opacity-25';
   var SWITCH_ON = 'bg-indigo-100 text-indigo-800 ring-indigo-300 dark:bg-indigo-900/40 dark:text-indigo-200 dark:ring-indigo-700';
   var SWITCH_OFF = 'text-slate-900 ring-slate-300 hover:bg-slate-100 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700';
 
@@ -87,6 +90,39 @@
     return 'board-item-' + String(key).replace(/[^A-Za-z0-9_-]/g, '_');
   }
 
+  // A lookup object with no prototype: keys come from repo files, so a key such as
+  // constructor must never read as present.
+  function dict() {
+    return Object.create(null);
+  }
+
+  // The item itself, every transitive dependency (through up) and every transitive
+  // dependent (through down), as a set object {key: true}. Explicit stack, no recursion.
+  function boardRelated(key, up, down) {
+    var set = dict();
+    set[key] = true;
+    var maps = [up || {}, down || {}];
+    var m;
+    for (m = 0; m < maps.length; m++) {
+      var map = maps[m];
+      var stack = [key];
+      while (stack.length > 0) {
+        var k = stack.pop();
+        var next = Object.prototype.hasOwnProperty.call(map, k) ? map[k] : null;
+        if (!Array.isArray(next)) continue;
+        var i;
+        for (i = 0; i < next.length; i++) {
+          var n = next[i];
+          if (set[n] !== true) {
+            set[n] = true;
+            stack.push(n);
+          }
+        }
+      }
+    }
+    return set;
+  }
+
   window.ABBoard = {
     COL_W: COL_W,
     RAIL_W: RAIL_W,
@@ -98,6 +134,7 @@
     layout: boardLayout,
     edgeGeometry: edgeGeometry,
     domId: boardDomId,
+    related: boardRelated,
   };
 
   function arr(v) {
@@ -160,6 +197,11 @@
       cards: [],
       edgeViews: [],
       canvasStyle: {},
+      sel: '',
+      lit: {},
+      selectedItem: null,
+      upMap: {},
+      downMap: {},
 
       init: function () {
         var self = this;
@@ -311,6 +353,84 @@
           width: Math.max(lay.width, 1) + 'px',
           height: Math.max(lay.height, 1) + 'px',
         };
+
+        // Dependency maps restricted to the cards that are on screen.
+        var seen = dict();
+        for (i = 0; i < cards.length; i++) seen[cards[i].key] = true;
+        var up = dict();
+        var down = dict();
+        for (i = 0; i < cards.length; i++) {
+          var cd = cards[i];
+          var ups = [];
+          var downs = [];
+          var j;
+          for (j = 0; j < cd.waits_on.length; j++) {
+            if (seen[cd.waits_on[j]] === true) ups.push(cd.waits_on[j]);
+          }
+          for (j = 0; j < cd.waited_by.length; j++) {
+            if (seen[cd.waited_by[j]] === true) downs.push(cd.waited_by[j]);
+          }
+          up[cd.key] = ups;
+          down[cd.key] = downs;
+        }
+        this.upMap = up;
+        this.downMap = down;
+
+        if (this.sel !== '') {
+          var kept = this.cardByKey(this.sel);
+          if (kept) {
+            this.selectedItem = kept;
+            this.lit = window.ABBoard.related(this.sel, up, down);
+          } else {
+            this.resetSelection();
+          }
+        }
+      },
+
+      cardByKey: function (key) {
+        for (var i = 0; i < this.cards.length; i++) {
+          if (this.cards[i].key === key) return this.cards[i];
+        }
+        return null;
+      },
+
+      resetSelection: function () {
+        this.sel = '';
+        this.lit = {};
+        this.selectedItem = null;
+      },
+
+      select: function (key) {
+        if (this.sel === key) {
+          this.resetSelection();
+          return;
+        }
+        this.pick(key);
+      },
+
+      pick: function (key) {
+        var card = this.cardByKey(key);
+        if (!card) return false;
+        this.sel = key;
+        this.lit = window.ABBoard.related(key, this.upMap, this.downMap);
+        this.selectedItem = card;
+        return true;
+      },
+
+      clearSelection: function () {
+        if (this.sel === '') return;
+        var id = window.ABBoard.domId(this.sel);
+        this.resetSelection();
+        window.AB.focusLater(id);
+      },
+
+      focusItem: function (key) {
+        if (!this.pick(key)) return;
+        window.AB.focusLater(window.ABBoard.domId(key));
+      },
+
+      pressed: function (it) {
+        return it.key === this.sel ? 'true' : 'false';
       },
 
       reload: function () {
@@ -365,16 +485,123 @@
 
       cardClass: function (it) {
         var status = BOARD_CARD[it.status] || BOARD_CARD.bi_chan;
-        return status + ' ' + (it.chip ? CHIP_LAYOUT : CARD_LAYOUT);
+        var cls = status + ' ' + (it.chip ? CHIP_LAYOUT : CARD_LAYOUT);
+        if (this.sel !== '') {
+          if (it.key === this.sel) cls += ' ' + CARD_SELECTED;
+          if (this.lit[it.key] !== true) cls += ' ' + DIM;
+        }
+        return cls;
+      },
+
+      isHot: function (e) {
+        return this.sel !== '' && this.lit[e.from] === true && this.lit[e.to] === true;
       },
 
       edgeClass: function (e) {
-        return e.critical ? EDGE_CRITICAL : EDGE_DEFAULT;
+        var base = e.critical ? EDGE_CRITICAL : EDGE_DEFAULT;
+        if (this.sel === '') return base;
+        if (this.isHot(e)) return EDGE_HOT;
+        return base + ' ' + DIM;
+      },
+
+      edgeZ: function (e) {
+        return e.critical || this.isHot(e) ? 'z-10' : 'z-0';
       },
 
       cardLabel: function (it) {
         return it.key + ' ' + it.title + ', ' + window.AB.stateWord(it.status) +
           ', wave ' + it.wave + (it.critical ? ', trên đường găng' : '');
+      },
+
+      neighbours: function (keys) {
+        var AB = window.AB;
+        var out = [];
+        for (var i = 0; i < keys.length; i++) {
+          var key = keys[i];
+          var card = this.cardByKey(key);
+          if (card) {
+            out.push({ key: key, inView: true, text: key + ' · ' + AB.stateWord(card.status) });
+            continue;
+          }
+          var ext = null;
+          for (var j = 0; j < this.external.length; j++) {
+            if (this.external[j] && this.external[j].key === key) {
+              ext = this.external[j];
+              break;
+            }
+          }
+          if (ext) {
+            out.push({
+              key: key,
+              inView: false,
+              text: key + ' · ' + AB.stateWord(ext.status) + ' · phase ' + ext.epic + ' (ngoài bộ lọc)',
+            });
+          } else {
+            out.push({ key: key, inView: false, text: key + ' (ngoài bộ lọc)' });
+          }
+        }
+        return out;
+      },
+
+      get hasSelection() {
+        return this.sel !== '' && this.selectedItem !== null;
+      },
+
+      get panelKey() {
+        return this.selectedItem ? this.selectedItem.key : '';
+      },
+
+      get panelTitle() {
+        return this.selectedItem ? this.selectedItem.title : '';
+      },
+
+      get panelEpic() {
+        var it = this.selectedItem;
+        if (!it) return '';
+        return it.epic_name ? it.epic + ' · ' + it.epic_name : String(it.epic);
+      },
+
+      get panelMilestone() {
+        var it = this.selectedItem;
+        return it && it.milestone ? it.milestone : '—';
+      },
+
+      get panelWave() {
+        return this.selectedItem ? String(this.selectedItem.wave) : '';
+      },
+
+      get panelStatus() {
+        return this.selectedItem ? this.selectedItem.statusText : '';
+      },
+
+      get panelCritical() {
+        return this.selectedItem && this.selectedItem.critical ? 'có' : 'không';
+      },
+
+      get panelRequirements() {
+        var it = this.selectedItem;
+        return it && it.requirements.length > 0 ? it.requirements.join(', ') : '—';
+      },
+
+      get panelPath() {
+        var it = this.selectedItem;
+        return it && it.plan_path ? it.plan_path : '— (phase chưa có plan)';
+      },
+
+      get panelDeps() {
+        return this.selectedItem ? this.neighbours(this.selectedItem.waits_on) : [];
+      },
+
+      get panelWaiters() {
+        return this.selectedItem ? this.neighbours(this.selectedItem.waited_by) : [];
+      },
+
+      get hasPanelDeps() {
+        return this.panelDeps.length > 0;
+      },
+
+      get hasPanelWaiters() {
+        return this.panelWaiters.length > 0;
       },
 
       get loadedAttr() {

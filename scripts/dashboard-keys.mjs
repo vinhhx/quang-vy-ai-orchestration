@@ -731,6 +731,93 @@ async function main() {
   await cdp('Emulation.clearDeviceMetricsOverride');
   console.log('OK layout-5.2');
 
+  // Check J, work board (#/board): Enter and Space select a card, the panel opens,
+  // a panel neighbour moves selection and focus, Esc clears and returns focus.
+  const BVIS = 'const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));';
+  const boardCard = (key) => `document.querySelector('[data-item-key="${key}"]')`;
+
+  await evaluate('window.location.hash = "#/board"');
+  await waitFor(`
+    (() => {
+      ${BVIS}
+      if (!document.querySelector('[data-screen="board"][data-loaded="yes"]')) return false;
+      return vis(${boardCard('02-02')});
+    })()
+  `, 8000, 'board-keys', 'Màn hình board không hiện thẻ 02-02');
+
+  const boardEpic = await evaluate('document.getElementById("board-epic").value');
+  if (boardEpic !== '02') {
+    throw new Error(`LỖI board-keys: board-epic là "${boardEpic}", kỳ vọng "02"`);
+  }
+
+  await evaluate('document.getElementById("board-item-02-02").focus()');
+  await pressKeyText('Enter', 'Enter', 13, '\r');
+  await waitFor(`
+    (() => {
+      ${BVIS}
+      const c = ${boardCard('02-02')};
+      const panel = document.querySelector('[data-board-panel]');
+      return c && c.getAttribute('aria-pressed') === 'true' && vis(panel) && panel.textContent.includes('02-02');
+    })()
+  `, 3000, 'board-keys', 'Enter trên thẻ 02-02 không chọn thẻ hoặc không mở bảng bên (data-board-panel)');
+
+  const dimInfo = await evaluate(`
+    (() => ({
+      other: ${boardCard('02-03')}.className,
+      upstream: ${boardCard('02-01')}.className,
+      selected: ${boardCard('02-02')}.className,
+    }))()
+  `);
+  if (!dimInfo.other.includes('opacity-25')) {
+    throw new Error('LỖI board-keys: thẻ 02-03 ngoài chuỗi phụ thuộc không bị làm mờ (opacity-25)');
+  }
+  if (dimInfo.upstream.includes('opacity-25')) {
+    throw new Error('LỖI board-keys: thẻ 02-01 trong chuỗi phụ thuộc bị làm mờ');
+  }
+  if (!dimInfo.selected.includes('ring-cyan-600')) {
+    throw new Error('LỖI board-keys: thẻ 02-02 được chọn thiếu vòng ring-cyan-600');
+  }
+
+  await pressKey('Escape', 'Escape', 27);
+  await waitFor(`
+    (() => {
+      ${BVIS}
+      const cards = Array.from(document.querySelectorAll('[data-item-key]'));
+      const none = cards.length > 0 && cards.every(c => c.getAttribute('aria-pressed') === 'false');
+      return none && !vis(document.querySelector('[data-board-panel]')) && document.activeElement && document.activeElement.id === 'board-item-02-02';
+    })()
+  `, 3000, 'board-keys', 'Esc không bỏ chọn, không đóng bảng bên hoặc focus không trở về thẻ board-item-02-02');
+
+  await evaluate('document.getElementById("board-item-02-03").focus()');
+  await pressKeyText(' ', 'Space', 32, ' ');
+  await waitFor(`${boardCard('02-03')}.getAttribute('aria-pressed') === 'true'`, 3000, 'board-keys', 'Space trên thẻ 02-03 không chọn thẻ');
+
+  await waitFor(`Boolean(document.querySelector('[data-panel-dep="02-01"] button'))`, 3000, 'board-keys', 'Bảng bên của 02-03 không có nút Phụ thuộc 02-01');
+  await evaluate('document.querySelector(\'[data-panel-dep="02-01"] button\').focus()');
+  await pressKeyText('Enter', 'Enter', 13, '\r');
+  await waitFor(`
+    ${boardCard('02-01')}.getAttribute('aria-pressed') === 'true'
+      && ${boardCard('02-03')}.getAttribute('aria-pressed') === 'false'
+      && document.activeElement && document.activeElement.id === 'board-item-02-01'
+  `, 3000, 'board-keys', 'Nút Phụ thuộc 02-01 không chuyển chọn và focus sang thẻ 02-01');
+
+  // Esc from inside the panel must land on the card, not on <body>.
+  await evaluate(`
+    (() => {
+      const close = Array.from(document.querySelectorAll('[data-board-panel] button')).find(b => b.textContent.trim() === 'Đóng');
+      close.focus();
+    })()
+  `);
+  await pressKey('Escape', 'Escape', 27);
+  await waitFor(`
+    (() => {
+      ${BVIS}
+      const none = Array.from(document.querySelectorAll('[data-item-key]')).every(c => c.getAttribute('aria-pressed') === 'false');
+      return none && !vis(document.querySelector('[data-board-panel]')) && document.activeElement && document.activeElement.id === 'board-item-02-01';
+    })()
+  `, 3000, 'board-keys', 'Esc từ nút Đóng của bảng bên không đưa focus về thẻ board-item-02-01');
+  console.log('OK board-keys');
+
   ws.close();
 }
 

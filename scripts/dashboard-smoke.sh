@@ -1318,5 +1318,5 @@ EOF
 
   stop_chrome
   cat "$TMP/keys.out"
-  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, picker, layout-5.2"
+  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, picker, layout-5.2, board-keys"
 fi

@@ -1,4 +1,4 @@
-<section data-screen="board" x-data="board" :data-loaded="loadedAttr" class="space-y-6">
+<section data-screen="board" x-data="board" :data-loaded="loadedAttr" class="space-y-6" @keydown.escape.window="clearSelection">
   <div class="flex flex-wrap items-center gap-4">
     <h1 class="text-2xl font-semibold leading-[1.2]">Bảng công việc</h1>
     <button type="button" id="board-reload" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="reloading" @click="reload" x-text="reloadLabel">Đọc lại</button>
@@ -81,12 +81,12 @@
             </div>
           </template>
           <template x-for="e in edgeViews" :key="e.id">
-            <svg aria-hidden="true" class="pointer-events-none absolute overflow-visible" :class="e.zClass" :data-edge="e.id" :style="e.boxStyle">
+            <svg aria-hidden="true" class="pointer-events-none absolute overflow-visible" :class="edgeZ(e)" :data-edge="e.id" :style="e.boxStyle">
               <path fill="none" :d="e.d" :class="edgeClass(e)"></path>
             </svg>
           </template>
           <template x-for="it in cards" :key="it.key">
-            <button type="button" class="absolute z-20 flex overflow-hidden rounded-xl border text-left motion-safe:transition-opacity focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :id="it.domId" :data-item-key="it.key" :class="cardClass(it)" :style="it.style" :aria-label="cardLabel(it)">
+            <button type="button" class="absolute z-20 flex overflow-hidden rounded-xl border text-left motion-safe:transition-opacity focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :id="it.domId" :data-item-key="it.key" :class="cardClass(it)" :style="it.style" :aria-label="cardLabel(it)" :aria-pressed="pressed(it)" @click="select(it.key)">
               <span class="flex w-full min-w-0 flex-col gap-1" x-show="!it.chip">
                 <span class="flex w-full items-center gap-2">
                   <span class="truncate font-mono text-sm font-semibold leading-normal text-slate-900 dark:text-slate-100" x-text="it.key"></span>
@@ -104,5 +104,64 @@
         </div>
       </div>
     </div>
+    <aside data-board-panel aria-labelledby="board-panel-title" x-show="hasSelection" class="w-full rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4 lg:w-80 lg:shrink-0">
+      <h2 id="board-panel-title" class="font-mono text-xl font-semibold leading-[1.2] break-all" x-text="panelKey"></h2>
+      <p class="text-base font-normal leading-normal break-words" x-text="panelTitle"></p>
+      <dl class="space-y-2">
+        <div>
+          <dt class="text-sm font-semibold leading-normal">Phase</dt>
+          <dd class="text-sm font-normal leading-normal break-words" x-text="panelEpic"></dd>
+        </div>
+        <div>
+          <dt class="text-sm font-semibold leading-normal">Milestone</dt>
+          <dd class="text-sm font-normal leading-normal break-words" x-text="panelMilestone"></dd>
+        </div>
+        <div>
+          <dt class="text-sm font-semibold leading-normal">Wave (tính từ phụ thuộc)</dt>
+          <dd class="text-sm font-normal leading-normal break-words" x-text="panelWave"></dd>
+        </div>
+        <div>
+          <dt class="text-sm font-semibold leading-normal">Trạng thái</dt>
+          <dd class="text-sm font-normal leading-normal break-words" x-text="panelStatus"></dd>
+        </div>
+        <div>
+          <dt class="text-sm font-semibold leading-normal">Đường găng</dt>
+          <dd class="text-sm font-normal leading-normal break-words" x-text="panelCritical"></dd>
+        </div>
+        <div>
+          <dt class="text-sm font-semibold leading-normal">Requirements</dt>
+          <dd class="text-sm font-normal leading-normal break-words" x-text="panelRequirements"></dd>
+        </div>
+        <div>
+          <dt class="text-sm font-semibold leading-normal">File plan</dt>
+          <dd class="font-mono text-sm font-normal leading-normal break-all" x-text="panelPath"></dd>
+        </div>
+      </dl>
+      <div class="space-y-2">
+        <h3 class="text-sm font-semibold leading-normal">Phụ thuộc</h3>
+        <ul class="space-y-2">
+          <template x-for="d in panelDeps" :key="d.key">
+            <li :data-panel-dep="d.key" class="text-sm font-normal leading-normal break-words">
+              <button type="button" class="inline-flex min-h-12 w-full items-center justify-start rounded-xl px-4 py-2 text-left text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="d.inView" @click="focusItem(d.key)" x-text="d.text"></button>
+              <span class="text-slate-600 dark:text-slate-400" x-show="!d.inView" x-text="d.text"></span>
+            </li>
+          </template>
+        </ul>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="!hasPanelDeps">Không có</p>
+      </div>
+      <div class="space-y-2">
+        <h3 class="text-sm font-semibold leading-normal">Được chờ bởi</h3>
+        <ul class="space-y-2">
+          <template x-for="d in panelWaiters" :key="d.key">
+            <li :data-panel-waiter="d.key" class="text-sm font-normal leading-normal break-words">
+              <button type="button" class="inline-flex min-h-12 w-full items-center justify-start rounded-xl px-4 py-2 text-left text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="d.inView" @click="focusItem(d.key)" x-text="d.text"></button>
+              <span class="text-slate-600 dark:text-slate-400" x-show="!d.inView" x-text="d.text"></span>
+            </li>
+          </template>
+        </ul>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="!hasPanelWaiters">Không có</p>
+      </div>
+      <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="clearSelection">Đóng</button>
+    </aside>
   </div>
 </section>
