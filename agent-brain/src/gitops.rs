@@ -481,4 +481,40 @@ mod tests {
         expected.insert("src/a.py".to_string());
         assert_eq!(diff_bc, expected);
     }
+
+    #[test]
+    fn git_sets_optional_locks_off() {
+        let dir = repo();
+        let root = dir.path();
+        let out = git(
+            root,
+            &[
+                "-c",
+                "alias.optlocks=!printenv GIT_OPTIONAL_LOCKS",
+                "optlocks",
+            ],
+        )
+        .expect("git() must pass GIT_OPTIONAL_LOCKS to git");
+        assert_eq!(out.trim(), "0");
+    }
+
+    #[test]
+    fn changed_paths_leaves_foreign_index_lock_alone() {
+        let dir = repo();
+        let root = dir.path();
+        commit(root, &[("a.txt", "1\n")], "init");
+        std::fs::write(root.join("a.txt"), "2\n").unwrap();
+
+        let lock = root.join(".git").join("index.lock");
+        std::fs::write(&lock, "").unwrap();
+
+        let paths = changed_paths(root).expect("status must not fail on a held index.lock");
+        let mut expected = BTreeSet::new();
+        expected.insert("a.txt".to_string());
+        assert_eq!(paths, expected);
+        assert!(
+            lock.exists(),
+            "status must not touch another process's index.lock"
+        );
+    }
 }
