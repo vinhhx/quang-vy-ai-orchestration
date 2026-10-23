@@ -836,11 +836,12 @@ const sections = [
       const calls = [];
       let intervalCalls = 0;
       let everyCalls = 0;
-      let answer = (url) => {
+      const defaultAnswer = (url) => {
         if (url.indexOf('project=gone') !== -1) return { ok: false, status: 404, data: { error: 'Không tìm thấy dự án gone' } };
         if (url.indexOf('epic=all') !== -1) return { ok: true, status: 200, data: BOARD_ALL };
         return { ok: true, status: 200, data: BOARD_02 };
       };
+      let answer = defaultAnswer;
       ctx.localStorage = {
         getItem(k) { return store.has(k) ? store.get(k) : null; },
         setItem(k, v) { store.set(k, String(v)); },
@@ -921,7 +922,7 @@ const sections = [
           check('board: toggle back stores 1', c.collapse === true && store.get('ab.board.collapse') === '1');
           check('board: switch makes no api call', calls.length === 0, JSON.stringify(calls));
           store.delete('ab.board.collapse');
-          answer = (url) => (url.indexOf('epic=all') !== -1 ? { ok: true, status: 200, data: BOARD_ALL } : { ok: true, status: 200, data: BOARD_02 });
+          answer = defaultAnswer;
         });
 
         // --- Đọc lại ---

@@ -1,10 +1,51 @@
 <section data-screen="board" x-data="board" :data-loaded="loadedAttr" class="space-y-6">
   <div class="flex flex-wrap items-center gap-4">
     <h1 class="text-2xl font-semibold leading-[1.2]">Bảng công việc</h1>
+    <button type="button" id="board-reload" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="reloading" @click="reload" x-text="reloadLabel">Đọc lại</button>
   </div>
   <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đọc từ .planning/ của dự án (ROADMAP.md, STATE.md, front matter của các PLAN.md). Sửa file rồi bấm Đọc lại; bảng chỉ xem.</p>
 
   <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isLoading">Đang tải...</p>
+
+  <div data-board-toolbar class="flex flex-wrap items-end gap-4" x-show="hasProjects">
+    <div class="flex flex-col gap-1">
+      <label for="board-project" class="text-sm font-semibold leading-normal">Dự án</label>
+      <select id="board-project" class="min-h-12 w-auto max-w-full rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="projectSel" @change="projectChanged">
+        <template x-for="p in boardProjects" :key="p.id">
+          <option :value="p.id" :selected="isProjectSel(p)" x-text="projectLabel(p)"></option>
+        </template>
+      </select>
+    </div>
+    <div class="flex flex-col gap-1" x-show="hasBoard">
+      <label for="board-epic" class="text-sm font-semibold leading-normal">Epic</label>
+      <select id="board-epic" class="min-h-12 w-auto max-w-full rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="epicSel" @change="epicChanged">
+        <option value="all" :selected="isEpicSel('all')">Mọi epic</option>
+        <template x-for="e in epics" :key="e.id">
+          <option :value="e.id" :selected="isEpicSel(e.id)" x-text="epicLabel(e)"></option>
+        </template>
+      </select>
+    </div>
+    <div class="flex flex-col gap-1" x-show="showMilestones">
+      <label for="board-milestone" class="text-sm font-semibold leading-normal">Milestone</label>
+      <select id="board-milestone" class="min-h-12 w-auto max-w-full rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="milestoneSel" @change="milestoneChanged">
+        <option value="" :selected="isMilestoneSel('')">Mọi milestone</option>
+        <template x-for="m in milestones" :key="m">
+          <option :value="m" :selected="isMilestoneSel(m)" x-text="m"></option>
+        </template>
+      </select>
+    </div>
+    <button type="button" id="board-collapse" role="switch" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold ring-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="collapseClass" :aria-checked="collapseAttr" @click="toggleCollapse">
+      <span>Thu gọn mục đã xong</span>
+      <span x-text="collapseWord"></span>
+    </button>
+  </div>
+
+  <div data-board-warnings class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="hasWarnings">
+    <p class="font-semibold leading-normal">Dữ liệu GSD có lỗi</p>
+    <template x-for="(line, i) in warningLines" :key="i">
+      <p class="text-sm font-normal leading-normal break-words" x-text="line"></p>
+    </template>
+  </div>
 
   <div data-board-error class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="hasError">
     <h2 class="text-xl font-semibold leading-[1.2]">Không tải được dữ liệu</h2>

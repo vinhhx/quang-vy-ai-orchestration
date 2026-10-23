@@ -18,6 +18,8 @@
   var CHIP_LAYOUT = 'flex-row items-center gap-2 px-2 py-1';
   var EDGE_DEFAULT = 'stroke-slate-400 dark:stroke-slate-500 stroke-1';
   var EDGE_CRITICAL = 'stroke-yellow-600 dark:stroke-yellow-400 stroke-2';
+  var SWITCH_ON = 'bg-indigo-100 text-indigo-800 ring-indigo-300 dark:bg-indigo-900/40 dark:text-indigo-200 dark:ring-indigo-700';
+  var SWITCH_OFF = 'text-slate-900 ring-slate-300 hover:bg-slate-100 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700';
 
   function boardLayout(items, collapse) {
     var list = items || [];
@@ -106,10 +108,32 @@
     return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
   }
 
+  function readStore(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeStore(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (e) {}
+  }
+
+  function removeStore(key) {
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {}
+  }
+
   window.AB.onReady('board', function () {
     return {
       loaded: false,
       loadError: '',
+      reloading: false,
+      projectRetried: false,
       reqSeq: 0,
       state: '',
       reason: '',
@@ -117,7 +141,7 @@
       expectedPath: '',
       project: null,
       projects: [],
-      projectSel: '',
+      projectSel: readStore('ab.board.project') || '',
       epic: '',
       defaultEpic: '',
       epics: [],
@@ -131,7 +155,7 @@
       counts: {},
       warnings: [],
       truncated: false,
-      collapse: true,
+      collapse: readStore('ab.board.collapse') !== '0',
       cols: [],
       cards: [],
       edgeViews: [],
@@ -165,6 +189,15 @@
         var seq = this.reqSeq;
         return window.AB.api('GET', this.buildUrl()).then(function (res) {
           if (seq !== self.reqSeq) return;
+          if (res && res.status === 404 && self.projectSel && !self.projectRetried) {
+            // The remembered project no longer exists: forget it and ask for the default once.
+            self.projectRetried = true;
+            removeStore('ab.board.project');
+            self.projectSel = '';
+            self.epicSel = '';
+            self.milestoneSel = '';
+            return self.load();
+          }
           if (res && res.ok && res.data) {
             self.apply(res.data);
           } else {
@@ -280,6 +313,56 @@
         };
       },
 
+      reload: function () {
+        var self = this;
+        if (this.reloading) return Promise.resolve();
+        this.reloading = true;
+        return this.load().then(function () {
+          self.reloading = false;
+        });
+      },
+
+      toggleCollapse: function () {
+        this.collapse = !this.collapse;
+        writeStore('ab.board.collapse', this.collapse ? '1' : '0');
+        this.rebuild();
+      },
+
+      projectChanged: function () {
+        writeStore('ab.board.project', this.projectSel);
+        this.epicSel = '';
+        this.milestoneSel = '';
+        return this.load();
+      },
+
+      epicChanged: function () {
+        return this.load();
+      },
+
+      milestoneChanged: function () {
+        return this.load();
+      },
+
+      projectLabel: function (p) {
+        return p.name_vi || p.id;
+      },
+
+      epicLabel: function (e) {
+        return e.id + ' · ' + e.name + ' (' + e.done + '/' + e.total + ')';
+      },
+
+      isProjectSel: function (p) {
+        return this.projectSel === p.id;
+      },
+
+      isEpicSel: function (id) {
+        return this.epicSel === id;
+      },
+
+      isMilestoneSel: function (m) {
+        return this.milestoneSel === m;
+      },
+
       cardClass: function (it) {
         var status = BOARD_CARD[it.status] || BOARD_CARD.bi_chan;
         return status + ' ' + (it.chip ? CHIP_LAYOUT : CARD_LAYOUT);
@@ -335,6 +418,60 @@
           });
         }
         return out;
+      },
+
+      get reloadLabel() {
+        return this.reloading ? 'Đang đọc...' : 'Đọc lại';
+      },
+
+      get collapseAttr() {
+        return this.collapse ? 'true' : 'false';
+      },
+
+      get collapseWord() {
+        return this.collapse ? 'bật' : 'tắt';
+      },
+
+      get collapseClass() {
+        return this.collapse ? SWITCH_ON : SWITCH_OFF;
+      },
+
+      get showMilestones() {
+        return this.milestones.length >= 2;
+      },
+
+      get boardProjects() {
+        var out = [];
+        var curId = this.project && this.project.id ? this.project.id : '';
+        var seen = false;
+        for (var i = 0; i < this.projects.length; i++) {
+          var p = this.projects[i];
+          if (p.has_board || p.id === curId) out.push(p);
+          if (p.id === curId) seen = true;
+        }
+        if (curId && !seen) {
+          out.push({ id: curId, name_vi: this.project.name_vi, profile: this.project.profile, has_board: false });
+        }
+        return out;
+      },
+
+      get hasProjects() {
+        return this.boardProjects.length > 0;
+      },
+
+      get hasWarnings() {
+        return this.warnings.length > 0;
+      },
+
+      get warningLines() {
+        var lines = [];
+        var n = this.warnings.length;
+        var shown = Math.min(n, 10);
+        for (var i = 0; i < shown; i++) {
+          lines.push(this.warnings[i].path + ' — ' + this.warnings[i].message);
+        }
+        if (n > 10) lines.push('… và ' + (n - 10) + ' cảnh báo khác');
+        return lines;
       },
 
       get legendTotal() {
