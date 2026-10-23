@@ -1072,4 +1072,269 @@ mod tests {
         assert_eq!(last_wave, 2_399);
         assert_eq!(crit, 2_400);
     }
+
+    fn warning_at(v: &View, path: &str, message: &str) -> bool {
+        v.warnings
+            .iter()
+            .any(|w| w.path == path && w.message == message)
+    }
+
+    fn edge_pairs_of(v: &View) -> Vec<(&str, &str)> {
+        v.edges
+            .iter()
+            .map(|e| (e.from.as_str(), e.to.as_str()))
+            .collect()
+    }
+
+    fn phase_two(plans: Vec<PlanFact>) -> Facts {
+        Facts {
+            phases: vec![ph("2", "Giai đoạn hai")],
+            plans,
+            ..Facts::default()
+        }
+    }
+
+    #[test]
+    fn warn_unknown_dep_dropped_not_blocking() {
+        let f = phase_two(vec![plan("2", 1, &["02-99"], false)]);
+        let path = f.plans[0].path.clone();
+        let v = derive(&f, &all());
+        assert!(v.edges.is_empty());
+        assert_eq!(v.items.len(), 1);
+        assert_eq!(status_of(&v, "02-01"), STATUS_SAN_SANG);
+        assert_eq!(v.warnings.len(), 1);
+        assert!(warning_at(
+            &v,
+            &path,
+            "depends_on trỏ tới plan không tồn tại: 02-99 (bỏ qua cạnh này)"
+        ));
+    }
+
+    #[test]
+    fn warn_self_and_malformed_deps() {
+        let f = phase_two(vec![
+            plan("2", 1, &["02-01"], false),
+            plan("2", 2, &["Phase 2"], false),
+        ]);
+        let (p1, p2) = (f.plans[0].path.clone(), f.plans[1].path.clone());
+        let v = derive(&f, &all());
+        assert!(v.edges.is_empty());
+        assert_eq!(status_of(&v, "02-01"), STATUS_SAN_SANG);
+        assert_eq!(status_of(&v, "02-02"), STATUS_SAN_SANG);
+        assert_eq!(v.warnings.len(), 2);
+        assert!(warning_at(
+            &v,
+            &p1,
+            "depends_on chứa chính plan 02-01 (bỏ qua)"
+        ));
+        assert!(warning_at(
+            &v,
+            &p2,
+            "depends_on trỏ tới plan không tồn tại: Phase 2 (bỏ qua cạnh này)"
+        ));
+    }
+
+    #[test]
+    fn warn_duplicate_dep_collapsed() {
+        let f = phase_two(vec![
+            plan("2", 1, &[], false),
+            plan("2", 2, &["02-01", "\"02-01\"", "02-01"], false),
+        ]);
+        let v = derive(&f, &all());
+        assert_eq!(edge_pairs_of(&v), [("02-01", "02-02")]);
+        assert!(v.warnings.is_empty());
+    }
+
+    #[test]
+    fn warn_cycle_breaks_one_edge() {
+        let f = phase_two(vec![
+            plan("2", 1, &["02-02"], false),
+            plan("2", 2, &["02-01"], false),
+            plan("2", 3, &["02-01"], false),
+        ]);
+        let p2 = f.plans[1].path.clone();
+        let v = derive(&f, &all());
+        assert_eq!(v.items.len(), 3);
+        assert_eq!(v.warnings.len(), 1);
+        assert!(warning_at(
+            &v,
+            &p2,
+            "vòng phụ thuộc: 02-01 cần 02-02 cần 02-01 — đã bỏ phụ thuộc của 02-02 vào 02-01"
+        ));
+        assert_eq!(edge_pairs_of(&v), [("02-01", "02-03"), ("02-02", "02-01")]);
+        assert_eq!(status_of(&v, "02-02"), STATUS_SAN_SANG);
+        assert_eq!(status_of(&v, "02-01"), STATUS_BI_CHAN);
+        assert_eq!(status_of(&v, "02-03"), STATUS_BI_CHAN);
+    }
+
+    #[test]
+    fn warn_cycle_long_path_is_abbreviated() {
+        let mut plans = Vec::new();
+        for i in 1..=10u64 {
+            let next = format!("01-{:02}", if i == 10 { 1 } else { i + 1 });
+            plans.push(plan("1", i, &[next.as_str()], false));
+        }
+        let f = Facts {
+            phases: vec![ph("1", "Vòng dài")],
+            plans,
+            ..Facts::default()
+        };
+        let v = derive(&f, &all());
+        assert_eq!(v.items.len(), 10);
+        assert_eq!(v.edges.len(), 9);
+        assert_eq!(v.warnings.len(), 1);
+        assert_eq!(
+            v.warnings[0].message,
+            "vòng phụ thuộc: 01-01 cần 01-02 cần 01-03 cần … cần 01-09 cần 01-10 cần 01-01 — đã bỏ phụ thuộc của 01-10 vào 01-01"
+        );
+    }
+
+    #[test]
+    fn warn_duplicate_plan_id_keeps_first() {
+        let first = ".planning/phases/01-a/01-01-PLAN.md";
+        let second = ".planning/phases/01-zz/01-01-PLAN.md";
+        let mut a = plan("1", 1, &[], false);
+        a.path = first.to_string();
+        let mut b = plan("1", 1, &[], true);
+        b.path = second.to_string();
+        let f = Facts {
+            phases: vec![ph("1", "A")],
+            plans: vec![a, b],
+            ..Facts::default()
+        };
+        let v = derive(&f, &all());
+        assert_eq!(v.items.len(), 1);
+        assert_eq!(v.items[0].plan_path.as_deref(), Some(first));
+        assert_eq!(status_of(&v, "01-01"), STATUS_SAN_SANG);
+        assert_eq!(v.warnings.len(), 1);
+        assert!(warning_at(
+            &v,
+            second,
+            "mã plan 01-01 trùng với .planning/phases/01-a/01-01-PLAN.md — bỏ qua file này"
+        ));
+    }
+
+    #[test]
+    fn waves_fm_wave_mismatch_warns() {
+        let mut second = plan("2", 2, &["02-01"], false);
+        second.fm_wave = Some(5);
+        let path = second.path.clone();
+        let f = phase_two(vec![plan("2", 1, &[], false), second]);
+        let v = derive(&f, &all());
+        assert_eq!(v.warnings.len(), 1);
+        assert!(warning_at(
+            &v,
+            &path,
+            "wave: ghi 5, tính ra 2 — chỉ cảnh báo, hạng mục giữ vị trí tính từ phụ thuộc"
+        ));
+        assert_eq!(wave_of(&v, "02-02"), 1);
+        assert_eq!(wave_of(&v, "02-01"), 0);
+    }
+
+    #[test]
+    fn waves_fm_wave_agrees_one_based() {
+        let mut first = plan("2", 1, &["01-02"], false);
+        first.fm_wave = Some(1);
+        let mut second = plan("2", 2, &["02-01"], false);
+        second.fm_wave = Some(2);
+        let mut f = phase_two(vec![first, second]);
+        f.phases.insert(0, ph("1", "Một"));
+        f.plans.insert(0, plan("1", 1, &[], true));
+        f.plans.insert(1, plan("1", 2, &["01-01"], true));
+        let v = derive(&f, &all());
+        assert!(v.warnings.is_empty(), "{:?}", v.warnings);
+        // wave hiển thị vẫn tính cả cạnh sang phase khác.
+        assert_eq!(wave_of(&v, "02-01"), 2);
+        assert_eq!(wave_of(&v, "02-02"), 3);
+    }
+
+    #[test]
+    fn status_standin_checkbox_and_plan_lines() {
+        let line = |checked: bool| RoadmapPlanLine {
+            id: "x-01".to_string(),
+            title: "t".to_string(),
+            checked,
+        };
+        let mut p1 = ph("1", "Có dấu tích");
+        p1.checkbox = Some(true);
+        let mut p2 = ph("2", "Mọi dòng plan đã xong");
+        p2.roadmap_plans = vec![line(true), line(true)];
+        let mut p3 = ph("3", "Còn một dòng plan chưa xong");
+        p3.roadmap_plans = vec![line(true), line(false)];
+        let mut p4 = ph("4", "Không dấu tích, không dòng plan");
+        p4.checkbox = Some(false);
+        let f = Facts {
+            phases: vec![p1, p2, p3, p4],
+            ..Facts::default()
+        };
+        let v = derive(&f, &all());
+        assert_eq!(status_of(&v, "01"), STATUS_XONG);
+        assert_eq!(status_of(&v, "02"), STATUS_XONG);
+        assert_eq!(status_of(&v, "03"), STATUS_SAN_SANG);
+        assert_eq!(status_of(&v, "04"), STATUS_SAN_SANG);
+    }
+
+    #[test]
+    fn items_cap_truncates() {
+        let mut plans = vec![plan("1", 1, &["01-2501"], false)];
+        for i in 2..=2_501u64 {
+            plans.push(plan("1", i, &[], false));
+        }
+        let f = Facts {
+            phases: vec![ph("1", "Nhiều")],
+            plans,
+            ..Facts::default()
+        };
+        let v = derive(&f, &all());
+        assert_eq!(v.items.len(), 2_500);
+        assert!(v.truncated);
+        assert_eq!(v.warnings.len(), 1, "{:?}", v.warnings);
+        assert!(warning_at(
+            &v,
+            ".planning",
+            "quá 2500 hạng mục — chỉ hiện 2500 hạng mục đầu"
+        ));
+        assert!(v.items.iter().all(|i| i.key != "01-2501"));
+        assert!(v.edges.is_empty());
+    }
+
+    #[test]
+    fn edges_cap_truncates() {
+        let mut plans: Vec<PlanFact> = Vec::new();
+        for i in 1..=203u64 {
+            let earlier: Vec<String> = (1..i).map(|j| format!("01-{j:02}")).collect();
+            let refs: Vec<&str> = earlier.iter().map(String::as_str).collect();
+            plans.push(plan("1", i, &refs, false));
+        }
+        let f = Facts {
+            phases: vec![ph("1", "Dày")],
+            plans,
+            ..Facts::default()
+        };
+        let v = derive(&f, &all());
+        assert_eq!(v.items.len(), 203);
+        assert_eq!(v.edges.len(), 20_000);
+        assert!(v.truncated);
+        assert_eq!(v.warnings.len(), 1, "{:?}", v.warnings);
+        assert!(warning_at(
+            &v,
+            ".planning",
+            "quá 20000 cạnh — bỏ các cạnh sau"
+        ));
+    }
+
+    #[test]
+    fn warn_cap_200() {
+        let mut f = tracer_facts();
+        f.warnings = (0..250)
+            .map(|i| Warning {
+                path: format!(".planning/phases/x/{i}-PLAN.md"),
+                message: format!("lỗi {i}"),
+            })
+            .collect();
+        let v = derive(&f, &all());
+        assert_eq!(v.warnings.len(), 200);
+        assert_eq!(v.warnings[0].message, "lỗi 0");
+        assert_eq!(v.warnings[199].message, "lỗi 199");
+    }
 }
