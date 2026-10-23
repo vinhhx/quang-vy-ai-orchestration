@@ -1,0 +1,569 @@
+mod common;
+
+use common::Sandbox;
+use serde_json::{json, Value};
+use std::time::Duration;
+
+/// Một file plan có dạng như plan GSD thật: front matter có khối lồng và dòng chứa `:` và `---`.
+fn plan_md(dir: &str, plan: &str, wave: u32, deps: &str) -> String {
+    format!(
+        "---\n\
+phase: {dir}\n\
+plan: {plan}\n\
+type: execute\n\
+wave: {wave}\n\
+depends_on: {deps}\n\
+files_modified:\n\
+  - src/app.py\n\
+autonomous: true\n\
+requirements: [DEMO-01, DEMO-02]\n\
+must_haves:\n\
+  truths:\n\
+    - \"dòng có dấu hai chấm: và --- ở giữa\"\n\
+---\n\
+\n\
+<objective>\n\
+Câu đầu của mục tiêu. Câu sau.\n\
+</objective>\n"
+    )
+}
+
+/// Fixture tracer: hai phase có plan, một phase chưa có plan.
+fn demo_files() -> Vec<(String, String)> {
+    let roadmap = "# Roadmap: Demo\n\n### Phase 1: Nền tảng\n### Phase 2: Xuất báo cáo\n### Phase 3: Hướng dẫn (INSERTED)\n";
+    let d1 = "01-nen-tang";
+    let d2 = "02-xuat-bao-cao";
+    vec![
+        (".planning/ROADMAP.md".into(), roadmap.into()),
+        (
+            format!(".planning/phases/{d1}/01-01-PLAN.md"),
+            plan_md(d1, "01", 1, "[]"),
+        ),
+        (
+            format!(".planning/phases/{d1}/01-01-SUMMARY.md"),
+            "# xong\n".into(),
+        ),
+        (
+            format!(".planning/phases/{d1}/01-02-PLAN.md"),
+            plan_md(d1, "02", 2, "[01-01]"),
+        ),
+        (
+            format!(".planning/phases/{d1}/01-02-SUMMARY.md"),
+            "# xong\n".into(),
+        ),
+        (
+            format!(".planning/phases/{d2}/02-01-PLAN.md"),
+            plan_md(d2, "01", 1, "[\"01-02\"]"),
+        ),
+        (
+            format!(".planning/phases/{d2}/02-02-PLAN.md"),
+            plan_md(d2, "02", 2, "[02-01]"),
+        ),
+    ]
+}
+
+fn as_refs(files: &[(String, String)]) -> Vec<(&str, &str)> {
+    files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect()
+}
+
+fn item_keys(j: &Value) -> Vec<String> {
+    j["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .map(|i| i["key"].as_str().expect("key").to_string())
+        .collect()
+}
+
+fn item<'a>(j: &'a Value, key: &str) -> &'a Value {
+    j["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|i| i["key"] == key)
+        .unwrap_or_else(|| panic!("không có hạng mục {key}"))
+}
+
+fn edge_triples(j: &Value) -> Vec<(String, String, String)> {
+    j["edges"]
+        .as_array()
+        .expect("edges array")
+        .iter()
+        .map(|e| {
+            (
+                e["from"].as_str().unwrap().to_string(),
+                e["to"].as_str().unwrap().to_string(),
+                e["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn demo_server(sb: &Sandbox) -> common::Serve {
+    let files = demo_files();
+    let repo = sb.make_repo("demo", &as_refs(&files), None, None);
+    sb.write_map(json!([sb.project_entry(&repo, "demo", "work")]), &[]);
+    sb.serve(&[])
+}
+
+#[test]
+fn board01_tracer_fixture_board() {
+    let sb = Sandbox::new();
+    let mut srv = demo_server(&sb);
+
+    let r = srv.get("/api/board?project=demo&epic=all");
+    assert_eq!(r.status, 200);
+    let j = r.json();
+    assert_eq!(j["state"], "ok");
+    assert_eq!(j["project"]["id"], "demo");
+    assert_eq!(item_keys(&j), ["01-01", "03", "01-02", "02-01", "02-02"]);
+
+    assert_eq!(item(&j, "01-01")["status"], "xong");
+    assert_eq!(item(&j, "01-02")["status"], "xong");
+    assert_eq!(item(&j, "02-01")["status"], "san_sang");
+    assert_eq!(item(&j, "02-02")["status"], "bi_chan");
+    assert_eq!(item(&j, "03")["status"], "san_sang");
+
+    let ph3 = item(&j, "03");
+    assert_eq!(ph3["placeholder"], true);
+    assert_eq!(ph3["plan_path"], Value::Null);
+    assert_eq!(ph3["title"], "Hướng dẫn");
+
+    assert_eq!(item(&j, "01-01")["wave"], 0);
+    assert_eq!(item(&j, "03")["wave"], 0);
+    assert_eq!(item(&j, "01-02")["wave"], 1);
+    assert_eq!(item(&j, "02-01")["wave"], 2);
+    assert_eq!(item(&j, "02-02")["wave"], 3);
+    assert_eq!(item(&j, "02-02")["fm_wave"], 2);
+    assert_eq!(
+        item(&j, "02-01")["plan_path"],
+        ".planning/phases/02-xuat-bao-cao/02-01-PLAN.md"
+    );
+
+    assert_eq!(
+        edge_triples(&j),
+        [
+            ("01-01".to_string(), "01-02".to_string(), "plan".to_string()),
+            ("01-02".to_string(), "02-01".to_string(), "plan".to_string()),
+            ("02-01".to_string(), "02-02".to_string(), "plan".to_string()),
+        ]
+    );
+
+    assert_eq!(
+        j["counts"],
+        json!({"total": 5, "xong": 2, "san_sang": 2, "bi_chan": 1, "waves": 4})
+    );
+    let epics = j["epics"].as_array().unwrap();
+    let ids: Vec<&str> = epics.iter().map(|e| e["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["01", "02", "03"]);
+    let tallies: Vec<(u64, u64)> = epics
+        .iter()
+        .map(|e| (e["total"].as_u64().unwrap(), e["done"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(tallies, [(2, 2), (2, 0), (1, 0)]);
+    assert_eq!(j["warnings"], json!([]));
+
+    let r2 = srv.get("/api/board?project=demo&epic=02");
+    assert_eq!(r2.status, 200);
+    let j2 = r2.json();
+    assert_eq!(j2["epic"], "02");
+    assert_eq!(item_keys(&j2), ["02-01", "02-02"]);
+    assert_eq!(item(&j2, "02-01")["wave"], 0);
+    assert_eq!(item(&j2, "02-01")["status"], "san_sang");
+    assert_eq!(item(&j2, "02-02")["wave"], 1);
+    assert_eq!(
+        edge_triples(&j2),
+        [("02-01".to_string(), "02-02".to_string(), "plan".to_string())]
+    );
+
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+}
+
+fn table_names(sb: &Sandbox) -> Vec<String> {
+    let db = sb.db();
+    let mut stmt = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        .expect("prepare");
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query");
+    rows.map(|r| r.expect("row")).collect()
+}
+
+#[test]
+fn board01_gated_read_only() {
+    let sb = Sandbox::new();
+    let mut srv = demo_server(&sb);
+
+    let unauth = srv.request("GET", "/api/board", &[], b"");
+    assert_eq!(unauth.status, 401);
+
+    let post = srv.post_json("/api/board", &json!({}));
+    assert_eq!(post.status, 405);
+
+    let before = table_names(&sb);
+    let ok = srv.get("/api/board?project=demo&epic=all");
+    assert_eq!(ok.status, 200);
+    let after = table_names(&sb);
+    assert_eq!(before, after);
+
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+}
+
+fn demo_server_with_repo(sb: &Sandbox) -> (common::Serve, std::path::PathBuf) {
+    let files = demo_files();
+    let repo = sb.make_repo("demo", &as_refs(&files), None, None);
+    sb.write_map(json!([sb.project_entry(&repo, "demo", "work")]), &[]);
+    (sb.serve(&[]), repo)
+}
+
+fn error_of(r: &common::HttpResp) -> String {
+    r.json()["error"].as_str().unwrap_or("").to_string()
+}
+
+#[test]
+fn board01_params_rejected() {
+    let sb = Sandbox::new();
+    let mut srv = demo_server(&sb);
+
+    let long_project = format!("/api/board?project={}", "a".repeat(129));
+    let r = srv.get(&long_project);
+    assert_eq!(r.status, 400);
+    assert_eq!(error_of(&r), "Tham số project quá dài (tối đa 128 ký tự)");
+
+    let r = srv.get(&format!("/api/board?project=demo&epic={}", "1".repeat(33)));
+    assert_eq!(r.status, 400);
+    assert_eq!(error_of(&r), "Tham số epic quá dài (tối đa 32 ký tự)");
+
+    let r = srv.get(&format!(
+        "/api/board?project=demo&milestone={}",
+        "m".repeat(65)
+    ));
+    assert_eq!(r.status, 400);
+    assert_eq!(error_of(&r), "Tham số milestone quá dài (tối đa 64 ký tự)");
+
+    let r = srv.get(&format!(
+        "/api/board?project=demo&profile={}",
+        "p".repeat(33)
+    ));
+    assert_eq!(r.status, 400);
+    assert_eq!(error_of(&r), "Tham số profile quá dài (tối đa 32 ký tự)");
+
+    let r = srv.get("/api/board?project=a%01b");
+    assert_eq!(r.status, 400);
+    assert_eq!(error_of(&r), "Tham số project chứa ký tự không hợp lệ");
+
+    let r = srv.get("/api/board?project=demo&milestone=v%0A1");
+    assert_eq!(r.status, 400);
+    assert_eq!(error_of(&r), "Tham số milestone chứa ký tự không hợp lệ");
+
+    let r = srv.get("/api/board?project=demo&epic=x.y");
+    assert_eq!(r.status, 400);
+    assert_eq!(
+        error_of(&r),
+        "Tham số epic không hợp lệ: dùng all hoặc số phase như 05.4"
+    );
+
+    let r = srv.get("/api/board?project=demo&profile=khac");
+    assert_eq!(r.status, 400);
+    assert!(
+        error_of(&r).contains("Profile 'khac' không hợp lệ"),
+        "thông báo: {}",
+        error_of(&r)
+    );
+
+    let r = srv.get("/api/board?project=khong-co");
+    assert_eq!(r.status, 404);
+    assert_eq!(error_of(&r), "Không tìm thấy dự án khong-co");
+
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+}
+
+fn plain_repo(sb: &Sandbox, name: &str) -> std::path::PathBuf {
+    sb.make_repo(name, &[], None, None)
+}
+
+fn board_repo(sb: &Sandbox, name: &str) -> std::path::PathBuf {
+    let files = demo_files();
+    sb.make_repo(name, &as_refs(&files), None, None)
+}
+
+#[test]
+fn board02_default_project_and_projects_list() {
+    let sb = Sandbox::new();
+    let no_roadmap = plain_repo(&sb, "no-roadmap");
+    let demo = board_repo(&sb, "demo");
+    let khac = board_repo(&sb, "khac");
+    sb.write_map(
+        json!([
+            sb.project_entry(&no_roadmap, "no-roadmap", "work"),
+            sb.project_entry(&demo, "demo", "work"),
+            sb.project_entry(&khac, "khac", "personal"),
+        ]),
+        &[],
+    );
+    let mut srv = sb.serve(&[]);
+
+    let j = srv.get("/api/board").json();
+    assert_eq!(j["state"], "ok");
+    assert_eq!(j["project"]["id"], "demo");
+    let list = j["projects"].as_array().unwrap();
+    let flags: Vec<(String, bool)> = list
+        .iter()
+        .map(|p| {
+            (
+                p["id"].as_str().unwrap().to_string(),
+                p["has_board"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            ("no-roadmap".to_string(), false),
+            ("demo".to_string(), true),
+            ("khac".to_string(), true)
+        ]
+    );
+
+    let j = srv.get("/api/board?profile=personal").json();
+    assert_eq!(j["project"]["id"], "khac");
+    let ids: Vec<&str> = j["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["khac"]);
+
+    let j = srv.get("/api/board?project=khac&profile=work").json();
+    assert_eq!(j["state"], "ok");
+    assert_eq!(j["project"]["id"], "khac");
+
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+}
+
+#[test]
+fn board02_no_board_projects() {
+    let sb = Sandbox::new();
+    let a = plain_repo(&sb, "a");
+    sb.write_map(json!([sb.project_entry(&a, "a", "work")]), &[]);
+    let mut srv = sb.serve(&[]);
+
+    let r = srv.get("/api/board");
+    assert_eq!(r.status, 200);
+    let j = r.json();
+    assert_eq!(j["state"], "empty");
+    assert_eq!(j["reason"], "no_board_projects");
+    assert_eq!(j["project"], Value::Null);
+    assert_eq!(j["expected_path"], Value::Null);
+    assert!(j["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("Chưa có dự án nào có bảng công việc"));
+    assert_eq!(j["projects"].as_array().unwrap().len(), 1);
+    assert!(j.get("items").is_none());
+
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+}
+
+#[test]
+fn board02_empty_states() {
+    let sb = Sandbox::new();
+
+    let no_roadmap = plain_repo(&sb, "no-roadmap");
+    let media = board_repo(&sb, "media-proj");
+    let mut media_entry = sb.project_entry(&media, "media-proj", "work");
+    media_entry["type"] = json!("media");
+    let gone_path = sb.root.join("khong-ton-tai");
+    let gone_entry = sb.project_entry(&gone_path, "gone", "work");
+
+    // .planning là symlink tới thư mục ngoài repo có ROADMAP.md
+    let outside = sb.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("ROADMAP.md"), "### Phase 1: Ngoài\n").unwrap();
+    let plan_link = plain_repo(&sb, "plan-link");
+    std::os::unix::fs::symlink(&outside, plan_link.join(".planning")).unwrap();
+
+    // ROADMAP.md là symlink tới file ngoài repo
+    let secret = sb.root.join("secret.md");
+    std::fs::write(&secret, "### Phase 1: BÍ MẬT\n").unwrap();
+    let road_link = plain_repo(&sb, "road-link");
+    std::fs::create_dir_all(road_link.join(".planning")).unwrap();
+    std::os::unix::fs::symlink(&secret, road_link.join(".planning/ROADMAP.md")).unwrap();
+
+    // ROADMAP.md lớn hơn 1 MiB
+    let big = plain_repo(&sb, "big");
+    std::fs::create_dir_all(big.join(".planning")).unwrap();
+    std::fs::write(big.join(".planning/ROADMAP.md"), vec![b'x'; 1_048_577]).unwrap();
+
+    sb.write_map(
+        json!([
+            sb.project_entry(&no_roadmap, "no-roadmap", "work"),
+            media_entry,
+            gone_entry,
+            sb.project_entry(&plan_link, "plan-link", "work"),
+            sb.project_entry(&road_link, "road-link", "work"),
+            sb.project_entry(&big, "big", "work"),
+        ]),
+        &[],
+    );
+    let mut srv = sb.serve(&[]);
+
+    let cases = [
+        ("no-roadmap", "no_roadmap"),
+        ("media-proj", "media"),
+        ("gone", "missing_folder"),
+        ("plan-link", "planning_symlink"),
+        ("road-link", "unreadable"),
+        ("big", "unreadable"),
+    ];
+    for (id, reason) in cases {
+        let r = srv.get(&format!("/api/board?project={id}"));
+        assert_eq!(r.status, 200, "{id}");
+        let j = r.json();
+        assert_eq!(j["state"], "empty", "{id}");
+        assert_eq!(j["reason"], reason, "{id}");
+        let msg = j["message"].as_str().unwrap_or("");
+        assert!(!msg.is_empty(), "{id}: thiếu message");
+        assert!(j.get("items").is_none(), "{id}: không được có items");
+        assert_eq!(j["project"]["id"], id);
+        if reason == "media" {
+            assert_eq!(j["expected_path"], Value::Null);
+        } else {
+            let expected = j["expected_path"].as_str().unwrap_or("");
+            assert!(
+                expected.ends_with("/.planning/ROADMAP.md"),
+                "{id}: expected_path {expected}"
+            );
+        }
+        assert!(!msg.contains("BÍ MẬT"), "{id}: nội dung file lộ ra");
+    }
+    let j = srv.get("/api/board?project=no-roadmap").json();
+    assert!(j["message"]
+        .as_str()
+        .unwrap()
+        .contains(j["expected_path"].as_str().unwrap()));
+
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+}
+
+#[test]
+fn board06_rereads_each_request() {
+    let sb = Sandbox::new();
+    let (mut srv, repo) = demo_server_with_repo(&sb);
+
+    let j = srv.get("/api/board?project=demo&epic=02").json();
+    assert_eq!(item(&j, "02-02")["status"], "bi_chan");
+
+    std::fs::write(
+        repo.join(".planning/phases/02-xuat-bao-cao/02-02-SUMMARY.md"),
+        "# xong\n",
+    )
+    .unwrap();
+
+    let j = srv.get("/api/board?project=demo&epic=02").json();
+    assert_eq!(item(&j, "02-02")["status"], "xong");
+
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+}
+
+#[test]
+fn board10_default_epic_from_state() {
+    let sb = Sandbox::new();
+    let demo = board_repo(&sb, "demo");
+    let fin_files = vec![
+        (
+            ".planning/ROADMAP.md".to_string(),
+            "### Phase 1: Nền tảng\n".to_string(),
+        ),
+        (
+            ".planning/phases/01-nen-tang/01-01-PLAN.md".to_string(),
+            plan_md("01-nen-tang", "01", 1, "[]"),
+        ),
+        (
+            ".planning/phases/01-nen-tang/01-01-SUMMARY.md".to_string(),
+            "# xong\n".to_string(),
+        ),
+    ];
+    let fin = sb.make_repo("fin", &as_refs(&fin_files), None, None);
+    sb.write_map(
+        json!([
+            sb.project_entry(&demo, "demo", "work"),
+            sb.project_entry(&fin, "fin", "work"),
+        ]),
+        &[],
+    );
+    let mut srv = sb.serve(&[]);
+    let state_path = demo.join(".planning/STATE.md");
+    let board = |srv: &common::Serve, q: &str| -> Value {
+        let r = srv.get(&format!("/api/board?project=demo{q}"));
+        assert_eq!(r.status, 200);
+        r.json()
+    };
+
+    // không có STATE.md: epic đầu tiên chưa xong
+    let j = board(&srv, "");
+    assert_eq!(j["epic"], "02");
+    assert_eq!(j["default_epic"], "02");
+
+    // current_phase có nháy
+    std::fs::write(&state_path, "---\ncurrent_phase: \"01\"\n---\n# State\n").unwrap();
+    let j = board(&srv, "");
+    assert_eq!(j["epic"], "01");
+    assert_eq!(j["default_epic"], "01");
+
+    // current_phase không nháy
+    std::fs::write(&state_path, "---\ncurrent_phase: 3\n---\n").unwrap();
+    let j = board(&srv, "");
+    assert_eq!(j["epic"], "03");
+    std::fs::write(&state_path, "---\ncurrent_phase: 2\n---\n").unwrap();
+    let j = board(&srv, "");
+    assert_eq!(j["epic"], "02");
+    assert_eq!(j["default_epic"], "02");
+
+    // epic rõ ràng thắng mặc định
+    std::fs::write(&state_path, "---\ncurrent_phase: \"01\"\n---\n").unwrap();
+    let j = board(&srv, "&epic=2");
+    assert_eq!(j["epic"], "02");
+    assert_eq!(j["default_epic"], "01");
+    let j = board(&srv, "&epic=all");
+    assert_eq!(j["epic"], "all");
+    assert_eq!(item_keys(&j).len(), 5);
+
+    // epic không tồn tại: rơi về mặc định kèm cảnh báo
+    let j = board(&srv, "&epic=9");
+    assert_eq!(j["epic"], j["default_epic"]);
+    assert_eq!(j["epic"], "01");
+    let warnings = j["warnings"].as_array().unwrap();
+    assert!(
+        warnings.iter().any(
+            |w| w["message"] == "Không có epic 09 — đang xem epic mặc định 01"
+                && w["path"] == ".planning/ROADMAP.md"
+        ),
+        "cảnh báo: {warnings:?}"
+    );
+
+    // STATE.md là symlink: bỏ qua kèm cảnh báo, dùng epic đầu chưa xong
+    std::fs::remove_file(&state_path).unwrap();
+    let outside_state = sb.root.join("outside-state.md");
+    std::fs::write(&outside_state, "---\ncurrent_phase: \"01\"\n---\n").unwrap();
+    std::os::unix::fs::symlink(&outside_state, &state_path).unwrap();
+    let j = board(&srv, "");
+    assert_eq!(j["epic"], "02");
+    let warnings = j["warnings"].as_array().unwrap();
+    assert!(
+        warnings.iter().any(|w| w["path"] == ".planning/STATE.md"),
+        "cảnh báo: {warnings:?}"
+    );
+
+    // mọi hạng mục đã xong: "all"
+    let j = srv.get("/api/board?project=fin").json();
+    assert_eq!(j["default_epic"], "all");
+    assert_eq!(j["epic"], "all");
+
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(5)), Some(0));
+}
