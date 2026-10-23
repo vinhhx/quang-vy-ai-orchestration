@@ -360,6 +360,7 @@ Bao gồm các bài kiểm thử tự động cho lõi điều phối và dashbo
 - `tests/dashboard_kill.rs`: Kiểm tra endpoint `/api/runs/:id/kill` dừng an toàn tiến trình và dọn dẹp cây tiến trình.
 - `tests/dashboard_projects.rs`: Kiểm tra API danh sách dự án, cập nhật alias, quét repo và phát hiện tên trùng lặp.
 - `tests/dashboard_stats.rs`: Kiểm tra báo cáo thống kê token theo ngày, vai trò và profile qua API.
+- `tests/dashboard_board.rs`: Bảng công việc qua HTTP: cổng token và route chỉ đọc (không có route ghi), các trạng thái trống, dự án và epic mặc định, đọc lại file ở mỗi request, liên kết phase theo `Depends on` của ROADMAP, tên phase / plan và milestone, file bí mật nằm sau symlink không bao giờ bị đọc, dữ liệu GSD hỏng được liệt kê thành cảnh báo. Các bộ kiểm thử đơn vị trong `src/dashboard/board.rs` (wave, trạng thái, đường găng, bộ lọc epic và milestone, giới hạn) và `src/dashboard/board_scan.rs` (đọc ROADMAP, STATE, front matter của plan, symlink, giới hạn kích thước) chạy cùng `--lib`.
 - `tests/telegram_serve.rs`, `tests/telegram_notify.rs`, `tests/telegram_outage.rs`, `tests/telegram_actions.rs`, `tests/telegram_setup.rs`: Bot Telegram trong `serve` (token chỉ qua stdin của curl, từ chối file không phải `0600`), thông báo, mất kết nối, các nút và ghép nối. Mọi test nói chuyện với Telegram giả trên máy (`tests/fakes/fake_telegram.py` qua `AGENT_BRAIN_TELEGRAM_API=http://127.0.0.1:<cổng>`), không bao giờ gọi `api.telegram.org`.
 - `tests/telegram_intake.rs`: Giao việc qua Telegram: `/task` (bốn màn hình, huỷ, hết hạn, nút cũ, một yêu cầu mỗi lúc), danh sách `telegram_projects`, giới hạn `telegram_max_tasks_per_day`, báo kết quả sau `Tạo task`, menu lệnh; duyệt plan của task giao từ Telegram chỉ trên dashboard (không có nút `Duyệt plan`, lần duyệt giả mạo từ Telegram bị từ chối); tin chuyển tiếp (gom, chọn ☑/☐, khối dữ liệu không tin cậy, giữ nguyên sau Trả về Lead). Cũng chạy với Telegram giả trên máy.
 - `tests/task_origin.rs`: Cờ ẩn `--origin telegram` của `run lead` và `auto --start`, cột `tasks.origin` của lược đồ `brain.db` 3 (nâng từ lược đồ 2 giữ nguyên dữ liệu, lập lại plan giữ nguồn), và lời nhắn Lead có thêm quy tắc dữ liệu không tin cậy.
@@ -392,7 +393,7 @@ Lệnh `agent-brain serve [--port N]` khởi động giao diện web nội bộ 
 - **Dừng an toàn & Giám sát tiến trình**: Nhấn Ctrl+C hoặc đóng cửa sổ terminal (SIGHUP) sẽ gửi tín hiệu SIGINT tới serve và chuyển tiếp tín hiệu dừng tới toàn bộ các run do dashboard khởi chạy. Cơ chế an toàn chống mồ côi `PDEATHSIG` đảm bảo các tiến trình agent con tự động dừng nếu server đột ngột gặp sự cố.
 - **Tương tác đa chiều với terminal**: Các run được khởi chạy từ terminal (ví dụ `agent-brain run lead`) sẽ tự động xuất hiện trực tiếp trên dashboard theo thời gian thực và người dùng có thể bấm nút **Kill** trên giao diện để dừng chúng an toàn.
 
-### Năm màn hình chức năng
+### Sáu màn hình chức năng
 1. **Tổng quan (`#/`)**: Hiển thị bảng tóm tắt nhanh số lượng task theo từng nhóm trạng thái (đang chạy, chờ duyệt plan, cần chú ý, hoàn tất) và danh sách thẻ task gần đây. Hỗ trợ lọc nhanh theo profile (`Tất cả`, `work`, `personal`).
 2. **Giao việc (`#/assign`)**: Ô nhập yêu cầu bằng tiếng Việt, chọn dự án thông qua ô tìm kiếm tự động gợi ý (tự động đề xuất slug chuẩn hóa). Nếu tên nhập vào bị mơ hồ hoặc trùng khớp nhiều dự án, giao diện hiển thị danh sách để người dùng chọn thay vì tự động chạy.
 3. **Chi tiết task (`#/task/:id`)**:
@@ -403,6 +404,13 @@ Lệnh `agent-brain serve [--port N]` khởi động giao diện web nội bộ 
    - Hộp log sự kiện trực tiếp qua Server-Sent Events (SSE) kèm tự động cuộn (auto-scroll) và nút chuyển chế độ xem dữ liệu thô (raw JSON).
 4. **Thống kê (`#/stats`)**: Biểu đồ thanh CSS trực quan thống kê lượng token và chi phí USD tương đương theo từng ngày (cột flex), theo từng vai trò (lead, dev, qa, inspect), theo từng dự án và theo hồ sơ profile.
 5. **Dự án (`#/projects`)**: Danh sách toàn bộ dự án đã đăng ký trong `projects_map.json`. Cho phép chỉnh sửa danh sách `aliases` (biệt danh) trực tiếp với kiểm tra trùng lặp và nút **Quét lại** (`agent-brain projects scan`) để tự động cập nhật danh mục repo.
+6. **Bảng công việc (`#/board`)**: Bảng chỉ đọc của lộ trình GSD của một dự án (`.planning/ROADMAP.md`, `STATE.md` và front matter của các `*-PLAN.md`):
+   - Các cột là wave **tính từ `depends_on`** (giá trị `wave:` trong front matter chỉ dùng để cảnh báo khi lệch); các đường nối là phụ thuộc giữa plan và giữa phase (theo `Depends on` của ROADMAP).
+   - Đường găng màu vàng: chuỗi dài nhất các mục chưa xong. Trạng thái mỗi thẻ: `xong` (có `*-SUMMARY.md`), `sẵn sàng`, `bị chặn`; phase chưa có plan hiện thành một mục thay thế.
+   - `Thu gọn mục đã xong` bật mặc định: wave đã xong hết thu thành cột hẹp `Wave N` / `k/k ✓︎`.
+   - Bấm một thẻ (hoặc `Enter` / `Space` khi thẻ đang có focus) để làm sáng chuỗi của nó (vòng cyan, các mục khác bị mờ) và mở bảng bên với thông tin plan; `Esc` để thoát, focus vẫn ở thẻ.
+   - Bộ lọc `Dự án`, `Epic` (mặc định là `current_phase` của `STATE.md`; `Mọi epic` để xem cả lộ trình) và `Milestone` (ẩn khi dự án có ít hơn hai milestone).
+   - Không tự làm mới: bấm `Đọc lại` để đọc lại file. Dữ liệu GSD hỏng (plan trùng mã, phụ thuộc không tồn tại, vòng lặp…) hiện trong khung `Dữ liệu GSD có lỗi` thay vì làm hỏng bảng.
 
 ### Quy tắc điều phối & Hồ sơ (Pipeline & Profile Rules)
 - **Quy tắc pipeline**: Sau khi Lead chạy xong, task chuyển sang trạng thái `Chờ duyệt plan`. Với quy trình thủ công (ví dụ `nhanh`) hoặc khi autopilot đang tắt, các bước Dev và QA chỉ chạy khi người dùng chủ động bấm nút; với quy trình `auto` (ví dụ `mac-dinh`), autopilot tự chạy các bước sau khi bạn duyệt plan (xem mục Autopilot). Nội dung plan không chỉnh sửa trên web; nếu gặp `Vướng mắc` (dev:blocked) hoặc `Cần sửa` (qa:fix), giao diện cung cấp nút bấm để chạy lại Lead hoặc tiếp tục Dev sau khi người dùng sửa file và commit.
@@ -411,7 +419,7 @@ Lệnh `agent-brain serve [--port N]` khởi động giao diện web nội bộ 
 - **Bộ chuyển đổi Profile**: Bộ chọn profile trên giao diện (`Tất cả` / `work` / `personal`) chỉ có tác dụng lọc tầm nhìn (view filter) cho danh sách task, thống kê và bộ gợi ý dự án. Một task mới khi tạo sẽ luôn chạy dưới profile được cấu hình sẵn của dự án đó trong `projects_map.json`, giao diện không cho phép ghi đè profile khi giao việc.
 
 ### Danh mục HTTP API
-Danh sách dưới đây khớp đúng các route khai báo trong `agent-brain/src/dashboard` (`api_tasks.rs`, `api_runs.rs`, `api_projects.rs`, `api_stats.rs`, `api_workflows.rs` và `mod.rs`). Mọi route đều yêu cầu xác thực cookie phiên hợp lệ (trừ `GET /?token=TOKEN` cấp cookie). Mọi `POST` / `PUT` cần thân JSON (`Content-Type: application/json`) và bị từ chối `403` khi `Origin` lạ; thân của các route task có khóa lạ bị từ chối. Các nút điều khiển (`approve`, `return`, `auto…`) nhận `rev` của task đang hiển thị: `rev` cũ trả `409` với `"kind": "stale"` và màn hình tải lại.
+Danh sách dưới đây khớp đúng các route khai báo trong `agent-brain/src/dashboard` (`api_tasks.rs`, `api_runs.rs`, `api_projects.rs`, `api_stats.rs`, `api_workflows.rs`, `api_board.rs` và `mod.rs`). Mọi route đều yêu cầu xác thực cookie phiên hợp lệ (trừ `GET /?token=TOKEN` cấp cookie). Mọi `POST` / `PUT` cần thân JSON (`Content-Type: application/json`) và bị từ chối `403` khi `Origin` lạ; thân của các route task có khóa lạ bị từ chối. Các nút điều khiển (`approve`, `return`, `auto…`) nhận `rev` của task đang hiển thị: `rev` cũ trả `409` với `"kind": "stale"` và màn hình tải lại.
 
 Task và việc chạy:
 - `GET /api/tasks?profile=work|personal&limit=N`: Danh sách task (nhóm, banner, trạng thái autopilot, lý do dừng) và trạng thái bận (`busy`) của các dự án.
@@ -445,6 +453,14 @@ Dự án, thống kê, quy trình:
 - `GET /api/projects/{id}/status`: Đường dẫn nhanh kiểm tra trạng thái git của dự án.
 - `GET /api/stats?profile=...&since=...`: Báo cáo thống kê token và chi phí tương đương.
 - `GET /api/workflows`: Danh sách quy trình (có sẵn trước, rồi theo thứ tự trong file), lỗi của `workflows.json` và dự án nào dùng quy trình nào làm mặc định. Chỉ đọc.
+- `GET /api/board?project=…&epic=all|05.4&milestone=…&profile=…`: Bảng công việc. **Chỉ đọc** (không có route ghi nào cho bảng): đọc `.planning/ROADMAP.md`, `.planning/STATE.md` và front matter của các plan **ở mỗi request** (không cache, không ghi gì vào `brain.db`). Mọi tham số không bắt buộc:
+  - `project`: mã dự án trong `projects_map.json`; bỏ trống → dự án đầu tiên (sau khi lọc theo `profile`) có `.planning/ROADMAP.md`.
+  - `epic`: bỏ trống → epic mặc định (`current_phase` của `STATE.md` nếu là một epic, nếu không thì phase đầu tiên còn việc); `all` → mọi epic; một số phase như `05.4`.
+  - `milestone`: chỉ xem các phase của milestone đó. `profile`: `work` hoặc `personal`, lọc danh sách dự án.
+  - Trả `200` với `state: "ok"` và các trường `project`, `projects` (kèm `has_board`), `epic`, `default_epic`, `epics` (mã, tên, milestone, số mục xong / tổng), `milestone`, `milestones`, `items` (mỗi mục có `key`, `title`, `epic`, `wave`, `status` là `xong` / `san_sang` / `bi_chan`, `critical`, `placeholder`, `requirements`, `waits_on`, `waited_by`, `plan_path` tương đối), `edges` (`from`, `to`, `kind` là `plan` / `phase`, `critical`), `external` (mục ngoài epic đang xem mà các mục trong bảng chờ hoặc được chờ), `counts`, `warnings` (đường dẫn tương đối và lời nhắn) và `truncated`.
+  - Trạng thái trống (vẫn `200`, `state: "empty"` kèm `reason`, `message`, `expected_path`): `no_roadmap` (chưa có `.planning/ROADMAP.md`), `media` (dự án media), `missing_folder` (thư mục dự án không còn), `planning_symlink` (`.planning` là symlink), `unreadable` (không đọc được ROADMAP, ví dụ quá lớn hoặc không phải file thường), `no_board_projects` (không dự án nào có bảng).
+  - `400` khi tham số sai (quá dài, có ký tự điều khiển, `epic` sai dạng, `profile` lạ); `404` khi không có dự án `project`.
+  - Giới hạn: ROADMAP tối đa 1 MiB, chỉ đọc 32 KiB đầu của mỗi plan, 500 thư mục phase, 2.000 file plan, 2.500 mục, 20.000 đường nối, mỗi lần đọc tối đa 2 giây (vượt giới hạn → `truncated: true` kèm cảnh báo). Symlink và file đặc biệt bên trong `.planning/` không bao giờ được đọc.
 
 ### Tài nguyên tĩnh & Tái dựng CSS ngoại tuyến
 - Tất cả tài nguyên (HTML shell, các phân mảnh màn hình, thư viện Alpine CSP, mã JavaScript và stylesheet `app.css`) đều được nhúng trực tiếp vào binary qua `include_bytes!`. Khi binary xuất xưởng, máy đích không cần kết nối mạng hay cài đặt thêm file nào.
@@ -458,6 +474,16 @@ Dự án, thống kê, quy trình:
   ```bash
   bash scripts/dashboard-smoke.sh
   ```
+- Kiểm tra khói riêng màn hình Bảng công việc, kể cả các đường bàn phím (`Enter` / `Space` / `Esc`):
+  ```bash
+  bash scripts/dashboard-smoke.sh board --keys
+  ```
+- Nghiệm thu trực tiếp Bảng công việc bằng binary thật trong môi trường cô lập (thư mục tạm riêng, repo này chỉ được đọc, bảng mẫu SHOP được tạo trong thư mục tạm; không đụng `brain.db` thật hay `serve` cổng 7437):
+  ```bash
+  bash scripts/board-live-check.sh          # in "Board live check OK"
+  bash scripts/board-live-check.sh --keep   # giữ serve chạy và in URL #/board để xem bằng trình duyệt
+  ```
+  Quy trình nhìn bằng mắt (giao diện sáng / tối, độ rộng 1024 / 768 / 480 px) nằm ở `agent-brain/LIVE-CHECKS.md` mục 7.
 - Tham khảo thêm file `agent-brain/assets/dashboard/VENDOR.md` về nguồn gốc và cách thức đóng gói thư viện Alpine.js bản CSP.
 
 ### Cảnh báo an toàn (Security Notes)
@@ -557,3 +583,11 @@ Từ chat đã ghép nối, bạn giao việc mới cho một dự án được 
 ### Xử lý sự cố (Troubleshooting)
 - **Lỗi 401 Unauthorized**: Mở lại URL đầy đủ chứa `?token=TOKEN` được in ở terminal chạy `agent-brain serve` để làm mới cookie phiên trên trình duyệt.
 - **Cổng bị chiếm dụng (Address in use)**: Mặc định server sử dụng cổng `7437`. Nếu cổng đã bị ứng dụng khác chiếm dụng, chỉ định cổng khác bằng cờ `--port <cổng>` (hoặc cấu hình khóa `dashboard_port` trong file `config.json`), hoặc dùng `--port 0` để hệ thống tự cấp cổng còn trống.
+- **Bảng công việc trống**: Màn hình `#/board` nêu lý do (trường `reason` của `GET /api/board`):
+  - `no_roadmap`: dự án chưa có `.planning/ROADMAP.md`. Bảng chỉ đọc lộ trình GSD; tạo lộ trình cho dự án (ví dụ bằng GSD) hoặc chọn dự án khác.
+  - `media`: dự án loại media không có bảng. Chọn một dự án code.
+  - `missing_folder`: thư mục dự án trong `projects_map.json` không còn. Khôi phục thư mục hoặc bấm **Quét lại** ở màn hình Dự án.
+  - `planning_symlink`: `.planning` là symlink; bảng không đi theo symlink. Thay bằng thư mục thật nằm trong dự án.
+  - `unreadable`: không đọc được `ROADMAP.md` (quá 1 MiB, là symlink hoặc file đặc biệt, hoặc lỗi quyền). Sửa file rồi bấm `Đọc lại`.
+  - `no_board_projects`: chưa dự án nào (theo bộ lọc profile) có `.planning/ROADMAP.md`. Đổi bộ lọc profile hoặc thêm lộ trình cho một dự án.
+  - Bảng hiện nhưng thiếu mục hoặc có khung `Dữ liệu GSD có lỗi`: đọc từng dòng cảnh báo (đường dẫn tương đối của file hỏng), sửa file GSD rồi bấm `Đọc lại`; bảng không tự làm mới.
