@@ -35,6 +35,7 @@ Cổng qua phase (phase gates) nằm trong `ROADMAP.md` (mỗi phase có Success
 - ✓ **Phase 5.1 — Pipeline View** (PIPE-01…05): màn Chi tiết task kiểu "Autopilot" — thẻ giai đoạn có vòng, thời gian, chi phí, cổng "Bạn" suy ra từ git, sổ lượt chạy theo chu kỳ kèm tổng và phân trang; dựng từ dữ liệu runs có sẵn, không đổi schema/giao thức (bước A của Dashboard v2) — Phase 5.1
 - ✓ **Phase 5.3 — Thông báo và hành động qua Telegram** (TELE-01…07): bot long polling trong `agent-brain serve` gọi API bằng `curl -K -` (không thêm crate, không mở cổng), ghép nối `agent-brain telegram setup` (mã 6 số, `telegram.json` 0600), chỉ chat ID đã ghép; thông báo chờ duyệt plan / autopilot dừng / QA đạt / run lỗi mỗi sự kiện một lần, chịu được mất mạng (hàng đợi, backoff 5→60 s); nút Duyệt plan, Trả về Lead (kèm ghi chú), Chạy thêm 1 vòng, Dừng hẳn, Kill (xác nhận) dùng chung hàm hành động với dashboard; UAT thật 3/3 Đạt — Phase 5.3
 - ✓ **Phase 5.4 — Giao việc qua Telegram** (INTAKE-01…12): `/task` (yêu cầu → dự án → quy trình → xác nhận) và chuyển tiếp nhiều tin → danh sách ☑/☐ → **một** task trích dẫn người gửi và thời gian, cùng hàm `start_new_task` với màn Giao việc; `tasks.origin` (lược đồ v3) khiến plan của task Telegram chỉ duyệt trên dashboard; `telegram_projects` (mặc định đóng), `telegram_max_tasks_per_day`; nội dung chuyển tiếp là dữ liệu không tin cậy với Lead; nghiệm thu thật P5.4-01…07 + UX-01 Đạt, UAT 44/44 — Phase 5.4
+- ✓ **Phase 5.5 — Bảng công việc** (BOARD-01…14): màn `#/board` chỉ đọc, `GET /api/board` đọc trực tiếp `ROADMAP.md`, `STATE.md` và front matter plan GSD mỗi lần gọi (không bảng, không migration); wave tính từ `depends_on`, cạnh liên phase từ `Depends on`, đường găng vàng chỉ gồm hạng mục chưa xong, `Thu gọn mục đã xong`, chế độ tập trung + khung bên (Enter/Space/Esc); không theo symlink, có giới hạn kích thước/số file/thời gian, dữ liệu hỏng thành cảnh báo; kiểm thật `scripts/board-live-check.sh` trên repo này + bảng mẫu SHOP, xem trên trình duyệt sáng/tối Đạt — Phase 5.5
 
 ### Active
 
@@ -136,4 +137,4 @@ Tài liệu này tiến hóa theo vòng đời dự án.
 4. Cập nhật Context theo hiện trạng
 
 ---
-*Last updated: 2026-10-23 after Phase 5.4*
+*Last updated: 2026-10-24 after Phase 5.5*

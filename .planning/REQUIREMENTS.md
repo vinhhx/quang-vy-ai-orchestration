@@ -163,20 +163,20 @@ Quyết định người dùng 2026-10-21 (ROADMAP Phase 05.4: phase riêng sau 
 
 Quyết định người dùng 2026-10-19, 2026-10-20, 2026-10-21 (ROADMAP Phase 05.5) và 05.5-CONTEXT.md D-01…D-12 (2026-10-23). Bảng chỉ đọc, dữ liệu đọc trực tiếp từ file GSD của dự án; không bảng epics/items trong brain.db, không migration; chế độ epic của Lead làm ở phase sau.
 
-- [ ] **BOARD-01**: Màn hình mới `#/board` (mục menu "Bảng công việc") chỉ đọc: không thêm route ghi nào; `GET /api/board?project=&epic=&milestone=&profile=` đi qua cùng middleware token và header như mọi route; không đổi `brain.db`. *(derived: 05.5-CONTEXT D-01, D-05)*
-- [ ] **BOARD-02**: Dự án có bảng khi thư mục đăng ký chứa `.planning/ROADMAP.md`; mọi dự án khác (không roadmap, loại `media`, thiếu thư mục, `.planning` là symlink) hiện trạng thái trống bằng tiếng Việt, nói bảng đọc lộ trình GSD và nêu đường dẫn mong đợi; không có danh sách bật riêng. *(derived: 05.5-CONTEXT D-02)*
-- [ ] **BOARD-03**: Một plan GSD là một hạng mục (khoá = mã plan, ví dụ `05.4-03`), một phase là một epic; phase chưa có file plan hiện một hạng mục giữ chỗ (khoá = số phase) để đồ thị không có lỗ hổng. *(derived: 05.5-CONTEXT D-03)*
-- [ ] **BOARD-04**: Trạng thái chỉ suy từ file GSD: `xong` (có `*-SUMMARY.md`, hoặc checkbox roadmap `[x]` với hạng mục giữ chỗ), `sẵn sàng` (chưa xong, mọi phụ thuộc đã xong), `bị chặn` (chưa xong, còn phụ thuộc chưa xong); bộ lọc milestone lấy từ ROADMAP.md và tự ẩn khi chỉ có một milestone. *(derived: 05.5-CONTEXT D-04, D-04b)*
-- [ ] **BOARD-05**: Mỗi lần gọi API đọc trực tiếp `.planning/` của dự án với giới hạn kích thước file, số file và thời gian; chỉ đọc trong `.planning/`, không theo symlink, không đọc file không phải file thường. *(derived: 05.5-CONTEXT D-05)*
-- [ ] **BOARD-06**: Bảng làm mới khi mở màn hình và khi bấm `Đọc lại`; không polling, không theo dõi file. *(derived: 05.5-CONTEXT D-06)*
-- [ ] **BOARD-07**: Dữ liệu hỏng không làm trống bảng: front matter lỗi, `depends_on` trỏ plan không có, vòng phụ thuộc, file không đọc được chỉ bị bỏ phần hỏng và được liệt kê trong hộp cảnh báo amber `Dữ liệu GSD có lỗi` kèm đường dẫn file và lý do tiếng Việt. *(derived: 05.5-CONTEXT D-07)*
-- [ ] **BOARD-08**: Wave tính từ các cạnh (đường dài nhất từ gốc, wave 0 không phụ thuộc), không dùng `wave:` trong front matter để xếp; khi lệch thì thêm một dòng cảnh báo nhưng không dời hạng mục. *(derived: 05.5-CONTEXT D-08)*
-- [ ] **BOARD-09**: Đường găng là chuỗi dài nhất các hạng mục chưa xong (mỗi hạng mục chưa xong tính 1, đã xong tính 0, cùng thuật toán với bản mẫu), kết quả xác định khi có nhiều chuỗi dài bằng nhau (chọn chuỗi bắt đầu sớm nhất); chỉ các hạng mục chưa xong của chuỗi và cạnh nối hai hạng mục chưa xong liền nhau được đánh dấu, vẽ bằng đường nối màu vàng. *(derived: 05.5-CONTEXT D-09; quyết định người dùng 2026-10-23: đường găng rút gọn)*
-- [ ] **BOARD-10**: Cạnh liên phase: `Depends on: Phase X` trong roadmap nối các plan cuối của X với các plan gốc của phase này; `depends_on` liên phase tường minh được giữ nguyên; chế độ xem mặc định là phase hiện tại (từ `STATE.md`, dự phòng là phase đầu tiên chưa xong), `Mọi epic` là lựa chọn rõ ràng cho một đồ thị liền mạch. *(derived: 05.5-CONTEXT D-10)*
-- [ ] **BOARD-11**: Công tắc `Thu gọn mục đã xong` bật mặc định: wave xong hết thu thành cột hẹp `Wave N · k/k ✓`, mục xong trong wave lẫn thành chip một dòng, cạnh vào mục đã thu vẫn hiện; tắt công tắc thì hiện đủ thẻ. *(derived: 05.5-CONTEXT D-11)*
-- [ ] **BOARD-12**: Bấm một hạng mục: vòng cyan 2px, toàn bộ chuỗi thượng nguồn và hạ nguồn sáng, mục không liên quan mờ đi; khung bên chỉ đọc hiện khoá, tiêu đề, phase, milestone, wave tính ra, trạng thái, `requirements`, danh sách `Phụ thuộc` và `Được chờ bởi` (bấm để chuyển tiêu điểm) và đường dẫn `PLAN.md` trong repo; dùng bàn phím: Enter/Space chọn, Esc bỏ chọn và đóng khung. *(derived: 05.5-CONTEXT D-12)*
-- [ ] **BOARD-13**: Giữ quy tắc giao diện của Phase 5: Tailwind v4 build sẵn (`app.css` dựng lại và commit), Alpine CSP, không CDN, chạy offline, tiếng Việt, sáng/tối, kiểu chữ và lớp cấm của 05-UI-SPEC, `scripts/dashboard-ui-lint.sh` đạt; đạt ở 1024/768/480 px, bảng cuộn ngang trong khung riêng và trang không cuộn ngang. *(derived: 05.5-CONTEXT Carried forward)*
-- [ ] **BOARD-14**: Mỗi quy tắc suy diễn (wave, đường găng, liên kết liên phase, trạng thái, cảnh báo, giới hạn, symlink) có kiểm thử theo fixture, không thêm crate, các bộ test dashboard cũ vẫn đạt; tài liệu: README (màn hình, API), `agent-brain/LIVE-CHECKS.md` § 7 (kiểm tra thật trên dữ liệu repo này); truy vết BOARD trong `REQUIREMENTS.md` và các dòng `Depends on`, `Requirements`, `Notes` của ROADMAP Phase 05.5 cập nhật theo phase này. *(derived: 05.5-CONTEXT specifics; Phase 5 live-check pattern)*
+- [x] **BOARD-01**: Màn hình mới `#/board` (mục menu "Bảng công việc") chỉ đọc: không thêm route ghi nào; `GET /api/board?project=&epic=&milestone=&profile=` đi qua cùng middleware token và header như mọi route; không đổi `brain.db`. *(derived: 05.5-CONTEXT D-01, D-05)*
+- [x] **BOARD-02**: Dự án có bảng khi thư mục đăng ký chứa `.planning/ROADMAP.md`; mọi dự án khác (không roadmap, loại `media`, thiếu thư mục, `.planning` là symlink) hiện trạng thái trống bằng tiếng Việt, nói bảng đọc lộ trình GSD và nêu đường dẫn mong đợi; không có danh sách bật riêng. *(derived: 05.5-CONTEXT D-02)*
+- [x] **BOARD-03**: Một plan GSD là một hạng mục (khoá = mã plan, ví dụ `05.4-03`), một phase là một epic; phase chưa có file plan hiện một hạng mục giữ chỗ (khoá = số phase) để đồ thị không có lỗ hổng. *(derived: 05.5-CONTEXT D-03)*
+- [x] **BOARD-04**: Trạng thái chỉ suy từ file GSD: `xong` (có `*-SUMMARY.md`, hoặc checkbox roadmap `[x]` với hạng mục giữ chỗ), `sẵn sàng` (chưa xong, mọi phụ thuộc đã xong), `bị chặn` (chưa xong, còn phụ thuộc chưa xong); bộ lọc milestone lấy từ ROADMAP.md và tự ẩn khi chỉ có một milestone. *(derived: 05.5-CONTEXT D-04, D-04b)*
+- [x] **BOARD-05**: Mỗi lần gọi API đọc trực tiếp `.planning/` của dự án với giới hạn kích thước file, số file và thời gian; chỉ đọc trong `.planning/`, không theo symlink, không đọc file không phải file thường. *(derived: 05.5-CONTEXT D-05)*
+- [x] **BOARD-06**: Bảng làm mới khi mở màn hình và khi bấm `Đọc lại`; không polling, không theo dõi file. *(derived: 05.5-CONTEXT D-06)*
+- [x] **BOARD-07**: Dữ liệu hỏng không làm trống bảng: front matter lỗi, `depends_on` trỏ plan không có, vòng phụ thuộc, file không đọc được chỉ bị bỏ phần hỏng và được liệt kê trong hộp cảnh báo amber `Dữ liệu GSD có lỗi` kèm đường dẫn file và lý do tiếng Việt. *(derived: 05.5-CONTEXT D-07)*
+- [x] **BOARD-08**: Wave tính từ các cạnh (đường dài nhất từ gốc, wave 0 không phụ thuộc), không dùng `wave:` trong front matter để xếp; khi lệch thì thêm một dòng cảnh báo nhưng không dời hạng mục. *(derived: 05.5-CONTEXT D-08)*
+- [x] **BOARD-09**: Đường găng là chuỗi dài nhất các hạng mục chưa xong (mỗi hạng mục chưa xong tính 1, đã xong tính 0, cùng thuật toán với bản mẫu), kết quả xác định khi có nhiều chuỗi dài bằng nhau (chọn chuỗi bắt đầu sớm nhất); chỉ các hạng mục chưa xong của chuỗi và cạnh nối hai hạng mục chưa xong liền nhau được đánh dấu, vẽ bằng đường nối màu vàng. *(derived: 05.5-CONTEXT D-09; quyết định người dùng 2026-10-23: đường găng rút gọn)*
+- [x] **BOARD-10**: Cạnh liên phase: `Depends on: Phase X` trong roadmap nối các plan cuối của X với các plan gốc của phase này; `depends_on` liên phase tường minh được giữ nguyên; chế độ xem mặc định là phase hiện tại (từ `STATE.md`, dự phòng là phase đầu tiên chưa xong), `Mọi epic` là lựa chọn rõ ràng cho một đồ thị liền mạch. *(derived: 05.5-CONTEXT D-10)*
+- [x] **BOARD-11**: Công tắc `Thu gọn mục đã xong` bật mặc định: wave xong hết thu thành cột hẹp `Wave N · k/k ✓`, mục xong trong wave lẫn thành chip một dòng, cạnh vào mục đã thu vẫn hiện; tắt công tắc thì hiện đủ thẻ. *(derived: 05.5-CONTEXT D-11)*
+- [x] **BOARD-12**: Bấm một hạng mục: vòng cyan 2px, toàn bộ chuỗi thượng nguồn và hạ nguồn sáng, mục không liên quan mờ đi; khung bên chỉ đọc hiện khoá, tiêu đề, phase, milestone, wave tính ra, trạng thái, `requirements`, danh sách `Phụ thuộc` và `Được chờ bởi` (bấm để chuyển tiêu điểm) và đường dẫn `PLAN.md` trong repo; dùng bàn phím: Enter/Space chọn, Esc bỏ chọn và đóng khung. *(derived: 05.5-CONTEXT D-12)*
+- [x] **BOARD-13**: Giữ quy tắc giao diện của Phase 5: Tailwind v4 build sẵn (`app.css` dựng lại và commit), Alpine CSP, không CDN, chạy offline, tiếng Việt, sáng/tối, kiểu chữ và lớp cấm của 05-UI-SPEC, `scripts/dashboard-ui-lint.sh` đạt; đạt ở 1024/768/480 px, bảng cuộn ngang trong khung riêng và trang không cuộn ngang. *(derived: 05.5-CONTEXT Carried forward)*
+- [x] **BOARD-14**: Mỗi quy tắc suy diễn (wave, đường găng, liên kết liên phase, trạng thái, cảnh báo, giới hạn, symlink) có kiểm thử theo fixture, không thêm crate, các bộ test dashboard cũ vẫn đạt; tài liệu: README (màn hình, API), `agent-brain/LIVE-CHECKS.md` § 7 (kiểm tra thật trên dữ liệu repo này); truy vết BOARD trong `REQUIREMENTS.md` và các dòng `Depends on`, `Requirements`, `Notes` của ROADMAP Phase 05.5 cập nhật theo phase này. *(derived: 05.5-CONTEXT specifics; Phase 5 live-check pattern)*
 
 ### Multi-engine Routing (GSD Phase 6 — nguồn Phase 5)
 
@@ -312,20 +312,20 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | INTAKE-10 | Phase 5.4 | Complete |
 | INTAKE-11 | Phase 5.4 | Complete |
 | INTAKE-12 | Phase 5.4 | Complete |
-| BOARD-01 | Phase 5.5 | Pending |
-| BOARD-02 | Phase 5.5 | Pending |
-| BOARD-03 | Phase 5.5 | Pending |
-| BOARD-04 | Phase 5.5 | Pending |
-| BOARD-05 | Phase 5.5 | Pending |
-| BOARD-06 | Phase 5.5 | Pending |
-| BOARD-07 | Phase 5.5 | Pending |
-| BOARD-08 | Phase 5.5 | Pending |
-| BOARD-09 | Phase 5.5 | Pending |
-| BOARD-10 | Phase 5.5 | Pending |
-| BOARD-11 | Phase 5.5 | Pending |
-| BOARD-12 | Phase 5.5 | Pending |
-| BOARD-13 | Phase 5.5 | Pending |
-| BOARD-14 | Phase 5.5 | Pending |
+| BOARD-01 | Phase 5.5 | Complete |
+| BOARD-02 | Phase 5.5 | Complete |
+| BOARD-03 | Phase 5.5 | Complete |
+| BOARD-04 | Phase 5.5 | Complete |
+| BOARD-05 | Phase 5.5 | Complete |
+| BOARD-06 | Phase 5.5 | Complete |
+| BOARD-07 | Phase 5.5 | Complete |
+| BOARD-08 | Phase 5.5 | Complete |
+| BOARD-09 | Phase 5.5 | Complete |
+| BOARD-10 | Phase 5.5 | Complete |
+| BOARD-11 | Phase 5.5 | Complete |
+| BOARD-12 | Phase 5.5 | Complete |
+| BOARD-13 | Phase 5.5 | Complete |
+| BOARD-14 | Phase 5.5 | Complete |
 | ENG-01 | Phase 6 | Pending |
 | ENG-02 | Phase 6 | Pending |
 | ENG-03 | Phase 6 | Pending |
@@ -366,4 +366,4 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 
 ---
 *Requirements defined: 2026-10-14*
-*Last updated: 2026-10-23 — added BOARD-01..14 (Phase 5.5)*
+*Last updated: 2026-10-24 — BOARD-01..14 complete (Phase 5.5)*
