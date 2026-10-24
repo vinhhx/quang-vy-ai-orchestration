@@ -124,6 +124,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Không có quyết đị
 - Phase 05.2 inserted after Phase 05.1: Workflows and Autopilot — Dashboard v2 step B (review roles, workflow templates, autopilot, schema v2)
 - Phase 05.3 inserted after Phase 05.2: Telegram Notifications and Actions — notify + gate/stop actions via long-polling bot (user decision 2026-10-20); work board moves to 5.4
 - Phase 05.5 (was 05.4) inserted after Phase 05.4: Work Board — View 2 of Dashboard v2 (#/board: waves, dependencies, critical path; GSD roadmap import first)
+- Phase 06.1 inserted after Phase 6: Media Branch — MEDIA-01…03 split out of Phase 6 (user decision 2026-10-24, 06-CONTEXT D-22); Phase 6 keeps ENG-01…07 + Settings screen + human engine
 - Phase 05.4 inserted after Phase 05.3: Telegram Task Intake — /task command and forwarded messages → one task; plans of Telegram-created tasks approved on the dashboard only (user decision 2026-10-21); work board renumbered to 05.5
 
 ## Deferred Items

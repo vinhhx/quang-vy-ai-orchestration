@@ -28,7 +28,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Rust CLI Core** - Binary `agent-brain` với kill sạch cây tiến trình, bắt log stream-json, token trong SQLite, fast-path (completed 2026-10-16)
 - [ ] **Phase 4: Session & Token Optimization** - Giảm token/task dựa trên số liệu `runs` thật (`.gsd-summary.md`, `.handover.md`)
 - [x] **Phase 5: Embedded Dashboard** - Web UI + SSE trong cùng binary: xem log realtime, giao việc, kill, thống kê (completed 2026-10-19)
-- [ ] **Phase 6: Multi-engine & Media Branch** - Mỗi vai trò một engine, xử lý hết quota không đổi ngầm, nhánh video tách khỏi Git worktree
+- [ ] **Phase 6: Multi-engine & Media Branch** - Mỗi vai trò một engine (claude, DeepSeek, agy, nhân sự), đội hình + màn Cài đặt, xử lý hết quota không đổi ngầm (nhánh Media tách sang 06.1)
+- [ ] **Phase 06.1: Media Branch (INSERTED)** - Dự án media chạy ngoài Git worktree, job render FFmpeg có kill sạch, bảng `media_jobs`
 
 **Execution Order & Dependencies:**
 
@@ -403,14 +404,27 @@ Plans:
 **Goal**: Mỗi vai trò (Lead/Dev/QA) chạy được bằng engine khác nhau và đổi được giữa các task khi hết quota (không đổi ngầm), và sản xuất video chạy ở nhánh riêng tách khỏi Git worktree nhưng vẫn điều phối chung một nơi.
 **Source**: Phase 5 — `06-phase5-da-doi-hinh-media.md`
 **Depends on**: Phase 3 (kết quả S1, S5, S6, S7 từ Phase 1; phụ thuộc mềm vào `.handover.md` của Phase 4)
-**Requirements**: ENG-01, ENG-02, ENG-03, ENG-04, ENG-05, ENG-06, ENG-07, MEDIA-01, MEDIA-02, MEDIA-03
+**Requirements**: ENG-01, ENG-02, ENG-03, ENG-04, ENG-05, ENG-06, ENG-07 (+ ID mới cho màn Cài đặt và engine `người`, planner đăng ký vào REQUIREMENTS.md); MEDIA-01…03 chuyển sang Phase 06.1 (06-CONTEXT D-22, quyết định người dùng 2026-10-24)
 **Success Criteria** (what must be TRUE):
   1. Chạy task với đội hình `tiet-kiem`: Lead và QA chạy Claude, Dev chạy DeepSeek, log ghi đúng engine và thống kê tách đúng token từng engine (cổng phase: 1 task trộn engine chạy end-to-end).
   2. Khi hết quota giữa task, hệ thống báo lỗi và đề xuất đổi đội hình, không tự đổi ngầm; đổi engine giữa task thì engine mới tiếp tục từ `.plan.md` (và `.handover.md` nếu có) mà không làm lại từ đầu.
   3. Key DeepSeek không xuất hiện trong file đã commit hay trong log.
-  4. Dự án media không tạo Git worktree, file render nằm ngoài repo; kịch bản whiteboard đã duyệt chuyển thành cấu hình render rồi file output; kill job render thì FFmpeg dừng và không còn tiến trình sót.
+  4. *(chuyển sang Phase 06.1)*
   5. Antigravity được xử lý theo kết quả S7 (chạy headless như engine, hoặc dùng thủ công và theo dõi qua `git diff`), và tỉ lệ "Cần sửa" của QA được ghi theo engine.
 
+**Plans**: TBD
+
+### Phase 06.1: Media Branch (INSERTED)
+
+**Goal**: Sản xuất video chạy ở nhánh riêng tách khỏi Git worktree nhưng vẫn điều phối chung một nơi: kịch bản đã duyệt → agent viết cấu hình/script render → runner chạy FFmpeg → file output.
+**Source**: Phase 5 — `06-phase5-da-doi-hinh-media.md` §2.4, §3.2, §3.3 (tách khỏi Phase 6 theo 06-CONTEXT D-22)
+**Depends on**: Phase 6 (đội hình/engine cho bước viết cấu hình render)
+**Requirements**: MEDIA-01, MEDIA-02, MEDIA-03
+**Success Criteria** (what must be TRUE):
+  1. Dự án `type: media` là thư mục thường, không tạo Git worktree; file output nằm ở `<dự án media>/output/`, không nằm trong repo code nào.
+  2. Kịch bản đã duyệt trong dự án media được agent chuyển thành cấu hình/script render, runner chạy ra file output; mỗi job ghi vào bảng `media_jobs`.
+  3. Kill một job render thì FFmpeg dừng và không còn tiến trình sót (cách kill S4).
+**Notes**: Pipeline kịch bản whiteboard thật chưa có — phase này làm job render chung; nối pipeline thật làm sau. Discuss riêng trước khi plan.
 **Plans**: TBD
 
 ## Cross-cutting KPIs
@@ -422,7 +436,7 @@ Các KPI áp dụng xuyên suốt các phase (nguồn `00-ROADMAP.md` mục 5); 
 | Token trung bình / task | SQLite (từ Phase 3) | Giảm dần qua các phase | Phase 3 (mốc), Phase 4 (OPT-06) |
 | Số turn trước khi agent bắt đầu sửa code | Đếm trong log stream-json | ≤ 2 | Phase 2 (nhật ký), Phase 4 (OPT-02) |
 | Task chạy nhầm repo | Ghi tay / log | 0 | Phase 2 (ROUTE-03, ROUTE-04), Phase 5 (DASH-07) |
-| Tiến trình còn sót sau Kill | `ps` sau khi kill | 0 | Phase 3 (PROC-01, PROC-02), Phase 5 (DASH-06), Phase 6 (MEDIA-02) |
+| Tiến trình còn sót sau Kill | `ps` sau khi kill | 0 | Phase 3 (PROC-01, PROC-02), Phase 5 (DASH-06), Phase 06.1 (MEDIA-02) |
 | Task phải làm lại do Dev hiểu sai plan | Ghi tay (nhật ký task) | Giảm dần | Phase 2 (ROLE-07), Phase 6 (ENG-07) |
 
 ## Progress
