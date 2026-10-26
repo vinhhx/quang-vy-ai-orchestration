@@ -401,7 +401,7 @@ Plans:
 
 ### Phase 6: Multi-engine & Media Branch
 
-**Goal**: Mỗi vai trò (Lead/Dev/QA) chạy được bằng engine khác nhau và đổi được giữa các task khi hết quota (không đổi ngầm), và sản xuất video chạy ở nhánh riêng tách khỏi Git worktree nhưng vẫn điều phối chung một nơi.
+**Goal**: Mỗi vai trò (Lead/Dev/QA và hai vai trò review) chạy được bằng engine khác nhau (claude theo profile dự án, DeepSeek, Antigravity, nhân sự) qua đội hình đặt tên, cấu hình trên màn Cài đặt; hết quota thì dừng chờ người dùng và đổi được đội hình, không đổi ngầm. (Nhánh Media chuyển sang Phase 06.1.)
 **Source**: Phase 5 — `06-phase5-da-doi-hinh-media.md`
 **Depends on**: Phase 3 (kết quả S1, S5, S6, S7 từ Phase 1; phụ thuộc mềm vào `.handover.md` của Phase 4)
 **Requirements**: ENG-01, ENG-02, ENG-03, ENG-04, ENG-05, ENG-06, ENG-07 (+ ID mới cho màn Cài đặt và engine `người`, planner đăng ký vào REQUIREMENTS.md); MEDIA-01…03 chuyển sang Phase 06.1 (06-CONTEXT D-22, quyết định người dùng 2026-10-24)
