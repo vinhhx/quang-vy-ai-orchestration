@@ -63,7 +63,16 @@ Requirements in this phase: ENG-01 … ENG-07, plus new requirement IDs for the 
   - The `media_jobs` table, and render kill with no leftovers (S4 method).
   - The whiteboard pipeline does not exist yet. Connecting it comes later.
 
+### Amendments after research (user answers, 2026-10-26)
+- **D-24 (narrows D-19):** In this phase the `người` engine is allowed **only for the Dev role**. Saving a team that sets Lead, plan-review, code-review or QA to `người:<id>` is refused with a clear Vietnamese error. Other roles are deferred.
+- **D-25 (extends D-20):** When a human Dev step starts, agent-brain makes a **best-effort `git push`** of the task branch (with the committed `.plan.md`) to the remote. If the push fails, the step still waits, and the UI shows the branch name and the exact push command for the user to run. This is a new network side effect; it never force-pushes.
+- **D-26 (refines D-05):** The agy probe plan tests a narrower permission mode (`--mode accept-edits` / `--sandbox`) for Dev. If the probe shows agy can edit files in that mode, Dev uses it. Only if it cannot does Dev fall back to `--dangerously-skip-permissions`. The post-run git diff scope check always applies.
+- **D-27:** Team names are capped at **40 characters**, matching the existing `validate_name`. The UI-SPEC's 48 is superseded.
+- **D-28:** Picking a team on Telegram to re-run a step needs a **second confirm tap** before anything runs.
+- **D-29:** While a human step is waiting (`Chờ <tên> làm`), changing the task's team is **refused**, the same as while a run is live.
+
 ### Claude's Discretion
+- Behaviour when a task's team no longer exists in `teams.json` (the user left this to the planner).
 - Exact JSON shapes of `teams.json`, the engine entries in `config.json`, and the staff list. The planner can keep staff inside `teams.json` or put them in `staff.json`.
 - How a task stores its team (a column on `tasks`, which needs a schema v4 migration with backup and a decision gate as in 05.4, versus a run-dir/plan-header field). Pick the durable, smallest option and flag any migration as a decision checkpoint.
 - The quota detection patterns for each engine. Research the real stream and exit shapes, and use fixtures.
