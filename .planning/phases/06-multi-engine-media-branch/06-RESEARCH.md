@@ -571,19 +571,29 @@ Order rationale: the two probes are independent and user-run so they start in Wa
 | A13 | Live brain.db is still user_version 2 | Runtime State Inventory | upgrade note wording only |
 | A14 | UI-SPEC assumptions C1-C20 stand as planner defaults except C1, C6, C11, C12, C13 which the user confirmed | UI | per UI-SPEC |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All eight questions were answered by the user on 2026-10-26 (06-CONTEXT D-24…D-29) or are settled by a plan; each item ends with its resolution.
 
 1. **Human engine for Lead / plan-review / code-review (D-19 says "any role except QA").**
    - What we know: Dev/fix has a clear artifact (commits on the task branch, diff scope check). Lead needs a committed `.plan.md` with subject `{slug}: plan` that passes `validate_plan`, but for a NEW task there is no branch yet (`cmd_lead` creates it) and a committed skeleton would be mistaken for a plan commit by `plan_commit_on_branch`. Reviewers must produce `.plan-review.md` / `.code-review.md` with front matter (`parse_review`).
    - What's unclear: whether v1 must support all four non-QA roles.
    - Recommendation: build the generic marker/`Xong` mechanism with a per-role artifact contract table; ship Dev (implement + fix) fully; allow the other roles in the validator but have the runtime refuse with a clear Vietnamese "chưa hỗ trợ engine người cho vai trò này" unless the user wants the larger scope. Ask the user.
+   - **RESOLVED → D-24:** `người` only for the Dev role in this phase; the teams loader and the Settings save refuse it on Lead, plan-review, code-review and QA (plan 06-03; runtime in 06-12).
 2. **Who pushes the task branch for staff?** D-19/D-20 say agent-brain "prepares" the branch and staff "push" theirs; staff need the branch from the remote first. Recommend a best-effort `git push -u origin task/<slug>` at preparation (new network side effect; failure non-fatal and shown in the callout). Needs confirmation.
+   - **RESOLVED → D-25:** best-effort `git push` of the task branch at the start of a human step (and at Trả lại), never force; a failure keeps the wait and shows the branch and the push command (plans 06-12, 06-18).
 3. **agy Dev permissions:** D-05 locks `--dangerously-skip-permissions`; `--mode accept-edits` (and `--sandbox`) may suffice because agent-brain commits the work itself after the run. Test in 06-02; if it works, propose switching (narrower blast radius).
+   - **RESOLVED → D-26:** the 06-02 probe tests `--mode accept-edits` / `--sandbox`; Dev uses the narrowest mode that edits, the skip flag only as the fallback; the post-run diff check always applies (plans 06-02 decision task, 06-09).
 4. **DeepSeek model strings:** alias-based (`opus`/`sonnet` -> DeepSeek mapping) versus explicit `deepseek-*` names; docs disagree. E-09 decides.
+   - **RESOLVED at execution time by the E-09 gate (plan 06-01 Task 3):** `pass-alias` keeps the role aliases, `pass-explicit` ships the observed model ids (applied by plan 06-11), `fail` stops the DeepSeek work (D-02).
 5. **Name length:** 40 (loader) vs 48 (UI-SPEC).
+   - **RESOLVED → D-27:** 40 characters everywhere (`workflows::validate_name`); the UI-SPEC's 48 is superseded (plans 06-03, 06-08).
 6. **Telegram flow:** one confirm tap after picking a team (recommended) or direct execution.
-7. **Change team while a human step is waiting:** recommend allowed, clears the marker and records history.
+   - **RESOLVED → D-28:** picking a team on Telegram needs a second confirm tap before anything runs (plan 06-14).
+7. **Change team while a human step is waiting:** ~~recommend allowed, clears the marker and records history.~~ (superseded)
+   - **RESOLVED → D-29:** changing the team is REFUSED while a human step waits, the same as while a run is live (plans 06-05, 06-10, 06-16).
 8. **Task with team missing from `teams.json`:** recommend the step refuses with "Đội hình 'x' của task không còn trong teams.json — đổi đội hình rồi chạy lại" (exit 1, no run row), consistent with UI-SPEC's amber hint.
+   - **RESOLVED in plans (Claude's discretion, recorded in 06-05):** the next step is refused with `Đội hình '{x}' của task không còn trong teams.json — đổi đội hình rồi chạy lại.` (exit 1, no run row); the task screen shows the amber hint and keeps `Đổi đội hình` available (06-10, 06-17).
 
 ## Environment Availability
 
