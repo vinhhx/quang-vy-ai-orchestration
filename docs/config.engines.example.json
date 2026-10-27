@@ -1,0 +1,48 @@
+{
+  "_comment": "Ví dụ hình dạng danh sách engine (Phase 6, D-30..D-34). CHƯA dùng được: binary hiện tại chỉ đọc engines dạng object; dạng danh sách có sau khi 06-11 được lập lại kế hoạch và thực thi. Các khóa khác của config.json giữ như agent-brain/assets/config.default.json. Key KHÔNG bao giờ nằm trong file này: chỉ ghi tên biến môi trường (key_env), rồi export biến đó trong shell chạy agent-brain serve.",
+
+  "engines": [
+    {
+      "id": "vcadm-deepseek",
+      "kind": "anthropic",
+      "label": "DeepSeek qua gateway công ty",
+      "command": "claude",
+      "base_url": "https://ai-gateway.vcadm.vn/proxyllm",
+      "key_env": "VCADM_GATEWAY_KEY",
+      "models": {
+        "lead": "deepseek/deepseek-reasoner",
+        "dev": "deepseek/deepseek-chat",
+        "qa": "deepseek/deepseek-chat",
+        "plan-review": "deepseek/deepseek-reasoner",
+        "code-review": "deepseek/deepseek-reasoner"
+      },
+      "pricing": {
+        "deepseek/deepseek-chat": { "input": 0.28, "output": 0.42, "cache_read": 0.028 },
+        "deepseek/deepseek-reasoner": { "input": 0.28, "output": 0.42, "cache_read": 0.028 }
+      }
+    },
+    {
+      "id": "deepseek",
+      "kind": "anthropic",
+      "label": "DeepSeek chính hãng",
+      "command": "claude",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "key_env": "DEEPSEEK_API_KEY",
+      "models": {
+        "dev": "deepseek-chat",
+        "qa": "deepseek-chat"
+      }
+    },
+    {
+      "id": "agy",
+      "kind": "agy",
+      "label": "Antigravity (headless)",
+      "command": "agy",
+      "dev_permission": ["--mode", "accept-edits"],
+      "print_timeout_margin_secs": 30,
+      "model": null
+    }
+  ],
+
+  "_teams_comment": "Đội hình (teams) chọn engine theo id, ví dụ Dev = \"vcadm-deepseek\"; Lead/QA giữ \"claude\" (luôn dùng profile của dự án, D-33). Engine \"claude\" và \"người:<id>\" là sẵn có, không khai báo ở đây."
+}
