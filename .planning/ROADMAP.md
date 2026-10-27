@@ -404,7 +404,7 @@ Plans:
 **Goal**: Mỗi vai trò (Lead/Dev/QA và hai vai trò review) chạy được bằng engine khác nhau (claude theo profile dự án, DeepSeek, Antigravity, nhân sự) qua đội hình đặt tên, cấu hình trên màn Cài đặt; hết quota thì dừng chờ người dùng và đổi được đội hình, không đổi ngầm. (Nhánh Media chuyển sang Phase 06.1.)
 **Source**: Phase 5 — `06-phase5-da-doi-hinh-media.md`
 **Depends on**: Phase 3 (kết quả S1, S5, S6, S7 từ Phase 1; phụ thuộc mềm vào `.handover.md` của Phase 4)
-**Requirements**: ENG-01, ENG-02, ENG-03, ENG-04, ENG-05, ENG-06, ENG-07 (+ ID mới cho màn Cài đặt và engine `người`, planner đăng ký vào REQUIREMENTS.md); MEDIA-01…03 chuyển sang Phase 06.1 (06-CONTEXT D-22, quyết định người dùng 2026-10-24)
+**Requirements**: ENG-01, ENG-02, ENG-03, ENG-04, ENG-05, ENG-06, ENG-07, ENG-08, ENG-09, ENG-10, ENG-11 (ENG-08…11: danh sách engine, dsh, khóa profile, E-09 theo endpoint — 06-CONTEXT D-30…D-44) (+ ID mới cho màn Cài đặt và engine `người`, planner đăng ký vào REQUIREMENTS.md); MEDIA-01…03 chuyển sang Phase 06.1 (06-CONTEXT D-22, quyết định người dùng 2026-10-24)
 **Success Criteria** (what must be TRUE):
   1. Chạy task với đội hình `tiet-kiem`: Lead và QA chạy Claude, Dev chạy DeepSeek, log ghi đúng engine và thống kê tách đúng token từng engine (cổng phase: 1 task trộn engine chạy end-to-end).
   2. Khi hết quota giữa task, hệ thống báo lỗi và đề xuất đổi đội hình, không tự đổi ngầm; đổi engine giữa task thì engine mới tiếp tục từ `.plan.md` (và `.handover.md` nếu có) mà không làm lại từ đầu.
@@ -412,7 +412,7 @@ Plans:
   4. *(chuyển sang Phase 06.1)*
   5. Antigravity được xử lý theo kết quả S7 (chạy headless như engine, hoặc dùng thủ công và theo dõi qua `git diff`), và tỉ lệ "Cần sửa" của QA được ghi theo engine.
 
-**Plans:** 17/19 plans executed
+**Plans:** 17/26 plans executed
 
 Plans:
 **Wave 1**
@@ -434,7 +434,6 @@ Plans:
 - [x] 06-10-PLAN.md — Task team operations: pick, change with history, quota re-run (shared actions) (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 06-11-PLAN.md — DeepSeek engine + key hygiene (only if E-09 passed) (wave 5)
 - [x] 06-12-PLAN.md — Human engine CLI side: prepare/push branch, wait marker, Xong/Trả lại (wave 5)
 - [x] 06-13-PLAN.md — Engines on the pipeline, per-engine stats, Cần sửa by Dev engine (wave 5)
 - [x] 06-14-PLAN.md — Telegram quota message with team buttons + confirm tap (wave 5)
@@ -447,8 +446,24 @@ Plans:
 **Wave 7** *(blocked on Wave 6 completion)*
 - [x] 06-18-PLAN.md — Human callout, Tổng quan and Thống kê screens (wave 7)
 
-**Wave 8** *(blocked on Wave 7 completion)*
-- [ ] 06-19-PLAN.md — Live check, schema v4 dry run on a copy of brain.db, README, LIVE-CHECKS § 8, phase gate (wave 8)
+**Wave 8** *(blocked on Wave 7 completion)* — engine list re-plan (D-30…D-44)
+- [ ] 06-11-PLAN.md — Engine list in config.json, `anthropic` kind, run-seam guards (unknown id, profile, unverified mark), final example config (wave 8)
+- [ ] 06-20-PLAN.md — E-09 per endpoint (gateway first) and dsh kill-wrapper probe (user-run), COVERAGE.md, ENG-08…11 registered (wave 8)
+
+**Wave 9** *(blocked on Wave 8 completion)*
+- [ ] 06-21-PLAN.md — Key hygiene for every engine key: redaction before every sink, post-run scan before commit (wave 9)
+- [ ] 06-22-PLAN.md — Teams know the engine list: profile guard at every bind point, dsh Dev-only, unknown ids (wave 9)
+- [ ] 06-26-PLAN.md — Readiness of the configured list (`chưa kiểm`, dsh container) and pricing by engine id (wave 9)
+
+**Wave 10** *(blocked on Wave 9 completion)*
+- [ ] 06-23-PLAN.md — dsh black-box engine: docker exec wrapper, text events, in-container kill by marker (wave 10)
+- [ ] 06-24-PLAN.md — UI-SPEC delta + approval, then the engine list on Cài đặt and Giao việc (wave 10)
+
+**Wave 11** *(blocked on Wave 10 completion)*
+- [ ] 06-25-PLAN.md — dsh outcomes: Dev diff checks, `dsh:empty`, text-mode quota (wave 11)
+
+**Wave 12** *(blocked on Wave 11 completion)*
+- [ ] 06-19-PLAN.md — Live check on the engine list, schema v4 dry run on a copy of brain.db, README, LIVE-CHECKS § 8, phase gate (wave 12)
 
 ### Phase 06.1: Media Branch (INSERTED)
 
@@ -488,4 +503,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 13/13 | Complete    | 2026-10-19 |
-| 6. Multi-engine & Media Branch | 17/19 | In Progress | - |
+| 6. Multi-engine & Media Branch | 17/26 | In Progress | - |
