@@ -282,7 +282,7 @@ fn cli_upgrades_v2_db() {
     let ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(ver, 3);
+    assert_eq!(ver, agent_brain::db::SCHEMA_VERSION);
     let (title, origin): (String, Option<String>) = conn
         .query_row("SELECT title, origin FROM tasks WHERE id = 1", [], |r| {
             Ok((r.get(0)?, r.get(1)?))

@@ -56,9 +56,10 @@ ALTER TABLE tasks ADD COLUMN auto_stop_at INTEGER;
 ALTER TABLE tasks ADD COLUMN auto_stop_kind TEXT;
 ALTER TABLE tasks ADD COLUMN auto_json TEXT;"#,
     "ALTER TABLE tasks ADD COLUMN origin TEXT;",
+    "ALTER TABLE tasks ADD COLUMN team_json TEXT;",
 ];
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -319,15 +320,21 @@ pub struct NewRun {
 }
 
 pub fn insert_run(conn: &Connection, r: &NewRun) -> BrainResult<i64> {
+    insert_run_with_engine(conn, r, "claude")
+}
+
+/// Inserts a `running` row recording the engine that executes it (D-14).
+pub fn insert_run_with_engine(conn: &Connection, r: &NewRun, engine: &str) -> BrainResult<i64> {
     let now = now_ms();
     conn.execute(
         "INSERT INTO runs (task_id, project_id, role, engine, profile, model, pid, pgid, pid_start,
                            status, started_at, base_commit, run_dir)
-         VALUES (?1, ?2, ?3, 'claude', ?4, ?5, ?6, ?7, ?8, 'running', ?9, ?10, ?11)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'running', ?10, ?11, ?12)",
         params![
             r.task_id,
             r.project_id,
             r.role,
+            engine,
             r.profile,
             r.model,
             r.pid,
@@ -336,6 +343,46 @@ pub fn insert_run(conn: &Connection, r: &NewRun) -> BrainResult<i64> {
             now,
             r.base_commit,
             r.run_dir,
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[derive(Debug, Clone)]
+pub struct HumanRun {
+    pub task_id: i64,
+    pub project_id: i64,
+    pub role: String,
+    pub profile: String,
+    pub stage: Option<String>,
+    pub round: Option<i64>,
+    pub started_at: i64,
+    pub ended_at: i64,
+    pub outcome: Option<String>,
+    pub base_commit: Option<String>,
+    pub metrics_json: String,
+}
+
+/// Stores a person's finished work as a normal finished run (D-21): engine `người`, status
+/// `succeeded`, no tokens, no model, no process identity. Never inserts a `running` row, so
+/// `reconcile_stale_runs` (running rows without a live pid become `lost`) never touches it.
+pub fn insert_human_run(conn: &Connection, h: &HumanRun) -> BrainResult<i64> {
+    conn.execute(
+        "INSERT INTO runs (task_id, project_id, role, engine, profile, model, status, outcome,
+                           started_at, ended_at, usage_source, base_commit, stage, round, metrics_json)
+         VALUES (?1, ?2, ?3, 'người', ?4, NULL, 'succeeded', ?5, ?6, ?7, 'none', ?8, ?9, ?10, ?11)",
+        params![
+            h.task_id,
+            h.project_id,
+            h.role,
+            h.profile,
+            h.outcome,
+            h.started_at,
+            h.ended_at,
+            h.base_commit,
+            h.stage,
+            h.round,
+            h.metrics_json,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -663,6 +710,43 @@ pub fn mark_task_origin(conn: &Connection, task_id: i64, origin: &str) -> BrainR
     let changes = conn.execute(
         "UPDATE tasks SET origin = ?2 WHERE id = ?1 AND origin IS NULL",
         params![task_id, origin],
+    )?;
+    Ok(changes == 1)
+}
+
+/// The task's team JSON (`None` for a missing task or a NULL column).
+pub fn task_team_json(conn: &Connection, task_id: i64) -> BrainResult<Option<String>> {
+    let mut stmt = conn.prepare("SELECT team_json FROM tasks WHERE id = ?1")?;
+    let mut rows = stmt.query(params![task_id])?;
+    match rows.next()? {
+        Some(r) => Ok(r.get(0)?),
+        None => Ok(None),
+    }
+}
+
+/// Creates the team only while `team_json` is still NULL. Bumps `updated_at` on a write so the
+/// Telegram detector signature and the dashboard `rev` change.
+pub fn set_task_team_if_null(conn: &Connection, task_id: i64, json: &str) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE tasks SET team_json = ?1, updated_at = ?2 WHERE id = ?3 AND team_json IS NULL",
+        params![json, now, task_id],
+    )?;
+    Ok(changes == 1)
+}
+
+/// Compare-and-swap on `team_json`: writes only when the stored value equals `old`
+/// (`None` matches NULL, via the NULL-safe `IS`). Bumps `updated_at` on a write.
+pub fn set_task_team_cas(
+    conn: &Connection,
+    task_id: i64,
+    old: Option<&str>,
+    new: &str,
+) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE tasks SET team_json = ?1, updated_at = ?2 WHERE id = ?3 AND team_json IS ?4",
+        params![new, now, task_id, old],
     )?;
     Ok(changes == 1)
 }
