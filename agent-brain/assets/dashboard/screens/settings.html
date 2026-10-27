@@ -1,0 +1,427 @@
+<section data-screen="settings" x-data="settings" :data-loaded="loadedAttr" class="space-y-6">
+  <div class="flex flex-wrap items-center gap-4">
+    <h1 class="text-2xl font-semibold leading-[1.2]">Cài đặt</h1>
+    <button type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="reloading" @click="reload" x-text="reloadLabel">Đọc lại</button>
+  </div>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Đội hình, quy trình và nhân sự lưu trong ~/.config/agent-brain/ và vẫn sửa tay được trong editor; sửa tay xong bấm Đọc lại. Engine chỉ xem.</p>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Đội hình và quy trình là hai danh sách riêng nên được trùng tên (ví dụ mac-dinh). Mọi nơi hiện tên đều ghi rõ là đội hình hay quy trình.</p>
+
+  <nav aria-label="Mục cài đặt" class="flex flex-wrap gap-2">
+    <template x-for="s in sections" :key="s.id">
+      <button type="button" class="inline-flex min-h-12 items-center rounded-xl px-4 py-2 text-sm font-semibold motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="navClass(s)" :aria-current="navCurrent(s)" @click="pickSection(s)" x-text="s.label"></button>
+    </template>
+  </nav>
+
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" aria-live="polite" data-settings-status x-text="statusText"></p>
+
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="stale">Không cập nhật được — đang thử lại...</p>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="isLoading">Đang tải...</p>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="hasError">
+    <h2 class="text-xl font-semibold leading-[1.2]">Không tải được dữ liệu</h2>
+    <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="errorBody"></p>
+    <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="retry">Thử lại</button>
+  </div>
+
+  <div data-settings-section="teams" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-6" x-show="showTeams">
+    <div class="flex flex-wrap items-center gap-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Đội hình</h2>
+      <button id="ab-set-team-new" type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="actionsLocked('team')" @click="newTeam">Tạo đội hình mới</button>
+    </div>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Đội hình chọn engine chạy cho từng vai trò của task. Mỗi dự án có đội hình mặc định (khóa team trong projects_map.json, không có thì mac-dinh); khi giao việc có thể chọn đội hình khác cho riêng task đó.</p>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="isEditorOpen('team')" x-text="lockLine('team')"></p>
+    <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="invalidFile('team')">
+      <p class="font-semibold leading-normal">teams.json có lỗi</p>
+      <template x-for="(line, i) in fileErrorLines('team')" :key="i">
+        <p class="text-sm font-normal leading-normal break-words" x-text="line"></p>
+      </template>
+      <p class="text-sm font-normal leading-normal break-words" x-text="teamFileClosing"></p>
+    </div>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="invalidFile('team')" x-text="fileReason('team')"></p>
+    <form data-team-editor novalidate class="space-y-4 rounded-xl bg-indigo-50 p-4 ring-2 ring-indigo-600 dark:bg-indigo-900/20 dark:ring-indigo-400 max-w-3xl" x-show="teamEditorOpen" @submit.prevent="saveTeam" aria-labelledby="ab-set-team-editor-title">
+      <h3 id="ab-set-team-editor-title" class="text-base font-semibold leading-normal break-words" x-text="editorTitle('team')"></h3>
+        <div class="space-y-2">
+          <label for="ab-set-team-name" class="text-sm font-semibold leading-normal">Tên (slug)</label>
+          <input id="ab-set-team-name" type="text" maxlength="40" autocomplete="off" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 font-mono" :class="fieldClass('team', 'name')" x-model="tName" @input="onField('team', 'name')" @blur="onField('team', 'name')" :readonly="isEditMode('team')" :aria-readonly="readonlyAttr('team')" :aria-invalid="invalidAttr('team', 'name')" :aria-describedby="describedBy('team', 'name', 'ab-set-team-name')">
+          <p id="ab-set-team-name-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="nameHelp('team')"></p>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="collisionNote('team')" x-text="collisionNote('team')"></p>
+          <p id="ab-set-team-name-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('team', 'name')" x-text="fieldMsg('team', 'name')"></p>
+        </div>
+        <div class="space-y-2">
+          <label for="ab-set-team-desc" class="text-sm font-semibold leading-normal">Mô tả (tiếng Việt)</label>
+          <textarea id="ab-set-team-desc" rows="3" maxlength="200" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 resize-y" :class="fieldClass('team', 'description')" x-model="tDesc" @input="onField('team', 'description')" @blur="onField('team', 'description')" :aria-invalid="invalidAttr('team', 'description')" :aria-describedby="describedBy('team', 'description', 'ab-set-team-desc')"></textarea>
+          <p id="ab-set-team-desc-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Một hai câu: đội hình này dùng cho việc gì (ví dụ tiết kiệm chi phí, việc cá nhân, việc giao cho nhân sự).</p>
+          <p id="ab-set-team-desc-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('team', 'description')" x-text="fieldMsg('team', 'description')"></p>
+        </div>
+      <fieldset class="space-y-4">
+        <legend class="text-sm font-semibold leading-normal">Engine cho từng vai trò</legend>
+        <div class="grid gap-4 md:grid-cols-2">
+          <div class="space-y-2">
+            <label for="ab-set-team-lead" class="text-sm font-semibold leading-normal">Lead — lập plan</label>
+            <select id="ab-set-team-lead" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="fieldClass('team', 'lead')" x-model="tLead" @change="onField('team', 'lead')" :aria-invalid="invalidAttr('team', 'lead')" :aria-describedby="describedBy('team', 'lead', 'ab-set-team-lead')">
+              <template x-for="o in roleOptions('lead')" :key="o.value">
+                <option :value="o.value" :selected="optionSelected('lead', o.value)" x-text="o.label"></option>
+              </template>
+            </select>
+            <p id="ab-set-team-lead-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('team', 'lead')" x-text="fieldMsg('team', 'lead')"></p>
+          </div>
+          <div class="space-y-2">
+            <label for="ab-set-team-dev" class="text-sm font-semibold leading-normal">Dev — viết code</label>
+            <select id="ab-set-team-dev" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="fieldClass('team', 'dev')" x-model="tDev" @change="onField('team', 'dev')" :aria-invalid="invalidAttr('team', 'dev')" :aria-describedby="describedBy('team', 'dev', 'ab-set-team-dev')">
+              <template x-for="o in roleOptions('dev')" :key="o.value">
+                <option :value="o.value" :selected="optionSelected('dev', o.value)" x-text="o.label"></option>
+              </template>
+            </select>
+            <p id="ab-set-team-dev-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('team', 'dev')" x-text="fieldMsg('team', 'dev')"></p>
+          </div>
+          <div class="space-y-2">
+            <label for="ab-set-team-qa" class="text-sm font-semibold leading-normal">QA — kiểm thử</label>
+            <select id="ab-set-team-qa" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="fieldClass('team', 'qa')" x-model="tQa" @change="onField('team', 'qa')" :aria-invalid="invalidAttr('team', 'qa')" :aria-describedby="describedBy('team', 'qa', 'ab-set-team-qa')">
+              <template x-for="o in roleOptions('qa')" :key="o.value">
+                <option :value="o.value" :selected="optionSelected('qa', o.value)" x-text="o.label"></option>
+              </template>
+            </select>
+            <p id="ab-set-team-qa-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">QA phải chạy bằng claude để kiểm tra lại việc của engine rẻ hơn.</p>
+            <p id="ab-set-team-qa-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('team', 'qa')" x-text="fieldMsg('team', 'qa')"></p>
+          </div>
+          <div class="space-y-2">
+            <label for="ab-set-team-plan-review" class="text-sm font-semibold leading-normal">Review plan</label>
+            <select id="ab-set-team-plan-review" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="fieldClass('team', 'plan_review')" x-model="tPlanReview" @change="onField('team', 'plan_review')" :aria-invalid="invalidAttr('team', 'plan_review')" :aria-describedby="describedBy('team', 'plan_review', 'ab-set-team-plan-review')">
+              <template x-for="o in roleOptions('plan_review')" :key="o.value">
+                <option :value="o.value" :selected="optionSelected('plan_review', o.value)" x-text="o.label"></option>
+              </template>
+            </select>
+            <p id="ab-set-team-plan-review-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('team', 'plan_review')" x-text="fieldMsg('team', 'plan_review')"></p>
+          </div>
+          <div class="space-y-2">
+            <label for="ab-set-team-code-review" class="text-sm font-semibold leading-normal">Review code</label>
+            <select id="ab-set-team-code-review" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="fieldClass('team', 'code_review')" x-model="tCodeReview" @change="onField('team', 'code_review')" :aria-invalid="invalidAttr('team', 'code_review')" :aria-describedby="describedBy('team', 'code_review', 'ab-set-team-code-review')">
+              <template x-for="o in roleOptions('code_review')" :key="o.value">
+                <option :value="o.value" :selected="optionSelected('code_review', o.value)" x-text="o.label"></option>
+              </template>
+            </select>
+            <p id="ab-set-team-code-review-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('team', 'code_review')" x-text="fieldMsg('team', 'code_review')"></p>
+          </div>
+        </div>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="noStaffYet">Muốn giao một vai trò cho người, thêm nhân sự ở mục Nhân sự trước.</p>
+      </fieldset>
+        <div id="ab-set-team-refusal" role="alert" tabindex="-1" class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasRefusal('team')">
+          <p class="font-semibold leading-normal" x-text="refusalHeading('team')"></p>
+          <template x-for="(line, i) in refusalLines('team')" :key="i">
+            <p class="text-sm font-normal leading-normal break-words" x-text="line"></p>
+          </template>
+        </div>
+        <div id="ab-set-team-conflict" role="alert" tabindex="-1" class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasConflict('team')">
+          <p class="font-semibold leading-normal" x-text="conflictHeading('team')"></p>
+          <p class="text-sm font-normal leading-normal break-words" x-text="conflictBody()"></p>
+        </div>
+        <div class="space-y-2">
+          <div class="flex flex-wrap gap-2">
+            <button type="submit" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="saveDisabled('team')" x-text="saveText('team')"></button>
+            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="writeLocked" @click="cancelTeam" x-text="cancelText('team')"></button>
+          </div>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="saveReason('team')" x-text="saveReason('team')"></p>
+        </div>
+    </form>
+    <ul class="space-y-4">
+      <template x-for="t in teamRows" :key="t.name">
+        <li :data-team-row="t.name" x-show="t.visible" class="space-y-2 rounded-xl p-4 ring-1 ring-slate-200 dark:ring-slate-700">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-mono text-base font-semibold leading-normal break-all" x-text="t.name"></span>
+            <template x-for="c in t.chips" :key="c">
+              <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="c"></span>
+            </template>
+          </div>
+          <p class="text-base font-normal leading-normal break-words" x-text="t.description"></p>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="t.summary"></p>
+          <template x-for="(w, i) in t.warnings" :key="i">
+            <p class="text-sm font-normal leading-normal text-amber-800 dark:text-amber-300 break-words"><span aria-hidden="true" class="inline-block w-6 text-center">!&#xFE0E;</span><span x-text="w"></span></p>
+          </template>
+      <div class="flex flex-wrap gap-2">
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="t.canEdit" :id="t.editId" :aria-label="t.editLabel" :disabled="actionsLocked('team')" @click="editTeam(t.name)">Sửa</button>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :id="t.copyId" :aria-label="t.copyLabel" :disabled="actionsLocked('team')" @click="copyTeam(t.name)">Nhân bản</button>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="t.canEdit" :id="t.delId" :aria-label="t.delLabel" :disabled="actionsLocked('team')" @click="askDelete('team', t.name)">Xóa</button>
+      </div>
+        </li>
+      </template>
+    </ul>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="noCustomTeam">Chưa có đội hình riêng. Bấm Nhân bản trên một đội hình có sẵn hoặc Tạo đội hình mới.</p>
+  </div>
+
+  <div data-settings-section="workflows" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-6" x-show="showWorkflows">
+    <div class="flex flex-wrap items-center gap-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Quy trình</h2>
+      <button id="ab-set-workflow-new" type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="actionsLocked('workflow')" @click="newWorkflow">Tạo quy trình mới</button>
+    </div>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Quy trình quyết định các bước và vòng lặp của task. Task giữ bản sao lúc bắt đầu, nên sửa hoặc xóa quy trình không ảnh hưởng task đã giao.</p>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="isEditorOpen('workflow')" x-text="lockLine('workflow')"></p>
+    <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="invalidFile('workflow')">
+      <p class="font-semibold leading-normal">workflows.json có lỗi</p>
+      <template x-for="(line, i) in fileErrorLines('workflow')" :key="i">
+        <p class="text-sm font-normal leading-normal break-words" x-text="line"></p>
+      </template>
+      <p class="text-sm font-normal leading-normal break-words" x-text="workflowFileClosing"></p>
+    </div>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="invalidFile('workflow')" x-text="fileReason('workflow')"></p>
+    <form data-workflow-editor novalidate class="space-y-4 rounded-xl bg-indigo-50 p-4 ring-2 ring-indigo-600 dark:bg-indigo-900/20 dark:ring-indigo-400 max-w-3xl" x-show="workflowEditorOpen" @submit.prevent="saveWorkflow" aria-labelledby="ab-set-wf-editor-title">
+      <h3 id="ab-set-wf-editor-title" class="text-base font-semibold leading-normal break-words" x-text="editorTitle('workflow')"></h3>
+        <div class="space-y-2">
+          <label for="ab-set-wf-name" class="text-sm font-semibold leading-normal">Tên (slug)</label>
+          <input id="ab-set-wf-name" type="text" maxlength="40" autocomplete="off" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 font-mono" :class="fieldClass('workflow', 'name')" x-model="wName" @input="onField('workflow', 'name')" @blur="onField('workflow', 'name')" :readonly="isEditMode('workflow')" :aria-readonly="readonlyAttr('workflow')" :aria-invalid="invalidAttr('workflow', 'name')" :aria-describedby="describedBy('workflow', 'name', 'ab-set-wf-name')">
+          <p id="ab-set-wf-name-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="nameHelp('workflow')"></p>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="collisionNote('workflow')" x-text="collisionNote('workflow')"></p>
+          <p id="ab-set-wf-name-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('workflow', 'name')" x-text="fieldMsg('workflow', 'name')"></p>
+        </div>
+      <fieldset class="space-y-2">
+        <legend class="text-sm font-semibold leading-normal">Các bước</legend>
+        <p id="ab-set-wf-stages-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Thứ tự cố định: lên plan, review plan, bạn duyệt, code, review code, QA, sửa. Chọn các bước muốn có.</p>
+        <div class="space-y-2">
+          <template x-for="(s, i) in stages" :key="s.key">
+            <label class="flex min-h-12 items-center gap-2 rounded-xl px-4 ring-1 ring-slate-300 dark:ring-slate-600 cursor-pointer">
+              <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :id="stageInputId(i)" :checked="stageChecked(s.key)" @change="toggleStage(s.key)" aria-describedby="ab-set-wf-stages-help">
+              <span class="text-base font-normal leading-normal" x-text="s.label"></span>
+              <span class="ml-auto font-mono text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="s.key"></span>
+            </label>
+          </template>
+        </div>
+        <p id="ab-set-wf-stages-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('workflow', 'stages')" x-text="fieldMsg('workflow', 'stages')"></p>
+      </fieldset>
+      <fieldset class="space-y-2">
+        <legend class="text-sm font-semibold leading-normal">Vòng lặp</legend>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Vòng lặp chạy lại bước làm cho tới khi bước kiểm tra đạt hoặc hết số vòng.</p>
+        <div class="space-y-2">
+          <template x-for="l in loops" :key="l.key">
+            <div class="space-y-2">
+              <label class="flex min-h-12 items-center gap-2 rounded-xl px-4 ring-1 ring-slate-300 dark:ring-slate-600" :class="loopRowClass(l)">
+                <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :id="loopInputId(l)" :checked="loopChecked(l)" :disabled="loopDisabled(l)" @change="toggleLoop(l)" :aria-describedby="loopHelpId(l)">
+                <span class="text-base font-normal leading-normal" x-text="l.label"></span>
+              </label>
+              <p :id="loopHelpId(l)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="loopReason(l)" x-text="loopReason(l)"></p>
+            </div>
+          </template>
+        </div>
+      </fieldset>
+      <div class="space-y-2">
+        <label class="flex min-h-12 items-center gap-2 rounded-xl px-4 ring-1 ring-slate-300 dark:ring-slate-600 cursor-pointer">
+          <input id="ab-set-wf-auto" type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="wAuto" @change="toggleAuto" aria-describedby="ab-set-wf-auto-help">
+          <span class="text-base font-normal leading-normal">Tự chạy autopilot</span>
+        </label>
+        <p id="ab-set-wf-auto-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Bật: autopilot tự chạy các bước và luôn dừng ở bước bạn duyệt plan. Tắt: bạn bấm từng bước.</p>
+      </div>
+      <div class="grid gap-4 sm:grid-cols-3">
+        <div class="space-y-2">
+          <label for="ab-set-wf-rounds" class="text-sm font-semibold leading-normal">Số vòng tối đa mỗi vòng lặp</label>
+          <input id="ab-set-wf-rounds" type="number" inputmode="numeric" min="1" max="10" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-50" :class="fieldClass('workflow', 'max_rounds')" x-model="wMaxRounds" :disabled="roundsDisabled" @input="onField('workflow', 'max_rounds')" @blur="onField('workflow', 'max_rounds')" :aria-invalid="invalidAttr('workflow', 'max_rounds')" :aria-describedby="roundsDescribedBy">
+          <p id="ab-set-wf-rounds-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="roundsReason" x-text="roundsReason"></p>
+          <p id="ab-set-wf-rounds-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('workflow', 'max_rounds')" x-text="fieldMsg('workflow', 'max_rounds')"></p>
+        </div>
+        <div class="space-y-2">
+          <label for="ab-set-wf-minutes" class="text-sm font-semibold leading-normal">Ngân sách thời gian (phút)</label>
+          <input id="ab-set-wf-minutes" type="number" inputmode="numeric" min="1" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="fieldClass('workflow', 'budget_minutes')" x-model="wBudgetMinutes" @input="onField('workflow', 'budget_minutes')" @blur="onField('workflow', 'budget_minutes')" :aria-invalid="invalidAttr('workflow', 'budget_minutes')" :aria-describedby="describedBy('workflow', 'budget_minutes', 'ab-set-wf-minutes')">
+          <p id="ab-set-wf-minutes-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('workflow', 'budget_minutes')" x-text="fieldMsg('workflow', 'budget_minutes')"></p>
+        </div>
+        <div class="space-y-2">
+          <label for="ab-set-wf-usd" class="text-sm font-semibold leading-normal">Ngân sách chi phí (USD)</label>
+          <input id="ab-set-wf-usd" type="number" inputmode="decimal" min="0" step="any" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="fieldClass('workflow', 'budget_usd')" x-model="wBudgetUsd" @input="onField('workflow', 'budget_usd')" @blur="onField('workflow', 'budget_usd')" :aria-invalid="invalidAttr('workflow', 'budget_usd')" :aria-describedby="describedBy('workflow', 'budget_usd', 'ab-set-wf-usd')">
+          <p id="ab-set-wf-usd-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('workflow', 'budget_usd')" x-text="fieldMsg('workflow', 'budget_usd')"></p>
+        </div>
+      </div>
+        <div id="ab-set-workflow-refusal" role="alert" tabindex="-1" class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasRefusal('workflow')">
+          <p class="font-semibold leading-normal" x-text="refusalHeading('workflow')"></p>
+          <template x-for="(line, i) in refusalLines('workflow')" :key="i">
+            <p class="text-sm font-normal leading-normal break-words" x-text="line"></p>
+          </template>
+        </div>
+        <div id="ab-set-workflow-conflict" role="alert" tabindex="-1" class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasConflict('workflow')">
+          <p class="font-semibold leading-normal" x-text="conflictHeading('workflow')"></p>
+          <p class="text-sm font-normal leading-normal break-words" x-text="conflictBody()"></p>
+        </div>
+        <div class="space-y-2">
+          <div class="flex flex-wrap gap-2">
+            <button type="submit" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="saveDisabled('workflow')" x-text="saveText('workflow')"></button>
+            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="writeLocked" @click="cancelWorkflow" x-text="cancelText('workflow')"></button>
+          </div>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="saveReason('workflow')" x-text="saveReason('workflow')"></p>
+        </div>
+    </form>
+    <ul class="space-y-4">
+      <template x-for="w in workflowRows" :key="w.name">
+        <li :data-workflow-row="w.name" x-show="w.visible" class="space-y-2 rounded-xl p-4 ring-1 ring-slate-200 dark:ring-slate-700">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-mono text-base font-semibold leading-normal break-all" x-text="w.name"></span>
+            <template x-for="c in w.chips" :key="c">
+              <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="c"></span>
+            </template>
+          </div>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="w.summary"></p>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="w.limits"></p>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="w.defaultFor" x-text="w.defaultFor"></p>
+      <div class="flex flex-wrap gap-2">
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="w.canEdit" :id="w.editId" :aria-label="w.editLabel" :disabled="actionsLocked('workflow')" @click="editWorkflow(w.name)">Sửa</button>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :id="w.copyId" :aria-label="w.copyLabel" :disabled="actionsLocked('workflow')" @click="copyWorkflow(w.name)">Nhân bản</button>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="w.canEdit" :id="w.delId" :aria-label="w.delLabel" :disabled="actionsLocked('workflow')" @click="askDelete('workflow', w.name)">Xóa</button>
+      </div>
+        </li>
+      </template>
+    </ul>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="noCustomWorkflow">Chưa có quy trình riêng. Bấm Nhân bản trên một quy trình có sẵn hoặc Tạo quy trình mới.</p>
+  </div>
+
+  <div data-settings-section="staff" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-6" x-show="showStaff">
+    <div class="flex flex-wrap items-center gap-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Nhân sự</h2>
+      <button id="ab-set-staff-new" type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="staffHasRows" :disabled="actionsLocked('staff')" @click="newStaff">Thêm nhân sự</button>
+    </div>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Người nhận việc ở bước chạy bằng engine người. Họ làm trên máy của họ và đẩy nhánh task lên remote; họ không vào dashboard hay Telegram.</p>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="isEditorOpen('staff')" x-text="lockLine('staff')"></p>
+    <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="invalidFile('staff')">
+      <p class="font-semibold leading-normal">staff.json có lỗi</p>
+      <template x-for="(line, i) in fileErrorLines('staff')" :key="i">
+        <p class="text-sm font-normal leading-normal break-words" x-text="line"></p>
+      </template>
+    </div>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="invalidFile('staff')" x-text="fileReason('staff')"></p>
+    <div class="space-y-4 py-12 text-center" x-show="staffEmpty">
+      <h3 class="text-xl font-semibold leading-[1.2]">Chưa có nhân sự nào</h3>
+      <p class="text-base font-normal leading-normal text-slate-600 dark:text-slate-400">Thêm người sẽ nhận việc ở bước chạy bằng engine người.</p>
+      <button id="ab-set-staff-new-empty" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="actionsLocked('staff')" @click="newStaff">Thêm nhân sự</button>
+    </div>
+    <form data-staff-editor novalidate class="space-y-4 rounded-xl bg-indigo-50 p-4 ring-2 ring-indigo-600 dark:bg-indigo-900/20 dark:ring-indigo-400 max-w-3xl" x-show="staffEditorOpen" @submit.prevent="saveStaff" aria-labelledby="ab-set-staff-editor-title">
+      <h3 id="ab-set-staff-editor-title" class="text-base font-semibold leading-normal break-words" x-text="editorTitle('staff')"></h3>
+        <div class="space-y-2">
+          <label for="ab-set-staff-id" class="text-sm font-semibold leading-normal">Mã (id)</label>
+          <input id="ab-set-staff-id" type="text" maxlength="32" autocomplete="off" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 font-mono" :class="fieldClass('staff', 'id')" x-model="sId" @input="onField('staff', 'id')" @blur="onField('staff', 'id')" :readonly="isEditMode('staff')" :aria-readonly="readonlyAttr('staff')" :aria-invalid="invalidAttr('staff', 'id')" :aria-describedby="describedBy('staff', 'id', 'ab-set-staff-id')">
+          <p id="ab-set-staff-id-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Chữ thường không dấu, số và dấu gạch ngang. Đội hình ghi là người:{mã}.</p>
+          <p id="ab-set-staff-id-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('staff', 'id')" x-text="fieldMsg('staff', 'id')"></p>
+        </div>
+        <div class="space-y-2">
+          <label for="ab-set-staff-name" class="text-sm font-semibold leading-normal">Tên hiển thị</label>
+          <input id="ab-set-staff-name" type="text" maxlength="64" autocomplete="off" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="fieldClass('staff', 'display_name')" x-model="sName" @input="onField('staff', 'display_name')" @blur="onField('staff', 'display_name')" :aria-invalid="invalidAttr('staff', 'display_name')" :aria-describedby="describedBy('staff', 'display_name', 'ab-set-staff-name')">
+
+          <p id="ab-set-staff-name-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('staff', 'display_name')" x-text="fieldMsg('staff', 'display_name')"></p>
+        </div>
+        <div class="space-y-2">
+          <label for="ab-set-staff-notes" class="text-sm font-semibold leading-normal">Ghi chú / liên hệ (không bắt buộc)</label>
+          <textarea id="ab-set-staff-notes" rows="3" maxlength="500" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 resize-y" :class="fieldClass('staff', 'notes')" x-model="sNotes" @input="onField('staff', 'notes')" @blur="onField('staff', 'notes')" :aria-invalid="invalidAttr('staff', 'notes')" :aria-describedby="describedBy('staff', 'notes', 'ab-set-staff-notes')"></textarea>
+          <p id="ab-set-staff-notes-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Ví dụ: Zalo 09xx, làm phần giao diện. Chỉ hiện trên dashboard. Đừng ghi mật khẩu hay token.</p>
+          <p id="ab-set-staff-notes-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('staff', 'notes')" x-text="fieldMsg('staff', 'notes')"></p>
+        </div>
+        <div id="ab-set-staff-refusal" role="alert" tabindex="-1" class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasRefusal('staff')">
+          <p class="font-semibold leading-normal" x-text="refusalHeading('staff')"></p>
+          <template x-for="(line, i) in refusalLines('staff')" :key="i">
+            <p class="text-sm font-normal leading-normal break-words" x-text="line"></p>
+          </template>
+        </div>
+        <div id="ab-set-staff-conflict" role="alert" tabindex="-1" class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasConflict('staff')">
+          <p class="font-semibold leading-normal" x-text="conflictHeading('staff')"></p>
+          <p class="text-sm font-normal leading-normal break-words" x-text="conflictBody()"></p>
+        </div>
+        <div class="space-y-2">
+          <div class="flex flex-wrap gap-2">
+            <button type="submit" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="saveDisabled('staff')" x-text="saveText('staff')"></button>
+            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="writeLocked" @click="cancelStaff" x-text="cancelText('staff')"></button>
+          </div>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="saveReason('staff')" x-text="saveReason('staff')"></p>
+        </div>
+    </form>
+    <ul class="space-y-4">
+      <template x-for="s in staffRows" :key="s.id">
+        <li :data-staff-row="s.id" x-show="s.visible" class="space-y-2 rounded-xl p-4 ring-1 ring-slate-200 dark:ring-slate-700">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-base font-semibold leading-normal break-words" x-text="s.displayName"></span>
+            <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200 font-mono break-all" x-text="s.id"></span>
+          </div>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words whitespace-pre-wrap" x-show="s.hasNotes" x-text="s.notes"></p>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="s.usage"></p>
+      <div class="flex flex-wrap gap-2">
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="s.canEdit" :id="s.editId" :aria-label="s.editLabel" :disabled="actionsLocked('staff')" @click="editStaff(s.id)">Sửa</button>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="s.canEdit" :id="s.delId" :aria-label="s.delLabel" :disabled="actionsLocked('staff')" @click="askDelete('staff', s.id)">Xóa</button>
+      </div>
+        </li>
+      </template>
+    </ul>
+  </div>
+
+  <div data-settings-section="engines" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-6" x-show="showEngines">
+    <div class="flex flex-wrap items-center gap-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Engine</h2>
+      <button id="ab-set-engines-check" type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="enginesChecking" @click="checkEngines" x-text="checkLabel">Kiểm tra lại</button>
+    </div>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Engine có sẵn trong agent-brain. Lệnh, endpoint và tên biến key nằm trong config.json; dashboard chỉ xem, không sửa.</p>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Chỉ xem biến môi trường và lệnh có trên máy; không gọi model, không tốn token.</p>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="enginesFailed">Không kiểm tra được. Bấm Kiểm tra lại để thử lại.</p>
+    <ul class="space-y-4">
+      <template x-for="row in engineRows" :key="row.name">
+        <li :data-engine-row="row.name" class="space-y-2 rounded-xl p-4 ring-1 ring-slate-200 dark:ring-slate-700">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-mono text-base font-semibold leading-normal break-all" x-text="row.name"></span>
+            <span :class="engineBadgeClass(row)"><span aria-hidden="true" class="w-6 text-center" x-text="engineGlyph(row)"></span><span x-text="row.word"></span></span>
+          </div>
+          <p class="text-base font-normal leading-normal break-words" x-text="row.description"></p>
+          <template x-for="(d, i) in row.details" :key="i">
+            <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words"><span x-text="d.label"></span><span :class="d.cls" x-text="d.value"></span></p>
+          </template>
+          <p class="text-sm font-normal leading-normal text-amber-800 dark:text-amber-300 break-words" x-show="row.hasReason" x-text="row.reason"></p>
+        </li>
+      </template>
+    </ul>
+  </div>
+
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-6" x-show="isDeleting('team')">
+    <div role="alertdialog" aria-modal="true" aria-labelledby="ab-set-del-title-team" aria-describedby="ab-set-del-body-team" @keydown.escape="closeDelete" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 w-full max-w-lg space-y-4">
+      <h2 id="ab-set-del-title-team" class="text-xl font-semibold leading-[1.2] break-words" x-text="delTitle('team')"></h2>
+      <div id="ab-set-del-body-team" class="space-y-2">
+        <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100 break-words" x-text="delBody('team')"></p>
+        <template x-for="(line, i) in delExtra('team')" :key="i">
+          <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100 break-words" x-text="line"></p>
+        </template>
+      </div>
+      <p class="text-sm font-normal leading-normal text-amber-800 dark:text-amber-300 break-words" x-show="delConfirmReason('team')" x-text="delConfirmReason('team')"></p>
+      <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2" role="alert" x-show="delError">
+        <p class="text-sm font-normal leading-normal break-words" x-text="delError"></p>
+      </div>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button id="ab-set-keep-team" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="delBusy" @click="closeDelete" x-text="delKeepText('team')"></button>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-base font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="delConfirmDisabled('team')" @click="confirmDelete" x-text="delConfirmText('team')"></button>
+      </div>
+    </div>
+  </div>
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-6" x-show="isDeleting('workflow')">
+    <div role="alertdialog" aria-modal="true" aria-labelledby="ab-set-del-title-workflow" aria-describedby="ab-set-del-body-workflow" @keydown.escape="closeDelete" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 w-full max-w-lg space-y-4">
+      <h2 id="ab-set-del-title-workflow" class="text-xl font-semibold leading-[1.2] break-words" x-text="delTitle('workflow')"></h2>
+      <div id="ab-set-del-body-workflow" class="space-y-2">
+        <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100 break-words" x-text="delBody('workflow')"></p>
+        <template x-for="(line, i) in delExtra('workflow')" :key="i">
+          <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100 break-words" x-text="line"></p>
+        </template>
+      </div>
+      <p class="text-sm font-normal leading-normal text-amber-800 dark:text-amber-300 break-words" x-show="delConfirmReason('workflow')" x-text="delConfirmReason('workflow')"></p>
+      <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2" role="alert" x-show="delError">
+        <p class="text-sm font-normal leading-normal break-words" x-text="delError"></p>
+      </div>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button id="ab-set-keep-workflow" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="delBusy" @click="closeDelete" x-text="delKeepText('workflow')"></button>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-base font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="delConfirmDisabled('workflow')" @click="confirmDelete" x-text="delConfirmText('workflow')"></button>
+      </div>
+    </div>
+  </div>
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-6" x-show="isDeleting('staff')">
+    <div role="alertdialog" aria-modal="true" aria-labelledby="ab-set-del-title-staff" aria-describedby="ab-set-del-body-staff" @keydown.escape="closeDelete" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 w-full max-w-lg space-y-4">
+      <h2 id="ab-set-del-title-staff" class="text-xl font-semibold leading-[1.2] break-words" x-text="delTitle('staff')"></h2>
+      <div id="ab-set-del-body-staff" class="space-y-2">
+        <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100 break-words" x-text="delBody('staff')"></p>
+        <template x-for="(line, i) in delExtra('staff')" :key="i">
+          <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100 break-words" x-text="line"></p>
+        </template>
+      </div>
+      <p class="text-sm font-normal leading-normal text-amber-800 dark:text-amber-300 break-words" x-show="delConfirmReason('staff')" x-text="delConfirmReason('staff')"></p>
+      <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2" role="alert" x-show="delError">
+        <p class="text-sm font-normal leading-normal break-words" x-text="delError"></p>
+      </div>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button id="ab-set-keep-staff" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="delBusy" @click="closeDelete" x-text="delKeepText('staff')"></button>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-base font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="delConfirmDisabled('staff')" @click="confirmDelete" x-text="delConfirmText('staff')"></button>
+      </div>
+    </div>
+  </div>
+</section>
