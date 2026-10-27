@@ -13,6 +13,7 @@ use crate::autopilot::decide::{
 };
 use crate::error::{
     BrainError, BrainResult, EXIT_BLOCKED, EXIT_INTERRUPTED, EXIT_OK, EXIT_PROTOCOL, EXIT_QUOTA,
+    EXIT_WAITING,
 };
 use crate::workflows::Workflow;
 use std::io::BufRead;
@@ -327,7 +328,20 @@ fn max_run_id(ctx: &Ctx, task_id: i64) -> BrainResult<i64> {
         .unwrap_or(0))
 }
 
-/// Con thoát với mã lỗi (không phải 0, 3, 4, 5 = hết quota, 130) trong khi run mới nhất của task
+/// Mã thoát của con không phải lỗi của vai trò: 0, 3, 4, 5 (hết quota), 6 (chờ nhân sự), 130.
+pub(crate) fn child_exit_is_neutral(code: i32) -> bool {
+    [
+        EXIT_OK,
+        EXIT_PROTOCOL,
+        EXIT_BLOCKED,
+        EXIT_QUOTA,
+        EXIT_WAITING,
+        EXIT_INTERRUPTED,
+    ]
+    .contains(&code)
+}
+
+/// Con thoát với mã lỗi (không phải 0, 3, 4, 5 = hết quota, 6 = chờ nhân sự, 130) trong khi run mới nhất của task
 /// `succeeded` mà chưa có outcome: vai trò hỏng sau run (vd. commit bị hook từ chối).
 /// Dừng `run lỗi` gắn run đó, không để `decide` chạy lại bước (WR-02, D-27).
 /// Run failed / timed_out / killed hoặc đã có outcome thì để `decide` (D2) xử lý.
@@ -338,18 +352,7 @@ fn child_error_stop(
     outcome: &ChildOutcome,
 ) -> BrainResult<Option<StopInfo>> {
     let code = match outcome.exit_code {
-        Some(c)
-            if ![
-                EXIT_OK,
-                EXIT_PROTOCOL,
-                EXIT_BLOCKED,
-                EXIT_QUOTA,
-                EXIT_INTERRUPTED,
-            ]
-            .contains(&c) =>
-        {
-            c
-        }
+        Some(c) if !child_exit_is_neutral(c) => c,
         _ => return Ok(None),
     };
     let run = match crate::db::latest_run_for_task(&ctx.conn, task_id)? {
@@ -477,6 +480,14 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
                 };
                 if outcome.interrupted {
                     return Ok(interrupted(ctx, task_id));
+                }
+                // D-19: bước Dev do người làm không tạo run nào và không lỗi — nhả task chờ `Xong`.
+                if outcome.exit_code == Some(EXIT_WAITING) {
+                    claim::release(&ctx.conn, task_id, "waiting_human", &aj)?;
+                    crate::term::emit(&format!(
+                        "Autopilot · task {task_id} · chờ nhân sự làm — bấm Xong khi họ báo xong."
+                    ));
+                    return Ok(EXIT_OK);
                 }
                 let after = max_run_id(ctx, task_id)?;
                 if after <= before {
@@ -740,6 +751,15 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
     drive(ctx, task_id, true)
 }
 
+/// `human done` sau một vi phạm giao thức (D-20): nhận lại task và chạy vòng lặp KHÔNG ở chế độ
+/// resume, để D2 đọc run người vừa ghi (`protocol_violation`) và ghi lý do dừng thay vì chạy lại
+/// bước Dev.
+pub fn stop_after_human_violation(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
+    install_signal_handlers();
+    claim_task(ctx, task_id, &ClaimOpts::default())?;
+    drive(ctx, task_id, false)
+}
+
 /// `agent-brain approve` — ghi duyệt plan cho commit plan hiện tại; với quy trình
 /// `auto: true` driver chạy tiếp ngay trong tiến trình này (trừ khi `--no-continue`).
 pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResult<i32> {
@@ -811,4 +831,27 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
         &ClaimOpts::default(),
     )?;
     drive(ctx, task_id, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_exit_is_neutral_ignores_waiting() {
+        for code in [
+            EXIT_OK,
+            EXIT_PROTOCOL,
+            EXIT_BLOCKED,
+            EXIT_QUOTA,
+            EXIT_WAITING,
+            EXIT_INTERRUPTED,
+        ] {
+            assert!(child_exit_is_neutral(code), "{code}");
+        }
+        assert_eq!(EXIT_WAITING, 6);
+        for code in [1, 2, 7, 137] {
+            assert!(!child_exit_is_neutral(code), "{code}");
+        }
+    }
 }

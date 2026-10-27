@@ -149,6 +149,25 @@ enum Commands {
         #[command(subcommand)]
         subcommand: TelegramCommands,
     },
+    /// Bước Dev do nhân sự làm (engine người): xong / trả lại
+    Human {
+        #[command(subcommand)]
+        action: HumanCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum HumanCommands {
+    /// Lấy nhánh nhân sự đã đẩy và chạy tiếp quy trình
+    Done {
+        /// ID của task
+        task_id: i64,
+    },
+    /// Trả việc lại cho nhân sự kèm báo cáo
+    Return {
+        /// ID của task
+        task_id: i64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -238,6 +257,18 @@ fn main() {
         Commands::Guard { .. } => unreachable!(),
         Commands::Serve { .. } => unreachable!(),
         Commands::Telegram { .. } => unreachable!(),
+        Commands::Human { action } => match action {
+            HumanCommands::Done { task_id } => agent_brain::human::cmd_human(
+                &mut ctx,
+                agent_brain::human::HumanAction::Done,
+                task_id,
+            ),
+            HumanCommands::Return { task_id } => agent_brain::human::cmd_human(
+                &mut ctx,
+                agent_brain::human::HumanAction::Return,
+                task_id,
+            ),
+        },
         Commands::Projects { subcommand } => match subcommand {
             ProjectsCommands::Scan { roots } => projects::cmd_scan(&roots),
             ProjectsCommands::Add { path, r#type } => projects::cmd_add(&path, r#type.as_deref()),

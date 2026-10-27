@@ -5,6 +5,8 @@ pub const EXIT_PROTOCOL: i32 = 3;
 pub const EXIT_BLOCKED: i32 = 4;
 /// A run stopped because the engine hit its quota or rate limit (D-15). Nothing retries or switches engine.
 pub const EXIT_QUOTA: i32 = 5;
+/// A step is waiting for a person (human engine, D-19): nothing ran and nothing failed.
+pub const EXIT_WAITING: i32 = 6;
 pub const EXIT_INTERRUPTED: i32 = 130;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +64,7 @@ mod tests {
         assert_eq!(EXIT_PROTOCOL, 3);
         assert_eq!(EXIT_BLOCKED, 4);
         assert_eq!(EXIT_QUOTA, 5);
+        assert_eq!(EXIT_WAITING, 6);
         assert_eq!(EXIT_INTERRUPTED, 130);
     }
 
