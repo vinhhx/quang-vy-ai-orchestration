@@ -450,6 +450,20 @@ PYEOF
 # keys confirm-dialog check, need its branch checked out).
 git -C "$REPO_DIR" checkout task/sua-app >/dev/null 2>&1
 
+# 06-15: the smoke project gets a default team only now, after the CLI seeding above, so
+# the seeded tasks keep running on the default team; the Giao việc picker reads it.
+python3 - "$TMP/xdg_config/agent-brain/projects_map.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path, 'r', encoding='utf-8') as f:
+    data = json.load(f)
+for p in data['projects']:
+    if p['id'] == 'web-ban-hang':
+        p['team'] = 'doi-thu'
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+PYEOF
+
 # Start serve
 "$BIN" serve --port 0 > "$TMP/serve.out" 2> "$TMP/serve.err" &
 SERVE_PID=$!
@@ -992,7 +1006,7 @@ EOF
 
   # DOM assertions for the Giao việc, Dự án and Tổng quan screens (Phase 5.2).
   if [[ "$s" == "assign" || "$s" == "projects" || "$s" == "overview" || "$s" == "board" || "$s" == "settings" ]]; then
-    if ! python3 - "$DOM_OUT" "$s" <<'EOF'
+    if ! python3 - "$DOM_OUT" "$s" "$URL" <<'EOF'
 import sys
 from html.parser import HTMLParser
 
@@ -1114,6 +1128,55 @@ if screen == 'assign':
     if 'Không tải được danh sách quy trình' in fs_text:
         fail("Fieldset Quy trình hiện callout lỗi tải danh sách")
     print("Assign DOM OK")
+
+    # 06-15: the Đội hình fieldset, a separate kind from Quy trình (UI-SPEC C1).
+    def collapse_ws(t):
+        return ' '.join(t.split())
+    team_sets = []
+    for cand in root.find(lambda n: n.tag == 'fieldset'):
+        legends = [c for c in cand.content if isinstance(c, Node) and c.tag == 'legend']
+        if legends and legends[0].text().strip() == 'Đội hình':
+            team_sets.append(cand)
+    if len(team_sets) != 1:
+        fail(f"Số fieldset có legend 'Đội hình' là {len(team_sets)}, kỳ vọng 1")
+    tfs = team_sets[0]
+    if tfs is fs:
+        fail("Fieldset Đội hình trùng với fieldset Quy trình")
+    if 'Đội hình chọn engine chạy từng vai trò.' not in collapse_ws(tfs.text()):
+        fail("Fieldset Đội hình thiếu 'Đội hình chọn engine chạy từng vai trò.'")
+    options = tfs.find(lambda n: 'data-team-option' in n.attrs)
+    option_names = sorted(o.attrs.get('data-team-option') for o in options)
+    for name in ('mac-dinh', 'tiet-kiem', 'doi-thu'):
+        if name not in option_names:
+            fail(f"Thiếu phần tử data-team-option=\"{name}\" (có: {option_names})")
+    team_radios = tfs.find(lambda n: n.tag == 'input' and n.attrs.get('type') == 'radio' and n.attrs.get('name') == 'team')
+    if len(team_radios) < 3:
+        fail(f"Số input[type=radio][name=team] là {len(team_radios)}, kỳ vọng ít nhất 3")
+    team_checked = [r for r in team_radios if 'checked' in r.attrs]
+    # No project is chosen in a plain DOM dump, so the default is mac-dinh; the project
+    # default (doi-thu) is asserted below from the same payload the picker reads.
+    if len(team_checked) != 1 or team_checked[0].attrs.get('value') != 'mac-dinh':
+        fail(f"Radio đội hình đang chọn là {[r.attrs.get('value') for r in team_checked]}, kỳ vọng ['mac-dinh']")
+    tfs_text = tfs.text()
+    if 'Đang tải đội hình...' in tfs_text:
+        fail("Fieldset Đội hình vẫn hiện 'Đang tải đội hình...'")
+    if 'Không tải được danh sách đội hình' in tfs_text:
+        fail("Fieldset Đội hình hiện callout lỗi tải danh sách")
+    if 'teams.json có lỗi' in tfs_text:
+        fail("Fieldset Đội hình hiện callout 'teams.json có lỗi' dù file hợp lệ")
+    import json, urllib.parse, urllib.request
+    base = urllib.parse.urlsplit(sys.argv[3])
+    token = urllib.parse.parse_qs(base.query).get('token', [''])[0]
+    req = urllib.request.Request(
+        f"{base.scheme}://{base.netloc}/api/teams",
+        headers={'Cookie': f"agent_brain_token={token}"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        teams_payload = json.load(resp)
+    pd = teams_payload.get('project_defaults', {}).get('web-ban-hang')
+    if not pd or pd.get('effective') != 'doi-thu' or pd.get('team') != 'doi-thu':
+        fail(f"project_defaults['web-ban-hang'] là {pd}, kỳ vọng team và effective 'doi-thu'")
+    print("OK assign-team")
     sys.exit(0)
 
 if screen == 'projects':

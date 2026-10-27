@@ -1,5 +1,10 @@
 // js/assign.js — Giao việc screen component
 (function () {
+  // Role keys of a team entry (`/api/teams` roles), and the fixed engines in display order.
+  var TEAM_ROLES = ['lead', 'dev', 'qa', 'plan_review', 'code_review'];
+  var ENGINE_ORDER = ['claude', 'deepseek', 'agy'];
+  var BUILTIN_TEAM_NAMES = ['mac-dinh', 'tiet-kiem'];
+
   window.AB.onReady('assign', function () {
     return {
       request: '',
@@ -32,6 +37,16 @@
       workflowsFailed: false,
       workflowName: 'mac-dinh',
       workflowTouched: false,
+      teams: [],
+      teamErrors: [],
+      teamBuiltinNames: [],
+      projectTeamDefaults: {},
+      teamsLoading: true,
+      teamsFailed: false,
+      teamName: 'mac-dinh',
+      teamTouched: false,
+      engineReadiness: {},
+      staffNames: {},
 
       _slugSeq: 0,
       _suggestSeq: 0,
@@ -44,6 +59,7 @@
         var self = this;
         this.loaded = true;
         this.loadWorkflows();
+        this.loadTeams();
 
         var profileHandler = function (e) {
           self.profile = (e.detail && e.detail.profile) ? e.detail.profile : window.AB.profile();
@@ -82,6 +98,162 @@
             self.workflowsFailed = true;
           }
         });
+      },
+
+      // Read-only: GET /api/teams, then readiness (/api/engines) and staff names (/api/staff).
+      // The two extra calls only feed the warnings; a failure of either just hides them.
+      loadTeams: function () {
+        var self = this;
+        this.teamsLoading = true;
+        return window.AB.api('GET', '/api/teams').then(function (res) {
+          self.teamsLoading = false;
+          if (res && res.ok && res.data && Array.isArray(res.data.teams)) {
+            self.teams = res.data.teams;
+            self.teamErrors = Array.isArray(res.data.errors) ? res.data.errors : [];
+            self.teamBuiltinNames = Array.isArray(res.data.builtin_names) ? res.data.builtin_names : [];
+            self.projectTeamDefaults = (res.data.project_defaults && typeof res.data.project_defaults === 'object') ? res.data.project_defaults : {};
+            self.teamsFailed = false;
+            if (!self.teamTouched || !self.hasTeam(self.teamName)) {
+              self.teamName = self.defaultTeamFor(self.selected);
+            }
+          } else {
+            self.teams = [];
+            self.teamErrors = [];
+            self.teamBuiltinNames = [];
+            self.projectTeamDefaults = {};
+            self.teamsFailed = true;
+          }
+          return self.loadTeamExtras();
+        });
+      },
+
+      loadTeamExtras: function () {
+        var self = this;
+        var engines = window.AB.api('GET', '/api/engines').then(function (res) {
+          var map = {};
+          if (res && res.ok && res.data && Array.isArray(res.data.engines)) {
+            for (var i = 0; i < res.data.engines.length; i++) {
+              var e = res.data.engines[i];
+              if (e && e.name && e.readiness && e.readiness !== 'san_sang') {
+                map[e.name] = e.word || e.readiness;
+              }
+            }
+          }
+          self.engineReadiness = map;
+        }).catch(function () {
+          self.engineReadiness = {};
+        });
+        var staff = window.AB.api('GET', '/api/staff').then(function (res) {
+          var names = {};
+          if (res && res.ok && res.data && Array.isArray(res.data.staff)) {
+            for (var i = 0; i < res.data.staff.length; i++) {
+              var m = res.data.staff[i];
+              if (m && m.id) names[m.id] = m.display_name || m.id;
+            }
+          }
+          self.staffNames = names;
+          if (window.AB.setStaffNames) window.AB.setStaffNames(names);
+        }).catch(function () {
+          self.staffNames = {};
+        });
+        return Promise.all([engines, staff]);
+      },
+
+      hasTeam: function (name) {
+        return Boolean(this.findTeam(name));
+      },
+
+      findTeam: function (name) {
+        if (!name || !this.teams) return null;
+        for (var i = 0; i < this.teams.length; i++) {
+          if (this.teams[i].name === name) return this.teams[i];
+        }
+        return null;
+      },
+
+      projectTeamDefault: function (project) {
+        if (!project || !project.id || !this.projectTeamDefaults) return null;
+        return this.projectTeamDefaults[project.id] || null;
+      },
+
+      defaultTeamFor: function (project) {
+        var d = this.projectTeamDefault(project);
+        if (d && d.effective) return d.effective;
+        return 'mac-dinh';
+      },
+
+      pickTeam: function (name) {
+        if (!name) return;
+        this.teamName = name;
+        this.teamTouched = true;
+      },
+
+      onTeamChange: function (event) {
+        var target = event && event.target;
+        this.pickTeam((target && target.value) ? target.value : this.teamName);
+      },
+
+      teamChecked: function (t) {
+        return Boolean(t && t.name === this.teamName);
+      },
+
+      teamOptionClass: function (t) {
+        if (this.teamChecked(t)) {
+          return 'bg-indigo-50 ring-2 ring-indigo-600 dark:bg-indigo-900/20 dark:ring-indigo-400';
+        }
+        return 'ring-1 ring-slate-300 hover:bg-slate-50 dark:ring-slate-600 dark:hover:bg-slate-700/50';
+      },
+
+      teamChips: function (t) {
+        if (!t) return [];
+        var chips = [];
+        var d = this.projectTeamDefault(this.selected);
+        if (d && d.effective === t.name) {
+          chips.push('mặc định của dự án');
+        }
+        chips.push(t.source === 'builtin' ? 'có sẵn' : 'từ teams.json');
+        return chips;
+      },
+
+      // Engines of the team's roles that are not ready, in engine order: [{engine, word}].
+      teamNotReady: function (t) {
+        var out = [];
+        if (!t || !t.roles) return out;
+        var used = {};
+        for (var i = 0; i < TEAM_ROLES.length; i++) {
+          var eng = t.roles[TEAM_ROLES[i]];
+          if (eng) used[eng] = true;
+        }
+        for (var j = 0; j < ENGINE_ORDER.length; j++) {
+          var name = ENGINE_ORDER[j];
+          if (used[name] && this.engineReadiness && this.engineReadiness[name]) {
+            out.push({ engine: name, word: this.engineReadiness[name] });
+          }
+        }
+        return out;
+      },
+
+      teamReadinessLines: function (t) {
+        var list = this.teamNotReady(t);
+        var lines = [];
+        for (var i = 0; i < list.length; i++) {
+          lines.push('! ' + list[i].engine + ': ' + list[i].word);
+        }
+        return lines;
+      },
+
+      // Display names (without the `người ` prefix) of the humans in the team's roles.
+      teamHumanNames: function (t) {
+        var names = [];
+        if (!t || !t.roles) return names;
+        for (var i = 0; i < TEAM_ROLES.length; i++) {
+          var eng = t.roles[TEAM_ROLES[i]];
+          if (eng && String(eng).indexOf('người:') === 0) {
+            var shown = window.AB.engineText(eng, this.staffNames).replace(/^người /, '');
+            if (names.indexOf(shown) === -1) names.push(shown);
+          }
+        }
+        return names;
       },
 
       hasWorkflow: function (name) {
@@ -291,6 +463,7 @@
         this.open = false;
         this.active = -1;
         this.selectDefaultWorkflow();
+        this.selectDefaultTeam();
         this.refreshPreflight();
       },
 
@@ -298,6 +471,11 @@
       selectDefaultWorkflow: function () {
         if (this.workflowTouched) return;
         this.workflowName = this.defaultWorkflowFor(this.selected);
+      },
+
+      selectDefaultTeam: function () {
+        if (this.teamTouched) return;
+        this.teamName = this.defaultTeamFor(this.selected);
       },
 
       chooseCandidate: function (c) {
@@ -314,6 +492,7 @@
         this.candidates = [];
         this.error = '';
         this.selectDefaultWorkflow();
+        this.selectDefaultTeam();
         this.refreshPreflight();
       },
 
@@ -511,7 +690,15 @@
         if (this.workflowsLoaded && this.workflowName) {
           body.workflow = this.workflowName;
         }
+        if (this.teamsLoaded && this.teamName) {
+          body.team = this.teamName;
+        }
         return body;
+      },
+
+      // `team` only when the list loaded; otherwise the server default applies.
+      get teamsLoaded() {
+        return Boolean(!this.teamsLoading && !this.teamsFailed && this.teams && this.teams.length > 0);
       },
 
       get workflowsLoaded() {
@@ -529,6 +716,31 @@
           lines.push('… và ' + (errs.length - 10) + ' lỗi khác');
         }
         return lines;
+      },
+
+      get hasTeamErrors() {
+        return Boolean(this.teamErrors && this.teamErrors.length > 0);
+      },
+
+      get teamErrorLines() {
+        var errs = this.teamErrors || [];
+        var lines = errs.slice(0, 10);
+        if (errs.length > 10) {
+          lines.push('… và ' + (errs.length - 10) + ' lỗi khác');
+        }
+        return lines;
+      },
+
+      get teamErrorClosing() {
+        var names = this.teamBuiltinNames;
+        if (!names || names.length === 0) {
+          names = [];
+          for (var i = 0; i < (this.teams || []).length; i++) {
+            if (this.teams[i].source === 'builtin') names.push(this.teams[i].name);
+          }
+        }
+        if (names.length === 0) names = BUILTIN_TEAM_NAMES;
+        return 'Đang dùng các đội hình có sẵn (' + names.join(', ') + ') cho đến khi bạn sửa xong file.';
       },
 
       get selectedHelp() {
