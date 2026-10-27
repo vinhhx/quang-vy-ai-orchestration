@@ -3070,6 +3070,402 @@ const sections = [
       check('21 rows after showMoreRuns shows 21', rows21After.length === 21, `got ${rows21After.length}`);
     },
   },
+  {
+    name: 'settings',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      const settingsJsPath = path.join(repoRoot, 'agent-brain/assets/dashboard/js/settings.js');
+      vm.runInContext(fs.readFileSync(settingsJsPath, 'utf8'), ctx, { filename: 'settings.js' });
+
+      check('settings: factory registered', typeof factories.settings === 'function', 'factories.settings not found');
+      if (typeof factories.settings !== 'function') return;
+
+      const PLANTED = 'planted-key-value-0123456789';
+      const ROLES = (dev) => ({ lead: 'claude', dev, qa: 'claude', plan_review: 'claude', code_review: 'claude' });
+      const teamRow = (name, source, dev, extra) => Object.assign({
+        name,
+        source,
+        description: 'Mô tả ' + name,
+        roles: ROLES(dev),
+        summary: 'tóm tắt ' + name,
+        warnings: [],
+        default_for: [],
+        used_by: { projects: [], open_tasks: 0 },
+      }, extra || {});
+      const TEAMS = {
+        teams: [
+          teamRow('mac-dinh', 'builtin', 'claude'),
+          teamRow('tiet-kiem', 'builtin', 'deepseek'),
+          teamRow('doi-thu', 'file', 'người:ha', { warnings: ['Nhân sự ma không còn trong danh sách.'], used_by: { projects: ['web-ban-hang'], open_tasks: 2 } }),
+          teamRow('ghi-de', 'override', 'claude'),
+        ],
+        errors: [],
+        version: 'tv1',
+        builtin_names: ['mac-dinh', 'tiet-kiem'],
+      };
+      const WORKFLOWS = {
+        workflows: [
+          { name: 'mac-dinh', source: 'builtin', summary: 's1', auto: true, limits: '3 vòng · 60 phút · $20', default_for: [], stages: [], edit: { stages: ['plan', 'plan-review', 'gate:you', 'implement', 'code-review', 'qa', 'fix'], loops: { plan: 'plan-review', implement: 'code-review', qa: 'fix' }, auto: true, max_rounds: 3, budget_minutes: 60, budget_usd: 20 } },
+          { name: 'nhanh', source: 'file', summary: 's2', auto: false, limits: '60 phút · $20', default_for: ['Web bán hàng'], stages: [], edit: { stages: ['plan', 'gate:you', 'implement', 'qa'], loops: {}, auto: false, max_rounds: 3, budget_minutes: 60, budget_usd: 20 } },
+        ],
+        errors: [],
+        version: 'wv1',
+      };
+      const STAFF = {
+        staff: [{ id: 'ha', display_name: 'Hà', notes: 'Zalo 09xx', used_in: ['doi-b'] }],
+        errors: [],
+        version: 'sv1',
+      };
+      const secretEngine = (e) => Object.assign({ env: { DEEPSEEK_API_KEY: PLANTED }, secret_value: PLANTED, argv: ['--key', PLANTED] }, e);
+      const ENGINES = {
+        engines: [
+          secretEngine({ name: 'claude', readiness: 'san_sang', word: 'sẵn sàng', reason: null, command: 'claude', key_env: null, model: null }),
+          secretEngine({ name: 'deepseek', readiness: 'thieu_key', word: 'thiếu key', reason: 'Chưa đặt biến môi trường DEEPSEEK_API_KEY.', command: 'claude', key_env: 'DEEPSEEK_API_KEY', model: 'deepseek-chat' }),
+          secretEngine({ name: 'agy', readiness: 'thieu_lenh', word: 'thiếu lệnh', reason: 'Không tìm thấy lệnh agy trên máy.', command: 'agy', key_env: null, model: null }),
+          secretEngine({ name: 'người', readiness: 'san_sang', word: 'sẵn sàng', reason: null, command: null, key_env: null, model: null, detail: '1 nhân sự' }),
+        ],
+      };
+
+      let routes;
+      let calls;
+      const ok = (data) => ({ ok: true, status: 200, data: JSON.parse(JSON.stringify(data)) });
+      const defaults = () => ({
+        'GET /api/teams': () => ok(TEAMS),
+        'GET /api/workflows': () => ok(WORKFLOWS),
+        'GET /api/staff': () => ok(STAFF),
+        'GET /api/engines': () => ok(ENGINES),
+      });
+      const savedApi = ctx.AB.api;
+      ctx.AB.api = function (method, url, body) {
+        calls.push({ method, url, body });
+        const h = routes[method + ' ' + url];
+        if (!h) return Promise.resolve({ ok: false, status: 404, data: null });
+        return Promise.resolve(typeof h === 'function' ? h(body) : h);
+      };
+      async function fresh(over) {
+        routes = Object.assign(defaults(), over || {});
+        calls = [];
+        const c = factories.settings();
+        await c.load();
+        await c.loadEngines();
+        return c;
+      }
+
+      try {
+        // ---- load, rows and chips ----
+        let c = await fresh();
+        check('settings: loaded after the three reads', c.loaded === true && c.loadedAttr === 'yes', `got ${c.loadedAttr}`);
+        check('settings: starts on the Đội hình section', c.section === 'teams' && c.showTeams === true);
+        const chips = (name) => JSON.stringify(c.teamRows.filter((r) => r.name === name)[0].chips);
+        check('settings: builtin chips', chips('mac-dinh') === JSON.stringify(['có sẵn']), chips('mac-dinh'));
+        check('settings: file chips', chips('doi-thu') === JSON.stringify(['từ teams.json']), chips('doi-thu'));
+        check('settings: override chips', chips('ghi-de') === JSON.stringify(['ghi đè đội hình có sẵn']), chips('ghi-de'));
+        const rowOf = (name) => c.teamRows.filter((r) => r.name === name)[0];
+        check('settings: builtin row only copies', rowOf('mac-dinh').canEdit === false && rowOf('doi-thu').canEdit === true && rowOf('ghi-de').canEdit === true);
+        check('settings: aria-label names kind and name', rowOf('tiet-kiem').copyLabel === 'Nhân bản đội hình tiet-kiem' && rowOf('doi-thu').editLabel === 'Sửa đội hình doi-thu' && rowOf('doi-thu').delLabel === 'Xóa đội hình doi-thu');
+        check('settings: not-ready engine line from /api/engines', JSON.stringify(rowOf('tiet-kiem').warnings) === JSON.stringify(['deepseek: thiếu key']), JSON.stringify(rowOf('tiet-kiem').warnings));
+        check('settings: missing staff line from the server', rowOf('doi-thu').warnings.indexOf('Nhân sự ma không còn trong danh sách.') >= 0, JSON.stringify(rowOf('doi-thu').warnings));
+        check('settings: custom team exists so no helper', c.noCustomTeam === false);
+        check('settings: workflow chips', JSON.stringify(c.workflowRows[1].chips) === JSON.stringify(['từ workflows.json', 'chạy tay']), JSON.stringify(c.workflowRows[1].chips));
+        check('settings: workflow default line', c.workflowRows[1].defaultFor === 'Mặc định của: Web bán hàng', c.workflowRows[1].defaultFor);
+        check('settings: staff usage line', c.staffRows[0].usage === 'Dùng trong đội hình: doi-b', c.staffRows[0].usage);
+
+        // ---- copy names ----
+        c.copyTeam('tiet-kiem');
+        check('settings: copy name', c.tName === 'tiet-kiem-ban-sao' && c.teamMode === 'create', `got "${c.tName}"`);
+        check('settings: copy prefills the source', c.tDev === 'deepseek' && c.tDesc === 'Mô tả tiet-kiem');
+        c.cancelTeam();
+        c.teams.push(teamRow('tiet-kiem-ban-sao', 'file', 'claude'));
+        c.copyTeam('tiet-kiem');
+        check('settings: second copy name', c.tName === 'tiet-kiem-ban-sao-2', `got "${c.tName}"`);
+        c.cancelTeam();
+
+        // ---- team editor rules ----
+        c = await fresh();
+        c.newTeam();
+        check('settings: new team defaults every role to claude', ['tLead', 'tDev', 'tQa', 'tPlanReview', 'tCodeReview'].every((k) => c[k] === 'claude'));
+        check('settings: first reason is the empty name', c.saveReason('team') === 'Nhập tên đội hình.', c.saveReason('team'));
+        c.tName = 'Bad Name';
+        check('settings: format reason', c.saveReason('team') === 'Tên chỉ gồm chữ thường không dấu, số và dấu gạch ngang (ví dụ tiet-kiem).', c.saveReason('team'));
+        c.tName = 'doi-thu';
+        check('settings: duplicate reason', c.saveReason('team') === "Đã có đội hình tên 'doi-thu'.", c.saveReason('team'));
+        c.tName = 'mac-dinh';
+        check('settings: builtin reason', c.saveReason('team') === "'mac-dinh' là đội hình có sẵn, không ghi đè được. Đặt tên khác.", c.saveReason('team'));
+        c.tName = 'moi-1';
+        check('settings: empty description reason', c.saveReason('team') === 'Nhập mô tả ngắn để chọn đội hình cho đúng.', c.saveReason('team'));
+        c.tDesc = '   ';
+        check('settings: blank description is empty', c.saveReason('team') === 'Nhập mô tả ngắn để chọn đội hình cho đúng.');
+        c.tDesc = 'Đội hình mới';
+        check('settings: valid draft has no reason', c.saveReason('team') === '' && c.saveDisabled('team') === false, c.saveReason('team'));
+        c.tQa = 'deepseek';
+        check('settings: QA must be claude', c.saveReason('team') === 'QA phải dùng engine claude.' && c.saveDisabled('team') === true, c.saveReason('team'));
+        check('settings: QA error shows at once', c.fieldMsg('team', 'qa') === 'QA phải dùng engine claude.' && c.invalidAttr('team', 'qa') === 'true');
+        check('settings: untouched empty name shows no error', c.fieldMsg('team', 'name') === '' && c.invalidAttr('team', 'name') === false);
+        c.tQa = 'claude';
+        check('settings: valid ring vs invalid ring', c.fieldClass('team', 'name').indexOf('ring-slate-500') >= 0);
+        c.tName = 'Sai';
+        c.onField('team', 'name');
+        check('settings: touched invalid name gets the rose ring', c.fieldClass('team', 'name') === 'ring-2 ring-rose-600 dark:ring-rose-400', c.fieldClass('team', 'name'));
+        c.tName = 'tên-có-dấu';
+        check('settings: diacritics are refused', c.saveReason('team').indexOf('Tên chỉ gồm chữ thường') === 0);
+        c.tName = 'a'.repeat(41);
+        check('settings: 41 characters are refused', c.saveReason('team').indexOf('Tên chỉ gồm chữ thường') === 0);
+        c.tName = 'doi-thu-moi';
+        const devOpts = c.roleOptions('dev').map((o) => o.label);
+        const leadOpts = c.roleOptions('lead').map((o) => o.label);
+        check('settings: Dev options include người Hà', devOpts.indexOf('người Hà') >= 0, JSON.stringify(devOpts));
+        check('settings: Lead options do not include a person', leadOpts.every((l) => l.indexOf('người') !== 0), JSON.stringify(leadOpts));
+        check('settings: QA / reviews have no person either', ['qa', 'plan_review', 'code_review'].every((r) => c.roleOptions(r).every((o) => o.value.indexOf('người:') !== 0)));
+        check('settings: not-ready option carries its word', leadOpts.indexOf('deepseek — thiếu key') >= 0 && leadOpts.indexOf('agy — thiếu lệnh') >= 0, JSON.stringify(leadOpts));
+        check('settings: human value stays visible on a non-Dev role', (() => { c.tLead = 'người:ha'; const o = c.roleOptions('lead').map((x) => x.label); c.tLead = 'claude'; return o.indexOf('người Hà') >= 0; })());
+        check('settings: editor lock line for a new draft', c.lockLine('team') === 'Đang sửa doi-thu-moi — lưu hoặc hủy trước khi sửa mục khác.', c.lockLine('team'));
+        check('settings: actions locked while a draft is open', c.actionsLocked('team') === true && c.actionsLocked('staff') === false);
+        check('settings: collision note when the name is also a workflow', (() => { c.tName = 'nhanh'; const n = c.collisionNote('team'); c.tName = 'doi-thu-moi'; return n.indexOf('Tên này cũng là một quy trình.') === 0; })());
+        check('settings: save sends version, create and entry', (() => {
+          routes['POST /api/teams/save'] = () => ok(Object.assign({ ok: true }, TEAMS));
+          return true;
+        })());
+        await c.saveTeam();
+        const post = calls.filter((x) => x.method === 'POST')[0];
+        check('settings: POST /api/teams/save body', post && post.url === '/api/teams/save' && post.body.version === 'tv1' && post.body.create === true && post.body.entry.name === 'doi-thu-moi' && post.body.entry.roles.plan_review === 'claude' && post.body.entry.roles.code_review === 'claude', JSON.stringify(post));
+        check('settings: success closes the editor and says so', c.teamMode === '' && c.statusText === 'Đã lưu đội hình doi-thu-moi.', `mode "${c.teamMode}" status "${c.statusText}"`);
+        check('settings: editor closed unlocks the section', c.actionsLocked('team') === false);
+
+        // ---- edit mode ----
+        c.editTeam('doi-thu');
+        check('settings: edit keeps the name and prefills', c.teamMode === 'edit' && c.tName === 'doi-thu' && c.tDev === 'người:ha' && c.readonlyAttr('team') === 'true');
+        check('settings: edit mode has no name reason', c.saveReason('team') === '', c.saveReason('team'));
+        check('settings: edit title and cancel label', c.editorTitle('team') === 'Sửa đội hình doi-thu' && c.cancelText('team') === 'Hủy sửa');
+        check('settings: edited row is hidden', c.teamRows.filter((r) => r.name === 'doi-thu')[0].visible === false);
+        c.cancelTeam();
+        c.editTeam('mac-dinh');
+        check('settings: a builtin cannot be edited', c.teamMode === '');
+
+        // ---- conflict keeps the draft ----
+        routes['POST /api/teams/save'] = { ok: false, status: 409, data: { error: 'teams.json vừa bị sửa ở nơi khác', code: 'conflict' } };
+        c.newTeam();
+        c.tName = 'xung-dot';
+        c.tDesc = 'Bản nháp giữ lại';
+        calls.length = 0;
+        await c.saveTeam();
+        check('settings: conflict keeps tName and tDesc', c.tName === 'xung-dot' && c.tDesc === 'Bản nháp giữ lại' && c.teamMode === 'create');
+        check('settings: conflict heading', c.hasConflict('team') === true && c.conflictHeading('team') === 'teams.json vừa bị sửa ở nơi khác', c.conflictHeading('team'));
+        check('settings: conflict body', c.conflictBody() === 'Đã tải lại danh sách. Bản nháp của bạn vẫn còn trong form — kiểm tra rồi lưu lại.');
+        check('settings: conflict reloads the teams', calls.some((x) => x.method === 'GET' && x.url === '/api/teams'));
+        check('settings: staff and workflow conflict headings', c.conflictHeading('workflow') === 'workflows.json vừa bị sửa ở nơi khác' && c.conflictHeading('staff') === 'file nhân sự vừa bị sửa ở nơi khác');
+        c.cancelTeam();
+
+        // ---- 422 refusal: field errors, at most 10 lines ----
+        const errs = [{ field: 'name', message: 'Tên sai.' }];
+        for (let i = 1; i <= 11; i++) errs.push({ field: null, message: 'Lỗi ' + i });
+        routes['POST /api/teams/save'] = { ok: false, status: 422, data: { error: 'Không lưu được đội hình', errors: errs } };
+        c.newTeam();
+        c.tName = 'sai-ten';
+        c.tDesc = 'x';
+        await c.saveTeam();
+        check('settings: refusal keeps the draft', c.teamMode === 'create' && c.tName === 'sai-ten');
+        check('settings: refusal shows 10 lines then the remainder', c.refusalLines('team').length === 11 && c.refusalLines('team')[10] === '… và 2 lỗi khác', JSON.stringify(c.refusalLines('team')));
+        check('settings: refusal heading', c.refusalHeading('team') === 'Không lưu được đội hình');
+        check('settings: field error under its field', c.fieldMsg('team', 'name') === 'Tên sai.' && c.fieldInvalid('team', 'name') === true);
+        c.onField('team', 'name');
+        check('settings: typing clears that field error', c.fieldMsg('team', 'name') === '');
+        c.cancelTeam();
+        check('settings: cancel clears refusal', c.hasRefusal('team') === false && c.hasConflict('team') === false);
+
+        // ---- invalid file blocks writes ----
+        c = await fresh({ 'GET /api/teams': () => ok(Object.assign({}, TEAMS, { errors: ['Dòng 3: khóa lạ', 'Dòng 7: thiếu mô tả'] })) });
+        check('settings: invalid file disables creation', c.actionsLocked('team') === true);
+        check('settings: invalid file reason', c.fileReason('team') === 'teams.json đang có lỗi — sửa file trong editor rồi bấm Đọc lại; dashboard không ghi đè file lỗi.', c.fileReason('team'));
+        c.newTeam();
+        check('settings: newTeam does nothing on an invalid file', c.teamMode === '');
+        c.copyTeam('mac-dinh');
+        check('settings: copy does nothing on an invalid file', c.teamMode === '');
+        check('settings: built-ins stay listed', c.teamRows.length === 4);
+        check('settings: invalid file lines', JSON.stringify(c.fileErrorLines('team')) === JSON.stringify(['Dòng 3: khóa lạ', 'Dòng 7: thiếu mô tả']));
+        check('settings: closing line names the built-ins', c.teamFileClosing === 'Đang dùng các đội hình có sẵn (mac-dinh, tiet-kiem) cho đến khi bạn sửa xong file.', c.teamFileClosing);
+        check('settings: other sections stay writable', c.actionsLocked('workflow') === false && c.actionsLocked('staff') === false);
+        const manyErrs = [];
+        for (let i = 1; i <= 12; i++) manyErrs.push('Dòng ' + i + ': lỗi');
+        c = await fresh({ 'GET /api/teams': () => ok(Object.assign({}, TEAMS, { errors: manyErrs })) });
+        check('settings: invalid file lines are capped at 10', c.fileErrorLines('team').length === 11 && c.fileErrorLines('team')[10] === '… và 2 lỗi khác');
+
+        // ---- workflow editor ----
+        c = await fresh();
+        c.newWorkflow();
+        const codeLoop = c.loops[1];
+        check('settings: seven stages in the fixed order', c.stages.map((s) => s.key).join(',') === 'plan,plan-review,gate:you,implement,code-review,qa,fix');
+        check('settings: loop disabled until both stages are checked', c.loopDisabled(codeLoop) === true && c.loopReason(codeLoop) === 'Cần chọn cả Code và Review code ở mục Các bước.', c.loopReason(codeLoop));
+        check('settings: other loop reasons', c.loopReason(c.loops[0]) === 'Cần chọn cả Lên plan và Review plan ở mục Các bước.' && c.loopReason(c.loops[2]) === 'Cần chọn cả QA và Sửa ở mục Các bước.');
+        check('settings: rounds disabled without a loop', c.roundsDisabled === true && c.roundsReason === 'Chưa bật vòng lặp nào.');
+        c.toggleStage('code-review');
+        check('settings: loop enabled with both stages', c.loopEnabled(codeLoop) === true && c.loopReason(codeLoop) === '');
+        c.toggleLoop(codeLoop);
+        check('settings: loop checked enables rounds', c.loopChecked(codeLoop) === true && c.roundsDisabled === false && c.roundsReason === '');
+        c.wName = 'wf-moi';
+        c.wMaxRounds = '11';
+        check('settings: rounds 11 is refused', c.saveReason('workflow') === 'Số vòng phải là số nguyên từ 1 đến 10.', c.saveReason('workflow'));
+        c.wMaxRounds = '0';
+        check('settings: rounds 0 is refused', c.saveReason('workflow') === 'Số vòng phải là số nguyên từ 1 đến 10.');
+        c.wMaxRounds = '2';
+        c.wBudgetMinutes = '0';
+        check('settings: minutes message', c.saveReason('workflow') === 'Ngân sách thời gian phải là số nguyên dương.');
+        c.wBudgetMinutes = '1.5';
+        check('settings: fractional minutes refused', c.saveReason('workflow') === 'Ngân sách thời gian phải là số nguyên dương.');
+        c.wBudgetMinutes = '45';
+        c.wBudgetUsd = '0';
+        check('settings: usd message', c.saveReason('workflow') === 'Ngân sách chi phí phải là số dương.');
+        c.wBudgetUsd = '12.5';
+        check('settings: valid workflow draft', c.saveReason('workflow') === '', c.saveReason('workflow'));
+        c.toggleStage('code-review');
+        check('settings: unchecking a stage unchecks its loop', c.loopChecked(codeLoop) === false && c.anyLoopOn === false);
+        c.toggleStage('plan');
+        c.toggleStage('gate:you');
+        c.toggleStage('implement');
+        c.toggleStage('qa');
+        check('settings: no stage reason', c.saveReason('workflow') === 'Chọn ít nhất một bước.', c.saveReason('workflow'));
+        c.toggleStage('plan');
+        c.toggleStage('plan-review');
+        c.toggleLoop(c.loops[0]);
+        c.toggleAuto();
+        const entry = c.buildEntry('workflow');
+        check('settings: workflow entry', JSON.stringify(entry) === JSON.stringify({ name: 'wf-moi', stages: ['plan', 'plan-review'], loops: { plan: 'plan-review' }, auto: true, budget_minutes: 45, budget_usd: 12.5, max_rounds: 2 }), JSON.stringify(entry));
+        c.wName = 'nhanh';
+        check('settings: workflow duplicate reason', c.saveReason('workflow') === "Đã có quy trình tên 'nhanh'.", c.saveReason('workflow'));
+        c.wName = 'mac-dinh';
+        check('settings: workflow builtin reason', c.saveReason('workflow') === "'mac-dinh' là quy trình có sẵn, không ghi đè được. Đặt tên khác.", c.saveReason('workflow'));
+        c.wName = 'ghi-de';
+        check('settings: workflow collision note with a team', c.collisionNote('workflow').indexOf('Tên này cũng là một đội hình.') === 0);
+        c.cancelWorkflow();
+        c.editWorkflow('nhanh');
+        check('settings: workflow edit prefill', c.wMode === 'edit' && c.stageChecked('qa') === true && c.stageChecked('fix') === false && c.wMaxRounds === '3' && c.wBudgetUsd === '20');
+        c.cancelWorkflow();
+        c.copyWorkflow('mac-dinh');
+        check('settings: workflow copy name and loops', c.wName === 'mac-dinh-ban-sao' && c.loopChecked(c.loops[2]) === true && c.stageChecked('fix') === true);
+        c.cancelWorkflow();
+        check('settings: workflow conflict heading', c.conflictHeading('workflow') === 'workflows.json vừa bị sửa ở nơi khác');
+        check('settings: builtin workflow cannot be deleted', (() => { c.askDelete('workflow', 'mac-dinh'); return c.delKind === ''; })());
+
+        // ---- staff editor and delete ----
+        c = await fresh();
+        c.askDelete('staff', 'ha');
+        check('settings: staff delete dialog title', c.isDeleting('staff') && c.delTitle('staff') === 'Xóa nhân sự Hà?', c.delTitle('staff'));
+        check('settings: staff confirm disabled with the usage reason', c.delConfirmDisabled('staff') === true && c.delConfirmReason('staff') === 'Đang dùng trong đội hình: doi-b. Đổi engine của vai trò đó trước rồi xóa.', c.delConfirmReason('staff'));
+        check('settings: staff delete labels', c.delConfirmText('staff') === 'Xóa nhân sự' && c.delKeepText('staff') === 'Giữ nhân sự');
+        await c.confirmDelete();
+        check('settings: a disabled confirm sends nothing', calls.filter((x) => x.method === 'POST').length === 0);
+        c.closeDelete();
+        check('settings: closeDelete clears the dialog', c.delKind === '');
+        routes['GET /api/staff'] = () => ok({ staff: [{ id: 'ha', display_name: 'Hà', notes: '', used_in: [] }], errors: [], version: 'sv2' });
+        await c.loadStaff();
+        c.askDelete('staff', 'ha');
+        check('settings: unused staff confirm is enabled', c.delConfirmDisabled('staff') === false && c.staffRows[0].usage === 'Chưa dùng trong đội hình nào');
+        routes['POST /api/staff/delete'] = () => ok({ ok: true, staff: [], errors: [], version: 'sv3' });
+        calls.length = 0;
+        await c.confirmDelete();
+        const del = calls.filter((x) => x.method === 'POST')[0];
+        check('settings: staff delete body', del && del.url === '/api/staff/delete' && del.body.id === 'ha' && del.body.version === 'sv2', JSON.stringify(del));
+        check('settings: delete success message', c.statusText === 'Đã xóa nhân sự Hà.' && c.delKind === '' && c.staff.length === 0, c.statusText);
+        check('settings: staff empty state', c.staffEmpty === true && c.staffHasRows === false);
+        c.newStaff();
+        check('settings: staff first reason', c.saveReason('staff') === 'Nhập mã nhân sự.');
+        c.sId = 'Ha';
+        check('settings: staff id format', c.saveReason('staff') === 'Mã chỉ gồm chữ thường không dấu, số và dấu gạch ngang.');
+        c.sId = 'ha';
+        check('settings: staff name reason', c.saveReason('staff') === 'Nhập tên hiển thị.');
+        c.sName = 'Hà';
+        check('settings: staff valid', c.saveReason('staff') === '');
+        routes['GET /api/staff'] = () => ok(STAFF);
+        await c.loadStaff();
+        check('settings: staff duplicate id', c.saveReason('staff') === "Đã có nhân sự mã 'ha'.", c.saveReason('staff'));
+        c.cancelStaff();
+        routes['POST /api/teams/delete'] = { ok: false, status: 422, data: { error: 'Không lưu được đội hình', errors: [{ field: 'name', message: 'Đội hình có sẵn chỉ đọc — bấm Nhân bản để tạo bản riêng.' }] } };
+        c.askDelete('team', 'doi-thu');
+        check('settings: team delete extra lines', JSON.stringify(c.delExtra('team')) === JSON.stringify(['Đang là đội hình mặc định của: web-ban-hang.', '2 task chưa xong đang dùng đội hình này; sau khi xóa, các task đó cần Đổi đội hình trước khi chạy bước kế tiếp.']), JSON.stringify(c.delExtra('team')));
+        await c.confirmDelete();
+        check('settings: refused delete shows the server line and stays open', c.delError === 'Đội hình có sẵn chỉ đọc — bấm Nhân bản để tạo bản riêng.' && c.isDeleting('team'), c.delError);
+        c.closeDelete();
+        c.askDelete('team', 'ghi-de');
+        check('settings: override delete note', c.delExtra('team').indexOf('Đội hình có sẵn ghi-de sẽ được dùng lại.') >= 0, JSON.stringify(c.delExtra('team')));
+        c.closeDelete();
+
+        // ---- reload ----
+        c = await fresh();
+        calls.length = 0;
+        await c.reload();
+        check('settings: Đọc lại re-reads teams, workflows and staff but not engines', calls.map((x) => x.url).sort().join(',') === '/api/staff,/api/teams,/api/workflows', calls.map((x) => x.url).join(','));
+        check('settings: reload label idle', c.reloadLabel === 'Đọc lại');
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        const prevTeams = routes['GET /api/teams'];
+        routes['GET /api/teams'] = () => gate.then(() => prevTeams());
+        const pending = c.reload();
+        check('settings: reload label in flight keeps the data', c.reloadLabel === 'Đang đọc...' && c.teams.length === 4 && c.loaded === true);
+        release();
+        await pending;
+        check('settings: reload label back', c.reloadLabel === 'Đọc lại');
+        routes['GET /api/teams'] = { ok: false, status: 500, data: { error: 'Lỗi nội bộ khi đọc cài đặt' } };
+        await c.reload();
+        check('settings: a failed reload keeps the data and marks it stale', c.stale === true && c.teams.length === 4 && c.loadError === '');
+        routes['GET /api/teams'] = prevTeams;
+        await c.reload();
+        check('settings: a good reload clears stale', c.stale === false);
+        routes['GET /api/workflows'] = { ok: false, status: 0, data: null };
+        const c2 = factories.settings();
+        await c2.load();
+        check('settings: first load failure shows the error card', c2.hasError === true && c2.loaded === false && c2.loadedAttr === 'no' && c2.errorBody === 'Mất kết nối tới agent-brain serve. Bấm Thử lại; nếu vẫn lỗi, kiểm tra terminal đang chạy agent-brain serve.', c2.errorBody);
+        check('settings: sections stay hidden until loaded', c2.showTeams === false);
+        routes['GET /api/workflows'] = () => ok(WORKFLOWS);
+        await c2.retry();
+        check('settings: Thử lại recovers', c2.loaded === true && c2.hasError === false && c2.showTeams === true);
+
+        // ---- sub-nav ----
+        check('settings: four sections', c.sections.map((s) => s.label).join(',') === 'Đội hình,Quy trình,Nhân sự,Engine');
+        c.showSection('staff');
+        check('settings: showSection switches', c.showStaff === true && c.showTeams === false && c.navCurrent(c.sections[2]) === 'true' && c.navCurrent(c.sections[0]) === false);
+        check('settings: active nav class', c.navClass(c.sections[2]).indexOf('bg-indigo-100') === 0 && c.navClass(c.sections[0]).indexOf('hover:bg-slate-100') >= 0);
+        c.showSection('khong-co');
+        check('settings: an unknown section is ignored', c.section === 'staff');
+
+        // ---- engines: read-only, never a secret ----
+        c = await fresh();
+        const rows = c.engineRows;
+        check('settings: four engine rows in order', rows.map((r) => r.name).join(',') === 'claude,deepseek,agy,người');
+        check('settings: readiness keys and words', rows.map((r) => r.key + ':' + r.word).join(',') === 'san_sang:sẵn sàng,thieu_key:thiếu key,thieu_lenh:thiếu lệnh,san_sang:sẵn sàng', rows.map((r) => r.key).join(','));
+        const detailOf = (r) => r.details.map((d) => d.label + d.value);
+        check('settings: deepseek detail lines', JSON.stringify(detailOf(rows[1])) === JSON.stringify(['Lệnh: claude', 'Biến key: DEEPSEEK_API_KEY', 'Model: deepseek-chat']), JSON.stringify(detailOf(rows[1])));
+        check('settings: claude and agy show only the command', JSON.stringify(detailOf(rows[0])) === JSON.stringify(['Lệnh: claude']) && JSON.stringify(detailOf(rows[2])) === JSON.stringify(['Lệnh: agy']));
+        check('settings: người shows the staff count', JSON.stringify(detailOf(rows[3])) === JSON.stringify(['1 nhân sự']), JSON.stringify(detailOf(rows[3])));
+        check('settings: server reason for a not-ready engine only', rows[1].reason === 'Chưa đặt biến môi trường DEEPSEEK_API_KEY.' && rows[2].reason === 'Không tìm thấy lệnh agy trên máy.' && rows[0].reason === '' && rows[0].hasReason === false);
+        check('settings: exact engine descriptions', rows[0].description === 'Dùng profile của dự án (work hoặc personal), không có tài khoản riêng.' && rows[1].description === 'claude chạy trên máy với endpoint của DeepSeek.' && rows[2].description === 'Antigravity chạy không giao diện (headless).' && rows[3].description === 'Nhân sự làm trên máy của họ và đẩy nhánh task lên remote.');
+        const rendered = JSON.stringify({ rows, teams: c.teamRows, optionLabels: c.roleOptions('dev'), staff: c.staffRows });
+        check('settings: a planted key value never reaches the engine rows or any other view', rendered.indexOf(PLANTED) === -1, 'planted value found in a rendered view');
+        check('settings: the key variable NAME is shown, not its value', rendered.indexOf('DEEPSEEK_API_KEY') >= 0);
+        routes['GET /api/engines'] = { ok: false, status: 500, data: null };
+        const c3 = factories.settings();
+        await c3.load();
+        await c3.loadEngines();
+        check('settings: engines failure keeps every row in chưa kiểm', c3.engineRows.every((r) => r.key === 'chua_kiem' && r.word === 'chưa kiểm') && c3.enginesFailed === true && c3.loaded === true);
+        check('settings: no readiness warnings without engine data', c3.teamRows.every((r) => r.warnings.every((w) => w.indexOf('thiếu') === -1)));
+        routes['GET /api/engines'] = () => ok(ENGINES);
+        let release2;
+        const gate2 = new Promise((r) => { release2 = r; });
+        routes['GET /api/engines'] = () => gate2.then(() => ok(ENGINES));
+        const checking = c3.checkEngines();
+        check('settings: Kiểm tra lại in flight', c3.checkLabel === 'Đang kiểm tra...' && c3.enginesChecking === true);
+        release2();
+        await checking;
+        check('settings: Kiểm tra lại done', c3.checkLabel === 'Kiểm tra lại' && c3.enginesFailed === false && c3.engineRows[1].key === 'thieu_key');
+        check('settings: no engine write route is ever called', calls.every((x) => x.url.indexOf('/api/engines') !== 0 || x.method === 'GET'));
+      } finally {
+        ctx.AB.api = savedApi;
+      }
+    },
+  },
 ];
 
 // A promise that never settles would let node exit 0 with no output; fail loudly instead.
