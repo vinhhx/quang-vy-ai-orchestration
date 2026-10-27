@@ -1428,3 +1428,264 @@ fn pipe03_is_ancestor_cases() {
     );
     assert_eq!(agent_brain::gitops::commit_time_ms(&repo, "-x"), None);
 }
+
+// ---- 06-13: engines on pipeline cards and ledger rows (ENG-01 / D-14, HUM-03, ENG-03) ----
+
+/// Task 1 `sua-app` after a claude Lead run, through the CLI; `team` is stored as the task's team.
+fn lead_task(sb: &Sandbox, team: Option<&str>) {
+    setup_project(sb, "work");
+    let mut args = vec!["run", "lead", "--name", "sua-app"];
+    if let Some(t) = team {
+        args.extend(["--team", t]);
+    }
+    args.extend(["--", "web-ban-hang", "sửa app"]);
+    let out = sb.run(
+        &args,
+        Some(lead_scenario(&[(
+            "src/app.py",
+            "app()",
+            "trả về 2",
+            "yêu cầu",
+        )])),
+    );
+    assert_eq!(
+        out.code, 0,
+        "run lead failed: stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+}
+
+fn project_id_of_task_1(sb: &Sandbox) -> i64 {
+    sb.db()
+        .query_row("SELECT project_id FROM tasks WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+/// A finished Dev run of `engine` on task 1 with the given outcome.
+fn seed_dev_run(sb: &Sandbox, engine: &str, status: &str, outcome: Option<&str>) -> i64 {
+    let conn = sb.db();
+    let id = agent_brain::db::insert_run_with_engine(
+        &conn,
+        &agent_brain::db::NewRun {
+            task_id: Some(1),
+            project_id: project_id_of_task_1(sb),
+            role: "dev".to_string(),
+            profile: "work".to_string(),
+            model: Some("sonnet".to_string()),
+            pid: 1000,
+            pgid: 1000,
+            pid_start: 1000,
+            base_commit: None,
+            run_dir: None,
+        },
+        engine,
+    )
+    .unwrap();
+    agent_brain::db::finish_run(
+        &conn,
+        id,
+        &agent_brain::db::RunFinish {
+            status: status.to_string(),
+            exit_code: Some(1),
+            session_id: None,
+            usage: agent_brain::stream::Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+            usage_source: "result".to_string(),
+            cost_usd: 0.0,
+            num_turns: Some(3),
+            assistant_turns: Some(3),
+            turns_before_first_edit: None,
+            reads_outside_plan: None,
+            permission_denials: 0,
+            error: None,
+        },
+    )
+    .unwrap();
+    if let Some(o) = outcome {
+        agent_brain::db::set_run_outcome(&conn, id, o).unwrap();
+    }
+    id
+}
+
+fn pipeline_cards(j: &serde_json::Value) -> Vec<serde_json::Value> {
+    j["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["cards"].as_array().unwrap().clone())
+        .collect()
+}
+
+fn card_by_key(j: &serde_json::Value, key: &str) -> serde_json::Value {
+    pipeline_cards(j)
+        .into_iter()
+        .find(|c| c["key"] == key)
+        .unwrap_or_else(|| panic!("no card {key} in {j}"))
+}
+
+fn ledger_rows(j: &serde_json::Value) -> Vec<serde_json::Value> {
+    j["ledger"]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["rows"].as_array().unwrap().clone())
+        .collect()
+}
+
+#[test]
+fn pipeline_engines_on_cards_and_ledger() {
+    let sb = Sandbox::new();
+    lead_task(&sb, Some("tiet-kiem"));
+    let srv = sb.serve(&[]);
+
+    let r = srv.get("/api/tasks/1/pipeline");
+    assert_eq!(r.status, 200);
+    let j = r.json();
+
+    // The plan card ran on claude: the run's engine, not a plan.
+    let plan = card_by_key(&j, "plan");
+    assert_eq!(plan["has_run"], true);
+    assert_eq!(plan["engine"], "claude");
+    assert_eq!(plan["engine_planned"], false);
+
+    // `tiet-kiem` sends Dev to deepseek and QA to claude; neither card has a run yet.
+    let code = card_by_key(&j, "code");
+    assert_eq!(code["has_run"], false);
+    assert_eq!(code["engine"], "deepseek");
+    assert_eq!(code["engine_planned"], true);
+    let qa = card_by_key(&j, "qa");
+    assert_eq!(qa["engine"], "claude");
+    assert_eq!(qa["engine_planned"], true);
+
+    // The Lead ledger row carries its engine and `human: false`.
+    let rows = ledger_rows(&j);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["engine"], "claude");
+    assert_eq!(rows[0]["human"], false);
+    assert_eq!(j["ledger"]["total"]["human_runs"], 0);
+
+    // A card whose runs used two engines shows the latest run's engine.
+    seed_dev_run(&sb, "deepseek", "failed", Some("quota"));
+    std::thread::sleep(Duration::from_millis(5));
+    seed_dev_run(&sb, "claude", "succeeded", None);
+    let j2 = srv.get("/api/tasks/1/pipeline").json();
+    let code2 = card_by_key(&j2, "code");
+    assert_eq!(code2["has_run"], true);
+    assert_eq!(code2["engine"], "claude");
+    assert_eq!(code2["engine_planned"], false);
+    let engines: Vec<String> = ledger_rows(&j2)
+        .iter()
+        .map(|r| r["engine"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(engines, vec!["claude", "deepseek", "claude"]);
+}
+
+#[test]
+fn pipeline_legacy_planned_claude() {
+    let sb = Sandbox::new();
+    lead_task(&sb, None);
+    // A task made before Phase 6 has no team: every planned engine is claude.
+    sb.db()
+        .execute("UPDATE tasks SET team_json = NULL WHERE id = 1", [])
+        .unwrap();
+    let srv = sb.serve(&[]);
+
+    let j = srv.get("/api/tasks/1/pipeline").json();
+    for key in ["code", "qa"] {
+        let c = card_by_key(&j, key);
+        assert_eq!(c["engine"], "claude", "card {key}");
+        assert_eq!(c["engine_planned"], true, "card {key}");
+    }
+    for c in pipeline_cards(&j) {
+        if c["has_run"] == false {
+            assert_eq!(c["engine"], "claude", "card {c}");
+        }
+    }
+
+    // A stored team that is no longer in teams.json also plans claude.
+    sb.db()
+        .execute(
+            "UPDATE tasks SET team_json = '{\"name\":\"da-xoa\"}' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    let j2 = srv.get("/api/tasks/1/pipeline").json();
+    assert_eq!(card_by_key(&j2, "code")["engine"], "claude");
+    assert_eq!(card_by_key(&j2, "code")["engine_planned"], true);
+}
+
+#[test]
+fn pipeline_human_run_row_and_total() {
+    let sb = Sandbox::new();
+    lead_task(&sb, None);
+    let conn = sb.db();
+    let started = agent_brain::db::now_ms();
+    agent_brain::db::insert_human_run(
+        &conn,
+        &agent_brain::db::HumanRun {
+            task_id: 1,
+            project_id: project_id_of_task_1(&sb),
+            role: "dev".to_string(),
+            profile: "work".to_string(),
+            stage: None,
+            round: None,
+            started_at: started,
+            ended_at: started + 600_000,
+            outcome: None,
+            base_commit: None,
+            metrics_json: "{\"team\":\"tieu-doi\",\"staff\":\"ha\"}".to_string(),
+        },
+    )
+    .unwrap();
+    let srv = sb.serve(&[]);
+
+    let j = srv.get("/api/tasks/1/pipeline").json();
+    let rows = ledger_rows(&j);
+    assert_eq!(rows.len(), 2);
+    let human = rows.iter().find(|r| r["human"] == true).expect("human row");
+    assert_eq!(human["engine"], "người:ha");
+    assert!(human["turns"].is_null());
+    assert!(human["cost_usd"].is_null());
+    assert_eq!(human["duration_ms"], 600_000);
+
+    let total = &j["ledger"]["total"];
+    assert_eq!(total["runs"], 2);
+    assert_eq!(total["human_runs"], 1);
+    // The person's ten minutes are not agent minutes.
+    let lead_ms = rows.iter().find(|r| r["human"] == false).unwrap()["duration_ms"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(total["duration_ms"].as_i64().unwrap(), lead_ms);
+
+    // The Code card names the person.
+    let code = card_by_key(&j, "code");
+    assert_eq!(code["has_run"], true);
+    assert_eq!(code["engine"], "người:ha");
+    assert_eq!(code["engine_planned"], false);
+}
+
+#[test]
+fn pipeline_quota_state() {
+    let sb = Sandbox::new();
+    lead_task(&sb, None);
+    seed_dev_run(&sb, "deepseek", "failed", Some("quota"));
+    let srv = sb.serve(&[]);
+
+    let j = srv.get("/api/tasks/1/pipeline").json();
+    let rows = ledger_rows(&j);
+    let dev = rows.iter().find(|r| r["role"] == "dev").expect("dev row");
+    assert_eq!(dev["state"], "het_quota");
+    assert_eq!(dev["verdict"], "hết quota");
+    assert_eq!(dev["engine"], "deepseek");
+
+    let code = card_by_key(&j, "code");
+    assert_eq!(code["state"], "het_quota");
+    assert_eq!(code["state_word"], "hết quota");
+    assert_eq!(code["engine"], "deepseek");
+}

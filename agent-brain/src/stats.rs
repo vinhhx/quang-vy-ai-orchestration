@@ -1,7 +1,9 @@
 use crate::app::Ctx;
+use crate::config::Price;
 use crate::error::{BrainError, BrainResult};
 use crate::term;
 use rusqlite::{params, Connection};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Totals {
@@ -39,6 +41,30 @@ pub struct ProfileStats {
     pub profile: String,
     #[serde(flatten)]
     pub totals: Totals,
+}
+
+/// Tokens and cost of every run of one engine in the filtered window (ENG-04 / D-23).
+/// `priced` is false for an engine with no price (a person, or no `pricing.<engine>` entry): its
+/// `cost` is then not a real 0 USD and the UI must say so instead of showing it as free.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct EngineStats {
+    pub engine: String,
+    pub runs: i64,
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_write: i64,
+    pub cost: f64,
+    pub priced: bool,
+}
+
+/// QA verdict counts for the runs of one Dev engine (ENG-07 / D-23): integers only, the UI turns
+/// them into a percentage.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct QaRate {
+    pub engine: String,
+    pub qa_fix: i64,
+    pub qa_total: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -301,6 +327,92 @@ pub fn query_by_profile(
     Ok(by_profile)
 }
 
+/// One row per `runs.engine` with runs in the window, sums of the run columns, sorted by
+/// `input + output` descending then engine name. Engines never mix tokens.
+pub fn query_by_engine(
+    conn: &Connection,
+    profile: Option<&str>,
+    since_ms: Option<i64>,
+    pricing: &BTreeMap<String, Price>,
+) -> BrainResult<Vec<EngineStats>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+            runs.engine,
+            COUNT(*),
+            COALESCE(SUM(runs.input_tokens), 0),
+            COALESCE(SUM(runs.output_tokens), 0),
+            COALESCE(SUM(runs.cache_read_tokens), 0),
+            COALESCE(SUM(runs.cache_write_tokens), 0),
+            COALESCE(SUM(runs.cost_usd), 0.0)
+         FROM runs
+         WHERE (?1 IS NULL OR runs.profile = ?1)
+           AND (?2 IS NULL OR runs.started_at >= ?2)
+         GROUP BY runs.engine",
+    )?;
+    let mut rows = stmt
+        .query_map(params![profile, since_ms], |r| {
+            let engine: String = r.get(0)?;
+            Ok(EngineStats {
+                priced: crate::pricing::is_priced(&engine, pricing),
+                engine,
+                runs: r.get(1)?,
+                input: r.get(2)?,
+                output: r.get(3)?,
+                cache_read: r.get(4)?,
+                cache_write: r.get(5)?,
+                cost: r.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.sort_by(|a, b| {
+        (b.input + b.output)
+            .cmp(&(a.input + a.output))
+            .then_with(|| a.engine.cmp(&b.engine))
+    });
+    Ok(rows)
+}
+
+/// QA `qa:pass` / `qa:fix` verdicts in the window, attributed to the engine of the latest Dev run
+/// (implement or fix, any engine, a person included) of the same task with a smaller run id. The
+/// run id is the insertion order, so it stays right for a human run whose `started_at` is the
+/// start of the wait. QA runs with no earlier Dev run are ignored; rows are sorted by engine.
+pub fn query_qa_by_dev_engine(
+    conn: &Connection,
+    profile: Option<&str>,
+    since_ms: Option<i64>,
+) -> BrainResult<Vec<QaRate>> {
+    let mut stmt = conn.prepare(
+        "SELECT dev_engine,
+                COALESCE(SUM(CASE WHEN outcome = 'qa:fix' THEN 1 ELSE 0 END), 0),
+                COUNT(*)
+         FROM (
+            SELECT q.outcome AS outcome,
+                   (SELECT d.engine FROM runs d
+                     WHERE d.task_id = q.task_id AND d.role = 'dev' AND d.id < q.id
+                     ORDER BY d.id DESC LIMIT 1) AS dev_engine
+              FROM runs q
+             WHERE q.role = 'qa'
+               AND q.outcome IN ('qa:pass', 'qa:fix')
+               AND q.task_id IS NOT NULL
+               AND (?1 IS NULL OR q.profile = ?1)
+               AND (?2 IS NULL OR q.started_at >= ?2)
+         )
+         WHERE dev_engine IS NOT NULL
+         GROUP BY dev_engine
+         ORDER BY dev_engine",
+    )?;
+    let rows = stmt
+        .query_map(params![profile, since_ms], |r| {
+            Ok(QaRate {
+                engine: r.get(0)?,
+                qa_fix: r.get(1)?,
+                qa_total: r.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn query_stats(
     conn: &Connection,
     profile: Option<&str>,
@@ -419,5 +531,187 @@ mod tests {
         assert!(parse_since("-1d", now).is_err());
         assert!(parse_since("7x", now).is_err());
         assert!(parse_since("", now).is_err());
+    }
+
+    fn temp_conn() -> (tempfile::TempDir, Connection, i64) {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = crate::db::open(&tmp.path().join("brain.db")).unwrap();
+        let p = crate::projects::Project {
+            id: "proj".to_string(),
+            path: "/path/proj".to_string(),
+            name_vi: "Proj".to_string(),
+            aliases: vec![],
+            kind: "code".to_string(),
+            profile: "work".to_string(),
+            repo: None,
+            missing: false,
+        };
+        crate::db::sync_projects(&conn, &[p]).unwrap();
+        let proj_id = crate::db::project_row_id(&conn, "proj").unwrap();
+        (tmp, conn, proj_id)
+    }
+
+    fn seed_run(
+        conn: &Connection,
+        proj_id: i64,
+        role: &str,
+        engine: &str,
+        input: i64,
+        output: i64,
+        cost: f64,
+    ) -> i64 {
+        let id = crate::db::insert_run_with_engine(
+            conn,
+            &crate::db::NewRun {
+                task_id: None,
+                project_id: proj_id,
+                role: role.to_string(),
+                profile: "work".to_string(),
+                model: None,
+                pid: 1,
+                pgid: 1,
+                pid_start: 1,
+                base_commit: None,
+                run_dir: None,
+            },
+            engine,
+        )
+        .unwrap();
+        crate::db::finish_run(
+            conn,
+            id,
+            &crate::db::RunFinish {
+                status: "succeeded".to_string(),
+                exit_code: Some(0),
+                session_id: None,
+                usage: crate::stream::Usage {
+                    input_tokens: input,
+                    output_tokens: output,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                },
+                usage_source: "result".to_string(),
+                cost_usd: cost,
+                num_turns: Some(1),
+                assistant_turns: Some(1),
+                turns_before_first_edit: None,
+                reads_outside_plan: None,
+                permission_denials: 0,
+                error: None,
+            },
+        )
+        .unwrap();
+        id
+    }
+
+    #[test]
+    fn query_by_engine_groups_and_sorts() {
+        let (_tmp, conn, proj_id) = temp_conn();
+        seed_run(&conn, proj_id, "lead", "claude", 100, 10, 0.10);
+        seed_run(&conn, proj_id, "dev", "claude", 200, 20, 0.20);
+        seed_run(&conn, proj_id, "dev", "deepseek", 1000, 100, 0.0);
+        seed_run(&conn, proj_id, "dev", "agy", 50, 5, 0.0);
+
+        let mut pricing = BTreeMap::new();
+        let rows = query_by_engine(&conn, None, None, &pricing).unwrap();
+        let names: Vec<&str> = rows.iter().map(|r| r.engine.as_str()).collect();
+        assert_eq!(names, vec!["deepseek", "claude", "agy"]);
+        assert_eq!(rows[0].runs, 1);
+        assert_eq!(rows[0].input, 1000);
+        assert!(!rows[0].priced);
+        assert_eq!(rows[1].runs, 2);
+        assert_eq!(rows[1].input, 300);
+        assert_eq!(rows[1].output, 30);
+        assert!((rows[1].cost - 0.30).abs() < 1e-9);
+        assert!(rows[1].priced);
+        assert!(!rows[2].priced);
+
+        pricing.insert(
+            "deepseek".to_string(),
+            Price {
+                input: 1.0,
+                output: 2.0,
+                cache_read: 0.1,
+                cache_write: 1.0,
+            },
+        );
+        let rows = query_by_engine(&conn, None, None, &pricing).unwrap();
+        assert!(rows.iter().find(|r| r.engine == "deepseek").unwrap().priced);
+        assert!(!rows.iter().find(|r| r.engine == "agy").unwrap().priced);
+
+        // The profile filter applies like the totals do; an empty window has no rows.
+        assert!(query_by_engine(&conn, Some("personal"), None, &pricing)
+            .unwrap()
+            .is_empty());
+        assert!(query_by_engine(&conn, None, Some(i64::MAX), &pricing)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A finished run bound to `task_id`, with an optional verdict.
+    fn seed_task_run(
+        conn: &Connection,
+        proj_id: i64,
+        task_id: i64,
+        role: &str,
+        engine: &str,
+        outcome: Option<&str>,
+    ) -> i64 {
+        let id = crate::db::insert_run_with_engine(
+            conn,
+            &crate::db::NewRun {
+                task_id: Some(task_id),
+                project_id: proj_id,
+                role: role.to_string(),
+                profile: "work".to_string(),
+                model: None,
+                pid: 1,
+                pgid: 1,
+                pid_start: 1,
+                base_commit: None,
+                run_dir: None,
+            },
+            engine,
+        )
+        .unwrap();
+        if let Some(o) = outcome {
+            crate::db::set_run_outcome(conn, id, o).unwrap();
+        }
+        id
+    }
+
+    #[test]
+    fn qa_rate_attribution() {
+        let (_tmp, conn, proj_id) = temp_conn();
+        let t1 = crate::db::upsert_task(&conn, proj_id, "t1", "T1", "task/1", None, None).unwrap();
+        let t2 = crate::db::upsert_task(&conn, proj_id, "t2", "T2", "task/2", None, None).unwrap();
+
+        // t1: deepseek dev -> fix -> claude fix run -> pass. The verdict follows the latest Dev run.
+        seed_task_run(&conn, proj_id, t1, "dev", "deepseek", None);
+        seed_task_run(&conn, proj_id, t1, "qa", "claude", Some("qa:fix"));
+        seed_task_run(&conn, proj_id, t1, "dev", "claude", None);
+        seed_task_run(&conn, proj_id, t1, "qa", "claude", Some("qa:pass"));
+        // t2: a QA verdict with no earlier Dev run is ignored.
+        seed_task_run(&conn, proj_id, t2, "qa", "claude", Some("qa:pass"));
+
+        let rows = query_qa_by_dev_engine(&conn, None, None).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                QaRate {
+                    engine: "claude".to_string(),
+                    qa_fix: 0,
+                    qa_total: 1
+                },
+                QaRate {
+                    engine: "deepseek".to_string(),
+                    qa_fix: 1,
+                    qa_total: 1
+                },
+            ]
+        );
+        assert!(query_qa_by_dev_engine(&conn, Some("personal"), None)
+            .unwrap()
+            .is_empty());
     }
 }

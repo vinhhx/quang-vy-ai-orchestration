@@ -1983,7 +1983,22 @@ async fn get_pipeline(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i6
             budget,
         };
 
-        let view = pipeline::derive_response(&facts, &flow);
+        let mut view = pipeline::derive_response(&facts, &flow);
+
+        // D-14: a card without a run names the engine its role will use under the task's team;
+        // a task with no team (or a team no longer in teams.json) runs everything on claude.
+        let team = state.team.as_ref().and_then(|t| state.teams.get(&t.name));
+        let planned: std::collections::BTreeMap<String, String> =
+            ["lead", "plan-review", "dev", "code-review", "qa"]
+                .iter()
+                .map(|role| {
+                    let engine = team
+                        .map(|t| t.engine_for(role).to_config_string())
+                        .unwrap_or_else(|| crate::engine::ENGINE_CLAUDE.to_string());
+                    (role.to_string(), engine)
+                })
+                .collect();
+        pipeline::set_planned_engines(&mut view, &planned);
 
         Ok((
             StatusCode::OK,

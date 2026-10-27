@@ -425,3 +425,288 @@ fn stats_requires_cookie() {
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
 }
+
+// ---- 06-13: per-engine split (ENG-04 / D-23) ----
+
+const HUMAN_ENGINE: &str = "ng\u{01b0}\u{1edd}i";
+
+struct EngineSeed {
+    id_a: i64,
+    id_b: i64,
+    conn: rusqlite::Connection,
+}
+
+impl EngineSeed {
+    fn new(sb: &Sandbox) -> EngineSeed {
+        let repo_a = sb.make_repo("proj-a", &[], None, None);
+        let repo_b = sb.make_repo("proj-b", &[], None, None);
+        let entry_a = sb.project_entry(&repo_a, "proj-a", "work");
+        let entry_b = sb.project_entry(&repo_b, "proj-b", "personal");
+        sb.write_map(serde_json::json!([entry_a, entry_b]), &[]);
+        let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+        let projects: Vec<agent_brain::projects::Project> =
+            [("proj-a", &repo_a, "work"), ("proj-b", &repo_b, "personal")]
+                .iter()
+                .map(|(id, repo, profile)| agent_brain::projects::Project {
+                    id: id.to_string(),
+                    path: repo.to_string_lossy().to_string(),
+                    name_vi: id.to_string(),
+                    aliases: vec![],
+                    kind: "code".to_string(),
+                    profile: profile.to_string(),
+                    repo: None,
+                    missing: false,
+                })
+                .collect();
+        agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+        let id_a = agent_brain::db::project_row_id(&conn, "proj-a").expect("id_a");
+        let id_b = agent_brain::db::project_row_id(&conn, "proj-b").expect("id_b");
+        EngineSeed { id_a, id_b, conn }
+    }
+
+    /// A finished run of `engine` with the given tokens and stored cost; `started_at` overrides
+    /// the insert time when given.
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &self,
+        proj_id: i64,
+        profile: &str,
+        role: &str,
+        engine: &str,
+        input: i64,
+        output: i64,
+        cost: f64,
+        started_at: Option<i64>,
+    ) -> i64 {
+        let id = agent_brain::db::insert_run_with_engine(
+            &self.conn,
+            &agent_brain::db::NewRun {
+                task_id: None,
+                project_id: proj_id,
+                role: role.to_string(),
+                profile: profile.to_string(),
+                model: Some("sonnet".to_string()),
+                pid: 1000,
+                pgid: 1000,
+                pid_start: 1000,
+                base_commit: None,
+                run_dir: None,
+            },
+            engine,
+        )
+        .expect("insert run");
+        agent_brain::db::finish_run(
+            &self.conn,
+            id,
+            &agent_brain::db::RunFinish {
+                status: "succeeded".to_string(),
+                exit_code: Some(0),
+                session_id: None,
+                usage: agent_brain::stream::Usage {
+                    input_tokens: input,
+                    output_tokens: output,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                },
+                usage_source: "result".to_string(),
+                cost_usd: cost,
+                num_turns: Some(1),
+                assistant_turns: Some(1),
+                turns_before_first_edit: None,
+                reads_outside_plan: None,
+                permission_denials: 0,
+                error: None,
+            },
+        )
+        .expect("finish run");
+        if let Some(ts) = started_at {
+            self.conn
+                .execute(
+                    "UPDATE runs SET started_at = ?1 WHERE id = ?2",
+                    rusqlite::params![ts, id],
+                )
+                .expect("update started_at");
+        }
+        id
+    }
+
+    fn human(&self, proj_id: i64, profile: &str) {
+        let task_id = agent_brain::db::upsert_task(
+            &self.conn,
+            proj_id,
+            "t-human",
+            "Human task",
+            "task/human",
+            Some("main"),
+            Some("base1"),
+        )
+        .expect("task");
+        let now = agent_brain::db::now_ms();
+        agent_brain::db::insert_human_run(
+            &self.conn,
+            &agent_brain::db::HumanRun {
+                task_id,
+                project_id: proj_id,
+                role: "dev".to_string(),
+                profile: profile.to_string(),
+                stage: Some("implement".to_string()),
+                round: Some(1),
+                started_at: now,
+                ended_at: now + 60_000,
+                outcome: None,
+                base_commit: None,
+                metrics_json: "{\"staff\":\"ha\"}".to_string(),
+            },
+        )
+        .expect("human run");
+    }
+}
+
+fn engine_row<'a>(engines: &'a [serde_json::Value], name: &str) -> &'a serde_json::Value {
+    engines
+        .iter()
+        .find(|e| e["engine"] == name)
+        .unwrap_or_else(|| panic!("no engine row {name}: {engines:?}"))
+}
+
+#[test]
+fn eng04_engines_split_and_priced() {
+    let sb = Sandbox::new();
+    let seed = EngineSeed::new(&sb);
+    seed.run(seed.id_a, "work", "lead", "claude", 100, 10, 0.10, None);
+    seed.run(seed.id_a, "work", "dev", "claude", 200, 20, 0.20, None);
+    seed.run(seed.id_a, "work", "inspect", "claude", 5, 5, 0.01, None);
+    seed.run(seed.id_a, "work", "dev", "deepseek", 1000, 100, 0.0, None);
+    seed.run(seed.id_a, "work", "dev", "agy", 50, 5, 0.0, None);
+    seed.human(seed.id_a, "work");
+
+    let mut srv = sb.serve(&[]);
+    let r = srv.get("/api/stats");
+    assert_eq!(r.status, 200);
+    let j = r.json();
+
+    let engines = j["engines"].as_array().expect("engines array");
+    let names: Vec<&str> = engines
+        .iter()
+        .map(|e| e["engine"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["deepseek", "claude", "agy", HUMAN_ENGINE]);
+
+    let ds = &engines[0];
+    assert_eq!(ds["runs"], 1);
+    assert_eq!(ds["input"], 1000);
+    assert_eq!(ds["output"], 100);
+    assert_eq!(ds["cost"].as_f64().unwrap(), 0.0);
+    assert_eq!(ds["priced"], false);
+
+    let cl = &engines[1];
+    assert_eq!(cl["runs"], 3);
+    assert_eq!(cl["input"], 305);
+    assert_eq!(cl["output"], 35);
+    assert!((cl["cost"].as_f64().unwrap() - 0.31).abs() < 1e-9);
+    assert_eq!(cl["priced"], true);
+
+    assert_eq!(engines[2]["input"], 50);
+    assert_eq!(engines[2]["output"], 5);
+    assert_eq!(engines[2]["priced"], false);
+
+    let human = &engines[3];
+    assert_eq!(human["runs"], 1);
+    assert_eq!(human["input"], 0);
+    assert_eq!(human["output"], 0);
+    assert_eq!(human["cost"].as_f64().unwrap(), 0.0);
+    assert_eq!(human["priced"], false);
+
+    // The existing fields keep their meaning and the tokens add up across engines.
+    assert_eq!(j["total"]["runs"], 6);
+    assert_eq!(j["total"]["input_tokens"], 1355);
+    assert!(j["by_project"].is_array() && j["by_role"].is_array());
+    assert!(j["by_day"].is_array() && j["by_profile"].is_array());
+    let sum_in: i64 = engines.iter().map(|e| e["input"].as_i64().unwrap()).sum();
+    assert_eq!(sum_in, j["total"]["input_tokens"].as_i64().unwrap());
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+
+    // A `pricing.deepseek` entry in config.json makes the deepseek row priced.
+    sb.write_config(serde_json::json!({
+        "pricing": {
+            "deepseek": {"input": 0.3, "output": 1.2, "cache_read": 0.03, "cache_write": 0.3}
+        }
+    }));
+    let mut srv = sb.serve(&[]);
+    let j = srv.get("/api/stats").json();
+    let engines = j["engines"].as_array().expect("engines array");
+    assert_eq!(engine_row(engines, "deepseek")["priced"], true);
+    assert_eq!(engine_row(engines, "agy")["priced"], false);
+    assert_eq!(engine_row(engines, HUMAN_ENGINE)["priced"], false);
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn eng04_engines_follow_filters() {
+    let sb = Sandbox::new();
+    let seed = EngineSeed::new(&sb);
+    let now = agent_brain::db::now_ms();
+    let three_days_ago = now - 3 * 86_400_000;
+    seed.run(seed.id_a, "work", "dev", "claude", 10, 1, 0.01, Some(now));
+    seed.run(seed.id_a, "work", "dev", "deepseek", 20, 2, 0.0, Some(now));
+    seed.run(
+        seed.id_a,
+        "work",
+        "dev",
+        "agy",
+        30,
+        3,
+        0.0,
+        Some(three_days_ago),
+    );
+    seed.run(
+        seed.id_b,
+        "personal",
+        "dev",
+        "claude",
+        40,
+        4,
+        0.04,
+        Some(three_days_ago),
+    );
+
+    let mut srv = sb.serve(&[]);
+
+    let all = srv.get("/api/stats").json();
+    let all_engines = all["engines"].as_array().unwrap();
+    assert_eq!(all_engines.len(), 3);
+    assert_eq!(engine_row(all_engines, "claude")["runs"], 2);
+
+    let work = srv.get("/api/stats?profile=work").json();
+    let work_engines = work["engines"].as_array().unwrap();
+    assert_eq!(work_engines.len(), 3);
+    assert_eq!(engine_row(work_engines, "claude")["runs"], 1);
+    assert_eq!(engine_row(work_engines, "claude")["input"], 10);
+
+    let personal = srv.get("/api/stats?profile=personal").json();
+    let personal_engines = personal["engines"].as_array().unwrap();
+    assert_eq!(personal_engines.len(), 1);
+    assert_eq!(personal_engines[0]["engine"], "claude");
+    assert_eq!(personal_engines[0]["input"], 40);
+
+    let recent = srv.get("/api/stats?since=1d").json();
+    let recent_engines = recent["engines"].as_array().unwrap();
+    assert_eq!(recent_engines.len(), 2);
+    assert!(recent_engines.iter().all(|e| e["engine"] != "agy"));
+    let sum_runs: i64 = recent_engines
+        .iter()
+        .map(|e| e["runs"].as_i64().unwrap())
+        .sum();
+    assert_eq!(sum_runs, recent["total"]["runs"].as_i64().unwrap());
+
+    // Empty window: the personal runs are all older than a day.
+    let empty = srv.get("/api/stats?profile=personal&since=1d").json();
+    assert_eq!(empty["engines"], serde_json::json!([]));
+    assert_eq!(empty["total"]["runs"], 0);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
