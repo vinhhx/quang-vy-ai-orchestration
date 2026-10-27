@@ -192,6 +192,43 @@ const sections = [
           card: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
           word: 'sửa lại',
         },
+        // Phase 6 words (06-UI-SPEC § Status vocabulary — additions)
+        cho_nguoi: {
+          codePoint: 0x25D0,
+          text: 'text-blue-700 dark:text-blue-300',
+          card: 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-900/20',
+          word: 'chờ người',
+        },
+        het_quota: {
+          codePoint: 0x0021,
+          text: 'text-amber-800 dark:text-amber-300',
+          card: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
+          word: 'hết quota',
+        },
+        thieu_key: {
+          codePoint: 0x0021,
+          text: 'text-amber-800 dark:text-amber-300',
+          card: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
+          word: 'thiếu key',
+        },
+        thieu_lenh: {
+          codePoint: 0x0021,
+          text: 'text-amber-800 dark:text-amber-300',
+          card: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
+          word: 'thiếu lệnh',
+        },
+        chua_kiem: {
+          codePoint: 0x25CC,
+          text: 'text-slate-600 dark:text-slate-400',
+          card: 'border-dashed border-slate-400 bg-transparent dark:border-slate-500 dark:bg-transparent',
+          word: 'chưa kiểm',
+        },
+        san_sang: {
+          codePoint: 0x25B6,
+          text: 'text-emerald-700 dark:text-emerald-300',
+          card: 'border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-800',
+          word: 'sẵn sàng',
+        },
       };
 
       const states = Object.keys(expected);
@@ -252,6 +289,22 @@ const sections = [
         AB.stateCard('chua_tu_dong')
       );
 
+      // Phase 6 vocabulary: every new key copies the class string of an existing family
+      check('stepClass(cho_nguoi) == stepClass(dang_chay)', AB.stepClass('cho_nguoi') === AB.stepClass('dang_chay'), `got "${AB.stepClass('cho_nguoi')}"`);
+      check('stepClass(het_quota) == stepClass(vuong_mac)', AB.stepClass('het_quota') === AB.stepClass('vuong_mac'), `got "${AB.stepClass('het_quota')}"`);
+      check('stepClass(thieu_key) == stepClass(vuong_mac)', AB.stepClass('thieu_key') === AB.stepClass('vuong_mac'), `got "${AB.stepClass('thieu_key')}"`);
+      check('stepClass(thieu_lenh) == stepClass(vuong_mac)', AB.stepClass('thieu_lenh') === AB.stepClass('vuong_mac'), `got "${AB.stepClass('thieu_lenh')}"`);
+      check('stepClass(chua_kiem) == stepClass(chua_tu_dong)', AB.stepClass('chua_kiem') === AB.stepClass('chua_tu_dong'), `got "${AB.stepClass('chua_kiem')}"`);
+      check('stateCard(cho_nguoi) == stateCard(dang_chay)', AB.stateCard('cho_nguoi') === AB.stateCard('dang_chay'));
+      check('stateCard(het_quota) == stateCard(vuong_mac)', AB.stateCard('het_quota') === AB.stateCard('vuong_mac'));
+      check('stateCard(chua_kiem) == stateCard(chua_tu_dong)', AB.stateCard('chua_kiem') === AB.stateCard('chua_tu_dong'));
+      check('stateText(cho_nguoi) == stateText(dang_chay)', AB.stateText('cho_nguoi') === AB.stateText('dang_chay'));
+      check('stepGlyphClass(cho_nguoi) does not pulse', AB.stepGlyphClass('cho_nguoi') === 'w-6 text-center' && AB.stepGlyphClass('cho_nguoi').indexOf('animate-pulse') === -1, `got "${AB.stepGlyphClass('cho_nguoi')}"`);
+      check('stepGlyphClass(dang_chay) still pulses', AB.stepGlyphClass('dang_chay').indexOf('animate-pulse') >= 0, `got "${AB.stepGlyphClass('dang_chay')}"`);
+      for (const k of ['het_quota', 'thieu_key', 'thieu_lenh', 'chua_kiem']) {
+        check(`stepGlyphClass(${k}) does not pulse`, AB.stepGlyphClass(k).indexOf('animate-pulse') === -1);
+      }
+
       // 05.2 vocabulary: duyet reuses xong, sua_lai reuses can_sua
       check('stateCard(duyet) == stateCard(xong)', AB.stateCard('duyet') === AB.stateCard('xong'), `got "${AB.stateCard('duyet')}"`);
       check('stepClass(duyet) == stepClass(xong)', AB.stepClass('duyet') === AB.stepClass('xong'), `got "${AB.stepClass('duyet')}"`);
@@ -310,6 +363,43 @@ const sections = [
       check('fmtClock(now)', /^\d\d:\d\d$/.test(AB.fmtClock(Date.now())), `got "${AB.fmtClock(Date.now())}"`);
       const t2020 = new Date(2020, 0, 2, 3, 4).getTime();
       check('fmtClock(2020-01-02 03:04)', AB.fmtClock(t2020) === '02/01 03:04', `got "${AB.fmtClock(t2020)}"`);
+
+      // fmtWait: null → `—`; under 60 min `{M} phút`; under 48 h `{H} giờ {MM} phút`; else `{D} ngày {H} giờ`
+      check('fmtWait(null)', AB.fmtWait(null) === '—', `got "${AB.fmtWait(null)}"`);
+      check('fmtWait(undefined)', AB.fmtWait(undefined) === '—', `got "${AB.fmtWait(undefined)}"`);
+      check('fmtWait(NaN)', AB.fmtWait(NaN) === '—', `got "${AB.fmtWait(NaN)}"`);
+      check('fmtWait(0)', AB.fmtWait(0) === '0 phút', `got "${AB.fmtWait(0)}"`);
+      check('fmtWait(59 min)', AB.fmtWait(59 * 60000) === '59 phút', `got "${AB.fmtWait(59 * 60000)}"`);
+      check('fmtWait(60 min)', AB.fmtWait(60 * 60000) === '1 giờ 00 phút', `got "${AB.fmtWait(60 * 60000)}"`);
+      check('fmtWait(3 h 5 min)', AB.fmtWait(3 * 3600000 + 5 * 60000) === '3 giờ 05 phút', `got "${AB.fmtWait(3 * 3600000 + 5 * 60000)}"`);
+      check('fmtWait(47 h 59 min)', AB.fmtWait(47 * 3600000 + 59 * 60000) === '47 giờ 59 phút', `got "${AB.fmtWait(47 * 3600000 + 59 * 60000)}"`);
+      check('fmtWait(48 h)', AB.fmtWait(48 * 3600000) === '2 ngày 0 giờ', `got "${AB.fmtWait(48 * 3600000)}"`);
+      check('fmtWait(3 d 2 h)', AB.fmtWait(3 * 86400000 + 2 * 3600000) === '3 ngày 2 giờ', `got "${AB.fmtWait(3 * 86400000 + 2 * 3600000)}"`);
+      check('fmtWait(-5000)', AB.fmtWait(-5000) === '0 phút', `got "${AB.fmtWait(-5000)}"`);
+
+      // engineText: claude / deepseek / agy verbatim; người:{id} → `người {tên}` (names arg, stored map, else id)
+      check('engineText(claude)', AB.engineText('claude') === 'claude', `got "${AB.engineText('claude')}"`);
+      check('engineText(deepseek)', AB.engineText('deepseek') === 'deepseek', `got "${AB.engineText('deepseek')}"`);
+      check('engineText(agy)', AB.engineText('agy') === 'agy', `got "${AB.engineText('agy')}"`);
+      check('engineText(người:ha, names)', AB.engineText('người:ha', { ha: 'Hà' }) === 'người Hà', `got "${AB.engineText('người:ha', { ha: 'Hà' })}"`);
+      check('engineText(người:x) without a name', AB.engineText('người:x') === 'người x', `got "${AB.engineText('người:x')}"`);
+      check('engineText(người:ha, names without ha)', AB.engineText('người:ha', { khac: 'K' }) === 'người ha', `got "${AB.engineText('người:ha', { khac: 'K' })}"`);
+      check('engineText(unknown) verbatim', AB.engineText('mot-engine-la') === 'mot-engine-la');
+      check('engineText(null)', AB.engineText(null) === '', `got "${AB.engineText(null)}"`);
+      AB.setStaffNames({ ha: 'Hà Nguyễn' });
+      check('engineText uses the stored staff names', AB.engineText('người:ha') === 'người Hà Nguyễn', `got "${AB.engineText('người:ha')}"`);
+      check('engineText: names arg wins over the stored map', AB.engineText('người:ha', { ha: 'H' }) === 'người H', `got "${AB.engineText('người:ha', { ha: 'H' })}"`);
+      AB.setStaffNames(null);
+      check('setStaffNames(null) resets the map', AB.engineText('người:ha') === 'người ha', `got "${AB.engineText('người:ha')}"`);
+
+      // fmtPercent: n = 0 → `—`; else rounded percent
+      check('fmtPercent(1, 3)', AB.fmtPercent(1, 3) === '33%', `got "${AB.fmtPercent(1, 3)}"`);
+      check('fmtPercent(1, 2)', AB.fmtPercent(1, 2) === '50%', `got "${AB.fmtPercent(1, 2)}"`);
+      check('fmtPercent(2, 3)', AB.fmtPercent(2, 3) === '67%', `got "${AB.fmtPercent(2, 3)}"`);
+      check('fmtPercent(0, 0)', AB.fmtPercent(0, 0) === '—', `got "${AB.fmtPercent(0, 0)}"`);
+      check('fmtPercent(0, 5)', AB.fmtPercent(0, 5) === '0%', `got "${AB.fmtPercent(0, 5)}"`);
+      check('fmtPercent(5, 5)', AB.fmtPercent(5, 5) === '100%', `got "${AB.fmtPercent(5, 5)}"`);
+      check('fmtPercent(null, 3)', AB.fmtPercent(null, 3) === '—', `got "${AB.fmtPercent(null, 3)}"`);
 
       // stepWord: null → ''; {state: 'killed', label: 'killed'} → `đã dừng`; {state: 'xong', label: 'xong'} → `xong`; {state: 'vuong_mac', label: 'Vướng mắc'} → `Vướng mắc`
       check('stepWord(null)', AB.stepWord(null) === '', `got "${AB.stepWord(null)}"`);

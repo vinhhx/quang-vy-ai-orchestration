@@ -18,6 +18,11 @@
     chua_tu_dong: BADGE + ' border border-dashed border-slate-400 text-slate-600 dark:border-slate-500 dark:text-slate-400',
     san_sang: BADGE + ' bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
     bi_chan: BADGE + ' border border-dashed border-slate-400 text-slate-600 dark:border-slate-500 dark:text-slate-400',
+    cho_nguoi: BADGE + ' bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-200',
+    het_quota: BADGE + ' bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200',
+    thieu_key: BADGE + ' bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200',
+    thieu_lenh: BADGE + ' bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200',
+    chua_kiem: BADGE + ' border border-dashed border-slate-400 text-slate-600 dark:border-slate-500 dark:text-slate-400',
   };
 
   var STEP_GLYPHS = {
@@ -36,6 +41,11 @@
     chua_tu_dong: '◌\uFE0E',
     san_sang: '▶\uFE0E',
     bi_chan: '⟳\uFE0E',
+    cho_nguoi: '◐\uFE0E',
+    het_quota: '!\uFE0E',
+    thieu_key: '!\uFE0E',
+    thieu_lenh: '!\uFE0E',
+    chua_kiem: '◌\uFE0E',
   };
 
   var STATE_TEXT = {
@@ -54,6 +64,11 @@
     chua_tu_dong: 'text-slate-600 dark:text-slate-400',
     san_sang: 'text-emerald-700 dark:text-emerald-300',
     bi_chan: 'text-slate-600 dark:text-slate-400',
+    cho_nguoi: 'text-blue-700 dark:text-blue-300',
+    het_quota: 'text-amber-800 dark:text-amber-300',
+    thieu_key: 'text-amber-800 dark:text-amber-300',
+    thieu_lenh: 'text-amber-800 dark:text-amber-300',
+    chua_kiem: 'text-slate-600 dark:text-slate-400',
   };
 
   var STATE_CARD = {
@@ -72,6 +87,11 @@
     chua_tu_dong: 'border-dashed border-slate-400 bg-transparent dark:border-slate-500 dark:bg-transparent',
     san_sang: 'border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-800',
     bi_chan: 'border-dashed border-slate-400 bg-white dark:border-slate-500 dark:bg-slate-800',
+    cho_nguoi: 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-900/20',
+    het_quota: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
+    thieu_key: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
+    thieu_lenh: 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20',
+    chua_kiem: 'border-dashed border-slate-400 bg-transparent dark:border-slate-500 dark:bg-transparent',
   };
 
   var STATE_WORDS = {
@@ -90,6 +110,11 @@
     chua_tu_dong: 'chưa tự động',
     san_sang: 'sẵn sàng',
     bi_chan: 'bị chặn',
+    cho_nguoi: 'chờ người',
+    het_quota: 'hết quota',
+    thieu_key: 'thiếu key',
+    thieu_lenh: 'thiếu lệnh',
+    chua_kiem: 'chưa kiểm',
   };
 
   var PROFILE_CLASSES = {
@@ -248,6 +273,43 @@
       if (usd === null || usd === undefined || isNaN(usd)) return '—';
       if (usd > 0 && usd < 0.005) return '< $0.01';
       return '$' + Number(usd).toFixed(2);
+    },
+
+    // Human waiting time: `{M} phút` under an hour, `{H} giờ {MM} phút` under 48 hours,
+    // otherwise `{D} ngày {H} giờ`; unknown is `—`.
+    fmtWait: function (ms) {
+      if (ms === null || ms === undefined || isNaN(ms)) return '—';
+      var totalMin = Math.floor(Math.max(ms, 0) / 60000);
+      if (totalMin < 60) return totalMin + ' phút';
+      var totalHours = Math.floor(totalMin / 60);
+      if (totalHours < 48) {
+        var mm = totalMin % 60;
+        return totalHours + ' giờ ' + (mm < 10 ? '0' : '') + mm + ' phút';
+      }
+      return Math.floor(totalHours / 24) + ' ngày ' + (totalHours % 24) + ' giờ';
+    },
+
+    // `{id: display_name}` of the staff list; screens that show human engines set it.
+    _staffNames: {},
+
+    setStaffNames: function (names) {
+      window.AB._staffNames = (names && typeof names === 'object') ? names : {};
+    },
+
+    // claude / deepseek / agy verbatim; `người:{id}` reads `người {display_name}`
+    // (from `names`, else the stored map, else the id); anything else verbatim.
+    engineText: function (engine, names) {
+      var e = String(engine === null || engine === undefined ? '' : engine);
+      if (e.indexOf('người:') !== 0) return e;
+      var id = e.slice('người:'.length);
+      var map = (names && typeof names === 'object') ? names : window.AB._staffNames;
+      var shown = (map && map[id]) ? map[id] : id;
+      return 'người ' + shown;
+    },
+
+    fmtPercent: function (k, n) {
+      if (n === 0 || n === null || n === undefined || isNaN(n) || k === null || k === undefined || isNaN(k)) return '—';
+      return Math.round(100 * k / n) + '%';
     },
 
     stepWord: function (step) {
