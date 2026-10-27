@@ -1,5 +1,7 @@
 # Phase 6: Multi-engine Teams - Research
 
+> **Amendment note (2026-10-27):** the final section `## Amendment Research: D-30 … D-36` supersedes every DeepSeek-specific statement in this file that assumes a fixed engine set (D-01 / D-08: `deepseek` as the one built-in claude-with-endpoint engine, `engines.deepseek` / `engines.agy` as the only config keys, `Engine::{Deepseek, Agy}`, the "dsh is not used" rows, and the old 06-11 / 06-19 rows of the decomposition table) wherever the two conflict. Everything else (executed plans 06-01 … 06-10, 06-12 … 06-18) still stands as written.
+
 **Researched:** 2026-10-26
 **Domain:** Rust CLI orchestrator (agent-brain): per-role engine routing (claude / deepseek-via-claude / agy / human), quota stop, team storage, dashboard Settings, Telegram actions, per-engine stats
 **Confidence:** MEDIUM overall. Code seams HIGH (every file below was opened this session). Claude Code / agy / DeepSeek quota shapes MEDIUM-LOW (no real rejected-quota evidence exists in the repo; shapes come from docs and must be calibrated by user-run probes).
@@ -717,3 +719,507 @@ All eight questions were answered by the user on 2026-10-26 (06-CONTEXT D-24…D
 
 **Research date:** 2026-10-26
 **Valid until:** 2026-11-09 for CLI-behaviour claims (Claude Code and agy move fast: 2.1.300 -> 2.1.310 and 1.3.5 -> 1.4.7 already drifted since the spikes); code-seam claims hold until the next commit touching the cited files.
+
+---
+
+## Amendment Research: D-30 … D-36 (2026-10-27)
+
+**Scope:** a targeted addendum for the re-planned `06-11` (user-defined engine list replacing the fixed DeepSeek engine) and the revised `06-19` (live check + docs). It does not redo research for the 17 executed plans. Every code citation below was read this session in the CURRENT tree (HEAD `20893cc`, after plans 06-01 … 06-10, 06-12 … 06-18 landed). Constraints honoured: no network call to any model endpoint, no `agy` prompt, no `antigravity`, Docker used read-only (`docker ps`, `docker inspect --format …`, `docker exec … dsh … --help`), no source/config/plan file changed.
+
+**Confidence:** HIGH for the code seams, the docker mount facts and the spike scripts (all opened or executed read-only this session); MEDIUM for the gateway behaviour (`https://ai-gateway.vcadm.vn/proxyllm` could not be probed: no key, and network calls to model endpoints are forbidden); LOW for the quota shape of an unknown gateway and for dsh process behaviour not covered by S6.
+
+**Primary recommendation:** model an engine as an `EngineDef { id, kind, … }` list loaded by `config.rs` (accepting both the new array and today's `{deepseek, agy}` objects), keep the argv of `anthropic` engines owned by `build_command_with_prompt` (never by a user `command` template: the example's template drops `--append-system-prompt`, `--settings` and the guard hooks), store the engine **id** in `runs.engine`, enforce `allowed_profiles` / `pin_profile` in ONE pure function called at the run seam (backstop) and at six bind points, run `dsh` as a marker-wrapped `docker exec … sh -c` black box that is killed inside the container, and split the work into `06-11` (catalog + `anthropic`), `06-20` (E-09 per endpoint tooling, user-run), `06-21` (key hygiene, old 06-11 Tasks 2-3), `06-22` (profile guard at bind points), `06-23` (dsh), `06-24` (Settings/Giao việc engine list UI), then the revised `06-19`.
+
+### Key findings (read this first)
+
+1. **No schema change.** `runs.engine` is `TEXT NOT NULL DEFAULT 'claude'` with no CHECK, so engine ids need no migration. [VERIFIED: agent-brain/src/db.rs:32 `engine TEXT NOT NULL DEFAULT 'claude', profile TEXT NOT NULL,`] The v4 dry run in 06-19 is unaffected.
+2. **The user's real machine has no `config.json` at all** (`~/.config/agent-brain/` holds only `projects_map.json`), so "existing `engines.deepseek` / `engines.agy` objects must keep loading" is a compatibility requirement for the repo's own defaults (assets/config.default.json:12-33) and the test sandboxes that write the object shape (agent-brain/tests/engine_agy.rs:28 `sb.write_config(json!({"engines": {"agy": {"command": fake_agy().to_str().unwrap()}}}));`), not for a user file. No rewrite of any real config is needed or allowed. [VERIFIED: `ls -la ~/.config/agent-brain/` this session printed only `projects_map.json`]
+3. **The example's `command` templates cannot drive argv.** The `anthropic` example template has no `--append-system-prompt`, no `--settings` (the PreToolUse guard hooks) and no `--disallowedTools`. Using it verbatim would silently remove the Phase 3 guard. [VERIFIED: docs/config.engines.example.json:8-22 versus agent-brain/src/roles/mod.rs:145-175, quoted in "Config shape" below]
+4. **dsh sees the host tree at the same path.** The container has a read-write bind `/mnt/data` → `/mnt/data`; all 178 projects in `projects_map.json` (176 work, 2 personal) live under `/mnt/data/`. The same container also mounts `/var/run/docker.sock` and runs as root, so a dsh run can write anywhere under `/mnt/data` and files it writes are root-owned (S6). [VERIFIED: `docker inspect dsh-deepseek-harness --format '{{json .Mounts}}'` this session, quoted in "dsh kind"]
+5. **Killing the `docker exec` client does not kill dsh.** S6 variant (a) left `node dsh`, its `bash -c` and `sleep` alive; only an in-container TERM of recorded PIDs worked. Therefore `runner::supervise` and `runner::cmd_kill` both need a container-side stop hook; `procs::kill_tree` alone is insufficient. [VERIFIED: spikes/spike-results.md S6 (4a)/(4b), quoted in "dsh kind"]
+6. **`is_agy` is hard-coded in the Dev scope check** (`r.engine == crate::engine::ENGINE_AGY`), and `row_kind` / `term::event_text` map unparsable lines to error rows, so plain-text dsh output needs its own stream format, event kind and an `dsh:empty` outcome next to `agy:empty`. [VERIFIED: agent-brain/src/roles/dev.rs:578-580, agent-brain/src/dashboard/sse.rs:20-21]
+7. **On a personal project `claude` already means `~/.claude-orca`**, so a pinned `claude-max` only differs by models / label; D-36 stays as decided but the user should know (Open Question Q4).
+8. **E-09 tooling is hard-wired to `DEEPSEEK_API_KEY` and to one set of output names** (`e09-*`, `deepseek_e09_*.jsonl`, `rm -f "$RAW"/e09-*`), so probing a second endpoint would overwrite the first one's evidence; a key-variable override and an endpoint label are required. [VERIFIED: spikes/e09/run.sh:43,114,199-203]
+
+### What D-30 … D-36 supersede, and what still holds
+
+| Pre-amendment statement (06-RESEARCH / old 06-11) | Status | Replacement |
+|---|---|---|
+| D-01 "DeepSeek is `claude` + endpoint; dsh not used" | superseded | D-30/D-31: any number of `anthropic` entries (generalised D-01 mechanism); D-35: `dsh` is a third kind, black box |
+| D-08 "engine definitions fixed in the binary" | partly superseded | engines are a user list in `config.json`; the UI is still read-only (no route writes a command, endpoint or key name) |
+| `Engine::{Claude, Deepseek, Agy, Human}` and `ENGINE_ORDER` | superseded | `Engine::{Claude, Named(id), Human(staff)}`; order = `claude`, config order, `người` |
+| Pitfall 5 (inject `ANTHROPIC_*` AFTER `profile::build_env`) | still holds, per entry | applies to every `anthropic` entry that has a `base_url` |
+| Pitfall 6/7 (engine-first pricing, never bill an alias model as Anthropic) | still holds, generalised | keyed by engine id; native (no `base_url`) entries use the family lookup like `claude` |
+| Pitfall 8 (a profile `settings.json` `env` block beats our env) | still holds | per endpoint, E-09 must run under the real profile |
+| Pitfall 10 + old 06-11 Tasks 2-3 (redaction before every sink, post-run secret scan) | **unchanged** | secrets = the values of EVERY `key_env` variable used by the engine of the run; message wording says the engine id instead of `deepseek` |
+| old 06-11 Task 1 (`deepseek` arm) | replaced | `anthropic` arm over `EngineDef` |
+| D-02 / 06-01 outcome `fail` = "not run" | superseded by D-34 | evidence per endpoint (and per model), recorded next to the engine; the Rust work no longer waits for E-09 |
+| D-06 (QA = `claude`) | holds | see Open Question Q4 for `claude-max` |
+| D-07 (claude-family always uses the project profile) | revised by D-36 | only an entry with `pin_profile` deviates, and only where the project's profile equals it |
+
+### Seam Map for D-30 (question 1)
+
+Risk: H = breaks existing tests or safety if missed, M = visible bug, L = cosmetic.
+
+| # | Where (file:lines, current tree) | What assumes the fixed set | Change for an `id` + `kind` list | Risk |
+|---|---|---|---|---|
+| S1 | agent-brain/src/engine.rs:11-16, 20-26 `pub const ENGINE_ORDER: [&str; 4] = ["claude", "deepseek", "agy", "người"];` and `pub enum Engine { Claude, Deepseek, Agy, Human(String) }` | closed enum | `Engine::{Claude, Named(String), Human(String)}`; `parse` = trim + NFC, `claude` \| `người:<staff id>` \| a valid engine-id slug; `as_db_str` returns `&str`/`String` (an id is dynamic); `ENGINE_ORDER` becomes a function of the catalog | H |
+| S2 | engine.rs:293 `pub db_engine: &'static str,` and roles/mod.rs:486 `db_engine: &'static str,` | static engine names | `String` in `EnginePlan` and the Observer; `insert_run_with_engine(conn, r, engine: &str)` already takes `&str` (db.rs:327) | H |
+| S3 | engine.rs:169-215 `readiness(cfg, env, staff_count)` hard-codes claude, `cfg.engines.deepseek`, `cfg.engines.agy`, human | four fixed rows | iterate the catalog: claude (built-in), each list entry by kind, người; add `kind`, `label`, `evidence` fields additively (the existing test asserts names `["claude", "deepseek", "agy", "người"]`, agent-brain/tests/dashboard_settings.rs:1018-1028, so the default catalog order must stay) | H |
+| S4 | engine.rs:309-340 `plan_for` `match &resolved.engine { Claude, Agy => agy_plan, Deepseek => Err("Engine … chưa được bật …"), Human => Err }` | per-engine arms | dispatch on `EngineDef.kind`: `anthropic` arm (new), `agy` arm (existing body, parameterised by the entry), `dsh` arm (06-23) | H |
+| S5 | engine.rs:415-421 `env.retain(|k, _| !(k.starts_with("ANTHROPIC_") \|\| k == "CLAUDE_CONFIG_DIR" \|\| … \|\| k == &cfg.engines.deepseek.key_env))` | strips only ONE key variable from agy's env | strip EVERY configured `key_env` (all entries) from claude, agy and dsh envs; each gateway arm strips the other entries' key variables | H (ENG-05) |
+| S6 | config.rs:77-99 `DeepseekCfg`, `AgyCfg`, `EnginesCfg { deepseek, agy }`; :129-251 `parse_engines`; :271 `pub engines: EnginesCfg,`; :154-160 rejects any key but `deepseek`/`agy` with `"Cấu hình engines.{key} không hợp lệ (chỉ deepseek, agy)"` | fixed struct | `EnginesCfg { list: Vec<EngineDef> }` + `get(id)`, `kind_of(id)`, `all_key_envs()`; keep the legacy-shape error texts byte-identical (asserted at config.rs:971-1000) | H |
+| S7 | assets/config.default.json:12-33 (`"engines": { "deepseek": {…}, "agy": {…} }`) and config.rs:913-932 (`engines_defaults` asserts `documented.engines == cfg.engines`) | documents the object shape | keep the object shape as the documented default (proves back-compat) OR switch to the array and keep a second legacy test; either way the equality test must stay | M |
+| S8 | assets/teams.default.json (`"tiet-kiem"` → `"dev": "deepseek"`) | built-in team names the id `deepseek` | keep it: the default catalog still contains `deepseek`; when the user supplies an array without `deepseek` the built-in shows an "engine chưa khai báo" warning and the user overrides `tiet-kiem` in `teams.json` (already supported: source `override`, teams.rs:309-313) | M |
+| S9 | teams.rs:204-233 `Engine::parse` in `validate_entry`; :214 error `"Engine không hợp lệ cho {role}: {shown} (dùng claude, deepseek, agy hoặc người:<mã>)"`; :220 `if role == "qa" && engine != Engine::Claude {`; :224 human only for dev | message names the fixed engines; QA = exact `Engine::Claude` | syntax-only validation at load (see "unknown engine id" below); new message text; QA rule unchanged (Q4) | H |
+| S10 | teams.rs:54-87 `Team::summary` sorts `Engine::Claude→0, Engine::Deepseek→1, Engine::Agy→2, Human→3/4`; :131-140 `engine_text` uses `as_db_str` | fixed sort keys | sort claude, then catalog order (unknown ids last, by id), then people; `engine_text` prints the id | M |
+| S11 | pricing.rs:38-47 `engine_price` (`claude`/`người` → `None`, else `table.get(engine)`), :60-70 `is_priced`, :77-89 `estimate_usd` (`r.engine == ENGINE_CLAUDE` → family lookup); roles/mod.rs:662-671 cost fallback `if ep.db_engine == crate::engine::ENGINE_CLAUDE { obs.summary.cost_usd } else { 0.0 }`; stats.rs:356 `is_priced(&engine, pricing)`; autopilot/decide.rs:390 and api_tasks.rs:2140 `budget_usage(.., pricing, ..)` | only the literal `claude` is "native" | "native" = `claude` or an `anthropic` entry without `base_url`; price gateway/agy/dsh entries by id; 4 external call sites + 3 in pricing.rs | H |
+| S12 | roles/dev.rs:578-580 `.map(|r| r.engine == crate::engine::ENGINE_AGY)` gating the `.planning/` + secret-path checks (:582-593) and the empty-diff stop (:606-612) | only agy gets the diff-only safety net | gate on kind ∈ {agy, dsh} from `ctx.cfg.engines.kind_of(&r.engine)` | H |
+| S13 | dashboard/api_settings.rs:811-826 `get_engines` → `engine::readiness(&st.cfg, …)`; teams payload `teams_json` (:154-230) shows each role's `to_config_string()` | fixed four | additive fields; warnings for unknown ids computed here (it has `st.cfg`) | M |
+| S14 | assets/dashboard/js/settings.js:32-45 `ENGINE_ORDER`, `ENGINE_DESC`, `FIXED_ENGINES`; :883-920 `roleOptions` loops `FIXED_ENGINES`; :1536-1575 `engineRows` special-cases `name === 'deepseek'` for key/model rows; :618 QA rule `this.tQa !== 'claude'` | hard-coded names and descriptions | build rows and role options from `GET /api/engines` (server sends `description`, `kind`, `label`); keep `người` row synthesised | H (UI) |
+| S15 | assets/dashboard/js/assign.js:5 `var ENGINE_ORDER = ['claude', 'deepseek', 'agy'];` and :218-240 readiness lines | fixed order for the "engine not ready" callout | iterate the order from the API; treat `chua_kiem` as a soft hint, not "bước này sẽ dừng với lỗi" (assign.js:757-760 text) | M |
+| S16 | assets/dashboard/js/app.js:299-304 `engineText` (generic), js/stats.js:210-310 (generic over `runs.engine` strings), js/task.js:417-430 (prefix `người`) | none | no change | — |
+| S17 | stats.rs:330-372 `query_by_engine` (`GROUP BY runs.engine`), :375-410 `query_qa_by_dev_engine` | generic strings | no change; a no-usage engine (dsh) needs a `usage` hint so "chưa có giá" is not shown for "no tokens" (api_stats.rs:43 is the only caller) | L |
+| S18 | quota.rs:104 doc "claude and deepseek engines"; roles/mod.rs:621-647 dispatches on `StreamFormat::{Claude, Agy}`; :733 `user_message(&ep.display, &hit)` | two stream formats | `anthropic` reuses `detect_claude` unchanged; dsh adds `StreamFormat::Text` + a text detector (see "dsh kind") | M |
+| S19 | autopilot/decide.rs:294, :935-945 and dashboard/taskstate.rs:110, autopilot/view.rs:347 treat outcome `agy:empty` | one empty-diff outcome per engine | add `dsh:empty` in the same four places (or a shared helper) | M |
+| S20 | runner.rs:162-172 `RunRequest { argv, cwd, env, stderr_path, stream_path, timeout, kill_grace, stdout_file }`; kill calls at runner.rs:122, 196, 405, 422, 436, 446 (`crate::procs::kill_tree`) and `cmd_kill` (:55-160) | host-process-tree kill only | optional `stop_hook` + container spec persisted in `runs.metrics_json.dsh`; `cmd_kill` reads `RunRow.metrics_json` (db.rs `RunRow` has `metrics_json`) | H (process safety) |
+| S21 | Team bind points (all create or change a task's team): teams.rs:377-418 `resolve`; roles/lead.rs:99-110 (CLI `run lead --team`) and :337-350; dashboard/api_tasks.rs:625-735 `start_new_task` (Giao việc + Telegram `/task`, intake.rs:597, 1163, 1172); autopilot/mod.rs:614-625 (`auto --start --team`, resolves with `None` as project default); api_tasks.rs:1403 `change_team`; :1715 `quota_rerun` (dashboard + Telegram `on_team` Confirm, telegram/bot.rs:1224); api_settings.rs:355 `save_team_blocking` | none know the project profile except `start_new_task` and `change_team`/`quota_rerun` via `state.project` | one pure `team_profile_refusal(team, catalog, project)` called at each | H (D-36) |
+| S22 | telegram/intake.rs:1033-1037 (`/task` team list = every team name) and render::team_names (quota picker) | lists teams the project cannot use | optionally skip/mark unfit teams to avoid dead buttons; the shared actions already refuse | L |
+| S23 | tests: config.rs:913-1012, engine.rs `plan_for_*` / `readiness_states` / `engine_parse`, teams.rs:517-548, stats.rs:612-640, pipeline.rs:4573-4697, decide.rs:1481-1543, tests/{engine_routing,engine_agy,engine_quota,dashboard_settings,telegram_quota}.rs | literal `deepseek` / four-engine order | update where the enum changes; keep legacy-shape tests as the back-compat proof | M |
+
+### Config Shape and Backward Compatibility (question 2)
+
+#### Recommended file shape
+
+`engines` is an array. The built-ins `claude` and `người` are implicit (not entries). Absent `engines` = the two historical defaults (`deepseek`, `agy`), so every existing sandbox, the built-in `tiet-kiem` team and `config.default.json` keep working. A user array is used exactly as written (no merge with the defaults).
+
+```json
+"engines": [
+  {"id": "deepseek", "kind": "anthropic", "label": "DeepSeek (endpoint chính thức)",
+   "command": "claude", "base_url": "https://api.deepseek.com/anthropic", "key_env": "DEEPSEEK_API_KEY",
+   "models": {"lead": "opus", "dev": "sonnet", "qa": "sonnet", "plan-review": "opus", "code-review": "opus"}},
+  {"id": "vcadm-deepseek", "kind": "anthropic", "label": "DeepSeek qua gateway công ty",
+   "base_url": "https://ai-gateway.vcadm.vn/proxyllm", "key_env": "VCADM_GATEWAY_KEY",
+   "models": {"lead": "deepseek/deepseek-reasoner", "dev": "deepseek/deepseek-chat", "qa": "deepseek/deepseek-chat"}},
+  {"id": "claude-max", "kind": "anthropic", "label": "Claude Max cá nhân", "pin_profile": "personal",
+   "models": {"lead": "opus", "dev": "opus", "qa": "sonnet"}},
+  {"id": "agy", "kind": "agy", "command": "agy", "print_timeout_margin_secs": 30, "dev_permission": "accept-edits", "model": null},
+  {"id": "dsh", "kind": "dsh", "docker": "docker", "container": "dsh-deepseek-harness", "dsh_profile": "headless"}
+]
+```
+
+Field rules (planner copies these into validators; every error is Vietnamese in the existing `Cấu hình …` style, see the error table):
+
+| Field | Kinds | Rule |
+|---|---|---|
+| `id` | all | required; `crate::workflows::validate_name` (lowercase ascii, digits, `-`, starts alnum) AND ≤ 32 bytes (`staff::MAX_ID_BYTES`, staff.rs:8); not `claude`, not `người` in any Unicode normalisation (reserved, D-30), cannot contain `:` (guaranteed by the charset); unique across the list |
+| `kind` | all | required; `anthropic` \| `agy` \| `dsh` (D-31, D-35). An OpenAI-format kind is deferred |
+| `label` | all | optional, one line, ≤ 120 chars, shown on the Settings Engine row; default per kind. Rendered with `x-text` (no HTML) |
+| `allowed_profiles` | all | optional non-empty array of names that exist in `profiles`; empty/unknown → config error. The generic form of D-36 |
+| `pricing` | anthropic, agy | optional `{input, output, cache_read, cache_write}` non-negative numbers (the `Price` struct, config.rs:30-36); rejected for `dsh` (no usage) |
+| `command` | anthropic, agy | executable only: a string or a one-element array, default `claude_bin` (anthropic) / `agy` (agy). Extra array elements are a config error (see divergence D1) |
+| `base_url` | anthropic | optional; when present it must start with `https://` (existing rule, config.rs:176-185); absent = native Anthropic via the profile's login |
+| `key_env` | anthropic | required iff `base_url` is present, forbidden otherwise; `^[A-Z_][A-Z0-9_]*$` (existing `valid_key_env`, config.rs:120-127); NAME only (D-32) |
+| `models` | anthropic | role → non-empty string, roles ∈ `teams::ROLES`; missing role → `models.dev` → config model (native) / config error "thiếu model cho vai trò" at readiness (gateway with no `models`) |
+| `pin_profile` | anthropic without `base_url` | optional; must exist in `profiles`; implies `allowed_profiles = [pin_profile]`; the run env is `profile::build_env(pin_profile, …)` |
+| `compat` | anthropic with `base_url` | optional array ⊆ {`disable_experimental_betas`, `disable_adaptive_thinking`}: the two knobs of old 06-11 that E-09 may require |
+| `verified` | anthropic with `base_url` | optional short string (date + note) the user pastes after E-09 passes for that endpoint; absent → readiness `chưa kiểm` (see "E-09 per endpoint") |
+| `print_timeout_margin_secs`, `model` | agy | unchanged rules (config.rs:232-247) |
+| `dev_permission` | agy | enum, default `accept-edits` (the 06-02 decision, engine.rs:367 `AGY_DEV_PERMISSION: &[&str] = &["--mode", "accept-edits"]`); no free-form extra args (divergence D2) |
+| `docker`, `container`, `dsh_profile` | dsh | `docker` default `docker` (string); `container` required, `^[A-Za-z0-9][A-Za-z0-9_.-]*$`, ≤ 64; `dsh_profile` default `headless`, slug (D-35) |
+
+**Divergences between `docs/config.engines.example.json` and the recommendation (the user's file is "intent"; confirm in Q1-Q3):**
+
+| # | Example | Recommendation | Why |
+|---|---|---|---|
+| D1 | `command` is a full argv template with `{prompt}`, `{model}`, `{max_turns}`, `{allowed_tools}` | `command` = executable only for `anthropic`/`agy`; argv stays with the role builders | the template omits `--append-system-prompt`, `--settings` (guard hooks), `--disallowedTools`; `--allowedTools` is multi-valued and `--max-turns` is optional. [VERIFIED: agent-brain/src/roles/mod.rs:145-175 builds `claude -p <input> --output-format stream-json --verbose --model <m> --append-system-prompt <prompt>` then `common_args`, optional `--max-turns`, `extra_args` (= `--settings <file>`), `--allowedTools …`, `--disallowedTools …`] |
+| D2 | agy `dev_extra_args: ["--mode","accept-edits"]`; agy `["timeout","{outer_timeout}","agy",…]` | enum `dev_permission`; no `timeout` wrapper | D-30 itself says `dev_permission`; free args could add `--dangerously-skip-permissions` (the repo forbids that flag for claude: roles/mod.rs:94-107 `check_forbidden_args`); the runner already enforces the hard timeout and passes `--print-timeout` (engine.rs:345-351) |
+| D3 | `env` maps with `"{base_url}"` and `"${VCADM_GATEWAY_KEY}"` | derive env from `base_url` + `key_env`; no user `env` map | the map restates two fields; `${VAR}` expansion would let a config read ANY env variable into the child. Whitelisted tuning goes through `compat` |
+| D4 | `claude-max`: `env.CLAUDE_CONFIG_DIR: "~/.claude-orca"` + `allowed_profiles: ["personal"]` | `pin_profile: "personal"` | reuses `profiles.personal.claude_config_dir` and its `unset_env` through `build_env`, one source of truth for the directory |
+| D5 | an entry with `id: "claude"` | not an entry (reserved built-in) OR accept it as an override of label/models only | the built-in is the project-profile engine; two definitions of `claude` can disagree (Q1) |
+| D6 | dsh `command` template containing the container name, `{profile}` placeholder | discrete `docker`, `container`, `dsh_profile` fields; agent-brain builds the argv | the kill hook needs the container name and a marker it controls; `{profile}` is ambiguous with the Claude profile (work/personal) |
+| D7 | `stdout: "file"`/`"text"` | implied by kind | agy is always file-tailed (CLAUDE.md), dsh is always text |
+
+#### Both shapes, defaults and migration
+
+`parse_engines` (config.rs:129-251) becomes a dispatcher on the JSON type: `Value::Array` → new loader; `Value::Object` → today's loader, producing the same `EngineDef`s (`deepseek` → `{id: "deepseek", kind: anthropic, command: claude_bin default, base_url, key_env, models}`; `agy` → `{id: "agy", kind: agy, …}`), with the legacy error strings unchanged; anything else keeps `"Cấu hình engines không hợp lệ (phải là JSON object)"` extended to `… (phải là mảng hoặc JSON object)`. **Accept both; do not migrate or rewrite any file** (reversible, and there is no user config to migrate). [VERIFIED: config.rs:144-160 quoted: `Some(serde_json::Value::Object(o)) => o,` … `if key != "deepseek" && key != "agy" {`] Because `load_config` replaces the whole default when a `config.json` exists (config.rs:593-602, no overlay), the README must show the minimal `config.json` that needs `models` and `profiles` plus `engines` (`config_from_value` requires `models.{lead,dev,qa}` and both profiles, config.rs:354-380).
+
+#### Validation errors (Vietnamese, existing style `Cấu hình engines.<path> …`)
+
+Use `engines[{i}]` until the id is valid, then `engines.{id}`. Proposed texts (planner may reword, tests assert them verbatim once chosen):
+
+| Case | Message |
+|---|---|
+| not array/object | `Cấu hình engines không hợp lệ (phải là mảng hoặc JSON object)` |
+| entry not an object | `Cấu hình engines[{i}] không hợp lệ (phải là JSON object)` |
+| bad id | `Cấu hình engines[{i}].id không hợp lệ (chữ thường không dấu, số và -, tối đa 32 ký tự)` |
+| reserved id | `Cấu hình engines[{i}].id '{id}' là engine có sẵn, không khai báo lại` |
+| duplicate id | `Cấu hình engines.{id} bị khai báo hai lần (engines[{j}] và engines[{i}])` |
+| unknown kind | `Cấu hình engines.{id}.kind không hợp lệ (chỉ anthropic, agy, dsh)` |
+| base_url scheme | `Cấu hình engines.{id}.base_url phải bắt đầu bằng https://` |
+| key_env missing/misplaced | `Cấu hình engines.{id}.key_env bắt buộc khi có base_url` / `Cấu hình engines.{id}.key_env chỉ dùng cùng base_url` |
+| key_env charset | `Cấu hình engines.{id}.key_env không hợp lệ (chỉ chữ hoa, số và _)` |
+| models role | `Cấu hình engines.{id}.models.{role} không hợp lệ` |
+| command extra args | `Cấu hình engines.{id}.command chỉ nhận tên lệnh, không nhận tham số` |
+| allowed_profiles / pin | `Cấu hình engines.{id}.allowed_profiles không hợp lệ (danh sách tên profile có trong profiles)` / `Cấu hình engines.{id}.pin_profile '{p}' không có trong profiles` |
+| pin with base_url | `Cấu hình engines.{id}.pin_profile chỉ dùng cho engine không có base_url` |
+| dsh container | `Cấu hình engines.{id}.container không được rỗng` |
+| unknown field | `Cấu hình engines.{id}: khóa lạ {k}` (strict, like teams.json `Khóa lạ`; the legacy object loader keeps ignoring unknown sub-keys, config.rs tests) |
+
+#### A team that names an engine id missing from the list: tolerant at load, strict at save and at run
+
+Teams are hand-edited files that must keep loading when `config.json` changes, and `teams::load*` takes no config (≈12 call sites, listed in S21/S9). Recommended:
+
+- **Load** (`teams::validate_entry`): syntax only (`claude`, `người:<staff id>`, or a valid id). Unknown ids load; `teams_json` (which has `st.cfg`) adds the existing `warnings` line `Engine '{id}' chưa khai báo trong config.json.`
+- **Settings save** (`save_team_blocking`): refuse with a 422 field error `Engine '{id}' không có trong config.json (engines).` (strict, so the UI cannot create a broken team).
+- **Run seam** (`engine::resolve_for_run` / `plan_for`): refuse before any run row, exit 1, same shape as the missing-team refusal (verified test `missing_team_refused_before_run`, agent-brain/tests/engine_routing.rs:486-508): `Engine '{id}' của đội hình '{team}' không có trong config.json (engines) — thêm engine hoặc đổi đội hình rồi chạy lại.` Autopilot already turns a child with no new run into a `run lỗi` stop with the last stderr line (autopilot/mod.rs:497 `"Bước {} không tạo run nào"`).
+- Built-in `tiet-kiem` keeps `deepseek`; a user list without `deepseek` overrides the team in `teams.json` (documented in README, 06-19).
+
+#### `runs.engine` stores the engine id; pricing follows the id
+
+D-23 needs "tokens per engine". Two gateway endpoints of the same kind must not mix, so the stored value is the **id**, not the kind. Historical rows (`claude`, `agy`, `người`) are already valid ids. [VERIFIED: stats.rs:330-372 `GROUP BY runs.engine`, generic over strings] Consequence (one-way-ish): renaming an id in `config.json` orphans its old rows (shown with the old name, unpriced). Pricing: per-entry `pricing` is merged under the entry id; to avoid distorting `price_for`'s "most expensive family" fallback (pricing.rs:8-37 iterates every table value), keep per-engine prices in a separate map (`cfg.engine_pricing`) and thread it to the four external call sites (stats.rs:356, roles/mod.rs:662, decide.rs:390, api_tasks.rs:2140). Native entries (`claude`, `claude-max`) price by model family like `claude` (cost from the result, roles/mod.rs:667 generalised).
+
+### The `anthropic` kind (question 3: D-31, D-32, D-34)
+
+What generalises from old 06-11, per entry that has a `base_url`:
+
+| Aspect | Old (deepseek) | New (any `anthropic` entry with `base_url`) |
+|---|---|---|
+| argv | `claude_argv` with argv[0] swapped and `--model` replaced | identical: `argv[0] = def.command`; value after `--model` = `def.models[role]` → `models.dev` → error; everything else (`--append-system-prompt`, `--settings`, `--allowedTools`, `--max-turns`) untouched |
+| env | `build_env(project profile)` then insert `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`; remove the key variable and `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` | same, using `def.base_url` and the value of `def.key_env`; ALSO remove every other entry's `key_env`; `compat` adds `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` / `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1` |
+| missing key | `Chưa đặt biến môi trường {KEY_ENV} cho engine deepseek …` | same text with the engine id: `Chưa đặt biến môi trường {KEY_ENV} cho engine {id} — đặt biến này trong shell chạy agent-brain (serve hoặc CLI) rồi chạy lại.`; refused before any run row |
+| redaction / post-run scan | `redact = [key]` | `redact = [key]` of THAT run's engine only; unchanged Tasks 2-3 of old 06-11 (runner `RunRequest.redact`, `redact_line`, `redact_file`; `scan_for_secrets` before commit; `metrics_json.secret_leak`) |
+| quota | `quota::detect_claude` | unchanged: it keys on the claude stream, not on the endpoint (quota.rs:104-160). A gateway's own budget error is an unknown shape: LiteLLM documents `budget_exceeded` with code 429 in one place and 400 in another, `error.code` possibly a string [CITED: https://docs.litellm.ai/docs/proxy/users and https://docs.litellm.ai/docs/proxy/error_reference.md, MEDIUM; whether `proxyllm` is LiteLLM is [ASSUMED]]. `detect_claude` already stops on HTTP 429/402 and on the phrases in `text_regex` (quota.rs:27-35); consider adding `budget` / `exceeded budget` to that regex, tagged assumed, and let the first real stop recalibrate (raw lines stay in `events`) |
+| pricing | `pricing.deepseek` | per entry id; cost 0 and "chưa có giá" when absent; `total_cost_usd` of a non-Claude model is a client-side estimate and is not trusted (Pitfall 7) |
+| model per role | five aliases | per entry; roles not listed fall back to `models.dev`; the example gives only lead/dev/qa for the gateway, so plan-review / code-review use the dev model unless the user lists them |
+
+**Native `anthropic` entries (no `base_url`)**: no env injection, no key, no redaction; env = `build_env(pin_profile or project profile)`. This is how `claude-max` is expressed.
+
+**Unchanged from old 06-11, reuse the plan text**: Task 2 (redaction before every sink including kill/timeout and `stderr.txt` rewrite) and Task 3 (post-run scan of changed + committed paths before the role commits; outcome `protocol_violation`, exit 3), the planted-key test idea (`test-planted-…-0123456789`), the fake-claude additions (`env_names`, `anthropic_base_url`, `auth_token_matches_expected`, `echo_env` op) and the acceptance greps, with `deepseek` wording replaced by the engine id and `DEEPSEEK_API_KEY` by per-entry key variables. Two keys in one process need `FAKE_CLAUDE_EXPECT_TOKEN` per call (set it per `Sandbox::run_env` invocation).
+
+**Mechanism caveat that still applies (Pitfall 8):** a profile `settings.json` `env` block pinning `ANTHROPIC_*` overrides what agent-brain injects; E-09 is the only detector. [CITED: https://code.claude.com/docs/en/llm-gateway-connect, via the 2026-10-26 research above]
+
+### The `dsh` kind (question 4: D-35)
+
+#### Facts established read-only this session
+
+- Container: `dsh-deepseek-harness` is up and has not been touched. [VERIFIED: `docker ps -a --format '{{.Names}} | {{.Status}} | {{.Image}}'` printed `dsh-deepseek-harness | Up 8 days | dsh-base:latest`]
+- Mounts, **same-path bind of the whole `/mnt/data`**, read-write; plus a data volume and the Docker socket. [VERIFIED: `docker inspect dsh-deepseek-harness --format '{{json .Mounts}}'` printed `[{"Type":"bind","Source":"/mnt/data","Destination":"/mnt/data","Mode":"rw","RW":true,"Propagation":"rprivate"},{"Type":"volume","Name":"docker_dsh_data","Source":"/var/lib/docker/volumes/docker_dsh_data/_data","Destination":"/root/.dsh","Driver":"local","Mode":"rw","RW":true,"Propagation":""},{"Type":"bind","Source":"/var/run/docker.sock","Destination":"/var/run/docker.sock","Mode":"rw","RW":true,"Propagation":"rprivate"}]`] The config part printed `user= workdir=/mnt/data state=running restart=unless-stopped` (empty user = root). `docker inspect` was always called with `--format`: a bare `docker inspect` prints `Config.Env`, which holds the container's secrets (S6 deliberately never ran it, spikes/s6/run.sh:5-6).
+- Every project path in the user's map is under `/mnt/data/` (178 of 178; profiles 176 work, 2 personal; no project has a `team` key). [VERIFIED: python read of `~/.config/agent-brain/projects_map.json` this session]
+- `dsh` interface. [VERIFIED: `docker exec dsh-deepseek-harness dsh --profile headless --help` printed `Usage: dsh --profile headless [options] [task...]` / `Answer one task, print the final assistant message, and exit.` / `task        the task text; multiple words are joined by spaces` / `-h, --help  show this help`]; `dsh --help` lists `--profile <name>`, `web`, `plugin` and no output-format, turn-limit or session flag for headless.
+- Black-box facts from S6 (user-run, earlier): plain text final message only, no tokens, no `tool_use`; files written by dsh are `uid:gid=0:0` while the host user is `1000:1000`; killing the host `docker exec` client leaves `node dsh`, `bash -c` and `sleep` alive; TERM to recorded in-container PIDs leaves `final: none`; the launcher exit code was 0 even when killed (so it cannot signal a kill). [VERIFIED: spikes/spike-results.md S6 (2), (3), (4a), (4b)]
+
+#### Argv and which parts are per-engine fields
+
+D-35's argv with the marker implementation of "marker/PID file per spikes/s6/run.sh" (S6 variant (b) wrote `$$` to a PID file; the marker form below keeps a findable `sh` parent):
+
+```text
+{docker} exec -w {cwd} {container} sh -c ': {marker}; dsh --profile "$1" "$2"' sh {dsh_profile} {prompt}
+stdin = /dev/null (runner Stdio::null), stdout = pipe (text lines), stderr = <run_dir>/stderr.txt, cwd (host) = project root
+marker = ab-dsh-<12 hex> generated per run; the prompt travels as a positional parameter ($2), never interpolated into the shell text
+```
+
+Per-engine fields: `docker`, `container`, `dsh_profile`. Derived per run: `{cwd}` (the project root, canonical), `{marker}`, `{prompt}` (built exactly like the agy prompt: role prompt + `\n\n---\n` + user input via `claude_argv_parts`, engine.rs:437-446). Not fields: the wrapper script text. Whether `sh` runs the last command directly (shell exec optimisation) is not assumed: kill never relies on the process shape, it records the marker's subtree first (S6 "design must not rely on the tree shape").
+
+#### Plain-text output, usage and outcome
+
+- New `StreamFormat::Text` (engine.rs:282-286 has `Claude`, `Agy`). `classify` turns a non-JSON line into `bad_json`, which `row_kind` renders as an error row and `term::event_text` prints as `dòng JSON lỗi` (sse.rs:20-21, term.rs:26-30), so the Observer must convert each text line into a JSON object before `insert_event` (e.g. `{"event":"dsh/text","text":"…"}`, kind `dsh/text`) while `stream.jsonl` keeps the raw text. `Summary` in text mode: `usage_source = none` (the column allows it: [VERIFIED: agent-brain/src/db.rs:40 `usage_source TEXT NOT NULL DEFAULT 'none' CHECK (usage_source IN ('result','partial','none')),`]), tokens 0, `result_text` = tail of stdout (cap 8 KiB).
+- `runs.model` / header label: `headless` (the dsh profile); header `· engine dsh · model headless`; `runs.cost_usd = 0`; stats row `priced: false` must not read "chưa có giá" for "no tokens": add a `usage: "none"` hint in the engines payload (S17).
+- Outcome: runner status from the exit code of `docker exec` (= the in-container command's status; not trusted for kills, S6). Dev success → the existing diff scope check and commit path. **Reuse of the agy Dev path**: `is_agy` becomes `kind ∈ {agy, dsh}` (dev.rs:578-580), so `.planning/` and `report::sensitive_path` paths are violations even when the plan lists them (dev.rs:582-593) and an empty diff after exit 0 stops with a new outcome `dsh:empty` (agy's is `agy:empty`, dev.rs:606-612; add `dsh:empty` wherever `agy:empty` appears: S19).
+- Quota: no JSON; `quota::detect_text(exit_code, stdout_tail, stderr_tail)` applies the existing `text_matches` only when the exit code is non-zero (an exit-0 "quota" message is indistinguishable from an answer; the empty-diff stop catches the no-work case). Shapes are [ASSUMED]; fixtures come from the first real stop.
+
+#### Timeout and kill
+
+- Timeout = `cfg.timeout_for(role)` (runner `RunRequest.timeout`); no `timeout` wrapper, and dsh has no turn flag, so time is the only bound (like agy).
+- **Stop hook.** `RunRequest` gains an optional stop hook (runner.rs:162-172 today has none); `supervise_async` calls it at the four stop sites that now call `kill_tree` (SIGINT, SIGTERM, SIGHUP, timeout: runner.rs:405, 422, 436, 446) **before** the host `kill_tree` of the `docker exec` client, and `cmd_kill` (runner.rs:55-160, reached from CLI, dashboard `api_runs.rs:120` and Telegram `bot.rs:874`) calls the same function using `RunRow.metrics_json.dsh = {docker, container, marker}` written by the Observer at spawn (the pid recorded in `runs` is the docker client, so the container spec must be persisted: the kill may run in another process). Hook algorithm (S4 + S6): `docker exec C ps -ww -eo pid=,ppid=,pgid=,args=` → pure function `marker_subtree(snapshot, marker, before)` (a port of the `tree` Python in spikes/s6/run.sh:56-90) → record → `docker exec C kill -TERM <pids>` → poll up to `kill_grace` → re-snapshot → `kill -KILL` the survivors by PID → final snapshot → report; then `docker exec C rm -f -- <pidfile>` if one is used. PIDs are signalled only after being re-matched against the marker in a fresh snapshot (guards in-container PID reuse). Never `pkill`/`killall`/by name; never `docker restart|stop|kill|rm`.
+- Residual risk to document: SIGKILL of agent-brain itself (`JobManager::kill_all_now`, dashboard/jobs.rs:389-396, and `shutdown`'s final `kill_tree` at :385) skips the hook and leaves the container process; the next dsh run's preflight can list leftover `ab-dsh-*` markers and warn. [ASSUMED: acceptable; a user-run kill probe (see 06-20) must confirm the marker form on the real image before enabling dsh for real tasks.]
+
+#### Readiness (local, read-only) and the run-time preflight
+
+- `docker` found by `find_command` (engine.rs:120-134) → else `thiếu lệnh` / `Không tìm thấy lệnh docker trên máy.` Container up: `docker ps --filter name=^{container}$ --format {{.Status}}` (the exact read-only form S6 uses, spikes/s6/run.sh:32) with a 3 s timeout, injected as a probe closure so unit tests never need Docker → `Up…` = `sẵn sàng`; otherwise `thiếu lệnh` with reason `Container {name} chưa chạy.` (no new vocabulary; a fifth word is the alternative, Q-optional).
+- **Run-time preflight (before the run row):** `docker inspect {container} --format '{{json .Mounts}}'`; require a bind mount with `Source == Destination`, `RW == true` and `cwd.starts_with(Destination)`; else refuse with `Dự án '{id}' ở {cwd} không nằm trong thư mục mà container {container} thấy cùng đường dẫn — engine dsh không chạy được trên dự án này.` Today `/mnt/data` covers all 178 projects.
+
+#### Tests without Docker (fake shims)
+
+`engines[].docker` points at `tests/fakes/fake_docker.py`, a stdlib shim that implements only: `ps --filter name=^C$ --format {{.Status}}` (prints `Up 1 minute`), `inspect C --format {{json .Mounts}}` (prints a mount list chosen by `FAKE_DOCKER_MOUNTS`), and `exec [-w DIR] [-u U] C CMD…` which `chdir`s and `exec`s `CMD` locally, so the real marker wrapper, `ps` and `kill -TERM <pid>` run against local processes. A second shim `tests/fakes/fake_dsh.py` (put first on `PATH` as `dsh`) follows the `fake_agy.py` scenario style (`FAKE_DSH_SCENARIO` ops `write`, `output`, `exit_code`, `sleep_s`, `spawn_child`; `FAKE_DSH_RECORD` argv/cwd/env names). The kill test reads the marker from `runs.metrics_json.dsh.marker`, kills through `agent-brain kill`, and asserts no process whose args contain the marker survives; the shim and tests never use `pkill`/`killall` (acceptance grep).
+
+#### Hazards that need a user decision or a user-run probe
+
+1. **Blast radius.** The container is root with rw `/mnt/data` and the Docker socket, so a dsh run can modify every project under `/mnt/data`, not just the task's repo; the post-run diff check only sees the task's repo. Mitigation available now: `allowed_profiles: ["personal"]` on the `dsh` entry (generic field). Q3.
+2. **Root-owned files in work repos.** Files dsh edits become `0:0` (S6 (3)); later in-place edits by the host user fail (unlink/rename still works in a user-owned directory). Untested: `docker exec -u 1000:1000` (would the profile in `/root/.dsh` still be readable?) [ASSUMED unknown]; git run by root inside a user-owned repo may be refused by git's ownership check (also unknown). The first real dsh task must run on a scratch/personal repo.
+3. **Roles.** dsh has no read-only mode (agy gets `request-review` soft-deny for Lead/reviewers; dsh's headless profile edits files). Recommend `dsh` = Dev only in this phase, mirroring D-24 for `người`; Q2.
+
+### `claude-max` pinned profile guard (question 5: D-36)
+
+**Where a pinned directory enters env construction.** Today `execute_role_staged` builds `base_env = profile::build_env(&project.profile, &ctx.cfg.profiles, &current_env())` BEFORE the engine is known to `plan_for` (roles/mod.rs:431-444, signature `plan_for(cfg, resolved, role, claude_argv, claude_model, base_env, timeout)`, engine.rs:309-317). Recommended: pass `project_profile` and the raw current env into `plan_for`; a native entry with `pin_profile` calls `build_env(pin_profile, …)` itself (so `unset_env` and `CLAUDE_CONFIG_DIR` come from the pinned profile exactly as for a project of that profile), and `profile_refusal(def, project.profile)` runs first. [VERIFIED: profile.rs:67-105 `build_env` removes `NESTED_SESSION_VARS`, the profile's `unset_env`, then sets `CLAUDE_CONFIG_DIR` from `claude_config_dir` or removes it]
+
+**How a project's profile is determined today.** `Project.profile` read from `projects_map.json` (`profile` key; `check_profile` refuses empty or unknown, profile.rs:19-32 `"Dự án chưa đặt profile (work|personal) — sửa projects_map.json rồi chạy lại"`); SPK-10 maps work → `~/.claude` (company Team seat) and personal → `~/.claude-orca`. [VERIFIED: spikes/spike-results.md SPK-10; config default `profiles.personal.claude_config_dir = "~/.claude-orca"`, assets/config.default.json] The user's map has 176 work and 2 personal projects.
+
+**Enforcement points** (one pure function each, all returning the same Vietnamese text):
+
+| # | Path | Where | Notes |
+|---|---|---|---|
+| 1 | run seam (backstop; covers autopilot children, CLI `run dev|qa|review`, a team edited by hand, an engine whose `allowed_profiles` changed later) | roles/mod.rs `execute_role_staged` after `resolve_for_run`, before `plan_for` | refusal = exit 1, no run row (like the missing-team refusal); autopilot then stops `run lỗi` with the message (autopilot/mod.rs:497) |
+| 2 | project default `team` in `projects_map.json` | `teams::resolve` callers: lead.rs:101, api_tasks.rs:670, api_settings.rs:166 and :188 | a work project whose default team is unfit: refuse the new task with the text, and show it as the existing `note`/warning in `project_defaults` (api_settings.rs:165-190) |
+| 3 | Giao việc picker (`POST /api/tasks {team}`) | `start_new_task` (api_tasks.rs:625-735), `req.team` branch | `StartOutcome::Invalid(message)` (422), before any job |
+| 4 | Telegram `/task` | goes through `start_new_task` (intake.rs:597, 1163, 1172) | free; optionally hide unfit teams in the picker (intake.rs:1033-1037) |
+| 5 | CLI `run lead --team` | lead.rs:99-110 | refuse before branch/task row |
+| 6 | `auto --start --team` | autopilot/mod.rs:614-625 | currently `resolve(.., Some(requested), None)`; needs the project profile |
+| 7 | change team on a task | `api_tasks::change_team` (:1403), after the `state.teams.get(team)` check; `state.project.profile` is available (TaskState.project, :1015) | `TeamOutcome::Invalid`/`Refused` |
+| 8 | quota re-run (dashboard + Telegram confirm) | `api_tasks::quota_rerun` (:1715), after `state.teams.get(team)` and BEFORE `write_team_change` | otherwise the team would change for nothing |
+| 9 | Settings team save | `save_team_blocking` (api_settings.rs:355) | refuse when any project whose map `team` is this team has a profile the team's engines forbid, or any open task of such a project uses the team (`open_task_count`, api_settings.rs:144 is the model) |
+| 10 | Settings engines change | not a UI action (config is file-edited) | seam backstop (1) covers it |
+
+**Text style** (existing precedents: `"Profile personal đang có run {} chạy …"`, roles/mod.rs:402; `"Đội hình '{}' của task không còn trong teams.json — đổi đội hình rồi chạy lại."`, engine.rs:254-262): `Engine '{id}' chỉ dùng cho dự án profile {allowed} — dự án '{project}' dùng profile {profile} (ranh giới work/personal, SPK-10). Đổi engine của vai trò {role} hoặc chọn đội hình khác.` Settings save variant names the project or the number of open tasks.
+
+**Related facts.** E-06 (no two personal runs in parallel) keys on `runs.profile == project.profile` (roles/mod.rs:388-411) and stays correct: a pinned run only happens on a project of that profile. A gateway engine on a personal project also records profile `personal`, which is conservative (it still uses the project's `CLAUDE_CONFIG_DIR`).
+
+**QA + D-06.** The validator is a strict equality (`engine != Engine::Claude`, teams.rs:220). D-36 does not say whether QA on `claude-max` satisfies "QA must use a strong engine (`claude`)". On a personal project `claude` already resolves to the same `~/.claude-orca`, so the strict rule costs nothing; relaxing it to "any native `anthropic` entry" would need the catalog inside `validate_entry`. Recorded as Open Question Q4 instead of decided.
+
+### E-09 per endpoint (question 6: D-34)
+
+**What `spikes/e09/run.sh` needs** (all verified by reading the script):
+
+| Gap | Evidence | Needed change |
+|---|---|---|
+| key variable hard-wired | run.sh:43 `KEY="${DEEPSEEK_API_KEY:-}"`, :114 `e09_call "$OUT/e09-$name" DEEPSEEK_API_KEY …`; verify.sh:17 `KEY="${DEEPSEEK_API_KEY:-}"` | `E09_KEY_ENV` (default `DEEPSEEK_API_KEY`) read in both scripts; the gateway run is `E09_KEY_ENV=VCADM_GATEWAY_KEY E09_BASE_URL=https://ai-gateway.vcadm.vn/proxyllm E09_MODEL=deepseek/deepseek-chat bash spikes/e09/run.sh` |
+| single output namespace | `rm -f "$RAW"/e09-*` and fixtures `deepseek_e09_ok.jsonl` / `deepseek_e09_auth_error.jsonl` (run.sh:199-203) | `E09_NAME` label (default `deepseek`): files `e09-<name>-*`, fixtures `anthropic_e09_<name>_{ok,auth_error}.jsonl`, never delete another endpoint's files |
+| one model per run | `E09_MODEL` single; `E09_EXTRA_MODEL` only probe C | `E09_MODELS="m1 m2"` (reasoner vs chat differ in tool/thinking support): one probe A per model; the endpoint is `pass` only if every model the config lists for a used role passed |
+| cheap route check absent | none | optional unauthenticated `POST {base}/v1/messages` with an empty body, expecting 400/401/403/405 rather than 404/connection error, as a zero-token "does it serve /v1/messages" pre-check (a network call: user-run only) |
+| decision store | `spikes/e09/NOTES.md` holds ONE decision, currently `fail` = "not run" | one section per endpoint name: `pass` / `fail` / `not-run` plus the pasted observation lines |
+
+**Evidence an endpoint must produce before it is trusted.** The offline self-test already names the observation lines that mean "pass": `a.stream_json_parses=yes a.tool_use_write=yes a.result_seen=yes a.result_is_error=no a.usage_input_gt0=yes a.usage_output_gt0=yes a.file_ok=yes a.key_absent=yes b.result_is_error=yes b.api_error_status=401` [VERIFIED: spikes/e09/run.sh:173-175]. Gate on exactly those, per endpoint AND per model, plus the saved fixtures (`tests/fixtures/stream/anthropic_e09_<name>_*.jsonl`) parsing through `stream::summarize_file` with non-zero tokens.
+
+**How an un-probed endpoint appears.** Readiness stays about local ability (command, key); an `anthropic` entry with a `base_url`, `command` and key present, but no `verified` string, reports `chưa kiểm` (the existing word, UI-SPEC line 145 "Engine readiness before the first check") with reason `Endpoint chưa có bằng chứng E-09 — chạy spikes/e09/run.sh rồi ghi "verified" cho engine này.`; `thiếu key` / `thiếu lệnh` win over it. It does not block a run (the user's own first real task is the check); it adds a header warning and `metrics_json.unverified = true`. Q5 asks whether it should block instead. Ripple: the existing test asserts the default `deepseek` reads `san_sang` (dashboard_settings.rs:1026-1027) and `assign.js` words any non-ready engine as "sẽ dừng với lỗi" (assign.js:757-760), so both change. The decision gate stays user-run (it needs the user's key and a real call).
+
+### 06-19 Revision (question 7)
+
+| Part of 06-19 | Change |
+|---|---|
+| frontmatter `depends_on`, `requirements` | add `06-20 … 06-24`; add the new ENG ids; ENG-01 gate wording ("DeepSeek" → "an `anthropic` engine verified by E-09") |
+| Task 1 config of the live check | generate the array shape: `claude` built-in, `gw` (kind anthropic, command = fake claude, `base_url` https fake host, `key_env` e.g. `PHASE6_GW_KEY`), `agy` (fake agy), `dsh` (kind dsh, `docker` = `tests/fakes/fake_docker.py`, container `fake-dsh`), `claude-max` (native, `pin_profile personal`); export two planted keys; the key sweep greps for both |
+| Task 1 assertions | tiet-kiem-shaped team (`lead: claude`, `dev: gw`, `qa: claude`) → engines `claude, gw, claude`; a second task with Dev on `dsh` → engine `dsh`, `usage_source none`, `dsh:empty` NOT hit; quota on `gw` then re-run on `mac-dinh` (as before); `claude-max` team on the work project `live-p6` refused at `POST /api/tasks` (422, text above) and accepted on a second **personal** scratch project with the record showing `claude_config_dir` = the personal dir; `/api/stats` rows per id |
+| the "E-09 failed → skip deepseek assertions" truth | delete: the automated check runs on fakes and no longer depends on E-09; E-09 matters only for the real P6-02 |
+| `--schema-dry-run` | unchanged (no schema change) |
+| Task 2 README | § 5 documents the array shape, kinds, fields, `key_env` NAME only, `allowed_profiles` / `pin_profile`, `verified`, both shapes and the built-in `tiet-kiem` / `deepseek` note, a minimal `config.json`; § 11 adds dsh blast radius (root, `/mnt/data`, docker.sock) and root-owned files; § 14 Settings "Engine" lists configured engines with kind/label; exit codes unchanged |
+| LIVE-CHECKS § 8 | P6-02 uses the endpoint that passed E-09 (gateway or official); add `P6-09 dsh as a black box` (scratch personal repo, container up, one tiny Dev task, `agent-brain kill` while running, then `docker exec C ps` shows no `ab-dsh-` marker, root-owned file check) and `P6-10 claude-max` (refused on a work project, runs on a personal one); the heading count becomes 11 (`^### P6-(0[0-9]|10)`), and the acceptance grep that expects 9 changes accordingly |
+| human-check | add: gateway E-09 pasted lines for each model, dsh kill result, root-ownership observation |
+
+### Pitfalls (amendment)
+
+#### Pitfall A1: a user `command` template silently removes the guard
+**What goes wrong:** executing the example's `claude -p {prompt} … --allowedTools {allowed_tools} --strict-mcp-config` drops `--append-system-prompt`, `--settings <guard hooks>` and `--disallowedTools`; Lead/Dev would run without their prompt and without the PreToolUse guard (W-1, ROLE-06).
+**How to avoid:** argv for `anthropic` and `agy` comes only from `build_command_with_prompt` / `agy_plan`; `command` supplies argv[0]. Acceptance grep in 06-11: `--settings` and `--append-system-prompt` still present in the gateway argv recorded by the fake.
+**Warning signs:** a run whose fake record lacks `--settings`.
+
+#### Pitfall A2: key variables of other engines leak into a run
+**What goes wrong:** engine.rs:415-421 strips only the deepseek `key_env` from agy's env; with N entries, a claude, agy or dsh run (or gateway B) inherits gateway A's key from the serve shell.
+**How to avoid:** `catalog.all_key_envs()` removed from every env, then each gateway arm injects only its own token; tests with two planted keys assert `env_names` per record.
+
+#### Pitfall A3: `${VAR}` / free `env` maps read arbitrary environment
+A config `env` value `${ANY}` would copy any variable of the serve process into a child. Derive env from `base_url` + `key_env` + whitelisted `compat`; reject `env` (strict unknown-key error).
+
+#### Pitfall A4: in-container processes survive a host kill (dsh)
+S6 (4a). Every stop path must run the marker-based container kill, including `cmd_kill` from another process (needs the persisted `metrics_json.dsh`) and the runner's timeout; only SIGKILL of agent-brain itself escapes (documented).
+
+#### Pitfall A5: plain text goes through the JSON classifier
+`classify` maps non-JSON to `bad_json`; `row_kind` shows it as an error row and `events.raw_json` must stay re-classifiable by `sse::row_json` (sse.rs:36+). Wrap text lines into a JSON event before insert; keep the raw text in `stream.jsonl`.
+
+#### Pitfall A6: `docker inspect` without `--format` prints the container's environment
+Always `--format '{{json .Mounts}}'`; never capture or store a full inspect; add an acceptance grep forbidding a bare `inspect` in `dsh.rs` and the shims.
+
+#### Pitfall A7: `plan_for` signature churn
+`plan_for(cfg, resolved, role, claude_argv, claude_model, base_env, timeout)` has ~8 unit-test call sites in engine.rs (:475-665) and one production call (roles/mod.rs:436). Adding `project_profile` + raw env (for `pin_profile`) is one coordinated edit in 06-11; later plans must not change it again.
+
+#### Pitfall A8: renamed/removed engine ids
+Old `runs.engine` rows keep the old id; stats show them unpriced and the pipeline label falls back to the raw id. Document "do not rename an engine id that has runs"; `kind_of(unknown)` must return `None` and every consumer (dev.rs scope check, pricing) must treat `None` as "no special handling", never panic.
+
+#### Pitfall A9: `chưa kiểm` repurposing
+The word currently has no producer (`Readiness::ChuaKiem` exists, engine.rs:75, `readiness()` never returns it). Emitting it changes `dashboard_settings.rs:1026` expectations and the Giao việc callout text; both are listed in the plan, not discovered at execution.
+
+#### Pitfall A10: pricing "most expensive" fallback sees engine prices
+`price_for` falls back to the maximum `input` over ALL table values (pricing.rs:23-36). Engine prices must not live in `cfg.pricing`, or an expensive gateway entry would raise the claude fallback.
+
+#### Pitfall A11: personal-profile concurrency rule and `claude-max`
+E-06 blocks a second live run on profile `personal` (roles/mod.rs:396-404). A pinned run and a normal personal run share `~/.claude-orca`, which is exactly what E-06 protects; no change needed, but the live check must not run them concurrently.
+
+### Validation Architecture (amendment)
+
+Same framework and commands as the existing section (`cargo test … -- --test-threads=1`, `node scripts/dashboard-js-check.mjs`, ui-lint, `build-css.sh --check`, smoke). `workflow.nyquist_validation` is not set in `.planning/config.json` (only `workflow._auto_chain_active`), so this amendment is in force. [VERIFIED: `cat .planning/config.json` this session]
+
+| Req ID | Behavior | Test Type | Automated Command | File Exists? |
+|--------|----------|-----------|-------------------|-------------|
+| ENG-08 | array shape parses to `EngineDef`s: two `anthropic` entries (gateway + official), `agy`, `dsh`, native `claude-max`; absent `engines` = `[deepseek, agy]`; user array not merged with defaults | unit | `cargo test --lib config::tests::engine_list` | ❌ Wave 0 (new tests in config.rs) |
+| ENG-08 | legacy object shape unchanged, legacy error strings byte-identical | unit | `cargo test --lib config::tests::engines_defaults config::tests::engines_validation config::tests::engines_custom` (existing, config.rs:913-1012; assertions may move to `get("deepseek")`) | ✅ extend |
+| ENG-08 | every validation error of the table (duplicate id, reserved ids `claude`/`người`/NFD, charset/length, unknown kind, `key_env` rules, models role, `command` extra args, `allowed_profiles`/`pin_profile` unknown, dsh container, unknown field) | unit | `cargo test --lib config::tests::engine_list_errors` | ❌ Wave 0 |
+| ENG-08 | the shipped example parses: `docs/config.engines.example.json` (amended to the final shape) loads through `config_from_value` | unit | `cargo test --lib config::tests::example_engines_file_loads` (`include_str!` of `../docs/config.engines.example.json`) | ❌ Wave 0 |
+| ENG-08 | team naming an unknown engine id: loads with a warning; Settings save → 422; run seam refuses before any run row; summary sort/`engine_text` for ids | unit + integration | `cargo test --lib teams`; `cargo test --test dashboard_settings team_unknown_engine`; `cargo test --test engine_routing unknown_engine_refused_before_run` | ❌ Wave 0 / extend |
+| ENG-08 / ENG-01 | two `anthropic` endpoints in one config: each run gets only its own base_url/token (`auth_token_matches_expected`), the other key variable absent from `env_names`; `runs.engine` = the id; stats rows per id | integration | `cargo test --test engine_routing two_anthropic_endpoints` | ❌ Wave 0 |
+| ENG-01 | `tiet-kiem`-shaped team on a custom id: lead/qa `claude`, dev `vcadm-deepseek`; header `· engine vcadm-deepseek · model deepseek/deepseek-chat`; argv still has `--settings`, `--append-system-prompt`, `--allowedTools` | integration | `cargo test --test engine_routing tiet_kiem_routes_lead_dev_qa` (re-specified by the new 06-11) | ❌ Wave 0 |
+| ENG-05 | planted key of engine A absent from every sink of runs of engines B, claude, agy, dsh; redaction/scan tests of old 06-11 Tasks 2-3 with per-entry keys | integration | `cargo test --test engine_secrets` | ❌ Wave 0 (06-21) |
+| ENG-04 | stats rows by engine id; a native `claude-max` run is priced by family, a gateway run by `engine_pricing[id]`, an unpriced one flagged, a dsh run `usage: none` | unit + integration | `cargo test --lib pricing`; `cargo test --test dashboard_stats eng04_engines_split_and_priced` | ✅ extend |
+| ENG-09 | argv recorded by the fake docker: `exec -w <root> <container> sh -c ': ab-dsh-…; dsh --profile "$1" "$2"' sh headless <prompt>`; stdin null; prompt not interpolated | integration | `cargo test --test engine_dsh dsh_argv_and_stdin` | ❌ Wave 0 (06-23) |
+| ENG-09 | text lines become `dsh/text` events, `usage_source none`, tokens 0, header label; Dev success commits; scope / `.planning/` / secret-path violation → exit 3; empty diff → `dsh:empty`, exit 4 | integration | `cargo test --test engine_dsh dsh_dev_outcomes` | ❌ Wave 0 |
+| ENG-09 | marker kill: `agent-brain kill` (cmd_kill path), runner timeout and SIGINT each end with no process whose args carry the marker; no `pkill`/`killall`/name-based kill in sources and shims | integration | `cargo test --test engine_dsh dsh_kill_inside_container` | ❌ Wave 0 |
+| ENG-09 | `marker_subtree` pure parsing of a `ps` snapshot (nested, re-parented orphans via the `before` list, no false positives on a similar marker) | unit | `cargo test --lib dsh::` | ❌ Wave 0 |
+| ENG-09 | preflight refuses a project root outside every same-path bind mount; accepts `/mnt/data`; refuses `Source != Destination` and read-only mounts | unit + integration | `cargo test --lib dsh::mounts`; `cargo test --test engine_dsh dsh_mount_preflight` | ❌ Wave 0 |
+| ENG-09 / SET-01 | readiness for dsh: no `docker` → `thieu_lenh`; container down → `thieu_lenh` with the reason; up → `san_sang`; probe injected, never a real Docker in tests | unit | `cargo test --lib engine::tests::readiness_dsh` | ❌ Wave 0 |
+| ENG-10 | `profile_refusal` / `team_profile_refusal` pure rules (`pin_profile`, `allowed_profiles`, third profile) | unit | `cargo test --lib engine::tests::profile_refusal teams::tests::team_profile_refusal` | ❌ Wave 0 |
+| ENG-10 | refusal at each bind point with the exact text and NO side effect (no job, no branch/task row, no team write, no run row): Giao việc 422, CLI `run lead --team`, `auto --start --team`, change team, quota re-run (dashboard and Telegram confirm), project-default `team`, Settings save with a work project referencing the team; success on the personal scratch project with `claude_config_dir` = the personal dir in the fake record | integration | `cargo test --test task_team --test dashboard_settings --test telegram_quota --test cli_autopilot --test engine_routing` (new cases named `eng10_*`) | ❌ Wave 0 (06-22) |
+| ENG-10 | run seam backstop refuses a hand-edited task team on a work project (exit 1, no run row, autopilot stops `run lỗi`) | integration | `cargo test --test engine_routing eng10_seam_backstop` | ❌ Wave 0 |
+| ENG-11 | E-09 offline self-test with `E09_KEY_ENV` and `E09_NAME`: prints `E09 offline OK`, leak gate negative test, two endpoint names do not overwrite each other's files | script | `E09_OFFLINE=1 E09_KEY_ENV=GW_KEY E09_NAME=gw bash spikes/e09/run.sh` then again with another name and `E09_OFFLINE=1 bash spikes/e09/run.sh` | ❌ Wave 0 (06-20) |
+| ENG-11 | readiness `chua_kiem` for a command+key-ready gateway without `verified`; `thieu_key` wins; `verified` → `san_sang`; reason text; header warning + `metrics_json.unverified` | unit + integration | `cargo test --lib engine::tests::readiness_chua_kiem`; `cargo test --test dashboard_settings engines_readiness_no_secret` | ✅ extend |
+| SET-01 | `GET /api/engines` lists configured engines in order claude → list → người with `kind`, `label`, `description`, no secret value, no write route (`PUT` → 405 as today) | integration | `cargo test --test dashboard_settings engines_readiness_no_secret settings_routes_gated` | ✅ extend |
+| SET-05 | Settings Engine rows and role selects built from the API (custom ids, kind badge, `chưa kiểm` soft hint on Giao việc); QA select still only `claude` | js-check + smoke | `node scripts/dashboard-js-check.mjs` (new `engine-list` section); `bash scripts/dashboard-smoke.sh settings assign --keys`; `bash scripts/dashboard-ui-lint.sh`; `bash scripts/build-css.sh --check` | ✅ extend |
+
+**Sampling rate (amendment).** Per task: the module-filtered `--lib` run plus the plan's own integration file. Per wave: that wave's integration files; wave 10 also the UI gates. Phase gate: unchanged (full suite, UI gates, scan-secrets, Cargo files unchanged since `574b6cd`, the live check with the amended script).
+
+**Wave 0 gaps (amendment).**
+- [ ] `tests/fakes/fake_docker.py` and `tests/fakes/fake_dsh.py` (+ a `Sandbox` helper that puts the shim directory first on `PATH` and writes the `dsh` engine entry)
+- [ ] `tests/fakes/fake_claude.py`: `env_names`, `anthropic_base_url`, `auth_token_matches_expected`, `echo_env` (the old 06-11 additions, still unbuilt) with per-call `FAKE_CLAUDE_EXPECT_TOKEN`
+- [ ] `Sandbox::write_engines(list)` and a **personal** scratch project helper (`setup_auto_project(&sb, "personal")` already takes a profile, engine_routing.rs:57)
+- [ ] fixtures `tests/fixtures/stream/anthropic_e09_<name>_{ok,auth_error}.jsonl` (user-run output of 06-20; tests skip with a printed line when absent, as the old `e09_fixtures_parse` did)
+- [ ] `06-VALIDATION.md`: add the rows above, replace the single E-09 manual row by "E-09 per endpoint and per model", add manual rows "dsh black box on a scratch personal repo (kill, ownership)", "`claude-max` refused on work / runs on personal"
+
+**Manual-only (amendment).** E-09 per endpoint (user key, real call); dsh kill and ownership on the real container (S6-style, user-run); the first real dsh task; Settings engine list look in light/dark at 1024/768/480.
+
+### Security Domain (amendment)
+
+`security_enforcement` is not disabled in config, so the section applies. ASVS categories touched: V5 (config and file input validation), V7 (redaction of N keys, no secret in errors), V12 (config files: strict keys, no env expansion), V4 (profile boundary as an access-control rule), V14 (configuration: Docker socket / bind-mount exposure of the dsh container).
+
+| Pattern | STRIDE | Standard mitigation |
+|---|---|---|
+| user config injects argv or env (template, `env`, `${VAR}`) | Tampering / Information disclosure | argv owned by role builders; env derived; strict unknown-key errors; config is the user's own trusted file but still never shell-interpreted (argv arrays only) |
+| wrong key reaches the wrong endpoint or engine | Information disclosure | strip all `key_env` from every env, inject one; `https://` only; per-engine redaction; planted-key tests for two keys |
+| work account used where personal is required (or the reverse) | Elevation of privilege | one pure `profile_refusal`, called at the run seam and six bind points; `pin_profile` resolves the directory through `profiles`, never a literal path |
+| dsh container root + `/mnt/data` rw + docker.sock | Elevation of privilege / Tampering | documented blast radius; optional `allowed_profiles`; post-run diff covers only the task repo (cannot see other projects); first real run on scratch; nothing in agent-brain starts, stops or execs anything but `exec … sh -c`, `ps`, `kill -TERM/-KILL <marker pid>`, `ps`, `inspect --format` |
+| shell injection through the dsh prompt | Tampering | prompt passed as positional `$2`, wrapper text is a constant plus a hex marker; `container` / `docker` validated by charset |
+| leftover container process after a kill | Denial of service / Repudiation | marker subtree + sweep by recorded PID; residual SIGKILL-of-agent-brain case documented and detected by preflight |
+| gateway error body echoing the token | Information disclosure | redaction before every sink applies to gateway engines (their stderr/stream can contain the token) |
+| `docker inspect` leaking container env | Information disclosure | only `--format '{{json .Mounts}}'`; acceptance grep |
+
+### Environment Availability (amendment)
+
+| Dependency | Required by | Available | Version | Fallback |
+|---|---|---|---|---|
+| docker CLI | dsh readiness/preflight/kill (real use), live check P6-09 | ✓ | Docker 29.8.1, build 4a63305 [VERIFIED: `docker --version`] | tests use `tests/fakes/fake_docker.py` |
+| container `dsh-deepseek-harness` | dsh real runs | ✓ up | `Up 8 days`, image `dsh-base:latest` [VERIFIED] | none (user starts it; agent-brain never does) |
+| `dsh` in the container | dsh | ✓ | `dsh --help` works; headless help quoted above [VERIFIED] | — |
+| `ps` inside the container | marker kill | ✓ (used by S6) [VERIFIED: spikes/s6/run.sh `snapshot()` runs `docker exec "$C" ps -ww -eo pid=,ppid=,pgid=,args=`, evidence in S6 (4a)/(4b)] | — | — |
+| `sh -c` wrapper behaviour in the image | dsh kill design | unknown (not executed: only `dsh … --help` is allowed) | — | S6-style user probe in 06-20 |
+| gateway key (`VCADM_GATEWAY_KEY`) and network | E-09 per endpoint | ✗ in this environment (by constraint) | — | user-run only |
+| `python3`, `node`, cargo, git, Chrome | tests, gates | ✓ (see the 2026-10-26 table) | — | — |
+
+**Missing with no fallback:** the user's gateway key and a real call (blocks only the E-09 evidence and the ENG-01 real gate). **Missing with fallback:** Docker in CI-like runs (fake shims).
+
+### Runtime State Inventory (amendment)
+
+Not a rename phase, but `runs.engine` changes meaning from a fixed name to an id: **Stored data:** no historical `deepseek` run can exist (`plan_for` refuses it today: engine.rs:332-335 `Engine::Deepseek => Err(BrainError::error(format!("Engine {} chưa được bật trong bản agent-brain này", …`), so no row migration; **Live service config / OS-registered state:** none; **Secrets/env vars:** new variable NAMES only (`VCADM_GATEWAY_KEY` in the example), values only in the process env; **Build artifacts:** none. Nothing needs a data migration; only the README note about not renaming ids.
+
+### Recommended Plan Decomposition (amendment)
+
+All dependencies on executed plans are satisfied (17 of 19 have SUMMARYs). The old `06-11` file is replaced; five plans are new (numbers 06-20 … 06-24); `06-19` is revised and moves last. The Rust work no longer waits for E-09: D-34 moves the gate from "build the engine" to "trust the endpoint", and fakes cover every behaviour (the real evidence gates only 06-19's human checks).
+
+| Plan | Wave (frontmatter) | depends_on | Requirements | Files it owns | Notes |
+|---|---|---|---|---|---|
+| **06-11** (replaced) "engine list + `anthropic` kind + profile-refusal core" | 9 | executed plans only | ENG-08, ENG-11 (readiness), ENG-01 (partial), ENG-10 (core fn only) | `config.rs`, `assets/config.default.json`, `engine.rs`, `teams.rs` (parse/summary/QA rule only), `pricing.rs`, `roles/mod.rs` (seam: `String` engine, `plan_for` signature, `profile_refusal` call, unknown-id refusal), `roles/dev.rs` (`kind_of` gate only), `dashboard/api_settings.rs` (`get_engines` payload only), new stub `dsh.rs` (arm returns "Engine dsh chưa được bật"), `lib.rs`, `docs/config.engines.example.json`, `tests/fakes/fake_claude.py`, `tests/{engine_routing,dashboard_settings}.rs`, config/engine/teams unit tests | 3 tasks: (1) tracer: catalog + both shapes + `Engine::Named` + `anthropic` arm → `tiet_kiem_routes_lead_dev_qa` on a custom id; (2) readiness/API/teams-with-catalog/pricing per id/unknown-id refusal; (3) `profile_refusal` + `pin_profile` env + seam backstop + example file test. Estimate ~110k tokens, confidence low |
+| **06-20** (new) "E-09 per endpoint + dsh kill probe tooling" | 9 | none | ENG-11 | `spikes/e09/{run.sh,verify.sh,NOTES.md}`, `spikes/s6/run.sh` (a `--kill-wrapper` variant for the marker form, optional `--uid` variant), `tests/fixtures/stream/anthropic_e09_*` (user output) | no Rust; disjoint from 06-11, so same wave; `checkpoint:human-action` (user runs the gateway probe with their own key) then `checkpoint:decision` per endpoint; offline self-tests with fakes; ~40k tokens |
+| **06-21** (new) "key hygiene for N keys" = old 06-11 Tasks 2-3 | 10 | 06-11 | ENG-05 | `runner.rs` (`redact`), `roles/mod.rs` (pass redact, post-run scan), `engine.rs` (`scan_for_secrets` appended; no `plan_for` change), `tests/fakes/fake_claude.py` (`echo_env`), `tests/engine_secrets.rs` | near-verbatim reuse of the old tasks; secrets = values of the run's engine `key_env` variables; ~70k tokens |
+| **06-22** (new) "profile guard at the bind points (D-36)" | 10 | 06-11 | ENG-10 | `teams.rs` (`team_profile_refusal`), `roles/lead.rs`, `autopilot/mod.rs`, `dashboard/api_tasks.rs`, `dashboard/api_settings.rs` (save), `telegram/intake.rs` (optional picker filter), tests `task_team.rs`, `dashboard_settings.rs`, `telegram_quota.rs`, `cli_autopilot.rs`, `engine_routing.rs` (`eng10_*`) | disjoint from 06-21 (no runner/roles/mod.rs); needs 06-11's `profile_refusal`; ~70k tokens |
+| **06-24** (new) "engine list in Settings and Giao việc" | 10 | 06-11 | SET-01 (amended), SET-05 | `assets/dashboard/js/{settings,assign}.js`, `screens/{settings,assign}.html`, `scripts/dashboard-js-check.mjs`, `scripts/dashboard-smoke.sh`, `assets/dashboard/app.css` only if `build-css.sh --check` says so | disjoint (assets only); the UI-SPEC copy change needs approval (Q9); ~60k tokens |
+| **06-23** (new) "`dsh` black-box engine" | 11 | 06-21, 06-22 (runner.rs and roles/mod.rs ownership; guard tests) | ENG-09 | new `dsh.rs`, `runner.rs` (stop hook + `cmd_kill`), `roles/mod.rs` (Observer text format, `metrics_json.dsh`), `stream.rs`, `term.rs`, `dashboard/sse.rs`, `roles/dev.rs` (`dsh:empty`), `autopilot/{decide,view}.rs`, `dashboard/taskstate.rs`, `quota.rs` (`detect_text`), `tests/fakes/{fake_docker,fake_dsh}.py`, `tests/engine_dsh.rs` | the largest and riskiest plan (process safety); one `coupling_justified` note for the shared files; ~120k tokens, confidence low; no real Docker in any automated test |
+| **06-19** (revised) | 12 | 06-01 … 06-18, 06-20 … 06-24 | ENG-01 … ENG-11, TEAM-02, SET-05 | `scripts/phase6-live-check.sh`, `agent-brain/README.md`, `agent-brain/LIVE-CHECKS.md` | see "06-19 Revision"; its `[BLOCKING]` schema dry run is unchanged |
+
+**Shared-file watch list.** `engine.rs`: 06-11 (owner), 06-21 appends one function only. `roles/mod.rs`: 06-11 → 06-21 → 06-23 strictly serial. `runner.rs`: 06-21 → 06-23. `teams.rs` and `api_settings.rs`: 06-11 → 06-22. `fake_claude.py`: 06-11 → 06-21. `tests/engine_routing.rs`: 06-11 then 06-22 (06-21 uses its own file). 06-11 must leave the dispatch stubs (`dsh` arm, `kind_of`, `all_key_envs`, `profile_refusal`) in place so 06-21/06-22/06-23 never edit `plan_for` again (the old plans did the same with deepseek/agy stubs).
+
+**One-way or costly doors (mark each as a decision checkpoint or an explicit note in the plan):**
+
+1. `runs.engine` = engine **id** from the first non-claude run on: renaming an id later orphans rows; reversible only by not renaming. (06-11, note in README)
+2. Engine ids are written into `teams.json` and `tasks.team_json`: same orphan effect; mitigated by the refuse-before-run rule.
+3. Nothing in these plans rewrites the user's real `config.json` (none exists), `teams.json` or `projects_map.json`; both config shapes are accepted, so the choice of shape is reversible.
+4. The first real dsh run on a work repo can leave root-owned files that only `sudo` fixes: not reversible by agent-brain. Gate it behind `checkpoint:human-verify` in 06-19 (P6-09 on a scratch personal repo) and ship `allowed_profiles` for the `dsh` entry.
+5. The first real gateway call spends the company's tokens and sends a company key to an internal endpoint: only through the user-run E-09 script (06-20), never from automated tests.
+6. The built-in `tiet-kiem` keeps naming `deepseek`: changing a built-in team later changes behaviour for every user of it (Q7).
+7. Adding `chưa kiểm` to readiness changes UI behaviour and two existing assertions (A9): do it once, in 06-11 + 06-24.
+
+### Proposed requirement wording (for the planner to register in REQUIREMENTS.md)
+
+Existing style; coverage grows by 4 (122 → 126) and the Traceability table gets four `Phase 6 | Pending` rows.
+
+- **ENG-08**: Danh sách engine do người dùng khai báo trong `config.json` (`engines`: mảng mục có `id`, `kind` = `anthropic` | `agy` | `dsh`, lệnh, `base_url` + tên biến `key_env` + model theo vai trò, giá); đội hình gọi engine theo `id` (cùng `claude` và `người:<mã>`); nhiều mục cùng loại được phép (gateway công ty và endpoint DeepSeek chính thức); dạng object `engines.deepseek` / `engines.agy` cũ vẫn đọc được; `runs.engine` ghi `id`; dashboard chỉ xem, không route nào ghi engine. *(derived: 06-CONTEXT D-30, D-31, D-32, D-33)*
+- **ENG-09**: Engine kiểu `dsh` chạy như hộp đen qua `docker exec` (chỉ văn bản, không token, dừng được bên trong container theo marker và quét các tiến trình con đã ghi, không theo tên, không khởi động lại container), kiểm tra git diff sau khi chạy như Dev của agy, và từ chối dự án nằm ngoài thư mục container thấy cùng đường dẫn. *(derived: 06-CONTEXT D-35)*
+- **ENG-10**: Engine có `pin_profile` hoặc `allowed_profiles` chỉ chạy trên dự án có profile phù hợp: lưu đội hình dùng engine đó, giao việc, đổi đội hình, chạy lại khi hết quota, `run lead --team`, `auto --start --team` và chạy bước trên dự án khác profile đều bị từ chối bằng thông báo tiếng Việt, không đường nào mượn quota của profile khác (ranh giới SPK-10). *(derived: 06-CONTEXT D-36)*
+- **ENG-11**: Mỗi endpoint `anthropic` có `base_url` cần bằng chứng E-09 (stream-json, tool use, usage, sửa file, không lộ key) theo từng model trước khi được tin; chưa có thì hiện `chưa kiểm`; script thăm dò nhận tên biến key và nhãn endpoint; quyết định do người dùng chạy. *(derived: 06-CONTEXT D-34)*
+- Amend **ENG-01** ("Dev chạy DeepSeek" → "Dev chạy trên một engine `anthropic` đã có bằng chứng E-09, endpoint DeepSeek chính thức hoặc gateway"), **ENG-05** ("Key DeepSeek" → "Key của mọi engine (mọi biến `key_env`)"), **TEAM-01** (engine names: "`claude`, tên engine khai báo trong `config.json`, `người:<mã>`") and **SET-01** (mục Engine liệt kê engine khai báo trong config.json cùng độ sẵn sàng, `chưa kiểm` khi thiếu bằng chứng E-09).
+
+### Assumptions Log (amendment)
+
+| # | Claim | Section | Risk if Wrong |
+|---|-------|---------|---------------|
+| A15 | `https://ai-gateway.vcadm.vn/proxyllm` serves Anthropic `/v1/messages` and accepts `ANTHROPIC_AUTH_TOKEN` as its key | anthropic kind, E-09 | the endpoint fails E-09; D-34 anticipates this (the user said "if it serves `/v1/messages`") |
+| A16 | `claude --model deepseek/deepseek-chat` is passed through unchanged and the gateway maps it | anthropic kind | model-name 400s; per-model E-09 catches it |
+| A17 | the gateway's budget/rate errors surface as HTTP 429/402 or a text `detect_claude` matches (LiteLLM documents 429 in one place and 400 in another [CITED: docs.litellm.ai users / error_reference]; that `proxyllm` is LiteLLM is itself assumed) | anthropic kind, quota | gateway budget stops look like `run lỗi` instead of `hết quota`; raw lines stored for recalibration |
+| A18 | the shell in `dsh-base:latest` runs `sh -c ': marker; dsh …'` so the marker stays visible in `ps` args until dsh exits | dsh kind | marker kill finds nothing; mitigated by the PID-file fallback and the user-run kill probe (06-20) before real use |
+| A19 | `docker exec -u 1000:1000` works with dsh (profile in `/root/.dsh` readable) | dsh hazards | root-owned files cannot be avoided; unknown, probe only |
+| A20 | git run as root inside a user-owned repo is refused or harmless | dsh hazards | root-owned `.git` objects break the host's git; detect with a post-run `git status` in P6-09 |
+| A21 | agy/dsh/gateway engines on a personal project share the personal profile's E-06 serialisation safely | claude-max | over-restrictive only |
+| A22 | per-model E-09 evidence is required (reasoner vs chat differ) | E-09 | extra user-run probe cost; relaxing to per-endpoint is a one-line rule change |
+| A23 | `chưa kiểm` should warn, not block | E-09 | if the user wants a hard gate the run seam refuses instead (Q5) |
+| A24 | LiteLLM-style budget phrases (`budget`, `exceeded budget`) belong in the quota regex | anthropic kind | false positives on prose; keep it to an error result only |
+| A25 | dsh output is plain text on stdout with errors on stderr and a non-zero exit when dsh fails | dsh kind | quota/failed misclassification; S6 observed exit 0 and one stdout line on success only |
+
+Verified this session (not assumed): the code seams and line numbers above, the dsh help text, the same-path `/mnt/data` bind mount, container user/restart policy, the project count and profile split, `runs.engine` having no CHECK, the E-09 script limits, the existing test expectations quoted.
+
+### Open Questions (amendment)
+
+1. **Q1: shape divergences from `docs/config.engines.example.json`.**
+   - What we know: the example is the user's intent but marked "CHƯA dùng được"; it contains an `id: "claude"` entry, full argv templates, `env` maps and a dsh template with the container inside (divergences D1-D7 above).
+   - What's unclear: whether the user wants templates to drive argv (the research recommends against: Pitfall A1) and whether an entry with `id: "claude"` is meant to override the built-in's models/label or just document it.
+   - Recommendation: `command` = executable only; `claude` reserved (a list entry with that id is a config error telling the user to remove it); `pin_profile` instead of `env.CLAUDE_CONFIG_DIR`; discrete dsh fields. Planner amends the example to the final shape and a test loads it.
+2. **Q2: which roles may use `dsh`?**
+   - Known: D-35 is silent; dsh has no read-only mode (agy gets `request-review`); `người` is Dev-only (D-24).
+   - Unclear: whether Lead/reviewers on dsh are wanted.
+   - Recommendation: Dev only in this phase, refused by the teams validator and Settings save with a Vietnamese error (same mechanism as D-24).
+3. **Q3: restrict `dsh` to personal projects and accept the blast radius?**
+   - Known: root, rw `/mnt/data`, docker.sock, root-owned output files; 176 of 178 projects are work projects.
+   - Unclear: whether work repos are in scope for dsh at all.
+   - Recommendation: ship `allowed_profiles` for every kind; suggest `["personal"]` on the user's `dsh` entry until P6-09 shows the ownership/kill behaviour is acceptable.
+4. **Q4: QA on `claude-max`, and is the pinned engine worth it?** 
+   - Known: D-06 says QA must be `claude`; teams.rs:220 is strict equality; on a personal project `claude` already runs on `~/.claude-orca` (assets/config.default.json personal profile), so `claude-max` differs only by models/label.
+   - Unclear: whether the user wants QA allowed on any native Claude entry, and whether the model difference justifies the pinned kind.
+   - Recommendation: keep QA strictly `claude` (costs nothing on personal projects); keep D-36 as decided.
+5. **Q5: should an endpoint without E-09 evidence block runs?**
+   - Recommendation: no, warn (`chưa kiểm`, header line, `metrics_json.unverified`). The first real task is the evidence collector in practice; a hard block can be one config flag later.
+6. **Q6: Settings save of a team that uses a pinned engine, when no work project references it yet.**
+   - Recommendation: allow; refuse only when a project default (`projects_map.json` `team`) or an open task of a project with a forbidden profile uses the team; everything else is caught at use (seam + bind points).
+7. **Q7: built-in `tiet-kiem` and a user list that lacks `deepseek`.**
+   - Recommendation: keep the built-in naming `deepseek`; document the override in `teams.json`; the Settings team row shows "engine chưa khai báo". Alternative (not recommended): resolve `tiet-kiem`'s Dev to "the first verified gateway", which hides which endpoint is spending money.
+8. **Q8: UI-SPEC change.** The approved UI-SPEC says the Engine section lists "Engine có sẵn trong agent-brain" with fixed descriptions (06-UI-SPEC.md:280-288) and that `chưa kiểm` is "Engine readiness before the first check" (:145). Both change (configured list, `chưa kiểm` = no E-09 evidence, `usage: none`). Needs the user's OK on the copy before 06-24 (a short UI-SPEC delta).
+9. **Q9 (optional): fifth readiness word for "container chưa chạy"** instead of reusing `thiếu lệnh` with a reason line. Recommendation: reuse, no vocabulary change.
+
+### Sources (amendment)
+
+#### Primary (HIGH confidence)
+- Codebase files opened this session (paths cited inline): `agent-brain/src/{engine,config,teams,pricing,quota,runner,profile,stream,term,db,projects,staff,workflows,error}.rs`, `src/roles/{mod,dev,lead}.rs`, `src/autopilot/{mod,decide,view}.rs`, `src/dashboard/{api_settings,api_tasks,api_stats,api_runs,jobs,sse,taskstate,pipeline}.rs`, `src/telegram/{bot,intake}.rs`, `assets/config.default.json`, `assets/teams.default.json`, `assets/dashboard/js/{settings,assign,app,stats,task}.js`, `agent-brain/tests/{engine_routing,engine_agy,dashboard_settings}.rs`, `tests/common/mod.rs`, `tests/fakes/{fake_claude,fake_agy}.py`
+- `spikes/spike-results.md` (S5, S6, SPK-10), `spikes/s6/run.sh`, `spikes/e09/{run.sh,verify.sh,NOTES.md}`, `docs/config.engines.example.json`
+- `06-CONTEXT.md` (D-30 … D-36 and the decisions they revise), `06-11-PLAN.md`, `06-19-PLAN.md`, SUMMARYs of 06-01, 06-02, 06-03, 06-05, 06-06, 06-07, 06-09, 06-10, 06-13, 06-14, 06-15, `06-UI-SPEC.md` (engine section), `06-VALIDATION.md`, `.planning/REQUIREMENTS.md` (ENG/TEAM/SET/HUM/QUOTA rows)
+- Read-only tool output: `docker --version`, `docker ps -a --format …`, `docker inspect dsh-deepseek-harness --format '{{json .Mounts}}'` and a second `--format` for user/workdir/state/restart policy, `docker exec dsh-deepseek-harness dsh --profile headless --help` and `dsh --help`, a python read of `~/.config/agent-brain/{config,projects_map}.json` (no config.json exists; 178 projects)
+
+#### Secondary (MEDIUM confidence)
+- https://docs.litellm.ai/docs/proxy/users and https://docs.litellm.ai/docs/proxy/error_reference.md (budget-exceeded error codes vary: 400 / 429 / string `error.code`)
+- the 2026-10-26 sources already listed above (Claude Code gateway docs for credential precedence)
+
+#### Tertiary (LOW confidence)
+- web search on `docker exec` signal forwarding returned only generic container-signal material; the local S6 evidence is used instead
+- anything about `ai-gateway.vcadm.vn` (not reachable by constraint)
+
+### Metadata (amendment)
+
+**Confidence breakdown:**
+- Seam map and decomposition: HIGH (every cited file opened in this tree).
+- Config shape and guard design: HIGH for the code constraints; MEDIUM for the user-intent choices (Q1-Q4).
+- `anthropic` gateway behaviour: MEDIUM-LOW until E-09 per endpoint.
+- dsh process behaviour: MEDIUM (S6 evidence + read-only docker facts), LOW for the marker wrapper on the real image until the user-run probe.
+
+**Research date:** 2026-10-27
+**Valid until:** 2026-11-03 for the dsh/docker facts (the container's mounts and image can change at any time); code-seam claims hold until the next commit touching the cited files.
