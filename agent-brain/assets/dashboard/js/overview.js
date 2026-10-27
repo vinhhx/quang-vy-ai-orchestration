@@ -113,7 +113,7 @@
           {
             key: 'running',
             title: 'Đang chạy',
-            hint: 'Agent đang làm việc',
+            hint: 'Agent hoặc nhân sự đang làm việc',
             empty: 'Không có run nào đang chạy.',
           },
           {
@@ -200,13 +200,36 @@
         return window.AB.roleName(role) + ': ' + (s ? window.AB.stepWord(s) : 'chờ');
       },
 
-      // Autopilot stop reason (server stop_detail, shown verbatim) under the banner row.
-      hasReason: function (t) {
-        return Boolean(t && t.auto_state === 'stopped' && t.stop_detail);
+      // A task whose step a person holds (06-16): blue `cho_nguoi` tint and ◐ without a pulse.
+      isHumanWaiting: function (t) {
+        return Boolean(t && t.human_mode === 'waiting');
       },
 
+      bannerClass: function (t) {
+        var base = 'inline-flex items-center gap-1 text-sm font-semibold leading-normal';
+        if (this.isHumanWaiting(t)) return base + ' ' + window.AB.stateText('cho_nguoi');
+        return base;
+      },
+
+      bannerHasGlyph: function (t) {
+        return this.isHumanWaiting(t);
+      },
+
+      bannerGlyph: function (t) {
+        return this.isHumanWaiting(t) ? window.AB.stepGlyph('cho_nguoi') : '';
+      },
+
+      // Reason line under the banner: the autopilot's stop_detail when it stopped, else the quota
+      // stop_detail of a manual task waiting for you (both server strings, shown verbatim).
       reasonText: function (t) {
-        return (t && t.stop_detail) ? t.stop_detail : '';
+        if (!t) return '';
+        if (t.auto_state === 'stopped' && t.stop_detail) return t.stop_detail;
+        if (t.group === 'waiting' && !t.human_mode && t.quota_detail) return t.quota_detail;
+        return '';
+      },
+
+      hasReason: function (t) {
+        return this.reasonText(t) !== '';
       },
 
       showAutoBadge: function (t) {

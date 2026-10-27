@@ -44,6 +44,12 @@
       staffVer: 0,
       _staffLoaded: false,
 
+      // 06-18: human step callout. `taskAt` is when the task payload arrived (the wait time
+      // keeps counting from it between polls); the refusal and copy messages belong to the callout.
+      taskAt: 0,
+      humanRefusal: '',
+      humanCopyMessage: '',
+
       stageTitles: {
         start: 'Bắt đầu',
         plan: 'Lên plan',
@@ -99,6 +105,8 @@
           self._taskApplied = seq;
           if (res.ok && res.data) {
             self.task = res.data;
+            self.taskAt = Date.now();
+            self.syncHumanName();
             self.loaded = true;
             self.stale = false;
             self.error = '';
@@ -384,6 +392,7 @@
 
       get bannerState() {
         if (!this.task) return 'cho';
+        if (this.humanWaiting) return 'cho_nguoi';
         var g = this.task.group;
         if (g === 'running') return 'dang_chay';
         if (g === 'waiting') return 'cho_ban';
@@ -454,6 +463,274 @@
           }
           return names;
         });
+      },
+
+      // ---- Human step callout (D-19 / D-20 / D-25) — only the task-detail payload ----
+      get humanView() {
+        return (this.task && this.task.human) ? this.task.human : null;
+      },
+
+      get hasHuman() {
+        return Boolean(this.humanView);
+      },
+
+      get humanWaiting() {
+        return Boolean(this.humanView && this.humanView.mode === 'waiting');
+      },
+
+      get humanRejected() {
+        return Boolean(this.humanView && this.humanView.mode === 'rejected');
+      },
+
+      get humanName() {
+        var h = this.humanView;
+        if (!h) return '';
+        return h.staff_name || h.staff_id || 'người';
+      },
+
+      // `{staff_id: staff_name}` of the waiting person, merged into the names the engine texts
+      // read, so `người:{id}` shows the name even before /api/staff is fetched.
+      syncHumanName: function () {
+        var h = this.humanView;
+        if (!h || !h.staff_id || !h.staff_name) return;
+        var known = window.AB._staffNames || {};
+        if (known[h.staff_id] === h.staff_name) return;
+        var names = {};
+        for (var k in known) {
+          if (Object.prototype.hasOwnProperty.call(known, k)) names[k] = known[k];
+        }
+        names[h.staff_id] = h.staff_name;
+        window.AB.setStaffNames(names);
+        this.staffVer += 1;
+      },
+
+      // Second round or a fix step reads `làm lại`.
+      get humanRedo() {
+        var h = this.humanView;
+        if (!h) return false;
+        return Boolean((typeof h.round === 'number' && h.round > 1) || h.step === 'fix');
+      },
+
+      get humanHeading() {
+        var h = this.humanView;
+        if (!h) return '';
+        if (h.mode === 'rejected') return 'Kết quả của ' + this.humanName + ' chưa đạt';
+        return 'Chờ ' + this.humanName + (this.humanRedo ? ' làm lại bước ' : ' làm bước ') + (h.step_name || '');
+      },
+
+      // Which review turned the person's work down, read from the report the server attached.
+      get humanVerdictLine() {
+        var paths = this.humanReportPaths;
+        var qa = false;
+        var review = false;
+        for (var i = 0; i < paths.length; i++) {
+          if (String(paths[i]).indexOf('.qa-report') >= 0) qa = true;
+          if (String(paths[i]).indexOf('.code-review') >= 0) review = true;
+        }
+        if (qa) return 'QA kết luận cần sửa.';
+        if (review) return 'Review code kết luận sửa lại.';
+        return 'Kết quả lần trước chưa đạt.';
+      },
+
+      get humanBody() {
+        var h = this.humanView;
+        if (!h) return '';
+        var name = this.humanName;
+        if (h.mode === 'rejected') {
+          return this.humanVerdictLine + ' Xem báo cáo bên dưới rồi bấm Trả lại để ' + name + ' làm lại.';
+        }
+        return 'Nhánh ' + (h.branch || '') + ' đã có .plan.md đã commit. ' + name +
+          ' làm trên máy của họ rồi đẩy nhánh này lên remote. Khi họ báo xong, bấm Xong để lấy nhánh về và chạy tiếp quy trình.';
+      },
+
+      get humanBranch() {
+        return this.humanView ? (this.humanView.branch || '') : '';
+      },
+
+      get humanContact() {
+        var h = this.humanView;
+        return (h && h.notes) ? 'Liên hệ: ' + h.notes : '';
+      },
+
+      get hasHumanContact() {
+        return this.humanContact !== '';
+      },
+
+      // The wait keeps counting between the 3 s polls.
+      get humanWaitText() {
+        var h = this.humanView;
+        if (!h || typeof h.waiting_ms !== 'number') return '';
+        var elapsed = this.taskAt ? Math.max(0, Date.now() - this.taskAt) : 0;
+        return 'Đã chờ ' + window.AB.fmtWait(h.waiting_ms + elapsed) + '.';
+      },
+
+      get humanReportPaths() {
+        var h = this.humanView;
+        return (h && Array.isArray(h.report_paths)) ? h.report_paths : [];
+      },
+
+      get hasHumanReport() {
+        return this.humanReportPaths.length > 0;
+      },
+
+      get humanReportLabel() {
+        return 'Báo cáo cần gửi cho ' + this.humanName + ':';
+      },
+
+      get humanReportText() {
+        return this.humanReportPaths.join('\n');
+      },
+
+      get humanPush() {
+        var h = this.humanView;
+        return (h && h.push) ? h.push : null;
+      },
+
+      // D-25: the push to the remote failed, so the person cannot fetch the branch yet.
+      get humanPushFailed() {
+        var p = this.humanPush;
+        return Boolean(p && p.ok === false);
+      },
+
+      get humanPushCommand() {
+        var p = this.humanPush;
+        return p ? (p.command || '') : '';
+      },
+
+      get humanPushLine() {
+        return 'Chưa đẩy được nhánh lên remote — chạy lệnh này trong thư mục dự án rồi gửi nhánh cho ' + this.humanName + '.';
+      },
+
+      actionById: function (id) {
+        var acts = this.actionList;
+        for (var i = 0; i < acts.length; i++) {
+          if (acts[i] && acts[i].id === id) return acts[i];
+        }
+        return null;
+      },
+
+      get humanDoneAction() {
+        return this.actionById('human_done');
+      },
+
+      get humanReturnAction() {
+        return this.actionById('human_return');
+      },
+
+      // One button per mode: `Xong` while the person works, `Trả lại` when the result was refused.
+      get humanButtons() {
+        if (this.humanWaiting) return this.humanDoneAction ? [this.humanDoneAction] : [];
+        if (this.humanRejected) return this.humanReturnAction ? [this.humanReturnAction] : [];
+        return [];
+      },
+
+      get hasHumanButtons() {
+        return this.humanButtons.length > 0;
+      },
+
+      humanHelper: function (a) {
+        if (!a) return '';
+        if (a.id === 'human_done') {
+          return 'Lấy nhánh ' + this.humanBranch + ' từ remote vào thư mục làm việc rồi chạy tiếp quy trình.';
+        }
+        if (a.id === 'human_return') {
+          return 'Đưa việc về cho ' + this.humanName + ' kèm báo cáo; bạn gửi báo cáo cho họ.';
+        }
+        return '';
+      },
+
+      // Waiting: the blue card tint (STATE_CARD.cho_nguoi, no new class); rejected: the amber callout.
+      get humanCalloutClass() {
+        var base = 'rounded-xl p-4 space-y-4 ';
+        if (this.humanRejected) {
+          return base + 'bg-amber-50 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200';
+        }
+        return base + 'border text-slate-900 dark:text-slate-100 ' + window.AB.stateCard('cho_nguoi');
+      },
+
+      // ◐ without a pulse (nobody runs a process) while waiting; ! for a refused result.
+      get humanGlyph() {
+        return window.AB.stepGlyph(this.humanRejected ? 'vuong_mac' : 'cho_nguoi');
+      },
+
+      get humanGlyphClass() {
+        return 'w-6 shrink-0 text-center';
+      },
+
+      get hasHumanCopyMessage() {
+        return this.humanCopyMessage !== '';
+      },
+
+      // POST /api/tasks/{id}/human/done|return {rev} → {job_id}. A refusal keeps the callout and
+      // shows the server's reason under the button, verbatim.
+      humanPost: function (a, route, okText) {
+        var self = this;
+        if (!a || this.busyAction) return;
+        var rev = (this.task && this.task.rev !== undefined) ? this.task.rev : null;
+        this.busyAction = a.id;
+        this.humanRefusal = '';
+        return window.AB.api('POST', '/api/tasks/' + this.id + route, { rev: rev }).then(function (res) {
+          self.busyAction = '';
+          if (res && (res.status === 202 || res.status === 200) && res.data && !res.data.error) {
+            self.humanRefusal = '';
+            self.message = (typeof okText === 'function') ? okText(res.data) : okText;
+            self.load();
+          } else {
+            self.humanRefusal = (res && res.data && res.data.error) ? res.data.error : window.AB.errorText(res);
+            if (res && res.data && res.data.kind === 'stale') self.load();
+          }
+        });
+      },
+
+      humanDone: function () {
+        var a = this.humanDoneAction;
+        if (!a || !a.enabled) return;
+        return this.humanPost(a, '/human/done', function (data) {
+          return 'Đã lấy nhánh về — quy trình chạy tiếp (job ' + data.job_id + ').';
+        });
+      },
+
+      humanReturn: function () {
+        var a = this.humanReturnAction;
+        if (!a || !a.enabled) return;
+        return this.humanPost(a, '/human/return', 'Đã trả việc lại cho ' + this.humanName + '.');
+      },
+
+      // Clipboard, else select the text so Ctrl+C works; the message sits in the callout.
+      copyHumanText: function (text, elId, okText) {
+        var self = this;
+        function selectFallback() {
+          var el = document.getElementById(elId);
+          if (el && window.getSelection) {
+            var range = document.createRange();
+            range.selectNodeContents(el);
+            var sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          }
+          self.humanCopyMessage = okText;
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () {
+            self.humanCopyMessage = okText;
+          }).catch(function () {
+            selectFallback();
+          });
+        } else {
+          selectFallback();
+        }
+      },
+
+      copyBranch: function () {
+        this.copyHumanText(this.humanBranch, 'ab-human-branch', 'Đã sao chép tên nhánh');
+      },
+
+      copyReportPaths: function () {
+        this.copyHumanText(this.humanReportText, 'ab-human-report', 'Đã sao chép đường dẫn');
+      },
+
+      copyPushCommand: function () {
+        this.copyHumanText(this.humanPushCommand, 'ab-human-push', 'Đã sao chép lệnh');
       },
 
       // ---- Team line, history (D-13) — only the task-detail payload ----
@@ -595,6 +872,7 @@
         if (!a.enabled && a.reason) return a.reason;
         if (a.id === 'change_team') return this.teamRefusal;
         if (a.id === 'quota_rerun') return this.quotaRefusal;
+        if (a.id === 'human_done' || a.id === 'human_return') return this.humanRefusal;
         return '';
       },
 
@@ -1620,6 +1898,10 @@
       },
 
       get autoBadge() {
+        // 06-18: a person holds the step; autopilot continues by itself after Xong.
+        if (this.autoState === 'waiting_human') {
+          return { text: 'Autopilot: chờ ' + this.humanName + ' làm', key: 'cho_nguoi' };
+        }
         return window.AB.autoBadge(this.autoView);
       },
 
@@ -1902,6 +2184,9 @@
         if (this.quotaRerunShown) return secondary;
         if (a.id === 'auto_more_round') return primary;
         if (this.controlById('auto_more_round') && this.showAutoStop) return secondary;
+        // Xong / Trả lại: one at a time, below the three above and above the strip.
+        if (a.id === 'human_done' || a.id === 'human_return') return primary;
+        if (this.hasHumanButtons) return secondary;
         var strip = this.stripActions;
         var firstEnabled = null;
         for (var i = 0; i < strip.length; i++) {
@@ -1924,6 +2209,8 @@
           if (a.id === 'approve') return 'Đang duyệt...';
           if (a.id === 'kill' || a.id === 'auto_stop' || a.id === 'auto_end') return 'Đang dừng...';
           if (a.id === 'change_team') return 'Đang đổi...';
+          if (a.id === 'human_done') return 'Đang lấy nhánh...';
+          if (a.id === 'human_return') return 'Đang trả...';
           return 'Đang giao...';
         }
         return a.label;
@@ -1957,6 +2244,10 @@
           this.openQuotaRerun();
         } else if (a.id === 'quota_later') {
           this.postponeQuota();
+        } else if (a.id === 'human_done') {
+          this.humanDone();
+        } else if (a.id === 'human_return') {
+          this.humanReturn();
         } else if (a.id === 'kill' || a.id === 'relead') {
           this.lastFocusId = this.actionId(a);
           this.dialog = a;

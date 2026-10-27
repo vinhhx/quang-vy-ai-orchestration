@@ -1,6 +1,8 @@
 // scripts/dashboard-keys.mjs — headless keyboard checks for dashboard
 // plain Node ESM, no dependencies, global fetch and WebSocket
 
+import { execFileSync } from 'node:child_process';
+
 const [,, portArg, urlArg] = process.argv;
 if (!portArg || !urlArg) {
   console.error('LỖI args: Thiếu port hoặc url');
@@ -818,6 +820,105 @@ async function main() {
     })()
   `, 8000, 'task-quota', 'Sau khi tải lại trang banner quota không hiện đủ hai nút');
   console.log('OK task-quota');
+
+  // Check N (06-18), human step on task 4 (Hà holds the Code step): the callout sits before the
+  // action strip in the tab order, Tab from the flow region reaches `Xong` without landing on a
+  // strip control, and Enter on `Sao chép tên nhánh` shows `Đã sao chép tên nhánh`. `Xong` is
+  // enabled only on the task branch, so the check switches the smoke repo to task/nguoi-lam and
+  // back; it never presses `Xong` or `Trả lại` (no job starts, nothing changes on task 4).
+  const smokeRepo = process.env.AB_SMOKE_REPO;
+  if (!smokeRepo) {
+    throw new Error('LỖI task-human: thiếu biến AB_SMOKE_REPO (thư mục repo của smoke)');
+  }
+  execFileSync('git', ['-C', smokeRepo, 'checkout', '-q', 'task/nguoi-lam']);
+  try {
+    await evaluate('window.location.hash = "#/task/4"');
+    await waitFor(`
+      (() => {
+        if (!document.querySelector('[data-screen="task"][data-loaded="yes"]')) return false;
+        const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        const btn = document.getElementById("ab-act-human_done");
+        return vis(document.querySelector("[data-human-callout]")) && vis(btn) && !btn.disabled
+          && btn.textContent.trim() === "Xong";
+      })()
+    `, 12000, 'task-human', 'Không thấy callout người làm với nút "Xong" đang bật trên task/4');
+
+    const humanSnapshot = `
+      fetch('/api/tasks/4')
+        .then(r => r.json())
+        .then(d => ({ rev: d.rev, runs: Array.isArray(d.runs) ? d.runs.length : 0, mode: d.human ? d.human.mode : null }))
+    `;
+    const humanBefore = await evaluate(humanSnapshot);
+
+    // Tab order: callout before the action strip (the strip's own buttons are disabled here, and
+    // none of them may take focus before Xong).
+    const order = await evaluate(`
+      (() => {
+        const callout = document.querySelector("[data-human-callout]");
+        const strip = document.querySelector("[data-action-strip]");
+        if (!callout || !strip) return { ok: false, why: "thiếu callout hoặc dải hành động" };
+        const pos = callout.compareDocumentPosition(strip);
+        return { ok: true, calloutBeforeStrip: Boolean(pos & Node.DOCUMENT_POSITION_FOLLOWING) };
+      })()
+    `);
+    if (!order.ok) {
+      throw new Error(`LỖI task-human: ${order.why}`);
+    }
+
+    await evaluate('document.activeElement && document.activeElement.blur()');
+    await evaluate('document.querySelector("[data-flow-region]").focus()');
+    let humanReached = false;
+    const visited = [];
+    for (let i = 0; i < 15 && !humanReached; i++) {
+      await pressKey('Tab', 'Tab', 9);
+      const info = await evaluate(`
+        (() => {
+          const el = document.activeElement;
+          return {
+            id: el ? el.id : "",
+            text: el ? el.textContent.trim().slice(0, 40) : "",
+            inStrip: Boolean(el && el.closest && el.closest("[data-action-strip]")),
+            inCallout: Boolean(el && el.closest && el.closest("[data-human-callout]")),
+          };
+        })()
+      `);
+      visited.push(info.id || info.text);
+      if (info.inStrip) {
+        throw new Error(`LỖI task-human: Tab đã rơi vào dải hành động (${info.id || info.text}) trước khi tới "Xong" (đã qua: ${visited.join(' → ')})`);
+      }
+      humanReached = info.id === 'ab-act-human_done';
+    }
+    if (!humanReached) {
+      throw new Error(`LỖI task-human: Tab không tới được nút "Xong" trong 15 lần bấm (đã qua: ${visited.join(' → ')})`);
+    }
+    if (!visited.includes('Sao chép tên nhánh')) {
+      throw new Error(`LỖI task-human: "Sao chép tên nhánh" không nằm trước "Xong" trong thứ tự Tab (đã qua: ${visited.join(' → ')})`);
+    }
+
+    await evaluate(`
+      (() => {
+        const callout = document.querySelector("[data-human-callout]");
+        const copy = Array.from(callout.querySelectorAll("button")).find(b => b.textContent.trim() === "Sao chép tên nhánh");
+        copy.focus();
+      })()
+    `);
+    await pressKeyText('Enter', 'Enter', 13, '\r');
+    await waitFor(`
+      (() => {
+        const el = document.querySelector("[data-human-copy]");
+        const vis = Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        return vis && el.textContent.trim() === "Đã sao chép tên nhánh";
+      })()
+    `, 3000, 'task-human', 'Enter trên "Sao chép tên nhánh" không hiện "Đã sao chép tên nhánh"');
+
+    const humanAfter = await evaluate(humanSnapshot);
+    if (JSON.stringify(humanAfter) !== JSON.stringify(humanBefore)) {
+      throw new Error(`LỖI task-human: task 4 đã đổi (${JSON.stringify(humanBefore)} → ${JSON.stringify(humanAfter)})`);
+    }
+  } finally {
+    execFileSync('git', ['-C', smokeRepo, 'checkout', '-q', 'task/sua-app']);
+  }
+  console.log('OK task-human');
 
   // Check H, Quy trình picker on Giao việc: ArrowDown moves the selection
   // from mac-dinh to nhanh (native radio group).

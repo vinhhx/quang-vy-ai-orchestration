@@ -109,5 +109,42 @@
         </div>
       </template>
     </div>
+
+    <div data-stats-card="engines" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Theo engine</h2>
+      <template x-for="r in engineRows" :key="r.key">
+        <div data-engine-row class="grid grid-cols-[8rem_1fr_auto] items-center gap-4" :title="r.title">
+          <span class="truncate leading-normal" :title="r.name" x-text="r.name"></span>
+          <div class="h-4 rounded-full bg-slate-100 dark:bg-slate-700" x-show="r.hasBar">
+            <div class="h-4 rounded-full bg-indigo-500 dark:bg-indigo-400" :style="r.style"></div>
+          </div>
+          <div aria-hidden="true" x-show="r.noBar"></div>
+          <div>
+            <span class="block text-right text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 tabular-nums" x-text="r.line1"></span>
+            <span class="block text-right text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 tabular-nums" x-text="r.line2"></span>
+          </div>
+        </div>
+      </template>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Giá mỗi engine lấy từ config.json (pricing). Engine chưa có giá hiện "chưa có giá", không tính vào Chi phí ≈ ở trên.</p>
+    </div>
+
+    <div data-stats-card="qa-rate" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Tỉ lệ QA kết luận Cần sửa theo engine của Dev</h2>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Chỉ tính các lần QA kết luận Đạt hoặc Cần sửa, gắn với engine của lần Dev được kiểm tra.</p>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noRates">Chưa có lần QA nào trong khoảng này.</p>
+      <template x-for="r in rateRows" :key="r.key">
+        <div data-rate-row class="grid grid-cols-[8rem_1fr_auto] items-center gap-4" :title="r.title">
+          <span class="truncate leading-normal" :title="r.name" x-text="r.name"></span>
+          <div class="h-4 rounded-full bg-slate-100 dark:bg-slate-700">
+            <div class="h-4 rounded-full bg-indigo-500 dark:bg-indigo-400" :style="r.style"></div>
+          </div>
+          <div>
+            <span class="block text-right text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 tabular-nums" x-text="r.line1"></span>
+            <span class="block text-right text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 tabular-nums" x-text="r.line2"></span>
+          </div>
+        </div>
+      </template>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="hasRates">Tỉ lệ chỉ đáng tin khi có nhiều lần QA; xem số lần ở cuối mỗi dòng.</p>
+    </div>
   </div>
 </section>

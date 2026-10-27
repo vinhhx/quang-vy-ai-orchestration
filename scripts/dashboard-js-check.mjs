@@ -3683,6 +3683,426 @@ const sections = [
     },
   },
   {
+    // 06-18: the human step callout of the task screen (waiting / rejected, Xong / Trả lại, copy
+    // buttons, push failure, autopilot badge).
+    name: 'task-human',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      ctx.AB.route = { name: 'task', params: { id: '1' } };
+      const taskJsSrc = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/js/task.js'), 'utf8');
+      vm.runInContext(taskJsSrc, ctx, { filename: 'task.js' });
+
+      const savedApi = ctx.AB.api;
+      const savedFocus = ctx.AB.focusLater;
+      const savedLock = ctx.AB.lockScroll;
+      const calls = [];
+      let respond = () => ({ ok: false, status: 0, data: null });
+      ctx.AB.api = function (method, url, body) {
+        calls.push({ method, url, body });
+        return Promise.resolve(respond(method, url, body));
+      };
+      ctx.AB.focusLater = function () {};
+      ctx.AB.lockScroll = function () {};
+      const ok = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, data });
+      const copied = [];
+      ctx.navigator = { clipboard: { writeText: (t) => { copied.push(t); return Promise.resolve(); } } };
+      const tick = async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
+
+      try {
+        const PRIMARY = 'bg-indigo-600';
+        const WAIT_MS = (3 * 24 + 2) * 3600000;
+        const BRANCH = 'task/sua-app';
+        const HW = {
+          mode: 'waiting', staff_id: 'ha', staff_name: 'Hà', notes: 'Zalo 09xx', step: 'implement', step_name: 'Code', round: 1,
+          branch: BRANCH, since_ms: 1, waiting_ms: WAIT_MS, report_paths: [],
+          push: { ok: true, command: 'git push -u origin ' + BRANCH, error: null },
+        };
+        const HR = { ...HW, mode: 'rejected', step: 'fix', step_name: 'Sửa', round: 2, report_paths: ['.qa-report.md'] };
+        const HDONE = { id: 'human_done', label: 'Xong', enabled: true, reason: null, run_id: null };
+        const HRET = { id: 'human_return', label: 'Trả lại', enabled: true, reason: null, run_id: null };
+        const HDONE_OFF = { ...HDONE, enabled: false, reason: 'Bấm Trả lại trước: kết quả lần trước của Hà chưa đạt.' };
+        const HRET_OFF = { ...HRET, enabled: false, reason: 'Chỉ trả lại khi kết quả của Hà chưa đạt.' };
+        const RUN_DEV = { id: 'run_dev', label: 'Chạy Dev', enabled: false, reason: 'Đang chờ Hà làm — bấm Xong khi họ báo xong.' };
+        const KILL = { id: 'kill', label: 'Kill', enabled: true, reason: null, run_id: 3 };
+        const APPROVE = { id: 'approve', label: 'Duyệt plan', enabled: true, reason: null, run_id: null };
+        const T = {
+          id: 1,
+          slug: 'sua-app',
+          status: 'planned',
+          current_step: 'dev',
+          group: 'running',
+          actions: [RUN_DEV, HDONE, HRET_OFF],
+          controls: [],
+          auto: { state: 'off', workflow_auto: false },
+          workflow: { name: 'mac-dinh', summary: 'plan', auto: false },
+          team: { name: 'doi-nguoi', summary: 'người Hà: dev', description: null, missing: false, legacy: false },
+          team_history: [],
+          quota: null,
+          human: HW,
+          rev: 'R',
+          steps: [],
+          runs: [],
+        };
+        const fresh = (task, pipe) => {
+          const c = factories.task();
+          c.id = '1';
+          c.task = task;
+          c.taskAt = Date.now();
+          if (pipe) c.pipe = pipe;
+          return c;
+        };
+
+        // ---- waiting mode: heading, body, contact, wait time ----
+        let c = fresh({ ...T });
+        check('human: callout shows for a waiting person', c.hasHuman === true && c.humanWaiting === true && c.humanRejected === false);
+        check('human: waiting heading', c.humanHeading === 'Chờ Hà làm bước Code', c.humanHeading);
+        check('human: waiting body', c.humanBody === 'Nhánh task/sua-app đã có .plan.md đã commit. Hà làm trên máy của họ rồi đẩy nhánh này lên remote. Khi họ báo xong, bấm Xong để lấy nhánh về và chạy tiếp quy trình.', c.humanBody);
+        check('human: branch and contact', c.humanBranch === BRANCH && c.humanContact === 'Liên hệ: Zalo 09xx' && c.hasHumanContact === true, c.humanContact);
+        c.task = { ...T, human: { ...HW, notes: undefined } };
+        check('human: no contact line without notes', c.humanContact === '' && c.hasHumanContact === false);
+        c.task = { ...T, human: { ...HW, round: 2 } };
+        check('human: second round reads làm lại', c.humanHeading === 'Chờ Hà làm lại bước Code', c.humanHeading);
+        c.task = { ...T, human: { ...HW, step: 'fix', step_name: 'Sửa' } };
+        check('human: a fix step reads làm lại', c.humanHeading === 'Chờ Hà làm lại bước Sửa', c.humanHeading);
+        c.task = { ...T, human: { ...HW, staff_name: 'Nguyễn Văn Ế' } };
+        check('human: a long name with diacritics is kept whole', c.humanHeading === 'Chờ Nguyễn Văn Ế làm bước Code', c.humanHeading);
+        c.task = { ...T };
+        check('human: three-day wait', c.humanWaitText === 'Đã chờ 3 ngày 2 giờ.', c.humanWaitText);
+        c.task = { ...T, human: { ...HW, waiting_ms: 59 * 60000 } };
+        c.taskAt = Date.now() - 2 * 60000;
+        check('human: the wait keeps counting between polls', c.humanWaitText === 'Đã chờ 1 giờ 01 phút.', c.humanWaitText);
+        c.task = { ...T, human: { ...HW, waiting_ms: 5 * 60000 } };
+        c.taskAt = Date.now();
+        check('human: minutes under an hour', c.humanWaitText === 'Đã chờ 5 phút.', c.humanWaitText);
+
+        // ---- tint, glyph, role ----
+        c = fresh({ ...T });
+        check('human: waiting tint is the blue cho_nguoi card string', c.humanCalloutClass.includes('border-blue-300') && c.humanCalloutClass.includes('bg-blue-50') && c.humanCalloutClass.includes('rounded-xl p-4 space-y-4') && !c.humanCalloutClass.includes('amber'), c.humanCalloutClass);
+        check('human: waiting glyph is ◐ without a pulse', c.humanGlyph === ctx.AB.stepGlyph('cho_nguoi') && c.humanGlyph.indexOf('◐') === 0 && c.humanGlyphClass.indexOf('animate-pulse') === -1, c.humanGlyph);
+        check('human: the task banner takes the cho_nguoi tint', c.bannerState === 'cho_nguoi' && c.bannerClass === ctx.AB.stepClass('cho_nguoi') && c.bannerGlyph === ctx.AB.stepGlyph('cho_nguoi'));
+
+        // ---- buttons: one per mode, outside the strip, primary order ----
+        check('human: waiting offers Xong only', JSON.stringify(c.humanButtons.map((a) => a.id)) === JSON.stringify(['human_done']) && c.hasHumanButtons === true);
+        check('human: Xong label and helper', c.actionText(HDONE) === 'Xong' && c.humanHelper(HDONE) === 'Lấy nhánh task/sua-app từ remote vào thư mục làm việc rồi chạy tiếp quy trình.', c.humanHelper(HDONE));
+        check('human: the strip excludes Xong and Trả lại', JSON.stringify(c.stripActions.map((a) => a.id)) === JSON.stringify(['run_dev']), JSON.stringify(c.stripActions.map((a) => a.id)));
+        check('human: Xong is the primary, the strip step is not', c.actionClass(HDONE).includes(PRIMARY) && !c.actionClass(RUN_DEV).includes(PRIMARY));
+        c = fresh({ ...T, controls: [APPROVE], actions: [RUN_DEV, HDONE, HRET_OFF] }, { groups: [], cards: {}, gate: { present: true, state: 'cho_ban', result: 'chờ bạn', at_ms: Date.now() }, current_card: 'ban', ledger: { groups: [], total: null } });
+        check('human: Duyệt plan outranks Xong', c.actionClass(APPROVE).includes(PRIMARY) && !c.actionClass(HDONE).includes(PRIMARY));
+        c = fresh({ ...T, actions: [KILL, RUN_DEV, HDONE, HRET_OFF] });
+        check('human: Kill stays red, Xong is the only primary', c.actionClass(KILL).includes('bg-rose-600') && c.actionClass(HDONE).includes(PRIMARY) && !c.actionClass(RUN_DEV).includes(PRIMARY));
+        c = fresh({ ...T, actions: [RUN_DEV, HDONE_OFF, HRET_OFF] });
+        check('human: a disabled Xong shows the server reason', c.actionDisabled(HDONE_OFF) === true && c.reasonText(HDONE_OFF) === HDONE_OFF.reason && c.showReason(HDONE_OFF) === true);
+        c = fresh({ ...T, actions: [RUN_DEV] });
+        check('human: no Xong in the payload, no button', c.hasHumanButtons === false);
+
+        // ---- Xong: in flight, success, refusal, no dialog ----
+        c = fresh({ ...T });
+        calls.length = 0;
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        respond = (method, url) => (method === 'POST' ? gate.then(() => ok({ job_id: 5 }, 202)) : { ok: false, status: 0, data: null });
+        const pending = c.humanDone();
+        check('Xong: in flight reads Đang lấy nhánh...', c.busyAction === 'human_done' && c.actionText(HDONE) === 'Đang lấy nhánh...', c.actionText(HDONE));
+        check('Xong: every task action is disabled while it runs', c.actionDisabled(HDONE) === true && c.actionDisabled({ ...RUN_DEV, enabled: true }) === true && c.actionDisabled(KILL) === true);
+        release();
+        await pending;
+        const post = calls.filter((x) => x.method === 'POST');
+        check('Xong: POST /api/tasks/1/human/done with {rev}', post.length === 1 && post[0].url === '/api/tasks/1/human/done' && JSON.stringify(post[0].body) === JSON.stringify({ rev: 'R' }), JSON.stringify(post));
+        check('Xong: success message', c.message === 'Đã lấy nhánh về — quy trình chạy tiếp (job 5).', c.message);
+        check('Xong: busy cleared, no refusal', c.busyAction === '' && c.humanRefusal === '');
+
+        const REFUSAL = 'Chưa thấy nhánh task/sua-app trên remote — nhờ Hà đẩy nhánh lên rồi bấm Xong lại.';
+        respond = (method) => (method === 'POST' ? ok({ error: REFUSAL, kind: 'not_allowed' }, 409) : { ok: false, status: 0, data: null });
+        c.message = '';
+        await c.humanDone();
+        check('Xong: the server reason shows under the button verbatim', c.humanRefusal === REFUSAL && c.reasonText(HDONE) === REFUSAL && c.showReason(HDONE) === true, c.humanRefusal);
+        check('Xong: the callout stays after a refusal', c.hasHumanButtons === true && c.hasHuman === true && c.busyAction === '' && c.message === '', c.message);
+
+        calls.length = 0;
+        respond = (method) => (method === 'POST' ? ok({ job_id: 6 }, 202) : { ok: false, status: 0, data: null });
+        c.onAction(HDONE);
+        await tick();
+        check('Xong: onAction sends the POST and opens no dialog', calls.some((x) => x.method === 'POST' && x.url === '/api/tasks/1/human/done') && c.dialogOpen === false && c.teamDlgOpen === false && c.rawOpen === false);
+        check('Xong: a success clears an earlier refusal', c.humanRefusal === '', c.humanRefusal);
+
+        // a disabled Xong sends nothing
+        calls.length = 0;
+        c.task = { ...T, actions: [RUN_DEV, HDONE_OFF, HRET_OFF] };
+        await c.humanDone();
+        check('Xong: disabled sends nothing', calls.filter((x) => x.method === 'POST').length === 0);
+
+        // ---- rejected mode ----
+        c = fresh({ ...T, group: 'waiting', human: HR, actions: [RUN_DEV, HDONE_OFF, HRET] });
+        check('rejected: mode flags', c.hasHuman === true && c.humanRejected === true && c.humanWaiting === false);
+        check('rejected: heading', c.humanHeading === 'Kết quả của Hà chưa đạt', c.humanHeading);
+        check('rejected: QA body', c.humanBody === 'QA kết luận cần sửa. Xem báo cáo bên dưới rồi bấm Trả lại để Hà làm lại.', c.humanBody);
+        c.task = { ...c.task, human: { ...HR, report_paths: ['.code-review.md'] } };
+        check('rejected: Review code body', c.humanBody === 'Review code kết luận sửa lại. Xem báo cáo bên dưới rồi bấm Trả lại để Hà làm lại.', c.humanBody);
+        c.task = { ...c.task, human: HR };
+        check('rejected: amber callout, ! glyph', c.humanCalloutClass.includes('bg-amber-50') && c.humanCalloutClass.includes('ring-amber-300') && !c.humanCalloutClass.includes('border-blue') && c.humanGlyph === ctx.AB.stepGlyph('vuong_mac'), c.humanCalloutClass);
+        check('rejected: the report block', c.hasHumanReport === true && c.humanReportLabel === 'Báo cáo cần gửi cho Hà:' && c.humanReportText === '.qa-report.md' && JSON.stringify(c.humanReportPaths) === JSON.stringify(['.qa-report.md']));
+        check('rejected: Trả lại only, primary, with its helper', JSON.stringify(c.humanButtons.map((a) => a.id)) === JSON.stringify(['human_return']) && c.actionClass(HRET).includes(PRIMARY) && c.humanHelper(HRET) === 'Đưa việc về cho Hà kèm báo cáo; bạn gửi báo cáo cho họ.', c.humanHelper(HRET));
+        check('rejected: the task banner is not the blue tint', c.bannerState !== 'cho_nguoi');
+        check('rejected: the strip excludes Trả lại', c.stripActions.every((a) => a.id !== 'human_return' && a.id !== 'human_done'));
+        c.task = { ...c.task, human: { ...HR, report_paths: ['.qa-report.md', '.code-review.md'] } };
+        check('rejected: two report paths are joined by a line break', c.humanReportText === '.qa-report.md\n.code-review.md', JSON.stringify(c.humanReportText));
+        c.task = { ...c.task, human: HR };
+
+        calls.length = 0;
+        let release2;
+        const gate2 = new Promise((r) => { release2 = r; });
+        respond = (method) => (method === 'POST' ? gate2.then(() => ok({ job_id: 7 }, 202)) : { ok: false, status: 0, data: null });
+        const returning = c.humanReturn();
+        check('Trả lại: in flight reads Đang trả...', c.busyAction === 'human_return' && c.actionText(HRET) === 'Đang trả...' && c.actionDisabled(HRET) === true, c.actionText(HRET));
+        release2();
+        await returning;
+        const post2 = calls.filter((x) => x.method === 'POST');
+        check('Trả lại: POST /api/tasks/1/human/return with {rev}', post2.length === 1 && post2[0].url === '/api/tasks/1/human/return' && JSON.stringify(post2[0].body) === JSON.stringify({ rev: 'R' }), JSON.stringify(post2));
+        check('Trả lại: success message', c.message === 'Đã trả việc lại cho Hà.', c.message);
+        check('Trả lại: no dialog', c.dialogOpen === false && c.teamDlgOpen === false);
+        respond = (method) => (method === 'POST' ? ok({ error: 'Đang có run chạy — chờ run xong hoặc bấm Kill', kind: 'busy' }, 409) : { ok: false, status: 0, data: null });
+        await c.humanReturn();
+        check('Trả lại: a refusal shows under the button', c.reasonText(HRET) === 'Đang có run chạy — chờ run xong hoặc bấm Kill' && c.humanRefusal === c.reasonText(HRET));
+
+        // ---- push failure (D-25) ----
+        c = fresh({ ...T });
+        check('push: ok hides the block', c.humanPushFailed === false);
+        c.task = { ...T, human: { ...HW, push: { ok: false, command: 'git push -u origin ' + BRANCH, error: 'permission denied' } } };
+        check('push: failure shows the command and the line', c.humanPushFailed === true && c.humanPushCommand === 'git push -u origin task/sua-app' && c.humanPushLine === 'Chưa đẩy được nhánh lên remote — chạy lệnh này trong thư mục dự án rồi gửi nhánh cho Hà.', c.humanPushLine);
+        check('push: the branch stays visible next to the command', c.humanBranch === BRANCH && c.humanBody.indexOf(BRANCH) >= 0);
+        c.task = { ...T, human: { ...HW, push: null } };
+        check('push: no push result hides the block', c.humanPushFailed === false && c.humanPushCommand === '');
+
+        // ---- copy buttons ----
+        c = fresh({ ...T });
+        copied.length = 0;
+        c.copyBranch();
+        await tick();
+        check('copy: branch name', copied[0] === BRANCH && c.humanCopyMessage === 'Đã sao chép tên nhánh' && c.hasHumanCopyMessage === true, c.humanCopyMessage);
+        c.task = { ...T, human: { ...HR, report_paths: ['.qa-report.md', '.code-review.md'] } };
+        c.copyReportPaths();
+        await tick();
+        check('copy: report paths', copied[1] === '.qa-report.md\n.code-review.md' && c.humanCopyMessage === 'Đã sao chép đường dẫn', c.humanCopyMessage);
+        c.task = { ...T, human: { ...HW, push: { ok: false, command: 'git push -u origin ' + BRANCH, error: 'x' } } };
+        c.copyPushCommand();
+        await tick();
+        check('copy: push command', copied[2] === 'git push -u origin task/sua-app' && c.humanCopyMessage === 'Đã sao chép lệnh', c.humanCopyMessage);
+        const savedNav = ctx.navigator;
+        ctx.navigator = {};
+        c.humanCopyMessage = '';
+        c.copyBranch();
+        check('copy: without a clipboard the text is selected and the message still shows', c.humanCopyMessage === 'Đã sao chép tên nhánh', c.humanCopyMessage);
+        ctx.navigator = { clipboard: { writeText: () => Promise.reject(new Error('denied')) } };
+        c.humanCopyMessage = '';
+        c.copyBranch();
+        await tick();
+        check('copy: a denied clipboard falls back to selecting', c.humanCopyMessage === 'Đã sao chép tên nhánh', c.humanCopyMessage);
+        ctx.navigator = savedNav;
+
+        // ---- autopilot badge ----
+        c = fresh({ ...T, auto: { state: 'waiting_human', workflow_auto: true } });
+        check('badge: Autopilot: chờ Hà làm', c.autoBadgeText === 'Autopilot: chờ Hà làm', c.autoBadgeText);
+        check('badge: cho_nguoi tint, ◐ without a pulse', c.autoBadgeClass === ctx.AB.stepClass('cho_nguoi') && c.autoBadgeGlyph === ctx.AB.stepGlyph('cho_nguoi') && c.autoBadgeGlyphClass.indexOf('animate-pulse') === -1);
+        c = fresh({ ...T, auto: { state: 'running', workflow_auto: true }, human: null });
+        check('badge: other states are unchanged', c.autoBadgeText === 'Autopilot: đang chạy', c.autoBadgeText);
+
+        // ---- staff names for the engine texts ----
+        ctx.AB.setStaffNames({});
+        c = fresh({ ...T });
+        c.syncHumanName();
+        check('names: the payload feeds `người:ha`', ctx.AB.engineText('người:ha') === 'người Hà', ctx.AB.engineText('người:ha'));
+        ctx.AB.setStaffNames({ binh: 'Bình' });
+        c.syncHumanName();
+        check('names: existing names are kept', ctx.AB.engineText('người:binh') === 'người Bình' && ctx.AB.engineText('người:ha') === 'người Hà');
+        const before = c.staffVer;
+        c.syncHumanName();
+        check('names: no churn when nothing changed', c.staffVer === before);
+
+        // ---- a three-day wait on the card ----
+        c = fresh({ ...T }, { groups: [], cards: {}, ledger: { groups: [], total: null } });
+        const HCARD = { key: 'code', state: 'cho_nguoi', has_run: true, engine: 'người:ha', engine_planned: false, duration_ms: WAIT_MS, cost_usd: null };
+        check('card: three-day wait reads 3 ngày 2 giờ', c.flowCardMetrics(HCARD) === 'đã chờ 3 ngày 2 giờ', c.flowCardMetrics(HCARD));
+
+        // ---- no payload ----
+        c = fresh({ ...T, human: null, actions: [RUN_DEV] });
+        check('none: no callout, no buttons, no wait text', c.hasHuman === false && c.humanButtons.length === 0 && c.humanWaitText === '' && c.humanHeading === '' && c.bannerState !== 'cho_nguoi');
+        check('none: the strip keeps its own button', c.stripActions.length === 1);
+      } finally {
+        ctx.AB.api = savedApi;
+        ctx.AB.focusLater = savedFocus;
+        ctx.AB.lockScroll = savedLock;
+        ctx.AB.setStaffNames({});
+        delete ctx.navigator;
+      }
+    },
+  },
+  {
+    // 06-18: Thống kê `Theo engine` and the QA rate by Dev engine.
+    name: 'stats-engines',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      const statsJsSrc = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/js/stats.js'), 'utf8');
+      vm.runInContext(statsJsSrc, ctx, { filename: 'stats.js' });
+      check('stats-engines: factory registered', typeof factories.stats === 'function');
+      if (typeof factories.stats !== 'function') return;
+
+      const savedApi = ctx.AB.api;
+      try {
+        const REPORT = {
+          total: { runs: 10, input_tokens: 180000, output_tokens: 30000, cache_read_tokens: 1000, cache_write_tokens: 200, cost_usd: 1.5 },
+          by_day: [], by_profile: [], by_project: [], by_role: [],
+          engines: [
+            { engine: 'claude', runs: 5, input: 120000, output: 30000, cache_read: 1000, cache_write: 200, cost: 1.5, priced: true },
+            { engine: 'deepseek', runs: 3, input: 60000, output: 0, cache_read: 0, cache_write: 0, cost: 0, priced: false },
+            { engine: 'người', runs: 2, input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, priced: false },
+          ],
+          qa_by_dev_engine: [
+            { engine: 'claude', qa_fix: 1, qa_total: 3 },
+            { engine: 'deepseek', qa_fix: 0, qa_total: 2 },
+            { engine: 'người', qa_fix: 2, qa_total: 2 },
+          ],
+        };
+        const c = factories.stats();
+        c.loaded = true;
+        c.report = REPORT;
+
+        // ---- Theo engine ----
+        const rows = c.engineRows;
+        check('engines: one row per engine in the server order', JSON.stringify(rows.map((r) => r.name)) === JSON.stringify(['claude', 'deepseek', 'người']), JSON.stringify(rows.map((r) => r.name)));
+        check('engines: priced row line 1', rows[0].line1 === 'vào 120.000 · ra 30.000', rows[0].line1);
+        check('engines: priced row line 2 shows the cost without hover', rows[0].line2 === '≈ $1.5000 · 5 run', rows[0].line2);
+        check('engines: cache figures live in the title', rows[0].title === 'claude · cache 1.000 / 200 · ≈ $1.5000', rows[0].title);
+        check('engines: the largest row fills the track', JSON.stringify(rows[0].style) === JSON.stringify({ width: '100%' }) && rows[0].hasBar === true && rows[0].noBar === false, JSON.stringify(rows[0].style));
+        check('engines: bar width is the share of the largest in + out', JSON.stringify(rows[1].style) === JSON.stringify({ width: '40%' }), JSON.stringify(rows[1].style));
+        check('engines: unpriced engine reads chưa có giá, never ≈ $0', rows[1].line2 === 'chưa có giá · 3 run' && rows.every((r) => r.line2.indexOf('≈ $0') === -1), rows[1].line2);
+        check('engines: unpriced title has no cost', rows[1].title === 'deepseek · cache —', rows[1].title);
+        check('engines: the person row has no bar and no tokens', rows[2].hasBar === false && rows[2].noBar === true && rows[2].line1 === 'không có token' && rows[2].line2 === '2 lượt do người làm', JSON.stringify(rows[2]));
+        check('engines: hasEngineRows', c.hasEngineRows === true);
+        check('engines: every row has a key for x-for', new Set(rows.map((r) => r.key)).size === 3);
+        c.report = { ...REPORT, engines: [{ engine: 'claude', runs: 1, input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, priced: true }] };
+        check('engines: a lone row with no tokens gets an empty bar, no division by zero', c.engineRows[0].style.width === '0%', JSON.stringify(c.engineRows[0].style));
+        const long = 'x'.repeat(60);
+        c.report = { ...REPORT, engines: [{ engine: long, runs: 1, input: 5, output: 5, cache_read: 0, cache_write: 0, cost: 0, priced: false }] };
+        check('engines: a long name is kept whole for the title attribute', c.engineRows[0].name === long);
+        c.report = { ...REPORT, engines: undefined };
+        check('engines: no engines list gives no rows', c.engineRows.length === 0 && c.hasEngineRows === false);
+
+        // ---- QA rate ----
+        c.report = REPORT;
+        const rates = c.rateRows;
+        check('rates: one row per entry in the server order', JSON.stringify(rates.map((r) => r.name)) === JSON.stringify(['claude', 'deepseek', 'người']));
+        check('rates: 1 / 3 reads 33%', rates[0].line1 === '33%' && rates[0].line2 === '1 / 3 lần QA', JSON.stringify(rates[0]));
+        check('rates: 0 / 2 reads 0% with an empty bar', rates[1].line1 === '0%' && rates[1].line2 === '0 / 2 lần QA' && JSON.stringify(rates[1].style) === JSON.stringify({ width: '0%' }), JSON.stringify(rates[1]));
+        check('rates: 2 / 2 fills the track', rates[2].line1 === '100%' && JSON.stringify(rates[2].style) === JSON.stringify({ width: '100%' }), JSON.stringify(rates[2]));
+        check('rates: bar width is the rate', Math.abs(parseFloat(rates[0].style.width) - 100 / 3) < 0.0001, rates[0].style.width);
+        check('rates: hasRates', c.hasRates === true && c.noRates === false);
+        c.report = { ...REPORT, qa_by_dev_engine: [] };
+        check('rates: no verdicts leaves the card with its empty line', c.hasRates === false && c.noRates === true && c.rateRows.length === 0);
+        c.report = { ...REPORT, qa_by_dev_engine: undefined };
+        check('rates: no list is the same as an empty one', c.hasRates === false && c.rateRows.length === 0);
+        c.report = { ...REPORT, qa_by_dev_engine: [{ engine: 'claude', qa_fix: 0, qa_total: 0 }] };
+        check('rates: a zero total never divides', c.rateRows[0].line1 === '—' && c.rateRows[0].style.width === '0%', JSON.stringify(c.rateRows[0]));
+
+        // ---- empty window: the empty-state card replaces the body ----
+        c.report = { ...REPORT, total: { ...REPORT.total, runs: 0 }, engines: [], qa_by_dev_engine: [] };
+        check('empty: no runs shows the empty state and hides every card', c.isEmpty === true && c.hasData === false);
+        c.report = REPORT;
+        check('empty: with runs the cards show', c.isEmpty === false && c.hasData === true);
+
+        // ---- filter change keeps the previous figures until the response; an error keeps them too ----
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        const urls = [];
+        ctx.AB.api = (method, url) => {
+          urls.push(url);
+          return gate;
+        };
+        c.since = '7d';
+        c.load();
+        check('filter: the request carries the window', urls.length === 1 && urls[0].indexOf('since=7d') >= 0, urls.join(','));
+        check('filter: previous figures stay while loading', c.report === REPORT && c.engineRows.length === 3 && c.rateRows.length === 3);
+        const NEXT = { ...REPORT, engines: [REPORT.engines[0]], qa_by_dev_engine: [REPORT.qa_by_dev_engine[0]] };
+        release({ ok: true, status: 200, data: NEXT });
+        await gate;
+        await Promise.resolve();
+        check('filter: the response replaces both cards', c.engineRows.length === 1 && c.rateRows.length === 1, String(c.engineRows.length));
+        ctx.AB.api = () => Promise.resolve({ ok: false, status: 500, data: { error: 'lỗi' } });
+        c.load();
+        await Promise.resolve();
+        await Promise.resolve();
+        check('error: after a first load a failure keeps the figures and shows the retry line', c.stale === true && c.hasError === false && c.engineRows.length === 1);
+        const fresh = factories.stats();
+        ctx.AB.api = () => Promise.resolve({ ok: false, status: 500, data: { error: 'Lỗi máy chủ' } });
+        fresh.load();
+        await Promise.resolve();
+        await Promise.resolve();
+        check('error: a failed first load shows the global error card, not the cards', fresh.hasError === true && fresh.hasData === false && fresh.isEmpty === false);
+      } finally {
+        ctx.AB.api = savedApi;
+      }
+    },
+  },
+  {
+    // 06-18: Tổng quan hint, the blue banner for a person's step, the quota reason line.
+    name: 'overview-human',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      const overviewJsSrc = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/js/overview.js'), 'utf8');
+      vm.runInContext(overviewJsSrc, ctx, { filename: 'overview.js' });
+      check('overview-human: factory registered', typeof factories.overview === 'function');
+      if (typeof factories.overview !== 'function') return;
+
+      const c = factories.overview();
+      const AB = ctx.AB;
+      const QD = 'Run 7 (dev) trên engine deepseek dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine.';
+      const human = { id: 4, group: 'running', auto_state: 'off', human_mode: 'waiting', human_name: 'Hà', banner: 'Chờ Hà làm', stop_detail: null, quota_detail: null, updated_at: 4000 };
+      const rejected = { id: 5, group: 'waiting', auto_state: 'off', human_mode: 'rejected', human_name: 'Hà', banner: 'Chờ bạn · trả lại cho Hà', stop_detail: null, quota_detail: null, updated_at: 3000 };
+      const quotaManual = { id: 3, group: 'waiting', auto_state: 'off', human_mode: null, banner: 'Chờ bạn · hết quota', stop_detail: null, quota_detail: QD, updated_at: 2000 };
+      const quotaAuto = { id: 6, group: 'waiting', auto_state: 'stopped', human_mode: null, banner: 'Chờ bạn · hết quota', stop_detail: 'Autopilot dừng: ' + QD, quota_detail: QD, updated_at: 1900 };
+      const gate = { id: 1, group: 'waiting', auto_state: 'gate', human_mode: null, banner: 'Chờ duyệt plan', stop_detail: null, quota_detail: null, updated_at: 1000 };
+      c.tasks = [human, rejected, quotaManual, quotaAuto, gate];
+
+      const running = c.groups.find((g) => g.key === 'running');
+      check('overview-human: the Đang chạy hint names people too', running && running.hint === 'Agent hoặc nhân sự đang làm việc', running && running.hint);
+      check('overview-human: the other hints are unchanged', c.groups.find((g) => g.key === 'waiting').hint === 'Duyệt plan hoặc xử lý chỗ autopilot dừng' && c.groups.find((g) => g.key === 'attention').hint === 'Vướng mắc, cần sửa, bị dừng hoặc lỗi');
+      check('overview-human: a waiting person sits in Đang chạy', running && running.items.length === 1 && running.items[0].id === 4);
+      check('overview-human: a quota stop sits in Chờ bạn', c.groups.find((g) => g.key === 'waiting').items.some((t) => t.id === 3));
+
+      // ---- banner tint and glyph ----
+      const cls = c.bannerClass(human);
+      check('overview-human: the banner takes the cho_nguoi text tint', cls.includes(AB.stateText('cho_nguoi')) && cls.includes('text-blue-700'), cls);
+      check('overview-human: no pulse on the banner', cls.indexOf('animate-pulse') === -1);
+      check('overview-human: ◐ glyph shows for a waiting person', c.bannerHasGlyph(human) === true && c.bannerGlyph(human) === AB.stepGlyph('cho_nguoi') && c.bannerGlyph(human).indexOf('◐') === 0, c.bannerGlyph(human));
+      for (const t of [rejected, quotaManual, gate, { group: 'done', banner: 'QA: Đạt' }]) {
+        check('overview-human: other banners keep the plain class and no glyph (' + (t.banner || '') + ')', c.bannerClass(t).indexOf('text-blue') === -1 && c.bannerHasGlyph(t) === false && c.bannerGlyph(t) === '');
+      }
+
+      // ---- reason line ----
+      check('overview-human: a manual quota stop shows quota_detail', c.hasReason(quotaManual) === true && c.reasonText(quotaManual) === QD, c.reasonText(quotaManual));
+      check('overview-human: an autopilot stop shows stop_detail', c.hasReason(quotaAuto) === true && c.reasonText(quotaAuto) === 'Autopilot dừng: ' + QD, c.reasonText(quotaAuto));
+      check('overview-human: the gate has no reason line', c.hasReason(gate) === false && c.reasonText(gate) === '');
+      check('overview-human: a waiting person has no reason line', c.hasReason(human) === false);
+      check('overview-human: a rejected result has no quota line', c.hasReason(rejected) === false);
+      check('overview-human: no task is no reason', c.hasReason(null) === false && c.reasonText(undefined) === '');
+      check('overview-human: autopilot stopped without a detail has no line', c.hasReason({ group: 'waiting', auto_state: 'stopped', stop_detail: null, quota_detail: null }) === false);
+    },
+  },
+  {
     name: 'settings',
     async run(ctx) {
       const factories = {};
