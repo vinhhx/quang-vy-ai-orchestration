@@ -632,7 +632,10 @@ fn note_limits() {
             r.get(0)
         })
         .unwrap();
-    assert!(metrics_json.is_none());
+    // Phase 6 stores the team in every run's metrics; a blank note must still store no note.
+    let metrics: serde_json::Value =
+        serde_json::from_str(&metrics_json.unwrap_or_else(|| "{}".to_string())).unwrap();
+    assert!(metrics.get("note").is_none(), "metrics: {metrics}");
 }
 
 #[test]
