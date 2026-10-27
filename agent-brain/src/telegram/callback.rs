@@ -237,9 +237,11 @@ pub enum IntakeOp {
     Go,
     Confirm,
     Cancel,
+    /// The team step after the workflow step (Phase 6, TEAM-03).
+    Team,
 }
 
-pub const ALL_INTAKE_OPS: [IntakeOp; 8] = [
+pub const ALL_INTAKE_OPS: [IntakeOp; 9] = [
     IntakeOp::Project,
     IntakeOp::Workflow,
     IntakeOp::Toggle,
@@ -248,6 +250,7 @@ pub const ALL_INTAKE_OPS: [IntakeOp; 8] = [
     IntakeOp::Go,
     IntakeOp::Confirm,
     IntakeOp::Cancel,
+    IntakeOp::Team,
 ];
 
 impl IntakeOp {
@@ -261,6 +264,7 @@ impl IntakeOp {
             IntakeOp::Go => 'G',
             IntakeOp::Confirm => 'C',
             IntakeOp::Cancel => 'X',
+            IntakeOp::Team => 'D',
         }
     }
 
@@ -272,7 +276,7 @@ impl IntakeOp {
     pub fn needs_index(self) -> bool {
         matches!(
             self,
-            IntakeOp::Project | IntakeOp::Workflow | IntakeOp::Toggle
+            IntakeOp::Project | IntakeOp::Workflow | IntakeOp::Toggle | IntakeOp::Team
         )
     }
 }
