@@ -867,6 +867,8 @@ async fn list_tasks(
 
         let mut task_items = Vec::new();
         let now_ms = crate::db::now_ms();
+        // staff.json is read once for the whole list.
+        let staff = crate::staff::load();
 
         while let Some(r) = rows.next()? {
             let task = TaskRow {
@@ -908,6 +910,12 @@ async fn list_tasks(
             let running = crate::db::running_run_for_task(&conn, task.id)?;
             // Reviews are not among the three roles above; a quota stop of one still counts.
             let latest_run = crate::db::latest_run_for_task(&conn, task.id)?;
+            // A person's pending step (06-16): mode and display name, so the overview banner and
+            // group match the task detail.
+            let team_json = crate::db::task_team_json(&conn, task.id)?;
+            let human = crate::teams::TaskTeam::parse(team_json.as_deref())
+                .and_then(|t| t.wait)
+                .map(|w| (w.mode.clone(), staff.display_name_of(&w.staff)));
             let auto_facts = AutoFacts {
                 workflow: workflow.as_ref(),
                 auto: Some(&auto),
@@ -917,10 +925,15 @@ async fn list_tasks(
                 gate: None,
                 plan_dirty: false,
                 latest_run: latest_run.as_ref(),
-                human_mode: None,
-                human_name: None,
+                human_mode: human.as_ref().map(|(m, _)| m.as_str()),
+                human_name: human.as_ref().map(|(_, n)| n.as_str()),
             };
             let view = taskstate::derive_with(&facts, &auto_facts);
+            // Tổng quan shows the reason line of a quota stop for manual tasks (UI-SPEC).
+            let quota_detail = latest_run
+                .as_ref()
+                .filter(|r| r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA))
+                .map(|r| crate::quota::stop_detail(r.id, &r.role, &r.engine));
 
             task_items.push(serde_json::json!({
                 "id": task.id,
@@ -938,6 +951,9 @@ async fn list_tasks(
                 "auto_state": view.auto.state,
                 "stop_reason": view.auto.stop_reason,
                 "stop_detail": view.auto.stop_detail,
+                "human_mode": human.as_ref().map(|(m, _)| m.as_str()),
+                "human_name": human.as_ref().map(|(_, n)| n.as_str()),
+                "quota_detail": quota_detail,
                 "created_at": task.created_at,
                 "updated_at": task.updated_at,
             }));
@@ -2150,6 +2166,16 @@ async fn get_pipeline(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i6
                 })
                 .collect();
         pipeline::set_planned_engines(&mut view, &planned);
+
+        // 06-16: a person's pending step is not a run; the pipeline shows it from the marker.
+        if let Some(wait) = state.team.as_ref().and_then(|t| t.wait.as_ref()) {
+            pipeline::apply_human_wait(
+                &mut view,
+                wait,
+                &state.staff.display_name_of(&wait.staff),
+                now,
+            );
+        }
 
         Ok((
             StatusCode::OK,

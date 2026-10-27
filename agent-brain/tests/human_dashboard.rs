@@ -94,19 +94,20 @@ fn setup_base(sb: &Sandbox, with_origin: bool) -> World {
 
 /// `setup_base` plus task 1 (`task/sua-app`) created by `run lead --team doi-nguoi`.
 fn setup(sb: &Sandbox, with_origin: bool) -> World {
+    setup_workflow(sb, with_origin, None)
+}
+
+/// As `setup`, optionally creating the task with `--workflow <name>` (e.g. `mac-dinh`, whose
+/// pipeline has the `fix` card).
+fn setup_workflow(sb: &Sandbox, with_origin: bool, workflow: Option<&str>) -> World {
     let world = setup_base(sb, with_origin);
+    let mut args = vec!["run", "lead", "--team", "doi-nguoi", "--name", "sua-app"];
+    if let Some(w) = workflow {
+        args.extend(["--workflow", w]);
+    }
+    args.extend(["--", "web", "sửa app"]);
     let res = sb.run(
-        &[
-            "run",
-            "lead",
-            "--team",
-            "doi-nguoi",
-            "--name",
-            "sua-app",
-            "--",
-            "web",
-            "sửa app",
-        ],
+        &args,
         Some(json!({ "by_role": { "lead": [lead_plan_entry()] } })),
     );
     assert_eq!(
@@ -559,4 +560,183 @@ fn autopilot_waiting_human_state() {
     let r = srv.post_json("/api/tasks/1/auto", &json!({}));
     assert_eq!(r.status, 409, "{}", r.text());
     assert_eq!(human_run_count(&sb), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Task 3: pipeline synthesized row and card, overview banners
+// ---------------------------------------------------------------------------
+
+fn pipeline(srv: &Serve) -> Value {
+    let r = srv.get("/api/tasks/1/pipeline");
+    assert_eq!(r.status, 200, "GET pipeline: {}", r.text());
+    r.json()
+}
+
+/// Ledger rows of the pipeline payload, oldest group first.
+fn ledger_rows(p: &Value) -> Vec<Value> {
+    p["ledger"]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["rows"].as_array().unwrap().clone())
+        .collect()
+}
+
+fn flow_card(p: &Value, key: &str) -> Value {
+    p["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["cards"].as_array().unwrap().clone())
+        .find(|c| c["key"] == key)
+        .unwrap_or_else(|| panic!("flow card {key} in {}", p["groups"]))
+}
+
+#[test]
+fn pipeline_synthesized_waiting_row() {
+    let sb = Sandbox::new();
+    let w = setup(&sb, true);
+    let remote = w.remote.clone().unwrap();
+    let srv = sb.serve(&[]);
+
+    // Before the wait: only the Lead row; the code card has no run.
+    let before = pipeline(&srv);
+    assert_eq!(ledger_rows(&before).len(), 1);
+    assert_eq!(before["ledger"]["total"]["runs"], 1);
+
+    run_dev_waits(&sb);
+    let wait = task_team(&sb).wait.expect("marker");
+    let p = pipeline(&srv);
+    let rows = ledger_rows(&p);
+    assert_eq!(rows.len(), 2, "Lead row plus the synthesized one: {rows:?}");
+    let row = rows
+        .iter()
+        .find(|r| r["run_id"] == 0)
+        .expect("run_id 0 row");
+    assert_eq!(row["human"], true);
+    assert_eq!(row["engine"], "người:ha");
+    assert_eq!(row["state"], "cho_nguoi");
+    assert_eq!(row["verdict"], "chờ người");
+    assert_eq!(row["started_at"], wait.since_ms);
+    assert!(row["duration_ms"].as_i64().unwrap() >= 0);
+    assert_eq!(row["running"], false);
+    assert_eq!(row["label"], "Vòng 1 · code · người Hà");
+    assert_eq!(row["role"], "dev");
+    assert_eq!(row["stage"], "implement");
+    // Not a run: it never counts in the totals, and no run row exists for it.
+    assert_eq!(p["ledger"]["total"]["runs"], 1);
+    assert_eq!(p["ledger"]["total"]["human_runs"], 0);
+    assert_eq!(human_run_count(&sb), 0);
+
+    let code = flow_card(&p, "code");
+    assert_eq!(code["state"], "cho_nguoi");
+    assert_eq!(code["state_word"], "chờ người");
+    assert_eq!(code["result"], "Chờ Hà làm");
+    assert_eq!(code["engine"], "người:ha");
+    assert_eq!(code["engine_planned"], false);
+    assert_eq!(p["current_card"], "code");
+
+    // After Xong the person's work is a real run and the synthesized row is gone.
+    staff_clone_push(
+        &sb,
+        &remote,
+        "task/sua-app",
+        &[("src/a.txt", "a do Hà sửa\n")],
+        "sua-app: Hà làm",
+    );
+    let r = srv.post_json("/api/tasks/1/human/done", &json!({}));
+    assert_eq!(r.status, 202, "{}", r.text());
+    let job = wait_for_job(&srv, r.json()["job_id"].as_u64().unwrap());
+    assert_eq!(job["exit_code"], 0, "job output: {}", job["output"]);
+    let p = pipeline(&srv);
+    let rows = ledger_rows(&p);
+    assert!(rows.iter().all(|r| r["run_id"] != 0), "{rows:?}");
+    let human_row = rows.iter().find(|r| r["human"] == true).expect("human run");
+    assert_eq!(human_row["engine"], "người:ha");
+    assert_eq!(p["ledger"]["total"]["human_runs"], 1);
+    assert_ne!(flow_card(&p, "code")["state"], "cho_nguoi");
+}
+
+#[test]
+fn pipeline_fix_wait_on_fix_card() {
+    let sb = Sandbox::new();
+    let _w = setup_workflow(&sb, true, Some("mac-dinh"));
+    run_dev_waits(&sb);
+    make_rejected(&sb);
+    let srv = sb.serve(&[]);
+
+    let p = pipeline(&srv);
+    let row = ledger_rows(&p)
+        .into_iter()
+        .find(|r| r["run_id"] == 0)
+        .expect("synthesized row");
+    assert_eq!(row["kind"], "sửa theo QA");
+    assert_eq!(row["stage"], "fix");
+    assert_eq!(row["human"], true);
+    assert_eq!(row["state"], "cho_nguoi");
+    assert_eq!(row["label"], "Vòng 1 · sửa theo QA · người Hà");
+    let fix = flow_card(&p, "fix");
+    assert_eq!(fix["state"], "cho_nguoi");
+    assert_eq!(fix["result"], "Chờ Hà làm");
+    assert_eq!(fix["engine"], "người:ha");
+    assert_ne!(flow_card(&p, "code")["state"], "cho_nguoi");
+    assert_eq!(p["current_card"], "fix");
+    assert_eq!(p["ledger"]["total"]["runs"], 1);
+}
+
+fn overview_task(srv: &Serve) -> Value {
+    let r = srv.get("/api/tasks");
+    assert_eq!(r.status, 200, "GET /api/tasks: {}", r.text());
+    r.json()["tasks"][0].clone()
+}
+
+#[test]
+fn overview_human_banners() {
+    let sb = Sandbox::new();
+    let _w = setup(&sb, true);
+    let srv = sb.serve(&[]);
+
+    // No marker: nothing about a person, no quota reason.
+    let t = overview_task(&srv);
+    assert!(t["human_mode"].is_null());
+    assert!(t["human_name"].is_null());
+    assert!(t["quota_detail"].is_null());
+
+    run_dev_waits(&sb);
+    let t = overview_task(&srv);
+    assert_eq!(t["banner"], "Chờ Hà làm");
+    assert_eq!(t["group"], "running");
+    assert_eq!(t["human_mode"], "waiting");
+    assert_eq!(t["human_name"], "Hà");
+    assert!(t["quota_detail"].is_null());
+
+    make_rejected(&sb);
+    let t = overview_task(&srv);
+    assert_eq!(t["banner"], "Chờ bạn · trả lại cho Hà");
+    assert_eq!(t["group"], "waiting");
+    assert_eq!(t["human_mode"], "rejected");
+    assert_eq!(t["human_name"], "Hà");
+
+    // The overview banner and group match the task detail.
+    let d = task_detail(&srv);
+    assert_eq!(d["banner"], t["banner"]);
+    assert_eq!(d["group"], t["group"]);
+
+    // A manual task whose latest run stopped on quota carries the reason line.
+    let sb2 = Sandbox::new();
+    let _w2 = setup(&sb2, true);
+    sb2.db()
+        .execute(
+            "UPDATE runs SET status = 'failed', outcome = 'quota' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    let srv2 = sb2.serve(&[]);
+    let t = overview_task(&srv2);
+    assert_eq!(
+        t["quota_detail"],
+        "Run 1 (lead) trên engine claude dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine."
+    );
+    assert!(t["human_mode"].is_null());
+    assert_eq!(t["banner"], "Chờ bạn · hết quota");
 }
