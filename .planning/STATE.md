@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 06
 current_phase_name: Multi-engine & Media Branch
 status: executing
-stopped_at: Phase 6 UI-SPEC approved
-last_updated: "2026-10-27T01:34:38.652Z"
+stopped_at: "Phase 6 paused after wave 6: 12/19 plans done; 06-02 awaits agy login, 06-11 awaits E-09"
+last_updated: "2026-10-27T08:41:08.750Z"
 last_activity: 2026-10-27
 last_activity_desc: Phase 06 execution started
-state_head: 2a49c4bf93a063f40fd647af0743cda244b95ae8
+state_head: 54c6ff7cc0444cba51a0cace187346c372afd9ab
 progress:
   total_phases: 12
   completed_phases: 5
   total_plans: 113
-  completed_plans: 94
+  completed_plans: 106
   percent: 42
 ---
 
@@ -117,6 +117,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Không có quyết đị
 - [Ops 2026-10-23]: Bot thử mới @quang_vy_bot (token cũ của 5.3 đã thu hồi); môi trường nghiệm thu 5.4 đã xóa; `~/.config/agent-brain` thật vẫn chưa có `telegram.json`; binary cài đặt chưa nâng lên 5.4 (cài bản mới sẽ migrate brain.db lên lược đồ v3 — sao lưu `brain.db.bak-pre-5.4-<ngày>` trước, xem README).
 - [Phase 05.5, follow-up không chặn]: từ 05.5-VERIFICATION.md — khe TOCTOU khi thư mục bị đổi thành symlink giữa lúc kiểm và lúc mở (xem ở `/gsd-secure-phase 05.5`); thẻ lỗi hiện chồng lên bảng cũ khi request lỗi sau một lần tải tốt (board.js:243-247); 05.5-03-SUMMARY ghi `requirements-completed: []`.
 - [Quick 2026-10-23]: Sửa flaky `index.lock` — `gitops::git_cmd` đặt `GIT_OPTIONAL_LOCKS=0` cho mọi lệnh git (a78fdac); kế hoạch ở `.planning/quick/git-optional-locks.plan.md`.
+- [Phase 6, paused 2026-10-27] 06-02 needs the user's agy login (Pro package removed) to run spikes/s7b/run.sh and pick the Dev permission mode; it blocks 06-09, 06-12, 06-16, 06-18, 06-19. 06-11 also needs E-09 (06-01 recorded fail: skipped) — run the DeepSeek probe or decide dsh vs drop. Resume with /gsd-execute-phase 6.
 
 ### Roadmap Evolution
 
@@ -138,6 +139,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T16:25:38.658Z
-Stopped at: Phase 6 UI-SPEC approved
+Last session: 2026-10-27T08:41:08.358Z
+Stopped at: Phase 6 paused after wave 6: 12/19 plans done; 06-02 awaits agy login, 06-11 awaits E-09
 Resume file: .planning/phases/06-multi-engine-media-branch/06-UI-SPEC.md
