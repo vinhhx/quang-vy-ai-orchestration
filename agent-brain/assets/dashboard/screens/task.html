@@ -303,6 +303,53 @@
       </ul>
     </div>
 
+    <!-- Human step callout (06-18): who works on the step, the branch, Xong / Trả lại -->
+    <div data-human-callout role="status" x-show="hasHuman" :class="humanCalloutClass">
+      <div class="flex items-center gap-2">
+        <span aria-hidden="true" :class="humanGlyphClass" x-text="humanGlyph"></span>
+        <h2 class="min-w-0 text-base font-semibold leading-normal break-words" x-text="humanHeading"></h2>
+      </div>
+      <p class="text-base font-normal leading-normal break-words" x-text="humanBody"></p>
+
+      <div class="space-y-2" x-show="humanWaiting">
+        <div class="flex flex-wrap items-center gap-2">
+          <code id="ab-human-branch" data-human-branch class="block min-w-0 rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-text="humanBranch"></code>
+          <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="copyBranch">Sao chép tên nhánh</button>
+        </div>
+      </div>
+
+      <p class="text-sm font-normal leading-normal break-words whitespace-pre-wrap" x-show="hasHumanContact" x-text="humanContact"></p>
+
+      <div class="space-y-2" x-show="humanPushFailed">
+        <p class="text-sm font-semibold leading-normal break-words" x-text="humanPushLine"></p>
+        <div class="flex flex-wrap items-center gap-2">
+          <code id="ab-human-push" data-human-push class="block min-w-0 rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-text="humanPushCommand"></code>
+          <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="copyPushCommand">Sao chép lệnh</button>
+        </div>
+      </div>
+
+      <div class="space-y-2" x-show="hasHumanReport">
+        <p class="text-sm font-semibold leading-normal break-words" x-text="humanReportLabel"></p>
+        <div class="flex flex-wrap items-center gap-2">
+          <code id="ab-human-report" data-human-report class="block min-w-0 rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all whitespace-pre-wrap text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-text="humanReportText"></code>
+          <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="copyReportPaths">Sao chép đường dẫn</button>
+        </div>
+      </div>
+
+      <p data-human-copy class="text-sm font-normal leading-normal" x-show="hasHumanCopyMessage" x-text="humanCopyMessage"></p>
+      <p data-human-wait class="text-sm font-normal leading-normal tabular-nums" x-show="humanWaiting" x-text="humanWaitText"></p>
+
+      <div class="flex flex-wrap gap-2" x-show="hasHumanButtons">
+        <template x-for="a in humanButtons" :key="a.id">
+          <div class="space-y-1">
+            <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
+            <p :id="reasonId(a)" class="text-sm font-normal leading-normal whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
+            <p class="text-sm font-normal leading-normal break-words" x-text="humanHelper(a)"></p>
+          </div>
+        </template>
+      </div>
+    </div>
+
     <!-- D-03 callouts -->
     <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="isBlocked">
       <p class="font-semibold leading-normal">Dev dừng vì vướng mắc</p>

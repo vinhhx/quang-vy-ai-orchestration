@@ -230,6 +230,12 @@ cat << 'EOF' > "$TMP/xdg_config/agent-brain/teams.json"
       "plan-review": "claude",
       "code-review": "claude"
     }
+  },
+  "doi-nguoi": {
+    "description": "Đội hình có người làm bước Code (smoke 06-18).",
+    "roles": {
+      "dev": "người:ha"
+    }
   }
 }
 EOF
@@ -496,6 +502,114 @@ conn.commit()
 conn.close()
 PYEOF
 
+# Task 4 (nguoi-lam, 06-18): team `doi-nguoi`, a person (Hà) waits for the Code step for 3 days
+# and 2 hours; the branch was pushed (push.ok). `run lead` checks out task/nguoi-lam from the
+# current HEAD; the fake Lead writes a different plan so the plan commit is not empty.
+cat << 'EOF' > "$TMP/fake_claude_scenario_human.json"
+{
+  "ops": [
+    {
+      "op": "read",
+      "path": "src/app.py"
+    },
+    {
+      "op": "write",
+      "path": ".plan.md",
+      "content": "# Plan: Người làm\n## Mục tiêu\nThực hiện Người làm\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/app.py | app | trả về 4 | yêu cầu |\n## Không được đụng tới\n\n## Cách kiểm tra\npython3 -m unittest\n## Vướng mắc (Dev ghi vào đây nếu có)\n\n",
+      "keep_meta": true
+    }
+  ]
+}
+EOF
+
+FAKE_CLAUDE_SCENARIO="$TMP/fake_claude_scenario_human.json" \
+  "$BIN" run lead --name nguoi-lam -- web-ban-hang "người làm" >/dev/null 2>&1
+
+HUMAN_BASE="$(git -C "$REPO_DIR" rev-parse task/nguoi-lam)"
+
+python3 - "$AGENT_BRAIN_DB" "$HUMAN_BASE" <<'PYEOF'
+import sys, sqlite3, json, time
+conn = sqlite3.connect(sys.argv[1], timeout=5)
+cur = conn.cursor()
+cur.execute("SELECT id FROM tasks WHERE slug = 'nguoi-lam'")
+row = cur.fetchone()
+if not row or row[0] != 4:
+    print(f"Lỗi seeding: task nguoi-lam có id {row[0] if row else None} (kỳ vọng 4)", file=sys.stderr)
+    sys.exit(1)
+now_ms = int(time.time() * 1000)
+since_ms = now_ms - (3 * 24 + 2) * 3600 * 1000 - 5 * 60000
+wait = {
+    "mode": "waiting", "role": "dev", "stage": "implement", "round": 1, "staff": "ha",
+    "since_ms": since_ms, "branch": "task/nguoi-lam", "base": sys.argv[2],
+    "report_paths": [],
+    "push": {"ok": True, "command": "git push -u origin task/nguoi-lam", "error": None},
+    "autopilot": False,
+}
+team = {"name": "doi-nguoi", "history": [], "wait": wait}
+cur.execute("UPDATE tasks SET team_json = ? WHERE id = 4", (json.dumps(team),))
+conn.commit()
+conn.close()
+PYEOF
+
+# Task 5 (do-thong-ke, 06-18): Dev runs on claude, deepseek (no price in config.json) and a
+# person, each followed by a QA verdict, for the Thống kê engine and QA-rate cards.
+cat << 'EOF' > "$TMP/fake_claude_scenario_statsfx.json"
+{
+  "ops": [
+    {
+      "op": "read",
+      "path": "src/app.py"
+    },
+    {
+      "op": "write",
+      "path": ".plan.md",
+      "content": "# Plan: Đo thống kê\n## Mục tiêu\nThực hiện Đo thống kê\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/app.py | app | trả về 5 | yêu cầu |\n## Không được đụng tới\n\n## Cách kiểm tra\npython3 -m unittest\n## Vướng mắc (Dev ghi vào đây nếu có)\n\n",
+      "keep_meta": true
+    }
+  ]
+}
+EOF
+
+FAKE_CLAUDE_SCENARIO="$TMP/fake_claude_scenario_statsfx.json" \
+  "$BIN" run lead --name do-thong-ke -- web-ban-hang "đo thống kê" >/dev/null 2>&1
+
+python3 - "$AGENT_BRAIN_DB" <<'PYEOF'
+import sys, sqlite3
+conn = sqlite3.connect(sys.argv[1], timeout=5)
+cur = conn.cursor()
+cur.execute("SELECT id, project_id FROM tasks WHERE slug = 'do-thong-ke'")
+row = cur.fetchone()
+if not row or row[0] != 5:
+    print(f"Lỗi seeding: task do-thong-ke có id {row[0] if row else None} (kỳ vọng 5)", file=sys.stderr)
+    sys.exit(1)
+task_id, project_id = row
+cur.execute("SELECT MAX(COALESCE(ended_at, started_at)) FROM runs WHERE task_id = ?", (task_id,))
+t = cur.fetchone()[0] + 1000
+MIN = 60000
+# role, engine, stage, round, outcome, input tokens, output tokens, cost, minutes
+rows = [
+    ('dev', 'claude', 'implement', 1, None, 12000, 3000, 0.40, 5),
+    ('qa', 'claude', 'qa', 1, 'qa:pass', 6000, 800, 0.10, 2),
+    ('dev', 'deepseek', 'fix', 2, None, 40000, 9000, 0.20, 6),
+    ('qa', 'claude', 'qa', 2, 'qa:fix', 6000, 900, 0.10, 2),
+    ('dev', 'deepseek', 'fix', 3, None, 30000, 7000, 0.15, 5),
+    ('qa', 'claude', 'qa', 3, 'qa:pass', 6000, 700, 0.10, 2),
+    ('dev', 'người', 'fix', 4, None, 0, 0, 0.0, 120),
+    ('qa', 'claude', 'qa', 4, 'qa:pass', 6000, 600, 0.10, 2),
+]
+for role, engine, stage, rnd, outcome, tin, tout, cost, minutes in rows:
+    started_at = t
+    ended_at = t + minutes * MIN
+    cur.execute("""
+        INSERT INTO runs (task_id, project_id, role, engine, status, profile, model, outcome, usage_source, cost_usd,
+                          input_tokens, output_tokens, num_turns, started_at, ended_at, stage, round)
+        VALUES (?, ?, ?, ?, 'succeeded', 'work', 'sonnet', ?, 'result', ?, ?, ?, 4, ?, ?, ?, ?)
+    """, (task_id, project_id, role, engine, outcome, cost, tin, tout, started_at, ended_at, stage, rnd))
+    t = ended_at + 1000
+conn.commit()
+conn.close()
+PYEOF
+
 # Task 1 stays the checked-out task (its actions, e.g. Chạy lại Lead for the
 # keys confirm-dialog check, need its branch checked out).
 git -C "$REPO_DIR" checkout task/sua-app >/dev/null 2>&1
@@ -571,6 +685,7 @@ for s in "${SCREENS[@]}"; do
     task) HASH="#/task/1" ;;
     task-stop) HASH="#/task/2"; SCREEN_NAME="task" ;;
     task-quota) HASH="#/task/3"; SCREEN_NAME="task" ;;
+    task-human) HASH="#/task/4"; SCREEN_NAME="task" ;;
     stats) HASH="#/stats" ;;
     projects) HASH="#/projects" ;;
     board) HASH="#/board" ;;
@@ -626,7 +741,7 @@ for s in "${SCREENS[@]}"; do
     exit 1
   fi
 
-  if [[ "$s" == "task" || "$s" == "task-stop" || "$s" == "task-quota" ]]; then
+  if [[ "$s" == "task" || "$s" == "task-stop" || "$s" == "task-quota" || "$s" == "task-human" ]]; then
     if ! python3 - "$DOM_OUT" "$s" <<'EOF'
 import sys
 from html.parser import HTMLParser
@@ -665,6 +780,9 @@ class PipelineParser(HTMLParser):
         self.team_buttons = set()
         self.team_history = []
         self.strip_text = ''
+        self.human_text = ''
+        self.human_buttons = set()
+        self.human_callouts = 0
         self.depth = 0
         self.captures = []
         self.current_card = None
@@ -700,6 +818,8 @@ class PipelineParser(HTMLParser):
                     self.strip_buttons.add(bid)
                 elif kind == 'teamline':
                     self.team_buttons.add(bid)
+                elif kind == 'human':
+                    self.human_buttons.add(bid)
 
         if tag == 'textarea' and 'id' in attr_dict:
             self.textareas[attr_dict['id']] = attr_dict
@@ -732,6 +852,9 @@ class PipelineParser(HTMLParser):
                 self.captures.append((self.depth, 'strip', None))
             if 'data-team-line' in attr_dict:
                 self.captures.append((self.depth, 'teamline', None))
+            if 'data-human-callout' in attr_dict:
+                self.human_callouts += 1
+                self.captures.append((self.depth, 'human', None))
             if 'data-team-history' in attr_dict:
                 self.captures.append((self.depth, 'teamhist', None))
             if tag == 'li' and any(k == 'teamhist' for _, k, _ in self.captures):
@@ -791,6 +914,8 @@ class PipelineParser(HTMLParser):
                     self.strip_text += data
                 elif kind == 'teamline':
                     self.team_line_text += data
+                elif kind == 'human':
+                    self.human_text += data
                 elif kind == 'teamitem':
                     self.team_history[ref] += data
             if self.in_chip:
@@ -826,6 +951,36 @@ if parser.data_pipeline != "ready":
 def fail(msg):
     print(f"Lỗi ({screen}): {msg}", file=sys.stderr)
     sys.exit(1)
+
+if screen == 'task-human':
+    # Task 4 (06-18): Hà holds the Code step for 3 days; the callout comes from the task-detail payload.
+    if parser.human_callouts != 1:
+        fail(f"Số phần tử data-human-callout là {parser.human_callouts}, kỳ vọng 1")
+    htext = ' '.join(parser.human_text.split())
+    for needle in ('Chờ Hà làm bước Code', 'task/nguoi-lam', 'Sao chép tên nhánh', 'Đã chờ 3 ngày',
+                   'Hà làm trên máy của họ rồi đẩy nhánh này lên remote',
+                   'Lấy nhánh task/nguoi-lam từ remote vào thư mục làm việc rồi chạy tiếp quy trình.'):
+        if needle not in htext:
+            fail(f"Callout người làm không chứa '{needle}' (nội dung: '{htext}')")
+    if 'ab-act-human_done' not in parser.human_buttons:
+        fail(f"Thiếu nút Xong (ab-act-human_done) trong callout (nút trong callout: {parser.human_buttons})")
+    if 'ab-act-human_return' in parser.human_buttons:
+        fail("Chế độ chờ không được có nút Trả lại")
+    if 'ab-act-human_done' in parser.strip_buttons or 'ab-act-human_return' in parser.strip_buttons:
+        fail(f"Xong / Trả lại không được nằm trong dải hành động (nút: {parser.strip_buttons})")
+    # The strip's own buttons stay but say why they are off (D-29).
+    if 'Đang chờ Hà làm — bấm Xong khi họ báo xong.' not in ' '.join(parser.strip_text.split()):
+        fail(f"Dải hành động thiếu lý do 'Đang chờ Hà làm — bấm Xong khi họ báo xong.' (nội dung: '{parser.strip_text}')")
+    # The smoke repo has task/sua-app checked out, so the server refuses Xong off the task branch and says why.
+    if 'Không ở nhánh task' not in htext:
+        fail(f"Lý do của server không hiện dưới nút Xong (nội dung: '{htext}')")
+    if len(parser.badges) != 1 or parser.badges[0]['role'] != 'status':
+        fail(f"Huy hiệu autopilot sai (nhận được: {parser.badges})")
+    team_text = ' '.join(parser.team_line_text.split())
+    if 'Đội hình: doi-nguoi' not in team_text:
+        fail(f"data-team-line không chứa 'Đội hình: doi-nguoi' (nội dung: '{team_text}')")
+    print("OK task-human")
+    sys.exit(0)
 
 if screen == 'task-quota':
     # Task 3 (06-17): the Dev run on deepseek stopped on quota; the stop slot carries the quota banner.
