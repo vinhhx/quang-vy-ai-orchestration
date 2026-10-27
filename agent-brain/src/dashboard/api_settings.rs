@@ -27,6 +27,9 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/staff", get(get_staff))
         .route("/api/staff/save", post(save_staff))
         .route("/api/staff/delete", post(delete_staff))
+        .route("/api/workflows/save", post(save_workflow))
+        .route("/api/workflows/delete", post(delete_workflow))
+        .route("/api/engines", get(get_engines))
 }
 
 // ---- shared response shapes ----
@@ -52,6 +55,14 @@ fn field_err(field: &str, message: impl Into<String>) -> FieldError {
 
 /// 422 `{error, errors: [{field, message}]}`.
 fn refusal(heading: &str, errors: Vec<FieldError>) -> Response {
+    json_response(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        json!({ "error": heading, "errors": errors }),
+    )
+}
+
+/// 422 with entries already shaped as `{field, message}` (`field` may be null).
+fn refusal_values(heading: &str, errors: Vec<Value>) -> Response {
     json_response(
         StatusCode::UNPROCESSABLE_ENTITY,
         json!({ "error": heading, "errors": errors }),
@@ -595,5 +606,234 @@ fn delete_staff_blocking(body: StaffDeleteBody) -> Response {
     match staff_payload() {
         Ok(v) => json_response(StatusCode::OK, with_ok(v)),
         Err(e) => internal_save(&e.message),
+    }
+}
+
+// ---- workflows ----
+
+const WORKFLOW_HEADING: &str = "Không lưu được quy trình";
+const WORKFLOW_CONFLICT: &str = "workflows.json vừa bị sửa ở nơi khác";
+const READONLY_WORKFLOW: &str = "Quy trình có sẵn chỉ đọc — bấm Nhân bản để tạo bản riêng.";
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowEntryBody {
+    name: String,
+    #[serde(default)]
+    stages: Vec<String>,
+    #[serde(default)]
+    loops: serde_json::Map<String, Value>,
+    #[serde(default)]
+    auto: bool,
+    #[serde(default)]
+    max_rounds: Option<Value>,
+    #[serde(default)]
+    budget_minutes: Option<Value>,
+    #[serde(default)]
+    budget_usd: Option<Value>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowSaveBody {
+    version: String,
+    create: bool,
+    entry: WorkflowEntryBody,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowDeleteBody {
+    version: String,
+    name: String,
+}
+
+/// Same rules as teams: built-in-only names are read-only, names never change.
+fn workflow_name_rule(
+    loaded: &crate::workflows::LoadedWorkflows,
+    name: &str,
+    create: bool,
+) -> Option<String> {
+    match (create, loaded.get(name).map(|w| w.source.as_str())) {
+        (true, Some("builtin")) => Some(format!(
+            "'{name}' là quy trình có sẵn, không ghi đè được. Đặt tên khác."
+        )),
+        (true, Some(_)) => Some(format!("Đã có quy trình tên '{name}'.")),
+        (true, None) | (false, Some("file")) | (false, Some("override")) => None,
+        (false, Some(_)) => Some(READONLY_WORKFLOW.to_string()),
+        (false, None) => Some(format!("Không có quy trình '{name}' trong workflows.json.")),
+    }
+}
+
+/// `Dòng 12: quy trình …` becomes `quy trình …`; anything else is returned as is.
+fn strip_line_prefix(msg: &str) -> String {
+    msg.strip_prefix("Dòng ")
+        .and_then(|rest| {
+            let (digits, tail) = rest.split_once(": ")?;
+            (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+                .then(|| tail.to_string())
+        })
+        .unwrap_or_else(|| msg.to_string())
+}
+
+fn workflow_file_entry(entry: &WorkflowEntryBody) -> Value {
+    let mut m = serde_json::Map::new();
+    m.insert("stages".to_string(), json!(entry.stages));
+    m.insert("loops".to_string(), Value::Object(entry.loops.clone()));
+    m.insert("auto".to_string(), Value::Bool(entry.auto));
+    for (key, value) in [
+        ("max_rounds", &entry.max_rounds),
+        ("budget_minutes", &entry.budget_minutes),
+        ("budget_usd", &entry.budget_usd),
+    ] {
+        if let Some(v) = value {
+            m.insert(key.to_string(), v.clone());
+        }
+    }
+    Value::Object(m)
+}
+
+async fn save_workflow(
+    State(st): State<Arc<AppState>>,
+    Json(body): Json<WorkflowSaveBody>,
+) -> Response {
+    run_write(move || save_workflow_blocking(&st, body)).await
+}
+
+fn save_workflow_blocking(st: &AppState, body: WorkflowSaveBody) -> Response {
+    let path = crate::workflows::workflows_path();
+    let (text, version) = match read_for_write(&path) {
+        Ok(x) => x,
+        Err(resp) => return resp,
+    };
+    let loaded = crate::workflows::load_from(text.as_deref(), &st.cfg);
+    if !loaded.errors.is_empty() {
+        return invalid_file("workflows.json", &loaded.errors);
+    }
+    if version != body.version {
+        return conflict(WORKFLOW_CONFLICT);
+    }
+
+    let name = body.entry.name.clone();
+    if let Some(msg) = workflow_name_rule(&loaded, &name, body.create) {
+        return refusal(WORKFLOW_HEADING, vec![field_err("name", msg)]);
+    }
+
+    // Validate exactly as the loader does, on the entry alone.
+    let raw_entry = workflow_file_entry(&body.entry);
+    let mut single = serde_json::Map::new();
+    single.insert(name.clone(), raw_entry.clone());
+    let single_text = serde_json::to_string_pretty(&Value::Object(single)).unwrap_or_default();
+    let lines = crate::workflows::key_lines(&single_text);
+    let file_entry =
+        match crate::workflows::validate_entry(&name, &raw_entry, &lines, &st.cfg, "file") {
+            Ok(wf) => wf.to_file_entry(),
+            Err(msgs) => {
+                let errors = msgs
+                    .iter()
+                    .map(|m| json!({ "field": Value::Null, "message": strip_line_prefix(m) }))
+                    .collect();
+                return refusal_values(WORKFLOW_HEADING, errors);
+            }
+        };
+
+    if let Err(e) = settings_store::write_object(&path, &body.version, |m| {
+        m.insert(name.clone(), file_entry);
+        Ok(())
+    }) {
+        return write_error_response(e, WORKFLOW_CONFLICT, WORKFLOW_HEADING);
+    }
+
+    workflows_response(st)
+}
+
+async fn delete_workflow(
+    State(st): State<Arc<AppState>>,
+    Json(body): Json<WorkflowDeleteBody>,
+) -> Response {
+    run_write(move || delete_workflow_blocking(&st, body)).await
+}
+
+fn delete_workflow_blocking(st: &AppState, body: WorkflowDeleteBody) -> Response {
+    let path = crate::workflows::workflows_path();
+    let (text, version) = match read_for_write(&path) {
+        Ok(x) => x,
+        Err(resp) => return resp,
+    };
+    let loaded = crate::workflows::load_from(text.as_deref(), &st.cfg);
+    if !loaded.errors.is_empty() {
+        return invalid_file("workflows.json", &loaded.errors);
+    }
+    if version != body.version {
+        return conflict(WORKFLOW_CONFLICT);
+    }
+
+    let name = body.name.clone();
+    if let Some(msg) = workflow_name_rule(&loaded, &name, false) {
+        return refusal(WORKFLOW_HEADING, vec![field_err("name", msg)]);
+    }
+
+    if let Err(e) = settings_store::write_object(&path, &body.version, |m| {
+        m.shift_remove(&name);
+        Ok(())
+    }) {
+        return write_error_response(e, WORKFLOW_CONFLICT, WORKFLOW_HEADING);
+    }
+
+    workflows_response(st)
+}
+
+fn workflows_response(st: &AppState) -> Response {
+    match crate::dashboard::api_workflows::workflows_payload(st) {
+        Ok(v) => json_response(StatusCode::OK, with_ok(v)),
+        Err(e) => internal_save(&e.message),
+    }
+}
+
+// ---- engines (read-only, D-08) ----
+
+/// Local readiness of the four engines. No route writes an engine command, endpoint or
+/// key name, and the response carries the key variable's NAME only, never its value.
+async fn get_engines(State(st): State<Arc<AppState>>) -> Response {
+    let res = blocking(move || {
+        let staff = crate::staff::load();
+        let engines =
+            crate::engine::readiness(&st.cfg, &crate::profile::current_env(), staff.staff.len());
+        Ok(json!({ "engines": engines }))
+    })
+    .await;
+    match res {
+        Ok(v) => json_response(StatusCode::OK, v),
+        Err(e) => internal_read(&e.message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_line_prefix_cases() {
+        assert_eq!(
+            strip_line_prefix("Dòng 12: quy trình \"x\" thiếu"),
+            "quy trình \"x\" thiếu"
+        );
+        assert_eq!(strip_line_prefix("Dòng 1: a: b"), "a: b");
+        assert_eq!(strip_line_prefix("Dòng x: a"), "Dòng x: a");
+        assert_eq!(strip_line_prefix("Dòng : a"), "Dòng : a");
+        assert_eq!(strip_line_prefix("không có tiền tố"), "không có tiền tố");
+    }
+
+    #[test]
+    fn ui_field_maps_hyphenated_roles() {
+        assert_eq!(ui_field(field_err("plan-review", "m")).field, "plan_review");
+        assert_eq!(ui_field(field_err("code-review", "m")).field, "code_review");
+        assert_eq!(ui_field(field_err("qa", "m")).field, "qa");
+    }
+
+    #[test]
+    fn with_ok_merges_payload() {
+        let v = with_ok(json!({"a": 1}));
+        assert_eq!(v, json!({"ok": true, "a": 1}));
     }
 }
