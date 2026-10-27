@@ -361,6 +361,11 @@ pub fn response_file_for(role: &str) -> Option<&'static str> {
     }
 }
 
+/// Extra argv appended for the Dev role only (D-05). Decided by the real agy 1.4.7 probe
+/// (spikes/s7b/NOTES.md `## Quyết định`): the narrowest mode that can edit files. Lead and the
+/// reviewers get none (they are read-only), and the skip flag stays unused.
+pub const AGY_DEV_PERMISSION: &[&str] = &["--mode", "accept-edits"];
+
 /// The `init.permission_mode` agy 1.4.7 reports for a run of `role`. The probe showed
 /// `--mode accept-edits` is NOT reflected in `init` (it stays `request-review`), so every role
 /// expects `request-review`; the real proof for Dev is the diff (D-05).
@@ -400,6 +405,9 @@ fn agy_plan(
     if let Some(m) = &acfg.model {
         argv.push("--model".to_string());
         argv.push(m.clone());
+    }
+    if role == "dev" {
+        argv.extend(AGY_DEV_PERMISSION.iter().map(|s| s.to_string()));
     }
 
     // agy never sees claude or DeepSeek credentials or config (T-06-35).
@@ -598,6 +606,62 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(bad.message, "Không dựng được lệnh agy từ lệnh claude");
+    }
+
+    #[test]
+    fn agy_permission_only_for_dev() {
+        let cfg = test_cfg(serde_json::json!({
+            "engines": {"agy": {"model": "gemini-x"}}
+        }));
+        let resolved = ResolvedEngine {
+            engine: Engine::Agy,
+            team: None,
+            wait: None,
+        };
+        let claude = vec![
+            "claude".to_string(),
+            "-p".to_string(),
+            "việc".to_string(),
+            "--append-system-prompt".to_string(),
+            "luật".to_string(),
+        ];
+        for role in ["lead", "plan-review", "code-review", "qa"] {
+            let p = plan_for(
+                &cfg,
+                &resolved,
+                role,
+                &claude,
+                "m",
+                BTreeMap::new(),
+                Duration::from_secs(600),
+            )
+            .unwrap();
+            for bad in ["--mode", "--sandbox", "--dangerously-skip-permissions"] {
+                assert!(!p.argv.iter().any(|a| a == bad), "{role} got {bad}");
+            }
+        }
+        let p = plan_for(
+            &cfg,
+            &resolved,
+            "dev",
+            &claude,
+            "m",
+            BTreeMap::new(),
+            Duration::from_secs(600),
+        )
+        .unwrap();
+        assert!(p.argv.ends_with(
+            &AGY_DEV_PERMISSION
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        ));
+        assert_eq!(AGY_DEV_PERMISSION, ["--mode", "accept-edits"]);
+        assert_eq!(p.response_file, None);
+        // The prompt for Dev is not the read-only variant.
+        assert!(!p.argv[2].contains("chế độ chỉ đọc"));
+        assert_eq!(agy_expected_permission_mode("dev"), "request-review");
+        assert_eq!(agy_expected_permission_mode("lead"), "request-review");
     }
 
     fn test_cfg(extra: serde_json::Value) -> Config {

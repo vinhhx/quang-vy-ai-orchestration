@@ -359,3 +359,176 @@ fn agy_error_status_fails() {
     assert_eq!(row.engine, "agy");
     assert_eq!(row.status, "failed");
 }
+
+// ---------------------------------------------------------------------------
+// Task 2: agy Dev
+// ---------------------------------------------------------------------------
+
+/// A plan whose table lists `files`, written by an agy Lead; leaves the repo on the task branch
+/// with the plan committed. `roles` is the team's per-role engine map.
+fn plan_task(sb: &Sandbox, roles: Value, files: &[&str]) -> PathBuf {
+    agy_config(sb);
+    write_doi_agy(sb, roles);
+    let repo = setup_project(sb, "work");
+    let rows: Vec<(&str, &str, &str, &str)> = files
+        .iter()
+        .map(|f| (*f, "toàn file", "sửa", "demo"))
+        .collect();
+    let plan = protocol::plan_text("Kế hoạch", &rows, "python3 -m unittest", "");
+    let env = AgyEnv::new(
+        sb,
+        json!({"lines": agy_lines(&plan, "SUCCESS", "request-review")}),
+    );
+    let res = run_lead(sb, &env);
+    assert_ok(&res, "run lead (agy, plan)");
+    repo
+}
+
+fn write_op(path: &str, content: &str) -> Value {
+    json!({"op": "write", "path": path, "content": content})
+}
+
+fn run_dev(sb: &Sandbox, scenario: Value) -> (RunOut, AgyEnv) {
+    let env = AgyEnv::new(sb, scenario);
+    let res = sb.run_env(&["run", "dev", "web"], None, &env.vars());
+    (res, env)
+}
+
+fn argv_of(rec: &Value) -> Vec<String> {
+    rec["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect()
+}
+
+fn dev_roles() -> Value {
+    json!({"lead": "agy", "dev": "agy"})
+}
+
+#[test]
+fn agy_dev_edits_in_scope() {
+    let sb = Sandbox::new();
+    let repo = plan_task(&sb, dev_roles(), &["src/a.txt"]);
+
+    let (res, env) = run_dev(&sb, json!({"ops": [write_op("src/a.txt", "a\n")]}));
+    assert_ok(&res, "run dev (agy)");
+
+    let subject = sb.git(&repo, &["log", "-1", "--format=%s"]);
+    assert!(subject.starts_with("sua-app: "), "head subject: {subject}");
+    let files = sb.git(&repo, &["show", "--name-only", "--format=", "HEAD"]);
+    assert!(files.lines().any(|l| l == "src/a.txt"), "{files}");
+
+    let row = run_row(&sb, "dev");
+    assert_eq!(row.engine, "agy");
+    assert_eq!(row.status, "succeeded");
+
+    let recs = env.records();
+    assert_eq!(recs.len(), 1);
+    let argv = argv_of(&recs[0]);
+    assert_eq!(&argv[argv.len() - 2..], ["--mode", "accept-edits"]);
+    assert_eq!(recs[0]["permission"], json!("accept-edits"));
+}
+
+#[test]
+fn agy_dev_out_of_scope_violation() {
+    let sb = Sandbox::new();
+    let repo = plan_task(&sb, dev_roles(), &["src/a.txt"]);
+
+    let (res, _env) = run_dev(
+        &sb,
+        json!({"ops": [write_op("src/a.txt", "a\n"), write_op("src/b.txt", "b\n")]}),
+    );
+    assert_eq!(
+        res.code, 3,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(res.stdout.contains("src/b.txt"), "stdout: {}", res.stdout);
+    assert_eq!(
+        run_row(&sb, "dev").outcome.as_deref(),
+        Some("protocol_violation")
+    );
+    // Nothing was committed or reverted: the files stay for a person to look at.
+    assert!(repo.join("src/b.txt").is_file());
+}
+
+#[test]
+fn agy_dev_planning_and_secret_paths() {
+    // `.planning/` is never agy's, even when the plan lists it.
+    let sb = Sandbox::new();
+    plan_task(&sb, dev_roles(), &[".planning/x.md"]);
+    let (res, _env) = run_dev(&sb, json!({"ops": [write_op(".planning/x.md", "x\n")]}));
+    assert_eq!(
+        res.code, 3,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        res.stdout.contains(".planning/x.md"),
+        "stdout: {}",
+        res.stdout
+    );
+    assert_eq!(
+        run_row(&sb, "dev").outcome.as_deref(),
+        Some("protocol_violation")
+    );
+
+    // A secret-looking / CI path is a violation too.
+    let sb = Sandbox::new();
+    plan_task(&sb, dev_roles(), &[".github/workflows/ci.yml"]);
+    let (res, _env) = run_dev(
+        &sb,
+        json!({"ops": [write_op(".github/workflows/ci.yml", "on: push\n")]}),
+    );
+    assert_eq!(
+        res.code, 3,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        res.stdout.contains(".github/workflows/ci.yml"),
+        "stdout: {}",
+        res.stdout
+    );
+}
+
+#[test]
+fn agy_dev_empty_diff_suspicious() {
+    let sb = Sandbox::new();
+    let repo = plan_task(&sb, dev_roles(), &["src/a.txt"]);
+    let before = sb.git(&repo, &["rev-parse", "HEAD"]);
+
+    // SUCCESS and no ops: nothing changed.
+    let (res, _env) = run_dev(&sb, json!({}));
+    assert_eq!(
+        res.code, 4,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        res.stdout
+            .contains("agy không sửa file nào — có thể bị từ chối quyền (xem stderr.txt của run)."),
+        "stdout: {}",
+        res.stdout
+    );
+    let row = run_row(&sb, "dev");
+    assert_eq!(row.status, "succeeded");
+    assert_eq!(row.outcome.as_deref(), Some("agy:empty"));
+    assert_eq!(sb.git(&repo, &["rev-parse", "HEAD"]), before, "no commit");
+}
+
+#[test]
+fn claude_dev_unchanged_for_planning_path() {
+    // Only the Lead is agy: the Dev is claude, which keeps today's behaviour for `.planning/`.
+    let sb = Sandbox::new();
+    let repo = plan_task(&sb, json!({"lead": "agy"}), &[".planning/x.md"]);
+
+    let scenario = json!({"ops": [write_op(".planning/x.md", "x\n")]});
+    let res = sb.run_env(&["run", "dev", "web"], Some(scenario), &[]);
+    assert_ok(&res, "run dev (claude, .planning path)");
+    assert_eq!(run_row(&sb, "dev").engine, "claude");
+    let files = sb.git(&repo, &["show", "--name-only", "--format=", "HEAD"]);
+    assert!(files.lines().any(|l| l == ".planning/x.md"), "{files}");
+}
