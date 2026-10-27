@@ -31,6 +31,9 @@ pub struct NewTask {
     pub name: Option<String>,
     #[serde(default)]
     pub workflow: Option<String>,
+    /// Đội hình cho task mới (D-12); không có thì dùng đội hình của dự án rồi `mac-dinh`.
+    #[serde(default)]
+    pub team: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -514,6 +517,8 @@ pub struct StartRequest<'a> {
     pub request: &'a str,
     pub name: Option<&'a str>,
     pub workflow: Option<&'a str>,
+    /// Đội hình yêu cầu (D-12); `None` = đội hình của dự án rồi `mac-dinh`.
+    pub team: Option<&'a str>,
     pub origin: Origin,
     /// Chạy mọi kiểm tra tới hết `lead_preflight` rồi dừng, không bắt đầu job nào.
     pub dry_run: bool,
@@ -528,6 +533,10 @@ pub struct StartInfo {
     pub auto: bool,
     pub warning: Option<String>,
     pub replan: bool,
+    /// Tên đội hình đã chọn cho task (body > đội hình dự án > `mac-dinh`).
+    pub team: String,
+    /// Ghi chú khi đội hình của dự án không có trong teams.json và phải dùng `mac-dinh`.
+    pub team_note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -561,6 +570,19 @@ pub fn new_task_args(
     request: &str,
     origin: Origin,
 ) -> (&'static str, Vec<String>) {
+    new_task_args_team(auto, slug, workflow, None, project_id, request, origin)
+}
+
+/// Như `new_task_args`, thêm `--team <tên>` ngay sau cặp `--workflow` khi có đội hình.
+pub fn new_task_args_team(
+    auto: bool,
+    slug: &str,
+    workflow: &str,
+    team: Option<&str>,
+    project_id: &str,
+    request: &str,
+    origin: Origin,
+) -> (&'static str, Vec<String>) {
     let (role, head): (&'static str, [&str; 2]) = if auto {
         ("auto", ["auto", "--start"])
     } else {
@@ -572,6 +594,10 @@ pub fn new_task_args(
             .iter()
             .map(|s| s.to_string()),
     );
+    if let Some(team) = team {
+        args.push("--team".to_string());
+        args.push(team.to_string());
+    }
     // Nguồn task đi theo argv (trước `--`) để `run lead` / `auto --start` lưu vào brain.db.
     if origin == Origin::Telegram {
         args.push("--origin".to_string());
@@ -625,6 +651,18 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
             Err(e) => return Ok(StartOutcome::Invalid(e.message)),
         };
 
+    // TEAM-03 / D-12: body > project default > mac-dinh; an unknown explicit team is
+    // refused before any job starts.
+    let (teams_loaded, _staff) = crate::teams::load();
+    let team = match crate::teams::resolve(
+        &teams_loaded,
+        req.team,
+        crate::projects::team_of(&map, &project.id).as_deref(),
+    ) {
+        Ok(r) => r,
+        Err(e) => return Ok(StartOutcome::Invalid(e.message)),
+    };
+
     let conn = crate::db::open(&st.db_path)?;
     let pf = lead_preflight(&conn, &st.jobs, &project, &proj_root, &slug)?;
     if !pf.can_start {
@@ -666,15 +704,18 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
         auto: workflow.auto,
         warning: pf.warning,
         replan: pf.replan,
+        team: team.team.name.clone(),
+        team_note: team.note.clone(),
     };
     if req.dry_run {
         return Ok(StartOutcome::Ready(info));
     }
 
-    let (role, args) = new_task_args(
+    let (role, args) = new_task_args_team(
         workflow.auto,
         &info.slug,
         &workflow.name,
+        Some(&info.team),
         &info.project.id,
         trimmed_req,
         req.origin,
@@ -724,9 +765,13 @@ fn start_response(outcome: StartOutcome) -> Response {
                 "branch": info.branch,
                 "workflow": info.workflow,
                 "auto": info.auto,
+                "team": info.team,
             });
             if let Some(w) = info.warning {
                 resp_val["warning"] = serde_json::json!(w);
+            }
+            if let Some(n) = info.team_note {
+                resp_val["team_note"] = serde_json::json!(n);
             }
             json_response(StatusCode::ACCEPTED, resp_val)
         }
@@ -763,6 +808,7 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
                 request: &body.request,
                 name: body.name.as_deref(),
                 workflow: body.workflow.as_deref(),
+                team: body.team.as_deref(),
                 origin: Origin::Dashboard,
                 dry_run: false,
             },
@@ -949,14 +995,23 @@ pub struct TaskState {
     pub rev: String,
     /// `tasks.origin` (05.4): `Some("telegram")` khi task do Telegram giao.
     pub origin: Option<String>,
+    /// `tasks.team_json` nguyên văn (`None` = task tạo trước Phase 6); là giá trị cũ của CAS.
+    pub team_json: Option<String>,
+    /// `team_json` đã đọc được (`None` = task cũ hoặc dữ liệu hỏng).
+    pub team: Option<crate::teams::TaskTeam>,
+    /// teams.json đang có (cộng đội hình có sẵn).
+    pub teams: crate::teams::LoadedTeams,
+    pub staff: crate::staff::LoadedStaff,
 }
 
-/// Token đổi khi trạng thái task, run mới nhất, autopilot, cờ dừng, duyệt hoặc commit plan đổi.
+/// Token đổi khi trạng thái task, run mới nhất, autopilot, cờ dừng, duyệt, commit plan hoặc
+/// `team_json` đổi.
 pub fn task_rev(
     task: &TaskRow,
     auto: &TaskAuto,
     latest: Option<&RunRow>,
     plan_commit: Option<&str>,
+    team_json: Option<&str>,
 ) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -967,6 +1022,7 @@ pub fn task_rev(
     auto.auto_stop_at.hash(&mut h);
     auto.approved_commit.hash(&mut h);
     plan_commit.hash(&mut h);
+    team_json.hash(&mut h);
     format!("{:016x}", h.finish())
 }
 
@@ -1119,8 +1175,17 @@ pub fn load_task_state(
     };
 
     let latest = runs.iter().max_by_key(|r| (r.started_at, r.id));
-    let rev = task_rev(&task, &auto, latest, git.plan_commit.as_deref());
+    let team_json = crate::db::task_team_json(conn, task.id)?;
+    let rev = task_rev(
+        &task,
+        &auto,
+        latest,
+        git.plan_commit.as_deref(),
+        team_json.as_deref(),
+    );
     let origin = crate::db::task_origin(conn, task.id)?;
+    let team = crate::teams::TaskTeam::parse(team_json.as_deref());
+    let (teams, staff) = crate::teams::load();
 
     Ok(Ok(TaskState {
         task,
@@ -1140,7 +1205,58 @@ pub fn load_task_state(
         view,
         rev,
         origin,
+        team_json,
+        team,
+        teams,
+        staff,
     }))
+}
+
+/// Tên đội hình hiện tại của task: tên đã lưu, hoặc `mac-dinh` cho task cũ (không có
+/// `team_json`) và cho dữ liệu hỏng không đọc được.
+fn current_team_name(state: &TaskState) -> String {
+    state
+        .team
+        .as_ref()
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| crate::teams::DEFAULT_TEAM.to_string())
+}
+
+/// `{name, summary, description, missing, legacy}` của UI-SPEC: task cũ (NULL) = `mac-dinh`,
+/// mọi vai trò chạy bằng claude; tên không còn trong teams.json = `missing`.
+pub fn team_view(state: &TaskState) -> serde_json::Value {
+    match state.team.as_ref() {
+        None if state.team_json.is_none() => serde_json::json!({
+            "name": crate::teams::DEFAULT_TEAM,
+            "summary": "tất cả: claude",
+            "description": serde_json::Value::Null,
+            "missing": false,
+            "legacy": true,
+        }),
+        None => serde_json::json!({
+            "name": crate::teams::DEFAULT_TEAM,
+            "summary": serde_json::Value::Null,
+            "description": serde_json::Value::Null,
+            "missing": true,
+            "legacy": false,
+        }),
+        Some(t) => match state.teams.get(&t.name) {
+            Some(team) => serde_json::json!({
+                "name": t.name,
+                "summary": team.summary(&state.staff),
+                "description": team.description,
+                "missing": false,
+                "legacy": false,
+            }),
+            None => serde_json::json!({
+                "name": t.name,
+                "summary": serde_json::Value::Null,
+                "description": serde_json::Value::Null,
+                "missing": true,
+                "legacy": false,
+            }),
+        },
+    }
 }
 
 /// PlanFacts cho cổng duyệt suy ra (task trước 5.2) và thẻ `ban` của 05.1.
@@ -1324,6 +1440,12 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "controls": view.controls,
             "auto": view.auto,
             "workflow": workflow_json,
+            "team": team_view(&state),
+            "team_history": state
+                .team
+                .as_ref()
+                .map(|t| t.history.clone())
+                .unwrap_or_default(),
             "rev": state.rev,
             "plan": plan_obj,
             "qa": qa_obj,
