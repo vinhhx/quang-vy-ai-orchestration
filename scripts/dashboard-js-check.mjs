@@ -3353,6 +3353,336 @@ const sections = [
     },
   },
   {
+    // 06-17: team line, history, change-team dialog, engine lines, ledger labels, total helper,
+    // quota banner and re-run dialog of the task screen.
+    name: 'task-team-quota',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      ctx.AB.route = { name: 'task', params: { id: '1' } };
+      const taskJsSrc = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/js/task.js'), 'utf8');
+      vm.runInContext(taskJsSrc, ctx, { filename: 'task.js' });
+
+      const savedApi = ctx.AB.api;
+      const savedFocus = ctx.AB.focusLater;
+      const savedLock = ctx.AB.lockScroll;
+      const calls = [];
+      let respond = () => ({ ok: false, status: 0, data: null });
+      ctx.AB.api = function (method, url, body) {
+        calls.push({ method, url, body });
+        return Promise.resolve(respond(method, url, body));
+      };
+      const focused = [];
+      ctx.AB.focusLater = function (id) {
+        focused.push(id);
+      };
+      let locked = false;
+      ctx.AB.lockScroll = function (on) {
+        locked = Boolean(on);
+      };
+      const ok = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, data });
+
+      try {
+        const PRIMARY = 'bg-indigo-600';
+        const RC = { lead: 'claude', dev: 'claude', qa: 'claude', plan_review: 'claude', code_review: 'claude' };
+        const TEAMS = [
+          { name: 'mac-dinh', source: 'builtin', description: 'Mọi vai trò dùng claude.', summary: 'tất cả: claude', roles: RC },
+          { name: 'tiet-kiem', source: 'builtin', description: 'Dev dùng deepseek.', summary: 'claude: lead, qa, review plan, review code · deepseek: dev', roles: { ...RC, dev: 'deepseek' } },
+          { name: 'doi-thu', source: 'file', description: 'Thử.', summary: 'claude: lead, qa · người Hà: dev', roles: { ...RC, dev: 'người:ha' } },
+        ];
+        const ENGINES = [
+          { name: 'claude', readiness: 'san_sang', word: 'sẵn sàng' },
+          { name: 'deepseek', readiness: 'thieu_key', word: 'thiếu key' },
+          { name: 'agy', readiness: 'san_sang', word: 'sẵn sàng' },
+        ];
+        const STAFF = [{ id: 'ha', display_name: 'Hà' }];
+        const routes = () => (method, url) => {
+          if (url === '/api/teams') return ok({ teams: TEAMS, errors: [], builtin_names: ['mac-dinh', 'tiet-kiem'], project_defaults: {} });
+          if (url === '/api/engines') return ok({ engines: ENGINES });
+          if (url === '/api/staff') return ok({ staff: STAFF, errors: [] });
+          return { ok: false, status: 0, data: null };
+        };
+
+        const APPROVE = { id: 'approve', label: 'Duyệt plan', enabled: true, reason: null, run_id: null };
+        const MORE = { id: 'auto_more_round', label: 'Chạy thêm 1 vòng', enabled: true, reason: null, run_id: null };
+        const END = { id: 'auto_end', label: 'Dừng hẳn', enabled: true, reason: null, run_id: null };
+        const RUN_DEV = { id: 'run_dev', label: 'Chạy Dev', enabled: true, reason: null };
+        const RUN_QA = { id: 'run_qa', label: 'Chạy QA', enabled: true, reason: null };
+        const CHANGE = { id: 'change_team', label: 'Đổi đội hình', enabled: true, reason: null, run_id: null };
+        const RERUN = { id: 'quota_rerun', label: 'Chạy lại bước này bằng đội hình…', enabled: true, reason: null, run_id: null };
+        const HDONE = { id: 'human_done', label: 'Xong', enabled: true, reason: null, run_id: null };
+        const HRET = { id: 'human_return', label: 'Trả lại', enabled: true, reason: null, run_id: null };
+        const QUOTA_DETAIL = 'Run 7 (dev) trên engine deepseek dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine.';
+        const QUOTA = { run_id: 7, role: 'dev', stage: 'implement', step_name: 'Code', engine: 'deepseek', detail: QUOTA_DETAIL, retry_label: 'Chạy Dev' };
+        const T = {
+          id: 1,
+          slug: 'sua-app',
+          status: 'planned',
+          current_step: 'dev',
+          actions: [RUN_DEV, CHANGE, RERUN],
+          controls: [],
+          auto: { state: 'off', workflow_auto: false },
+          workflow: { name: 'mac-dinh', summary: 'plan', auto: false },
+          team: { name: 'doi-thu', summary: 'claude: lead, qa · người Hà: dev', description: 'Thử.', missing: false, legacy: false },
+          team_history: [],
+          quota: null,
+          rev: 'R',
+          steps: [],
+          runs: [],
+        };
+        const fresh = (task, pipe) => {
+          const c = factories.task();
+          c.id = '1';
+          c.task = task;
+          if (pipe) c.pipe = pipe;
+          return c;
+        };
+
+        // ---- team line (D-13) ----
+        let c = fresh({ ...T });
+        check('team: normal line', c.teamLineText === 'Đội hình: doi-thu · claude: lead, qa · người Hà: dev', `got "${c.teamLineText}"`);
+        check('team: line shown, not missing', c.hasTeamLine === true && c.teamMissing === false);
+        c.task = { ...T, team: { name: 'mac-dinh', summary: 'tất cả: claude', description: null, missing: false, legacy: true }, team_history: [] };
+        check('team: legacy line', c.teamLineText === 'Đội hình: mac-dinh (task tạo trước Phase 6 — mọi vai trò chạy bằng claude)', `got "${c.teamLineText}"`);
+        check('team: legacy is not "missing" and has no history', c.teamMissing === false && c.hasTeamHistory === false && c.teamHistoryLines.length === 0);
+        c.task = { ...T, team: { name: 'cu', summary: null, description: null, missing: true, legacy: false } };
+        check('team: removed-team line', c.teamLineText === 'Đội hình: cu — không còn trong teams.json', `got "${c.teamLineText}"`);
+        check('team: removed-team hint', c.teamMissing === true && c.teamMissingText === 'Chọn đội hình khác bằng Đổi đội hình trước khi chạy bước tiếp.', c.teamMissingText);
+        check('team: the button stays available for a removed team', c.teamControls.length === 1 && c.teamControls[0].id === 'change_team');
+        c.task = { ...T, team: undefined };
+        check('team: no team in the payload hides the line and the button', c.hasTeamLine === false && c.teamLineText === '');
+        c.task = { ...T, actions: [RUN_DEV] };
+        check('team: no change_team action, no button', c.teamControls.length === 0);
+
+        // ---- history: oldest first, no cap, who in words ----
+        const at1 = new Date(2026, 9, 5, 14, 7).getTime();
+        const at2 = new Date(2026, 0, 12, 9, 30).getTime();
+        c.task = { ...T, team_history: [
+          { at: at1, by: 'dashboard', from: 'mac-dinh', to: 'tiet-kiem' },
+          { at: at2, by: 'telegram', from: 'tiet-kiem', to: 'doi-thu' },
+        ] };
+        check('history: two lines in payload order', JSON.stringify(c.teamHistoryLines) === JSON.stringify([
+          '05/10 14:07 · bạn qua dashboard: mac-dinh → tiet-kiem',
+          '12/01 09:30 · bạn qua Telegram: tiet-kiem → doi-thu',
+        ]), JSON.stringify(c.teamHistoryLines));
+        check('history: shown when there is a change', c.hasTeamHistory === true);
+        const many = [];
+        for (let i = 0; i < 25; i++) many.push({ at: at1 + i * 60000, by: 'dashboard', from: 'a' + i, to: 'b' + i });
+        c.task = { ...T, team_history: many };
+        check('history: long history shows every line (no cap)', c.teamHistoryLines.length === 25);
+
+        // ---- change-team dialog ----
+        respond = routes();
+        c = fresh({ ...T, team_history: [] });
+        check('change: closed at start', c.teamDlgOpen === false && c.teamDlgOkLabel === 'Đổi đội hình');
+        calls.length = 0;
+        focused.length = 0;
+        await c.openChangeTeam();
+        check('change: opens, scroll locked', c.teamDlgOpen === true && locked === true);
+        check('change: fetches teams, engines and staff when it opens', calls.map((x) => x.url).sort().join(',') === '/api/engines,/api/staff,/api/teams', calls.map((x) => x.url).join(','));
+        check('change: title', c.teamDlgTitle === 'Đổi đội hình cho task sua-app', c.teamDlgTitle);
+        check('change: body', c.teamDlgBody === 'Đội hình mới áp dụng từ bước kế tiếp; các run đã chạy giữ nguyên engine của chúng. Việc đổi được ghi lại trong lịch sử.', c.teamDlgBody);
+        check('change: current team preselected', c.teamDlgPick === 'doi-thu' && c.teamDlgChecked(TEAMS[2]) === true && c.teamDlgChecked(TEAMS[0]) === false);
+        check('change: the current team carries the chip đang dùng', c.teamDlgChips(TEAMS[2]).indexOf('đang dùng') >= 0 && c.teamDlgChips(TEAMS[0]).indexOf('đang dùng') === -1, JSON.stringify(c.teamDlgChips(TEAMS[2])));
+        check('change: source chips', c.teamDlgChips(TEAMS[0]).join('|') === 'có sẵn' && c.teamDlgChips(TEAMS[2]).join('|') === 'đang dùng|từ teams.json', c.teamDlgChips(TEAMS[2]).join('|'));
+        check('change: initial focus on the selected radio', focused[focused.length - 1] === 'ab-tdlg-radio-doi-thu', focused.join(','));
+        check('change: confirm disabled while the selection is the current team', c.teamDlgOkDisabled === true && c.teamDlgReason === 'Chọn đội hình khác đội hình hiện tại.' && c.hasTeamDlgReason === true, c.teamDlgReason);
+        check('change: readiness lines like Giao việc', JSON.stringify(c.teamDlgReadinessLines(TEAMS[1])) === JSON.stringify(['! deepseek: thiếu key']) && c.teamDlgReadinessLines(TEAMS[0]).length === 0, JSON.stringify(c.teamDlgReadinessLines(TEAMS[1])));
+        check('change: staff names reach the engine texts', ctx.AB.engineText('người:ha') === 'người Hà', ctx.AB.engineText('người:ha'));
+        check('change: no step line outside the re-run dialog', c.teamDlgStepLine(TEAMS[1]) === '');
+        const before = calls.length;
+        c.confirmChangeTeam();
+        check('change: confirm on the current team sends nothing', calls.length === before);
+        c.pickDlgTeam('tiet-kiem');
+        check('change: another team enables the confirm', c.teamDlgOkDisabled === false && c.teamDlgReason === '' && c.hasTeamDlgReason === false);
+
+        // in flight: label, disabled controls, one POST with {team, rev}
+        let release;
+        const gateP = new Promise((r) => { release = r; });
+        respond = (method, url) => (method === 'POST' ? gateP.then(() => ok({ ok: true, from: 'doi-thu', to: 'tiet-kiem' })) : routes()(method, url));
+        const posting = c.confirmChangeTeam();
+        check('change: in flight reads Đang đổi...', c.teamDlgOkLabel === 'Đang đổi...' && c.teamDlgOkDisabled === true && c.busyAction === 'change_team');
+        check('change: in flight blocks every task action', c.actionDisabled(RUN_DEV) === true);
+        check('change: Escape is ignored while in flight', (c.teamDlgCancel(), c.teamDlgOpen === true));
+        release();
+        await posting;
+        const post = calls.filter((x) => x.method === 'POST').pop();
+        check('change: POST /api/tasks/1/team with {team, rev}', post.method === 'POST' && post.url === '/api/tasks/1/team' && JSON.stringify(post.body) === JSON.stringify({ team: 'tiet-kiem', rev: 'R' }), JSON.stringify(post));
+        check('change: success closes the dialog, unlocks scroll, returns focus', c.teamDlgOpen === false && locked === false && focused[focused.length - 1] === 'ab-act-change_team', focused.join(','));
+        check('change: success message', c.message === 'Đã đổi đội hình: doi-thu → tiet-kiem.', c.message);
+        check('change: busy cleared after the answer', c.busyAction === '' && c.teamDlgBusy === false);
+
+        // refusal: the server reason inside the dialog and on the button's reason line
+        respond = routes();
+        await c.openChangeTeam();
+        c.pickDlgTeam('mac-dinh');
+        const REFUSAL = 'Đang có run chạy — chờ run xong hoặc Kill rồi mới đổi đội hình.';
+        respond = (method, url) => (method === 'POST' ? ok({ error: REFUSAL, kind: 'busy' }, 409) : routes()(method, url));
+        await c.confirmChangeTeam();
+        check('change: refusal stays in the dialog', c.teamDlgOpen === true && c.hasTeamDlgError === true && c.teamDlgError === REFUSAL, c.teamDlgError);
+        check('change: refusal shows on the button reason line', c.changeTeamReason === REFUSAL && c.showReason(CHANGE) === true, c.changeTeamReason);
+        c.teamDlgCancel();
+        check('change: cancel closes without a second POST', c.teamDlgOpen === false && calls.filter((x) => x.method === 'POST').length === 2);
+        const CHANGE_OFF = { ...CHANGE, enabled: false, reason: 'Đang có run chạy — chờ run xong hoặc Kill rồi mới đổi đội hình.' };
+        c.task = { ...T, actions: [RUN_DEV, CHANGE_OFF, RERUN] };
+        check('change: a disabled action shows the server reason, button disabled', c.actionDisabled(CHANGE_OFF) === true && c.changeTeamReason === CHANGE_OFF.reason);
+        check('change: Đổi đội hình is secondary', !c.actionClass(CHANGE).includes(PRIMARY));
+
+        // teams that cannot load
+        respond = () => ({ ok: false, status: 0, data: null });
+        c = fresh({ ...T });
+        await c.openChangeTeam();
+        check('change: a failed teams list shows the load error and no confirm', c.teamDlgLoadFailed === true && c.teamDlgTeams.length === 0 && c.teamDlgOkDisabled === true);
+        c.teamDlgCancel();
+
+        // ---- strip exclusions and the primary order ----
+        c = fresh({ ...T, actions: [RUN_DEV, CHANGE, RERUN, HDONE, HRET, RUN_QA] });
+        check('strip: excludes change_team, quota_rerun, human_done, human_return', JSON.stringify(c.stripActions.map((x) => x.id)) === JSON.stringify(['run_dev', 'run_qa']), JSON.stringify(c.stripActions.map((x) => x.id)));
+
+        // ---- engine lines, ledger labels, human rows ----
+        ctx.AB.setStaffNames({ ha: 'Hà' });
+        c = fresh({ ...T });
+        check('engine: planned card reads dự kiến deepseek', c.flowCardEngine({ key: 'code', engine: 'deepseek', engine_planned: true }) === 'dự kiến deepseek');
+        check('engine: a card with a run shows the engine verbatim', c.flowCardEngine({ key: 'plan', engine: 'claude', engine_planned: false }) === 'claude' && c.flowCardHasEngine({ engine: 'claude' }) === true);
+        check('engine: human run reads người Hà', c.flowCardEngine({ key: 'code', engine: 'người:ha', engine_planned: false }) === 'người Hà', c.flowCardEngine({ engine: 'người:ha' }));
+        check('engine: planned human reads dự kiến người Hà', c.flowCardEngine({ engine: 'người:ha', engine_planned: true }) === 'dự kiến người Hà');
+        check('engine: a card without an engine shows no line', c.flowCardHasEngine({ key: 'qa' }) === false && c.flowCardEngine(null) === '');
+        check('engine: human card metrics while waiting', c.flowCardMetrics({ has_run: true, engine: 'người:ha', engine_planned: false, state: 'cho_nguoi', duration_ms: 90 * 60000 }) === 'đã chờ 1 giờ 30 phút', c.flowCardMetrics({ has_run: true, engine: 'người:ha', state: 'cho_nguoi', duration_ms: 90 * 60000 }));
+        check('engine: human card metrics once done', c.flowCardMetrics({ has_run: true, engine: 'người:ha', engine_planned: false, state: 'xong', duration_ms: 5 * 60000 }) === '5 phút · không có token');
+        check('engine: agent card metrics unchanged', c.flowCardMetrics({ has_run: true, engine: 'deepseek', state: 'xong', duration_ms: 120000, cost_usd: 0.5 }) === '2 phút · $0.50');
+        check('ledger: label with the engine', c.rowLabel({ label: 'Vòng 1 · code', engine: 'deepseek' }) === 'Vòng 1 · code · deepseek', c.rowLabel({ label: 'Vòng 1 · code', engine: 'deepseek' }));
+        check('ledger: human label', c.rowLabel({ label: 'Vòng 2 · code', engine: 'người:ha' }) === 'Vòng 2 · code · người Hà');
+        check('ledger: a row with no engine keeps the server label', c.rowLabel({ label: 'Vòng 1 · code' }) === 'Vòng 1 · code');
+        const HUMAN_ROW = { run_id: 9, label: 'Vòng 2 · code', engine: 'người:ha', human: true, state: 'xong', verdict: 'xong', turns: null, duration_ms: (3 * 24 + 2) * 3600000, cost_usd: null, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, counts: null };
+        check('ledger: human row metrics for a 3-day wait', c.rowMetrics(HUMAN_ROW) === '3 ngày 2 giờ · không có token', c.rowMetrics(HUMAN_ROW));
+        const AGENT_ROW = { run_id: 8, label: 'Vòng 1 · code', engine: 'deepseek', human: false, state: 'xong', verdict: 'xong', turns: 6, duration_ms: 180000, cost_usd: 1.25, input_tokens: 10, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, counts: null };
+        check('ledger: agent row metrics unchanged', c.rowMetrics(AGENT_ROW) === '6 lượt · 3 phút · $1.25', c.rowMetrics(AGENT_ROW));
+        c.runId = 9;
+        check('ledger: selected human row token line', c.tokenLineFor(HUMAN_ROW) === 'Token: không có — run do người làm.', c.tokenLineFor(HUMAN_ROW));
+        c.runId = 8;
+        check('ledger: selected agent row token line unchanged', c.tokenLineFor(AGENT_ROW) === 'Token: vào 10 · ra 5 · cache 0 / 0', c.tokenLineFor(AGENT_ROW));
+        const LEDGER = (n) => ({ groups: [], total: { runs: 3, duration_ms: 600000, cost_usd: 2.5, cost_unknown: 0, human_runs: n } });
+        c.pipe = { groups: [], cards: {}, ledger: LEDGER(1) };
+        check('total: new wording without claude', c.totalText === '3 lượt chạy · 10 phút · $2.50', c.totalText);
+        check('total: human helper', c.humanRunsNote === 'Không tính thời gian chờ của 1 lượt do người làm.' && c.hasHumanRunsNote === true, c.humanRunsNote);
+        c.pipe = { groups: [], cards: {}, ledger: LEDGER(0) };
+        check('total: no helper without human runs', c.humanRunsNote === '' && c.hasHumanRunsNote === false);
+
+        // ---- quota banner (D-15 / D-16 / D-18) ----
+        c = fresh({ ...T, quota: QUOTA, actions: [RUN_DEV, CHANGE, RERUN] });
+        check('quota: banner shows for a manual task', c.hasQuota === true && c.showBanner === true);
+        check('quota: heading', c.bannerHeading === 'Hết quota engine deepseek', c.bannerHeading);
+        check('quota: body 1 is the server detail verbatim', c.bannerBody === QUOTA_DETAIL, c.bannerBody);
+        check('quota: body 2', c.quotaBody2 === 'Chạy lại bằng đội hình khác sẽ tiếp tục trên thư mục làm việc hiện tại: giữ nguyên diff đang có, đọc lại .plan.md (cùng .handover.md nếu có).', c.quotaBody2);
+        check('quota: buttons without autopilot', JSON.stringify(c.bannerControls.map((x) => x.id)) === JSON.stringify(['quota_rerun', 'quota_later']), JSON.stringify(c.bannerControls.map((x) => x.id)));
+        check('quota: button labels', c.bannerControls[0].label === 'Chạy lại bước này bằng đội hình…' && c.bannerControls[1].label === 'Thử lại sau');
+        check('quota: re-run is primary, Thử lại sau secondary', c.actionClass(RERUN).includes(PRIMARY) && !c.actionClass(c.bannerControls[1]).includes(PRIMARY));
+        check('quota: the strip keeps the step button and is secondary under the primary', JSON.stringify(c.stripActions.map((x) => x.id)) === JSON.stringify(['run_dev']) && !c.actionClass(RUN_DEV).includes(PRIMARY), JSON.stringify(c.stripActions.map((x) => x.id)));
+        check('quota: the D-03 callouts are not rendered for this cause', c.isBlocked === false && c.isQaFix === false);
+        c.task = { ...T, status: 'blocked', quota: QUOTA };
+        check('quota: no D-03 blocked callout even for a blocked status', c.isBlocked === false);
+
+        // Dừng hẳn only with autopilot's auto_end
+        c.task = { ...T, quota: QUOTA, controls: [END], auto: { state: 'stopped', workflow_auto: true, stop_reason: 'het_quota', stop_word: 'hết quota', stop_detail: QUOTA_DETAIL, stopped_in: 'build' } };
+        check('quota: Dừng hẳn appears with auto_end', JSON.stringify(c.bannerControls.map((x) => x.id)) === JSON.stringify(['quota_rerun', 'quota_later', 'auto_end']), JSON.stringify(c.bannerControls.map((x) => x.id)));
+        check('quota: the autopilot stop banner gives way to the quota banner', c.bannerHeading === 'Hết quota engine deepseek' && c.bannerBody === QUOTA_DETAIL);
+        check('quota: autopilot badge reads chờ bạn · hết quota', c.autoBadgeText === 'Autopilot: chờ bạn · hết quota', c.autoBadgeText);
+        const RELEAD = { id: 'relead', label: 'Chạy lại Lead', enabled: true, reason: null };
+        c.task = { ...c.task, actions: [RUN_DEV, RELEAD, CHANGE, RERUN] };
+        check('quota: the strip keeps Chạy lại Lead while the quota banner shows', c.stripActions.some((x) => x.id === 'relead') === true, JSON.stringify(c.stripActions.map((x) => x.id)));
+
+        // Thử lại sau: client only, collapses to the hint, nothing is sent
+        c = fresh({ ...T, quota: QUOTA, actions: [RUN_DEV, CHANGE, RERUN] });
+        calls.length = 0;
+        c.onAction(c.bannerControls[1]);
+        check('postpone: no API call (D-16)', calls.length === 0, JSON.stringify(calls));
+        check('postpone: collapses to the hint', c.quotaPostponed === true && c.bannerBody === 'Đã hoãn. Khi quota hồi phục, bấm Chạy Dev ở dưới để chạy lại bằng engine deepseek.', c.bannerBody);
+        check('postpone: the buttons and body 2 are gone, the heading stays', c.bannerControls.length === 0 && c.quotaBody2 === '' && c.bannerHeading === 'Hết quota engine deepseek');
+        check('postpone: no dialog, no busy action', c.teamDlgOpen === false && c.busyAction === '');
+        check('postpone: the step button becomes the strip primary', c.actionClass(RUN_DEV).includes(PRIMARY), c.actionClass(RUN_DEV));
+        const reloaded = fresh({ ...T, quota: QUOTA, actions: [RUN_DEV, CHANGE, RERUN] });
+        check('postpone: a reload shows the full banner again', reloaded.quotaPostponed === false && reloaded.bannerControls.length === 2);
+        c.task = { ...T, quota: { ...QUOTA, run_id: 8 }, actions: [RUN_DEV, CHANGE, RERUN] };
+        check('postpone: a newer quota stop shows the full banner', c.quotaPostponed === false && c.bannerControls.length === 2);
+        c.task = { ...T, quota: { ...QUOTA, retry_label: null }, actions: [RUN_DEV, CHANGE, RERUN] };
+        c.quotaPostponedRun = 7;
+        check('postpone: hint without a named step button', c.bannerBody === 'Đã hoãn. Khi quota hồi phục, bấm nút chạy lại của bước ở dưới để chạy lại bằng engine deepseek.', c.bannerBody);
+
+        // re-run dialog
+        respond = routes();
+        c = fresh({ ...T, team: { name: 'tiet-kiem', summary: 's', description: 'd', missing: false, legacy: false }, quota: QUOTA, actions: [RUN_DEV, CHANGE, RERUN] });
+        calls.length = 0;
+        focused.length = 0;
+        await c.openQuotaRerun();
+        check('rerun: opens as a dialog with a team list fetched on open', c.teamDlgOpen === true && c.rerunOpen === true && calls.map((x) => x.url).sort().join(',') === '/api/engines,/api/staff,/api/teams', calls.map((x) => x.url).join(','));
+        check('rerun: title', c.teamDlgTitle === 'Chạy lại bước Code bằng đội hình nào?', c.teamDlgTitle);
+        check('rerun: body', c.teamDlgBody === 'Đội hình bạn chọn thành đội hình của task từ bước này trở đi. Engine mới tiếp tục từ thư mục làm việc hiện tại, không làm lại từ đầu.', c.teamDlgBody);
+        check('rerun: no preselection, even for the current team', c.teamDlgPick === '' && TEAMS.every((t) => c.teamDlgChecked(t) === false));
+        check('rerun: the current team is not chipped đang dùng here', c.teamDlgChips(TEAMS[1]).indexOf('đang dùng') === -1);
+        check('rerun: confirm disabled until a team is chosen', c.teamDlgOkDisabled === true && c.teamDlgReason === 'Chọn một đội hình.' && c.teamDlgOkLabel === 'Chạy lại bước này' && c.teamDlgCancelLabel === 'Không chạy lại', c.teamDlgReason);
+        check('rerun: initial focus on the first radio', focused[focused.length - 1] === 'ab-tdlg-radio-mac-dinh', focused.join(','));
+        check('rerun: option line for tiet-kiem', c.teamDlgStepLine(TEAMS[1]) === 'Bước Code sẽ chạy bằng: deepseek', c.teamDlgStepLine(TEAMS[1]));
+        check('rerun: option line for mac-dinh', c.teamDlgStepLine(TEAMS[0]) === 'Bước Code sẽ chạy bằng: claude');
+        check('rerun: option line names a person', c.teamDlgStepLine(TEAMS[2]) === 'Bước Code sẽ chạy bằng: người Hà', c.teamDlgStepLine(TEAMS[2]));
+        check('rerun: chip vẫn là deepseek for tiet-kiem only', c.teamDlgChips(TEAMS[1]).indexOf('vẫn là deepseek') >= 0 && c.teamDlgChips(TEAMS[0]).every((x) => x.indexOf('vẫn là') === -1) && c.teamDlgChips(TEAMS[2]).every((x) => x.indexOf('vẫn là') === -1), JSON.stringify(c.teamDlgChips(TEAMS[1])));
+        c.pickRerunTeam('mac-dinh');
+        check('rerun: a pick enables the confirm', c.teamDlgOkDisabled === false && c.teamDlgReason === '');
+
+        // a review-stage quota maps the role key (plan-review → plan_review)
+        const cr = fresh({ ...T, quota: { ...QUOTA, role: 'code-review', stage: 'code-review', step_name: 'Review code', engine: 'claude' }, actions: [CHANGE, RERUN] });
+        await cr.openQuotaRerun();
+        check('rerun: review roles map to the team role keys', cr.teamDlgStepLine(TEAMS[1]) === 'Bước Review code sẽ chạy bằng: claude' && cr.teamDlgChips(TEAMS[1]).indexOf('vẫn là claude') >= 0, cr.teamDlgStepLine(TEAMS[1]));
+        cr.teamDlgCancel();
+
+        // refusal inside the dialog and under the banner button
+        const RERUN_REFUSAL = 'Dev đang chờ commit — không chạy lại được lúc này.';
+        respond = (method, url) => (method === 'POST' ? ok({ error: RERUN_REFUSAL, kind: 'not_allowed' }, 409) : routes()(method, url));
+        await c.confirmQuotaRerun();
+        check('rerun: refusal stays in the dialog', c.teamDlgOpen === true && c.teamDlgError === RERUN_REFUSAL && c.teamDlgBusy === false, c.teamDlgError);
+        check('rerun: refusal shows under the banner button', c.reasonText(RERUN) === RERUN_REFUSAL && c.showReason(RERUN) === true, c.reasonText(RERUN));
+        let postBody = null;
+        let release2;
+        const gate2 = new Promise((r) => { release2 = r; });
+        respond = (method, url, body) => {
+          if (method === 'POST') {
+            postBody = { url, body };
+            return gate2.then(() => ok({ job_id: 5 }, 202));
+          }
+          return routes()(method, url);
+        };
+        const rerunning = c.confirmQuotaRerun();
+        check('rerun: in flight reads Đang giao...', c.teamDlgOkLabel === 'Đang giao...' && c.teamDlgOkDisabled === true && c.busyAction === 'quota_rerun');
+        release2();
+        await rerunning;
+        check('rerun: POST /api/tasks/1/quota-rerun with {team, rev}', postBody && postBody.url === '/api/tasks/1/quota-rerun' && JSON.stringify(postBody.body) === JSON.stringify({ team: 'mac-dinh', rev: 'R' }), JSON.stringify(postBody));
+        check('rerun: success message', c.message === 'Đã đổi sang đội hình mac-dinh và giao lại bước Code (job 5).', c.message);
+        check('rerun: success closes, returns focus to the banner button', c.teamDlgOpen === false && c.busyAction === '' && focused[focused.length - 1] === 'ab-act-quota_rerun' && c.quotaRefusal === '', focused.join(','));
+
+        // ---- primary priority: Duyệt plan > quota re-run > Chạy thêm 1 vòng > first strip action ----
+        c = fresh({ ...T, quota: QUOTA, controls: [APPROVE, MORE, END], actions: [RUN_DEV, CHANGE, RERUN], auto: { state: 'stopped', workflow_auto: true, stop_reason: 'het_quota', stop_word: 'hết quota', stop_detail: QUOTA_DETAIL, stopped_in: 'build' } },
+          { groups: [], cards: {}, gate: { present: true, state: 'cho_ban', result: 'chờ bạn', at_ms: Date.now() }, current_card: 'ban', ledger: { groups: [], total: null } });
+        check('priority: Duyệt plan is the only primary when both show', c.actionClass(APPROVE).includes(PRIMARY) && !c.actionClass(RERUN).includes(PRIMARY) && !c.actionClass(MORE).includes(PRIMARY) && !c.actionClass(RUN_DEV).includes(PRIMARY));
+        c = fresh({ ...T, quota: QUOTA, controls: [MORE, END], actions: [RUN_DEV, CHANGE, RERUN], auto: { state: 'stopped', workflow_auto: true, stop_reason: 'het_quota', stop_word: 'hết quota', stop_detail: QUOTA_DETAIL, stopped_in: 'build' } });
+        check('priority: the quota re-run beats Chạy thêm 1 vòng and the strip', c.actionClass(RERUN).includes(PRIMARY) && !c.actionClass(MORE).includes(PRIMARY) && !c.actionClass(RUN_DEV).includes(PRIMARY));
+        c = fresh({ ...T, controls: [MORE, END], actions: [RUN_DEV, CHANGE, RERUN], auto: { state: 'stopped', workflow_auto: true, stop_reason: 'het_vong', stop_word: 'hết vòng', stop_detail: 'x', stopped_in: 'build' } });
+        check('priority: without a quota stop Chạy thêm 1 vòng stays the primary', c.actionClass(MORE).includes(PRIMARY) && !c.actionClass(RUN_DEV).includes(PRIMARY));
+        c = fresh({ ...T });
+        check('priority: with nothing above, the first enabled strip action is primary', c.actionClass(RUN_DEV).includes(PRIMARY));
+        check('colour: the new controls use no red', ![RERUN, CHANGE, { id: 'quota_later' }].some((a) => c.actionClass(a).includes('rose')));
+        check('quota: no banner when the payload has none', c.hasQuota === false && c.showBanner === false && c.bannerControls.length === 0);
+      } finally {
+        ctx.AB.api = savedApi;
+        ctx.AB.focusLater = savedFocus;
+        ctx.AB.lockScroll = savedLock;
+        ctx.AB.setStaffNames({});
+      }
+    },
+  },
+  {
     name: 'settings',
     async run(ctx) {
       const factories = {};
