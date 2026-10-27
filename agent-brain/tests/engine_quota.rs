@@ -237,3 +237,233 @@ fn eng02_retry_then_success_not_quota() {
     assert!(error.is_none(), "error: {error:?}");
     assert!(metrics.get("quota").is_none(), "metrics: {metrics}");
 }
+
+// ---------------------------------------------------------------------------
+// Task 2: autopilot het_quota, rounds
+// ---------------------------------------------------------------------------
+
+fn by_role(roles: Value) -> Value {
+    json!({ "by_role": roles })
+}
+
+fn review_report(verdict: &str, blocking: i64, advisory: i64) -> String {
+    let mut body = format!(
+        "---\nverdict: {verdict}\nblocking: {blocking}\nadvisory: {advisory}\nfiles: []\n---\n# Review: sửa app\n## Mục chặn (blocking)\n"
+    );
+    for i in 0..blocking {
+        body.push_str(&format!("- mục chặn {}\n", i + 1));
+    }
+    body.push_str("## Góp ý (advisory)\n");
+    for i in 0..advisory {
+        body.push_str(&format!("- góp ý {}\n", i + 1));
+    }
+    body
+}
+
+fn review_entry(file: &str, verdict: &str, blocking: i64, advisory: i64) -> Value {
+    json!({"ops": [{
+        "op": "write",
+        "path": file,
+        "content": review_report(verdict, blocking, advisory),
+    }]})
+}
+
+fn lead_plan_entry() -> Value {
+    protocol::lead_scenario(&[("src/app.py", "app()", "trả về 2", "demo")])
+}
+
+fn dev_impl_entry() -> Value {
+    json!({"ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "read", "path": "src/app.py"},
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+        {"op": "git", "args": ["add", "src/app.py"]},
+        {"op": "git", "args": ["commit", "-m", "sua-app: sửa app"]}
+    ]})
+}
+
+fn qa_ok_entry() -> Value {
+    let report = "# QA: sửa app\n## Thay đổi có khớp plan không (từng mục)\n- src/app.py: đã xem.\n## Sửa ngoài plan (nếu có)\nKhông.\n## Rủi ro\nKhông.\n## Kết luận\nĐạt\n";
+    json!({"ops": [{"op": "write", "path": ".qa-report.md", "content": report}]})
+}
+
+/// Repo `web-ban-hang` with an entry without `workflow` (server default: mac-dinh).
+fn setup_auto_project(sb: &Sandbox) -> PathBuf {
+    let repo = sb.make_repo(
+        "web-ban-hang",
+        &[("src/app.py", "def app():\n    return 1\n")],
+        None,
+        None,
+    );
+    let mut entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    entry.as_object_mut().unwrap().remove("workflow");
+    sb.write_map(json!([entry]), &[]);
+    repo
+}
+
+/// `auto --start` on a `mac-dinh` task: Lead plans, plan-review approves, the driver waits at the gate.
+fn flow_to_gate(sb: &Sandbox) {
+    setup_auto_project(sb);
+    let sc = by_role(json!({
+        "lead": [lead_plan_entry()],
+        "plan-review": [review_entry(".plan-review.md", "approve", 0, 1)],
+    }));
+    let res = sb.run(
+        &[
+            "auto",
+            "--start",
+            "--name",
+            "sua-app",
+            "--workflow",
+            "mac-dinh",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(sc),
+    );
+    assert_ok(&res, "auto --start");
+}
+
+/// `(role, stage, round, outcome)` of every run, oldest first.
+type RunTuple = (String, Option<String>, Option<i64>, Option<String>);
+
+fn runs(sb: &Sandbox) -> Vec<RunTuple> {
+    let conn = sb.db();
+    let mut stmt = conn
+        .prepare("SELECT role, stage, round, outcome FROM runs ORDER BY id")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+
+fn auto_state(sb: &Sandbox, task_id: i64) -> (Option<String>, Value) {
+    let (state, aj): (Option<String>, Option<String>) = sb
+        .db()
+        .query_row(
+            "SELECT auto_state, auto_json FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    (
+        state,
+        serde_json::from_str(&aj.unwrap_or_else(|| "{}".to_string())).unwrap(),
+    )
+}
+
+/// Gate reached, then `approve 1` lets the driver run Dev, whose fake stream hits quota.
+fn drive_into_quota(sb: &Sandbox) -> RunOut {
+    flow_to_gate(sb);
+    sb.run(
+        &["approve", "1"],
+        Some(by_role(json!({"dev": [quota_entry(vec![])]}))),
+    )
+}
+
+#[test]
+fn eng02_autopilot_stops_het_quota() {
+    let sb = Sandbox::new();
+    let res = drive_into_quota(&sb);
+    assert_eq!(
+        res.code, 4,
+        "driver stop exits 4; stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(res.stderr.contains("hết quota"), "stderr: {}", res.stderr);
+
+    let (state, aj) = auto_state(&sb, 1);
+    assert_eq!(state.as_deref(), Some("stopped"), "aj: {aj}");
+    assert_eq!(aj["stop"]["reason"], "het_quota", "aj: {aj}");
+    assert_eq!(aj["stop"]["role"], "dev");
+    let dev_id = last_run_id(&sb, "dev");
+    assert_eq!(aj["stop"]["run_id"], json!(dev_id));
+    assert_eq!(
+        aj["stop"]["detail_line"],
+        json!(format!(
+            "Run {dev_id} (dev) trên engine claude dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine."
+        ))
+    );
+
+    let all = runs(&sb);
+    assert_eq!(all.iter().filter(|r| r.0 == "dev").count(), 1, "{all:?}");
+    assert!(
+        all.iter().all(|r| r.0 != "qa" && r.0 != "code-review"),
+        "nothing may start after the quota run: {all:?}"
+    );
+    assert_eq!(all.last().unwrap().3.as_deref(), Some("quota"));
+}
+
+#[test]
+fn quota_run_does_not_consume_round() {
+    let sb = Sandbox::new();
+    let res = drive_into_quota(&sb);
+    assert_eq!(res.code, 4, "stderr: {}", res.stderr);
+    let quota_round = runs(&sb).iter().find(|r| r.0 == "dev").unwrap().2;
+    assert_eq!(quota_round, Some(1));
+
+    let res = sb.run(
+        &["auto", "1", "--more-round"],
+        Some(by_role(json!({
+            "dev": [dev_impl_entry()],
+            "code-review": [review_entry(".code-review.md", "pass", 0, 1)],
+            "qa": [qa_ok_entry()],
+        }))),
+    );
+    assert_ok(&res, "auto 1 --more-round after the quota stop");
+
+    let all = runs(&sb);
+    let devs: Vec<&RunTuple> = all.iter().filter(|r| r.0 == "dev").collect();
+    assert_eq!(devs.len(), 2, "{all:?}");
+    assert_eq!(devs[0].3.as_deref(), Some("quota"));
+    assert_eq!(devs[1].2, Some(1), "the re-run keeps the round: {all:?}");
+    assert!(all.iter().any(|r| r.0 == "qa"), "flow continues: {all:?}");
+    let (state, _) = auto_state(&sb, 1);
+    assert_eq!(state.as_deref(), Some("done"));
+}
+
+#[test]
+fn manual_lead_round_skips_quota() {
+    let sb = Sandbox::new();
+    setup_auto_project(&sb);
+
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(quota_entry(vec![])),
+    );
+    assert_eq!(res.code, 5, "stderr: {}", res.stderr);
+
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+    );
+    assert_ok(&res, "second run lead");
+
+    let all = runs(&sb);
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert_eq!(all[0].3.as_deref(), Some("quota"));
+    assert_eq!(all[0].2, Some(1));
+    assert_eq!(
+        all[1].2,
+        Some(1),
+        "the re-run of the stopped step keeps its round: {all:?}"
+    );
+}
