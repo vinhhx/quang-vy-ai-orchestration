@@ -19,9 +19,13 @@ pub enum Op {
     KillCancel,
     NoNote,
     CancelNote,
+    /// `Không chạy lại` on a quota re-run confirmation (Phase 6, D-28).
+    TeamCancel,
+    /// `Thử lại sau` on a quota message (Phase 6, D-17).
+    RetryLater,
 }
 
-pub const ALL_OPS: [Op; 9] = [
+pub const ALL_OPS: [Op; 11] = [
     Op::Approve,
     Op::ReturnLead,
     Op::MoreRound,
@@ -31,6 +35,8 @@ pub const ALL_OPS: [Op; 9] = [
     Op::KillCancel,
     Op::NoNote,
     Op::CancelNote,
+    Op::TeamCancel,
+    Op::RetryLater,
 ];
 
 impl Op {
@@ -45,6 +51,8 @@ impl Op {
             Op::KillCancel => 'x',
             Op::NoNote => 'n',
             Op::CancelNote => 'c',
+            Op::TeamCancel => 'v',
+            Op::RetryLater => 'l',
         }
     }
 
@@ -116,6 +124,104 @@ pub fn decode(data: &str) -> Option<Callback> {
         task_id,
         run_id,
         rev: rev.to_string(),
+    })
+}
+
+/// Most team buttons one quota message carries (Phase 6, D-17); the rest are chosen on the dashboard.
+pub const MAX_TEAM_BUTTONS: usize = 8;
+
+/// The two team buttons that carry an index: pick a team (`t`), confirm the re-run (`u`).
+/// `v` (cancel) and `l` (later) are plain `Op`s of the 05.3 grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeamOp {
+    Pick,
+    Confirm,
+}
+
+impl TeamOp {
+    pub fn code(self) -> char {
+        match self {
+            TeamOp::Pick => 't',
+            TeamOp::Confirm => 'u',
+        }
+    }
+
+    fn from_code(c: &str) -> Option<TeamOp> {
+        match c {
+            "t" => Some(TeamOp::Pick),
+            "u" => Some(TeamOp::Confirm),
+            _ => None,
+        }
+    }
+}
+
+/// `{t|u}:{task}:{idx}:{ver4}:{rev}`: `idx` is a position in the team list the server holds
+/// (never a name), `ver` the 4-hex version of that list, `rev` the task's 16-hex `rev`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamCb {
+    pub op: TeamOp,
+    pub task_id: i64,
+    pub idx: usize,
+    pub ver: String,
+    pub rev: String,
+}
+
+const VER_LEN: usize = 4;
+
+pub fn encode_team(cb: &TeamCb) -> String {
+    format!(
+        "{}:{}:{}:{}:{}",
+        cb.op.code(),
+        cb.task_id,
+        cb.idx,
+        cb.ver,
+        cb.rev
+    )
+}
+
+/// First 4 hex characters of a hash of the team names, in list order. The same list gives the
+/// same version for the lifetime of the process; any added, removed or reordered team changes it.
+pub fn team_list_ver(names: &[String]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    names.join("\n").hash(&mut h);
+    format!("{:016x}", h.finish())[..VER_LEN].to_string()
+}
+
+fn valid_ver(s: &str) -> bool {
+    s.len() == VER_LEN && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// One decimal digit below `MAX_TEAM_BUTTONS`.
+fn parse_team_idx(s: &str) -> Option<usize> {
+    if s.len() != 1 || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let v: usize = s.parse().ok()?;
+    (v < MAX_TEAM_BUTTONS).then_some(v)
+}
+
+/// Strict parse: anything not produced by `encode_team` returns `None`.
+pub fn decode_team(data: &str) -> Option<TeamCb> {
+    if data.is_empty() || data.len() > MAX_LEN {
+        return None;
+    }
+    let parts: Vec<&str> = data.split(':').collect();
+    if parts.len() != 5 {
+        return None;
+    }
+    let op = TeamOp::from_code(parts[0])?;
+    let task_id = parse_id(parts[1])?;
+    let idx = parse_team_idx(parts[2])?;
+    if !valid_ver(parts[3]) || !valid_rev(parts[4]) {
+        return None;
+    }
+    Some(TeamCb {
+        op,
+        task_id,
+        idx,
+        ver: parts[3].to_string(),
+        rev: parts[4].to_string(),
     })
 }
 
@@ -394,5 +500,142 @@ mod tests {
     fn intake_grammar_is_separate_from_the_05_3_grammar() {
         assert_eq!(decode("iP:0123abcd:1"), None);
         assert_eq!(decode_intake("a:1:0123456789abcdef"), None);
+    }
+
+    const VER: &str = "a1b2";
+
+    #[test]
+    fn team_grammar_round_trip() {
+        for (op, idx) in [
+            (TeamOp::Pick, 0),
+            (TeamOp::Pick, 7),
+            (TeamOp::Confirm, 0),
+            (TeamOp::Confirm, 7),
+        ] {
+            let cb = TeamCb {
+                op,
+                task_id: 42,
+                idx,
+                ver: VER.to_string(),
+                rev: REV.to_string(),
+            };
+            let data = encode_team(&cb);
+            assert_eq!(decode_team(&data), Some(cb), "{data}");
+        }
+        assert_eq!(
+            encode_team(&TeamCb {
+                op: TeamOp::Pick,
+                task_id: 1,
+                idx: 2,
+                ver: VER.to_string(),
+                rev: REV.to_string()
+            }),
+            format!("t:1:2:{VER}:{REV}")
+        );
+    }
+
+    #[test]
+    fn team_grammar_rejects() {
+        let long = format!("t:1:0:{VER}:{REV}{}", "0".repeat(65 - 11 - REV.len()));
+        assert_eq!(long.len(), 65);
+        for bad in [
+            format!("t:1:8:{VER}:{REV}"),
+            format!("t:1:10:{VER}:{REV}"),
+            format!("t:1:-1:{VER}:{REV}"),
+            format!("t:1:0:a1b:{REV}"),
+            format!("t:1:0:A1B2:{REV}"),
+            format!("t:1:0:a1b2c:{REV}"),
+            format!("t:1:0:{VER}:0123456789ABCDEF"),
+            format!("t:1:0:{VER}:0123456789abcde"),
+            format!("t:1:0:{VER}:{REV}:1"),
+            format!("t:1:{VER}:{REV}"),
+            format!("t:0:0:{VER}:{REV}"),
+            format!("x:1:0:{VER}:{REV}"),
+            format!("tt:1:0:{VER}:{REV}"),
+            format!("t:1:0:{VER}:"),
+            String::new(),
+            long,
+        ] {
+            assert_eq!(decode_team(&bad), None, "{bad:?}");
+        }
+        // The team grammar is separate from the 05.3 one.
+        assert_eq!(decode(&format!("t:1:0:{VER}:{REV}")), None);
+        assert_eq!(decode(&format!("u:1:0:{VER}:{REV}")), None);
+        assert_eq!(decode_team(&format!("a:1:{REV}")), None);
+    }
+
+    #[test]
+    fn team_max_len() {
+        let cb = TeamCb {
+            op: TeamOp::Confirm,
+            task_id: i64::MAX,
+            idx: 7,
+            ver: VER.to_string(),
+            rev: REV.to_string(),
+        };
+        let data = encode_team(&cb);
+        assert!(data.len() <= MAX_LEN, "{data}");
+        assert_eq!(decode_team(&data), Some(cb));
+    }
+
+    #[test]
+    fn team_ver_follows_the_list() {
+        let a = vec!["mac-dinh".to_string(), "tiet-kiem".to_string()];
+        let b = vec![
+            "mac-dinh".to_string(),
+            "tiet-kiem".to_string(),
+            "doi-b".to_string(),
+        ];
+        let swapped = vec!["tiet-kiem".to_string(), "mac-dinh".to_string()];
+        assert_eq!(team_list_ver(&a), team_list_ver(&a));
+        assert!(valid_ver(&team_list_ver(&a)));
+        assert_ne!(team_list_ver(&a), team_list_ver(&b));
+        assert_ne!(team_list_ver(&a), team_list_ver(&swapped));
+    }
+
+    #[test]
+    fn new_ops_decode() {
+        assert_eq!(
+            decode(&format!("v:3:{REV}")),
+            Some(Callback {
+                op: Op::TeamCancel,
+                task_id: 3,
+                run_id: None,
+                rev: REV.to_string()
+            })
+        );
+        assert_eq!(
+            decode(&format!("l:3:{REV}")),
+            Some(Callback {
+                op: Op::RetryLater,
+                task_id: 3,
+                run_id: None,
+                rev: REV.to_string()
+            })
+        );
+        assert_eq!(decode(&format!("v:3:1:{REV}")), None);
+        // Every 05.3 code still decodes.
+        for c in ["a", "r", "m", "e", "n", "c"] {
+            assert!(decode(&format!("{c}:1:{REV}")).is_some(), "{c}");
+        }
+        for c in ["k", "K", "x"] {
+            assert!(decode(&format!("{c}:1:2:{REV}")).is_some(), "{c}");
+        }
+    }
+
+    #[test]
+    fn op_codes_are_unique() {
+        let mut codes: Vec<char> = ALL_OPS.iter().map(|o| o.code()).collect();
+        codes.extend([TeamOp::Pick.code(), TeamOp::Confirm.code()]);
+        let n = codes.len();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), n, "a callback code is used twice");
+        assert_eq!(ALL_OPS.len(), 11);
+        for op in ALL_OPS {
+            assert_eq!(Op::from_code(op.code()), Some(op));
+        }
+        // None of the codes is the intake prefix.
+        assert!(!codes.contains(&'i'));
     }
 }

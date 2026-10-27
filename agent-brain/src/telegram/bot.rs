@@ -13,7 +13,7 @@
 //! not expired, the paired chat's next text message is the note, passed to the
 //! dashboard's own `return_lead` / `relead` path as one argv element.
 
-use super::callback::{self, Callback, Op};
+use super::callback::{self, Callback, Op, TeamCb, TeamOp};
 use super::detect;
 use super::intake;
 use super::outbox::{Outgoing, Tracked};
@@ -22,8 +22,8 @@ use super::transport::{backoff_ms, base_backoff_ms, Body, CallError, LONG_POLL_S
 use super::{sleep_or_stop, BotCtx, Channel};
 use crate::dashboard::api_runs::{kill_run, KillOutcome};
 use crate::dashboard::api_tasks::{
-    load_task_state, normalize_note, run_control_as, run_task_action, ActionSource, ControlOutcome,
-    TaskState,
+    load_task_state, normalize_note, quota_rerun, run_control_as, run_task_action, ActionSource,
+    ControlOutcome, TaskState,
 };
 use crate::error::BrainResult;
 use serde_json::{json, Value};
@@ -471,6 +471,18 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
         intake::on_callback(ctx, state, &id, message_id, data);
         return;
     }
+    // Team buttons (Phase 6) have their own five-part grammar, `t:` and `u:`; neither code is
+    // an `Op` of the 05.3 grammar.
+    if data.starts_with("t:") || data.starts_with("u:") {
+        match (message_id, callback::decode_team(data)) {
+            (Some(m), Some(tcb)) => {
+                let press = press_of(ctx, id, m, msg);
+                on_team(ctx, &press, &tcb);
+            }
+            _ => answer(ctx, &id, INVALID_BUTTON, false),
+        }
+        return;
+    }
     let (message_id, cb) = match (message_id, callback::decode(data)) {
         (Some(m), Some(cb)) => (m, cb),
         _ => {
@@ -478,10 +490,23 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
             return;
         }
     };
-    // Telegram sends only `chat`, `message_id` and `date = 0` (no `text`) for a message
-    // the bot can no longer read (an old gate message). The text then comes from the
-    // tracked entry; if there is none, `text` stays empty and results go out as a new
-    // message instead of overwriting the pressed one (`edit_result`).
+    let press = press_of(ctx, id, message_id, msg);
+    match cb.op {
+        Op::Approve => act(ctx, &press, &cb, "Duyệt plan", "approve"),
+        Op::MoreRound => act(ctx, &press, &cb, "Chạy thêm 1 vòng", "auto_more_round"),
+        Op::End => act(ctx, &press, &cb, "Dừng hẳn", "auto_end"),
+        Op::ReturnLead | Op::NoNote | Op::CancelNote => on_return_lead(ctx, state, &press, &cb),
+        Op::KillAsk | Op::KillConfirm | Op::KillCancel => on_kill(ctx, &press, &cb),
+        // Written in the next step of plan 06-14; until then the press changes nothing.
+        Op::TeamCancel | Op::RetryLater => answer(ctx, &press.id, NOT_APPLICABLE, true),
+    }
+}
+
+/// The pressed message of a callback query. Telegram sends only `chat`, `message_id` and
+/// `date = 0` (no `text`) for a message the bot can no longer read (an old gate message). The
+/// text then comes from the tracked entry; if there is none, `text` stays empty and results go
+/// out as a new message instead of overwriting the pressed one (`edit_result`).
+fn press_of(ctx: &BotCtx, id: String, message_id: i64, msg: Option<&Value>) -> Press {
     let shown = msg
         .and_then(|m| m.get("text"))
         .and_then(Value::as_str)
@@ -495,17 +520,10 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
     } else {
         shown.to_string()
     };
-    let press = Press {
+    Press {
         id,
         message_id,
         text,
-    };
-    match cb.op {
-        Op::Approve => act(ctx, &press, &cb, "Duyệt plan", "approve"),
-        Op::MoreRound => act(ctx, &press, &cb, "Chạy thêm 1 vòng", "auto_more_round"),
-        Op::End => act(ctx, &press, &cb, "Dừng hẳn", "auto_end"),
-        Op::ReturnLead | Op::NoNote | Op::CancelNote => on_return_lead(ctx, state, &press, &cb),
-        Op::KillAsk | Op::KillConfirm | Op::KillCancel => on_kill(ctx, &press, &cb),
     }
 }
 
@@ -1010,6 +1028,197 @@ fn kill_cancel(ctx: &Arc<BotCtx>, press: &Press, task_id: i64, base: &str) {
     }
     answer(ctx, &press.id, "Đã huỷ Kill", false);
     audit("Kill", task_id, "Đã huỷ Kill");
+}
+
+/// Answer (and re-render) when the team list changed after a quota message was sent.
+const TEAMS_CHANGED: &str = "Danh sách đội hình đã đổi — chọn lại.";
+
+/// The task's quota event when it still holds (`quota_run`), else `None`.
+fn quota_event(s: &TaskState) -> Option<detect::Event> {
+    detect::current_event(s).filter(|ev| ev.kind == detect::EventKind::Quota)
+}
+
+/// Shows the quota message (text and team buttons) for `ev` on `message_id`, and puts the
+/// message back under the detector's watch unless a newer message of the task is tracked.
+fn show_quota(ctx: &BotCtx, message_id: i64, ev: &detect::Event, s: &TaskState) {
+    let r = render::message_for(ev, s);
+    let keyboard = render::keyboard_json(&r.keyboard);
+    {
+        let mut reg = ctx.registry.lock().unwrap_or_else(|e| e.into_inner());
+        reg.remove_by_message(message_id);
+        if reg.get(s.task.id).is_none() {
+            reg.insert(Tracked {
+                task_id: s.task.id,
+                key: ev.key.clone(),
+                kind: ev.kind,
+                message_id,
+                text: r.text.clone(),
+                keyboard: keyboard.clone(),
+            });
+        }
+    }
+    edit(ctx, message_id, &r.text, keyboard);
+}
+
+/// Gives a message in a quota confirmation back its quota text and buttons while the quota
+/// stop still holds; otherwise the task has moved on and the message loses its buttons.
+fn restore_quota(ctx: &Arc<BotCtx>, press: &Press, task_id: i64) {
+    if let Loaded::State(s) = load_fresh(ctx, task_id) {
+        if let Some(ev) = quota_event(&s) {
+            show_quota(ctx, press.message_id, &ev, &s);
+            return;
+        }
+    }
+    untrack(ctx, press.message_id);
+    let sentence = format!("Task đã đổi trạng thái: {}", state_now(ctx, task_id));
+    let base = quota_base(&press.text);
+    edit_result(
+        ctx,
+        press.message_id,
+        base,
+        &format!("\n\n{sentence}"),
+        render::no_keyboard(),
+    );
+}
+
+/// The text of a quota message without a confirmation question: a confirmation replaces the
+/// message text, so what it shows is not a base to append a result to.
+fn quota_base(shown: &str) -> &str {
+    if shown.starts_with("Chạy lại bước ") {
+        ""
+    } else {
+        shown
+    }
+}
+
+/// `Đội hình {tên}` (pick) and `Chạy lại bước này` (confirm) on a quota message (Phase 6, D-17,
+/// D-28). A pick changes nothing: it only shows the confirmation. Only the confirm calls the
+/// dashboard's own `quota_rerun`, which re-reads the task, checks the `rev` again and never
+/// approves a plan. The team is chosen by index into the list the server holds now, bound to the
+/// version of that list the buttons were rendered with.
+fn on_team(ctx: &Arc<BotCtx>, press: &Press, cb: &TeamCb) {
+    let label = "Đội hình";
+    let task_id = cb.task_id;
+    let s = match load_fresh(ctx, task_id) {
+        Loaded::State(s) => s,
+        Loaded::Gone => {
+            untrack(ctx, press.message_id);
+            stale(ctx, press, label, task_id);
+            return;
+        }
+        Loaded::Error => {
+            answer(ctx, &press.id, INTERNAL_TEXT, true);
+            return;
+        }
+    };
+    let ev = match quota_event(&s) {
+        Some(ev) if cb.rev == s.rev => ev,
+        _ => {
+            untrack(ctx, press.message_id);
+            stale(ctx, press, label, task_id);
+            return;
+        }
+    };
+    let names = render::team_names(&s);
+    if callback::team_list_ver(&names) != cb.ver {
+        answer(ctx, &press.id, TEAMS_CHANGED, false);
+        show_quota(ctx, press.message_id, &ev, &s);
+        audit(label, task_id, TEAMS_CHANGED);
+        return;
+    }
+    let (name, run) = match (names.get(cb.idx), render::quota_run_of(&ev, &s)) {
+        (Some(n), Some(r)) => (n.clone(), r),
+        _ => {
+            answer(ctx, &press.id, INVALID_BUTTON, false);
+            return;
+        }
+    };
+    let step = render::quota_step_name(run);
+
+    match cb.op {
+        TeamOp::Pick => {
+            let engine = match s.teams.get(&name) {
+                Some(t) => crate::teams::engine_text(&t.engine_for(&run.role), &s.staff),
+                None => {
+                    answer(ctx, &press.id, INVALID_BUTTON, false);
+                    return;
+                }
+            };
+            // The confirmation is not the message the detector follows any more: it is
+            // restored (and tracked again) by `Không chạy lại`, or answered by the second tap.
+            untrack(ctx, press.message_id);
+            let again = |op: TeamOp| TeamCb {
+                op,
+                task_id,
+                idx: cb.idx,
+                ver: cb.ver.clone(),
+                rev: cb.rev.clone(),
+            };
+            let keyboard = render::keyboard_json(&[
+                vec![render::Button {
+                    label: "Chạy lại bước này".to_string(),
+                    data: callback::encode_team(&again(TeamOp::Confirm)),
+                }],
+                button_row(
+                    "Không chạy lại",
+                    Op::TeamCancel,
+                    &Callback {
+                        op: Op::TeamCancel,
+                        task_id,
+                        run_id: None,
+                        rev: cb.rev.clone(),
+                    },
+                ),
+            ]);
+            let text = render::rerun_confirm_text(step, &name, &engine);
+            edit(ctx, press.message_id, &text, keyboard);
+            answer(ctx, &press.id, "Xác nhận chạy lại bước?", false);
+            audit(label, task_id, &format!("hỏi xác nhận đội hình {name}"));
+        }
+        TeamOp::Confirm => {
+            untrack(ctx, press.message_id);
+            let outcome = quota_rerun(
+                &ctx.st,
+                task_id,
+                &name,
+                Some(&cb.rev),
+                ActionSource::Telegram,
+            );
+            let refused = |reason: &str| {
+                answer(ctx, &press.id, reason, true);
+                restore_quota(ctx, press, task_id);
+                audit(label, task_id, reason);
+            };
+            match outcome {
+                Ok(ControlOutcome::Started { job_id }) => {
+                    let text = render::rerun_done_text(&name, step, job_id);
+                    answer(ctx, &press.id, "Đã giao lại bước", false);
+                    edit(ctx, press.message_id, &text, render::no_keyboard());
+                    audit(label, task_id, &text);
+                }
+                Ok(ControlOutcome::Stale) | Ok(ControlOutcome::NotFound(_)) => {
+                    stale(ctx, press, label, task_id)
+                }
+                Ok(ControlOutcome::Refused { reason, .. }) => refused(&reason),
+                Ok(ControlOutcome::Invalid(msg)) => refused(&msg),
+                Ok(ControlOutcome::Unavailable) => refused(UNAVAILABLE_TEXT),
+                Ok(other) => {
+                    // Not an outcome of quota_rerun.
+                    crate::term::emit(&format!(
+                        "Telegram: kết quả không mong đợi khi chạy lại bước task {task_id}: {other:?}"
+                    ));
+                    refused(INTERNAL_TEXT);
+                }
+                Err(e) => {
+                    crate::term::emit(&format!(
+                        "Telegram: lỗi nội bộ khi chạy lại bước task {task_id} ({})",
+                        e.message
+                    ));
+                    refused(INTERNAL_TEXT);
+                }
+            }
+        }
+    }
 }
 
 /// Runs a control through the dashboard's own function (D-02), bound to the

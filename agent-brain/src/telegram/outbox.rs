@@ -218,6 +218,7 @@ fn kind_word(kind: EventKind) -> &'static str {
         EventKind::Stop => "autopilot dừng",
         EventKind::QaPass => "QA đạt",
         EventKind::RunFailed => "run lỗi",
+        EventKind::Quota => "hết quota",
     }
 }
 
