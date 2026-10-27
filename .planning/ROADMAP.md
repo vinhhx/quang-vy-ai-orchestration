@@ -412,7 +412,7 @@ Plans:
   4. *(chuyển sang Phase 06.1)*
   5. Antigravity được xử lý theo kết quả S7 (chạy headless như engine, hoặc dùng thủ công và theo dõi qua `git diff`), và tỉ lệ "Cần sửa" của QA được ghi theo engine.
 
-**Plans:** 3/19 plans executed
+**Plans:** 5/19 plans executed
 
 Plans:
 **Wave 1**
@@ -422,8 +422,8 @@ Plans:
 - [x] 06-04-PLAN.md — Schema v4 `tasks.team_json` + run engine recording (blocking decision gate, one-way) (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 06-05-PLAN.md — One engine seam per role run: `runs.engine`, header `engine …`, `--team` (wave 2)
-- [ ] 06-06-PLAN.md — Settings server API: atomic writes, version token, engine readiness (wave 2)
+- [x] 06-05-PLAN.md — One engine seam per role run: `runs.engine`, header `engine …`, `--team` (wave 2)
+- [x] 06-06-PLAN.md — Settings server API: atomic writes, version token, engine readiness (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 06-07-PLAN.md — Quota stop: outcome `quota`, exit 5, autopilot `hết quota`, continue on existing diff (wave 3)
@@ -488,4 +488,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 13/13 | Complete    | 2026-10-19 |
-| 6. Multi-engine & Media Branch | 3/19 | In Progress | - |
+| 6. Multi-engine & Media Branch | 5/19 | In Progress | - |
