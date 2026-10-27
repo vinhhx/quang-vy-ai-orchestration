@@ -56,9 +56,10 @@ ALTER TABLE tasks ADD COLUMN auto_stop_at INTEGER;
 ALTER TABLE tasks ADD COLUMN auto_stop_kind TEXT;
 ALTER TABLE tasks ADD COLUMN auto_json TEXT;"#,
     "ALTER TABLE tasks ADD COLUMN origin TEXT;",
+    "ALTER TABLE tasks ADD COLUMN team_json TEXT;",
 ];
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -667,21 +668,41 @@ pub fn mark_task_origin(conn: &Connection, task_id: i64, origin: &str) -> BrainR
     Ok(changes == 1)
 }
 
-pub fn task_team_json(_conn: &Connection, _task_id: i64) -> BrainResult<Option<String>> {
-    Ok(None)
+/// The task's team JSON (`None` for a missing task or a NULL column).
+pub fn task_team_json(conn: &Connection, task_id: i64) -> BrainResult<Option<String>> {
+    let mut stmt = conn.prepare("SELECT team_json FROM tasks WHERE id = ?1")?;
+    let mut rows = stmt.query(params![task_id])?;
+    match rows.next()? {
+        Some(r) => Ok(r.get(0)?),
+        None => Ok(None),
+    }
 }
 
-pub fn set_task_team_if_null(_conn: &Connection, _task_id: i64, _json: &str) -> BrainResult<bool> {
-    Ok(false)
+/// Creates the team only while `team_json` is still NULL. Bumps `updated_at` on a write so the
+/// Telegram detector signature and the dashboard `rev` change.
+pub fn set_task_team_if_null(conn: &Connection, task_id: i64, json: &str) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE tasks SET team_json = ?1, updated_at = ?2 WHERE id = ?3 AND team_json IS NULL",
+        params![json, now, task_id],
+    )?;
+    Ok(changes == 1)
 }
 
+/// Compare-and-swap on `team_json`: writes only when the stored value equals `old`
+/// (`None` matches NULL, via the NULL-safe `IS`). Bumps `updated_at` on a write.
 pub fn set_task_team_cas(
-    _conn: &Connection,
-    _task_id: i64,
-    _old: Option<&str>,
-    _new: &str,
+    conn: &Connection,
+    task_id: i64,
+    old: Option<&str>,
+    new: &str,
 ) -> BrainResult<bool> {
-    Ok(false)
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE tasks SET team_json = ?1, updated_at = ?2 WHERE id = ?3 AND team_json IS ?4",
+        params![new, now, task_id, old],
+    )?;
+    Ok(changes == 1)
 }
 
 pub fn count_tasks_since(conn: &Connection, origin: &str, since_ms: i64) -> BrainResult<i64> {

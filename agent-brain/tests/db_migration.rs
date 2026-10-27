@@ -799,13 +799,12 @@ fn v2_db_gains_origin_column() {
     let db_path = tmp.path().join("brain.db");
     build_v2(&db_path);
 
-    let conn = agent_brain::db::open(&db_path).expect("open v2 DB upgrades to v3");
+    let conn = agent_brain::db::open(&db_path).expect("open v2 DB upgrades in place");
 
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 3);
-    assert_eq!(agent_brain::db::SCHEMA_VERSION, 3);
+    assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     let n: i64 = conn
         .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
