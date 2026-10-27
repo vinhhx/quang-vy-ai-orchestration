@@ -197,6 +197,19 @@ pub struct Summary {
     pub first_edit_file: Option<String>,
     pub turns_before_first_edit: Option<i64>,
     pub reads_outside_plan: Option<Vec<String>>,
+    /// A `rate_limit_event` with `status: rejected` was seen (stays set once seen).
+    pub rate_limit_rejected: bool,
+    /// `resetsAt` (Unix seconds) of the rejected event, as milliseconds; fractions are truncated.
+    pub rate_limit_reset_at_ms: Option<i64>,
+    pub rate_limit_type: Option<String>,
+    /// `isUsingOverage` of the last `rate_limit_event` that carried it.
+    pub using_overage: bool,
+    /// `api_error_status` of the final `result` (HTTP status that ended the conversation).
+    pub api_error_status: Option<i64>,
+    pub terminal_reason: Option<String>,
+    /// `error` / `error_status` of the last `system/api_retry`.
+    pub last_retry_error: Option<String>,
+    pub last_retry_status: Option<i64>,
     plan_files: Option<Vec<String>>,
     root: Option<PathBuf>,
     seen_msg_ids: BTreeSet<String>,
@@ -227,12 +240,25 @@ impl Summary {
             first_edit_file: None,
             turns_before_first_edit: None,
             reads_outside_plan: None,
+            rate_limit_rejected: false,
+            rate_limit_reset_at_ms: None,
+            rate_limit_type: None,
+            using_overage: false,
+            api_error_status: None,
+            terminal_reason: None,
+            last_retry_error: None,
+            last_retry_status: None,
             plan_files,
             root,
             seen_msg_ids: BTreeSet::new(),
             msg_usages: BTreeMap::new(),
             result_seen: false,
         }
+    }
+
+    /// A final `result` event was seen.
+    pub fn result_seen(&self) -> bool {
+        self.result_seen
     }
 
     pub fn feed(&mut self, line: &[u8]) -> Option<StreamEvent> {
@@ -382,8 +408,37 @@ impl Summary {
                         }
                     }
                 }
+            } else if ev.kind == "rate_limit_event" {
+                if let Some(info) = obj.get("rate_limit_info").and_then(|v| v.as_object()) {
+                    if let Some(over) = info.get("isUsingOverage").and_then(|v| v.as_bool()) {
+                        self.using_overage = over;
+                    }
+                    if info.get("status").and_then(|v| v.as_str()) == Some("rejected") {
+                        self.rate_limit_rejected = true;
+                        if let Some(t) = info.get("rateLimitType").and_then(|v| v.as_str()) {
+                            self.rate_limit_type = Some(t.to_string());
+                        }
+                        // Unix seconds, integer or fractional: truncate toward zero, store ms.
+                        let secs = info.get("resetsAt").and_then(|v| {
+                            v.as_i64().or_else(|| v.as_f64().map(|f| f.trunc() as i64))
+                        });
+                        if let Some(s) = secs {
+                            self.rate_limit_reset_at_ms = Some(s.saturating_mul(1000));
+                        }
+                    }
+                }
+            } else if ev.kind == "system/api_retry" {
+                if let Some(e) = obj.get("error").and_then(|v| v.as_str()) {
+                    self.last_retry_error = Some(e.to_string());
+                }
+                self.last_retry_status = obj.get("error_status").and_then(|v| v.as_i64());
             } else if ev.kind == "result" {
                 self.result_seen = true;
+                self.api_error_status = obj.get("api_error_status").and_then(|v| v.as_i64());
+                self.terminal_reason = obj
+                    .get("terminal_reason")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 if self.session_id.is_empty() {
                     if let Some(s) = obj.get("session_id").and_then(|v| v.as_str()) {
                         self.session_id = s.to_string();
@@ -563,5 +618,85 @@ mod tests {
         assert_eq!(summary.reads, vec!["src/main.rs"]);
         assert_eq!(summary.tool_counts.get("Grep"), Some(&1));
         assert_eq!(summary.tool_counts.get("Read"), Some(&1));
+    }
+
+    fn feed_all(lines: &[&str]) -> Summary {
+        let mut s = Summary::new(None, None);
+        for l in lines {
+            s.feed(l.as_bytes());
+        }
+        s.finish();
+        s
+    }
+
+    #[test]
+    fn rate_limit_fields() {
+        let s = feed_all(&[
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1792310400,"rateLimitType":"seven_day","isUsingOverage":false}}"#,
+        ]);
+        assert!(!s.rate_limit_rejected, "allowed_warning is not a rejection");
+        assert_eq!(s.rate_limit_reset_at_ms, None);
+        assert_eq!(s.rate_limit_type, None);
+
+        let s = feed_all(&[
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1792310400,"rateLimitType":"five_hour","isUsingOverage":false}}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","isUsingOverage":true}}"#,
+        ]);
+        assert!(s.rate_limit_rejected, "a rejection stays set");
+        assert_eq!(s.rate_limit_reset_at_ms, Some(1_792_310_400_000));
+        assert_eq!(s.rate_limit_type.as_deref(), Some("five_hour"));
+        assert!(s.using_overage, "isUsingOverage is the last value seen");
+
+        // A fractional resetsAt is truncated toward zero; no float is stored.
+        let s = feed_all(&[
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1792310400.9,"isUsingOverage":false}}"#,
+        ]);
+        assert_eq!(s.rate_limit_reset_at_ms, Some(1_792_310_400_000));
+
+        // Unknown shapes never panic and change nothing.
+        let s = feed_all(&[
+            r#"{"type":"rate_limit_event"}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":"x"}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":7,"resetsAt":"soon","isUsingOverage":"no"}}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":"soon"}}"#,
+        ]);
+        assert!(s.rate_limit_rejected);
+        assert_eq!(s.rate_limit_reset_at_ms, None);
+        assert!(!s.using_overage);
+    }
+
+    #[test]
+    fn api_retry_fields() {
+        let s = feed_all(&[
+            r#"{"type":"system","subtype":"api_retry","attempt":1,"max_retries":5,"retry_delay_ms":10,"error_status":429,"error":"rate_limit"}"#,
+        ]);
+        assert_eq!(s.last_retry_error.as_deref(), Some("rate_limit"));
+        assert_eq!(s.last_retry_status, Some(429));
+        assert!(!s.result_seen());
+
+        let s = feed_all(&[
+            r#"{"type":"system","subtype":"api_retry","error_status":null,"error":"overloaded"}"#,
+            r#"{"type":"system","subtype":"api_retry","error":7}"#,
+        ]);
+        assert_eq!(s.last_retry_error.as_deref(), Some("overloaded"));
+        assert_eq!(s.last_retry_status, None);
+    }
+
+    #[test]
+    fn result_error_fields() {
+        let s = feed_all(&[
+            r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":402,"terminal_reason":"blocking_limit","result":"x"}"#,
+        ]);
+        assert!(s.result_seen());
+        assert!(s.is_error);
+        assert_eq!(s.api_error_status, Some(402));
+        assert_eq!(s.terminal_reason.as_deref(), Some("blocking_limit"));
+
+        let s = feed_all(&[
+            r#"{"type":"result","subtype":"success","is_error":false,"api_error_status":null}"#,
+        ]);
+        assert!(s.result_seen());
+        assert_eq!(s.api_error_status, None);
+        assert_eq!(s.terminal_reason, None);
     }
 }

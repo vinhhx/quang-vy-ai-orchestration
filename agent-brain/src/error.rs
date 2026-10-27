@@ -3,6 +3,8 @@ pub const EXIT_ERROR: i32 = 1;
 pub const EXIT_ROUTING: i32 = 2;
 pub const EXIT_PROTOCOL: i32 = 3;
 pub const EXIT_BLOCKED: i32 = 4;
+/// A run stopped because the engine hit its quota or rate limit (D-15). Nothing retries or switches engine.
+pub const EXIT_QUOTA: i32 = 5;
 pub const EXIT_INTERRUPTED: i32 = 130;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +61,7 @@ mod tests {
         assert_eq!(EXIT_ROUTING, 2);
         assert_eq!(EXIT_PROTOCOL, 3);
         assert_eq!(EXIT_BLOCKED, 4);
+        assert_eq!(EXIT_QUOTA, 5);
         assert_eq!(EXIT_INTERRUPTED, 130);
     }
 

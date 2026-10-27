@@ -114,14 +114,19 @@ fn setup_lead_task(sb: &Sandbox) -> PathBuf {
 
 /// `(status, outcome, error, metrics)` of the run with `id`.
 fn run_row(sb: &Sandbox, id: i64) -> (String, Option<String>, Option<String>, Value) {
-    let (status, outcome, error, metrics): (String, Option<String>, Option<String>, Option<String>) =
-        sb.db()
-            .query_row(
-                "SELECT status, outcome, error, metrics_json FROM runs WHERE id = ?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .unwrap_or_else(|e| panic!("no run row {id}: {e}"));
+    let (status, outcome, error, metrics): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sb
+        .db()
+        .query_row(
+            "SELECT status, outcome, error, metrics_json FROM runs WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap_or_else(|e| panic!("no run row {id}: {e}"));
     let metrics = serde_json::from_str(&metrics.unwrap_or_else(|| "{}".to_string())).unwrap();
     (status, outcome, error, metrics)
 }
