@@ -432,6 +432,19 @@ pub fn done(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
         EXIT_OK
     };
 
+    // Autopilot chạy tiếp ngay trong tiến trình này, kể cả sau vi phạm để `decide` ghi lý do dừng.
+    if p.wait.autopilot && violated {
+        return crate::autopilot::stop_after_human_violation(ctx, task_id);
+    }
+    if p.wait.autopilot {
+        return crate::autopilot::cmd_auto(
+            ctx,
+            &crate::autopilot::AutoOpts {
+                args: vec![task_id.to_string()],
+                ..Default::default()
+            },
+        );
+    }
     Ok(code)
 }
 

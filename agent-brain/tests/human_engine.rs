@@ -68,9 +68,10 @@ struct World {
     remote: Option<PathBuf>,
 }
 
-/// Repo `web` (optionally with a bare `origin`), staff `ha`, team `doi-nguoi` (Dev = `người:ha`)
-/// and task 1 (`task/sua-app`) created by `run lead --team doi-nguoi`, plan committed.
-fn setup(sb: &Sandbox, with_origin: bool) -> World {
+/// Repo `web` (optionally with a bare `origin`), staff `ha` and team `doi-nguoi`
+/// (Dev = `người:ha`). With `autopilot` the map entry has no `workflow` key (server default:
+/// mac-dinh), otherwise it keeps the manual `nhanh` workflow. No task yet.
+fn setup_base(sb: &Sandbox, with_origin: bool, autopilot: bool) -> World {
     let remote = with_origin.then(|| bare_remote(sb));
     let repo = sb.make_repo(
         "web",
@@ -81,12 +82,21 @@ fn setup(sb: &Sandbox, with_origin: bool) -> World {
     if remote.is_some() {
         sb.git(&repo, &["push", "-u", "origin", "main"]);
     }
-    let entry = sb.project_entry(&repo, "web", "work");
+    let mut entry = sb.project_entry(&repo, "web", "work");
+    if autopilot {
+        entry.as_object_mut().unwrap().remove("workflow");
+    }
     sb.write_map(json!([entry]), &[]);
     sb.write_staff(json!({"ha": {"display_name": "Hà"}}));
     sb.write_teams(json!({
         "doi-nguoi": {"description": "Dev do Hà làm", "roles": {"dev": "người:ha"}}
     }));
+    World { repo, remote }
+}
+
+/// `setup_base` plus task 1 (`task/sua-app`) created by `run lead --team doi-nguoi`, plan committed.
+fn setup(sb: &Sandbox, with_origin: bool) -> World {
+    let world = setup_base(sb, with_origin, false);
     let res = sb.run(
         &[
             "run",
@@ -102,7 +112,7 @@ fn setup(sb: &Sandbox, with_origin: bool) -> World {
         Some(json!({ "by_role": { "lead": [lead_plan_entry()] } })),
     );
     assert_ok(&res, "run lead --team doi-nguoi");
-    World { repo, remote }
+    world
 }
 
 fn assert_ok(res: &RunOut, what: &str) {
@@ -608,4 +618,262 @@ fn return_requires_rejected() {
         "Chỉ trả lại khi kết quả của Hà chưa đạt.",
     );
     assert_eq!(team_json(&sb), marker);
+}
+
+// ---------------------------------------------------------------------------
+// Task 3: autopilot waits for the person and resumes after Xong
+// ---------------------------------------------------------------------------
+
+fn by_role(roles: Value) -> Value {
+    json!({ "by_role": roles })
+}
+
+fn review_report(verdict: &str, blocking: i64, advisory: i64) -> String {
+    let mut body = format!(
+        "---\nverdict: {verdict}\nblocking: {blocking}\nadvisory: {advisory}\nfiles: []\n---\n# Review: sửa app\n## Mục chặn (blocking)\n"
+    );
+    for i in 0..blocking {
+        body.push_str(&format!("- mục chặn {}\n", i + 1));
+    }
+    body.push_str("## Góp ý (advisory)\n");
+    for i in 0..advisory {
+        body.push_str(&format!("- góp ý {}\n", i + 1));
+    }
+    body
+}
+
+fn plan_review_entry(verdict: &str, blocking: i64, advisory: i64) -> Value {
+    json!({"ops": [{
+        "op": "write",
+        "path": ".plan-review.md",
+        "content": review_report(verdict, blocking, advisory),
+    }]})
+}
+
+fn code_review_entry(verdict: &str, blocking: i64) -> Value {
+    json!({"ops": [{
+        "op": "write",
+        "path": ".code-review.md",
+        "content": review_report(verdict, blocking, 1),
+    }]})
+}
+
+fn qa_pass_entry() -> Value {
+    let report = "# QA: sửa app\n## Thay đổi có khớp plan không (từng mục)\n- src/a.txt: đã xem.\n## Sửa ngoài plan (nếu có)\nKhông.\n## Rủi ro\nKhông.\n## Kết luận\nĐạt\n";
+    json!({"ops": [{"op": "write", "path": ".qa-report.md", "content": report}]})
+}
+
+fn auto_state_of(sb: &Sandbox) -> (Option<String>, Option<i64>, Value) {
+    let (state, pid, aj): (Option<String>, Option<i64>, Option<String>) = sb
+        .db()
+        .query_row(
+            "SELECT auto_state, auto_pid, auto_json FROM tasks WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    let aj = serde_json::from_str(&aj.unwrap_or_else(|| "{}".to_string())).unwrap();
+    (state, pid, aj)
+}
+
+fn run_roles(sb: &Sandbox) -> Vec<(String, String)> {
+    let conn = sb.db();
+    let mut stmt = conn
+        .prepare("SELECT role, engine FROM runs ORDER BY id")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+
+/// mac-dinh through `auto --start --team doi-nguoi`: Lead, plan review approves, stops at the gate.
+fn auto_to_gate(sb: &Sandbox) -> World {
+    let w = setup_base(sb, true, true);
+    let sc = by_role(json!({
+        "lead": [lead_plan_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 2)],
+    }));
+    let res = sb.run(
+        &[
+            "auto",
+            "--start",
+            "--name",
+            "sua-app",
+            "--team",
+            "doi-nguoi",
+            "--",
+            "web",
+            "sửa app",
+        ],
+        Some(sc),
+    );
+    assert_ok(&res, "auto --start");
+    assert_eq!(auto_state_of(sb).0.as_deref(), Some("gate"));
+    w
+}
+
+/// `approve 1`: the driver reaches the Dev step, the child exits 6 and the task waits.
+fn approve_to_waiting(sb: &Sandbox) {
+    let res = sb.run(&["approve", "1"], None);
+    assert_ok(&res, "approve 1");
+    assert!(
+        both(&res).contains("chờ nhân sự làm — bấm Xong khi họ báo xong."),
+        "{}",
+        both(&res)
+    );
+}
+
+#[test]
+fn autopilot_waits_for_human() {
+    let sb = Sandbox::new();
+    let _w = auto_to_gate(&sb);
+    let runs_before = run_count(&sb);
+
+    approve_to_waiting(&sb);
+
+    let (state, pid, aj) = auto_state_of(&sb);
+    assert_eq!(state.as_deref(), Some("waiting_human"));
+    assert_eq!(pid, None, "the driver pid is cleared");
+    assert!(
+        aj.get("stop").map(|s| s.is_null()).unwrap_or(true),
+        "no stop recorded: {aj}"
+    );
+    assert_eq!(run_count(&sb), runs_before, "no run for the human wait");
+    assert_eq!(running_count(&sb), 0);
+    let wait = task_team(&sb).wait.expect("marker");
+    assert_eq!(wait.mode, "waiting");
+    assert_eq!(wait.stage, "implement");
+    assert!(wait.autopilot);
+    assert_ne!(task_status(&sb), "blocked");
+}
+
+#[test]
+fn autopilot_resumes_after_done() {
+    let sb = Sandbox::new();
+    let w = auto_to_gate(&sb);
+    let remote = w.remote.clone().unwrap();
+    approve_to_waiting(&sb);
+
+    staff_clone_push(
+        &sb,
+        &remote,
+        "task/sua-app",
+        &[("src/a.txt", "a của Hà\n")],
+        "sua-app: xong phần của Hà",
+    );
+    let sc = by_role(json!({
+        "code-review": [code_review_entry("pass", 0)],
+        "qa": [qa_pass_entry()],
+    }));
+    let done = sb.run(&["human", "done", "1"], Some(sc));
+    assert_ok(&done, "human done");
+
+    assert_eq!(
+        auto_state_of(&sb).0.as_deref(),
+        Some("done"),
+        "{}",
+        both(&done)
+    );
+    let roles = run_roles(&sb);
+    let expected: Vec<(String, String)> = [
+        ("lead", "claude"),
+        ("plan-review", "claude"),
+        ("dev", "người"),
+        ("code-review", "claude"),
+        ("qa", "claude"),
+    ]
+    .iter()
+    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .collect();
+    assert_eq!(roles, expected, "{}", both(&done));
+    assert!(task_team(&sb).wait.is_none());
+    assert_eq!(human_runs(&sb).len(), 1);
+}
+
+#[test]
+fn autopilot_fix_goes_back_rejected() {
+    let sb = Sandbox::new();
+    let w = auto_to_gate(&sb);
+    let remote = w.remote.clone().unwrap();
+    approve_to_waiting(&sb);
+    staff_clone_push(
+        &sb,
+        &remote,
+        "task/sua-app",
+        &[("src/a.txt", "a của Hà\n")],
+        "sua-app: xong phần của Hà",
+    );
+
+    // Code review asks for a fix: the driver runs the fix stage, which is a person's step again.
+    let sc = by_role(json!({ "code-review": [code_review_entry("revise", 1)] }));
+    let done = sb.run(&["human", "done", "1"], Some(sc));
+    assert_ok(&done, "human done");
+    let (state, pid, aj) = auto_state_of(&sb);
+    assert_eq!(state.as_deref(), Some("waiting_human"), "{}", both(&done));
+    assert_eq!(pid, None);
+    assert!(aj.get("stop").map(|s| s.is_null()).unwrap_or(true), "{aj}");
+    let wait = task_team(&sb).wait.expect("rejected marker");
+    assert_eq!(wait.mode, "rejected");
+    assert_eq!(wait.stage, "fix");
+    assert_eq!(wait.fix_for.as_deref(), Some("code_review"));
+    assert_eq!(wait.report_paths, vec![".code-review.md".to_string()]);
+    assert!(wait.autopilot);
+
+    // Trả lại, the person fixes, Xong: the autopilot goes on to code review and QA.
+    assert_ok(&human(&sb, "return"), "human return");
+    staff_clone_push(
+        &sb,
+        &remote,
+        "task/sua-app",
+        &[("src/a.txt", "a của Hà, đã sửa\n")],
+        "sua-app: sửa theo review",
+    );
+    let sc = by_role(json!({
+        "code-review": [code_review_entry("pass", 0)],
+        "qa": [qa_pass_entry()],
+    }));
+    let done = sb.run(&["human", "done", "1"], Some(sc));
+    assert_ok(&done, "human done (fix)");
+    assert_eq!(
+        auto_state_of(&sb).0.as_deref(),
+        Some("done"),
+        "{}",
+        both(&done)
+    );
+    let rows = human_runs(&sb);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].stage.as_deref(), Some("fix"));
+    assert_eq!(rows[1].metrics["fix_for"], json!("code_review"));
+}
+
+#[test]
+fn autopilot_violation_is_recorded_as_stop() {
+    let sb = Sandbox::new();
+    let w = auto_to_gate(&sb);
+    let remote = w.remote.clone().unwrap();
+    approve_to_waiting(&sb);
+    staff_clone_push(
+        &sb,
+        &remote,
+        "task/sua-app",
+        &[
+            ("src/a.txt", "a của Hà\n"),
+            ("src/khac.txt", "ngoài plan\n"),
+        ],
+        "sua-app: xong",
+    );
+
+    // The same process resumes the autopilot, so decide records the stop.
+    let done = sb.run(&["human", "done", "1"], None);
+    assert_eq!(done.code, 4, "{}", both(&done));
+    let (state, pid, aj) = auto_state_of(&sb);
+    assert_eq!(state.as_deref(), Some("stopped"), "{}", both(&done));
+    assert_eq!(pid, None);
+    assert!(aj["stop"].is_object(), "{aj}");
+    assert_eq!(
+        human_runs(&sb)[0].outcome.as_deref(),
+        Some("protocol_violation")
+    );
+    assert!(task_team(&sb).wait.is_none());
 }
