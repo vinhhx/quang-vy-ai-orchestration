@@ -102,6 +102,10 @@ pub struct FlowCard {
     pub cost_usd: Option<f64>,
     pub has_run: bool,
     pub run_id: Option<i64>,
+    /// Engine of the card's latest run, or (with `engine_planned`) the engine its role will use
+    /// under the task's current team. `None` until `set_planned_engines` fills a card without runs.
+    pub engine: Option<String>,
+    pub engine_planned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -211,6 +215,9 @@ pub struct LedgerRow {
     pub label: String,
     pub state: String,
     pub verdict: String,
+    /// `claude`, `deepseek`, `agy` or `người:{staff}` for a person's run.
+    pub engine: String,
+    pub human: bool,
     pub turns: Option<i64>,
     pub duration_ms: Option<i64>,
     pub cost_usd: Option<f64>,
@@ -235,6 +242,8 @@ pub struct LedgerTotal {
     pub duration_ms: Option<i64>,
     pub cost_usd: Option<f64>,
     pub cost_unknown: i64,
+    /// Runs done by a person; their minutes are left out of `duration_ms`.
+    pub human_runs: i64,
 }
 
 pub fn state_word(state: &str) -> &'static str {
@@ -251,7 +260,58 @@ pub fn state_word(state: &str) -> &'static str {
         "cho_ban" => "chờ bạn",
         "duyet" => "duyệt",
         "sua_lai" => "sửa lại",
+        "het_quota" => "hết quota",
+        "cho_nguoi" => "chờ người",
         _ => "lỗi",
+    }
+}
+
+/// Text of the engine that did a run: `người:{staff}` for a person's run (the staff id comes from
+/// the stored `metrics_json.staff`), else `runs.engine`.
+pub fn engine_text_of(run: &RunRow) -> String {
+    if run.engine != crate::engine::ENGINE_HUMAN {
+        return run.engine.clone();
+    }
+    let staff = run
+        .metrics_json
+        .as_deref()
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| v.get("staff").and_then(|s| s.as_str().map(str::to_string)))
+        .filter(|id| crate::staff::validate_id(id));
+    match staff {
+        Some(id) => format!("{}:{id}", crate::engine::ENGINE_HUMAN),
+        None => crate::engine::ENGINE_HUMAN.to_string(),
+    }
+}
+
+/// Fills `engine` + `engine_planned: true` on every card without a run, from the role → engine
+/// map of the task's team (`claude` for every role when the task has no team). Cards with a run
+/// keep the engine of their latest run.
+pub fn set_planned_engines(
+    resp: &mut PipelineResponse,
+    planned: &std::collections::BTreeMap<String, String>,
+) {
+    for group in &mut resp.groups {
+        for card in &mut group.cards {
+            if card.has_run || card.engine.is_some() {
+                continue;
+            }
+            let role = match card.key.as_str() {
+                "plan" => "lead",
+                "plan_review" | "plan-review" => "plan-review",
+                "code" | "implement" | "fix" => "dev",
+                "code_review" | "code-review" => "code-review",
+                "qa" => "qa",
+                _ => continue,
+            };
+            card.engine = Some(
+                planned
+                    .get(role)
+                    .cloned()
+                    .unwrap_or_else(|| crate::engine::ENGINE_CLAUDE.to_string()),
+            );
+            card.engine_planned = true;
+        }
     }
 }
 
@@ -347,6 +407,7 @@ fn derive_inner(f: &PipelineFacts, staged: bool) -> PipelineView {
             raw_state
         };
         let verdict = state_word(state).to_string();
+        let human = run.engine == crate::engine::ENGINE_HUMAN;
 
         // R4 Unknown fields
         let duration_ms = if run.status == "running" {
@@ -357,12 +418,15 @@ fn derive_inner(f: &PipelineFacts, staged: bool) -> PipelineView {
             None
         };
 
-        let cost_usd =
-            if run.status != "killed" && run.status != "running" && run.usage_source == "result" {
-                Some(run.cost_usd)
-            } else {
-                None
-            };
+        let cost_usd = if !human
+            && run.status != "killed"
+            && run.status != "running"
+            && run.usage_source == "result"
+        {
+            Some(run.cost_usd)
+        } else {
+            None
+        };
 
         // R5 Label
         let label = format!("Vòng {round} · {kind}");
@@ -376,7 +440,9 @@ fn derive_inner(f: &PipelineFacts, staged: bool) -> PipelineView {
             label,
             state: state.to_string(),
             verdict,
-            turns: run.num_turns,
+            engine: engine_text_of(run),
+            human,
+            turns: if human { None } else { run.num_turns },
             duration_ms,
             cost_usd,
             running: run.status == "running",
@@ -505,8 +571,15 @@ fn derive_inner(f: &PipelineFacts, staged: bool) -> PipelineView {
     let mut total_cost = 0.0f64;
     let mut has_known_cost = false;
     let mut cost_unknown = 0i64;
+    let mut human_runs = 0i64;
 
     for row in &ledger_rows {
+        // A person's run has no tokens and no price: it is counted, but its minutes are not
+        // agent minutes and its missing cost is not an unknown one.
+        if row.human {
+            human_runs += 1;
+            continue;
+        }
         if let Some(dur) = row.duration_ms {
             total_duration += dur;
             has_known_duration = true;
@@ -532,6 +605,7 @@ fn derive_inner(f: &PipelineFacts, staged: bool) -> PipelineView {
             None
         },
         cost_unknown,
+        human_runs,
     };
 
     // R13 Start card
@@ -1134,6 +1208,8 @@ pub fn derive_response(f: &PipelineFacts, x: &FlowFacts) -> PipelineResponse {
                 cost_usd,
                 has_run,
                 run_id,
+                engine: card_runs.last().map(|(_, r)| engine_text_of(r)),
+                engine_planned: false,
             });
         }
 
@@ -4353,5 +4429,204 @@ mod tests {
             .find(|g| g.rows.iter().any(|r| r.run_id == 4))
             .unwrap();
         assert_eq!(second_lead_group.cycle, 2);
+    }
+
+    fn human_run(
+        id: i64,
+        role: &str,
+        staff_metrics: Option<&str>,
+        started: i64,
+        ended: i64,
+    ) -> RunRow {
+        let mut r = run(id, role, "succeeded", None, started, Some(ended));
+        r.engine = crate::engine::ENGINE_HUMAN.to_string();
+        r.model = None;
+        r.pid = None;
+        r.pgid = None;
+        r.pid_start = None;
+        r.input_tokens = 0;
+        r.output_tokens = 0;
+        r.cache_read_tokens = 0;
+        r.cache_write_tokens = 0;
+        r.cost_usd = 0.0;
+        r.num_turns = None;
+        r.usage_source = "none".to_string();
+        r.metrics_json = staff_metrics.map(|s| s.to_string());
+        r
+    }
+
+    fn flow_card(resp: &PipelineResponse, key: &str) -> FlowCard {
+        resp.groups
+            .iter()
+            .flat_map(|g| g.cards.iter())
+            .find(|c| c.key == key)
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn ledger_engine_and_human_rows() {
+        let task = dummy_task("planned");
+        let mut ds = run(2, "dev", "succeeded", None, 2000, Some(5000));
+        ds.engine = "deepseek".to_string();
+        let runs = vec![
+            run(1, "lead", "succeeded", None, 1000, Some(2000)),
+            ds,
+            human_run(3, "dev", Some(r#"{"team":"x","staff":"ha"}"#), 6000, 66_000),
+        ];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 100_000,
+        };
+        let view = derive(&facts);
+        let rows: Vec<&LedgerRow> = view
+            .ledger
+            .groups
+            .iter()
+            .flat_map(|g| g.rows.iter())
+            .collect();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].engine, "claude");
+        assert!(!rows[0].human);
+        assert_eq!(rows[0].turns, Some(2));
+        assert_eq!(rows[1].engine, "deepseek");
+        assert!(!rows[1].human);
+
+        assert_eq!(rows[2].engine, "người:ha");
+        assert!(rows[2].human);
+        assert_eq!(rows[2].turns, None);
+        assert_eq!(rows[2].cost_usd, None);
+        // The person's own minutes are still shown on the row ...
+        assert_eq!(rows[2].duration_ms, Some(60_000));
+        // ... but the total sums agent runs only and counts the person's run apart.
+        let total = &view.ledger.total;
+        assert_eq!(total.runs, 3);
+        assert_eq!(total.human_runs, 1);
+        assert_eq!(total.duration_ms, Some(1000 + 3000));
+        assert_eq!(total.cost_unknown, 0);
+
+        // No staff id (or one that is not an id) reads as the bare engine.
+        assert_eq!(engine_text_of(&human_run(9, "dev", None, 0, 1)), "người");
+        assert_eq!(
+            engine_text_of(&human_run(9, "dev", Some(r#"{"staff":"../x"}"#), 0, 1)),
+            "người"
+        );
+        assert_eq!(
+            engine_text_of(&run(9, "dev", "succeeded", None, 0, Some(1))),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn planned_engines_fill_empty_cards() {
+        let task = dummy_task("planned");
+        let wf = test_mac_dinh();
+        let runs = vec![staged_run(
+            1,
+            "lead",
+            Some("plan"),
+            Some(1),
+            "succeeded",
+            None,
+            None,
+            1000,
+        )];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 5000,
+        };
+        let flow = FlowFacts {
+            workflow: Some(&wf),
+            ..Default::default()
+        };
+        let mut resp = derive_response(&facts, &flow);
+        // Before the fill: the card with a run names its engine, the others none.
+        assert_eq!(flow_card(&resp, "plan").engine.as_deref(), Some("claude"));
+        assert!(!flow_card(&resp, "plan").engine_planned);
+        assert_eq!(flow_card(&resp, "code").engine, None);
+
+        let planned: std::collections::BTreeMap<String, String> = [
+            ("lead", "deepseek"),
+            ("plan-review", "agy"),
+            ("dev", "người:ha"),
+            ("code-review", "claude"),
+            ("qa", "claude"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        set_planned_engines(&mut resp, &planned);
+
+        // The run's own engine wins over the plan for the lead (deepseek in the map).
+        assert_eq!(flow_card(&resp, "plan").engine.as_deref(), Some("claude"));
+        assert!(!flow_card(&resp, "plan").engine_planned);
+        for (key, engine) in [
+            ("plan_review", "agy"),
+            ("code", "người:ha"),
+            ("code_review", "claude"),
+            ("qa", "claude"),
+            ("fix", "người:ha"),
+        ] {
+            let c = flow_card(&resp, key);
+            assert_eq!(c.engine.as_deref(), Some(engine), "card {key}");
+            assert!(c.engine_planned, "card {key}");
+        }
+
+        // An empty map falls back to claude.
+        let mut resp = derive_response(&facts, &flow);
+        set_planned_engines(&mut resp, &std::collections::BTreeMap::new());
+        assert_eq!(flow_card(&resp, "code").engine.as_deref(), Some("claude"));
+        assert!(flow_card(&resp, "code").engine_planned);
+    }
+
+    #[test]
+    fn card_engine_follows_latest_run() {
+        let task = dummy_task("planned");
+        let mut first = run(1, "dev", "failed", Some("quota"), 1000, Some(2000));
+        first.engine = "deepseek".to_string();
+        let second = run(2, "dev", "succeeded", None, 3000, Some(4000));
+        let runs = vec![first, second];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "qa",
+            now_ms: 5000,
+        };
+        let resp = derive_response(&facts, &FlowFacts::default());
+        let code = flow_card(&resp, "code");
+        assert_eq!(code.engine.as_deref(), Some("claude"));
+        assert!(!code.engine_planned);
+    }
+
+    #[test]
+    fn quota_state_word() {
+        assert_eq!(state_word("het_quota"), "hết quota");
+        assert_eq!(state_word("cho_nguoi"), "chờ người");
+
+        let task = dummy_task("planned");
+        let runs = vec![run(1, "dev", "failed", Some("quota"), 1000, Some(2000))];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 5000,
+        };
+        let view = derive(&facts);
+        let row = &view.ledger.groups[0].rows[0];
+        assert_eq!(row.state, "het_quota");
+        assert_eq!(row.verdict, "hết quota");
+        let resp = derive_response(&facts, &FlowFacts::default());
+        let code = flow_card(&resp, "code");
+        assert_eq!(code.state, "het_quota");
+        assert_eq!(code.state_word, "hết quota");
+        assert_eq!(code.result, "hết quota");
     }
 }
