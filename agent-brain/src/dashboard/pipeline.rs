@@ -315,6 +315,108 @@ pub fn set_planned_engines(
     }
 }
 
+/// A person's pending step (06-12 `team_json.wait` marker) shown in the pipeline without a run:
+/// one synthesized ledger row (`run_id: 0`, `human: true`, state `cho_nguoi`, `started_at` = the
+/// marker's `since_ms`, `duration_ms` = the time waited so far) appended to the ledger group of
+/// the wait's loop, and the matching stage card (`code`, or `fix` for a fix for QA) set to
+/// `cho_nguoi` / `Chờ {tên} làm` with the person as its engine. `total` is never touched: no run
+/// exists, so the synthesized row is not counted (D-21, HUM-01).
+pub fn apply_human_wait(
+    resp: &mut PipelineResponse,
+    wait: &crate::teams::HumanWait,
+    staff_name: &str,
+    now_ms: i64,
+) {
+    let is_fix = wait.stage == "fix";
+    let for_review = wait.fix_for.as_deref() == Some("code_review");
+    let (kind, loop_name, card_key) = if !is_fix {
+        ("code", "build", "code")
+    } else if for_review {
+        ("sửa theo review", "build", "code")
+    } else {
+        ("sửa theo QA", "qa", "fix")
+    };
+
+    let ledger = &mut resp.base.ledger;
+    // The marker carries the autopilot round; a manual step has none, so it follows the Dev
+    // runs already on the ledger (the legacy per-role counter).
+    let round = wait.round.unwrap_or_else(|| {
+        1 + ledger
+            .groups
+            .iter()
+            .flat_map(|g| g.rows.iter())
+            .filter(|r| r.role == "dev")
+            .count() as i64
+    });
+    let row = LedgerRow {
+        run_id: 0,
+        role: "dev".to_string(),
+        round,
+        label: format!("Vòng {round} · {kind} · người {staff_name}"),
+        state: "cho_nguoi".to_string(),
+        verdict: state_word("cho_nguoi").to_string(),
+        engine: format!("{}:{}", crate::engine::ENGINE_HUMAN, wait.staff),
+        human: true,
+        turns: None,
+        duration_ms: Some((now_ms - wait.since_ms).max(0)),
+        cost_usd: None,
+        running: false,
+        started_at: wait.since_ms,
+        ended_at: None,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        loop_name: loop_name.to_string(),
+        stage: Some(wait.stage.clone()),
+        kind: kind.to_string(),
+        outcome: None,
+        counts: None,
+    };
+    let extends_last = ledger.groups.last().is_some_and(|g| g.kind == loop_name);
+    if extends_last {
+        if let Some(g) = ledger.groups.last_mut() {
+            g.rows.push(row);
+        }
+    } else {
+        // A new group, numbered like the derive does for any other group of the same cycle.
+        let cycle = ledger.groups.last().map(|g| g.cycle).unwrap_or(1);
+        let n = ledger.groups.len() + 1;
+        let header = if loop_name == "qa" {
+            format!("Chu kỳ {cycle} · QA")
+        } else {
+            format!("Chu kỳ {cycle} · build")
+        };
+        ledger.groups.push(LedgerGroup {
+            key: format!("c{cycle}-{loop_name}-{n}"),
+            kind: loop_name.to_string(),
+            cycle,
+            header,
+            right: None,
+            rows: vec![row],
+        });
+    }
+
+    let result = format!("Chờ {staff_name} làm");
+    let engine = format!("{}:{}", crate::engine::ENGINE_HUMAN, wait.staff);
+    for group in &mut resp.groups {
+        for card in group.cards.iter_mut().filter(|c| c.key == card_key) {
+            card.state = "cho_nguoi".to_string();
+            card.state_word = state_word("cho_nguoi").to_string();
+            card.result = result.clone();
+            card.engine = Some(engine.clone());
+            card.engine_planned = false;
+        }
+    }
+    if card_key == "code" {
+        let code = &mut resp.base.cards.code;
+        code.state = "cho_nguoi".to_string();
+        code.state_word = state_word("cho_nguoi").to_string();
+        code.result = result;
+    }
+    resp.current_card = Some(card_key.to_string());
+}
+
 pub fn derive(f: &PipelineFacts) -> PipelineView {
     derive_inner(f, false)
 }
@@ -4628,5 +4730,163 @@ mod tests {
         assert_eq!(code.state, "het_quota");
         assert_eq!(code.state_word, "hết quota");
         assert_eq!(code.result, "hết quota");
+    }
+
+    fn human_wait(mode: &str, stage: &str, fix_for: Option<&str>) -> crate::teams::HumanWait {
+        crate::teams::HumanWait {
+            mode: mode.to_string(),
+            role: "dev".to_string(),
+            stage: stage.to_string(),
+            fix_for: fix_for.map(str::to_string),
+            round: None,
+            staff: "ha".to_string(),
+            since_ms: 4000,
+            branch: "task/sua-app".to_string(),
+            base: "abc".to_string(),
+            report_paths: vec![],
+            push: None,
+            autopilot: false,
+        }
+    }
+
+    #[test]
+    fn human_wait_synthesized_row() {
+        let task = dummy_task("planned");
+        let wf = test_mac_dinh();
+        let runs = vec![
+            staged_run(
+                1,
+                "lead",
+                Some("plan"),
+                Some(1),
+                "succeeded",
+                None,
+                None,
+                1000,
+            ),
+            staged_run(
+                2,
+                "plan-review",
+                Some("plan-review"),
+                Some(1),
+                "succeeded",
+                Some("review:approve"),
+                None,
+                2000,
+            ),
+        ];
+        let facts = PipelineFacts {
+            task: &task,
+            runs: &runs,
+            plan: &PlanFacts::Unknown,
+            current_step: "dev",
+            now_ms: 9000,
+        };
+        let flow = FlowFacts {
+            workflow: Some(&wf),
+            ..Default::default()
+        };
+        let plain = derive_response(&facts, &flow);
+
+        // implement stage: a new build group with one synthesized row; `total` is unchanged.
+        let mut resp = plain.clone();
+        apply_human_wait(
+            &mut resp,
+            &human_wait("waiting", "implement", None),
+            "Hà",
+            9000,
+        );
+        assert_eq!(resp.base.ledger.total, plain.base.ledger.total);
+        assert_eq!(
+            resp.base.ledger.groups.len(),
+            plain.base.ledger.groups.len() + 1
+        );
+        let g = resp.base.ledger.groups.last().unwrap();
+        assert_eq!(g.kind, "build");
+        assert_eq!(g.header, "Chu kỳ 1 · build");
+        assert_eq!(g.rows.len(), 1);
+        let row = &g.rows[0];
+        assert_eq!(row.run_id, 0);
+        assert!(row.human);
+        assert!(!row.running);
+        assert_eq!(row.engine, "người:ha");
+        assert_eq!(row.state, "cho_nguoi");
+        assert_eq!(row.verdict, "chờ người");
+        assert_eq!(row.started_at, 4000);
+        assert_eq!(row.duration_ms, Some(5000));
+        assert_eq!(row.kind, "code");
+        assert_eq!(row.stage.as_deref(), Some("implement"));
+        assert_eq!(row.label, "Vòng 1 · code · người Hà");
+        assert_eq!(row.cost_usd, None);
+        let code = flow_card(&resp, "code");
+        assert_eq!(code.state, "cho_nguoi");
+        assert_eq!(code.state_word, "chờ người");
+        assert_eq!(code.result, "Chờ Hà làm");
+        assert_eq!(code.engine.as_deref(), Some("người:ha"));
+        assert!(!code.engine_planned);
+        assert_eq!(resp.base.cards.code.state, "cho_nguoi");
+        assert_eq!(resp.current_card.as_deref(), Some("code"));
+
+        // A fix for QA after a QA run: the row joins the QA group on the fix card.
+        let mut qa_runs = runs.clone();
+        qa_runs.push(staged_run(
+            3,
+            "qa",
+            Some("qa"),
+            Some(1),
+            "succeeded",
+            Some("qa:fix"),
+            None,
+            3000,
+        ));
+        let facts = PipelineFacts {
+            runs: &qa_runs,
+            ..facts
+        };
+        let plain = derive_response(&facts, &flow);
+        let mut wait = human_wait("rejected", "fix", Some("qa"));
+        wait.round = Some(2);
+        let mut resp = plain.clone();
+        apply_human_wait(&mut resp, &wait, "Hà", 9000);
+        assert_eq!(resp.base.ledger.total, plain.base.ledger.total);
+        assert_eq!(
+            resp.base.ledger.groups.len(),
+            plain.base.ledger.groups.len()
+        );
+        let row = resp
+            .base
+            .ledger
+            .groups
+            .last()
+            .unwrap()
+            .rows
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(row.kind, "sửa theo QA");
+        assert_eq!(row.loop_name, "qa");
+        assert_eq!(row.label, "Vòng 2 · sửa theo QA · người Hà");
+        assert_eq!(row.run_id, 0);
+        let fix = flow_card(&resp, "fix");
+        assert_eq!(fix.state, "cho_nguoi");
+        assert_eq!(fix.result, "Chờ Hà làm");
+        assert_eq!(resp.current_card.as_deref(), Some("fix"));
+        // The code card is not the one waiting.
+        assert_ne!(flow_card(&resp, "code").state, "cho_nguoi");
+
+        // A task without a workflow (legacy flow) updates its code card too.
+        let facts = PipelineFacts {
+            runs: &runs[..1],
+            ..facts
+        };
+        let mut resp = derive_response(&facts, &FlowFacts::default());
+        apply_human_wait(
+            &mut resp,
+            &human_wait("waiting", "implement", None),
+            "Hà",
+            9000,
+        );
+        assert_eq!(flow_card(&resp, "code").state, "cho_nguoi");
+        assert_eq!(resp.base.ledger.total.runs, 1);
     }
 }
