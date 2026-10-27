@@ -716,6 +716,17 @@ for s in "${SCREENS[@]}"; do
     done
   fi
 
+  # Stats race, same cause: retry while the engine rows are not drawn yet.
+  if [[ "$s" == "stats" ]]; then
+    ATTEMPT=1
+    while ! grep -q 'chưa có giá · 3 run' "$DOM_OUT" && (( ATTEMPT < 3 )); do
+      ATTEMPT=$((ATTEMPT + 1))
+      echo "Thử lại stats (lần $ATTEMPT)" >&2
+      sleep 1
+      dump_dom "$TARGET_URL" "$DOM_OUT" "$TMP/chrome-$s-$ATTEMPT"
+    done
+  fi
+
   # Board race, same cause: Alpine shows an x-show block a frame after the state
   # changes, and virtual time can dump the DOM between the two, leaving the board
   # layout hidden or the cards not drawn yet. Retry while no card is drawn or the
@@ -1309,7 +1320,7 @@ EOF
   fi
 
   # DOM assertions for the Giao việc, Dự án and Tổng quan screens (Phase 5.2).
-  if [[ "$s" == "assign" || "$s" == "projects" || "$s" == "overview" || "$s" == "board" || "$s" == "settings" ]]; then
+  if [[ "$s" == "assign" || "$s" == "projects" || "$s" == "overview" || "$s" == "board" || "$s" == "settings" || "$s" == "stats" ]]; then
     if ! python3 - "$DOM_OUT" "$s" "$URL" <<'EOF'
 import sys
 from html.parser import HTMLParser
@@ -1549,6 +1560,37 @@ if screen == 'overview':
     if [b for b in badges if not b.hidden()]:
         fail("Badge Autopilot hiện dù không có autopilot nào đang chạy")
     print("Overview DOM OK")
+
+    # 06-18: the Đang chạy hint, a person's step in the blue cho_nguoi tint, a quota stop under Chờ bạn.
+    if 'Agent hoặc nhân sự đang làm việc' not in ' '.join(full_text.split()):
+        fail("Nhóm Đang chạy thiếu gợi ý 'Agent hoặc nhân sự đang làm việc'")
+    running_groups = [g for g in root.find(lambda n: n.attrs.get('data-overview-group') == 'running')]
+    if len(running_groups) != 1:
+        fail(f"Số nhóm data-overview-group='running' là {len(running_groups)}, kỳ vọng 1")
+    running_items = {i.attrs.get('data-task-id'): i for i in running_groups[0].find(lambda n: 'data-task-id' in n.attrs)}
+    if '4' not in running_items:
+        fail(f"Nhóm Đang chạy không có task 4 đang chờ người (có: {sorted(running_items)})")
+    human_item = running_items['4']
+    human_text = ' '.join(human_item.text().split())
+    if 'Chờ Hà làm' not in human_text:
+        fail(f"Task 4 không có banner 'Chờ Hà làm' (nội dung: '{human_text}')")
+    banners = [b for b in human_item.find(lambda n: 'data-task-banner' in n.attrs) if not b.hidden()]
+    if len(banners) != 1 or 'text-blue-700' not in banners[0].attrs.get('class', ''):
+        fail(f"Banner của task 4 thiếu tông xanh cho_nguoi (class: {[b.attrs.get('class') for b in banners]})")
+    glyphs = [g for g in banners[0].find(lambda n: n.attrs.get('aria-hidden') == 'true') if not g.hidden()]
+    if len(glyphs) != 1 or glyphs[0].text().strip() != '◐︎':
+        fail(f"Banner của task 4 thiếu biểu tượng ◐ (nhận được: {[g.text() for g in glyphs]})")
+    if 'animate-pulse' in banners[0].attrs.get('class', '') or 'animate-pulse' in glyphs[0].attrs.get('class', ''):
+        fail("Biểu tượng ◐ của người làm không được nhấp nháy")
+    quota_item = items.get('3')
+    if quota_item is None:
+        fail(f"Nhóm Chờ bạn không có task 3 dừng vì hết quota (có: {sorted(items)})")
+    if 'Chờ bạn · hết quota' not in ' '.join(quota_item.text().split()):
+        fail(f"Task 3 không có banner 'Chờ bạn · hết quota' (nội dung: '{' '.join(quota_item.text().split())}')")
+    quota_lines = reason_lines(quota_item)
+    if len(quota_lines) != 1 or 'trên engine deepseek dừng vì hết quota' not in quota_lines[0].text():
+        fail(f"Task 3 không có dòng lý do quota (nhận được: {[l.text() for l in quota_lines]})")
+    print("OK overview-human")
     sys.exit(0)
 
 if screen == 'board':
@@ -1678,6 +1720,61 @@ if screen == 'settings':
     if collapse(link[0].text()) != 'Cài đặt':
         fail(f"Liên kết menu #/settings có nhãn '{collapse(link[0].text())}', kỳ vọng 'Cài đặt'")
     print("OK settings-shell")
+    sys.exit(0)
+
+if screen == 'stats':
+    def collapse(t):
+        return ' '.join(t.split())
+
+    def card_of(key):
+        found = [c for c in root.find(lambda n: n.attrs.get('data-stats-card') == key)]
+        if len(found) != 1:
+            fail(f"Số card data-stats-card='{key}' là {len(found)}, kỳ vọng 1")
+        return found[0]
+
+    # 06-18: Theo engine (task 5 has Dev runs on claude, deepseek without a price, and a person).
+    eng = card_of('engines')
+    if 'Theo engine' not in collapse(eng.text()):
+        fail("Thiếu tiêu đề card 'Theo engine'")
+    rows = {}
+    for r in eng.find(lambda n: 'data-engine-row' in n.attrs):
+        txt = collapse(r.text())
+        rows[txt.split(' ')[0]] = (r, txt)
+    for name in ('claude', 'deepseek', 'người'):
+        if name not in rows:
+            fail(f"Thiếu hàng engine '{name}' (có: {sorted(rows)})")
+    if 'chưa có giá · 3 run' not in rows['deepseek'][1] or '≈ $0' in rows['deepseek'][1]:
+        fail(f"Hàng deepseek phải là 'chưa có giá · 3 run' (nội dung: '{rows['deepseek'][1]}')")
+    if 'vào 70.000 · ra 16.000' not in rows['deepseek'][1]:
+        fail(f"Hàng deepseek thiếu 'vào 70.000 · ra 16.000' (nội dung: '{rows['deepseek'][1]}')")
+    if '≈ $' not in rows['claude'][1] or ' run' not in rows['claude'][1]:
+        fail(f"Hàng claude thiếu '≈ $… · n run' (nội dung: '{rows['claude'][1]}')")
+    if 'không có token' not in rows['người'][1] or '1 lượt do người làm' not in rows['người'][1]:
+        fail(f"Hàng người thiếu 'không có token' / '1 lượt do người làm' (nội dung: '{rows['người'][1]}')")
+    if [b for b in rows['người'][0].find(lambda n: n.tag == 'div' and 'bg-indigo-500' in n.attrs.get('class', '')) if not b.hidden()]:
+        fail("Hàng người không được có thanh")
+    if 'Engine chưa có giá hiện "chưa có giá", không tính vào Chi phí ≈ ở trên.' not in collapse(eng.text()):
+        fail("Thiếu chú thích giá dưới card 'Theo engine'")
+    print("OK stats-engines")
+
+    # 06-18: QA rate by the Dev engine (claude 0 / 1, deepseek 1 / 2, người 0 / 1).
+    rate = card_of('qa-rate')
+    rtext = collapse(rate.text())
+    if 'Tỉ lệ QA kết luận Cần sửa theo engine của Dev' not in rtext:
+        fail("Thiếu tiêu đề card 'Tỉ lệ QA kết luận Cần sửa theo engine của Dev'")
+    for needle in ('Chỉ tính các lần QA kết luận Đạt hoặc Cần sửa, gắn với engine của lần Dev được kiểm tra.',
+                   'Tỉ lệ chỉ đáng tin khi có nhiều lần QA; xem số lần ở cuối mỗi dòng.'):
+        if needle not in rtext:
+            fail(f"Card tỉ lệ QA thiếu '{needle}'")
+    if 'Chưa có lần QA nào trong khoảng này.' in rtext:
+        fail("Card tỉ lệ QA hiện trạng thái rỗng dù có lần QA")
+    rrows = {}
+    for r in rate.find(lambda n: 'data-rate-row' in n.attrs):
+        txt = collapse(r.text())
+        rrows[txt.split(' ')[0]] = txt
+    for name, want in (('deepseek', '50% 1 / 2 lần QA'), ('claude', '0% 0 / 1 lần QA'), ('người', '0% 0 / 1 lần QA')):
+        if want not in rrows.get(name, ''):
+            fail(f"Hàng QA của {name} phải là '{want}' (có: {rrows})")
     sys.exit(0)
 
 print(f"Không có kiểm tra DOM cho {screen}")

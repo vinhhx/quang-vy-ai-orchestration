@@ -207,6 +207,120 @@
         return (row.input_tokens || 0) + (row.output_tokens || 0);
       },
 
+      // ---- Theo engine (ENG-04, D-23) and QA rate by Dev engine (ENG-07) ----
+      // Engine rows keep the order the server sends (tokens in + out, then name); the figures
+      // use the engine columns (`input`, `output`, `cache_read`, `cache_write`).
+      get engineList() {
+        return (this.report && Array.isArray(this.report.engines)) ? this.report.engines : [];
+      },
+
+      isHumanEngine: function (name) {
+        return String(name === null || name === undefined ? '' : name).indexOf('người') === 0;
+      },
+
+      engineIo: function (e) {
+        if (!e) return 0;
+        return (e.input || 0) + (e.output || 0);
+      },
+
+      // Share of the largest row's tokens; the person's row has no tokens and no bar.
+      get maxEngine() {
+        var max = 0;
+        var list = this.engineList;
+        for (var i = 0; i < list.length; i++) {
+          var val = this.engineIo(list[i]);
+          if (val > max) max = val;
+        }
+        return Math.max(1, max);
+      },
+
+      barStyle: function (pct) {
+        var p = Number(pct);
+        if (isNaN(p) || p < 0) p = 0;
+        if (p > 100) p = 100;
+        return { width: p + '%' };
+      },
+
+      engineRow: function (e) {
+        var AB = window.AB;
+        var name = e.engine || '';
+        var runs = e.runs || 0;
+        if (this.isHumanEngine(name)) {
+          return {
+            key: name,
+            name: name,
+            hasBar: false,
+            noBar: true,
+            style: this.barStyle(0),
+            line1: 'không có token',
+            line2: runs + ' lượt do người làm',
+            title: name + ' · ' + runs + ' lượt do người làm · không có token',
+          };
+        }
+        var cache = (e.cache_read || e.cache_write)
+          ? (AB.fmtNum(e.cache_read) + ' / ' + AB.fmtNum(e.cache_write))
+          : '—';
+        // An engine without a price never reads `≈ $0`: the cost is unknown, not zero.
+        var line2 = (e.priced ? AB.fmtCost(e.cost) : 'chưa có giá') + ' · ' + runs + ' run';
+        return {
+          key: name,
+          name: name,
+          hasBar: true,
+          noBar: false,
+          style: this.barStyle((this.engineIo(e) / this.maxEngine) * 100),
+          line1: 'vào ' + AB.fmtNum(e.input) + ' · ra ' + AB.fmtNum(e.output),
+          line2: line2,
+          title: name + ' · cache ' + cache + (e.priced ? ' · ' + AB.fmtCost(e.cost) : ''),
+        };
+      },
+
+      get engineRows() {
+        var list = this.engineList;
+        var out = [];
+        for (var i = 0; i < list.length; i++) {
+          if (list[i]) out.push(this.engineRow(list[i]));
+        }
+        return out;
+      },
+
+      get hasEngineRows() {
+        return this.engineList.length > 0;
+      },
+
+      // QA rate: `qa_fix` of `qa_total` verdicts (Đạt or Cần sửa) per Dev engine.
+      get rateList() {
+        return (this.report && Array.isArray(this.report.qa_by_dev_engine)) ? this.report.qa_by_dev_engine : [];
+      },
+
+      get rateRows() {
+        var list = this.rateList;
+        var out = [];
+        for (var i = 0; i < list.length; i++) {
+          var q = list[i];
+          if (!q) continue;
+          var k = q.qa_fix || 0;
+          var n = q.qa_total || 0;
+          var pct = n > 0 ? (100 * k / n) : 0;
+          out.push({
+            key: q.engine,
+            name: q.engine,
+            style: this.barStyle(pct),
+            line1: window.AB.fmtPercent(k, n),
+            line2: k + ' / ' + n + ' lần QA',
+            title: q.engine + ' · ' + k + ' / ' + n + ' lần QA kết luận Cần sửa',
+          });
+        }
+        return out;
+      },
+
+      get hasRates() {
+        return this.rateList.length > 0;
+      },
+
+      get noRates() {
+        return !this.hasRates;
+      },
+
       colStyle: function (row) {
         var val = this.io(row);
         if (val <= 0) return { height: '0%' };

@@ -53,7 +53,7 @@
                   <span role="img" aria-label="Autopilot: đang chạy" :class="autoBadgeClass" x-show="showAutoBadge(t)"><span aria-hidden="true" class="w-6 text-center motion-safe:animate-pulse" x-text="autoBadgeGlyph"></span>Autopilot</span>
                 </div>
                 <div class="flex flex-wrap items-center gap-2">
-                  <span class="text-sm font-semibold leading-normal" x-show="t.banner" x-text="t.banner"></span>
+                  <span data-task-banner :class="bannerClass(t)" x-show="t.banner"><span aria-hidden="true" class="w-6 text-center" x-show="bannerHasGlyph(t)" x-text="bannerGlyph(t)"></span><span x-text="t.banner"></span></span>
                   <span class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="when(t)"></span>
                 </div>
                 <p data-reason-line class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="hasReason(t)" x-text="reasonText(t)"></p>
