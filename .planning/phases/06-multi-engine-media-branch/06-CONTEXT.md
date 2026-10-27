@@ -71,6 +71,13 @@ Requirements in this phase: ENG-01 … ENG-07, plus new requirement IDs for the 
 - **D-28:** Picking a team on Telegram to re-run a step needs a **second confirm tap** before anything runs.
 - **D-29:** While a human step is waiting (`Chờ <tên> làm`), changing the task's team is **refused**, the same as while a run is live.
 
+### Amendments during execution (user answers, 2026-10-27)
+- **D-30 (replaces the fixed DeepSeek engine of D-01/D-08 for 06-11):** Engines become a **user-defined list** in `config.json` `engines`: each entry has `id`, `kind`, `command`, and per kind its connection fields (`base_url`, `key_env`, `models` per role, `pricing`; agy: `dev_permission`, `print_timeout_margin_secs`, `model`). Teams name engines by `id` (plus the built-in `claude` and `người:<id>`). Several entries of the same kind are allowed (for example the user's company gateway `https://ai-gateway.vcadm.vn/proxyllm` and DeepSeek's official endpoint). The UI still only shows engines and their readiness (D-08 stays read-only); the list is edited in the file. Existing `engines.deepseek` / `engines.agy` objects must keep loading (migrate or accept both shapes).
+- **D-31:** Supported kinds now: **`anthropic`** (claude on the host pointed at an Anthropic-format endpoint, the D-01 mechanism, generalized) and **`agy`**. An OpenAI-format kind is **deferred** (needs a different agent CLI that edits files).
+- **D-32 (keeps D-03):** The file holds only the key's environment-variable **name** (`key_env`) per engine, never the key.
+- **D-33 (keeps D-07):** Engine entries **cannot name a Claude account or profile**; claude-family runs always use the project's profile. For gateway engines the "account" is the key alone.
+- **D-34:** E-09 evidence is still required per `anthropic` endpoint before it is trusted (tool use, stream-json, usage through that endpoint). The first one to probe is the user's gateway (`E09_BASE_URL`/`E09_MODEL` overrides of `spikes/e09/run.sh`), if it serves `/v1/messages`. Plan 06-11 is re-planned around D-30…D-34; 06-19 adjusts its DeepSeek checks to the engine list.
+
 ### Claude's Discretion
 - Behaviour when a task's team no longer exists in `teams.json` (the user left this to the planner).
 - Exact JSON shapes of `teams.json`, the engine entries in `config.json`, and the staff list. The planner can keep staff inside `teams.json` or put them in `staff.json`.
