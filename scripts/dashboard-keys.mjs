@@ -627,6 +627,87 @@ async function main() {
   }
   console.log('OK return-dialog');
 
+  // Check L (06-17), change-team dialog on task 1: Enter on `Đổi đội hình` opens it with focus on
+  // the selected radio (the current team, doi-thu), the primary is disabled with its reason while
+  // the selection is the current team, ArrowDown picks another team (primary enabled), Escape
+  // closes without any POST and focus returns to `Đổi đội hình`.
+  await evaluate('window.location.hash = "#/task/1"');
+  await waitFor(`
+    (() => {
+      if (!document.querySelector('[data-screen="task"][data-loaded="yes"]')) return false;
+      const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const btn = document.getElementById("ab-act-change_team");
+      return vis(btn) && !btn.disabled && btn.textContent.trim() === "Đổi đội hình";
+    })()
+  `, 5000, 'change-team', 'Không thấy nút "Đổi đội hình" (#ab-act-change_team) hiển thị và đang bật trên task/1');
+
+  const teamBefore = await evaluate(`
+    fetch('/api/tasks/1')
+      .then(r => r.json())
+      .then(d => ({ rev: d.rev, team: d.team ? d.team.name : null, history: Array.isArray(d.team_history) ? d.team_history.length : -1 }))
+  `);
+  await evaluate('document.getElementById("ab-act-change_team").focus()');
+  await pressKeyText('Enter', 'Enter', 13, '\r');
+  await waitFor(`
+    (() => {
+      const dlg = document.querySelector("[role=dialog][aria-labelledby=ab-tdlg-title]");
+      const open = Boolean(dlg && (dlg.offsetWidth || dlg.offsetHeight || dlg.getClientRects().length));
+      const a = document.activeElement;
+      return open && a && a.name === "dlg-team" && a.value === "doi-thu" && a.checked;
+    })()
+  `, 3000, 'change-team', 'Enter trên "Đổi đội hình" không mở dialog hoặc focus không ở radio doi-thu đang chọn');
+
+  const dlgState = await evaluate(`
+    (() => {
+      const ok = document.getElementById("ab-tdlg-ok");
+      const reason = document.getElementById("ab-tdlg-reason");
+      const chips = Array.from(document.querySelectorAll("[data-tdlg-option=doi-thu] span")).map(e => e.textContent.trim());
+      return {
+        title: document.getElementById("ab-tdlg-title").textContent.trim(),
+        okDisabled: ok.disabled,
+        okLabel: ok.textContent.trim(),
+        reason: reason ? reason.textContent.trim() : '',
+        current: chips.includes("đang dùng"),
+      };
+    })()
+  `);
+  if (dlgState.title !== 'Đổi đội hình cho task sua-app' || !dlgState.okDisabled || dlgState.okLabel !== 'Đổi đội hình'
+      || dlgState.reason !== 'Chọn đội hình khác đội hình hiện tại.' || !dlgState.current) {
+    throw new Error(`LỖI change-team: trạng thái dialog sai: ${JSON.stringify(dlgState)}`);
+  }
+
+  await pressKey('ArrowDown', 'ArrowDown', 40);
+  await waitFor(`
+    (() => {
+      const ok = document.getElementById("ab-tdlg-ok");
+      const a = document.activeElement;
+      return a && a.name === "dlg-team" && a.value !== "doi-thu" && a.checked && !ok.disabled;
+    })()
+  `, 2000, 'change-team', 'ArrowDown không chọn đội hình khác hoặc nút "Đổi đội hình" vẫn bị tắt');
+
+  await pressKey('Escape', 'Escape', 27);
+  await waitFor(
+    '!Array.from(document.querySelectorAll("[role=dialog]")).some(el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length))',
+    1000,
+    'change-team',
+    'dialog đổi đội hình vẫn hiển thị sau khi bấm Escape'
+  );
+  await waitFor(
+    'document.activeElement && document.activeElement.id === "ab-act-change_team"',
+    1500,
+    'change-team',
+    'Focus không trở về nút "Đổi đội hình" sau khi đóng dialog bằng Escape'
+  );
+  const teamAfter = await evaluate(`
+    fetch('/api/tasks/1')
+      .then(r => r.json())
+      .then(d => ({ rev: d.rev, team: d.team ? d.team.name : null, history: Array.isArray(d.team_history) ? d.team_history.length : -1 }))
+  `);
+  if (teamAfter.rev !== teamBefore.rev || teamAfter.team !== teamBefore.team || teamAfter.history !== teamBefore.history) {
+    throw new Error(`LỖI change-team: task 1 đã đổi sau Escape (${JSON.stringify(teamBefore)} → ${JSON.stringify(teamAfter)})`);
+  }
+  console.log('OK change-team');
+
   // Check H, Quy trình picker on Giao việc: ArrowDown moves the selection
   // from mac-dinh to nhanh (native radio group).
   await evaluate('window.location.hash = "#/assign"');

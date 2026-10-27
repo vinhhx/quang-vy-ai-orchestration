@@ -44,7 +44,7 @@
         <template x-for="a in bannerControls" :key="a.id">
           <div class="space-y-1">
             <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
-            <p :id="reasonId(a)" class="text-sm font-normal leading-normal whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
+            <p :id="reasonId(a)" class="text-sm font-normal leading-normal whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
             <p class="text-sm font-normal leading-normal break-words" x-show="moreRoundHelp(a)" x-text="moreRoundHelp(a)"></p>
           </div>
         </template>
@@ -62,13 +62,31 @@
         <template x-for="a in headerControls" :key="a.id">
           <div class="ml-auto space-y-1">
             <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
-            <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
+            <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
           </div>
         </template>
       </div>
 
       <div class="space-y-1">
         <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="workflowLine" x-text="workflowLine"></p>
+        <div data-team-line class="flex flex-wrap items-center gap-2" x-show="hasTeamLine">
+          <p class="min-w-0 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="teamLineText"></p>
+          <template x-for="a in teamControls" :key="a.id">
+            <div class="ml-auto space-y-1">
+              <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
+              <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
+            </div>
+          </template>
+        </div>
+        <p class="text-sm font-normal leading-normal text-amber-800 dark:text-amber-300 break-words" x-show="teamMissing" x-text="teamMissingText"></p>
+        <div class="space-y-1" x-show="hasTeamHistory">
+          <p class="text-sm font-semibold leading-normal text-slate-600 dark:text-slate-400">Lịch sử đổi đội hình</p>
+          <ul data-team-history aria-label="Lịch sử đổi đội hình" class="space-y-1">
+            <template x-for="(line, i) in teamHistoryLines" :key="i">
+              <li class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words tabular-nums" x-text="line"></li>
+            </template>
+          </ul>
+        </div>
         <p data-budget class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words tabular-nums" x-show="hasBudget"><span x-text="budgetText"></span><span x-show="budgetLevel"> · </span><span class="font-semibold text-amber-800 dark:text-amber-300" x-show="budgetLevel" x-text="budgetLevel"></span></p>
         <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="budgetNote" x-text="budgetNote"></p>
         <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="headerHelper" x-text="headerHelper"></p>
@@ -150,7 +168,7 @@
                 <template x-for="a in gateControls" :key="a.id">
                   <div class="space-y-1">
                     <button :id="actionId(a)" type="button" class="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl px-2 py-2 text-center text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
-                    <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
+                    <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
                   </div>
                 </template>
               </div>
@@ -238,7 +256,7 @@
           <template x-for="a in stripActions" :key="a.id">
             <div class="space-y-1">
               <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
-              <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="a.reason"></p>
+              <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
               <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="actionHelp(a)" x-text="actionHelp(a)"></p>
             </div>
           </template>
@@ -447,6 +465,43 @@
         <button id="ab-dlg-cancel" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="dialogCancel" x-text="dialogCancelLabel"></button>
         <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="dialogOkClass" @click="dialogOk" x-text="dialogOkLabel"></button>
       </div>
+    </div>
+  </div>
+
+  <!-- Team dialog: Đổi đội hình / Chạy lại bước hết quota -->
+  <div x-show="teamDlgOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-6">
+    <div role="dialog" aria-modal="true" aria-labelledby="ab-tdlg-title" aria-describedby="ab-tdlg-body" @keydown.escape="teamDlgCancel" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 w-full max-w-lg space-y-4">
+      <h2 id="ab-tdlg-title" class="text-xl font-semibold leading-[1.2] break-words" x-text="teamDlgTitle"></h2>
+      <p id="ab-tdlg-body" class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="teamDlgBody"></p>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="teamDlgLoading">Đang tải đội hình...</p>
+      <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 text-base font-normal leading-normal" x-show="teamDlgLoadFailed">Không tải được danh sách đội hình.</div>
+      <fieldset class="space-y-2 min-w-0 max-h-[60vh] overflow-y-auto" :disabled="teamDlgBusy">
+        <legend class="sr-only" x-text="teamDlgTitle"></legend>
+        <template x-for="t in teamDlgTeams" :key="t.name">
+          <label class="flex min-h-12 cursor-pointer items-start gap-2 rounded-xl p-4 motion-safe:transition-colors" :class="teamDlgOptionClass(t)" :data-tdlg-option="t.name">
+            <input type="radio" name="dlg-team" :id="teamDlgRadioId(t)" :value="t.name" :checked="teamDlgChecked(t)" @change="onTeamDlgChange" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+            <span class="block min-w-0 space-y-1">
+              <span class="flex flex-wrap items-center gap-2">
+                <span class="font-mono text-base font-semibold leading-normal break-all" x-text="t.name"></span>
+                <template x-for="c in teamDlgChips(t)" :key="c">
+                  <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="c"></span>
+                </template>
+              </span>
+              <span class="block text-base font-normal leading-normal break-words" x-text="t.description"></span>
+              <span class="block text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="t.summary"></span>
+              <template x-for="line in teamDlgReadinessLines(t)" :key="line">
+                <span class="block text-sm font-semibold leading-normal text-amber-900 dark:text-amber-200 break-words" x-text="line"></span>
+              </template>
+            </span>
+          </label>
+        </template>
+      </fieldset>
+      <div role="alert" class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-base font-normal leading-normal break-words" x-show="hasTeamDlgError" x-text="teamDlgError"></div>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button id="ab-tdlg-cancel" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="teamDlgBusy" @click="teamDlgCancel" x-text="teamDlgCancelLabel"></button>
+        <button id="ab-tdlg-ok" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="teamDlgOkDisabled" aria-describedby="ab-tdlg-reason" @click="teamDlgOk" x-text="teamDlgOkLabel"></button>
+      </div>
+      <p id="ab-tdlg-reason" class="text-right text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="hasTeamDlgReason" x-text="teamDlgReason"></p>
     </div>
   </div>
 

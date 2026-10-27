@@ -315,7 +315,7 @@ EOF
 # Task 1 (default mac-dinh workflow): one Review plan run that approved the
 # plan, and autopilot paused at the Bạn gate.
 python3 - "$AGENT_BRAIN_DB" <<'PYEOF'
-import sys, sqlite3
+import sys, sqlite3, json
 conn = sqlite3.connect(sys.argv[1], timeout=5)
 cur = conn.cursor()
 cur.execute("SELECT project_id, workflow_json FROM tasks WHERE id = 1")
@@ -350,6 +350,9 @@ if cur.rowcount < 1:
     print("Lỗi seeding: Lead run của task 1 không có dòng log nào", file=sys.stderr)
     sys.exit(1)
 cur.execute("UPDATE tasks SET auto_state = 'gate' WHERE id = 1")
+# 06-17: the task runs on `doi-thu` after one change made on the dashboard.
+team = {"name": "doi-thu", "history": [{"at": started_at, "by": "dashboard", "from": "mac-dinh", "to": "doi-thu"}]}
+cur.execute("UPDATE tasks SET team_json = ? WHERE id = 1", (json.dumps(team),))
 conn.commit()
 conn.close()
 PYEOF
@@ -610,6 +613,10 @@ class PipelineParser(HTMLParser):
         self.textareas = {}
         self.ledger_text = ''
         self.token_lines = []
+        self.team_line_text = ''
+        self.team_buttons = set()
+        self.team_history = []
+        self.strip_text = ''
         self.depth = 0
         self.captures = []
         self.current_card = None
@@ -643,6 +650,8 @@ class PipelineParser(HTMLParser):
                     self.banner_buttons.add(bid)
                 elif kind == 'strip':
                     self.strip_buttons.add(bid)
+                elif kind == 'teamline':
+                    self.team_buttons.add(bid)
 
         if tag == 'textarea' and 'id' in attr_dict:
             self.textareas[attr_dict['id']] = attr_dict
@@ -673,6 +682,13 @@ class PipelineParser(HTMLParser):
                 self.captures.append((self.depth, 'banner', len(self.banners) - 1))
             if 'data-action-strip' in attr_dict:
                 self.captures.append((self.depth, 'strip', None))
+            if 'data-team-line' in attr_dict:
+                self.captures.append((self.depth, 'teamline', None))
+            if 'data-team-history' in attr_dict:
+                self.captures.append((self.depth, 'teamhist', None))
+            if tag == 'li' and any(k == 'teamhist' for _, k, _ in self.captures):
+                self.team_history.append('')
+                self.captures.append((self.depth, 'teamitem', len(self.team_history) - 1))
             if 'data-ledger' in attr_dict:
                 self.captures.append((self.depth, 'ledger', None))
             if 'data-token-line' in attr_dict:
@@ -723,6 +739,12 @@ class PipelineParser(HTMLParser):
                     self.ledger_text += data
                 elif kind == 'token':
                     self.token_lines[ref]['text'] += data
+                elif kind == 'strip':
+                    self.strip_text += data
+                elif kind == 'teamline':
+                    self.team_line_text += data
+                elif kind == 'teamitem':
+                    self.team_history[ref] += data
             if self.in_chip:
                 self.chips[-1]['text'] += data
             if self.in_ledger_total:
@@ -957,6 +979,23 @@ for b in parser.banners:
         sys.exit(1)
 
 print("Pipeline DOM OK")
+
+# 06-17 team line: `Đội hình: {name} · {summary}`, one history line, the change button outside the strip.
+team_text = ' '.join(parser.team_line_text.split())
+if 'Đội hình: doi-thu' not in team_text:
+    print(f"Lỗi: data-team-line không chứa 'Đội hình: doi-thu' (nội dung: '{team_text}')", file=sys.stderr)
+    sys.exit(1)
+if 'Đổi đội hình' not in team_text or 'ab-act-change_team' not in parser.team_buttons:
+    print(f"Lỗi: thiếu nút 'Đổi đội hình' trong data-team-line (nút: {parser.team_buttons}, nội dung: '{team_text}')", file=sys.stderr)
+    sys.exit(1)
+history = [' '.join(t.split()) for t in parser.team_history]
+if len(history) != 1 or 'bạn qua dashboard: mac-dinh → doi-thu' not in history[0]:
+    print(f"Lỗi: lịch sử đổi đội hình không phải một dòng 'bạn qua dashboard: mac-dinh → doi-thu' (nhận được: {history})", file=sys.stderr)
+    sys.exit(1)
+if 'ab-act-change_team' in parser.strip_buttons or 'Đổi đội hình' in parser.strip_text:
+    print("Lỗi: 'Đổi đội hình' không được nằm trong dải hành động", file=sys.stderr)
+    sys.exit(1)
+print("OK task-team")
 
 if len(parser.ledger_rows) != 2:
     print(f"Lỗi: Số lượng data-ledger-row là {len(parser.ledger_rows)}, kỳ vọng 2", file=sys.stderr)
@@ -1482,5 +1521,5 @@ EOF
 
   stop_chrome
   cat "$TMP/keys.out"
-  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, picker, layout-5.2, board-keys, board-layout"
+  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, change-team, picker, layout-5.2, board-keys, board-layout"
 fi
