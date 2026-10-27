@@ -1,35 +1,87 @@
 {
   "_comment": "Ví dụ danh sách engine với lệnh chạy cụ thể (Phase 6, D-30..D-34). CHƯA dùng được: binary hiện tại chỉ đọc engines dạng object. {prompt}, {model}, {print_timeout}, {cwd} do agent-brain điền khi chạy. Key không bao giờ nằm trong file: chỉ ghi tên biến (key_env). stdin luôn là /dev/null.",
-
   "engines": [
     {
       "id": "claude",
       "kind": "anthropic",
       "label": "Claude theo profile của dự án (work = ~/.claude, personal = ~/.claude-orca)",
-      "command": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose",
-                  "--model", "{model}", "--max-turns", "{max_turns}", "--allowedTools", "{allowed_tools}",
-                  "--strict-mcp-config"],
-      "env": { "CLAUDE_CONFIG_DIR": "{project_profile_dir}" },
-      "models": { "lead": "opus", "dev": "sonnet", "qa": "sonnet", "plan-review": "opus", "code-review": "opus" }
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--model",
+        "{model}",
+        "--max-turns",
+        "{max_turns}",
+        "--allowedTools",
+        "{allowed_tools}",
+        "--strict-mcp-config"
+      ],
+      "env": {
+        "CLAUDE_CONFIG_DIR": "{project_profile_dir}"
+      },
+      "models": {
+        "lead": "opus",
+        "dev": "sonnet",
+        "qa": "sonnet",
+        "plan-review": "opus",
+        "code-review": "opus"
+      }
     },
     {
       "id": "claude-max",
       "kind": "anthropic",
-      "label": "Claude tài khoản Max cá nhân (cố định ~/.claude-orca) — XUNG ĐỘT D-33, xem _note",
-      "_note": "Ghim tài khoản vào engine nghĩa là dự án work có thể dùng quota cá nhân (trái D-07/D-33, ranh giới SPK-10). Chỉ giữ engine này nếu bạn sửa D-33.",
-      "command": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose",
-                  "--model", "{model}", "--max-turns", "{max_turns}", "--allowedTools", "{allowed_tools}",
-                  "--strict-mcp-config"],
-      "env": { "CLAUDE_CONFIG_DIR": "~/.claude-orca" },
-      "models": { "lead": "opus", "dev": "opus", "qa": "sonnet" }
+      "label": "Claude tài khoản Max cá nhân (~/.claude-orca) — chỉ cho dự án personal (D-36)",
+      "_note": "Đội hình dùng engine này trên dự án work sẽ bị từ chối (ranh giới SPK-10).",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--model",
+        "{model}",
+        "--max-turns",
+        "{max_turns}",
+        "--allowedTools",
+        "{allowed_tools}",
+        "--strict-mcp-config"
+      ],
+      "env": {
+        "CLAUDE_CONFIG_DIR": "~/.claude-orca"
+      },
+      "models": {
+        "lead": "opus",
+        "dev": "opus",
+        "qa": "sonnet"
+      },
+      "allowed_profiles": [
+        "personal"
+      ]
     },
     {
       "id": "vcadm-deepseek",
       "kind": "anthropic",
       "label": "DeepSeek qua gateway công ty (cần gateway có /v1/messages)",
-      "command": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose",
-                  "--model", "{model}", "--max-turns", "{max_turns}", "--allowedTools", "{allowed_tools}",
-                  "--strict-mcp-config"],
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--model",
+        "{model}",
+        "--max-turns",
+        "{max_turns}",
+        "--allowedTools",
+        "{allowed_tools}",
+        "--strict-mcp-config"
+      ],
       "base_url": "https://ai-gateway.vcadm.vn/proxyllm",
       "key_env": "VCADM_GATEWAY_KEY",
       "env": {
@@ -37,15 +89,31 @@
         "ANTHROPIC_AUTH_TOKEN": "${VCADM_GATEWAY_KEY}",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
       },
-      "models": { "lead": "deepseek/deepseek-reasoner", "dev": "deepseek/deepseek-chat", "qa": "deepseek/deepseek-chat" }
+      "models": {
+        "lead": "deepseek/deepseek-reasoner",
+        "dev": "deepseek/deepseek-chat",
+        "qa": "deepseek/deepseek-chat"
+      }
     },
     {
       "id": "agy",
       "kind": "agy",
       "label": "Antigravity headless (đăng nhập của bạn trên máy này)",
-      "command": ["timeout", "{outer_timeout}", "agy", "-p", "{prompt}", "--output-format", "stream-json",
-                  "--print-timeout", "{print_timeout}"],
-      "dev_extra_args": ["--mode", "accept-edits"],
+      "command": [
+        "timeout",
+        "{outer_timeout}",
+        "agy",
+        "-p",
+        "{prompt}",
+        "--output-format",
+        "stream-json",
+        "--print-timeout",
+        "{print_timeout}"
+      ],
+      "dev_extra_args": [
+        "--mode",
+        "accept-edits"
+      ],
       "stdout": "file",
       "print_timeout_margin_secs": 30,
       "model": null
@@ -53,10 +121,38 @@
     {
       "id": "dsh",
       "kind": "dsh",
-      "label": "DeepSeek qua container dsh (hộp đen) — kind chưa hỗ trợ (D-31), xem _note",
-      "_note": "S6: chỉ ra văn bản (không token, không stream-json), kill phải làm trong container. 'web' không có trong help của dsh (chỉ thấy --profile headless) — cho biết dsh web là profile/lệnh nào.",
-      "command": ["docker", "exec", "-w", "{cwd}", "dsh-deepseek-harness",
-                  "dsh", "--profile", "headless", "{prompt}"],
+      "label": "DeepSeek qua container dsh (hộp đen, D-35)",
+      "_note": "S6: chỉ văn bản, không token; kill trong container theo PID/marker, không theo tên. Xác nhận cờ profile 'web' trước khi lập kế hoạch.",
+      "command": [
+        "docker",
+        "exec",
+        "-w",
+        "{cwd}",
+        "dsh-deepseek-harness",
+        "dsh",
+        "--profile",
+        "{profile}",
+        "{prompt}"
+      ],
+      "stdout": "text",
+      "profile": "headless"
+    },
+    {
+      "id": "dsh-web",
+      "kind": "dsh",
+      "label": "dsh profile web (D-35)",
+      "profile": "web",
+      "command": [
+        "docker",
+        "exec",
+        "-w",
+        "{cwd}",
+        "dsh-deepseek-harness",
+        "dsh",
+        "--profile",
+        "{profile}",
+        "{prompt}"
+      ],
       "stdout": "text"
     }
   ]
