@@ -576,3 +576,407 @@ fn change_team_legacy_from_mac_dinh() {
     let stored: Value = serde_json::from_str(&team_json_of(&sb, 1).unwrap()).unwrap();
     assert_eq!(stored["name"], "doi-a");
 }
+
+// ---------------------------------------------------------------------------
+// Task 3: quota block, re-run with another team, step states, banner
+// ---------------------------------------------------------------------------
+
+fn init_event() -> Value {
+    json!({"type": "system", "subtype": "init", "session_id": "fake-quota", "model": "fake"})
+}
+
+fn rejected_rate_limit_event() -> Value {
+    json!({
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+            "status": "rejected",
+            "resetsAt": 1792310400,
+            "rateLimitType": "five_hour",
+            "isUsingOverage": false,
+            "overageStatus": "rejected"
+        },
+        "uuid": "u1",
+        "session_id": "fake-quota"
+    })
+}
+
+fn quota_result_event() -> Value {
+    json!({
+        "type": "result",
+        "subtype": "success",
+        "is_error": true,
+        "api_error_status": 429,
+        "terminal_reason": "blocking_limit",
+        "result": "You've hit your session limit",
+        "num_turns": 1,
+        "session_id": "fake-quota",
+        "total_cost_usd": 0,
+        "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0
+        },
+        "permission_denials": []
+    })
+}
+
+fn success_result_event() -> Value {
+    json!({
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "num_turns": 1,
+        "session_id": "fake-quota",
+        "total_cost_usd": 0,
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0
+        },
+        "permission_denials": []
+    })
+}
+
+fn write_op(path: &str, content: &str) -> Value {
+    json!({"op": "write", "path": path, "content": content})
+}
+
+/// A claude run that writes `ops` and then hits the quota wall (exit 1, outcome `quota`).
+fn quota_entry(ops: Vec<Value>) -> Value {
+    json!({
+        "ops": ops,
+        "events": [init_event(), rejected_rate_limit_event(), quota_result_event()],
+        "exit_code": 1,
+    })
+}
+
+fn ok_entry(ops: Vec<Value>) -> Value {
+    json!({
+        "ops": ops,
+        "events": [init_event(), success_result_event()],
+        "exit_code": 0,
+    })
+}
+
+fn by_role(roles: Value) -> Value {
+    json!({ "by_role": roles })
+}
+
+fn review_entry(file: &str, verdict: &str, blocking: i64, advisory: i64) -> Value {
+    let mut body = format!(
+        "---\nverdict: {verdict}\nblocking: {blocking}\nadvisory: {advisory}\nfiles: []\n---\n# Review: sửa app\n## Mục chặn (blocking)\n"
+    );
+    for i in 0..blocking {
+        body.push_str(&format!("- mục chặn {}\n", i + 1));
+    }
+    body.push_str("## Góp ý (advisory)\n");
+    for i in 0..advisory {
+        body.push_str(&format!("- góp ý {}\n", i + 1));
+    }
+    json!({"ops": [{"op": "write", "path": file, "content": body}]})
+}
+
+fn dev_impl_entry() -> Value {
+    json!({"ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "read", "path": "src/app.py"},
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+        {"op": "git", "args": ["add", "src/app.py"]},
+        {"op": "git", "args": ["commit", "-m", "sua-app: sửa app"]}
+    ]})
+}
+
+fn qa_ok_entry() -> Value {
+    let report = "# QA: sửa app\n## Thay đổi có khớp plan không (từng mục)\n- src/app.py: đã xem.\n## Sửa ngoài plan (nếu có)\nKhông.\n## Rủi ro\nKhông.\n## Kết luận\nĐạt\n";
+    json!({"ops": [{"op": "write", "path": ".qa-report.md", "content": report}]})
+}
+
+/// teams.json with `doi-a` and `doi-b`, both all-claude, so a re-run on either needs no key.
+fn write_doi_a_b(sb: &Sandbox) {
+    sb.write_teams(json!({
+        "doi-a": {"description": "Toàn claude, đội A", "roles": {}},
+        "doi-b": {"description": "Toàn claude, đội B", "roles": {}}
+    }));
+}
+
+fn latest_run_id(sb: &Sandbox, role: &str) -> i64 {
+    sb.db()
+        .query_row(
+            "SELECT id FROM runs WHERE role = ?1 ORDER BY id DESC LIMIT 1",
+            [role],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|e| panic!("no {role} run: {e}"))
+}
+
+fn run_summary(sb: &Sandbox) -> Vec<(String, String, Option<String>)> {
+    sb.db()
+        .prepare("SELECT role, status, outcome FROM runs ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+/// Manual task on team `doi-a`: Lead planned, then a Dev run through the dashboard that wrote part
+/// of `src/app.py` and hit the quota wall. The second queued Dev entry completes the work.
+fn manual_dev_quota(sb: &Sandbox) -> (std::path::PathBuf, Serve) {
+    write_doi_a_b(sb);
+    let repo = cli_lead_task_with(sb, Some("doi-a"));
+    sb.write_scenario(by_role(json!({
+        "dev": [
+            quota_entry(vec![write_op("src/app.py", "phần 1")]),
+            ok_entry(vec![write_op("src/app.py", "def app():\n    return 3\n")]),
+        ]
+    })));
+    let srv = sb.serve(&[]);
+    let resp = srv.post_json("/api/tasks/1/dev", &json!({}));
+    assert_eq!(resp.status, 202, "body: {}", resp.text());
+    let job = wait_for_job(&srv, resp.json()["job_id"].as_u64().unwrap());
+    assert_eq!(job["exit_code"], 5, "the quota stop exits 5: {job}");
+    (repo, srv)
+}
+
+#[test]
+fn quota_payload_and_rerun_manual() {
+    let sb = Sandbox::new();
+    let (repo, srv) = manual_dev_quota(&sb);
+    let dev_id = latest_run_id(&sb, "dev");
+
+    let task = srv.get("/api/tasks/1").json();
+    assert_eq!(
+        task["quota"],
+        json!({
+            "run_id": dev_id,
+            "role": "dev",
+            "stage": "implement",
+            "step_name": "Code",
+            "engine": "claude",
+            "detail": format!("Run {dev_id} (dev) trên engine claude dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine."),
+            "retry_label": "Chạy Dev"
+        }),
+        "task: {task}"
+    );
+    assert_eq!(task["banner"], "Chờ bạn · hết quota");
+    assert_eq!(task["group"], "waiting");
+    assert_eq!(task["steps"][1]["state"], "het_quota");
+    assert_eq!(task["steps"][1]["label"], "hết quota");
+    assert_eq!(action_of(&task, "quota_rerun")["enabled"], true);
+    assert_eq!(
+        action_of(&task, "quota_rerun")["label"],
+        "Chạy lại bước này bằng đội hình…"
+    );
+    // `Thử lại sau` writes nothing: the regular action stays enabled on the dirty tree.
+    let run_dev = action_of(&task, "run_dev");
+    assert_eq!(run_dev["enabled"], true, "run_dev: {run_dev}");
+    assert!(!sb.git(&repo, &["status", "--porcelain"]).trim().is_empty());
+    // Nothing switched the team on its own (D-16).
+    assert_eq!(task["team"]["name"], "doi-a");
+    assert_eq!(task["team_history"], json!([]));
+
+    let resp = srv.post_json(
+        "/api/tasks/1/quota-rerun",
+        &json!({"team": "doi-b", "rev": task["rev"]}),
+    );
+    assert_eq!(resp.status, 202, "body: {}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().expect("job_id");
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "job: {job}");
+
+    let runs = run_summary(&sb);
+    let devs: Vec<_> = runs.iter().filter(|r| r.0 == "dev").collect();
+    assert_eq!(devs.len(), 2, "runs: {runs:?}");
+    assert_eq!(devs[0].2.as_deref(), Some("quota"));
+    assert_eq!(devs[1].1, "succeeded", "runs: {runs:?}");
+
+    let after = srv.get("/api/tasks/1").json();
+    assert_eq!(after["team"]["name"], "doi-b");
+    let history = after["team_history"].as_array().unwrap();
+    assert_eq!(history.len(), 1, "history: {history:?}");
+    assert_eq!(history[0]["by"], "dashboard");
+    assert_eq!(history[0]["from"], "doi-a");
+    assert_eq!(history[0]["to"], "doi-b");
+    assert_eq!(after["quota"], Value::Null);
+    assert_ne!(after["banner"], "Chờ bạn · hết quota");
+}
+
+#[test]
+fn quota_rerun_same_team_records_history() {
+    let sb = Sandbox::new();
+    let (_repo, srv) = manual_dev_quota(&sb);
+
+    // The user chose to retry on the same engine through the picker: the entry is written.
+    let resp = srv.post_json("/api/tasks/1/quota-rerun", &json!({"team": "doi-a"}));
+    assert_eq!(resp.status, 202, "body: {}", resp.text());
+    let job = wait_for_job(&srv, resp.json()["job_id"].as_u64().unwrap());
+    assert_eq!(job["exit_code"], 0, "job: {job}");
+
+    let after = srv.get("/api/tasks/1").json();
+    assert_eq!(after["team"]["name"], "doi-a");
+    let history = after["team_history"].as_array().unwrap();
+    assert_eq!(history.len(), 1, "history: {history:?}");
+    assert_eq!(history[0]["from"], "doi-a");
+    assert_eq!(history[0]["to"], "doi-a");
+    assert_eq!(history[0]["by"], "dashboard");
+}
+
+#[test]
+fn quota_rerun_refused_without_quota() {
+    let sb = Sandbox::new();
+    write_doi_a_b(&sb);
+    cli_lead_task_with(&sb, Some("doi-a"));
+    let srv = sb.serve(&[]);
+    let stored_before = team_json_of(&sb, 1);
+
+    let task = srv.get("/api/tasks/1").json();
+    assert_eq!(task["quota"], Value::Null);
+    let action = action_of(&task, "quota_rerun");
+    assert_eq!(action["enabled"], false);
+    assert_eq!(
+        action["reason"],
+        "Chỉ chạy lại khi bước gần nhất dừng vì hết quota."
+    );
+
+    let resp = srv.post_json("/api/tasks/1/quota-rerun", &json!({"team": "doi-b"}));
+    assert_eq!(resp.status, 409, "body: {}", resp.text());
+    assert_eq!(
+        resp.json()["error"],
+        "Chỉ chạy lại khi bước gần nhất dừng vì hết quota."
+    );
+    assert_eq!(team_json_of(&sb, 1), stored_before, "no write on a refusal");
+
+    // A missing task.
+    let resp = srv.post_json("/api/tasks/999/quota-rerun", &json!({"team": "doi-b"}));
+    assert_eq!(resp.status, 404, "body: {}", resp.text());
+}
+
+#[test]
+fn quota_rerun_refuses_unknown_team_and_stale_rev() {
+    let sb = Sandbox::new();
+    let (_repo, srv) = manual_dev_quota(&sb);
+    let stored_before = team_json_of(&sb, 1);
+    let runs_before = run_summary(&sb).len();
+
+    let resp = srv.post_json("/api/tasks/1/quota-rerun", &json!({"team": "khong-co"}));
+    assert_eq!(resp.status, 422, "body: {}", resp.text());
+    assert!(resp.json()["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Không có đội hình 'khong-co'"));
+
+    let resp = srv.post_json(
+        "/api/tasks/1/quota-rerun",
+        &json!({"team": "doi-b", "rev": "0000000000000000"}),
+    );
+    assert_eq!(resp.status, 409, "body: {}", resp.text());
+    assert_eq!(resp.json()["kind"], "stale");
+
+    // Nothing changed: no team write, no new run, the quota stop is still shown.
+    assert_eq!(team_json_of(&sb, 1), stored_before);
+    assert_eq!(run_summary(&sb).len(), runs_before);
+    assert_eq!(
+        srv.get("/api/tasks/1").json()["banner"],
+        "Chờ bạn · hết quota"
+    );
+}
+
+#[test]
+fn quota_rerun_autopilot_starts_auto() {
+    let sb = Sandbox::new();
+    write_doi_a_b(&sb);
+    // An entry without `workflow`: the server default (mac-dinh, autopilot on).
+    let repo = sb.make_repo(
+        "web-ban-hang",
+        &[("src/app.py", "def app():\n    return 1\n")],
+        None,
+        None,
+    );
+    let mut entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    entry.as_object_mut().unwrap().remove("workflow");
+    sb.write_map(json!([entry]), &[]);
+
+    let res = sb.run(
+        &[
+            "auto",
+            "--start",
+            "--name",
+            "sua-app",
+            "--team",
+            "doi-a",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(by_role(json!({
+            "lead": [protocol::lead_scenario(&[("src/app.py", "app()", "trả về 2", "demo")])],
+            "plan-review": [review_entry(".plan-review.md", "approve", 0, 1)],
+        }))),
+    );
+    assert_eq!(res.code, 0, "auto --start: {}\n{}", res.stderr, res.stdout);
+    // Approve; the driver runs Dev, whose stream hits the quota wall and stops with het_quota.
+    let res = sb.run(
+        &["approve", "1"],
+        Some(by_role(json!({"dev": [quota_entry(vec![])]}))),
+    );
+    assert_eq!(
+        res.code, 4,
+        "driver stop exits 4: {}\n{}",
+        res.stderr, res.stdout
+    );
+
+    // The rest of the flow, for the re-run.
+    sb.write_scenario(by_role(json!({
+        "dev": [dev_impl_entry()],
+        "code-review": [review_entry(".code-review.md", "pass", 0, 1)],
+        "qa": [qa_ok_entry()],
+    })));
+    let srv = sb.serve(&[]);
+
+    let task = srv.get("/api/tasks/1").json();
+    assert_eq!(task["auto"]["state"], "stopped", "task: {task}");
+    assert_eq!(task["quota"]["role"], "dev");
+    assert_eq!(task["quota"]["retry_label"], "Chạy thêm 1 vòng");
+    assert_eq!(task["banner"], "Chờ bạn · hết quota");
+    assert_eq!(action_of(&task, "quota_rerun")["enabled"], true);
+
+    let resp = srv.post_json(
+        "/api/tasks/1/quota-rerun",
+        &json!({"team": "doi-b", "rev": task["rev"]}),
+    );
+    assert_eq!(resp.status, 202, "body: {}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().unwrap();
+    assert_eq!(
+        srv.get(&format!("/api/jobs/{job_id}")).json()["role"],
+        "auto"
+    );
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "job: {job}");
+
+    let after = srv.get("/api/tasks/1").json();
+    assert_eq!(after["team"]["name"], "doi-b");
+    assert_eq!(after["team_history"][0]["from"], "doi-a");
+    assert_eq!(after["team_history"][0]["to"], "doi-b");
+    assert_eq!(after["quota"], Value::Null);
+    assert_eq!(after["auto"]["state"], "done", "task: {after}");
+}
+
+#[test]
+fn overview_quota_banner() {
+    let sb = Sandbox::new();
+    let (_repo, srv) = manual_dev_quota(&sb);
+
+    let list = srv.get("/api/tasks").json();
+    let task = list["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == 1)
+        .expect("task 1 in the list")
+        .clone();
+    assert_eq!(task["banner"], "Chờ bạn · hết quota", "task: {task}");
+    assert_eq!(task["group"], "waiting");
+    assert_eq!(task["steps"][1]["state"], "het_quota");
+}
