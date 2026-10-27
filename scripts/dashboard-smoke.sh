@@ -218,6 +218,29 @@ cat << EOF > "$TMP/xdg_config/agent-brain/projects_map.json"
 }
 EOF
 
+# Cài đặt fixtures (06-08): one custom team and one staff entry under the private config dir.
+cat << 'EOF' > "$TMP/xdg_config/agent-brain/teams.json"
+{
+  "doi-thu": {
+    "description": "Đội hình thử cho smoke.",
+    "roles": {
+      "lead": "claude",
+      "dev": "deepseek",
+      "qa": "claude",
+      "plan-review": "claude",
+      "code-review": "claude"
+    }
+  }
+}
+EOF
+cat << 'EOF' > "$TMP/xdg_config/agent-brain/staff.json"
+{
+  "ha": {
+    "display_name": "Hà"
+  }
+}
+EOF
+
 cat << EOF > "$TMP/brain_config.json"
 {
   "claude_bin": "$REPO_ROOT/tests/fakes/fake_claude.py",
@@ -486,6 +509,7 @@ for s in "${SCREENS[@]}"; do
     stats) HASH="#/stats" ;;
     projects) HASH="#/projects" ;;
     board) HASH="#/board" ;;
+    settings) HASH="#/settings" ;;
     *)
       echo "Lỗi: Màn hình không xác định: $s" >&2
       exit 1
@@ -967,7 +991,7 @@ EOF
   fi
 
   # DOM assertions for the Giao việc, Dự án and Tổng quan screens (Phase 5.2).
-  if [[ "$s" == "assign" || "$s" == "projects" || "$s" == "overview" || "$s" == "board" ]]; then
+  if [[ "$s" == "assign" || "$s" == "projects" || "$s" == "overview" || "$s" == "board" || "$s" == "settings" ]]; then
     if ! python3 - "$DOM_OUT" "$s" <<'EOF'
 import sys
 from html.parser import HTMLParser
@@ -1249,6 +1273,44 @@ if screen == 'board':
         if 'ring-yellow' in (node.attrs.get('class') or ''):
             fail(f"Thẻ {key} có vòng vàng ring-yellow; đường găng chỉ vẽ bằng đường kẻ")
     print("Board DOM OK")
+    sys.exit(0)
+
+if screen == 'settings':
+    def collapse(t):
+        return ' '.join(t.split())
+
+    screens = root.find(lambda n: n.attrs.get('data-screen') == 'settings')
+    if len(screens) != 1:
+        fail(f"Số phần tử data-screen=\"settings\" là {len(screens)}, kỳ vọng 1")
+    if screens[0].attrs.get('data-loaded') != 'yes':
+        fail(f"data-loaded của màn hình Cài đặt là '{screens[0].attrs.get('data-loaded')}', kỳ vọng 'yes'")
+    rows = {n.attrs.get('data-team-row') for n in root.find(lambda n: 'data-team-row' in n.attrs)}
+    for name in ('mac-dinh', 'tiet-kiem', 'doi-thu'):
+        if name not in rows:
+            fail(f"Thiếu hàng đội hình data-team-row=\"{name}\" (có: {sorted(rows)})")
+    if 'Đội hình và quy trình là hai danh sách riêng' not in collapse(full_text):
+        fail("Màn hình Cài đặt thiếu quy tắc đặt tên 'Đội hình và quy trình là hai danh sách riêng'")
+    navs = root.find(lambda n: n.tag == 'nav' and n.attrs.get('aria-label') == 'Mục cài đặt')
+    if len(navs) != 1:
+        fail(f"Số nav 'Mục cài đặt' là {len(navs)}, kỳ vọng 1")
+    sub = [collapse(b.text()) for b in navs[0].find(lambda n: n.tag == 'button')]
+    if sub != ['Đội hình', 'Quy trình', 'Nhân sự', 'Engine']:
+        fail(f"Các nút của nav 'Mục cài đặt' là {sub}, kỳ vọng ['Đội hình', 'Quy trình', 'Nhân sự', 'Engine']")
+    current = [collapse(b.text()) for b in navs[0].find(lambda n: n.tag == 'button' and n.attrs.get('aria-current') == 'true')]
+    if current != ['Đội hình']:
+        fail(f"Nút nav đang chọn là {current}, kỳ vọng ['Đội hình']")
+    main_nav = root.find(lambda n: n.tag == 'nav' and n.attrs.get('aria-label') == 'Điều hướng chính')
+    if len(main_nav) != 1:
+        fail(f"Số nav 'Điều hướng chính' là {len(main_nav)}, kỳ vọng 1")
+    links = main_nav[0].find(lambda n: n.tag == 'a')
+    if len(links) != 6:
+        fail(f"Menu chính có {len(links)} mục, kỳ vọng 6")
+    link = [n for n in links if n.attrs.get('href') == '#/settings']
+    if len(link) != 1 or link[0].attrs.get('aria-current') != 'page':
+        fail(f"Liên kết menu #/settings thiếu aria-current=page (nhận được: {[n.attrs.get('aria-current') for n in link]})")
+    if collapse(link[0].text()) != 'Cài đặt':
+        fail(f"Liên kết menu #/settings có nhãn '{collapse(link[0].text())}', kỳ vọng 'Cài đặt'")
+    print("OK settings-shell")
     sys.exit(0)
 
 print(f"Không có kiểm tra DOM cho {screen}")

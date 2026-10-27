@@ -1,0 +1,61 @@
+<section data-screen="settings" x-data="settings" :data-loaded="loadedAttr" class="space-y-6">
+  <div class="flex flex-wrap items-center gap-4">
+    <h1 class="text-2xl font-semibold leading-[1.2]">Cài đặt</h1>
+    <button type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="reloading" @click="reload" x-text="reloadLabel">Đọc lại</button>
+  </div>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đội hình, quy trình và nhân sự lưu trong ~/.config/agent-brain/ và vẫn sửa tay được trong editor; sửa tay xong bấm Đọc lại. Engine chỉ xem.</p>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đội hình và quy trình là hai danh sách riêng nên được trùng tên (ví dụ mac-dinh). Mọi nơi hiện tên đều ghi rõ là đội hình hay quy trình.</p>
+
+  <nav aria-label="Mục cài đặt" class="flex flex-wrap gap-2">
+    <template x-for="s in sections" :key="s.id">
+      <button type="button" class="inline-flex min-h-12 items-center rounded-xl px-4 py-2 text-sm font-semibold motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="navClass(s)" :aria-current="navCurrent(s)" @click="pickSection(s)" x-text="s.label"></button>
+    </template>
+  </nav>
+
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" aria-live="polite" data-settings-status x-text="statusText"></p>
+
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="stale">Không cập nhật được — đang thử lại...</p>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isLoading">Đang tải...</p>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="hasError">
+    <h2 class="text-xl font-semibold leading-[1.2]">Không tải được dữ liệu</h2>
+    <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="errorBody"></p>
+    <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="retry">Thử lại</button>
+  </div>
+
+  <div data-settings-section="teams" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-6" x-show="isTeamsSection">
+    <div class="flex flex-wrap items-center gap-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Đội hình</h2>
+    </div>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đội hình chọn engine chạy cho từng vai trò của task. Mỗi dự án có đội hình mặc định (khóa team trong projects_map.json, không có thì mac-dinh); khi giao việc có thể chọn đội hình khác cho riêng task đó.</p>
+    <ul class="space-y-4">
+      <template x-for="t in teamRows" :key="t.name">
+        <li :data-team-row="t.name" class="space-y-2 rounded-xl p-4 ring-1 ring-slate-200 dark:ring-slate-700">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-mono text-base font-semibold leading-normal break-all" x-text="t.name"></span>
+            <template x-for="c in t.chips" :key="c">
+              <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="c"></span>
+            </template>
+          </div>
+          <p class="text-base font-normal leading-normal break-words" x-text="t.description"></p>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="t.summary"></p>
+        </li>
+      </template>
+    </ul>
+  </div>
+
+  <div data-settings-section="workflows" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-6" x-show="isWorkflowsSection">
+    <h2 class="text-xl font-semibold leading-[1.2]">Quy trình</h2>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đang tải...</p>
+  </div>
+
+  <div data-settings-section="staff" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-6" x-show="isStaffSection">
+    <h2 class="text-xl font-semibold leading-[1.2]">Nhân sự</h2>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đang tải...</p>
+  </div>
+
+  <div data-settings-section="engines" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-6" x-show="isEnginesSection">
+    <h2 class="text-xl font-semibold leading-[1.2]">Engine</h2>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đang tải...</p>
+  </div>
+</section>

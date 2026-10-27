@@ -405,6 +405,7 @@
       task: 'Chi tiết task',
       stats: 'Thống kê',
       projects: 'Dự án',
+      settings: 'Cài đặt',
       board: 'Bảng công việc',
     };
 
@@ -424,6 +425,9 @@
       }
       if (h === '#/board') {
         return { name: 'board', params: {} };
+      }
+      if (h === '#/settings') {
+        return { name: 'settings', params: {} };
       }
       var m = h.match(/^#\/task\/(\d+)$/);
       if (m) {
