@@ -45,12 +45,60 @@ fn one_line(s: &str) -> String {
     joined.chars().take(DETAIL_MAX_CHARS).collect()
 }
 
-/// First line of `s` that matches the quota phrases, in one line.
-fn first_matching_line(s: &str) -> String {
+/// First line of `s` that matches `re`, in one line.
+fn first_matching_line(s: &str, re: &Regex) -> String {
     s.lines()
-        .find(|l| text_matches(l))
+        .find(|l| re.is_match(l))
         .map(one_line)
         .unwrap_or_else(|| one_line(s))
+}
+
+fn agy_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)(\b429\b|resource_exhausted|resource has been exhausted|quota|rate limit|usage limit|credits)",
+        )
+        .expect("agy quota regex")
+    })
+}
+
+/// Quota decision for an agy run, from its `result` event (`status`, `error`), the exit code and
+/// the stderr tail. A `SUCCESS` result is never a stop. A failure is `status == ERROR`, or no
+/// status and a non-zero exit; it is a quota stop when `error` (first) or the stderr tail names
+/// HTTP 429 / RESOURCE_EXHAUSTED / quota / rate or usage limits / credits. The agy quota shape is
+/// undocumented (research A5): this is a community-evidence rule until a real stop is captured.
+pub fn detect_agy(
+    status: Option<&str>,
+    error: Option<&str>,
+    exit_code: Option<i32>,
+    stderr_tail: &str,
+) -> Option<QuotaHit> {
+    if status == Some("SUCCESS") {
+        return None;
+    }
+    let failed = status == Some("ERROR") || (status.is_none() && exit_code.unwrap_or(0) != 0);
+    if !failed {
+        return None;
+    }
+    let re = agy_regex();
+    if let Some(e) = error {
+        if re.is_match(e) {
+            return Some(QuotaHit {
+                signal: "agy.result.error",
+                detail: one_line(e),
+                reset_at_ms: None,
+            });
+        }
+    }
+    if re.is_match(stderr_tail) {
+        return Some(QuotaHit {
+            signal: "agy.stderr",
+            detail: first_matching_line(stderr_tail, re),
+            reset_at_ms: None,
+        });
+    }
+    None
 }
 
 /// Quota decision for a claude-format run (claude and deepseek engines).
@@ -125,7 +173,7 @@ pub fn detect_claude(s: &Summary, exit_code: Option<i32>, stderr_tail: &str) -> 
         if exit_code.unwrap_or(0) != 0 && text_matches(stderr_tail) {
             return Some(QuotaHit {
                 signal: "stderr",
-                detail: first_matching_line(stderr_tail),
+                detail: first_matching_line(stderr_tail, text_regex()),
                 reset_at_ms: None,
             });
         }
@@ -389,6 +437,49 @@ mod tests {
         ] {
             assert!(!text_matches(no), "{no}");
         }
+    }
+
+    #[test]
+    fn detect_agy_rules() {
+        let hit = detect_agy(
+            Some("ERROR"),
+            Some("HTTP 429 RESOURCE_EXHAUSTED: Resource has been exhausted (e.g. check quota)."),
+            Some(1),
+            "",
+        )
+        .expect("hit");
+        assert_eq!(hit.signal, "agy.result.error");
+        assert!(hit.detail.contains("RESOURCE_EXHAUSTED"));
+        assert_eq!(hit.reset_at_ms, None);
+
+        let hit = detect_agy(None, None, Some(1), "429 Too Many Requests").expect("hit");
+        assert_eq!(hit.signal, "agy.stderr");
+        assert_eq!(hit.detail, "429 Too Many Requests");
+
+        // An error that does not name a limit falls through to the stderr tail.
+        let hit = detect_agy(
+            Some("ERROR"),
+            Some("model not found"),
+            Some(1),
+            "boot\nquota exceeded for project\n",
+        )
+        .expect("hit");
+        assert_eq!(hit.signal, "agy.stderr");
+        assert_eq!(hit.detail, "quota exceeded for project");
+
+        // A successful result is never a stop, whatever stderr says.
+        assert_eq!(detect_agy(Some("SUCCESS"), None, Some(0), "quota"), None);
+        // Unrelated errors and clean exits are not stops.
+        assert_eq!(
+            detect_agy(Some("ERROR"), Some("model not found"), Some(1), ""),
+            None
+        );
+        assert_eq!(detect_agy(None, None, Some(0), "quota"), None);
+        assert_eq!(
+            detect_agy(Some("CANCELED"), Some("quota"), Some(1), "quota"),
+            None
+        );
+        assert_eq!(detect_agy(None, None, None, "429"), None);
     }
 
     #[test]

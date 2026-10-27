@@ -585,13 +585,19 @@ fn eng03_rerun_continues_partial_diff() {
 fn eng03_dirty_outside_plan_refused() {
     let sb = Sandbox::new();
     let repo = setup_lead_task(&sb);
-    queue_quota_then_ok(
-        &sb,
-        vec![
-            write_op("src/app.py", "phần 1"),
-            write_op("ngoai-plan.txt", "ngoài plan"),
-        ],
-    );
+    // The fake would block a write outside the plan through the guard hook; the point of this
+    // test is a tree that is already dirty outside the plan, so the first run ignores hooks.
+    let mut first_entry = quota_entry(vec![
+        write_op("src/app.py", "phần 1"),
+        write_op("ngoai-plan.txt", "ngoài plan"),
+    ]);
+    first_entry["ignore_hooks"] = json!(true);
+    sb.write_scenario(by_role(json!({
+        "dev": [
+            first_entry,
+            ok_entry(vec![write_op("src/app.py", "def app():\n    return 3\n")]),
+        ]
+    })));
 
     let first = run_dev_queued(&sb);
     assert_eq!(first.code, 5, "stderr: {}", first.stderr);
@@ -654,6 +660,28 @@ fn eng03_handover_included() {
     );
     let repo_str = repo.to_string_lossy();
     assert!(argv.contains(&format!("Read(/{repo_str}/.handover.md)")));
+
+    // The guard may read the handover file but never write it.
+    let settings_at = argv.iter().position(|a| a == "--settings").unwrap() + 1;
+    let policy_path = PathBuf::from(&argv[settings_at]).with_file_name("policy.json");
+    let policy: Value =
+        serde_json::from_str(&std::fs::read_to_string(&policy_path).unwrap()).unwrap();
+    let ends_with_handover = |list: &Value| {
+        list.as_array()
+            .map(|a| {
+                a.iter()
+                    .any(|p| p.as_str().is_some_and(|s| s.ends_with("/.handover.md")))
+            })
+            .unwrap_or(false)
+    };
+    assert!(
+        ends_with_handover(&policy["read_allow"]),
+        "policy: {policy}"
+    );
+    assert!(
+        !ends_with_handover(&policy["write_allow"]),
+        "policy: {policy}"
+    );
 
     // The handover file is context, not a deliverable: never committed, never a violation.
     assert!(
