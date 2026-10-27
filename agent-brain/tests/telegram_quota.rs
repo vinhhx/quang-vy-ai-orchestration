@@ -449,5 +449,293 @@ fn quota_two_tap_rerun() {
     assert_eq!(last["by"], "telegram", "{team}");
     assert_eq!(last["to"], "doi-b", "{team}");
     assert_eq!(env.srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
-    let _ = STRANGER_CHAT;
+}
+
+// ---------------------------------------------------------------------------
+// Task 2: stale list or rev, cancel, later, Telegram-origin rule, strangers
+// ---------------------------------------------------------------------------
+
+const REFUSED: &str = "Task giao từ Telegram — chỉ duyệt plan trên dashboard";
+const TEAMS_CHANGED: &str = "Danh sách đội hình đã đổi — chọn lại.";
+
+fn approved_commit(sb: &Sandbox, task_id: i64) -> Option<String> {
+    sb.db()
+        .query_row(
+            "SELECT approved_commit FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+fn wait_offset(tg: &FakeTelegram, srv: &Serve, offset: i64) {
+    assert!(
+        wait_until(Duration::from_secs(10), || tg
+            .calls("getUpdates")
+            .iter()
+            .any(|r| r["json"]["offset"].as_i64() == Some(offset))),
+        "no getUpdates with offset {offset}; stderr:\n{}",
+        stderr_of(srv)
+    );
+}
+
+fn stop(mut env: Env) {
+    assert_eq!(env.srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+fn wait_dev_succeeded(env: &Env) {
+    assert!(
+        wait_until(Duration::from_secs(60), || {
+            env.sb
+                .db()
+                .query_row(
+                    "SELECT COUNT(*) FROM runs WHERE role = 'dev' AND status = 'succeeded'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                == 1
+        }),
+        "the re-run did not finish; stderr:\n{}",
+        stderr_of(&env.srv)
+    );
+}
+
+#[test]
+fn quota_stale_team_list() {
+    let env = setup_quota(None);
+    let m = message_id_of(&env.quota);
+    let team_before = team_json_of(&env.sb, 1);
+    let runs_before = run_count(&env.sb);
+    let old_pick = button_data(&env.quota, "Đội hình doi-b");
+
+    // A team is added after the buttons were sent: the old list is no longer the server's.
+    env.sb.write_teams(json!({
+        "doi-b": {"description": "Toàn claude, đội B", "roles": {}},
+        "doi-c": {"description": "Toàn claude, đội C", "roles": {}}
+    }));
+    let cb = press(&env.tg, &env.quota, "Đội hình doi-b");
+    let ans = wait_answer(&env.tg, &env.srv, &cb);
+    assert_eq!(ans["json"]["text"], json!(TEAMS_CHANGED), "{ans}");
+    let fresh = wait_edit(&env.tg, &env.srv, m, |r| {
+        labels(r).iter().any(|l| l == "Đội hình doi-c")
+    });
+    assert!(
+        text_of(&fresh).starts_with("Hết quota engine claude · task 1"),
+        "{fresh}"
+    );
+    assert_eq!(
+        labels(&fresh),
+        vec![
+            "Đội hình mac-dinh",
+            "Đội hình tiet-kiem",
+            "Đội hình doi-b",
+            "Đội hình doi-c",
+            "Thử lại sau"
+        ]
+    );
+    // The new buttons carry another list version; the rev is the same.
+    let new_pick = button_data(&fresh, "Đội hình doi-b");
+    let ver = |d: &str| d.split(':').nth(3).unwrap().to_string();
+    assert_ne!(ver(&old_pick), ver(&new_pick));
+    assert_eq!(run_count(&env.sb), runs_before);
+    assert_eq!(team_json_of(&env.sb, 1), team_before);
+
+    // The old confirm of a stale list is stale too: nothing runs.
+    let forged = old_pick.replacen("t:", "u:", 1);
+    let cb = press_data(&env.tg, PAIRED_CHAT, m, text_of(&fresh), &forged);
+    let ans = wait_answer(&env.tg, &env.srv, &cb);
+    assert_eq!(ans["json"]["text"], json!(TEAMS_CHANGED), "{ans}");
+    assert_eq!(run_count(&env.sb), runs_before);
+    assert_eq!(team_json_of(&env.sb, 1), team_before);
+    stop(env);
+}
+
+#[test]
+fn quota_stale_rev() {
+    let env = setup_quota(None);
+    let m = message_id_of(&env.quota);
+    let runs_before = run_count(&env.sb);
+
+    let cb = press(&env.tg, &env.quota, "Đội hình doi-b");
+    wait_answer(&env.tg, &env.srv, &cb);
+    let confirm = wait_edit(&env.tg, &env.srv, m, |r| {
+        text_of(r).starts_with("Chạy lại bước Code bằng đội hình doi-b?")
+    });
+
+    // The team changes elsewhere (the dashboard): the task's rev moves on.
+    let moved = r#"{"name":"tiet-kiem"}"#;
+    env.sb
+        .db()
+        .execute("UPDATE tasks SET team_json = ?1 WHERE id = 1", [moved])
+        .unwrap();
+
+    let cb = press(&env.tg, &confirm, "Chạy lại bước này");
+    let ans = wait_answer(&env.tg, &env.srv, &cb);
+    assert!(
+        ans["json"]["text"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("Task đã đổi trạng thái"),
+        "{ans}"
+    );
+    let gone = wait_edit(&env.tg, &env.srv, m, |r| {
+        text_of(r).contains("Task đã đổi trạng thái")
+    });
+    assert!(empty_keyboard(&gone), "{gone}");
+    assert_eq!(run_count(&env.sb), runs_before, "nothing ran");
+    assert_eq!(team_json_of(&env.sb, 1).as_deref(), Some(moved));
+    stop(env);
+}
+
+#[test]
+fn quota_cancel_restores() {
+    let env = setup_quota(None);
+    let m = message_id_of(&env.quota);
+    let team_before = team_json_of(&env.sb, 1);
+    let runs_before = run_count(&env.sb);
+
+    let cb = press(&env.tg, &env.quota, "Đội hình tiet-kiem");
+    wait_answer(&env.tg, &env.srv, &cb);
+    let confirm = wait_edit(&env.tg, &env.srv, m, |r| {
+        text_of(r).starts_with("Chạy lại bước Code bằng đội hình tiet-kiem?")
+    });
+    assert!(
+        text_of(&confirm).contains("Bước Code sẽ chạy bằng: deepseek"),
+        "{confirm}"
+    );
+
+    let cb = press(&env.tg, &confirm, "Không chạy lại");
+    wait_answer(&env.tg, &env.srv, &cb);
+    let back = wait_edit(&env.tg, &env.srv, m, |r| {
+        text_of(r).starts_with("Hết quota engine claude · task 1")
+    });
+    assert_eq!(
+        labels(&back),
+        vec![
+            "Đội hình mac-dinh",
+            "Đội hình tiet-kiem",
+            "Đội hình doi-b",
+            "Thử lại sau"
+        ]
+    );
+    assert_eq!(run_count(&env.sb), runs_before);
+    assert_eq!(team_json_of(&env.sb, 1), team_before);
+
+    // The restored buttons work: the pick opens the confirmation again.
+    let cb = press(&env.tg, &back, "Đội hình doi-b");
+    wait_answer(&env.tg, &env.srv, &cb);
+    wait_edit(&env.tg, &env.srv, m, |r| {
+        text_of(r).starts_with("Chạy lại bước Code bằng đội hình doi-b?")
+    });
+    stop(env);
+}
+
+#[test]
+fn quota_retry_later_writes_nothing() {
+    let env = setup_quota(None);
+    let m = message_id_of(&env.quota);
+    let team_before = team_json_of(&env.sb, 1);
+    let runs_before = run_count(&env.sb);
+
+    let cb = press(&env.tg, &env.quota, "Thử lại sau");
+    let ans = wait_answer(&env.tg, &env.srv, &cb);
+    assert_eq!(ans["json"]["text"], json!("Đã hoãn."), "{ans}");
+    let edit = wait_edit(&env.tg, &env.srv, m, |r| {
+        text_of(r).contains("Đã hoãn — khi quota hồi phục, chạy lại bước này trên dashboard.")
+    });
+    assert!(
+        text_of(&edit).starts_with(text_of(&env.quota)),
+        "the message keeps its text: {edit}"
+    );
+    assert!(empty_keyboard(&edit), "{edit}");
+    assert_eq!(run_count(&env.sb), runs_before);
+    assert_eq!(team_json_of(&env.sb, 1), team_before);
+    // Postponing is not a new event: nothing more is sent.
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(env.tg.calls("sendMessage").len(), 1);
+    stop(env);
+}
+
+#[test]
+fn quota_rerun_telegram_origin_not_approval() {
+    let env = setup_quota(Some("telegram"));
+    let m = message_id_of(&env.quota);
+    let approved_before = approved_commit(&env.sb, 1);
+
+    // A forged `Duyệt plan` with the right rev stays refused for a Telegram-origin task.
+    let rev = button_data(&env.quota, "Thử lại sau")
+        .strip_prefix("l:1:")
+        .expect("l:1:{rev}")
+        .to_string();
+    let cb = press_data(
+        &env.tg,
+        PAIRED_CHAT,
+        m,
+        text_of(&env.quota),
+        &format!("a:1:{rev}"),
+    );
+    let ans = wait_answer(&env.tg, &env.srv, &cb);
+    // The terminal Dev run already recorded its own approval; Telegram refuses either way (the
+    // gate-time `TELEGRAM_APPROVE_REFUSED` answer is asserted by telegram_intake).
+    let text = ans["json"]["text"].as_str().unwrap_or("");
+    assert!(
+        text == REFUSED || text.starts_with("Plan hiện tại đã được duyệt"),
+        "{ans}"
+    );
+    assert_eq!(ans["json"]["show_alert"], json!(true), "{ans}");
+    assert_eq!(approved_commit(&env.sb, 1), approved_before);
+
+    // The quota re-run itself works through the two taps.
+    let cb = press(&env.tg, &env.quota, "Đội hình doi-b");
+    wait_answer(&env.tg, &env.srv, &cb);
+    let confirm = wait_edit(&env.tg, &env.srv, m, |r| {
+        text_of(r).starts_with("Chạy lại bước Code bằng đội hình doi-b?")
+    });
+    let cb = press(&env.tg, &confirm, "Chạy lại bước này");
+    wait_answer(&env.tg, &env.srv, &cb);
+    wait_edit(&env.tg, &env.srv, m, |r| {
+        text_of(r).starts_with("Đã đổi sang đội hình doi-b và giao lại bước Code (job ")
+    });
+    wait_dev_succeeded(&env);
+    // The re-run approved nothing.
+    assert_eq!(approved_commit(&env.sb, 1), approved_before);
+    stop(env);
+}
+
+#[test]
+fn quota_stranger_ignored() {
+    let env = setup_quota(None);
+    let m = message_id_of(&env.quota);
+    let team_before = team_json_of(&env.sb, 1);
+    let runs_before = run_count(&env.sb);
+    let pick = button_data(&env.quota, "Đội hình doi-b");
+    let text = text_of(&env.quota).to_string();
+
+    // (a) another chat, (b) the paired chat pressed by another sender.
+    let a = env
+        .tg
+        .callback_update(STRANGER_CHAT, STRANGER_CHAT, m, &text, &pick);
+    let b = env.tg.callback_update(PAIRED_CHAT, 8888, m, &text, &pick);
+    let a_id = a["callback_query"]["id"].as_str().unwrap().to_string();
+    let b_id = b["callback_query"]["id"].as_str().unwrap().to_string();
+    env.tg.push_update(a);
+    let last = env.tg.push_update(b);
+    wait_offset(&env.tg, &env.srv, last + 1);
+    std::thread::sleep(Duration::from_secs(2));
+
+    for id in [&a_id, &b_id] {
+        assert!(
+            env.tg
+                .calls("answerCallbackQuery")
+                .iter()
+                .all(|r| r["json"]["callback_query_id"].as_str() != Some(id.as_str())),
+            "{:#?}",
+            env.tg.records()
+        );
+    }
+    assert!(env.tg.calls("editMessageText").is_empty());
+    assert_eq!(run_count(&env.sb), runs_before);
+    assert_eq!(team_json_of(&env.sb, 1), team_before);
+    stop(env);
 }

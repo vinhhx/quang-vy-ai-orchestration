@@ -497,8 +497,7 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
         Op::End => act(ctx, &press, &cb, "Dừng hẳn", "auto_end"),
         Op::ReturnLead | Op::NoNote | Op::CancelNote => on_return_lead(ctx, state, &press, &cb),
         Op::KillAsk | Op::KillConfirm | Op::KillCancel => on_kill(ctx, &press, &cb),
-        // Written in the next step of plan 06-14; until then the press changes nothing.
-        Op::TeamCancel | Op::RetryLater => answer(ctx, &press.id, NOT_APPLICABLE, true),
+        Op::TeamCancel | Op::RetryLater => on_quota_side(ctx, &press, &cb),
     }
 }
 
@@ -1089,6 +1088,51 @@ fn quota_base(shown: &str) -> &str {
     } else {
         shown
     }
+}
+
+/// `Không chạy lại` (`v`) and `Thử lại sau` (`l`) on a quota message (Phase 6, D-17, D-28).
+/// Neither writes anything or starts a job. Cancel gives the quota message its team buttons
+/// back; later closes the message with a line that points to the dashboard.
+fn on_quota_side(ctx: &Arc<BotCtx>, press: &Press, cb: &Callback) {
+    let label = if cb.op == Op::TeamCancel {
+        "Không chạy lại"
+    } else {
+        "Thử lại sau"
+    };
+    let task_id = cb.task_id;
+    let s = match load_fresh(ctx, task_id) {
+        Loaded::State(s) => s,
+        Loaded::Gone => {
+            untrack(ctx, press.message_id);
+            stale(ctx, press, label, task_id);
+            return;
+        }
+        Loaded::Error => {
+            answer(ctx, &press.id, INTERNAL_TEXT, true);
+            return;
+        }
+    };
+    let ev = match quota_event(&s) {
+        Some(ev) if cb.rev == s.rev => ev,
+        _ => {
+            untrack(ctx, press.message_id);
+            stale(ctx, press, label, task_id);
+            return;
+        }
+    };
+    if cb.op == Op::TeamCancel {
+        show_quota(ctx, press.message_id, &ev, &s);
+        answer(ctx, &press.id, "Đã huỷ — không chạy lại", false);
+        audit(label, task_id, "không chạy lại");
+        return;
+    }
+    // Thử lại sau: the message keeps its text, loses its buttons and is no longer followed.
+    untrack(ctx, press.message_id);
+    let base = render::message_for(&ev, &s).text;
+    let suffix = format!("\n\n{}", render::RETRY_LATER_LINE);
+    edit_result(ctx, press.message_id, &base, &suffix, render::no_keyboard());
+    answer(ctx, &press.id, "Đã hoãn.", false);
+    audit(label, task_id, "đã hoãn");
 }
 
 /// `Đội hình {tên}` (pick) and `Chạy lại bước này` (confirm) on a quota message (Phase 6, D-17,
