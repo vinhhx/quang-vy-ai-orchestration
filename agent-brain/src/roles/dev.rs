@@ -314,6 +314,23 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         .collect::<Vec<_>>();
 
     if dry_run {
+        // D-19: a human Dev step runs no command. Read-only lookup, never creates a task row.
+        let existing_task_id = crate::db::project_row_id(&ctx.conn, &proj.id)
+            .ok()
+            .and_then(|pid| {
+                crate::gitops::current_branch(&proj_path).and_then(|b| {
+                    crate::db::find_task_by_branch(&ctx.conn, pid, &b)
+                        .ok()
+                        .flatten()
+                })
+            })
+            .map(|t| t.id);
+        if let Ok(r) = crate::engine::resolve_for_run(&ctx.conn, existing_task_id, "dev") {
+            if r.engine.is_human() {
+                crate::term::emit_out("Bước Dev do người làm — không chạy lệnh nào (dry run).");
+                return Ok(crate::error::EXIT_OK);
+            }
+        }
         crate::term::emit_out(&format!("Allowlist: {}", active_files.join(", ")));
         let spec_dry = crate::roles::RoleSpec {
             role: crate::roles::Role::Dev,
@@ -343,7 +360,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
 
     let proj_row_id = crate::db::project_row_id(&ctx.conn, &proj.id)?;
     let task_row = crate::tasks::current_task(&ctx.conn, proj_row_id, &proj_path)?;
-    let task_id = task_row.map(|t| t.id);
+    let task_id = task_row.as_ref().map(|t| t.id);
 
     if opts.fix.is_none() {
         if let Some(tid) = task_id {
@@ -363,6 +380,31 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
                 }
             }
         }
+    }
+
+    // D-19 / D-24: when the task's Dev engine is a person, every precondition above has passed;
+    // nothing is spawned and no run row is inserted — the step becomes a wait marker.
+    let resolved = crate::engine::resolve_for_run(&ctx.conn, task_id, "dev")?;
+    if let crate::engine::Engine::Human(staff_id) = &resolved.engine {
+        let Some(row) = task_row.as_ref() else {
+            return Err(BrainError::error(
+                "Bước Dev do người làm cần task đã có trong brain.db — chạy run lead trước",
+            ));
+        };
+        let (human_stage, fix_for) = match opts.fix {
+            Some(fix) => ("fix", Some(fix.metrics_value())),
+            None => ("implement", None),
+        };
+        return crate::human::start_wait(
+            ctx,
+            &proj,
+            &proj_path,
+            row,
+            staff_id,
+            human_stage,
+            fix_for,
+            opts.round,
+        );
     }
 
     let dev_base = crate::gitops::head_sha(&proj_path)?;
