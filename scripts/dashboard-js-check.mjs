@@ -3103,7 +3103,7 @@ const sections = [
 
       check(
         'totalText matches',
-        c.totalText === '4 lượt chạy claude · 12 phút · $3.75',
+        c.totalText === '4 lượt chạy · 12 phút · $3.75',
         `got "${c.totalText}"`
       );
 
@@ -3292,7 +3292,7 @@ const sections = [
       check('ledgerHasMore is true', c.ledgerHasMore === true);
 
       // totalText never depends on window
-      check('totalText uses total (26 runs)', c.totalText === '26 lượt chạy claude · 13 phút · $2.60', `got "${c.totalText}"`);
+      check('totalText uses total (26 runs)', c.totalText === '26 lượt chạy · 13 phút · $2.60', `got "${c.totalText}"`);
 
       // showMoreRuns() reveals all 26 rows
       c.showMoreRuns();

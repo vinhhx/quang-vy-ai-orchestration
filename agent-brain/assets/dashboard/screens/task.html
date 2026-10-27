@@ -36,9 +36,10 @@
     <div data-stop-banner x-show="showBanner" aria-live="polite" class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-4">
       <div class="flex items-center gap-2">
         <span aria-hidden="true" class="w-6 text-center" x-text="stopGlyph"></span>
-        <h2 class="text-base font-semibold leading-normal" x-text="bannerHeading"></h2>
+        <h2 id="ab-stop-heading" tabindex="-1" class="text-base font-semibold leading-normal" x-text="bannerHeading"></h2>
       </div>
       <p class="text-base font-normal leading-normal break-words" x-show="bannerBody" x-text="bannerBody"></p>
+      <p class="text-base font-normal leading-normal break-words" x-show="quotaBody2" x-text="quotaBody2"></p>
       <p class="text-sm font-normal leading-normal break-words tabular-nums" x-show="bannerBudget"><span x-text="bannerBudget"></span><span x-show="budgetLevel"> · </span><span class="font-semibold" x-show="budgetLevel" x-text="budgetLevel"></span></p>
       <div class="flex flex-wrap gap-2" x-show="hasBannerControls">
         <template x-for="a in bannerControls" :key="a.id">
@@ -130,6 +131,7 @@
                   <span aria-hidden="true" :class="flowCardGlyphClass(c)" x-text="flowCardGlyph(c)"></span>
                   <h3 class="min-w-0 break-words text-base font-semibold leading-normal" x-text="c.title"></h3>
                 </div>
+                <p data-card-engine class="font-mono text-sm font-normal leading-normal break-words text-slate-600 dark:text-slate-400" x-show="flowCardHasEngine(c)"><span class="sr-only">Engine: </span><span x-text="flowCardEngine(c)"></span></p>
                 <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
                   <span class="sr-only" x-text="flowCardSr(c)"></span>
                   <span x-text="flowCardResult(c)"></span>
@@ -186,6 +188,7 @@
                   <span aria-hidden="true" :class="flowCardGlyphClass(c)" x-text="flowCardGlyph(c)"></span>
                   <h3 class="min-w-0 break-words text-base font-semibold leading-normal" x-text="c.title"></h3>
                 </div>
+                <p data-card-engine class="font-mono text-sm font-normal leading-normal break-words text-slate-600 dark:text-slate-400" x-show="flowCardHasEngine(c)"><span class="sr-only">Engine: </span><span x-text="flowCardEngine(c)"></span></p>
                 <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
                   <span class="sr-only" x-text="flowCardSr(c)"></span>
                   <span x-text="flowCardResult(c)"></span>
@@ -215,6 +218,7 @@
                   <span aria-hidden="true" :class="flowCardGlyphClass(c)" x-text="flowCardGlyph(c)"></span>
                   <h3 class="min-w-0 break-words text-base font-semibold leading-normal" x-text="c.title"></h3>
                 </div>
+                <p data-card-engine class="font-mono text-sm font-normal leading-normal break-words text-slate-600 dark:text-slate-400" x-show="flowCardHasEngine(c)"><span class="sr-only">Engine: </span><span x-text="flowCardEngine(c)"></span></p>
                 <p class="break-words text-sm font-normal leading-normal text-slate-900 dark:text-slate-100">
                   <span class="sr-only" x-text="flowCardSr(c)"></span>
                   <span x-text="flowCardResult(c)"></span>
@@ -274,7 +278,7 @@
         </li>
         <li data-legend-item class="inline-flex items-center gap-1 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
           <span aria-hidden="true" :class="legendGlyphClass('dang_chay')" x-text="legendGlyph('dang_chay')"></span>
-          <span>đang chạy</span>
+          <span>đang chạy / chờ người</span>
         </li>
         <li data-legend-item class="inline-flex items-center gap-1 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
           <span aria-hidden="true" :class="legendGlyphClass('cho_ban')" x-text="legendGlyph('cho_ban')"></span>
@@ -294,7 +298,7 @@
         </li>
         <li data-legend-item class="inline-flex items-center gap-1 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
           <span aria-hidden="true" :class="legendGlyphClass('vuong_mac')" x-text="legendGlyph('vuong_mac')"></span>
-          <span>vướng mắc / cần sửa / sửa lại</span>
+          <span>vướng mắc / cần sửa / sửa lại / hết quota</span>
         </li>
       </ul>
     </div>
@@ -333,7 +337,7 @@
               <div>
                 <button type="button" data-ledger-row :data-run-id="r.run_id" class="flex min-h-12 w-full flex-col gap-1 rounded-xl px-4 py-2 text-left text-sm font-normal leading-normal hover:bg-slate-50 motion-safe:transition-colors dark:hover:bg-slate-700/50 sm:flex-row sm:items-center sm:justify-between sm:gap-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="ledgerRowClass(r)" :aria-current="ledgerRowCurrent(r)" :title="rowTitle(r)" @click="pickRun(r)">
                   <span class="min-w-0 break-words text-slate-600 dark:text-slate-400">
-                    <span x-text="r.label"></span>: <span aria-hidden="true" :class="rowGlyphClass(r)" x-text="rowGlyph(r)"></span>
+                    <span x-text="rowLabel(r)"></span>: <span aria-hidden="true" :class="rowGlyphClass(r)" x-text="rowGlyph(r)"></span>
                     <span :class="rowVerdictClass(r)" x-text="r.verdict"></span>
                     <span class="text-indigo-700 dark:text-indigo-300" x-show="isSelectedRow(r)"> Đang xem</span>
                   </span>
@@ -348,6 +352,7 @@
           <span>Tổng đến giờ</span>
           <span x-text="totalText"></span>
         </p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="hasHumanRunsNote" x-text="humanRunsNote"></p>
         <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="hasCostNote" x-text="costNote"></p>
       </div>
     </div>
@@ -489,6 +494,7 @@
               </span>
               <span class="block text-base font-normal leading-normal break-words" x-text="t.description"></span>
               <span class="block text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="t.summary"></span>
+              <span class="block text-sm font-normal leading-normal text-slate-900 dark:text-slate-100 break-words" x-show="teamDlgStepLine(t)" x-text="teamDlgStepLine(t)"></span>
               <template x-for="line in teamDlgReadinessLines(t)" :key="line">
                 <span class="block text-sm font-semibold leading-normal text-amber-900 dark:text-amber-200 break-words" x-text="line"></span>
               </template>
