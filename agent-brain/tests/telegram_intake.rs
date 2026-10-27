@@ -631,6 +631,16 @@ fn flow_of(data: &str) -> String {
     data.split(':').nth(1).unwrap_or("").to_string()
 }
 
+/// The team step (TEAM-03) after the workflow step: taps the project default (the first button).
+fn tap_default_team(tg: &FakeTelegram, srv: &Serve, mid: i64) {
+    let team = wait_edit(tg, srv, mid, |r| {
+        text_of(r).starts_with("Chọn đội hình cho task:")
+    });
+    let default = labels(&team)[0].clone();
+    assert!(default.starts_with("Mặc định ("), "{team}");
+    press_on(tg, mid, &team, &default);
+}
+
 fn task_row(sb: &Sandbox, task_id: i64) -> (Option<String>, String) {
     sb.db()
         .query_row(
@@ -689,8 +699,9 @@ fn task_command_full_flow() {
         "{wf_screen}"
     );
 
-    // Workflow -> confirm screen.
+    // Workflow -> team screen (TEAM-03) -> confirm screen.
     press_on(&tg, mid, &wf_screen, "Mặc định (nhanh)");
+    tap_default_team(&tg, &srv, mid);
     let confirm = wait_edit(&tg, &srv, mid, |r| {
         text_of(r).starts_with("Xác nhận giao việc")
     });
@@ -736,6 +747,168 @@ fn task_command_full_flow() {
     for line in telegram_lines(&srv) {
         assert!(!line.contains("sửa app"), "request leaked: {line}");
     }
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 plan 14 Task 3: the team step of `/task` (TEAM-03)
+// ---------------------------------------------------------------------------
+
+/// teams.json with `doi-b` (Dev on agy) and, in the map, the project's default team.
+fn setup_team_flow(sb: &Sandbox, project_team: &str) {
+    sb.write_teams(json!({
+        "doi-b": {"description": "Dev trên agy", "roles": {"dev": "agy"}}
+    }));
+    setup_project(sb, "work");
+    allow_projects(sb, &["web-ban-hang"]);
+    let mut map = sb.read_map();
+    map["projects"][0]["team"] = json!(project_team);
+    std::fs::write(sb.map_path(), serde_json::to_string_pretty(&map).unwrap()).expect("write map");
+    sb.write_scenario(lead_plan_entry());
+}
+
+fn team_name_of(sb: &Sandbox, task_id: i64) -> String {
+    let json: Option<String> = sb
+        .db()
+        .query_row(
+            "SELECT team_json FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let v: Value = serde_json::from_str(&json.expect("team_json")).unwrap();
+    v["name"].as_str().unwrap_or("").to_string()
+}
+
+/// `/task sửa app` -> project -> default workflow; returns the flow message id and the team screen.
+fn reach_team_screen(tg: &FakeTelegram, srv: &Serve) -> (i64, Value) {
+    send_text(tg, "/task sửa app");
+    let screen = wait_message(tg, srv, CHOOSE_PROJECT);
+    let mid = message_id_of(&screen);
+    press_on(tg, mid, &screen, "Web bán hàng · work");
+    let wf = wait_edit(tg, srv, mid, |r| text_of(r).starts_with("Chọn quy trình"));
+    press_on(tg, mid, &wf, "Mặc định (nhanh)");
+    let team = wait_edit(tg, srv, mid, |r| {
+        text_of(r).starts_with("Chọn đội hình cho task:")
+    });
+    (mid, team)
+}
+
+#[test]
+fn intake_team_step_choose_team() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_team_flow(&sb, "tiet-kiem");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let (mid, team) = reach_team_screen(&tg, &srv);
+    assert_eq!(
+        labels(&team),
+        vec![
+            "Mặc định (tiet-kiem)".to_string(),
+            "mac-dinh".to_string(),
+            "tiet-kiem".to_string(),
+            "doi-b".to_string(),
+            "Huỷ".to_string(),
+        ],
+        "{team}"
+    );
+    let b = buttons(&team);
+    let flow = flow_of(&b[0].1);
+    assert!(is_flow_id(&flow), "{team}");
+    for (i, (_, data)) in b[..4].iter().enumerate() {
+        assert_eq!(data, &format!("iD:{flow}:{i}"));
+    }
+    assert_eq!(b[4].1, format!("iX:{flow}"));
+
+    press_on(&tg, mid, &team, "doi-b");
+    let confirm = wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).starts_with("Xác nhận giao việc")
+    });
+    assert!(
+        text_of(&confirm)
+            .contains("Đội hình: doi-b (claude: lead, qa, review plan, review code · agy: dev)"),
+        "{confirm}"
+    );
+    assert_eq!(task_count(&sb), 0, "nothing is created before Tạo task");
+
+    press_on(&tg, mid, &confirm, "Tạo task");
+    wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).starts_with("Đã nhận — đang lập plan")
+    });
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    assert_eq!(team_name_of(&sb, 1), "doi-b");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn intake_team_default() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_team_flow(&sb, "doi-b");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let (mid, team) = reach_team_screen(&tg, &srv);
+    assert_eq!(
+        labels(&team).first().map(String::as_str),
+        Some("Mặc định (doi-b)"),
+        "{team}"
+    );
+    press_on(&tg, mid, &team, "Mặc định (doi-b)");
+    let confirm = wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).starts_with("Xác nhận giao việc")
+    });
+    assert!(
+        text_of(&confirm).contains("Đội hình: doi-b ("),
+        "the project default is shown: {confirm}"
+    );
+
+    press_on(&tg, mid, &confirm, "Tạo task");
+    wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).starts_with("Đã nhận — đang lập plan")
+    });
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    // The request went without a team: the server took the project's own.
+    assert_eq!(team_name_of(&sb, 1), "doi-b");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn intake_team_bad_index() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_team_flow(&sb, "tiet-kiem");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let (mid, team) = reach_team_screen(&tg, &srv);
+    let flow = flow_of(&buttons(&team)[0].1);
+    // Four teams (indexes 1..=3 after the default 0): 4 and 99 are past the list.
+    for bad in [format!("iD:{flow}:4"), format!("iD:{flow}:99")] {
+        let cb = press_data(&tg, mid, text_of(&team), &bad);
+        let ans = wait_answer(&tg, &srv, &cb);
+        assert_eq!(ans["json"]["text"], json!(INVALID), "{bad}: {ans}");
+    }
+    // The flow stays on the team step: a valid press still works.
+    assert_eq!(task_count(&sb), 0);
+    press_on(&tg, mid, &team, "tiet-kiem");
+    let confirm = wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).starts_with("Xác nhận giao việc")
+    });
+    assert!(
+        text_of(&confirm).contains("Đội hình: tiet-kiem ("),
+        "{confirm}"
+    );
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
 
@@ -810,6 +983,7 @@ fn reach_confirm_for(tg: &FakeTelegram, srv: &Serve, request: &str) -> (i64, Val
     press_on(tg, mid, &screen, "Web bán hàng · work");
     let wf = wait_edit(tg, srv, mid, |r| text_of(r).starts_with("Chọn quy trình"));
     press_on(tg, mid, &wf, "Mặc định (nhanh)");
+    tap_default_team(tg, srv, mid);
     let confirm = wait_edit(tg, srv, mid, |r| {
         text_of(r).starts_with("Xác nhận giao việc")
     });
@@ -1636,6 +1810,7 @@ fn forward_to_confirm(
     press_on(tg, mid, &projects, &project);
     let wf = wait_edit(tg, srv, mid, |r| text_of(r).starts_with("Chọn quy trình"));
     press_on(tg, mid, &wf, default_label);
+    tap_default_team(tg, srv, mid);
     let confirm = wait_edit(tg, srv, mid, |r| {
         text_of(r).starts_with("Xác nhận giao việc")
     });

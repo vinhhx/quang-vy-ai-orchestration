@@ -4,7 +4,7 @@
 //! titles, plan titles and file names (written by agents) cannot inject markup.
 //! Callback data is built only by `callback::encode` from DB ids and the rev.
 
-use super::callback::{self, Callback, Op};
+use super::callback::{self, Callback, Op, TeamCb, TeamOp};
 use super::detect::{Event, EventKind};
 use crate::autopilot::decide::StopReason;
 use crate::dashboard::api_tasks::TaskState;
@@ -227,6 +227,44 @@ fn failed_run<'a>(ev: &Event, s: &'a TaskState) -> Option<&'a RunRow> {
         .or_else(|| latest_run(s))
 }
 
+/// The quota run a `Quota` event names (`quota:{run id}`), else the one the task state calls for.
+pub fn quota_run_of<'a>(ev: &Event, s: &'a TaskState) -> Option<&'a RunRow> {
+    ev.key
+        .strip_prefix("quota:")
+        .and_then(|id| id.parse::<i64>().ok())
+        .and_then(|id| s.runs.iter().find(|r| r.id == id))
+        .or_else(|| super::detect::quota_run(s))
+}
+
+/// Vietnamese name of the step the quota run belonged to (`Code`, `QA`, …).
+pub fn quota_step_name(r: &RunRow) -> &'static str {
+    crate::quota::step_name(r.stage.as_deref(), &r.role)
+}
+
+/// The question of the confirmation a picked team opens (D-28): nothing runs before `Chạy lại bước này`.
+pub fn rerun_confirm_text(step: &str, team: &str, engine: &str) -> String {
+    format!("Chạy lại bước {step} bằng đội hình {team}?\nBước {step} sẽ chạy bằng: {engine}")
+}
+
+/// The line that replaces the confirmation once the shared re-run started a job.
+pub fn rerun_done_text(team: &str, step: &str, job_id: u64) -> String {
+    format!("Đã đổi sang đội hình {team} và giao lại bước {step} (job {job_id}).")
+}
+
+/// Added under the quota message when the user chooses `Thử lại sau`; nothing is written.
+pub const RETRY_LATER_LINE: &str =
+    "Đã hoãn — khi quota hồi phục, chạy lại bước này trên dashboard.";
+
+/// The team names a quota message offers: the first `MAX_TEAM_BUTTONS` of the list the server
+/// holds now. A button carries an index into this list and the version of it.
+pub fn team_names(s: &TaskState) -> Vec<String> {
+    s.teams
+        .names()
+        .into_iter()
+        .take(callback::MAX_TEAM_BUTTONS)
+        .collect()
+}
+
 fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
     let id = s.task.id;
     let mut lines: Vec<String> = Vec::new();
@@ -274,6 +312,29 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
             lines.push(title_line(s));
             lines.push(project_line(s));
             lines.push(summary_line(s, now_ms));
+        }
+        EventKind::Quota => {
+            if let Some(r) = quota_run_of(ev, s) {
+                lines.push(format!(
+                    "Hết quota engine {} · task {id} {}",
+                    r.engine, s.task.slug
+                ));
+                lines.push(crate::quota::stop_detail(r.id, &r.role, &r.engine));
+                lines.push(format!(
+                    "Chọn đội hình để chạy lại bước {} (engine mới tiếp tục từ thư mục làm việc hiện tại) hoặc Thử lại sau.",
+                    quota_step_name(r)
+                ));
+            } else {
+                lines.push(format!("Hết quota · task {id} {}", s.task.slug));
+            }
+            let hidden = s
+                .teams
+                .teams
+                .len()
+                .saturating_sub(callback::MAX_TEAM_BUTTONS);
+            if hidden > 0 {
+                lines.push(format!("Còn {hidden} đội hình khác — chọn trên dashboard."));
+            }
         }
         EventKind::RunFailed => {
             lines.push(format!("Run lỗi · task {id}"));
@@ -336,6 +397,23 @@ pub fn buttons_for(ev: &Event, s: &TaskState) -> Vec<Vec<Button>> {
             }
         }
         EventKind::QaPass => {}
+        EventKind::Quota => {
+            let names = team_names(s);
+            let ver = callback::team_list_ver(&names);
+            for (idx, name) in names.iter().enumerate() {
+                rows.push(vec![Button {
+                    label: format!("Đội hình {name}"),
+                    data: callback::encode_team(&TeamCb {
+                        op: TeamOp::Pick,
+                        task_id: s.task.id,
+                        idx,
+                        ver: ver.clone(),
+                        rev: s.rev.clone(),
+                    }),
+                }]);
+            }
+            rows.push(button("Thử lại sau", Op::RetryLater, s, None));
+        }
     }
     if let Some(r) = running_run(s) {
         rows.push(button("Kill", Op::KillAsk, s, Some(r.id)));

@@ -23,7 +23,7 @@
 //! confirm screen is the optional instruction, outside the block.
 
 use super::bot::{self, PollState, HELP_TEXT, INVALID_BUTTON};
-use super::callback::{decode_intake, encode_intake, IntakeCb, IntakeOp};
+use super::callback::{decode_intake, encode_intake, IntakeCb, IntakeOp, MAX_TEAM_BUTTONS};
 use super::compose;
 use super::forward::{self, ForwardItem};
 use super::render::{self, Button};
@@ -31,7 +31,7 @@ use super::transport::LONG_POLL_SECS;
 use super::BotCtx;
 use crate::config::Config;
 use crate::dashboard::api_tasks::{start_new_task, Origin, StartInfo, StartOutcome, StartRequest};
-use crate::projects::{load_map, projects_of, require_runnable, workflow_of, Project};
+use crate::projects::{load_map, projects_of, require_runnable, team_of, workflow_of, Project};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -46,6 +46,7 @@ pub const ASK_REQUEST: &str =
     "Gửi yêu cầu cho task mới (một tin nhắn), hoặc bấm Huỷ. Hết hạn sau 10 phút.";
 pub const CHOOSE_PROJECT: &str = "Chọn dự án cho task:";
 pub const CHOOSE_WORKFLOW: &str = "Chọn quy trình";
+pub const CHOOSE_TEAM: &str = "Chọn đội hình cho task:";
 pub const CONFIRM_TITLE: &str = "Xác nhận giao việc";
 pub const CONFIRM_FOOTER: &str = "Plan của task giao từ Telegram chỉ duyệt trên dashboard.";
 pub const ACCEPTED: &str = "Đã nhận — đang lập plan";
@@ -101,6 +102,8 @@ pub enum Stage {
     Select,
     Project,
     Workflow,
+    /// The team step between the workflow and the confirm screen (Phase 6, TEAM-03).
+    Team,
     Confirm,
 }
 
@@ -144,6 +147,12 @@ pub struct Intake {
     pub workflows: Vec<String>,
     /// Index into `workflows`; `None` is the project's default.
     pub workflow: Option<usize>,
+    /// The project's default team (its `team` key, else `mac-dinh`).
+    pub default_team: String,
+    /// Teams offered (the first `MAX_TEAM_BUTTONS` of teams.json plus the built-ins).
+    pub teams: Vec<String>,
+    /// Index into `teams`; `None` is the project's default.
+    pub team: Option<usize>,
     pub slug: Option<String>,
     /// The flow's message (edited through every stage).
     pub message_id: Option<i64>,
@@ -228,6 +237,13 @@ impl Intake {
     fn workflow_name(&self) -> Option<&str> {
         self.workflow
             .and_then(|i| self.workflows.get(i))
+            .map(String::as_str)
+    }
+
+    /// The team chosen on the team step; `None` is the project's default.
+    fn team_name(&self) -> Option<&str> {
+        self.team
+            .and_then(|i| self.teams.get(i))
             .map(String::as_str)
     }
 }
@@ -466,6 +482,31 @@ fn workflow_screen(f: &Intake, project_id: &str) -> (String, Value) {
     (text, render::keyboard_json(&rows))
 }
 
+/// The team step: the project's default first (index 0), then one button per team.
+fn team_screen(f: &Intake) -> (String, Value) {
+    let mut rows = vec![vec![button(
+        &format!("Mặc định ({})", f.default_team),
+        IntakeOp::Team,
+        &f.id,
+        Some(0),
+    )]];
+    for (i, name) in f.teams.iter().enumerate() {
+        rows.push(vec![button(name, IntakeOp::Team, &f.id, Some(i + 1))]);
+    }
+    rows.push(cancel_row(&f.id));
+    (CHOOSE_TEAM.to_string(), render::keyboard_json(&rows))
+}
+
+/// `Đội hình: {name} ({summary})`, the summary being the server's own team summary.
+fn team_line(f: &Intake, info: &StartInfo) -> String {
+    let name = f.team_name().unwrap_or(&info.team);
+    let (teams, staff) = crate::teams::load();
+    match teams.get(name) {
+        Some(t) => format!("Đội hình: {name} ({})", t.summary(&staff)),
+        None => format!("Đội hình: {name}"),
+    }
+}
+
 fn confirm_screen(f: &Intake, info: &StartInfo) -> (String, Value) {
     let mut lines = vec![
         CONFIRM_TITLE.to_string(),
@@ -478,6 +519,7 @@ fn confirm_screen(f: &Intake, info: &StartInfo) -> (String, Value) {
             info.workflow,
             if info.auto { "tự động" } else { "tay" }
         ),
+        team_line(f, info),
         format!("Nhánh: {}", info.branch),
     ];
     match &f.source {
@@ -548,7 +590,7 @@ fn find_slug(ctx: &BotCtx, f: &Intake, project_id: &str) -> Result<(String, Star
             request: &request,
             name: Some(candidate),
             workflow: f.workflow_name(),
-            team: None,
+            team: f.team_name(),
             origin: Origin::Telegram,
             dry_run: true,
         };
@@ -671,6 +713,9 @@ fn start_flow(ctx: &Arc<BotCtx>, state: &mut PollState, rest: &str) {
         default_workflow: String::new(),
         workflows: Vec::new(),
         workflow: None,
+        default_team: String::new(),
+        teams: Vec::new(),
+        team: None,
         slug: None,
         message_id: None,
         expires_at_ms: deadline(crate::db::now_ms()),
@@ -856,6 +901,7 @@ fn press(
         (IntakeOp::Go, Stage::Select) => go(ctx, f, cq_id, mid),
         (IntakeOp::Project, Stage::Project) => pick_project(ctx, f, cq_id, mid, cb.index),
         (IntakeOp::Workflow, Stage::Workflow) => pick_workflow(ctx, f, cq_id, mid, cb.index),
+        (IntakeOp::Team, Stage::Team) => pick_team(ctx, f, cq_id, mid, cb.index),
         (IntakeOp::Confirm, Stage::Confirm) => confirm(ctx, state, f, cq_id, mid),
         _ => {
             bot::answer(ctx, cq_id, INVALID_BUTTON, false);
@@ -984,6 +1030,12 @@ fn pick_project(
             Ok(r) => r.workflow.name,
             Err(e) => return refuse(ctx, cq_id, mid, &e.message, "quy trình"),
         };
+    let (teams, _) = crate::teams::load();
+    f.default_team = team_of(&map, &project_id)
+        .filter(|t| teams.get(t).is_some())
+        .unwrap_or_else(|| crate::teams::DEFAULT_TEAM.to_string());
+    f.teams = teams.names().into_iter().take(MAX_TEAM_BUTTONS).collect();
+    f.team = None;
     f.project = Some(i);
     f.default_workflow = default;
     f.workflows = loaded.names().into_iter().take(MAX_WORKFLOWS).collect();
@@ -1009,6 +1061,37 @@ fn pick_workflow(
             return Next::Kept;
         }
     };
+    if f.project_id().is_none() {
+        bot::answer(ctx, cq_id, INVALID_BUTTON, false);
+        return Next::Kept;
+    }
+    f.workflow = i.checked_sub(1);
+    // Next comes the team step; the slug search (a dry run) waits for the team.
+    f.team = None;
+    f.stage = Stage::Team;
+    let (text, keyboard) = team_screen(f);
+    bot::edit(ctx, mid, &text, keyboard);
+    bot::answer(ctx, cq_id, "Đã chọn quy trình", false);
+    Next::Advanced
+}
+
+/// The team step (TEAM-03): index 0 is the project's default (the request goes without a
+/// `team`), `1..=n` a team of the list the server holds. The dry run then finds the slug and
+/// the confirm screen shows the team with its summary.
+fn pick_team(
+    ctx: &Arc<BotCtx>,
+    f: &mut Intake,
+    cq_id: &str,
+    mid: i64,
+    index: Option<usize>,
+) -> Next {
+    let i = match index.filter(|i| *i <= f.teams.len()) {
+        Some(i) => i,
+        None => {
+            bot::answer(ctx, cq_id, INVALID_BUTTON, false);
+            return Next::Kept;
+        }
+    };
     let project_id = match f.project_id() {
         Some(id) => id.to_string(),
         None => {
@@ -1016,14 +1099,14 @@ fn pick_workflow(
             return Next::Kept;
         }
     };
-    f.workflow = i.checked_sub(1);
+    f.team = i.checked_sub(1);
     match find_slug(ctx, f, &project_id) {
         Ok((slug, info)) => {
             f.slug = Some(slug);
             f.stage = Stage::Confirm;
             let (text, keyboard) = confirm_screen(f, &info);
             bot::edit(ctx, mid, &text, keyboard);
-            bot::answer(ctx, cq_id, "Đã chọn quy trình", false);
+            bot::answer(ctx, cq_id, "Đã chọn đội hình", false);
             Next::Advanced
         }
         Err(reason) => refuse(ctx, cq_id, mid, &reason, "preflight"),
@@ -1073,7 +1156,7 @@ fn confirm(ctx: &Arc<BotCtx>, state: &PollState, f: &mut Intake, cq_id: &str, mi
         request: &request,
         name: Some(&slug),
         workflow: f.workflow_name(),
-        team: None,
+        team: f.team_name(),
         origin: Origin::Telegram,
         dry_run: true,
     };
@@ -1211,6 +1294,9 @@ fn start_forwarded(ctx: &Arc<BotCtx>, state: &mut PollState, item: Option<Forwar
         default_workflow: String::new(),
         workflows: Vec::new(),
         workflow: None,
+        default_team: String::new(),
+        teams: Vec::new(),
+        team: None,
         slug: None,
         message_id: None,
         expires_at_ms: deadline(now),
@@ -1409,6 +1495,9 @@ mod tests {
             default_workflow: String::new(),
             workflows: Vec::new(),
             workflow: None,
+            default_team: String::new(),
+            teams: Vec::new(),
+            team: None,
             slug: None,
             message_id: Some(9),
             expires_at_ms,

@@ -20,6 +20,7 @@ use super::{sleep_or_stop, BotCtx};
 use crate::autopilot::decide::GateState;
 use crate::dashboard::api_tasks::{load_task_state, TaskState};
 use crate::dashboard::AppState;
+use crate::db::RunRow;
 use crate::error::BrainResult;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
@@ -39,6 +40,8 @@ pub enum EventKind {
     Stop,
     QaPass,
     RunFailed,
+    /// The latest step stopped on a quota or rate limit (Phase 6, D-17): the user picks a team.
+    Quota,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,11 +57,29 @@ fn settling_run(s: &TaskState) -> bool {
         .any(|r| r.status == "running" && (r.role == "lead" || r.role == "plan-review"))
 }
 
+/// The run a quota event is about: the task's latest run (any role, as the dashboard's own
+/// `Chạy lại bước này bằng đội hình…` reads it) when it ended with outcome `quota` and nothing
+/// is running and no autopilot driver is alive. Only then can the shared re-run act.
+pub fn quota_run(s: &TaskState) -> Option<&RunRow> {
+    if s.driver_alive || s.runs.iter().any(|r| r.status == "running") {
+        return None;
+    }
+    s.runs
+        .iter()
+        .max_by_key(|r| (r.started_at, r.id))
+        .filter(|r| r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA))
+}
+
 /// The one event the task's current state calls for, if any (precedence:
-/// stop, gate, QA passed, run failed).
+/// quota, stop, gate, QA passed, run failed). A quota stop is reported as such, also when
+/// the autopilot stopped for it (`het_quota`), and never as a failed run.
 pub fn current_event(s: &TaskState) -> Option<Event> {
     let task_id = s.task.id;
     let ev = |kind, key: String| Some(Event { task_id, kind, key });
+
+    if let Some(run) = quota_run(s) {
+        return ev(EventKind::Quota, format!("quota:{}", run.id));
+    }
 
     if s.view.auto.state == "stopped" {
         if let Some(stop) = &s.aj.stop {
