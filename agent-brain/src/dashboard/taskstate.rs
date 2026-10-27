@@ -3098,6 +3098,138 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rejected_banner() {
+        let task = dummy_task("qa_fix");
+        let git = GitFacts::default();
+        let facts = facts_without(&task, &git);
+        let af = AutoFacts {
+            human_mode: Some("rejected"),
+            human_name: Some("Hà"),
+            ..Default::default()
+        };
+        let view = derive_with(&facts, &af);
+        assert_eq!(view.banner.as_deref(), Some("Chờ bạn · trả lại cho Hà"));
+        assert_eq!(view.group, "waiting");
+
+        // Without a display name the banner falls back to a neutral word, never to empty text.
+        let af = AutoFacts {
+            human_mode: Some("rejected"),
+            ..Default::default()
+        };
+        assert_eq!(
+            derive_with(&facts, &af).banner.as_deref(),
+            Some("Chờ bạn · trả lại cho người")
+        );
+    }
+
+    #[test]
+    fn human_strip_gating() {
+        let git = GitFacts {
+            current_branch: Some("task/sua-app".to_string()),
+            plan_exists: true,
+            plan_commit: Some("abc".to_string()),
+            code_after_plan: true,
+            ..Default::default()
+        };
+        let waiting = "Đang chờ Hà làm — bấm Xong khi họ báo xong.";
+        let rejected = "Kết quả của Hà chưa đạt — bấm Trả lại để Hà làm lại.";
+        // planned -> run_dev + relead; dev_done -> run_qa; qa_fix -> relead + run_dev.
+        for (status, ids) in [
+            ("planned", vec!["run_dev", "relead"]),
+            ("dev_done", vec!["run_qa"]),
+            ("qa_fix", vec!["relead", "run_dev"]),
+        ] {
+            let task = dummy_task(status);
+            let facts = facts_without(&task, &git);
+            for (mode, text) in [("waiting", waiting), ("rejected", rejected)] {
+                let af = AutoFacts {
+                    human_mode: Some(mode),
+                    human_name: Some("Hà"),
+                    ..Default::default()
+                };
+                let view = derive_with(&facts, &af);
+                let got: Vec<&str> = view.actions.iter().map(|a| a.id.as_str()).collect();
+                assert_eq!(got, ids, "{status}/{mode}");
+                for a in &view.actions {
+                    assert!(!a.enabled, "{status}/{mode}: {} must be disabled", a.id);
+                    assert_eq!(a.reason.as_deref(), Some(text), "{status}/{mode}/{}", a.id);
+                }
+            }
+            // No marker: the same actions are not gated by the human rule.
+            let view = derive_with(&facts, &AutoFacts::default());
+            assert!(view.actions.iter().any(|a| a.enabled), "{status}");
+        }
+
+        // A live driver does not hide the human reason: the person's text is first-match.
+        let task = dummy_task("planned");
+        let facts = facts_without(&task, &git);
+        let af = AutoFacts {
+            driver_alive: true,
+            human_mode: Some("waiting"),
+            human_name: Some("Hà"),
+            ..Default::default()
+        };
+        let view = derive_with(&facts, &af);
+        assert!(view
+            .actions
+            .iter()
+            .all(|a| a.reason.as_deref() == Some(waiting)));
+    }
+
+    #[test]
+    fn waiting_human_state() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+
+        let auto = dummy_task_auto(Some("waiting_human"), None);
+        let af = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto),
+            ..Default::default()
+        };
+        assert_eq!(auto_state_of(&af), "waiting_human");
+
+        // Without a workflow (legacy task) the autopilot is off whatever the column says.
+        let legacy = AutoFacts {
+            auto: Some(&auto),
+            ..Default::default()
+        };
+        assert_eq!(auto_state_of(&legacy), "off");
+
+        let task = dummy_task("planned");
+        let git = GitFacts {
+            current_branch: Some("task/sua-app".to_string()),
+            ..Default::default()
+        };
+        let facts = facts_without(&task, &git);
+        let af = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto),
+            human_mode: Some("waiting"),
+            human_name: Some("Hà"),
+            ..Default::default()
+        };
+        let view = derive_with(&facts, &af);
+        assert_eq!(view.auto.state, "waiting_human");
+        assert_eq!(view.banner.as_deref(), Some("Chờ Hà làm"));
+        // Autopilot cannot be started again while the person works.
+        let start = view
+            .controls
+            .iter()
+            .find(|c| c.id == "auto_start")
+            .expect("auto_start control");
+        assert!(!start.enabled);
+        assert_eq!(
+            start.reason.as_deref(),
+            Some("Đang chờ Hà làm — bấm Xong khi họ báo xong.")
+        );
+    }
+
     /// Facts with no runs, for tests that vary only the `AutoFacts`.
     fn facts_without<'a>(task: &'a TaskRow, git: &'a GitFacts) -> TaskFacts<'a> {
         TaskFacts {

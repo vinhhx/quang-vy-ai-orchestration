@@ -313,3 +313,250 @@ fn human_action_refusals() {
     assert_eq!(team_json(&sb), marker, "refusals leave the marker alone");
     assert_eq!(human_run_count(&sb), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Task 2: rejected mode, Trả lại, strip gating, autopilot waiting_human
+// ---------------------------------------------------------------------------
+
+/// Turns the waiting marker of task 1 into a rejected fix step, as `run dev --fix qa` leaves it.
+fn make_rejected(sb: &Sandbox) {
+    edit_wait(sb, |w| {
+        w.mode = "rejected".to_string();
+        w.stage = "fix".to_string();
+        w.fix_for = Some("qa".to_string());
+        w.round = Some(1);
+        w.report_paths = vec![".qa-report.md".to_string()];
+    });
+}
+
+#[test]
+fn rejected_mode_and_return() {
+    let sb = Sandbox::new();
+    let _w = setup(&sb, true);
+    run_dev_waits(&sb);
+    make_rejected(&sb);
+    let srv = sb.serve(&[]);
+
+    let d = task_detail(&srv);
+    assert_eq!(d["human"]["mode"], "rejected");
+    assert_eq!(d["human"]["step"], "fix");
+    assert_eq!(d["human"]["step_name"], "Sửa");
+    assert_eq!(d["human"]["round"], 1);
+    assert_eq!(d["human"]["report_paths"], json!([".qa-report.md"]));
+    let done = action(&d, "human_done").expect("human_done");
+    assert_eq!(done["enabled"], false);
+    assert_eq!(
+        done["reason"],
+        "Bấm Trả lại trước: kết quả lần trước của Hà chưa đạt."
+    );
+    let back = action(&d, "human_return").expect("human_return");
+    assert_eq!(back["enabled"], true, "{back}");
+    assert_eq!(d["banner"], "Chờ bạn · trả lại cho Hà");
+    assert_eq!(d["group"], "waiting");
+
+    // Xong is refused with the server text and starts nothing.
+    let r = srv.post_json(
+        "/api/tasks/1/human/done",
+        &json!({ "rev": d["rev"].as_str().unwrap() }),
+    );
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(
+        r.json()["error"],
+        "Bấm Trả lại trước: kết quả lần trước của Hà chưa đạt."
+    );
+    assert_eq!(human_run_count(&sb), 0);
+
+    // Trả lại runs the CLI as a job; the marker goes back to `waiting`.
+    let since = task_team(&sb).wait.unwrap().since_ms;
+    std::thread::sleep(Duration::from_millis(20));
+    let r = srv.post_json(
+        "/api/tasks/1/human/return",
+        &json!({ "rev": d["rev"].as_str().unwrap() }),
+    );
+    assert_eq!(r.status, 202, "{}", r.text());
+    let job = wait_for_job(&srv, r.json()["job_id"].as_u64().unwrap());
+    assert_eq!(job["exit_code"], 0, "job output: {}", job["output"]);
+    let wait = task_team(&sb).wait.expect("marker stays");
+    assert_eq!(wait.mode, "waiting");
+    assert!(wait.since_ms > since);
+
+    let d = task_detail(&srv);
+    assert_eq!(d["human"]["mode"], "waiting");
+    assert_eq!(d["banner"], "Chờ Hà làm");
+    assert_eq!(d["group"], "running");
+    assert_eq!(action(&d, "human_done").unwrap()["enabled"], true);
+    assert_eq!(action(&d, "human_return").unwrap()["enabled"], false);
+}
+
+#[test]
+fn xong_refused_off_the_task_branch() {
+    let sb = Sandbox::new();
+    let w = setup(&sb, true);
+    run_dev_waits(&sb);
+    sb.git(&w.repo, &["checkout", "main"]);
+    let srv = sb.serve(&[]);
+
+    let d = task_detail(&srv);
+    let done = action(&d, "human_done").expect("human_done");
+    assert_eq!(done["enabled"], false);
+    assert_eq!(
+        done["reason"],
+        "Không ở nhánh task 'task/sua-app' (nhánh hiện tại: 'main') — không đoán"
+    );
+    let r = srv.post_json("/api/tasks/1/human/done", &json!({}));
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(human_run_count(&sb), 0);
+}
+
+#[test]
+fn strip_disabled_while_waiting() {
+    let sb = Sandbox::new();
+    let _w = setup(&sb, true);
+    run_dev_waits(&sb);
+    let srv = sb.serve(&[]);
+    let waiting = "Đang chờ Hà làm — bấm Xong khi họ báo xong.";
+    let rejected = "Kết quả của Hà chưa đạt — bấm Trả lại để Hà làm lại.";
+
+    // planned: Chạy Dev / Chạy lại Lead are refused, in the payload and on the routes.
+    let d = task_detail(&srv);
+    for id in ["run_dev", "relead"] {
+        let a = action(&d, id).unwrap_or_else(|| panic!("{id} present"));
+        assert_eq!(a["enabled"], false, "{id}");
+        assert_eq!(a["reason"], waiting, "{id}");
+    }
+    for route in ["dev", "relead"] {
+        let r = srv.post_json(&format!("/api/tasks/1/{route}"), &json!({}));
+        assert_eq!(r.status, 409, "{route}: {}", r.text());
+        assert_eq!(r.json()["error"], waiting, "{route}");
+    }
+    // Đổi đội hình stays refused while the person works (06-10).
+    let r = srv.post_json("/api/tasks/1/team", &json!({ "team": "mac-dinh" }));
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(
+        r.json()["error"],
+        "Đang chờ Hà làm — chưa đổi được đội hình."
+    );
+
+    // dev_done: Chạy QA is refused the same way.
+    sb.db()
+        .execute("UPDATE tasks SET status = 'dev_done' WHERE id = 1", [])
+        .unwrap();
+    let d = task_detail(&srv);
+    let qa = action(&d, "run_qa").expect("run_qa present");
+    assert_eq!(qa["enabled"], false);
+    assert_eq!(qa["reason"], waiting);
+    let r = srv.post_json("/api/tasks/1/qa", &json!({}));
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(r.json()["error"], waiting);
+
+    // A rejected marker has its own text.
+    make_rejected(&sb);
+    sb.db()
+        .execute("UPDATE tasks SET status = 'qa_fix' WHERE id = 1", [])
+        .unwrap();
+    let d = task_detail(&srv);
+    for id in ["run_dev", "relead"] {
+        let a = action(&d, id).unwrap_or_else(|| panic!("{id} present"));
+        assert_eq!(a["enabled"], false, "{id}");
+        assert_eq!(a["reason"], rejected, "{id}");
+    }
+    let r = srv.post_json("/api/tasks/1/dev", &json!({}));
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(r.json()["error"], rejected);
+    assert_eq!(human_run_count(&sb), 0);
+}
+
+fn review_report(verdict: &str, blocking: i64, advisory: i64) -> String {
+    let mut body = format!(
+        "---\nverdict: {verdict}\nblocking: {blocking}\nadvisory: {advisory}\nfiles: []\n---\n# Review: sửa app\n## Mục chặn (blocking)\n"
+    );
+    for i in 0..blocking {
+        body.push_str(&format!("- mục chặn {}\n", i + 1));
+    }
+    body.push_str("## Góp ý (advisory)\n");
+    for i in 0..advisory {
+        body.push_str(&format!("- góp ý {}\n", i + 1));
+    }
+    body
+}
+
+fn plan_review_entry(verdict: &str, blocking: i64, advisory: i64) -> Value {
+    json!({"ops": [{
+        "op": "write",
+        "path": ".plan-review.md",
+        "content": review_report(verdict, blocking, advisory),
+    }]})
+}
+
+#[test]
+fn autopilot_waiting_human_state() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb);
+    let repo = sb.make_repo(
+        "web",
+        &[("src/a.txt", "a\n")],
+        None,
+        Some(remote.to_str().unwrap()),
+    );
+    sb.git(&repo, &["push", "-u", "origin", "main"]);
+    let mut entry = sb.project_entry(&repo, "web", "work");
+    entry.as_object_mut().unwrap().remove("workflow");
+    sb.write_map(json!([entry]), &[]);
+    sb.write_staff(json!({"ha": {"display_name": "Hà"}}));
+    sb.write_teams(json!({
+        "doi-nguoi": {"description": "Dev do Hà làm", "roles": {"dev": "người:ha"}}
+    }));
+
+    // mac-dinh autopilot: Lead, plan review approves, stops at the gate; approve starts the
+    // driver, which reaches the person's Dev step and releases the task as `waiting_human`.
+    let sc = json!({ "by_role": {
+        "lead": [lead_plan_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 2)],
+    }});
+    let res = sb.run(
+        &[
+            "auto",
+            "--start",
+            "--name",
+            "sua-app",
+            "--team",
+            "doi-nguoi",
+            "--",
+            "web",
+            "sửa app",
+        ],
+        Some(sc),
+    );
+    assert_eq!(res.code, 0, "auto --start: {}\n{}", res.stderr, res.stdout);
+    let res = sb.run(&["approve", "1"], None);
+    assert_eq!(res.code, 0, "approve 1: {}\n{}", res.stderr, res.stdout);
+    let state: Option<String> = sb
+        .db()
+        .query_row("SELECT auto_state FROM tasks WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(state.as_deref(), Some("waiting_human"));
+
+    let srv = sb.serve(&[]);
+    let d = task_detail(&srv);
+    assert_eq!(d["auto"]["state"], "waiting_human");
+    assert_eq!(d["banner"], "Chờ Hà làm");
+    assert_eq!(d["group"], "running");
+    assert_eq!(d["human"]["mode"], "waiting");
+    let start = d["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "auto_start")
+        .expect("auto_start control");
+    assert_eq!(start["enabled"], false);
+    assert_eq!(
+        start["reason"],
+        "Đang chờ Hà làm — bấm Xong khi họ báo xong."
+    );
+    // Autopilot does not start from the dashboard while the person works.
+    let r = srv.post_json("/api/tasks/1/auto", &json!({}));
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(human_run_count(&sb), 0);
+}
