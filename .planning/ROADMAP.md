@@ -412,14 +412,14 @@ Plans:
   4. *(chuyển sang Phase 06.1)*
   5. Antigravity được xử lý theo kết quả S7 (chạy headless như engine, hoặc dùng thủ công và theo dõi qua `git diff`), và tỉ lệ "Cần sửa" của QA được ghi theo engine.
 
-**Plans:** 0/19 plans executed
+**Plans:** 3/19 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 06-01-PLAN.md — E-09 decision gate: one tiny real DeepSeek call via `claude` (user-run, D-02) (wave 1)
+- [x] 06-01-PLAN.md — E-09 decision gate: one tiny real DeepSeek call via `claude` (user-run, D-02) (wave 1)
 - [ ] 06-02-PLAN.md — agy 1.4.7 probe: event shape, narrow Dev permission mode (user-run, D-26) (wave 1)
-- [ ] 06-03-PLAN.md — Engine catalog, `teams.json`/`staff.json` loaders and rules; register TEAM/SET/HUM/QUOTA IDs (wave 1)
-- [ ] 06-04-PLAN.md — Schema v4 `tasks.team_json` + run engine recording (blocking decision gate, one-way) (wave 1)
+- [x] 06-03-PLAN.md — Engine catalog, `teams.json`/`staff.json` loaders and rules; register TEAM/SET/HUM/QUOTA IDs (wave 1)
+- [x] 06-04-PLAN.md — Schema v4 `tasks.team_json` + run engine recording (blocking decision gate, one-way) (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 06-05-PLAN.md — One engine seam per role run: `runs.engine`, header `engine …`, `--team` (wave 2)
@@ -460,6 +460,7 @@ Plans:
   1. Dự án `type: media` là thư mục thường, không tạo Git worktree; file output nằm ở `<dự án media>/output/`, không nằm trong repo code nào.
   2. Kịch bản đã duyệt trong dự án media được agent chuyển thành cấu hình/script render, runner chạy ra file output; mỗi job ghi vào bảng `media_jobs`.
   3. Kill một job render thì FFmpeg dừng và không còn tiến trình sót (cách kill S4).
+
 **Notes**: Pipeline kịch bản whiteboard thật chưa có — phase này làm job render chung; nối pipeline thật làm sau. Discuss riêng trước khi plan.
 **Plans**: TBD
 
@@ -487,4 +488,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 13/13 | Complete    | 2026-10-19 |
-| 6. Multi-engine & Media Branch | 0/19 | Planned | - |
+| 6. Multi-engine & Media Branch | 3/19 | In Progress | - |
