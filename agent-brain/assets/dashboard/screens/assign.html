@@ -92,6 +92,12 @@
           </span>
         </label>
       </template>
+      <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 text-base font-normal leading-normal break-words" x-show="hasTeamWarning" x-text="teamWarningText"></div>
+      <div aria-live="polite" class="space-y-2">
+        <template x-for="(line, i) in teamHelpLines" :key="i">
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="line"></p>
+        </template>
+      </div>
     </fieldset>
 
     <div class="space-y-2">

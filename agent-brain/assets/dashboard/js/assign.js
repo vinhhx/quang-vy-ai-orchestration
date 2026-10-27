@@ -743,6 +743,45 @@
         return 'Đang dùng các đội hình có sẵn (' + names.join(', ') + ') cho đến khi bạn sửa xong file.';
       },
 
+      get selectedTeam() {
+        return this.findTeam(this.teamName);
+      },
+
+      // Amber callout for the selected team; a warning only, never a reason to disable Giao việc.
+      get teamWarningText() {
+        var t = this.selectedTeam;
+        var list = this.teamNotReady(t);
+        if (!t || list.length === 0) return '';
+        var parts = [];
+        for (var i = 0; i < list.length; i++) {
+          parts.push(list[i].engine + ' (' + list[i].word + ')');
+        }
+        return 'Đội hình ' + t.name + ' dùng engine chưa sẵn sàng: ' + parts.join(', ') +
+          '. Task vẫn giao được, nhưng bước dùng engine này sẽ dừng với lỗi.';
+      },
+
+      get hasTeamWarning() {
+        return this.teamWarningText !== '';
+      },
+
+      // Helper lines under the list: the server note of the project default (verbatim) and,
+      // per human in the team, how their step waits.
+      get teamHelpLines() {
+        var lines = [];
+        var t = this.selectedTeam;
+        if (!t) return lines;
+        var d = this.projectTeamDefault(this.selected);
+        if (d && d.note && d.effective === t.name) {
+          lines.push(d.note);
+        }
+        var humans = this.teamHumanNames(t);
+        for (var i = 0; i < humans.length; i++) {
+          lines.push('Bước do ' + humans[i] + ' làm sẽ chờ ở trạng thái "Chờ ' + humans[i] +
+            ' làm" cho tới khi bạn bấm Xong ở màn hình task.');
+        }
+        return lines;
+      },
+
       get selectedHelp() {
         var w = this.findWorkflow(this.workflowName);
         if (!w) return '';
