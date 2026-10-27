@@ -95,6 +95,17 @@ pub fn cmd_lead(
         crate::term::emit(note_msg);
     }
 
+    // TEAM-03 / D-12: an unknown explicit team is refused here, before any branch or task row.
+    let (teams_loaded, _staff) = crate::teams::load();
+    let team_res = crate::teams::resolve(
+        &teams_loaded,
+        opts.team.as_deref(),
+        crate::projects::team_of(&ctx.map, &proj.id).as_deref(),
+    )?;
+    if let Some(ref team_note) = team_res.note {
+        crate::term::emit(team_note);
+    }
+
     let curr_branch = crate::gitops::current_branch(&proj_path);
     let is_replan = curr_branch.as_deref() == Some(&branch);
 
@@ -318,6 +329,22 @@ pub fn cmd_lead(
             .unwrap_or_else(|| "khong-ro".to_string());
         crate::term::emit(&format!(
             "Task đã có quy trình '{existing_name}' — bỏ qua --workflow."
+        ));
+    }
+
+    // The team is recorded before the Lead agent starts and never replaced here.
+    let set = crate::db::set_task_team_if_null(
+        &ctx.conn,
+        task_id,
+        &crate::teams::TaskTeam::new(&team_res.team.name).to_json(),
+    )?;
+    if !set && opts.team.is_some() {
+        let existing = crate::db::task_team_json(&ctx.conn, task_id)?
+            .and_then(|j| crate::teams::TaskTeam::parse(Some(&j)))
+            .map(|t| t.name)
+            .unwrap_or_else(|| "khong-ro".to_string());
+        crate::term::emit(&format!(
+            "Task đã có đội hình '{existing}' — bỏ qua --team."
         ));
     }
 

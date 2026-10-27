@@ -2,8 +2,10 @@
 //! Lệnh, endpoint và biến key chỉ nằm trong config.json; ở đây chỉ có kiểu và độ sẵn sàng tính tại máy.
 
 use crate::config::Config;
+use crate::error::{BrainError, BrainResult};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 use unicode_normalization::UnicodeNormalization;
 
 pub const ENGINE_CLAUDE: &str = "claude";
@@ -212,9 +214,222 @@ pub fn readiness(
     vec![claude, deepseek, agy, human]
 }
 
+// ---- the engine seam (D-14): one decision per role run ----
+
+/// The engine a role run uses, decided from the task's stored team.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedEngine {
+    pub engine: Engine,
+    /// `None` = a legacy task (no `team_json`) or a run without a task.
+    pub team: Option<String>,
+    pub wait: Option<crate::teams::HumanWait>,
+}
+
+impl ResolvedEngine {
+    fn claude() -> ResolvedEngine {
+        ResolvedEngine {
+            engine: Engine::Claude,
+            team: None,
+            wait: None,
+        }
+    }
+}
+
+/// Task's stored team -> the role's engine. No task, or a task created before Phase 6 (NULL
+/// `team_json`), runs on claude. A team that no longer exists refuses the step: the engine is
+/// never switched silently (D-16). While the task waits for a person, only the waiting role runs.
+pub fn resolve_for_run(
+    conn: &rusqlite::Connection,
+    task_id: Option<i64>,
+    role: &str,
+) -> BrainResult<ResolvedEngine> {
+    let Some(task_id) = task_id else {
+        return Ok(ResolvedEngine::claude());
+    };
+    let Some(raw) = crate::db::task_team_json(conn, task_id)? else {
+        return Ok(ResolvedEngine::claude());
+    };
+    let task_team = crate::teams::TaskTeam::parse(Some(&raw)).ok_or_else(|| {
+        BrainError::error(format!(
+            "Không đọc được đội hình của task {task_id} — đổi đội hình rồi chạy lại."
+        ))
+    })?;
+    let (loaded, staff) = crate::teams::load();
+    let team = loaded.get(&task_team.name).ok_or_else(|| {
+        BrainError::error(format!(
+            "Đội hình '{}' của task không còn trong teams.json — đổi đội hình rồi chạy lại.",
+            task_team.name
+        ))
+    })?;
+
+    if let Some(wait) = &task_team.wait {
+        if wait.role != role {
+            let step = if wait.stage == "fix" { "Sửa" } else { "Code" };
+            return Err(BrainError::error(format!(
+                "Task đang chờ {} làm bước {step} — bấm Xong trên dashboard (hoặc agent-brain human done {task_id}) trước khi chạy bước khác.",
+                staff.display_name_of(&wait.staff)
+            )));
+        }
+    }
+
+    Ok(ResolvedEngine {
+        engine: team.engine_for(role),
+        team: Some(task_team.name.clone()),
+        wait: task_team.wait.clone(),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFormat {
+    Claude,
+    Agy,
+}
+
+/// What `execute_role_staged` spawns and records for one run.
+#[derive(Debug, Clone)]
+pub struct EnginePlan {
+    pub engine: Engine,
+    /// Value stored in `runs.engine`.
+    pub db_engine: &'static str,
+    /// Header word: `claude` | `deepseek` | `agy` | `người:<id>`.
+    pub display: String,
+    pub argv: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub model_label: String,
+    pub stream: StreamFormat,
+    pub stdout_file: bool,
+    /// Secret values to scrub from anything written to disk.
+    pub redact: Vec<String>,
+    pub response_file: Option<&'static str>,
+}
+
+/// `claude_argv` is the claude-family argv the role built; `base_env` is the project profile's
+/// env (D-07: the claude engine always uses it unchanged). Other engines derive their own argv
+/// from the claude one in later plans; until then they are refused here, before any run row.
+pub fn plan_for(
+    cfg: &Config,
+    resolved: &ResolvedEngine,
+    role: &str,
+    claude_argv: &[String],
+    claude_model: &str,
+    base_env: BTreeMap<String, String>,
+    timeout: Duration,
+) -> BrainResult<EnginePlan> {
+    let _ = (cfg, role, timeout);
+    match &resolved.engine {
+        Engine::Claude => Ok(EnginePlan {
+            engine: Engine::Claude,
+            db_engine: ENGINE_CLAUDE,
+            display: ENGINE_CLAUDE.to_string(),
+            argv: claude_argv.to_vec(),
+            env: base_env,
+            model_label: claude_model.to_string(),
+            stream: StreamFormat::Claude,
+            stdout_file: false,
+            redact: Vec::new(),
+            response_file: None,
+        }),
+        Engine::Deepseek | Engine::Agy => Err(BrainError::error(format!(
+            "Engine {} chưa được bật trong bản agent-brain này",
+            resolved.engine.as_db_str()
+        ))),
+        Engine::Human(_) => Err(BrainError::error(
+            "Engine người không chạy tiến trình — bước Dev của nhân sự bắt đầu bằng agent-brain run dev",
+        )),
+    }
+}
+
+/// `(-p input, --append-system-prompt text)` of a claude-family argv; `None` when either is missing.
+pub fn claude_argv_parts(argv: &[String]) -> Option<(String, String)> {
+    let after = |flag: &str| {
+        argv.iter()
+            .position(|a| a == flag)
+            .and_then(|i| argv.get(i + 1))
+            .cloned()
+    };
+    Some((after("-p")?, after("--append-system-prompt")?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_argv_parts_reads_input_and_prompt() {
+        let cfg = test_cfg(serde_json::json!({}));
+        let spec = crate::roles::RoleSpec {
+            role: crate::roles::Role::Dev,
+            user_input: "làm theo plan".to_string(),
+            allowed_tools: vec![],
+            disallowed_tools: vec![],
+            extra_args: vec![],
+        };
+        let argv = crate::roles::build_command_with_prompt(&spec, &cfg, "luật của dev").unwrap();
+        assert_eq!(
+            claude_argv_parts(&argv),
+            Some(("làm theo plan".to_string(), "luật của dev".to_string()))
+        );
+        assert_eq!(claude_argv_parts(&["claude".to_string()]), None);
+        assert_eq!(
+            claude_argv_parts(&["-p".to_string(), "x".to_string()]),
+            None
+        );
+    }
+
+    #[test]
+    fn plan_for_claude_keeps_argv_and_env() {
+        let cfg = test_cfg(serde_json::json!({}));
+        let resolved = ResolvedEngine {
+            engine: Engine::Claude,
+            team: Some("mac-dinh".to_string()),
+            wait: None,
+        };
+        let argv = vec!["claude".to_string(), "-p".to_string(), "x".to_string()];
+        let mut env = BTreeMap::new();
+        env.insert("A".to_string(), "1".to_string());
+        let p = plan_for(
+            &cfg,
+            &resolved,
+            "dev",
+            &argv,
+            "sonnet",
+            env.clone(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(p.argv, argv);
+        assert_eq!(p.env, env);
+        assert_eq!(p.db_engine, "claude");
+        assert_eq!(p.display, "claude");
+        assert_eq!(p.model_label, "sonnet");
+        assert_eq!(p.stream, StreamFormat::Claude);
+
+        for (engine, text) in [
+            (
+                Engine::Deepseek,
+                "Engine deepseek chưa được bật trong bản agent-brain này",
+            ),
+            (
+                Engine::Agy,
+                "Engine agy chưa được bật trong bản agent-brain này",
+            ),
+        ] {
+            let r = ResolvedEngine {
+                engine,
+                team: None,
+                wait: None,
+            };
+            let e =
+                plan_for(&cfg, &r, "dev", &argv, "m", BTreeMap::new(), Duration::ZERO).unwrap_err();
+            assert_eq!(e.message, text);
+        }
+        let r = ResolvedEngine {
+            engine: Engine::Human("ha".to_string()),
+            team: None,
+            wait: None,
+        };
+        assert!(plan_for(&cfg, &r, "dev", &argv, "m", BTreeMap::new(), Duration::ZERO).is_err());
+    }
 
     fn test_cfg(extra: serde_json::Value) -> Config {
         let mut v: serde_json::Value =

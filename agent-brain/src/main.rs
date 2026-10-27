@@ -57,6 +57,9 @@ enum Commands {
         /// Quy trình (workflow) cho task mới
         #[arg(long)]
         workflow: Option<String>,
+        /// Đội hình cho task mới (chỉ với vai trò lead)
+        #[arg(long)]
+        team: Option<String>,
         /// Nguồn của task (nội bộ: bot Telegram)
         #[arg(long, hide = true, value_parser = ["telegram"])]
         origin: Option<String>,
@@ -248,6 +251,7 @@ fn main() {
             review,
             note,
             workflow,
+            team,
             origin,
         } => {
             let opts = roles::RunOpts {
@@ -260,6 +264,7 @@ fn main() {
                 note,
                 workflow,
                 origin,
+                team,
             };
             roles::cmd_run(&mut ctx, role, &project, request.as_deref(), &opts)
         }

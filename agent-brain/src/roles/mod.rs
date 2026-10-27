@@ -365,6 +365,7 @@ pub struct RunOpts {
     pub note: Option<String>,
     pub workflow: Option<String>,
     pub origin: Option<String>,
+    pub team: Option<String>,
 }
 
 pub fn execute_role(
@@ -424,10 +425,22 @@ pub fn execute_role_staged(
         return Err(BrainError::error(reason));
     }
 
-    let env = crate::profile::build_env(
+    // ENG-01 / D-14: the one seam that decides the engine of a run. It runs before any run row
+    // is inserted and before anything is spawned.
+    let resolved = crate::engine::resolve_for_run(&ctx.conn, plan.task_id, &plan.role)?;
+    let base_env = crate::profile::build_env(
         &project.profile,
         &ctx.cfg.profiles,
         &crate::profile::current_env(),
+    )?;
+    let ep = crate::engine::plan_for(
+        &ctx.cfg,
+        &resolved,
+        &plan.role,
+        &plan.argv,
+        &plan.model,
+        base_env,
+        plan.timeout,
     )?;
     let run_dir = match &plan.run_dir {
         Some(rd) => {
@@ -444,17 +457,17 @@ pub fn execute_role_staged(
 
     let p_desc = crate::profile::describe_profile(&project.profile, &ctx.cfg.profiles);
     crate::term::emit(&format!(
-        "[agent-brain] {} · {} · profile {} ({}) · model {}",
-        plan.role, project.id, project.profile, p_desc, plan.model
+        "[agent-brain] {} · {} · profile {} ({}) · engine {} · model {}",
+        plan.role, project.id, project.profile, p_desc, ep.display, ep.model_label
     ));
 
     let stderr_path = run_dir.join("stderr.txt");
     let stream_path = run_dir.join("stream.jsonl");
 
     let req = crate::runner::RunRequest {
-        argv: plan.argv.clone(),
+        argv: ep.argv.clone(),
         cwd: root.to_path_buf(),
-        env,
+        env: ep.env.clone(),
         stderr_path,
         stream_path,
         timeout: plan.timeout,
@@ -468,6 +481,9 @@ pub fn execute_role_staged(
         project_id: &'a str,
         profile: &'a str,
         run_dir: &'a Path,
+        db_engine: &'static str,
+        model_label: String,
+        team: Option<String>,
         summary: Summary,
         run_id: Option<i64>,
         seq: i64,
@@ -481,14 +497,15 @@ pub fn execute_role_staged(
                 project_id: proj_row_id,
                 role: self.plan.role.clone(),
                 profile: self.profile.to_string(),
-                model: Some(self.plan.model.clone()),
+                model: Some(self.model_label.clone()),
                 pid: pid as i64,
                 pgid: pgid as i64,
                 pid_start: pid_start as i64,
                 base_commit: self.plan.base_commit.clone(),
                 run_dir: Some(self.run_dir.to_string_lossy().to_string()),
             };
-            let run_id = crate::db::insert_run(&self.ctx.conn, &new_run)?;
+            let run_id =
+                crate::db::insert_run_with_engine(&self.ctx.conn, &new_run, self.db_engine)?;
             self.run_id = Some(run_id);
             if self.stage.stage.is_some() || self.stage.round.is_some() {
                 crate::db::set_run_stage_round(
@@ -498,9 +515,23 @@ pub fn execute_role_staged(
                     self.stage.round,
                 )?;
             }
-            if let Some(ref m) = self.stage.metrics {
-                crate::db::merge_run_metrics(&self.ctx.conn, run_id, m)?;
-            }
+            // One merge: the stage metrics plus the team (JSON null for a legacy task).
+            let mut patch = match self.stage.metrics.as_ref().and_then(|m| m.as_object()) {
+                Some(obj) => obj.clone(),
+                None => serde_json::Map::new(),
+            };
+            patch.insert(
+                "team".to_string(),
+                match &self.team {
+                    Some(t) => serde_json::Value::String(t.clone()),
+                    None => serde_json::Value::Null,
+                },
+            );
+            crate::db::merge_run_metrics(
+                &self.ctx.conn,
+                run_id,
+                &serde_json::Value::Object(patch),
+            )?;
             if let Some(tid) = self.plan.task_id {
                 crate::term::emit(&format!("task {tid}, run {run_id}"));
             } else {
@@ -556,6 +587,9 @@ pub fn execute_role_staged(
         project_id: &project.id,
         profile: &project.profile,
         run_dir: &run_dir,
+        db_engine: ep.db_engine,
+        model_label: ep.model_label.clone(),
+        team: resolved.team.clone(),
         summary: Summary::new(plan.plan_files.clone(), Some(root.to_path_buf())),
         run_id: None,
         seq: 0,
@@ -631,6 +665,10 @@ pub fn cmd_run(
 
     if opts.origin.is_some() && role != Role::Lead {
         return Err(BrainError::error("--origin chỉ dùng với vai trò lead"));
+    }
+
+    if opts.team.is_some() && role != Role::Lead {
+        return Err(BrainError::error("--team chỉ dùng với vai trò lead"));
     }
 
     match role {
