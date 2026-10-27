@@ -1871,7 +1871,7 @@ EOF
     exit 1
   fi
 
-  if ! node "$REPO_ROOT/scripts/dashboard-keys.mjs" "$PORT" "$URL" > "$TMP/keys.out" 2>&1; then
+  if ! AB_SMOKE_REPO="$REPO_DIR" node "$REPO_ROOT/scripts/dashboard-keys.mjs" "$PORT" "$URL" > "$TMP/keys.out" 2>&1; then
     if [[ -f "$TMP/keys.out" ]]; then
       cat "$TMP/keys.out" >&2
     fi
@@ -1883,5 +1883,5 @@ EOF
 
   stop_chrome
   cat "$TMP/keys.out"
-  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, change-team, task-quota, picker, layout-5.2, board-keys, board-layout"
+  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, change-team, task-quota, task-human, picker, layout-5.2, board-keys, board-layout"
 fi
