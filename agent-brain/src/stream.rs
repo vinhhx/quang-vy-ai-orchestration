@@ -158,6 +158,9 @@ pub fn classify(line: &[u8]) -> Option<StreamEvent> {
                     "rate_limit_event" => "rate_limit_event".to_string(),
                     other => format!("unknown:{other}"),
                 }
+            } else if let Some(e) = val.get("event").and_then(|v| v.as_str()) {
+                // agy keys its events by `event` (S7), not `type`.
+                format!("agy/{e}")
             } else {
                 "unknown:".to_string()
             };
@@ -210,10 +213,19 @@ pub struct Summary {
     /// `error` / `error_status` of the last `system/api_retry`.
     pub last_retry_error: Option<String>,
     pub last_retry_status: Option<i64>,
+    /// agy `result.status` (`SUCCESS` | `ERROR` | ...); `None` without an agy result.
+    pub agy_status: Option<String>,
+    pub agy_response: Option<String>,
+    pub agy_error: Option<String>,
+    /// `init.permission_mode` of an agy run.
+    pub agy_permission_mode: Option<String>,
+    /// Raw thinking tokens of an agy run (folded into `usage.output_tokens` for cost).
+    pub thinking_tokens: i64,
     plan_files: Option<Vec<String>>,
     root: Option<PathBuf>,
     seen_msg_ids: BTreeSet<String>,
     msg_usages: BTreeMap<String, Usage>,
+    agy_step_thinking: BTreeMap<i64, i64>,
     result_seen: bool,
 }
 
@@ -248,10 +260,16 @@ impl Summary {
             terminal_reason: None,
             last_retry_error: None,
             last_retry_status: None,
+            agy_status: None,
+            agy_response: None,
+            agy_error: None,
+            agy_permission_mode: None,
+            thinking_tokens: 0,
             plan_files,
             root,
             seen_msg_ids: BTreeSet::new(),
             msg_usages: BTreeMap::new(),
+            agy_step_thinking: BTreeMap::new(),
             result_seen: false,
         }
     }
@@ -478,6 +496,65 @@ impl Summary {
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0);
                 }
+            } else if ev.kind == "agy/init" {
+                if self.session_id.is_empty() {
+                    if let Some(c) = obj.get("conversation_id").and_then(|v| v.as_str()) {
+                        self.session_id = c.to_string();
+                    }
+                }
+                self.agy_permission_mode = obj
+                    .get("init")
+                    .and_then(|i| i.get("permission_mode"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+            } else if ev.kind == "agy/step_update" {
+                if let Some(step) = obj.get("step_update").and_then(|v| v.as_object()) {
+                    let done = step.get("state").and_then(|v| v.as_str()) == Some("DONE");
+                    let idx = step
+                        .get("step_index")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(-1);
+                    if done {
+                        if let Some(u) = step.get("usage").and_then(|v| v.as_object()) {
+                            let (usage, thinking) = agy_usage(u);
+                            self.msg_usages.insert(format!("agy-step-{idx}"), usage);
+                            self.agy_step_thinking.insert(idx, thinking);
+                        }
+                    }
+                }
+            } else if ev.kind == "agy/result" {
+                if let Some(r) = obj.get("result").and_then(|v| v.as_object()) {
+                    self.result_seen = true;
+                    let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                    self.agy_status = Some(status.to_string());
+                    self.is_error = status != "SUCCESS";
+                    self.agy_response = r
+                        .get("response")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    self.result_text = self.agy_response.clone();
+                    self.agy_error = r
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+                    self.num_turns = r.get("num_turns").and_then(|v| v.as_i64());
+                    if self.session_id.is_empty() {
+                        if let Some(c) = r
+                            .get("conversation_id")
+                            .and_then(|v| v.as_str())
+                            .filter(|c| !c.is_empty())
+                        {
+                            self.session_id = c.to_string();
+                        }
+                    }
+                    self.cost_usd = 0.0;
+                    if let Some(u) = r.get("usage").and_then(|v| v.as_object()) {
+                        let (usage, thinking) = agy_usage(u);
+                        self.usage = usage;
+                        self.thinking_tokens = thinking;
+                    }
+                }
             }
         }
 
@@ -492,6 +569,7 @@ impl Summary {
             self.format_ok = false;
             self.usage_source = UsageSource::Partial;
             let mut sum_usage = Usage::default();
+            self.thinking_tokens = self.agy_step_thinking.values().sum();
             for u in self.msg_usages.values() {
                 sum_usage.input_tokens += u.input_tokens;
                 sum_usage.output_tokens += u.output_tokens;
@@ -520,6 +598,22 @@ impl Summary {
             self.reads_outside_plan = None;
         }
     }
+}
+
+/// agy `usage` -> (usage with thinking folded into output, raw thinking tokens). agy reports no
+/// cache writes.
+fn agy_usage(u: &serde_json::Map<String, serde_json::Value>) -> (Usage, i64) {
+    let n = |k: &str| u.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+    let thinking = n("thinking_tokens");
+    (
+        Usage {
+            input_tokens: n("input_tokens"),
+            output_tokens: n("output_tokens") + thinking,
+            cache_read_input_tokens: n("cache_read_tokens"),
+            cache_creation_input_tokens: 0,
+        },
+        thinking,
+    )
 }
 
 pub fn summarize_file(
@@ -698,5 +792,62 @@ mod tests {
         assert!(s.result_seen());
         assert_eq!(s.api_error_status, None);
         assert_eq!(s.terminal_reason, None);
+    }
+
+    #[test]
+    fn agy_events_classified() {
+        let init = br#"{"event":"init","conversation_id":"c1","init":{"permission_mode":"request-review"}}"#;
+        assert_eq!(classify(init).unwrap().kind, "agy/init");
+        let step = br#"{"event":"step_update","step_update":{"step_index":0,"state":"DONE"}}"#;
+        assert_eq!(classify(step).unwrap().kind, "agy/step_update");
+        let res = br#"{"event":"result","result":{"status":"SUCCESS"}}"#;
+        assert_eq!(classify(res).unwrap().kind, "agy/result");
+        // A claude line keeps its own kinds.
+        assert_eq!(classify(br#"{"type":"result"}"#).unwrap().kind, "result");
+    }
+
+    #[test]
+    fn agy_summary_from_result() {
+        let s = feed_all(&[
+            r#"{"event":"init","conversation_id":"c1","init":{"permission_mode":"request-review"}}"#,
+            r#"{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response"}}"#,
+            r#"{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":100,"output_tokens":10,"thinking_tokens":2,"cache_read_tokens":0}}}"#,
+            r#"{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"xong","num_turns":1,"usage":{"input_tokens":120,"output_tokens":30,"thinking_tokens":5,"cache_read_tokens":40,"total_tokens":150}}}"#,
+        ]);
+        assert!(s.result_seen());
+        assert_eq!(s.session_id, "c1");
+        assert_eq!(s.agy_permission_mode.as_deref(), Some("request-review"));
+        assert_eq!(s.agy_status.as_deref(), Some("SUCCESS"));
+        assert_eq!(s.agy_response.as_deref(), Some("xong"));
+        assert_eq!(s.result_text.as_deref(), Some("xong"));
+        assert!(!s.is_error);
+        assert_eq!(s.num_turns, Some(1));
+        assert_eq!(s.usage.input_tokens, 120);
+        assert_eq!(s.usage.output_tokens, 35);
+        assert_eq!(s.usage.cache_read_input_tokens, 40);
+        assert_eq!(s.usage.cache_creation_input_tokens, 0);
+        assert_eq!(s.thinking_tokens, 5);
+        assert_eq!(s.usage_source, UsageSource::Result);
+    }
+
+    #[test]
+    fn agy_summary_error_and_partial() {
+        let s = feed_all(&[
+            r#"{"event":"result","result":{"conversation_id":"","status":"ERROR","response":"","error":"boom","num_turns":0}}"#,
+        ]);
+        assert!(s.is_error);
+        assert_eq!(s.agy_status.as_deref(), Some("ERROR"));
+        assert_eq!(s.agy_error.as_deref(), Some("boom"));
+
+        // No result: partial usage from DONE steps, with their thinking tokens.
+        let s = feed_all(&[
+            r#"{"event":"step_update","step_update":{"step_index":1,"state":"DONE","usage":{"input_tokens":10,"output_tokens":4,"thinking_tokens":1,"cache_read_tokens":2}}}"#,
+            r#"{"event":"step_update","step_update":{"step_index":2,"state":"DONE","usage":{"input_tokens":20,"output_tokens":6,"thinking_tokens":3,"cache_read_tokens":0}}}"#,
+        ]);
+        assert!(!s.result_seen());
+        assert_eq!(s.usage_source, UsageSource::Partial);
+        assert_eq!(s.usage.input_tokens, 30);
+        assert_eq!(s.usage.output_tokens, 14);
+        assert_eq!(s.thinking_tokens, 4);
     }
 }

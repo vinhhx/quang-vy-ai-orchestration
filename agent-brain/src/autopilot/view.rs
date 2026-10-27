@@ -89,6 +89,9 @@ pub fn stop_detail(info: &StopInfo, slug: &str) -> String {
                 run_id, role
             )
         }
+        StopReason::VuongMac if info.detail_line.is_some() => {
+            info.detail_line.clone().unwrap_or_default()
+        }
         StopReason::VuongMac => {
             format!(
                 "Dev dừng vì vướng mắc. Sửa .plan.md trong editor của bạn rồi commit với message '{}: plan', hoặc chạy lại Lead.",
@@ -339,6 +342,19 @@ mod tests {
         assert_eq!(
             stop_detail(&stop_blocked, "sua-app"),
             "Dev dừng vì vướng mắc. Sửa .plan.md trong editor của bạn rồi commit với message 'sua-app: plan', hoặc chạy lại Lead."
+        );
+
+        // vướng mắc with a detail line (agy:empty) shows that detail
+        let stop_agy_empty = StopInfo {
+            detail_line: Some(
+                "agy không sửa file nào — có thể bị từ chối quyền (xem stderr.txt của run)."
+                    .to_string(),
+            ),
+            ..stop_blocked.clone()
+        };
+        assert_eq!(
+            stop_detail(&stop_agy_empty, "sua-app"),
+            "agy không sửa file nào — có thể bị từ chối quyền (xem stderr.txt của run)."
         );
 
         // dừng bởi bạn at_ms t

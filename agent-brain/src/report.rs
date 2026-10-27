@@ -213,7 +213,7 @@ pub struct NamedFiles {
 /// Paths a report may never add to the fix write set (WR-06): secrets, agent
 /// settings, and CI, hook, editor or build-script files that run code later.
 /// Matches the lowercased, normalised root-relative path.
-fn sensitive_path(rel: &str) -> bool {
+pub(crate) fn sensitive_path(rel: &str) -> bool {
     const DIRS: &[&str] = &[
         ".github",
         ".gitlab",
