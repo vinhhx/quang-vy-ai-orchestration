@@ -348,3 +348,264 @@ fn human_wait_without_origin() {
     assert!(push.error.is_some());
     assert_eq!(wait.mode, "waiting");
 }
+
+// ---------------------------------------------------------------------------
+// Task 2: Xong refusals, scope check, fix steps in `rejected` mode, Trả lại
+// ---------------------------------------------------------------------------
+
+/// What a refused `human done` must leave untouched: marker, run rows and local HEAD.
+fn snapshot(sb: &Sandbox, repo: &std::path::Path) -> (Option<String>, i64, String) {
+    (team_json(sb), run_count(sb), head(sb, repo))
+}
+
+fn assert_refused(res: &RunOut, text: &str) {
+    assert_eq!(
+        res.code, 1,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        both(res).contains(text),
+        "missing {text:?} in: {}",
+        both(res)
+    );
+}
+
+#[test]
+fn done_refusals_keep_marker() {
+    let sb = Sandbox::new();
+    let w = setup(&sb, true);
+    let remote = w.remote.clone().unwrap();
+
+    // No marker yet.
+    assert_refused(&human(&sb, "done"), "Task 1 không chờ nhân sự làm");
+
+    assert_eq!(run_dev(&sb).code, 6);
+    let before = snapshot(&sb, &w.repo);
+
+    // Not on the task branch.
+    sb.git(&w.repo, &["checkout", "main"]);
+    let main_head = head(&sb, &w.repo);
+    assert_refused(
+        &human(&sb, "done"),
+        "Không ở nhánh task 'task/sua-app' (nhánh hiện tại: 'main') — không đoán",
+    );
+    assert_eq!(head(&sb, &w.repo), main_head);
+    sb.git(&w.repo, &["checkout", "task/sua-app"]);
+
+    // Dirty file that is not a protocol file.
+    std::fs::write(w.repo.join("src/rac.txt"), "dở dang\n").unwrap();
+    let dirty = human(&sb, "done");
+    assert_refused(&dirty, "Working tree có thay đổi chưa commit");
+    assert!(both(&dirty).contains("src/rac.txt"), "{}", both(&dirty));
+    std::fs::remove_file(w.repo.join("src/rac.txt")).unwrap();
+
+    // The staff has pushed nothing new: the remote branch equals the local one.
+    assert_refused(
+        &human(&sb, "done"),
+        "Nhánh task/sua-app trên remote chưa có commit mới nào — nhờ Hà đẩy việc đã làm rồi bấm Xong lại.",
+    );
+    assert_eq!(snapshot(&sb, &w.repo), before);
+
+    // The branch is gone from the remote.
+    sb.git(&remote, &["update-ref", "-d", "refs/heads/task/sua-app"]);
+    assert_refused(
+        &human(&sb, "done"),
+        "Chưa thấy nhánh task/sua-app trên remote — nhờ Hà đẩy nhánh lên rồi bấm Xong lại.",
+    );
+    assert_eq!(snapshot(&sb, &w.repo), before);
+    assert_eq!(running_count(&sb), 0);
+    assert!(human_runs(&sb).is_empty());
+}
+
+#[test]
+fn done_without_origin_refused() {
+    let sb = Sandbox::new();
+    let w = setup(&sb, false);
+    assert_eq!(run_dev(&sb).code, 6);
+    let before = snapshot(&sb, &w.repo);
+    assert_refused(
+        &human(&sb, "done"),
+        "Dự án chưa có remote origin — không lấy được nhánh của Hà.",
+    );
+    assert_eq!(snapshot(&sb, &w.repo), before);
+}
+
+#[test]
+fn done_diverged_branch_refused() {
+    let sb = Sandbox::new();
+    let w = setup(&sb, true);
+    let remote = w.remote.clone().unwrap();
+    assert_eq!(run_dev(&sb).code, 6);
+
+    // The local branch gains a commit the remote lacks, then the staff pushes a different one
+    // on top of the old tip: the remote no longer continues from the local branch.
+    std::fs::write(w.repo.join("src/a.txt"), "a cục bộ\n").unwrap();
+    sb.git(&w.repo, &["add", "src/a.txt"]);
+    sb.git(&w.repo, &["commit", "-m", "sua-app: commit cục bộ"]);
+    staff_clone_push(
+        &sb,
+        &remote,
+        "task/sua-app",
+        &[("src/a.txt", "a của Hà\n")],
+        "sua-app: của Hà",
+    );
+    let before = snapshot(&sb, &w.repo);
+
+    let res = human(&sb, "done");
+    assert_refused(
+        &res,
+        "Nhánh task/sua-app trên remote không đi tiếp từ nhánh trong máy (có thể đã bị viết lại lịch sử) — không gộp. Kiểm tra với Hà rồi thử lại.",
+    );
+    assert_eq!(snapshot(&sb, &w.repo), before, "history must be untouched");
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join("src/a.txt")).unwrap(),
+        "a cục bộ\n"
+    );
+    assert!(task_team(&sb).wait.is_some());
+}
+
+#[test]
+fn done_scope_violation() {
+    for stray in ["src/khac.txt", ".planning/ghi-chu.md", ".github/ci.yml"] {
+        let sb = Sandbox::new();
+        let w = setup(&sb, true);
+        let remote = w.remote.clone().unwrap();
+        assert_eq!(run_dev(&sb).code, 6);
+        staff_clone_push(
+            &sb,
+            &remote,
+            "task/sua-app",
+            &[("src/a.txt", "a của Hà\n"), (stray, "ngoài plan\n")],
+            "sua-app: xong",
+        );
+
+        let res = human(&sb, "done");
+        assert_eq!(res.code, 3, "{stray}: {}", both(&res));
+        assert!(res.stdout.contains(stray), "{stray}: {}", res.stdout);
+        assert!(
+            res.stdout.contains("agent-brain không tự hoàn tác"),
+            "{}",
+            res.stdout
+        );
+        let rows = human_runs(&sb);
+        assert_eq!(rows.len(), 1, "{stray}");
+        assert_eq!(rows[0].outcome.as_deref(), Some("protocol_violation"));
+        assert_eq!(rows[0].status, "succeeded");
+        assert!(task_team(&sb).wait.is_none());
+        // Nothing is reverted: the stray file is still in the tree.
+        assert!(w.repo.join(stray).is_file(), "{stray} must stay");
+        assert_ne!(task_status(&sb), "dev_done", "{stray}");
+    }
+}
+
+fn qa_needs_fix_scenario() -> Value {
+    let report = "# QA: sửa app\n## Thay đổi có khớp plan không (từng mục)\n- lỗi logic\n## Sửa ngoài plan (nếu có)\n## Rủi ro\n## Kết luận\nCần sửa\n";
+    json!({"ops": [{"op": "write", "path": ".qa-report.md", "content": report}]})
+}
+
+#[test]
+fn fix_step_rejected_and_return() {
+    let sb = Sandbox::new();
+    let w = setup(&sb, true);
+    let remote = w.remote.clone().unwrap();
+
+    assert_eq!(run_dev(&sb).code, 6);
+    staff_clone_push(
+        &sb,
+        &remote,
+        "task/sua-app",
+        &[("src/a.txt", "a của Hà\n")],
+        "sua-app: xong",
+    );
+    assert_ok(&human(&sb, "done"), "human done (implement)");
+
+    let qa = sb.run(&["run", "qa", "--", "web"], Some(qa_needs_fix_scenario()));
+    assert_ok(&qa, "run qa");
+    let runs_before = run_count(&sb);
+    let records_before = sb.records().len();
+
+    let fix = sb.run(
+        &["run", "dev", "--fix", "qa", "--round", "1", "--", "web"],
+        None,
+    );
+    assert_eq!(fix.code, 6, "{}", both(&fix));
+    assert!(
+        both(&fix).contains(
+            "Kết quả của Hà chưa đạt — gửi báo cáo .qa-report.md cho Hà rồi bấm Trả lại (agent-brain human return 1)."
+        ),
+        "{}",
+        both(&fix)
+    );
+    assert_eq!(run_count(&sb), runs_before);
+    assert_eq!(
+        sb.records().len(),
+        records_before,
+        "claude must not be called"
+    );
+    let wait = task_team(&sb).wait.expect("marker");
+    assert_eq!(wait.mode, "rejected");
+    assert_eq!(wait.stage, "fix");
+    assert_eq!(wait.fix_for.as_deref(), Some("qa"));
+    assert_eq!(wait.round, Some(1));
+    assert_eq!(wait.report_paths, vec![".qa-report.md".to_string()]);
+    let rejected_since = wait.since_ms;
+
+    // Xong is refused while the marker is `rejected`.
+    assert_refused(
+        &human(&sb, "done"),
+        "Bấm Trả lại trước: kết quả lần trước của Hà chưa đạt.",
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let back = human(&sb, "return");
+    assert_ok(&back, "human return");
+    assert!(
+        both(&back).contains("Đã trả việc lại cho Hà."),
+        "{}",
+        both(&back)
+    );
+    let wait = task_team(&sb).wait.expect("marker");
+    assert_eq!(wait.mode, "waiting");
+    assert!(wait.since_ms > rejected_since);
+    assert!(wait.push.expect("push").ok);
+    assert_eq!(wait.stage, "fix");
+
+    // A second Trả lại is refused.
+    assert_refused(
+        &human(&sb, "return"),
+        "Chỉ trả lại khi kết quả của Hà chưa đạt.",
+    );
+
+    staff_clone_push(
+        &sb,
+        &remote,
+        "task/sua-app",
+        &[("src/a.txt", "a sửa theo QA\n")],
+        "sua-app: sửa theo QA",
+    );
+    assert_ok(&human(&sb, "done"), "human done (fix)");
+    let rows = human_runs(&sb);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].stage.as_deref(), Some("fix"));
+    assert_eq!(rows[1].round, Some(1));
+    assert_eq!(rows[1].metrics["fix_for"], json!("qa"));
+    assert_eq!(rows[1].outcome, None);
+    assert!(task_team(&sb).wait.is_none());
+    assert_eq!(task_status(&sb), "dev_done");
+}
+
+#[test]
+fn return_requires_rejected() {
+    let sb = Sandbox::new();
+    let _w = setup(&sb, true);
+
+    assert_refused(&human(&sb, "return"), "Task 1 không chờ nhân sự làm");
+    assert_eq!(run_dev(&sb).code, 6);
+    let marker = team_json(&sb);
+    assert_refused(
+        &human(&sb, "return"),
+        "Chỉ trả lại khi kết quả của Hà chưa đạt.",
+    );
+    assert_eq!(team_json(&sb), marker);
+}
