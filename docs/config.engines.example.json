@@ -122,7 +122,7 @@
       "id": "dsh",
       "kind": "dsh",
       "label": "DeepSeek qua container dsh (hộp đen, D-35)",
-      "_note": "S6: chỉ văn bản, không token; kill trong container theo PID/marker, không theo tên. Xác nhận cờ profile 'web' trước khi lập kế hoạch.",
+      "_note": "S6: chỉ văn bản, không token; kill trong container theo PID/marker, không theo tên. 'dsh web' không phải engine: nó chạy giao diện trình duyệt của DeepSeek Harness (dsh --profile web --host/--port/--no-open), dùng tay, agent-brain không điều khiển.",
       "command": [
         "docker",
         "exec",
@@ -136,24 +136,7 @@
       ],
       "stdout": "text",
       "profile": "headless"
-    },
-    {
-      "id": "dsh-web",
-      "kind": "dsh",
-      "label": "dsh profile web (D-35)",
-      "profile": "web",
-      "command": [
-        "docker",
-        "exec",
-        "-w",
-        "{cwd}",
-        "dsh-deepseek-harness",
-        "dsh",
-        "--profile",
-        "{profile}",
-        "{prompt}"
-      ],
-      "stdout": "text"
     }
-  ]
+  ],
+  "_dsh_web": "Mở UI dsh bằng tay: docker exec dsh-deepseek-harness dsh web --no-open --host 0.0.0.0 --port <port> (port phải được container publish)."
 }
