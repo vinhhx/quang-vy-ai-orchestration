@@ -59,6 +59,15 @@ struct ReturnBody {
     rev: Option<String>,
 }
 
+/// Thân yêu cầu của đổi đội hình và chạy lại bước hết quota: tên đội hình và `rev` tùy chọn.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TeamBody {
+    team: String,
+    #[serde(default)]
+    rev: Option<String>,
+}
+
 const STALE_MSG: &str = "Trạng thái task đã thay đổi — màn hình sẽ tải lại.";
 const NOT_ALLOWED_MSG: &str = "Hành động không áp dụng cho trạng thái hiện tại";
 
@@ -424,6 +433,7 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         .route("/api/tasks/{id}/dev", post(post_task_dev))
         .route("/api/tasks/{id}/qa", post(post_task_qa))
         .route("/api/tasks/{id}/relead", post(post_task_relead))
+        .route("/api/tasks/{id}/team", post(post_change_team))
         .route("/api/tasks/{id}/approve", post(post_approve))
         .route("/api/tasks/{id}/return", post(post_return))
         .route("/api/tasks/{id}/auto", post(post_auto))
@@ -1152,7 +1162,17 @@ pub fn load_task_state(
         decide::gate_state(wf, &facts)
     });
 
-    let view = {
+    let team_json = crate::db::task_team_json(conn, task.id)?;
+    let team = crate::teams::TaskTeam::parse(team_json.as_deref());
+    let (teams, staff) = crate::teams::load();
+    // D-29: only a step that is still waiting blocks a team change; a rejected one does not.
+    let waiting_staff = team
+        .as_ref()
+        .and_then(|t| t.wait.as_ref())
+        .filter(|w| w.mode == "waiting")
+        .map(|w| staff.display_name_of(&w.staff));
+
+    let mut view = {
         let facts = TaskFacts {
             task: &task,
             lead: latest_of(&runs, "lead"),
@@ -1173,9 +1193,13 @@ pub fn load_task_state(
         };
         taskstate::derive_with(&facts, &auto_facts)
     };
+    view.actions.push(taskstate::build_change_team(
+        running_of(&runs),
+        driver_alive,
+        waiting_staff.as_deref(),
+    ));
 
     let latest = runs.iter().max_by_key(|r| (r.started_at, r.id));
-    let team_json = crate::db::task_team_json(conn, task.id)?;
     let rev = task_rev(
         &task,
         &auto,
@@ -1184,8 +1208,6 @@ pub fn load_task_state(
         team_json.as_deref(),
     );
     let origin = crate::db::task_origin(conn, task.id)?;
-    let team = crate::teams::TaskTeam::parse(team_json.as_deref());
-    let (teams, staff) = crate::teams::load();
 
     Ok(Ok(TaskState {
         task,
@@ -1220,6 +1242,160 @@ fn current_team_name(state: &TaskState) -> String {
         .as_ref()
         .map(|t| t.name.clone())
         .unwrap_or_else(|| crate::teams::DEFAULT_TEAM.to_string())
+}
+
+/// Kết quả đổi đội hình của task, không gắn với HTTP: dashboard (`change_team_response`) và bot
+/// Telegram dùng chung một hàm (D-13, D-29).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TeamOutcome {
+    /// Đã ghi tên đội hình mới cùng một dòng lịch sử.
+    Changed { from: String, to: String },
+    /// Từ chối với lý do và loại (`busy`, `not_allowed`).
+    Refused { reason: String, kind: &'static str },
+    /// `rev` không khớp hoặc `team_json` đã đổi trong lúc ghi (CAS thua).
+    Stale,
+    /// Task / dự án không có.
+    NotFound(String),
+    /// Tên đội hình không có trong teams.json.
+    Invalid(String),
+}
+
+fn source_label(source: ActionSource) -> &'static str {
+    match source {
+        ActionSource::Dashboard => "dashboard",
+        ActionSource::Telegram => "telegram",
+    }
+}
+
+fn unknown_team_message(state: &TaskState, team: &str) -> String {
+    format!(
+        "Không có đội hình '{team}'. Đội hình có: {}",
+        state.teams.names().join(", ")
+    )
+}
+
+/// Ghi `to` làm đội hình của task kèm một dòng lịch sử `{at, by, from, to}` bằng CAS trên
+/// `team_json` (giá trị cũ là giá trị `state` đã đọc). `Some(from)` khi ghi được, `None` khi
+/// CAS thua. Task cũ (NULL) đi từ `mac-dinh` với lịch sử rỗng; `wait` được giữ nguyên.
+fn write_team_change(
+    conn: &rusqlite::Connection,
+    state: &TaskState,
+    to: &str,
+    source: ActionSource,
+) -> BrainResult<Option<String>> {
+    let from = current_team_name(state);
+    let mut new_team = state
+        .team
+        .clone()
+        .unwrap_or_else(|| crate::teams::TaskTeam::new(&from));
+    new_team.name = to.to_string();
+    new_team.history.push(crate::teams::TeamChange {
+        at: crate::db::now_ms(),
+        by: source_label(source).to_string(),
+        from: from.clone(),
+        to: to.to_string(),
+    });
+    let wrote = crate::db::set_task_team_cas(
+        conn,
+        state.task.id,
+        state.team_json.as_deref(),
+        &new_team.to_json(),
+    )?;
+    Ok(wrote.then_some(from))
+}
+
+/// Đổi đội hình của task (D-13, D-29). Trạng thái được đọc lại; thứ tự kiểm tra: task có →
+/// `rev` → nút `change_team` bật → đội hình có trong teams.json → khác đội hình hiện tại →
+/// ghi bằng CAS. Đội hình mới áp dụng từ bước kế tiếp; các run đã chạy giữ engine của chúng.
+pub fn change_team(
+    st: &AppState,
+    task_id: i64,
+    team: &str,
+    rev: Option<&str>,
+    source: ActionSource,
+) -> BrainResult<TeamOutcome> {
+    let team = team.trim();
+    let conn = crate::db::open(&st.db_path)?;
+    let state = match load_task_state(st, &conn, task_id)? {
+        Ok(s) => s,
+        Err(msg) => return Ok(TeamOutcome::NotFound(msg)),
+    };
+    if let Some(r) = rev {
+        if r != state.rev {
+            return Ok(TeamOutcome::Stale);
+        }
+    }
+    if let Some(refusal) = change_team_refusal(&state) {
+        return Ok(refusal);
+    }
+    if state.teams.get(team).is_none() {
+        return Ok(TeamOutcome::Invalid(unknown_team_message(&state, team)));
+    }
+    if team == current_team_name(&state) {
+        return Ok(TeamOutcome::Refused {
+            reason: SAME_TEAM_MSG.to_string(),
+            kind: "not_allowed",
+        });
+    }
+    match write_team_change(&conn, &state, team, source)? {
+        Some(from) => Ok(TeamOutcome::Changed {
+            from,
+            to: team.to_string(),
+        }),
+        None => Ok(TeamOutcome::Stale),
+    }
+}
+
+const SAME_TEAM_MSG: &str = "Chọn đội hình khác đội hình hiện tại.";
+
+/// Từ chối của nút `change_team` (run đang chạy, autopilot, người đang chờ) hoặc `None`.
+fn change_team_refusal(state: &TaskState) -> Option<TeamOutcome> {
+    let action = state.view.actions.iter().find(|a| a.id == "change_team")?;
+    if action.enabled {
+        return None;
+    }
+    let reason = action.reason.clone().unwrap_or_default();
+    let live = reason == taskstate::CHANGE_TEAM_RUN_LIVE
+        || reason == taskstate::CHANGE_TEAM_AUTOPILOT
+        || state.busy.as_deref() == Some(reason.as_str());
+    Some(TeamOutcome::Refused {
+        reason,
+        kind: if live { "busy" } else { "not_allowed" },
+    })
+}
+
+fn change_team_response(o: TeamOutcome) -> Response {
+    match o {
+        TeamOutcome::Changed { from, to } => json_resp(
+            StatusCode::OK,
+            serde_json::json!({ "ok": true, "from": from, "to": to }),
+        ),
+        TeamOutcome::Refused { reason, kind } => conflict(&reason, kind),
+        TeamOutcome::Stale => conflict(STALE_MSG, "stale"),
+        TeamOutcome::NotFound(msg) => json_error(StatusCode::NOT_FOUND, &msg),
+        TeamOutcome::Invalid(msg) => json_error(StatusCode::UNPROCESSABLE_ENTITY, &msg),
+    }
+}
+
+async fn post_change_team(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<TeamBody>,
+) -> Response {
+    let res = blocking(move || {
+        change_team(
+            &st,
+            task_id,
+            &body.team,
+            body.rev.as_deref(),
+            ActionSource::Dashboard,
+        )
+    })
+    .await;
+    match res {
+        Ok(o) => change_team_response(o),
+        Err(e) => internal_error("đổi đội hình của task", &e),
+    }
 }
 
 /// `{name, summary, description, missing, legacy}` của UI-SPEC: task cũ (NULL) = `mac-dinh`,

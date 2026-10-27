@@ -76,17 +76,19 @@ fn set_team_json(sb: &Sandbox, task_id: i64, json: Option<&str>) {
 
 /// Task 1 `sua-app` through the CLI (manual flow), so tests can start from a stored team.
 fn cli_lead_task(sb: &Sandbox) -> std::path::PathBuf {
+    cli_lead_task_with(sb, None)
+}
+
+/// As `cli_lead_task`, optionally with `--team <name>` so the stored team is known.
+fn cli_lead_task_with(sb: &Sandbox, team: Option<&str>) -> std::path::PathBuf {
     let repo = setup_project(sb, "work");
+    let mut args = vec!["run", "lead", "--name", "sua-app"];
+    if let Some(t) = team {
+        args.extend(["--team", t]);
+    }
+    args.extend(["--", "web-ban-hang", "sửa app"]);
     let out = sb.run(
-        &[
-            "run",
-            "lead",
-            "--name",
-            "sua-app",
-            "--",
-            "web-ban-hang",
-            "sửa app",
-        ],
+        &args,
         Some(lead_scenario(&[(
             "src/app.py",
             "app()",
@@ -359,4 +361,218 @@ fn rev_changes_with_team_json() {
         after["team_history"],
         json!([{"at": 1, "by": "cli", "from": "mac-dinh", "to": "tiet-kiem"}])
     );
+}
+
+// ---------------------------------------------------------------------------
+// Task 2: change the task's team
+// ---------------------------------------------------------------------------
+
+fn rev_of(srv: &Serve, id: i64) -> String {
+    srv.get(&format!("/api/tasks/{id}")).json()["rev"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn action_of(task: &Value, id: &str) -> Value {
+    task["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == id)
+        .cloned()
+        .unwrap_or_else(|| panic!("action {id} missing in {}", task["actions"]))
+}
+
+/// A `running` run row without a real process (pid 0) for the task.
+fn add_running_run(sb: &Sandbox, task_id: i64) -> i64 {
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let base = agent_brain::db::get_run(&conn, 1)
+        .expect("get_run")
+        .expect("run 1");
+    agent_brain::db::insert_run(
+        &conn,
+        &agent_brain::db::NewRun {
+            task_id: Some(task_id),
+            project_id: base.project_id,
+            role: "dev".to_string(),
+            profile: base.profile.clone(),
+            model: None,
+            pid: 0,
+            pgid: 0,
+            pid_start: 0,
+            base_commit: None,
+            run_dir: None,
+        },
+    )
+    .expect("insert_run")
+}
+
+#[test]
+fn change_team_records_history() {
+    let sb = Sandbox::new();
+    write_doi_a(&sb);
+    cli_lead_task_with(&sb, Some("doi-a"));
+    let srv = sb.serve(&[]);
+
+    let before = srv.get("/api/tasks/1").json();
+    let action = action_of(&before, "change_team");
+    assert_eq!(action["label"], "Đổi đội hình");
+    assert_eq!(action["enabled"], true, "action: {action}");
+    let engines_before: Vec<String> = sb
+        .db()
+        .prepare("SELECT engine FROM runs ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    let resp = srv.post_json(
+        "/api/tasks/1/team",
+        &json!({"team": "tiet-kiem", "rev": before["rev"]}),
+    );
+    assert_eq!(resp.status, 200, "body: {}", resp.text());
+    assert_eq!(
+        resp.json(),
+        json!({"ok": true, "from": "doi-a", "to": "tiet-kiem"})
+    );
+
+    let after = srv.get("/api/tasks/1").json();
+    assert_eq!(after["team"]["name"], "tiet-kiem");
+    let history = after["team_history"].as_array().unwrap();
+    assert_eq!(history.len(), 1, "history: {history:?}");
+    assert_eq!(history[0]["by"], "dashboard");
+    assert_eq!(history[0]["from"], "doi-a");
+    assert_eq!(history[0]["to"], "tiet-kiem");
+    assert!(history[0]["at"].as_i64().unwrap_or(0) > 0);
+    assert_ne!(before["rev"], after["rev"], "rev changes with team_json");
+
+    // The runs that already ran keep their engine.
+    let engines_after: Vec<String> = sb
+        .db()
+        .prepare("SELECT engine FROM runs ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(engines_before, engines_after);
+}
+
+#[test]
+fn change_team_refusals() {
+    let sb = Sandbox::new();
+    write_doi_a(&sb);
+    cli_lead_task_with(&sb, Some("doi-a"));
+    let srv = sb.serve(&[]);
+    let stored_before = team_json_of(&sb, 1);
+
+    // The current team.
+    let resp = srv.post_json("/api/tasks/1/team", &json!({"team": "doi-a"}));
+    assert_eq!(resp.status, 409, "body: {}", resp.text());
+    assert_eq!(
+        resp.json(),
+        json!({"error": "Chọn đội hình khác đội hình hiện tại.", "kind": "not_allowed"})
+    );
+
+    // An unknown team.
+    let resp = srv.post_json("/api/tasks/1/team", &json!({"team": "khong-co"}));
+    assert_eq!(resp.status, 422, "body: {}", resp.text());
+    assert!(
+        resp.json()["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Không có đội hình 'khong-co'"),
+        "body: {}",
+        resp.text()
+    );
+
+    // A stale rev.
+    let resp = srv.post_json(
+        "/api/tasks/1/team",
+        &json!({"team": "tiet-kiem", "rev": "0000000000000000"}),
+    );
+    assert_eq!(resp.status, 409, "body: {}", resp.text());
+    assert_eq!(resp.json()["kind"], "stale");
+
+    // A missing task.
+    let resp = srv.post_json("/api/tasks/999/team", &json!({"team": "tiet-kiem"}));
+    assert_eq!(resp.status, 404, "body: {}", resp.text());
+
+    // Unknown body fields are rejected.
+    let resp = srv.post_json(
+        "/api/tasks/1/team",
+        &json!({"team": "tiet-kiem", "by": "telegram"}),
+    );
+    assert!(
+        resp.status == 400 || resp.status == 422,
+        "status {}",
+        resp.status
+    );
+
+    // A live run: refused with the locked reason, nothing written.
+    add_running_run(&sb, 1);
+    let task = srv.get("/api/tasks/1").json();
+    let action = action_of(&task, "change_team");
+    assert_eq!(action["enabled"], false);
+    let resp = srv.post_json("/api/tasks/1/team", &json!({"team": "tiet-kiem"}));
+    assert_eq!(resp.status, 409, "body: {}", resp.text());
+    assert_eq!(
+        resp.json()["error"],
+        "Đang có run chạy — chờ run xong hoặc Kill rồi mới đổi đội hình."
+    );
+    assert_eq!(team_json_of(&sb, 1), stored_before, "no write on a refusal");
+}
+
+#[test]
+fn change_team_waiting_human_refused() {
+    let sb = Sandbox::new();
+    sb.write_staff(json!({"ha": {"display_name": "Hà"}}));
+    cli_lead_task_with(&sb, None);
+    let waiting = r#"{"name":"mac-dinh","history":[],"wait":{"mode":"waiting","role":"dev","stage":"implement","staff":"ha","since_ms":1000,"branch":"task/sua-app","base":"abc"}}"#;
+    set_team_json(&sb, 1, Some(waiting));
+    let srv = sb.serve(&[]);
+
+    let task = srv.get("/api/tasks/1").json();
+    let action = action_of(&task, "change_team");
+    assert_eq!(action["enabled"], false);
+    assert_eq!(
+        action["reason"],
+        "Đang chờ Hà làm — chưa đổi được đội hình."
+    );
+
+    let resp = srv.post_json(
+        "/api/tasks/1/team",
+        &json!({"team": "tiet-kiem", "rev": task["rev"]}),
+    );
+    assert_eq!(resp.status, 409, "body: {}", resp.text());
+    assert_eq!(
+        resp.json()["error"],
+        "Đang chờ Hà làm — chưa đổi được đội hình."
+    );
+    assert_eq!(team_json_of(&sb, 1).as_deref(), Some(waiting));
+}
+
+#[test]
+fn change_team_legacy_from_mac_dinh() {
+    let sb = Sandbox::new();
+    write_doi_a(&sb);
+    cli_lead_task(&sb);
+    set_team_json(&sb, 1, None);
+    let srv = sb.serve(&[]);
+
+    let resp = srv.post_json("/api/tasks/1/team", &json!({"team": "doi-a"}));
+    assert_eq!(resp.status, 200, "body: {}", resp.text());
+    assert_eq!(
+        resp.json(),
+        json!({"ok": true, "from": "mac-dinh", "to": "doi-a"})
+    );
+    let task = srv.get("/api/tasks/1").json();
+    assert_eq!(task["team"]["name"], "doi-a");
+    assert_eq!(task["team"]["legacy"], false);
+    assert_eq!(task["team_history"][0]["from"], "mac-dinh");
+    assert_eq!(task["team_history"][0]["to"], "doi-a");
+    let stored: Value = serde_json::from_str(&team_json_of(&sb, 1).unwrap()).unwrap();
+    assert_eq!(stored["name"], "doi-a");
 }

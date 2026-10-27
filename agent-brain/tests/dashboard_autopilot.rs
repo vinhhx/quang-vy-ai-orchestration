@@ -520,7 +520,14 @@ fn running_review_counts_as_run() {
     );
 
     let t1 = srv.get("/api/tasks/1").json();
-    let actions = t1["actions"].as_array().unwrap();
+    // `change_team` / `quota_rerun` (06-10) are rendered outside the action strip; the strip
+    // itself is only Kill while a run is live.
+    let actions: Vec<&serde_json::Value> = t1["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["id"] != "change_team" && a["id"] != "quota_rerun")
+        .collect();
     assert_eq!(actions.len(), 1, "{}", t1["actions"]);
     assert_eq!(actions[0]["id"], "kill");
     assert_eq!(actions[0]["run_id"], run_id);

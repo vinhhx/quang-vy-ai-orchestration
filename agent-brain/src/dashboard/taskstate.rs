@@ -302,6 +302,43 @@ fn build_relead(f: &TaskFacts) -> ActionView {
     }
 }
 
+/// Đổi đội hình của task (D-13, D-29): bị từ chối khi có run đang chạy, khi autopilot đang
+/// chạy task này, hoặc khi một bước của người đang chờ (`Chờ {tên} làm`). `waiting_staff` là
+/// tên hiển thị của người đang được chờ. Đây không phải nút của dải hành động (UI hiển thị
+/// ở dòng đội hình), nên `derive_with` không thêm nó; `load_task_state` thêm vào `actions`.
+pub fn build_change_team(
+    running: Option<&RunRow>,
+    driver_alive: bool,
+    waiting_staff: Option<&str>,
+) -> ActionView {
+    let mut enabled = true;
+    let mut reason = None;
+
+    if running.is_some() {
+        enabled = false;
+        reason = Some(CHANGE_TEAM_RUN_LIVE.to_string());
+    } else if driver_alive {
+        enabled = false;
+        reason = Some(CHANGE_TEAM_AUTOPILOT.to_string());
+    } else if let Some(name) = waiting_staff {
+        enabled = false;
+        reason = Some(format!("Đang chờ {name} làm — chưa đổi được đội hình."));
+    }
+
+    ActionView {
+        id: "change_team".to_string(),
+        label: "Đổi đội hình".to_string(),
+        enabled,
+        reason,
+        run_id: None,
+    }
+}
+
+pub const CHANGE_TEAM_RUN_LIVE: &str =
+    "Đang có run chạy — chờ run xong hoặc Kill rồi mới đổi đội hình.";
+pub const CHANGE_TEAM_AUTOPILOT: &str =
+    "Autopilot đang chạy task này — dừng autopilot rồi mới đổi đội hình.";
+
 /// Xác định trạng thái autopilot cho AutoView.
 fn auto_state_of(a: &AutoFacts) -> &'static str {
     if a.workflow.is_none() {
@@ -2614,5 +2651,43 @@ mod tests {
                 "status: {st} with qa running"
             );
         }
+    }
+
+    #[test]
+    fn change_team_rules() {
+        let running = dummy_run(5, "dev", "running", None);
+
+        let a = build_change_team(Some(&running), false, None);
+        assert_eq!(a.id, "change_team");
+        assert_eq!(a.label, "Đổi đội hình");
+        assert!(!a.enabled);
+        assert_eq!(
+            a.reason.as_deref(),
+            Some("Đang có run chạy — chờ run xong hoặc Kill rồi mới đổi đội hình.")
+        );
+
+        let a = build_change_team(None, true, None);
+        assert!(!a.enabled);
+        assert_eq!(
+            a.reason.as_deref(),
+            Some("Autopilot đang chạy task này — dừng autopilot rồi mới đổi đội hình.")
+        );
+
+        let a = build_change_team(None, false, Some("Hà"));
+        assert!(!a.enabled);
+        assert_eq!(
+            a.reason.as_deref(),
+            Some("Đang chờ Hà làm — chưa đổi được đội hình.")
+        );
+
+        // A live run is named before the driver, the driver before a waiting human.
+        let a = build_change_team(Some(&running), true, Some("Hà"));
+        assert_eq!(a.reason.as_deref(), Some(CHANGE_TEAM_RUN_LIVE));
+        let a = build_change_team(None, true, Some("Hà"));
+        assert_eq!(a.reason.as_deref(), Some(CHANGE_TEAM_AUTOPILOT));
+
+        let a = build_change_team(None, false, None);
+        assert!(a.enabled);
+        assert_eq!(a.reason, None);
     }
 }

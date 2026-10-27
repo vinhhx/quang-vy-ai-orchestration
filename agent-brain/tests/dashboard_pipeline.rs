@@ -116,7 +116,13 @@ fn pipeline_lead_dev_qa_via_api() {
     assert_eq!(task2["steps"][1]["state"], "xong");
     assert_eq!(task2["steps"][2]["state"], "cho");
 
-    let actions2 = task2["actions"].as_array().unwrap();
+    // `change_team` / `quota_rerun` (06-10) are rendered outside the action strip.
+    let actions2: Vec<&serde_json::Value> = task2["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["id"] != "change_team" && a["id"] != "quota_rerun")
+        .collect();
     assert_eq!(actions2.len(), 1);
     assert_eq!(actions2[0]["id"], "run_qa");
     assert!(actions2[0]["enabled"].as_bool().unwrap());
@@ -156,7 +162,11 @@ Không có.
     assert_eq!(task3["status"], "qa_pass");
     assert_eq!(task3["group"], "done");
     assert_eq!(task3["qa"]["verdict"], "Đạt");
-    assert!(task3["actions"].as_array().unwrap().is_empty());
+    assert!(task3["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["id"] == "change_team" || a["id"] == "quota_rerun"));
 }
 
 #[test]
