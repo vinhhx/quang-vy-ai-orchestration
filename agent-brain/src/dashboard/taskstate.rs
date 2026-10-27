@@ -11,6 +11,10 @@ pub struct GitFacts {
     pub plan_errors: Vec<String>,
     pub plan_commit: Option<String>,
     pub code_after_plan: bool,
+    /// ENG-03 (06-07): the latest Dev run stopped on quota and every dirty path is a plan file,
+    /// a protocol file or `.handover.md`, so a Dev re-run continues the partial diff instead of
+    /// being refused for a dirty tree. Computed by `load_task_state`.
+    pub continuation_ok: bool,
 }
 
 pub struct TaskFacts<'a> {
@@ -55,6 +59,9 @@ pub struct AutoFacts<'a> {
     pub running: Option<&'a RunRow>,
     pub gate: Option<GateState>,
     pub plan_dirty: bool,
+    /// Latest run of any role (reviews included). `None`: only the lead / dev / qa runs of
+    /// `TaskFacts` are known, which is enough for every caller that has no review runs.
+    pub latest_run: Option<&'a RunRow>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -95,6 +102,8 @@ pub fn step_state(run: Option<&RunRow>) -> (&'static str, &'static str) {
         Some("review:approve") => return ("duyet", "duyệt"),
         Some("review:revise") => return ("sua_lai", "sửa lại"),
         Some("review:pass") => return ("dat", "đạt"),
+        Some(crate::quota::OUTCOME_QUOTA) => return ("het_quota", "hết quota"),
+        Some("agy:empty") => return ("vuong_mac", "agy không sửa file"),
         _ => {}
     }
     match r.status.as_str() {
@@ -165,7 +174,7 @@ fn build_run_dev(f: &TaskFacts) -> ActionView {
             "Không ở nhánh task '{}' (nhánh hiện tại: '{cur}') — không đoán",
             f.task.branch
         ));
-    } else if !f.git.dirty.is_empty() {
+    } else if !f.git.dirty.is_empty() && !f.git.continuation_ok {
         enabled = false;
         let mut sorted = f.git.dirty.clone();
         sorted.sort();
@@ -301,6 +310,78 @@ fn build_relead(f: &TaskFacts) -> ActionView {
         run_id: None,
     }
 }
+
+/// Đổi đội hình của task (D-13, D-29): bị từ chối khi có run đang chạy, khi autopilot đang
+/// chạy task này, hoặc khi một bước của người đang chờ (`Chờ {tên} làm`). `waiting_staff` là
+/// tên hiển thị của người đang được chờ. Đây không phải nút của dải hành động (UI hiển thị
+/// ở dòng đội hình), nên `derive_with` không thêm nó; `load_task_state` thêm vào `actions`.
+pub fn build_change_team(
+    running: Option<&RunRow>,
+    driver_alive: bool,
+    waiting_staff: Option<&str>,
+) -> ActionView {
+    let mut enabled = true;
+    let mut reason = None;
+
+    if running.is_some() {
+        enabled = false;
+        reason = Some(CHANGE_TEAM_RUN_LIVE.to_string());
+    } else if driver_alive {
+        enabled = false;
+        reason = Some(CHANGE_TEAM_AUTOPILOT.to_string());
+    } else if let Some(name) = waiting_staff {
+        enabled = false;
+        reason = Some(format!("Đang chờ {name} làm — chưa đổi được đội hình."));
+    }
+
+    ActionView {
+        id: "change_team".to_string(),
+        label: "Đổi đội hình".to_string(),
+        enabled,
+        reason,
+        run_id: None,
+    }
+}
+
+/// Chạy lại bước vừa dừng vì hết quota bằng một đội hình khác (D-16, D-18). `latest` là run
+/// mới nhất của task (mọi vai trò). Chỉ bật khi run đó kết thúc với outcome `quota` và không
+/// có gì đang chạy; như `build_change_team`, nút này nằm ngoài dải hành động.
+pub fn build_quota_rerun(
+    latest: Option<&RunRow>,
+    running: Option<&RunRow>,
+    driver_alive: bool,
+) -> ActionView {
+    let mut enabled = true;
+    let mut reason = None;
+
+    if running.is_some() {
+        enabled = false;
+        reason = Some("Đang có run chạy — chờ run xong hoặc bấm Kill".to_string());
+    } else if driver_alive {
+        enabled = false;
+        reason = Some("Autopilot đang chạy task này — chờ autopilot dừng".to_string());
+    } else if latest.map_or(true, |r| {
+        r.outcome.as_deref() != Some(crate::quota::OUTCOME_QUOTA)
+    }) {
+        enabled = false;
+        reason = Some(QUOTA_RERUN_NOT_QUOTA.to_string());
+    }
+
+    ActionView {
+        id: "quota_rerun".to_string(),
+        label: "Chạy lại bước này bằng đội hình…".to_string(),
+        enabled,
+        reason,
+        run_id: None,
+    }
+}
+
+pub const QUOTA_RERUN_NOT_QUOTA: &str = "Chỉ chạy lại khi bước gần nhất dừng vì hết quota.";
+
+pub const CHANGE_TEAM_RUN_LIVE: &str =
+    "Đang có run chạy — chờ run xong hoặc Kill rồi mới đổi đội hình.";
+pub const CHANGE_TEAM_AUTOPILOT: &str =
+    "Autopilot đang chạy task này — dừng autopilot rồi mới đổi đội hình.";
 
 /// Xác định trạng thái autopilot cho AutoView.
 fn auto_state_of(a: &AutoFacts) -> &'static str {
@@ -615,12 +696,23 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
         (None, None, None, None)
     };
 
+    // QUOTA-01 / D-18: nothing runs and the latest run (any role) ended with outcome `quota`:
+    // the task waits for the user (re-run with another team, or try again later). An autopilot
+    // stop with `het_quota` already reads the same through its stop word.
+    let quota_stop = running_run.is_none()
+        && !a.driver_alive
+        && a.latest_run.or(latest_run).map_or(false, |r| {
+            r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA)
+        });
+
     let banner = if auto_state == "stopped" {
         if let Some(word) = &stop_word {
             Some(format!("Chờ bạn · {word}"))
         } else {
             Some("Chờ bạn".to_string())
         }
+    } else if quota_stop {
+        Some("Chờ bạn · hết quota".to_string())
     } else if auto_state == "gate" {
         Some("Chờ duyệt plan".to_string())
     } else {
@@ -636,7 +728,7 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
 
     let group = if running_run.is_some() || a.driver_alive {
         "running".to_string()
-    } else if auto_state == "stopped" {
+    } else if auto_state == "stopped" || quota_stop {
         "waiting".to_string()
     } else if f.task.status == "qa_pass" {
         "done".to_string()
@@ -1031,6 +1123,7 @@ mod tests {
             plan_errors: vec![],
             plan_commit: Some("abc".to_string()),
             code_after_plan: true,
+            continuation_ok: false,
         };
 
         // planned -> [run_dev, relead]
@@ -1153,6 +1246,7 @@ mod tests {
             plan_errors: vec![],
             plan_commit: Some("abc".to_string()),
             code_after_plan: true,
+            continuation_ok: false,
         };
 
         let task = dummy_task("open");
@@ -1201,6 +1295,7 @@ mod tests {
             plan_errors: vec![],
             plan_commit: Some("abc".to_string()),
             code_after_plan: true,
+            continuation_ok: false,
         };
         let facts = TaskFacts {
             task: &task,
@@ -1342,6 +1437,7 @@ mod tests {
 
         let git_no_code = GitFacts {
             code_after_plan: false,
+            continuation_ok: false,
             ..git.clone()
         };
         let facts = TaskFacts {
@@ -1472,6 +1568,7 @@ mod tests {
             plan_errors: vec![],
             plan_commit: Some("abc".to_string()),
             code_after_plan: false,
+            continuation_ok: false,
         };
         let facts = TaskFacts {
             task: &task,
@@ -1516,6 +1613,7 @@ mod tests {
             plan_errors: vec![],
             plan_commit: Some("abc".to_string()),
             code_after_plan: false,
+            continuation_ok: false,
         }
     }
 
@@ -1833,6 +1931,7 @@ mod tests {
             plan_errors: vec![],
             plan_commit: Some("abc".to_string()),
             code_after_plan: false,
+            continuation_ok: false,
         };
 
         // 1. plan_dirty -> approve disabled
@@ -2613,6 +2712,210 @@ mod tests {
                 derive(&facts_qa).current_step,
                 "status: {st} with qa running"
             );
+        }
+    }
+
+    #[test]
+    fn change_team_rules() {
+        let running = dummy_run(5, "dev", "running", None);
+
+        let a = build_change_team(Some(&running), false, None);
+        assert_eq!(a.id, "change_team");
+        assert_eq!(a.label, "Đổi đội hình");
+        assert!(!a.enabled);
+        assert_eq!(
+            a.reason.as_deref(),
+            Some("Đang có run chạy — chờ run xong hoặc Kill rồi mới đổi đội hình.")
+        );
+
+        let a = build_change_team(None, true, None);
+        assert!(!a.enabled);
+        assert_eq!(
+            a.reason.as_deref(),
+            Some("Autopilot đang chạy task này — dừng autopilot rồi mới đổi đội hình.")
+        );
+
+        let a = build_change_team(None, false, Some("Hà"));
+        assert!(!a.enabled);
+        assert_eq!(
+            a.reason.as_deref(),
+            Some("Đang chờ Hà làm — chưa đổi được đội hình.")
+        );
+
+        // A live run is named before the driver, the driver before a waiting human.
+        let a = build_change_team(Some(&running), true, Some("Hà"));
+        assert_eq!(a.reason.as_deref(), Some(CHANGE_TEAM_RUN_LIVE));
+        let a = build_change_team(None, true, Some("Hà"));
+        assert_eq!(a.reason.as_deref(), Some(CHANGE_TEAM_AUTOPILOT));
+
+        let a = build_change_team(None, false, None);
+        assert!(a.enabled);
+        assert_eq!(a.reason, None);
+    }
+
+    #[test]
+    fn step_state_quota_and_agy_empty() {
+        let mut r = dummy_run(1, "dev", "failed", Some("quota"));
+        assert_eq!(step_state(Some(&r)), ("het_quota", "hết quota"));
+
+        // The outcome wins over the failed status; a running run is still running.
+        r.status = "running".to_string();
+        assert_eq!(step_state(Some(&r)), ("dang_chay", "đang chạy"));
+
+        let r = dummy_run(2, "dev", "failed", Some("agy:empty"));
+        assert_eq!(step_state(Some(&r)), ("vuong_mac", "agy không sửa file"));
+    }
+
+    #[test]
+    fn run_dev_continuation_gate() {
+        let task = dummy_task("planned");
+        let mut git = GitFacts {
+            current_branch: Some("task/sua-app".to_string()),
+            dirty: vec!["src/a.txt".to_string()],
+            plan_exists: true,
+            plan_commit: Some("abc".to_string()),
+            ..Default::default()
+        };
+        // The latest Dev run stopped on quota and the dirty path is a plan file.
+        git.continuation_ok = true;
+        let a = build_run_dev(&facts_without(&task, &git));
+        assert!(a.enabled, "reason: {:?}", a.reason);
+
+        // Without the continuation the dirty tree is refused as before.
+        git.continuation_ok = false;
+        git.dirty = vec!["x.txt".to_string()];
+        let a = build_run_dev(&facts_without(&task, &git));
+        assert!(!a.enabled);
+        assert!(
+            a.reason
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("Working tree có thay đổi chưa commit"),
+            "reason: {:?}",
+            a.reason
+        );
+
+        // The continuation never lifts the other refusals (wrong branch).
+        git.continuation_ok = true;
+        git.current_branch = Some("main".to_string());
+        let a = build_run_dev(&facts_without(&task, &git));
+        assert!(!a.enabled);
+        assert!(a.reason.as_deref().unwrap_or("").contains("Không ở nhánh"));
+    }
+
+    #[test]
+    fn quota_rerun_rules() {
+        let quota = dummy_run(7, "dev", "failed", Some("quota"));
+        let ok = dummy_run(8, "dev", "succeeded", None);
+        let running = dummy_run(9, "dev", "running", None);
+
+        let a = build_quota_rerun(Some(&quota), None, false);
+        assert_eq!(a.id, "quota_rerun");
+        assert_eq!(a.label, "Chạy lại bước này bằng đội hình…");
+        assert!(a.enabled, "reason: {:?}", a.reason);
+        assert_eq!(a.reason, None);
+
+        let a = build_quota_rerun(Some(&ok), None, false);
+        assert!(!a.enabled);
+        assert_eq!(
+            a.reason.as_deref(),
+            Some("Chỉ chạy lại khi bước gần nhất dừng vì hết quota.")
+        );
+        let a = build_quota_rerun(None, None, false);
+        assert!(!a.enabled);
+        assert_eq!(a.reason.as_deref(), Some(QUOTA_RERUN_NOT_QUOTA));
+
+        // A running run is named first, even though it is the latest and is not a quota stop.
+        let a = build_quota_rerun(Some(&running), Some(&running), false);
+        assert!(!a.enabled);
+        assert_eq!(
+            a.reason.as_deref(),
+            Some("Đang có run chạy — chờ run xong hoặc bấm Kill")
+        );
+        let a = build_quota_rerun(Some(&quota), None, true);
+        assert!(!a.enabled);
+        assert_eq!(
+            a.reason.as_deref(),
+            Some("Autopilot đang chạy task này — chờ autopilot dừng")
+        );
+    }
+
+    #[test]
+    fn quota_banner_manual() {
+        let task = dummy_task("planned");
+        let git = GitFacts::default();
+        let quota = dummy_run(3, "dev", "failed", Some("quota"));
+        let facts = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: Some(&quota),
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 3000,
+        };
+        let view = derive(&facts);
+        assert_eq!(view.banner.as_deref(), Some("Chờ bạn · hết quota"));
+        assert_eq!(view.group, "waiting");
+        assert_eq!(view.steps[1].state, "het_quota");
+
+        // A review run that stopped on quota counts when the caller passes the latest run.
+        let mut review = dummy_run(4, "code-review", "failed", Some("quota"));
+        review.started_at = 5000;
+        let plain = TaskFacts {
+            dev: None,
+            ..facts_without(&task, &git)
+        };
+        let af = AutoFacts {
+            latest_run: Some(&review),
+            ..Default::default()
+        };
+        let view = derive_with(&plain, &af);
+        assert_eq!(view.banner.as_deref(), Some("Chờ bạn · hết quota"));
+        assert_eq!(view.group, "waiting");
+
+        // A live run, a live driver or a later non-quota run clear the quota banner.
+        let running = dummy_run(5, "dev", "running", None);
+        let af = AutoFacts {
+            running: Some(&running),
+            latest_run: Some(&review),
+            ..Default::default()
+        };
+        assert_ne!(
+            derive_with(&plain, &af).banner.as_deref(),
+            Some("Chờ bạn · hết quota")
+        );
+        let af = AutoFacts {
+            driver_alive: true,
+            latest_run: Some(&review),
+            ..Default::default()
+        };
+        assert_ne!(
+            derive_with(&plain, &af).banner.as_deref(),
+            Some("Chờ bạn · hết quota")
+        );
+        let mut later = dummy_run(6, "dev", "succeeded", None);
+        later.started_at = 9000;
+        let af = AutoFacts {
+            latest_run: Some(&later),
+            ..Default::default()
+        };
+        assert_ne!(
+            derive_with(&plain, &af).banner.as_deref(),
+            Some("Chờ bạn · hết quota")
+        );
+    }
+
+    /// Facts with no runs, for tests that vary only the `AutoFacts`.
+    fn facts_without<'a>(task: &'a TaskRow, git: &'a GitFacts) -> TaskFacts<'a> {
+        TaskFacts {
+            task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git,
+            busy: None,
+            now_ms: 6000,
         }
     }
 }

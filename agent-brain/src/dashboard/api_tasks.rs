@@ -31,6 +31,9 @@ pub struct NewTask {
     pub name: Option<String>,
     #[serde(default)]
     pub workflow: Option<String>,
+    /// Đội hình cho task mới (D-12); không có thì dùng đội hình của dự án rồi `mac-dinh`.
+    #[serde(default)]
+    pub team: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -52,6 +55,15 @@ struct ControlBody {
 struct ReturnBody {
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    rev: Option<String>,
+}
+
+/// Thân yêu cầu của đổi đội hình và chạy lại bước hết quota: tên đội hình và `rev` tùy chọn.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TeamBody {
+    team: String,
     #[serde(default)]
     rev: Option<String>,
 }
@@ -421,6 +433,8 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         .route("/api/tasks/{id}/dev", post(post_task_dev))
         .route("/api/tasks/{id}/qa", post(post_task_qa))
         .route("/api/tasks/{id}/relead", post(post_task_relead))
+        .route("/api/tasks/{id}/team", post(post_change_team))
+        .route("/api/tasks/{id}/quota-rerun", post(post_quota_rerun))
         .route("/api/tasks/{id}/approve", post(post_approve))
         .route("/api/tasks/{id}/return", post(post_return))
         .route("/api/tasks/{id}/auto", post(post_auto))
@@ -514,6 +528,8 @@ pub struct StartRequest<'a> {
     pub request: &'a str,
     pub name: Option<&'a str>,
     pub workflow: Option<&'a str>,
+    /// Đội hình yêu cầu (D-12); `None` = đội hình của dự án rồi `mac-dinh`.
+    pub team: Option<&'a str>,
     pub origin: Origin,
     /// Chạy mọi kiểm tra tới hết `lead_preflight` rồi dừng, không bắt đầu job nào.
     pub dry_run: bool,
@@ -528,6 +544,10 @@ pub struct StartInfo {
     pub auto: bool,
     pub warning: Option<String>,
     pub replan: bool,
+    /// Tên đội hình đã chọn cho task (body > đội hình dự án > `mac-dinh`).
+    pub team: String,
+    /// Ghi chú khi đội hình của dự án không có trong teams.json và phải dùng `mac-dinh`.
+    pub team_note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -561,6 +581,19 @@ pub fn new_task_args(
     request: &str,
     origin: Origin,
 ) -> (&'static str, Vec<String>) {
+    new_task_args_team(auto, slug, workflow, None, project_id, request, origin)
+}
+
+/// Như `new_task_args`, thêm `--team <tên>` ngay sau cặp `--workflow` khi có đội hình.
+pub fn new_task_args_team(
+    auto: bool,
+    slug: &str,
+    workflow: &str,
+    team: Option<&str>,
+    project_id: &str,
+    request: &str,
+    origin: Origin,
+) -> (&'static str, Vec<String>) {
     let (role, head): (&'static str, [&str; 2]) = if auto {
         ("auto", ["auto", "--start"])
     } else {
@@ -572,6 +605,10 @@ pub fn new_task_args(
             .iter()
             .map(|s| s.to_string()),
     );
+    if let Some(team) = team {
+        args.push("--team".to_string());
+        args.push(team.to_string());
+    }
     // Nguồn task đi theo argv (trước `--`) để `run lead` / `auto --start` lưu vào brain.db.
     if origin == Origin::Telegram {
         args.push("--origin".to_string());
@@ -625,6 +662,18 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
             Err(e) => return Ok(StartOutcome::Invalid(e.message)),
         };
 
+    // TEAM-03 / D-12: body > project default > mac-dinh; an unknown explicit team is
+    // refused before any job starts.
+    let (teams_loaded, _staff) = crate::teams::load();
+    let team = match crate::teams::resolve(
+        &teams_loaded,
+        req.team,
+        crate::projects::team_of(&map, &project.id).as_deref(),
+    ) {
+        Ok(r) => r,
+        Err(e) => return Ok(StartOutcome::Invalid(e.message)),
+    };
+
     let conn = crate::db::open(&st.db_path)?;
     let pf = lead_preflight(&conn, &st.jobs, &project, &proj_root, &slug)?;
     if !pf.can_start {
@@ -666,15 +715,18 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
         auto: workflow.auto,
         warning: pf.warning,
         replan: pf.replan,
+        team: team.team.name.clone(),
+        team_note: team.note.clone(),
     };
     if req.dry_run {
         return Ok(StartOutcome::Ready(info));
     }
 
-    let (role, args) = new_task_args(
+    let (role, args) = new_task_args_team(
         workflow.auto,
         &info.slug,
         &workflow.name,
+        Some(&info.team),
         &info.project.id,
         trimmed_req,
         req.origin,
@@ -724,9 +776,13 @@ fn start_response(outcome: StartOutcome) -> Response {
                 "branch": info.branch,
                 "workflow": info.workflow,
                 "auto": info.auto,
+                "team": info.team,
             });
             if let Some(w) = info.warning {
                 resp_val["warning"] = serde_json::json!(w);
+            }
+            if let Some(n) = info.team_note {
+                resp_val["team_note"] = serde_json::json!(n);
             }
             json_response(StatusCode::ACCEPTED, resp_val)
         }
@@ -763,6 +819,7 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
                 request: &body.request,
                 name: body.name.as_deref(),
                 workflow: body.workflow.as_deref(),
+                team: body.team.as_deref(),
                 origin: Origin::Dashboard,
                 dry_run: false,
             },
@@ -847,6 +904,8 @@ async fn list_tasks(
                 .as_deref()
                 .and_then(Workflow::from_snapshot);
             let running = crate::db::running_run_for_task(&conn, task.id)?;
+            // Reviews are not among the three roles above; a quota stop of one still counts.
+            let latest_run = crate::db::latest_run_for_task(&conn, task.id)?;
             let auto_facts = AutoFacts {
                 workflow: workflow.as_ref(),
                 auto: Some(&auto),
@@ -855,6 +914,7 @@ async fn list_tasks(
                 running: running.as_ref(),
                 gate: None,
                 plan_dirty: false,
+                latest_run: latest_run.as_ref(),
             };
             let view = taskstate::derive_with(&facts, &auto_facts);
 
@@ -949,14 +1009,23 @@ pub struct TaskState {
     pub rev: String,
     /// `tasks.origin` (05.4): `Some("telegram")` khi task do Telegram giao.
     pub origin: Option<String>,
+    /// `tasks.team_json` nguyên văn (`None` = task tạo trước Phase 6); là giá trị cũ của CAS.
+    pub team_json: Option<String>,
+    /// `team_json` đã đọc được (`None` = task cũ hoặc dữ liệu hỏng).
+    pub team: Option<crate::teams::TaskTeam>,
+    /// teams.json đang có (cộng đội hình có sẵn).
+    pub teams: crate::teams::LoadedTeams,
+    pub staff: crate::staff::LoadedStaff,
 }
 
-/// Token đổi khi trạng thái task, run mới nhất, autopilot, cờ dừng, duyệt hoặc commit plan đổi.
+/// Token đổi khi trạng thái task, run mới nhất, autopilot, cờ dừng, duyệt, commit plan hoặc
+/// `team_json` đổi.
 pub fn task_rev(
     task: &TaskRow,
     auto: &TaskAuto,
     latest: Option<&RunRow>,
     plan_commit: Option<&str>,
+    team_json: Option<&str>,
 ) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -967,6 +1036,7 @@ pub fn task_rev(
     auto.auto_stop_at.hash(&mut h);
     auto.approved_commit.hash(&mut h);
     plan_commit.hash(&mut h);
+    team_json.hash(&mut h);
     format!("{:016x}", h.finish())
 }
 
@@ -980,6 +1050,23 @@ fn running_of(runs: &[RunRow]) -> Option<&RunRow> {
     runs.iter()
         .filter(|r| r.status == "running")
         .max_by_key(|r| (r.started_at, r.id))
+}
+
+/// Mọi đường dơ đều thuộc việc dở của Dev: file trong bảng Thay đổi của plan, file giao thức
+/// hoặc `.handover.md` (cùng luật với `roles::dev::cmd_dev` khi tiếp tục sau hết quota).
+fn dirty_is_continuation(plan_text: &str, dirty: &[String]) -> bool {
+    use unicode_normalization::UnicodeNormalization;
+    let plan = crate::planfile::parse_plan(plan_text);
+    let plan_set: std::collections::BTreeSet<String> = crate::planfile::plan_files(&plan)
+        .iter()
+        .map(|f| crate::planfile::normalize_plan_path(f).nfc().collect())
+        .collect();
+    dirty.iter().all(|p| {
+        let n: String = p.nfc().collect();
+        plan_set.contains(&n)
+            || crate::stream::PROTOCOL_FILES.contains(&n.as_str())
+            || n == ".handover.md"
+    })
 }
 
 /// Đọc toàn bộ trạng thái task (Err(thông báo) = task / dự án không có; dashboard trả 404).
@@ -1060,7 +1147,7 @@ pub fn load_task_state(
         (false, false, Vec::new())
     };
 
-    let git = GitFacts {
+    let mut git = GitFacts {
         current_branch,
         dirty,
         plan_exists,
@@ -1068,6 +1155,7 @@ pub fn load_task_state(
         plan_errors,
         plan_commit,
         code_after_plan,
+        continuation_ok: false,
     };
 
     let busy = busy_reason_for_task(conn, &st.jobs, &project, task.id, &task.branch)?;
@@ -1081,6 +1169,18 @@ pub fn load_task_state(
     let driver_alive = claim::driver_alive(&auto);
     let runs = crate::db::runs_for_task(conn, task.id)?;
     let now = crate::db::now_ms();
+
+    // D-16 / ENG-03: the same rule `run dev` applies (06-07) — the latest Dev run stopped on
+    // quota, and every dirty path is a plan file, a protocol file or `.handover.md`. Then the
+    // partial diff is work to continue, so Chạy Dev stays enabled instead of refusing the tree.
+    git.continuation_ok = is_on_branch
+        && !git.dirty.is_empty()
+        && latest_of(&runs, "dev").map_or(false, |r| {
+            r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA)
+        })
+        && plan_text
+            .as_deref()
+            .map_or(false, |text| dirty_is_continuation(text, &git.dirty));
 
     let gate = workflow.as_ref().map(|wf| {
         let facts = decide::build_facts(
@@ -1096,7 +1196,17 @@ pub fn load_task_state(
         decide::gate_state(wf, &facts)
     });
 
-    let view = {
+    let team_json = crate::db::task_team_json(conn, task.id)?;
+    let team = crate::teams::TaskTeam::parse(team_json.as_deref());
+    let (teams, staff) = crate::teams::load();
+    // D-29: only a step that is still waiting blocks a team change; a rejected one does not.
+    let waiting_staff = team
+        .as_ref()
+        .and_then(|t| t.wait.as_ref())
+        .filter(|w| w.mode == "waiting")
+        .map(|w| staff.display_name_of(&w.staff));
+
+    let mut view = {
         let facts = TaskFacts {
             task: &task,
             lead: latest_of(&runs, "lead"),
@@ -1114,12 +1224,33 @@ pub fn load_task_state(
             running: running_of(&runs),
             gate,
             plan_dirty,
+            latest_run: runs.iter().max_by_key(|r| (r.started_at, r.id)),
         };
         taskstate::derive_with(&facts, &auto_facts)
     };
-
+    view.actions.push(taskstate::build_change_team(
+        running_of(&runs),
+        driver_alive,
+        waiting_staff.as_deref(),
+    ));
     let latest = runs.iter().max_by_key(|r| (r.started_at, r.id));
-    let rev = task_rev(&task, &auto, latest, git.plan_commit.as_deref());
+    let mut quota_rerun = taskstate::build_quota_rerun(latest, running_of(&runs), driver_alive);
+    // Anything else holding the project (another task, a job just handed over) also refuses it.
+    if quota_rerun.enabled {
+        if let Some(b) = busy.as_ref() {
+            quota_rerun.enabled = false;
+            quota_rerun.reason = Some(b.clone());
+        }
+    }
+    view.actions.push(quota_rerun);
+
+    let rev = task_rev(
+        &task,
+        &auto,
+        latest,
+        git.plan_commit.as_deref(),
+        team_json.as_deref(),
+    );
     let origin = crate::db::task_origin(conn, task.id)?;
 
     Ok(Ok(TaskState {
@@ -1140,7 +1271,431 @@ pub fn load_task_state(
         view,
         rev,
         origin,
+        team_json,
+        team,
+        teams,
+        staff,
     }))
+}
+
+/// Tên đội hình hiện tại của task: tên đã lưu, hoặc `mac-dinh` cho task cũ (không có
+/// `team_json`) và cho dữ liệu hỏng không đọc được.
+fn current_team_name(state: &TaskState) -> String {
+    state
+        .team
+        .as_ref()
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| crate::teams::DEFAULT_TEAM.to_string())
+}
+
+/// Kết quả đổi đội hình của task, không gắn với HTTP: dashboard (`change_team_response`) và bot
+/// Telegram dùng chung một hàm (D-13, D-29).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TeamOutcome {
+    /// Đã ghi tên đội hình mới cùng một dòng lịch sử.
+    Changed { from: String, to: String },
+    /// Từ chối với lý do và loại (`busy`, `not_allowed`).
+    Refused { reason: String, kind: &'static str },
+    /// `rev` không khớp hoặc `team_json` đã đổi trong lúc ghi (CAS thua).
+    Stale,
+    /// Task / dự án không có.
+    NotFound(String),
+    /// Tên đội hình không có trong teams.json.
+    Invalid(String),
+}
+
+fn source_label(source: ActionSource) -> &'static str {
+    match source {
+        ActionSource::Dashboard => "dashboard",
+        ActionSource::Telegram => "telegram",
+    }
+}
+
+fn unknown_team_message(state: &TaskState, team: &str) -> String {
+    format!(
+        "Không có đội hình '{team}'. Đội hình có: {}",
+        state.teams.names().join(", ")
+    )
+}
+
+/// Ghi `to` làm đội hình của task kèm một dòng lịch sử `{at, by, from, to}` bằng CAS trên
+/// `team_json` (giá trị cũ là giá trị `state` đã đọc). `Some(from)` khi ghi được, `None` khi
+/// CAS thua. Task cũ (NULL) đi từ `mac-dinh` với lịch sử rỗng; `wait` được giữ nguyên.
+fn write_team_change(
+    conn: &rusqlite::Connection,
+    state: &TaskState,
+    to: &str,
+    source: ActionSource,
+) -> BrainResult<Option<String>> {
+    let from = current_team_name(state);
+    let mut new_team = state
+        .team
+        .clone()
+        .unwrap_or_else(|| crate::teams::TaskTeam::new(&from));
+    new_team.name = to.to_string();
+    new_team.history.push(crate::teams::TeamChange {
+        at: crate::db::now_ms(),
+        by: source_label(source).to_string(),
+        from: from.clone(),
+        to: to.to_string(),
+    });
+    let wrote = crate::db::set_task_team_cas(
+        conn,
+        state.task.id,
+        state.team_json.as_deref(),
+        &new_team.to_json(),
+    )?;
+    Ok(wrote.then_some(from))
+}
+
+/// Đổi đội hình của task (D-13, D-29). Trạng thái được đọc lại; thứ tự kiểm tra: task có →
+/// `rev` → nút `change_team` bật → đội hình có trong teams.json → khác đội hình hiện tại →
+/// ghi bằng CAS. Đội hình mới áp dụng từ bước kế tiếp; các run đã chạy giữ engine của chúng.
+pub fn change_team(
+    st: &AppState,
+    task_id: i64,
+    team: &str,
+    rev: Option<&str>,
+    source: ActionSource,
+) -> BrainResult<TeamOutcome> {
+    let team = team.trim();
+    let conn = crate::db::open(&st.db_path)?;
+    let state = match load_task_state(st, &conn, task_id)? {
+        Ok(s) => s,
+        Err(msg) => return Ok(TeamOutcome::NotFound(msg)),
+    };
+    if let Some(r) = rev {
+        if r != state.rev {
+            return Ok(TeamOutcome::Stale);
+        }
+    }
+    if let Some(refusal) = change_team_refusal(&state) {
+        return Ok(refusal);
+    }
+    if state.teams.get(team).is_none() {
+        return Ok(TeamOutcome::Invalid(unknown_team_message(&state, team)));
+    }
+    if team == current_team_name(&state) {
+        return Ok(TeamOutcome::Refused {
+            reason: SAME_TEAM_MSG.to_string(),
+            kind: "not_allowed",
+        });
+    }
+    match write_team_change(&conn, &state, team, source)? {
+        Some(from) => Ok(TeamOutcome::Changed {
+            from,
+            to: team.to_string(),
+        }),
+        None => Ok(TeamOutcome::Stale),
+    }
+}
+
+const SAME_TEAM_MSG: &str = "Chọn đội hình khác đội hình hiện tại.";
+
+/// Từ chối của nút `change_team` (run đang chạy, autopilot, người đang chờ) hoặc `None`.
+fn change_team_refusal(state: &TaskState) -> Option<TeamOutcome> {
+    let action = state.view.actions.iter().find(|a| a.id == "change_team")?;
+    if action.enabled {
+        return None;
+    }
+    let reason = action.reason.clone().unwrap_or_default();
+    let live = reason == taskstate::CHANGE_TEAM_RUN_LIVE
+        || reason == taskstate::CHANGE_TEAM_AUTOPILOT
+        || state.busy.as_deref() == Some(reason.as_str());
+    Some(TeamOutcome::Refused {
+        reason,
+        kind: if live { "busy" } else { "not_allowed" },
+    })
+}
+
+fn change_team_response(o: TeamOutcome) -> Response {
+    match o {
+        TeamOutcome::Changed { from, to } => json_resp(
+            StatusCode::OK,
+            serde_json::json!({ "ok": true, "from": from, "to": to }),
+        ),
+        TeamOutcome::Refused { reason, kind } => conflict(&reason, kind),
+        TeamOutcome::Stale => conflict(STALE_MSG, "stale"),
+        TeamOutcome::NotFound(msg) => json_error(StatusCode::NOT_FOUND, &msg),
+        TeamOutcome::Invalid(msg) => json_error(StatusCode::UNPROCESSABLE_ENTITY, &msg),
+    }
+}
+
+async fn post_change_team(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<TeamBody>,
+) -> Response {
+    let res = blocking(move || {
+        change_team(
+            &st,
+            task_id,
+            &body.team,
+            body.rev.as_deref(),
+            ActionSource::Dashboard,
+        )
+    })
+    .await;
+    match res {
+        Ok(o) => change_team_response(o),
+        Err(e) => internal_error("đổi đội hình của task", &e),
+    }
+}
+
+/// Run mới nhất của task (mọi vai trò) khi nó kết thúc với outcome `quota` và không có driver
+/// autopilot đang chạy; `None` trong mọi trường hợp khác.
+fn quota_run(state: &TaskState) -> Option<&RunRow> {
+    if state.driver_alive {
+        return None;
+    }
+    state
+        .runs
+        .iter()
+        .max_by_key(|r| (r.started_at, r.id))
+        .filter(|r| r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA))
+}
+
+/// Tên nút của bước thường để `Thử lại sau` trỏ tới: autopilot đã dừng → `Chạy thêm 1 vòng`;
+/// ngược lại nút đang bật của Dev (`Chạy Dev`), QA (`Chạy QA`) hoặc Lead (`Chạy lại Lead`).
+/// Bước review không có nút riêng nên không có tên.
+fn quota_retry_label(state: &TaskState, run: &RunRow) -> Option<String> {
+    if state.view.auto.state == "stopped" {
+        if let Some(c) = state
+            .view
+            .controls
+            .iter()
+            .find(|c| c.id == "auto_more_round")
+        {
+            return Some(c.label.clone());
+        }
+    }
+    let id = match run.role.as_str() {
+        "dev" => "run_dev",
+        "qa" => "run_qa",
+        "lead" => "relead",
+        _ => return None,
+    };
+    state
+        .view
+        .actions
+        .iter()
+        .find(|a| a.id == id && a.enabled)
+        .map(|a| a.label.clone())
+}
+
+/// `{run_id, role, stage, step_name, engine, detail, retry_label}` của UI-SPEC khi bước gần
+/// nhất của task dừng vì hết quota (D-15, D-18); `None` khi không có quota stop.
+pub fn quota_view(state: &TaskState) -> Option<serde_json::Value> {
+    let run = quota_run(state)?;
+    Some(serde_json::json!({
+        "run_id": run.id,
+        "role": run.role,
+        "stage": run.stage,
+        "step_name": crate::quota::step_name(run.stage.as_deref(), &run.role),
+        "engine": run.engine,
+        "detail": crate::quota::stop_detail(run.id, &run.role, &run.engine),
+        "retry_label": quota_retry_label(state, run),
+    }))
+}
+
+/// Job chạy lại bước đã dừng vì hết quota: autopilot còn bật thì `auto {id}` (quota run bị bỏ
+/// khỏi dữ kiện khi resume nên cùng giai đoạn, cùng vòng chạy lại dưới đội hình mới); không
+/// thì lệnh riêng của bước. `None` khi vai trò của run không có lệnh chạy lại.
+fn quota_rerun_job(state: &TaskState, run: &RunRow) -> Option<(&'static str, Vec<String>)> {
+    if taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)) {
+        return Some(("auto", vec!["auto".to_string(), state.task.id.to_string()]));
+    }
+    let project = state.project.id.clone();
+    let run_args = |role: &'static str, mid: &[&str]| -> (&'static str, Vec<String>) {
+        let mut a = vec!["run".to_string(), role.to_string()];
+        a.extend(mid.iter().map(|s| s.to_string()));
+        a.push("--".to_string());
+        a.push(project.clone());
+        (role, a)
+    };
+    match run.role.as_str() {
+        "lead" => Some(lead_return_args(
+            &state.task,
+            &state.project.id,
+            false,
+            None,
+        )),
+        "plan-review" => Some(run_args("plan-review", &[])),
+        "code-review" => Some(run_args("code-review", &[])),
+        "qa" => Some(run_args("qa", &[])),
+        "dev" => {
+            if run.stage.as_deref() == Some("fix") {
+                let fix_for = decide::RunFact::from_row(run)
+                    .fix_for
+                    .map(|f| f.cli_arg())
+                    .unwrap_or("qa");
+                Some(run_args("dev", &["--fix", fix_for]))
+            } else {
+                Some(run_args("dev", &[]))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Chạy lại bước vừa dừng vì hết quota bằng đội hình `team` (D-16, D-17, D-18, QUOTA-01).
+/// Đội hình chọn trở thành đội hình của task từ bước này (lịch sử ghi theo `source`, kể cả khi
+/// trùng đội hình hiện tại), rồi bước chạy lại thành một job. Không bao giờ tự đổi đội hình
+/// hay engine, không phải duyệt plan. Thứ tự kiểm tra: task có → `rev` → nút `quota_rerun` bật
+/// (run gần nhất là quota stop, không gì đang chạy) → đội hình có → bước có lệnh chạy lại và
+/// nút thường của bước (nếu có) không từ chối → ghi đội hình bằng CAS → bắt đầu job. Job không
+/// bắt đầu được sau khi đã ghi (chỉ còn cuộc đua tắt dashboard) thì đội hình vẫn đổi (đã có
+/// trong lịch sử) và trả từ chối.
+pub fn quota_rerun(
+    st: &AppState,
+    task_id: i64,
+    team: &str,
+    rev: Option<&str>,
+    source: ActionSource,
+) -> BrainResult<ControlOutcome> {
+    let team = team.trim();
+    let conn = crate::db::open(&st.db_path)?;
+    let state = match load_task_state(st, &conn, task_id)? {
+        Ok(s) => s,
+        Err(msg) => return Ok(ControlOutcome::NotFound(msg)),
+    };
+    if let Some(r) = rev {
+        if r != state.rev {
+            return Ok(ControlOutcome::Stale);
+        }
+    }
+
+    let refusal = |reason: String| {
+        let kind = if state.busy.as_deref() == Some(reason.as_str())
+            || reason.starts_with("Đang có run")
+            || reason.starts_with("Autopilot đang chạy")
+        {
+            "busy"
+        } else {
+            "not_allowed"
+        };
+        ControlOutcome::Refused { reason, kind }
+    };
+    let action = match state.view.actions.iter().find(|a| a.id == "quota_rerun") {
+        Some(a) => a,
+        None => {
+            return Ok(ControlOutcome::Refused {
+                reason: NOT_ALLOWED_MSG.to_string(),
+                kind: "not_allowed",
+            })
+        }
+    };
+    if !action.enabled {
+        return Ok(refusal(action.reason.clone().unwrap_or_default()));
+    }
+    if state.teams.get(team).is_none() {
+        return Ok(ControlOutcome::Invalid(unknown_team_message(&state, team)));
+    }
+
+    let Some(run) = state
+        .runs
+        .iter()
+        .max_by_key(|r| (r.started_at, r.id))
+        .filter(|r| r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA))
+    else {
+        return Ok(refusal(taskstate::QUOTA_RERUN_NOT_QUOTA.to_string()));
+    };
+    let Some((role, args)) = quota_rerun_job(&state, run) else {
+        return Ok(ControlOutcome::Refused {
+            reason: NOT_ALLOWED_MSG.to_string(),
+            kind: "not_allowed",
+        });
+    };
+
+    // The step's own button knows whether the job can start (right branch, tree, plan); a refusal
+    // there must come before the team is written, or the team would change for nothing.
+    let own_id = if role == "auto" {
+        "auto_more_round"
+    } else {
+        match run.role.as_str() {
+            "dev" => "run_dev",
+            "qa" => "run_qa",
+            "lead" => "relead",
+            _ => "",
+        }
+    };
+    let own = state
+        .view
+        .actions
+        .iter()
+        .chain(state.view.controls.iter())
+        .find(|a| a.id == own_id);
+    if let Some(a) = own {
+        if !a.enabled {
+            return Ok(refusal(a.reason.clone().unwrap_or_default()));
+        }
+    }
+
+    if write_team_change(&conn, &state, team, source)?.is_none() {
+        return Ok(ControlOutcome::Stale);
+    }
+    match start_job_outcome(st, task_job(&state, role, args)) {
+        Ok(job_id) => Ok(ControlOutcome::Started { job_id }),
+        Err(outcome) => Ok(outcome),
+    }
+}
+
+async fn post_quota_rerun(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<TeamBody>,
+) -> Response {
+    let res = blocking(move || {
+        quota_rerun(
+            &st,
+            task_id,
+            &body.team,
+            body.rev.as_deref(),
+            ActionSource::Dashboard,
+        )
+    })
+    .await;
+    match res {
+        Ok(o) => control_response(o),
+        Err(e) => internal_error("chạy lại bước hết quota", &e),
+    }
+}
+
+/// `{name, summary, description, missing, legacy}` của UI-SPEC: task cũ (NULL) = `mac-dinh`,
+/// mọi vai trò chạy bằng claude; tên không còn trong teams.json = `missing`.
+pub fn team_view(state: &TaskState) -> serde_json::Value {
+    match state.team.as_ref() {
+        None if state.team_json.is_none() => serde_json::json!({
+            "name": crate::teams::DEFAULT_TEAM,
+            "summary": "tất cả: claude",
+            "description": serde_json::Value::Null,
+            "missing": false,
+            "legacy": true,
+        }),
+        None => serde_json::json!({
+            "name": crate::teams::DEFAULT_TEAM,
+            "summary": serde_json::Value::Null,
+            "description": serde_json::Value::Null,
+            "missing": true,
+            "legacy": false,
+        }),
+        Some(t) => match state.teams.get(&t.name) {
+            Some(team) => serde_json::json!({
+                "name": t.name,
+                "summary": team.summary(&state.staff),
+                "description": team.description,
+                "missing": false,
+                "legacy": false,
+            }),
+            None => serde_json::json!({
+                "name": t.name,
+                "summary": serde_json::Value::Null,
+                "description": serde_json::Value::Null,
+                "missing": true,
+                "legacy": false,
+            }),
+        },
+    }
 }
 
 /// PlanFacts cho cổng duyệt suy ra (task trước 5.2) và thẻ `ban` của 05.1.
@@ -1324,6 +1879,13 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "controls": view.controls,
             "auto": view.auto,
             "workflow": workflow_json,
+            "team": team_view(&state),
+            "quota": quota_view(&state),
+            "team_history": state
+                .team
+                .as_ref()
+                .map(|t| t.history.clone())
+                .unwrap_or_default(),
             "rev": state.rev,
             "plan": plan_obj,
             "qa": qa_obj,

@@ -548,6 +548,7 @@ fn find_slug(ctx: &BotCtx, f: &Intake, project_id: &str) -> Result<(String, Star
             request: &request,
             name: Some(candidate),
             workflow: f.workflow_name(),
+            team: None,
             origin: Origin::Telegram,
             dry_run: true,
         };
@@ -1072,6 +1073,7 @@ fn confirm(ctx: &Arc<BotCtx>, state: &PollState, f: &mut Intake, cq_id: &str, mi
         request: &request,
         name: Some(&slug),
         workflow: f.workflow_name(),
+        team: None,
         origin: Origin::Telegram,
         dry_run: true,
     };
