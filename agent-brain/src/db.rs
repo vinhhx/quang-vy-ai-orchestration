@@ -667,6 +667,23 @@ pub fn mark_task_origin(conn: &Connection, task_id: i64, origin: &str) -> BrainR
     Ok(changes == 1)
 }
 
+pub fn task_team_json(_conn: &Connection, _task_id: i64) -> BrainResult<Option<String>> {
+    Ok(None)
+}
+
+pub fn set_task_team_if_null(_conn: &Connection, _task_id: i64, _json: &str) -> BrainResult<bool> {
+    Ok(false)
+}
+
+pub fn set_task_team_cas(
+    _conn: &Connection,
+    _task_id: i64,
+    _old: Option<&str>,
+    _new: &str,
+) -> BrainResult<bool> {
+    Ok(false)
+}
+
 pub fn count_tasks_since(conn: &Connection, origin: &str, since_ms: i64) -> BrainResult<i64> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM tasks WHERE origin = ?1 AND created_at >= ?2",
