@@ -11,6 +11,7 @@ pub fn reason_word(r: StopReason) -> &'static str {
         StopReason::VuongMac => "vướng mắc",
         StopReason::DungBoiBan => "dừng bởi bạn",
         StopReason::RunLoi => "run lỗi",
+        StopReason::HetQuota => "hết quota",
     }
 }
 
@@ -110,6 +111,10 @@ pub fn stop_detail(info: &StopInfo, slug: &str) -> String {
                 "Autopilot không bắt đầu được bước tiếp theo.".to_string()
             }
         }
+        StopReason::HetQuota => info.detail_line.clone().unwrap_or_else(|| {
+            "Run dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine."
+                .to_string()
+        }),
     }
 }
 
@@ -153,6 +158,40 @@ mod tests {
         assert_eq!(reason_word(StopReason::VuongMac), "vướng mắc");
         assert_eq!(reason_word(StopReason::DungBoiBan), "dừng bởi bạn");
         assert_eq!(reason_word(StopReason::RunLoi), "run lỗi");
+        assert_eq!(
+            reason_word(StopReason::HetQuota),
+            ["hết", "quota"].join(" ")
+        );
+    }
+
+    #[test]
+    fn het_quota_detail() {
+        let mut info = StopInfo {
+            reason: StopReason::HetQuota,
+            loop_name: Some(Loop::Build),
+            stage: Some(Stage::Implement),
+            round: Some(1),
+            cap: None,
+            run_id: Some(7),
+            role: Some("dev".to_string()),
+            at_ms: 1000,
+            detail_line: Some(crate::quota::stop_detail(7, "dev", "deepseek")),
+            used_ms: None,
+            used_usd: None,
+            estimated: None,
+            limit_minutes: None,
+            limit_usd: None,
+        };
+        assert_eq!(
+            stop_detail(&info, "demo"),
+            "Run 7 (dev) trên engine deepseek dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine."
+        );
+        info.detail_line = None;
+        assert_eq!(
+            stop_detail(&info, "demo"),
+            "Run dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine."
+        );
+        assert!(terminal_line(&info, "demo", 3).starts_with("Autopilot dừng · hết quota: "));
     }
 
     #[test]

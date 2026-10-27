@@ -119,6 +119,8 @@ pub enum StopReason {
     VuongMac,
     DungBoiBan,
     RunLoi,
+    /// The engine hit its quota or rate limit (ENG-02, D-15); autopilot never switches engine.
+    HetQuota,
 }
 
 impl StopReason {
@@ -130,6 +132,7 @@ impl StopReason {
             StopReason::VuongMac => "vuong_mac",
             StopReason::DungBoiBan => "dung_boi_ban",
             StopReason::RunLoi => "run_loi",
+            StopReason::HetQuota => "het_quota",
         }
     }
 }
@@ -239,6 +242,8 @@ impl AutoJson {
 pub struct RunFact {
     pub id: i64,
     pub role: String,
+    /// `runs.engine` of the run (`claude`, `deepseek`, `agy`, `người`).
+    pub engine: String,
     pub stage: Option<Stage>,
     pub fix_for: Option<FixFor>,
     pub round: Option<i64>,
@@ -263,6 +268,7 @@ impl RunFact {
         RunFact {
             id: row.id,
             role: row.role.clone(),
+            engine: row.engine.clone(),
             stage,
             fix_for,
             round: row.round,
@@ -273,12 +279,20 @@ impl RunFact {
         }
     }
 
+    /// The run stopped on quota or a rate limit (outcome `quota`).
+    pub fn is_quota(&self) -> bool {
+        self.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA)
+    }
+
     pub fn is_ok(&self) -> bool {
         if self.status != "succeeded" {
             return false;
         }
         if let Some(ref oc) = self.outcome {
-            if oc == "protocol_violation" || oc == "dev:blocked" {
+            if oc == "protocol_violation"
+                || oc == "dev:blocked"
+                || oc == crate::quota::OUTCOME_QUOTA
+            {
                 return false;
             }
         }
@@ -344,6 +358,17 @@ pub fn build_facts(
         .map(RunFact::from_row)
         .collect();
     filtered_runs.sort_by_key(|r| (r.started_at, r.id));
+
+    // Pitfall 2: a quota run never consumes a round. It is kept only as the LAST run when not
+    // resuming (so D2 can stop on it); on resume, or once a later run supersedes it, it is dropped
+    // and the stopped step is decided again with the same round.
+    let last_index = filtered_runs.len().saturating_sub(1);
+    let mut index = 0usize;
+    filtered_runs.retain(|r| {
+        let i = index;
+        index += 1;
+        !r.is_quota() || (!resume && i == last_index)
+    });
 
     // D-28: approved chỉ đúng khi approved_commit bằng với plan_commit hiện tại
     let approved = match (&auto.approved_commit, plan_commit) {
@@ -460,6 +485,7 @@ pub fn effective_rounds(runs: &[RunFact]) -> Vec<i64> {
                 .enumerate()
                 .filter(|(j, prev)| {
                     cycs[*j] == run_cycle
+                        && !prev.is_quota()
                         && (prev.stage == Some(Stage::Plan)
                             || (prev.stage.is_none() && prev.role == "lead"))
                 })
@@ -484,6 +510,7 @@ pub fn effective_rounds(runs: &[RunFact]) -> Vec<i64> {
                 .enumerate()
                 .filter(|(j, prev)| {
                     cycs[*j] == run_cycle
+                        && !prev.is_quota()
                         && (prev.stage == Some(Stage::Implement)
                             || (prev.stage.is_none() && prev.role == "dev"))
                 })
@@ -510,6 +537,7 @@ pub fn effective_rounds(runs: &[RunFact]) -> Vec<i64> {
                 .enumerate()
                 .filter(|(j, prev)| {
                     cycs[*j] == run_cycle
+                        && !prev.is_quota()
                         && (prev.stage == Some(Stage::Implement)
                             || (prev.stage.is_none() && prev.role == "dev")
                             || (prev.stage == Some(Stage::Fix)
@@ -523,6 +551,7 @@ pub fn effective_rounds(runs: &[RunFact]) -> Vec<i64> {
                 .enumerate()
                 .filter(|(j, prev)| {
                     cycs[*j] == run_cycle
+                        && !prev.is_quota()
                         && (prev.stage == Some(Stage::Qa)
                             || (prev.stage.is_none() && prev.role == "qa"))
                 })
@@ -798,6 +827,30 @@ fn rule_d2_last_run_failures(f: &Facts, eff_rounds: &[i64]) -> Option<Decision> 
             role: Some(last_run.role.clone()),
             at_ms: f.now_ms,
             detail_line: Some(format!("Run {} vẫn đang chạy", last_run.id)),
+            used_ms: None,
+            used_usd: None,
+            estimated: None,
+            limit_minutes: None,
+            limit_usd: None,
+        }));
+    }
+    // ENG-02 / D-15: a quota or rate-limit stop is its own reason, checked before the generic
+    // failed-run rule. Nothing switches engine or retries (D-16).
+    if last_run.is_quota() {
+        return Some(Decision::Stop(StopInfo {
+            reason: StopReason::HetQuota,
+            loop_name,
+            stage,
+            round,
+            cap: None,
+            run_id: Some(last_run.id),
+            role: Some(last_run.role.clone()),
+            at_ms: f.now_ms,
+            detail_line: Some(crate::quota::stop_detail(
+                last_run.id,
+                &last_run.role,
+                &last_run.engine,
+            )),
             used_ms: None,
             used_usd: None,
             estimated: None,
@@ -1403,6 +1456,198 @@ mod tests {
                 fresh_plan: true,
             })
         );
+    }
+
+    /// Plan approved at "p1"; the first Dev run stopped on quota on the deepseek engine.
+    fn quota_dev_rows() -> Vec<RunRow> {
+        let r1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+        let r2 = dummy_run(
+            2,
+            "plan-review",
+            Some("plan-review"),
+            Some(1),
+            "succeeded",
+            Some("review:approve"),
+            None,
+        );
+        let mut r3 = dummy_run(
+            3,
+            "dev",
+            Some("implement"),
+            Some(1),
+            "failed",
+            Some("quota"),
+            None,
+        );
+        r3.engine = "deepseek".to_string();
+        vec![r1, r2, r3]
+    }
+
+    fn approved_auto() -> TaskAuto {
+        TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn d2_quota_stops_het_quota() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let rows = quota_dev_rows();
+        let facts = build_facts(
+            wf,
+            &rows,
+            &approved_auto(),
+            &AutoJson::default(),
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert_eq!(facts.runs.len(), 3, "the last quota run is kept");
+        assert_eq!(facts.runs[2].engine, "deepseek");
+
+        match decide(wf, &facts) {
+            Decision::Stop(info) => {
+                assert_eq!(info.reason, StopReason::HetQuota);
+                assert_eq!(info.reason.as_str(), "het_quota");
+                assert_eq!(info.run_id, Some(3));
+                assert_eq!(info.role.as_deref(), Some("dev"));
+                assert_eq!(info.stage, Some(Stage::Implement));
+                assert_eq!(info.round, Some(1));
+                assert_eq!(
+                    info.detail_line.as_deref(),
+                    Some("Run 3 (dev) trên engine deepseek dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine.")
+                );
+            }
+            other => panic!("expected Stop(HetQuota), got {other:?}"),
+        }
+
+        // The quota branch precedes the generic failed-run rule: the same run without the
+        // quota outcome is a plain run_loi.
+        let mut plain = quota_dev_rows();
+        plain[2].outcome = None;
+        let facts = build_facts(
+            wf,
+            &plain,
+            &approved_auto(),
+            &AutoJson::default(),
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        match decide(wf, &facts) {
+            Decision::Stop(info) => assert_eq!(info.reason, StopReason::RunLoi),
+            other => panic!("expected Stop(RunLoi), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn quota_run_dropped_on_resume() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let rows = quota_dev_rows();
+        let facts = build_facts(
+            wf,
+            &rows,
+            &approved_auto(),
+            &AutoJson::default(),
+            Some("p1"),
+            &pricing,
+            5000,
+            true,
+        );
+        assert_eq!(
+            facts.runs.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![1, 2],
+            "resume drops the quota run"
+        );
+        match decide(wf, &facts) {
+            Decision::Run(sr) => {
+                assert_eq!(sr.stage, Stage::Implement);
+                assert_eq!(sr.round, 1, "the stopped step keeps its round");
+            }
+            other => panic!("expected Run(Implement r1), got {other:?}"),
+        }
+
+        // A quota run that a later run superseded is dropped even without resume.
+        let mut rows = quota_dev_rows();
+        rows.push(dummy_run(
+            4,
+            "dev",
+            Some("implement"),
+            None,
+            "succeeded",
+            None,
+            None,
+        ));
+        let facts = build_facts(
+            wf,
+            &rows,
+            &approved_auto(),
+            &AutoJson::default(),
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert_eq!(
+            facts.runs.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![1, 2, 4]
+        );
+    }
+
+    #[test]
+    fn effective_rounds_skip_quota() {
+        let mut rows = quota_dev_rows();
+        rows[2].round = None;
+        rows.push(dummy_run(
+            4,
+            "dev",
+            Some("implement"),
+            None,
+            "succeeded",
+            None,
+            None,
+        ));
+        rows.push(dummy_run(
+            5,
+            "qa",
+            Some("qa"),
+            None,
+            "failed",
+            Some("quota"),
+            None,
+        ));
+        rows.push(dummy_run(
+            6,
+            "qa",
+            Some("qa"),
+            None,
+            "succeeded",
+            None,
+            None,
+        ));
+        let facts: Vec<RunFact> = rows.iter().map(RunFact::from_row).collect();
+        let eff = effective_rounds(&facts);
+        assert_eq!(
+            eff,
+            vec![1, 1, 1, 1, 1, 1],
+            "quota runs do not count: {eff:?}"
+        );
+
+        // Without the quota outcome the earlier failed run is counted as before.
+        let mut counted = rows.clone();
+        counted[2].outcome = None;
+        counted[4].outcome = None;
+        let facts: Vec<RunFact> = counted.iter().map(RunFact::from_row).collect();
+        assert_eq!(effective_rounds(&facts), vec![1, 1, 1, 2, 1, 2]);
     }
 
     #[test]
@@ -3516,6 +3761,7 @@ mod tests {
         let pr_after_q = RunFact {
             id: 13,
             role: "plan-review".to_string(),
+            engine: "claude".to_string(),
             stage: Some(Stage::PlanReview),
             fix_for: None,
             round: None,
