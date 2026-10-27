@@ -58,6 +58,7 @@ pub struct AutoOpts {
     pub replan: bool,
     pub note: Option<String>,
     pub origin: Option<String>,
+    pub team: Option<String>,
 }
 
 /// Kết quả một tiến trình con.
@@ -558,6 +559,9 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
     if !opts.start && opts.origin.is_some() {
         return Err(BrainError::error("--origin chỉ dùng với --start"));
     }
+    if !opts.start && opts.team.is_some() {
+        return Err(BrainError::error("--team chỉ dùng với --start"));
+    }
     if opts.start {
         if opts.more_round || opts.replan || opts.note.is_some() {
             return Err(BrainError::error(
@@ -584,6 +588,20 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
         if let Some(ref n) = resolved.note {
             crate::term::emit(n);
         }
+
+        // TEAM-03: an unknown explicit team is refused before anything is spawned. Without
+        // --team the Lead child applies the project default (or mac-dinh) itself.
+        let team_name = match opts.team.as_deref() {
+            Some(requested) => {
+                let (teams_loaded, _staff) = crate::teams::load();
+                Some(
+                    crate::teams::resolve(&teams_loaded, Some(requested), None)?
+                        .team
+                        .name,
+                )
+            }
+            None => None,
+        };
 
         let slug = crate::routing::slugify(opts.name.as_deref().unwrap_or(request));
         if slug.is_empty() {
@@ -620,6 +638,10 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
         if let Some(origin) = opts.origin.as_deref() {
             args.push("--origin".to_string());
             args.push(origin.to_string());
+        }
+        if let Some(team) = team_name.as_deref() {
+            args.push("--team".to_string());
+            args.push(team.to_string());
         }
         args.push("--".to_string());
         args.push(project.id.clone());

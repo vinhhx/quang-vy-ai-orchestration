@@ -114,6 +114,9 @@ enum Commands {
         /// Quy trình (workflow) cho task mới (chỉ với --start)
         #[arg(long)]
         workflow: Option<String>,
+        /// Đội hình cho task mới (chỉ với --start)
+        #[arg(long)]
+        team: Option<String>,
         /// Chạy thêm 1 vòng sau khi autopilot đã dừng
         #[arg(long)]
         more_round: bool,
@@ -278,6 +281,7 @@ fn main() {
             start,
             name,
             workflow,
+            team,
             more_round,
             replan,
             note,
@@ -292,6 +296,7 @@ fn main() {
                 replan,
                 note,
                 origin,
+                team,
             };
             autopilot::cmd_auto(&mut ctx, &opts)
         }
