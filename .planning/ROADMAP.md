@@ -412,7 +412,7 @@ Plans:
   4. *(chuyển sang Phase 06.1)*
   5. Antigravity được xử lý theo kết quả S7 (chạy headless như engine, hoặc dùng thủ công và theo dõi qua `git diff`), và tỉ lệ "Cần sửa" của QA được ghi theo engine.
 
-**Plans:** 14/19 plans executed
+**Plans:** 15/19 plans executed
 
 Plans:
 **Wave 1**
@@ -435,7 +435,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 06-11-PLAN.md — DeepSeek engine + key hygiene (only if E-09 passed) (wave 5)
-- [ ] 06-12-PLAN.md — Human engine CLI side: prepare/push branch, wait marker, Xong/Trả lại (wave 5)
+- [x] 06-12-PLAN.md — Human engine CLI side: prepare/push branch, wait marker, Xong/Trả lại (wave 5)
 - [x] 06-13-PLAN.md — Engines on the pipeline, per-engine stats, Cần sửa by Dev engine (wave 5)
 - [x] 06-14-PLAN.md — Telegram quota message with team buttons + confirm tap (wave 5)
 - [x] 06-15-PLAN.md — Team picker on Giao việc (wave 5)
@@ -488,4 +488,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 13/13 | Complete    | 2026-10-19 |
-| 6. Multi-engine & Media Branch | 14/19 | In Progress | - |
+| 6. Multi-engine & Media Branch | 15/19 | In Progress | - |
