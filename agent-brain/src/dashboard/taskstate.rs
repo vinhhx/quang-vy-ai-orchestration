@@ -62,6 +62,10 @@ pub struct AutoFacts<'a> {
     /// Latest run of any role (reviews included). `None`: only the lead / dev / qa runs of
     /// `TaskFacts` are known, which is enough for every caller that has no review runs.
     pub latest_run: Option<&'a RunRow>,
+    /// Mode of the task's human wait marker (`waiting` | `rejected`), `None` without a marker (06-16).
+    pub human_mode: Option<&'a str>,
+    /// Display name of the person the marker waits for.
+    pub human_name: Option<&'a str>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -383,6 +387,87 @@ pub const CHANGE_TEAM_RUN_LIVE: &str =
 pub const CHANGE_TEAM_AUTOPILOT: &str =
     "Autopilot đang chạy task này — dừng autopilot rồi mới đổi đội hình.";
 
+/// Mode of a human wait marker that is still waiting for the person.
+pub const HUMAN_WAITING: &str = "waiting";
+/// Mode of a human wait marker whose last result was rejected (waits for `Trả lại`).
+pub const HUMAN_REJECTED: &str = "rejected";
+
+/// Banner of a task whose human step is waiting (`Chờ {tên} làm`).
+pub fn human_waiting_banner(name: &str) -> String {
+    format!("Chờ {name} làm")
+}
+
+/// Banner of a task whose human result was rejected (`Chờ bạn · trả lại cho {tên}`).
+pub fn human_rejected_banner(name: &str) -> String {
+    format!("Chờ bạn · trả lại cho {name}")
+}
+
+/// Reason the Dev / QA / Lead buttons and `Bật autopilot` are refused while a person's step is
+/// pending (D-29, HUM-01).
+pub fn human_strip_reason(mode: &str, name: &str) -> String {
+    if mode == HUMAN_REJECTED {
+        format!("Kết quả của {name} chưa đạt — bấm Trả lại để {name} làm lại.")
+    } else {
+        format!("Đang chờ {name} làm — bấm Xong khi họ báo xong.")
+    }
+}
+
+/// Nút `Xong` (D-20): lấy việc người đã đẩy lên nhánh task. Chỉ bật ở chế độ `waiting`, khi
+/// không có run / autopilot đang chạy (`busy` = lý do) và đang ở nhánh task (`on_branch` = lý do
+/// khi không phải).
+pub fn build_human_done(
+    mode: &str,
+    name: &str,
+    on_branch: Option<String>,
+    busy: Option<&str>,
+) -> ActionView {
+    let mut enabled = true;
+    let mut reason = None;
+
+    if mode == HUMAN_REJECTED {
+        enabled = false;
+        reason = Some(format!(
+            "Bấm Trả lại trước: kết quả lần trước của {name} chưa đạt."
+        ));
+    } else if let Some(b) = busy {
+        enabled = false;
+        reason = Some(b.to_string());
+    } else if let Some(why) = on_branch {
+        enabled = false;
+        reason = Some(why);
+    }
+
+    ActionView {
+        id: "human_done".to_string(),
+        label: "Xong".to_string(),
+        enabled,
+        reason,
+        run_id: None,
+    }
+}
+
+/// Nút `Trả lại` (D-20): chỉ bật khi kết quả lần trước của người chưa đạt (`rejected`).
+pub fn build_human_return(mode: &str, name: &str, busy: Option<&str>) -> ActionView {
+    let mut enabled = true;
+    let mut reason = None;
+
+    if mode != HUMAN_REJECTED {
+        enabled = false;
+        reason = Some(format!("Chỉ trả lại khi kết quả của {name} chưa đạt."));
+    } else if let Some(b) = busy {
+        enabled = false;
+        reason = Some(b.to_string());
+    }
+
+    ActionView {
+        id: "human_return".to_string(),
+        label: "Trả lại".to_string(),
+        enabled,
+        reason,
+        run_id: None,
+    }
+}
+
 /// Xác định trạng thái autopilot cho AutoView.
 fn auto_state_of(a: &AutoFacts) -> &'static str {
     if a.workflow.is_none() {
@@ -410,6 +495,8 @@ fn auto_state_of(a: &AutoFacts) -> &'static str {
         }
         Some("stopped") => "stopped",
         Some("done") => "done",
+        // The driver released the task for a person (06-12): nothing runs until Xong.
+        Some("waiting_human") => "waiting_human",
         _ => "off",
     }
 }
@@ -705,7 +792,12 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
             r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA)
         });
 
-    let banner = if auto_state == "stopped" {
+    let human_name = a.human_name.unwrap_or("người");
+    let banner = if a.human_mode == Some(HUMAN_WAITING) {
+        Some(human_waiting_banner(human_name))
+    } else if a.human_mode == Some(HUMAN_REJECTED) {
+        Some(human_rejected_banner(human_name))
+    } else if auto_state == "stopped" {
         if let Some(word) = &stop_word {
             Some(format!("Chờ bạn · {word}"))
         } else {
@@ -726,7 +818,11 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
         }
     };
 
-    let group = if running_run.is_some() || a.driver_alive {
+    let group = if a.human_mode == Some(HUMAN_WAITING) {
+        "running".to_string()
+    } else if a.human_mode == Some(HUMAN_REJECTED) {
+        "waiting".to_string()
+    } else if running_run.is_some() || a.driver_alive {
         "running".to_string()
     } else if auto_state == "stopped" || quota_stop {
         "waiting".to_string()
@@ -796,6 +892,15 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
                 }
             }
         }
+        if let Some(mode) = a.human_mode {
+            // D-29: while a person's step is pending, nothing else may start.
+            for act in &mut acts {
+                if act.id == "run_dev" || act.id == "run_qa" || act.id == "relead" {
+                    act.enabled = false;
+                    act.reason = Some(human_strip_reason(mode, human_name));
+                }
+            }
+        }
         if auto_state == "gate" {
             // Autopilot chờ ở cổng duyệt plan: bước tiếp theo chỉ là Duyệt plan /
             // Trả về Lead (hoặc Dừng autopilot). Chạy Dev / Chạy lại Lead tay quay
@@ -837,6 +942,16 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
         if auto_state == "stopped" {
             controls.push(build_auto_more_round(f, a, running_run));
             controls.push(build_auto_end());
+        }
+    }
+
+    if let Some(mode) = a.human_mode {
+        // A person holds the step: autopilot cannot be (re)started or given another round.
+        for c in &mut controls {
+            if c.id == "auto_start" || c.id == "auto_more_round" {
+                c.enabled = false;
+                c.reason = Some(human_strip_reason(mode, human_name));
+            }
         }
     }
 
@@ -2903,6 +3018,83 @@ mod tests {
         assert_ne!(
             derive_with(&plain, &af).banner.as_deref(),
             Some("Chờ bạn · hết quota")
+        );
+    }
+
+    #[test]
+    fn human_action_builders() {
+        // Xong: enabled only in `waiting`, with no busy reason and on the task branch.
+        let ok = build_human_done("waiting", "Hà", None, None);
+        assert_eq!(ok.id, "human_done");
+        assert_eq!(ok.label, "Xong");
+        assert!(ok.enabled);
+        assert_eq!(ok.reason, None);
+
+        let rejected = build_human_done("rejected", "Hà", None, None);
+        assert!(!rejected.enabled);
+        assert_eq!(
+            rejected.reason.as_deref(),
+            Some("Bấm Trả lại trước: kết quả lần trước của Hà chưa đạt.")
+        );
+
+        let busy = build_human_done("waiting", "Hà", None, Some("Đang có run chạy"));
+        assert!(!busy.enabled);
+        assert_eq!(busy.reason.as_deref(), Some("Đang có run chạy"));
+
+        let off_branch = build_human_done(
+            "waiting",
+            "Hà",
+            Some("Không ở nhánh task 'task/x' (nhánh hiện tại: 'main') — không đoán".to_string()),
+            None,
+        );
+        assert!(!off_branch.enabled);
+        assert!(off_branch
+            .reason
+            .as_deref()
+            .unwrap()
+            .starts_with("Không ở nhánh task"));
+
+        // Trả lại: enabled only in `rejected`.
+        let back = build_human_return("rejected", "Hà", None);
+        assert_eq!(back.id, "human_return");
+        assert_eq!(back.label, "Trả lại");
+        assert!(back.enabled);
+        let waiting = build_human_return("waiting", "Hà", None);
+        assert!(!waiting.enabled);
+        assert_eq!(
+            waiting.reason.as_deref(),
+            Some("Chỉ trả lại khi kết quả của Hà chưa đạt.")
+        );
+        let busy = build_human_return("rejected", "Hà", Some("Autopilot đang chạy task này"));
+        assert!(!busy.enabled);
+    }
+
+    #[test]
+    fn human_waiting_banner_and_group() {
+        let task = dummy_task("planned");
+        let git = GitFacts::default();
+        let facts = facts_without(&task, &git);
+        let af = AutoFacts {
+            human_mode: Some("waiting"),
+            human_name: Some("Hà"),
+            ..Default::default()
+        };
+        let view = derive_with(&facts, &af);
+        assert_eq!(view.banner.as_deref(), Some("Chờ Hà làm"));
+        assert_eq!(view.group, "running");
+
+        // The banner outranks a quota stop and the plan banner.
+        let mut quota = dummy_run(4, "dev", "failed", Some("quota"));
+        quota.started_at = 5000;
+        let af = AutoFacts {
+            human_mode: Some("waiting"),
+            human_name: Some("Hà"),
+            latest_run: Some(&quota),
+            ..Default::default()
+        };
+        assert_eq!(
+            derive_with(&facts, &af).banner.as_deref(),
+            Some("Chờ Hà làm")
         );
     }
 

@@ -435,6 +435,8 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         .route("/api/tasks/{id}/relead", post(post_task_relead))
         .route("/api/tasks/{id}/team", post(post_change_team))
         .route("/api/tasks/{id}/quota-rerun", post(post_quota_rerun))
+        .route("/api/tasks/{id}/human/done", post(post_human_done))
+        .route("/api/tasks/{id}/human/return", post(post_human_return))
         .route("/api/tasks/{id}/approve", post(post_approve))
         .route("/api/tasks/{id}/return", post(post_return))
         .route("/api/tasks/{id}/auto", post(post_auto))
@@ -915,6 +917,8 @@ async fn list_tasks(
                 gate: None,
                 plan_dirty: false,
                 latest_run: latest_run.as_ref(),
+                human_mode: None,
+                human_name: None,
             };
             let view = taskstate::derive_with(&facts, &auto_facts);
 
@@ -1205,6 +1209,11 @@ pub fn load_task_state(
         .and_then(|t| t.wait.as_ref())
         .filter(|w| w.mode == "waiting")
         .map(|w| staff.display_name_of(&w.staff));
+    // 06-16: mode and display name of any human marker (waiting or rejected).
+    let human_wait = team
+        .as_ref()
+        .and_then(|t| t.wait.as_ref())
+        .map(|w| (w.mode.clone(), staff.display_name_of(&w.staff)));
 
     let mut view = {
         let facts = TaskFacts {
@@ -1225,9 +1234,33 @@ pub fn load_task_state(
             gate,
             plan_dirty,
             latest_run: runs.iter().max_by_key(|r| (r.started_at, r.id)),
+            human_mode: human_wait.as_ref().map(|(m, _)| m.as_str()),
+            human_name: human_wait.as_ref().map(|(_, n)| n.as_str()),
         };
         taskstate::derive_with(&facts, &auto_facts)
     };
+    if let Some((mode, name)) = human_wait.as_ref() {
+        // D-20: Xong / Trả lại exist whenever a person's step is pending; their `enabled` and
+        // `reason` carry the refusals the shared `human_action` repeats server-side.
+        let live = if running_of(&runs).is_some() {
+            Some("Đang có run chạy — chờ run xong hoặc bấm Kill")
+        } else if driver_alive {
+            Some("Autopilot đang chạy task này — chờ autopilot dừng")
+        } else {
+            None
+        };
+        let on_branch = (git.current_branch.as_deref() != Some(task.branch.as_str())).then(|| {
+            format!(
+                "Không ở nhánh task '{}' (nhánh hiện tại: '{}') — không đoán",
+                task.branch,
+                git.current_branch.as_deref().unwrap_or("None")
+            )
+        });
+        view.actions
+            .push(taskstate::build_human_done(mode, name, on_branch, live));
+        view.actions
+            .push(taskstate::build_human_return(mode, name, live));
+    }
     view.actions.push(taskstate::build_change_team(
         running_of(&runs),
         driver_alive,
@@ -1496,6 +1529,123 @@ pub fn quota_view(state: &TaskState) -> Option<serde_json::Value> {
         "detail": crate::quota::stop_detail(run.id, &run.role, &run.engine),
         "retry_label": quota_retry_label(state, run),
     }))
+}
+
+/// `human {mode, staff_id, staff_name, notes, step, step_name, round, branch, since_ms,
+/// waiting_ms, report_paths, push {ok, command, error}}` của UI-SPEC khi team document của task
+/// có marker `wait` (D-21, HUM-01); `None` khi không có. `notes` chỉ có khi nhân sự có ghi chú.
+pub fn human_view(state: &TaskState, now_ms: i64) -> Option<serde_json::Value> {
+    let wait = state.team.as_ref()?.wait.as_ref()?;
+    let entry = state.staff.get(&wait.staff);
+    let mut v = serde_json::json!({
+        "mode": wait.mode,
+        "staff_id": wait.staff,
+        "staff_name": state.staff.display_name_of(&wait.staff),
+        "step": wait.stage,
+        "step_name": crate::quota::step_name(Some(wait.stage.as_str()), "dev"),
+        "round": wait.round,
+        "branch": wait.branch,
+        "since_ms": wait.since_ms,
+        "waiting_ms": (now_ms - wait.since_ms).max(0),
+        "report_paths": wait.report_paths,
+        "push": wait.push.as_ref().map(|p| serde_json::json!({
+            "ok": p.ok,
+            "command": p.command,
+            "error": p.error,
+        })),
+    });
+    if let Some(notes) = entry
+        .and_then(|s| s.notes.as_deref())
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        v["notes"] = serde_json::json!(notes);
+    }
+    Some(v)
+}
+
+/// Xong / Trả lại (D-20): một hàm dùng chung cho hai route của dashboard (không có nút Telegram).
+/// Trạng thái được đọc lại; thứ tự kiểm tra: task có → `rev` → nút có mặt (có marker) → nút bật →
+/// bắt đầu job `human done|return {id}`. `action_id` là `human_done` hoặc `human_return`.
+pub fn human_action(
+    st: &AppState,
+    task_id: i64,
+    action_id: &str,
+    rev: Option<&str>,
+) -> BrainResult<ControlOutcome> {
+    let sub = match action_id {
+        "human_done" => "done",
+        "human_return" => "return",
+        _ => {
+            return Ok(ControlOutcome::Refused {
+                reason: NOT_ALLOWED_MSG.to_string(),
+                kind: "not_allowed",
+            })
+        }
+    };
+    let conn = crate::db::open(&st.db_path)?;
+    let state = match load_task_state(st, &conn, task_id)? {
+        Ok(s) => s,
+        Err(msg) => return Ok(ControlOutcome::NotFound(msg)),
+    };
+    if let Some(r) = rev {
+        if r != state.rev {
+            return Ok(ControlOutcome::Stale);
+        }
+    }
+    let action = match state.view.actions.iter().find(|a| a.id == action_id) {
+        Some(a) => a.clone(),
+        None => {
+            return Ok(ControlOutcome::Refused {
+                reason: NOT_ALLOWED_MSG.to_string(),
+                kind: "not_allowed",
+            })
+        }
+    };
+    if !action.enabled {
+        let reason = action.reason.unwrap_or_default();
+        let live = reason.starts_with("Đang có run") || reason.starts_with("Autopilot đang chạy");
+        let kind = if live || state.busy.as_deref() == Some(reason.as_str()) {
+            "busy"
+        } else {
+            "not_allowed"
+        };
+        return Ok(ControlOutcome::Refused { reason, kind });
+    }
+    let args = vec!["human".to_string(), sub.to_string(), task_id.to_string()];
+    match start_job_outcome(st, task_job(&state, "dev", args)) {
+        Ok(job_id) => Ok(ControlOutcome::Started { job_id }),
+        Err(outcome) => Ok(outcome),
+    }
+}
+
+async fn post_human(
+    st: Arc<AppState>,
+    task_id: i64,
+    action_id: &'static str,
+    rev: Option<String>,
+) -> Response {
+    let res = blocking(move || human_action(&st, task_id, action_id, rev.as_deref())).await;
+    match res {
+        Ok(o) => control_response(o),
+        Err(e) => internal_error("xử lý nút của bước do người làm", &e),
+    }
+}
+
+async fn post_human_done(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<ControlBody>,
+) -> Response {
+    post_human(st, task_id, "human_done", body.rev).await
+}
+
+async fn post_human_return(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<ControlBody>,
+) -> Response {
+    post_human(st, task_id, "human_return", body.rev).await
 }
 
 /// Job chạy lại bước đã dừng vì hết quota: autopilot còn bật thì `auto {id}` (quota run bị bỏ
@@ -1881,6 +2031,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "workflow": workflow_json,
             "team": team_view(&state),
             "quota": quota_view(&state),
+            "human": human_view(&state, crate::db::now_ms()),
             "team_history": state
                 .team
                 .as_ref()
