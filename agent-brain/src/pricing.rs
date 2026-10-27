@@ -35,11 +35,56 @@ pub fn price_for(model: Option<&str>, table: &BTreeMap<String, Price>) -> Price 
     }
 }
 
+/// Price of an engine's own `pricing.<engine>` entry. `claude` → `None`: the model-family lookup
+/// (`price_for`) applies to it instead. A person (`người`) has no price either.
+pub fn engine_price(engine: &str, table: &BTreeMap<String, Price>) -> Option<Price> {
+    if engine == crate::engine::ENGINE_CLAUDE || engine == crate::engine::ENGINE_HUMAN {
+        return None;
+    }
+    table.get(engine).copied()
+}
+
+/// USD cost of `usage` on a non-claude engine; `None` for claude and for an unpriced engine.
+pub fn cost_for_engine(
+    engine: &str,
+    usage: &crate::stream::Usage,
+    table: &BTreeMap<String, Price>,
+) -> Option<f64> {
+    let p = engine_price(engine, table)?;
+    Some(
+        (usage.input_tokens as f64 * p.input
+            + usage.output_tokens as f64 * p.output
+            + usage.cache_read_input_tokens as f64 * p.cache_read
+            + usage.cache_creation_input_tokens as f64 * p.cache_write)
+            / 1_000_000.0,
+    )
+}
+
+/// Whether the engine has a price: claude always (family lookup), a person never, else the key exists.
+pub fn is_priced(engine: &str, table: &BTreeMap<String, Price>) -> bool {
+    if engine == crate::engine::ENGINE_CLAUDE {
+        return true;
+    }
+    if engine == crate::engine::ENGINE_HUMAN {
+        return false;
+    }
+    table.contains_key(engine)
+}
+
 /// Ước tính chi phí USD dựa trên token và bảng giá.
 /// Các hệ số nhân lấy từ bảng config.json đã khớp với các run thực tế (RESEARCH §3.8).
 /// Một run bị killed hoặc partial luôn được ước tính để trần ngân sách không bị bypass (D-19).
 pub fn estimate_usd(r: &RunRow, table: &BTreeMap<String, Price>) -> f64 {
-    let p = price_for(r.model.as_deref(), table);
+    // D-23 / Pitfall 6: a non-claude run is priced only from `pricing.<engine>`; with no entry it
+    // costs 0 and is never billed at the most expensive Anthropic family.
+    let p = if r.engine == crate::engine::ENGINE_CLAUDE {
+        price_for(r.model.as_deref(), table)
+    } else {
+        match engine_price(&r.engine, table) {
+            Some(p) => p,
+            None => return 0.0,
+        }
+    };
     (r.input_tokens as f64 * p.input
         + r.output_tokens as f64 * p.output
         + r.cache_read_tokens as f64 * p.cache_read
@@ -552,5 +597,90 @@ mod tests {
         );
         assert_eq!(limits.limit_ms(), 3_600_000);
         assert_eq!(limits.limit_cents(), 2000);
+    }
+
+    fn deepseek_table(input: Option<f64>) -> BTreeMap<String, Price> {
+        let mut t = crate::config::default_pricing();
+        if let Some(input) = input {
+            t.insert(
+                "deepseek".to_string(),
+                Price {
+                    input,
+                    output: 1.10,
+                    cache_read: 0.07,
+                    cache_write: 0.27,
+                },
+            );
+        }
+        t
+    }
+
+    #[test]
+    fn engine_first_pricing() {
+        let none = deepseek_table(None);
+        assert_eq!(engine_price("claude", &none), None);
+        assert_eq!(engine_price("deepseek", &none), None);
+        assert!(is_priced("claude", &none));
+        assert!(!is_priced("người", &none));
+        assert!(!is_priced("agy", &none));
+        assert!(!is_priced("deepseek", &none));
+
+        let with = deepseek_table(Some(0.27));
+        assert_eq!(engine_price("claude", &with), None);
+        assert_eq!(engine_price("deepseek", &with).unwrap().input, 0.27);
+        assert!(is_priced("deepseek", &with));
+        assert!(!is_priced("người", &with));
+        assert!(!is_priced("agy", &with));
+
+        let mut agy = with.clone();
+        agy.insert("agy".to_string(), with["deepseek"]);
+        assert!(is_priced("agy", &agy));
+
+        let usage = crate::stream::Usage {
+            input_tokens: 2_000_000,
+            output_tokens: 1_000_000,
+            cache_read_input_tokens: 1_000_000,
+            cache_creation_input_tokens: 1_000_000,
+        };
+        assert_eq!(cost_for_engine("claude", &usage, &with), None);
+        assert_eq!(cost_for_engine("deepseek", &usage, &none), None);
+        let cost = cost_for_engine("deepseek", &usage, &with).unwrap();
+        assert!(
+            (cost - (2.0 * 0.27 + 1.10 + 0.07 + 0.27)).abs() < 1e-9,
+            "{cost}"
+        );
+    }
+
+    #[test]
+    fn estimate_non_claude_unpriced_is_zero() {
+        let mut r = dummy_run(
+            "dev",
+            "killed",
+            Some("sonnet"),
+            "partial",
+            0.0,
+            0,
+            Some(1000),
+            1_000_000,
+            0,
+            0,
+            0,
+        );
+        r.engine = "deepseek".to_string();
+
+        // Never the sonnet or the opus price.
+        assert_eq!(estimate_usd(&r, &deepseek_table(None)), 0.0);
+        let est = estimate_usd(&r, &deepseek_table(Some(0.27)));
+        assert!((est - 0.27).abs() < 1e-9, "{est}");
+
+        // A person's run is never priced.
+        r.engine = "người".to_string();
+        assert_eq!(estimate_usd(&r, &deepseek_table(Some(0.27))), 0.0);
+
+        // A claude run keeps the family lookup (sonnet: 1M input tokens = its input price).
+        r.engine = "claude".to_string();
+        let table = crate::config::default_pricing();
+        let expected = price_for(Some("sonnet"), &table).input;
+        assert!((estimate_usd(&r, &table) - expected).abs() < 1e-9);
     }
 }

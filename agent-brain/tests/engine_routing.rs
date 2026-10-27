@@ -603,3 +603,49 @@ fn all_claude_team_matches_legacy_record() {
         "the personal profile env must be applied: {team_record}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 3: engine-first pricing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn claude_cost_unchanged() {
+    // A `pricing.deepseek` entry must not change what a claude run stores.
+    let sb = Sandbox::new();
+    sb.write_config(json!({
+        "pricing": {
+            "opus": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 8.0},
+            "sonnet": {"input": 2.0, "output": 10.0, "cache_read": 0.1, "cache_write": 4.0},
+            "deepseek": {"input": 0.27, "output": 1.1, "cache_read": 0.07, "cache_write": 0.27}
+        }
+    }));
+    setup_auto_project(&sb, "work");
+
+    let mut entry = lead_plan_entry();
+    entry["result_cost"] = json!(1.25);
+    entry["result_tokens"] = json!({"input": 1000, "output": 500});
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(entry),
+    );
+    assert_ok(&res, "run lead");
+
+    let (engine, cost): (String, f64) = sb
+        .db()
+        .query_row(
+            "SELECT engine, cost_usd FROM runs WHERE role = 'lead'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(engine, "claude");
+    assert!((cost - 1.25).abs() < 1e-9, "stored cost {cost}");
+}

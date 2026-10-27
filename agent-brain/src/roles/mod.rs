@@ -609,7 +609,18 @@ pub fn execute_role_staged(
             },
             usage: obs.summary.usage,
             usage_source: obs.summary.usage_source.as_str().to_string(),
-            cost_usd: obs.summary.cost_usd,
+            // claude keeps the cost from its result event; other engines are priced from
+            // `pricing.<engine>` and cost 0 when unpriced (D-23).
+            cost_usd: crate::pricing::cost_for_engine(
+                ep.db_engine,
+                &obs.summary.usage,
+                &ctx.cfg.pricing,
+            )
+            .unwrap_or(if ep.db_engine == crate::engine::ENGINE_CLAUDE {
+                obs.summary.cost_usd
+            } else {
+                0.0
+            }),
             num_turns: obs.summary.num_turns,
             assistant_turns: Some(obs.summary.assistant_turns),
             turns_before_first_edit: obs.summary.turns_before_first_edit,
