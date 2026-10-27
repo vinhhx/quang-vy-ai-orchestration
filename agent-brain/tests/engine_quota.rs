@@ -467,3 +467,250 @@ fn manual_lead_round_skips_quota() {
         "the re-run of the stopped step keeps its round: {all:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 3: Dev continuation after a quota stop (ENG-03)
+// ---------------------------------------------------------------------------
+
+/// `run dev` against the scenario already on disk, so the by_role queue keeps its position.
+fn run_dev_queued(sb: &Sandbox) -> RunOut {
+    let out = sb
+        .command(&["run", "dev", "web-ban-hang"], &[])
+        .output()
+        .expect("execute agent-brain");
+    RunOut {
+        code: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+    }
+}
+
+/// Dev queue: a first run that writes `first_ops` and hits quota, then one that completes.
+fn queue_quota_then_ok(sb: &Sandbox, first_ops: Vec<Value>) {
+    sb.write_scenario(by_role(json!({
+        "dev": [
+            quota_entry(first_ops),
+            ok_entry(vec![write_op("src/app.py", "def app():\n    return 3\n")]),
+        ]
+    })));
+}
+
+fn argv_of(record: &Value) -> Vec<String> {
+    record["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The text after `-p` of a recorded fake claude call.
+fn input_of(record: &Value) -> String {
+    let argv = argv_of(record);
+    let i = argv.iter().position(|a| a == "-p").expect("-p in argv");
+    argv[i + 1].clone()
+}
+
+const CONTINUE_TEXT: &str = "Tiếp tục việc dở của lượt trước (dừng vì hết quota)";
+
+#[test]
+fn eng03_rerun_continues_partial_diff() {
+    let sb = Sandbox::new();
+    let repo = setup_lead_task(&sb);
+    queue_quota_then_ok(&sb, vec![write_op("src/app.py", "phần 1")]);
+
+    let first = run_dev_queued(&sb);
+    assert_eq!(first.code, 5, "stderr: {}", first.stderr);
+    let first_id = last_run_id(&sb, "dev");
+    let dirty = sb.git(&repo, &["status", "--porcelain"]);
+    assert!(dirty.contains("src/app.py"), "status: {dirty}");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("src/app.py")).unwrap(),
+        "phần 1"
+    );
+
+    let second = run_dev_queued(&sb);
+    assert_eq!(
+        second.code, 0,
+        "the re-run is not refused; stderr: {}\nstdout: {}",
+        second.stderr, second.stdout
+    );
+
+    let recs = sb.records();
+    let rec = recs.last().unwrap();
+    let argv = argv_of(rec);
+    assert!(
+        input_of(rec).contains(CONTINUE_TEXT),
+        "input: {}",
+        input_of(rec)
+    );
+    assert!(
+        argv.contains(&"Bash(git diff *)".to_string()),
+        "argv: {argv:?}"
+    );
+    assert!(argv.contains(&"Bash(git status *)".to_string()));
+    assert!(
+        !argv.iter().any(|a| a == "--resume" || a == "--continue"),
+        "the old session is never resumed: {argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|a| a.contains(".handover.md")),
+        "no handover file exists: {argv:?}"
+    );
+
+    // The first run's own input carries no continuation text.
+    assert!(!input_of(&recs[recs.len() - 2]).contains(CONTINUE_TEXT));
+
+    // The partial diff was kept and finished: one commit `sua-app: …` with src/app.py.
+    assert_eq!(
+        std::fs::read_to_string(repo.join("src/app.py")).unwrap(),
+        "def app():\n    return 3\n"
+    );
+    let subject = sb.git(&repo, &["log", "-1", "--format=%s"]);
+    assert!(subject.starts_with("sua-app: "), "subject: {subject}");
+    let files = sb.git(&repo, &["show", "--name-only", "--format=", "HEAD"]);
+    assert_eq!(files.trim(), "src/app.py");
+    assert!(sb.git(&repo, &["status", "--porcelain"]).trim().is_empty());
+
+    let second_id = last_run_id(&sb, "dev");
+    assert_ne!(second_id, first_id);
+    let (_, outcome, _, metrics) = run_row(&sb, second_id);
+    assert_ne!(outcome.as_deref(), Some("quota"));
+    assert_eq!(metrics["continuation"], json!(true), "metrics: {metrics}");
+    let (_, _, _, first_metrics) = run_row(&sb, first_id);
+    assert!(first_metrics.get("continuation").is_none());
+}
+
+#[test]
+fn eng03_dirty_outside_plan_refused() {
+    let sb = Sandbox::new();
+    let repo = setup_lead_task(&sb);
+    queue_quota_then_ok(
+        &sb,
+        vec![
+            write_op("src/app.py", "phần 1"),
+            write_op("ngoai-plan.txt", "ngoài plan"),
+        ],
+    );
+
+    let first = run_dev_queued(&sb);
+    assert_eq!(first.code, 5, "stderr: {}", first.stderr);
+    let calls = sb.records().len();
+
+    let second = run_dev_queued(&sb);
+    assert_eq!(second.code, 1, "stderr: {}", second.stderr);
+    assert!(
+        second
+            .stderr
+            .contains("Working tree có thay đổi chưa commit"),
+        "stderr: {}",
+        second.stderr
+    );
+    assert!(
+        second.stderr.contains("  ngoai-plan.txt"),
+        "stderr: {}",
+        second.stderr
+    );
+    assert!(
+        !second.stderr.contains("  src/app.py"),
+        "only the disallowed paths are listed: {}",
+        second.stderr
+    );
+    assert_eq!(sb.records().len(), calls, "no process was spawned");
+    assert!(sb
+        .git(&repo, &["status", "--porcelain"])
+        .contains("ngoai-plan.txt"));
+}
+
+#[test]
+fn eng03_handover_included() {
+    let sb = Sandbox::new();
+    let repo = setup_lead_task(&sb);
+    queue_quota_then_ok(&sb, vec![write_op("src/app.py", "phần 1")]);
+
+    let first = run_dev_queued(&sb);
+    assert_eq!(first.code, 5, "stderr: {}", first.stderr);
+    std::fs::write(repo.join(".handover.md"), "# Bàn giao\nCòn lại: phần 2\n").unwrap();
+
+    let second = run_dev_queued(&sb);
+    assert_eq!(
+        second.code, 0,
+        "stderr: {}\nstdout: {}",
+        second.stderr, second.stdout
+    );
+
+    let recs = sb.records();
+    let rec = recs.last().unwrap();
+    let argv = argv_of(rec);
+    assert!(input_of(rec).contains(CONTINUE_TEXT));
+    assert!(
+        input_of(rec).contains(".handover.md"),
+        "input: {}",
+        input_of(rec)
+    );
+    assert!(
+        argv.contains(&"Read(./.handover.md)".to_string()),
+        "argv: {argv:?}"
+    );
+    let repo_str = repo.to_string_lossy();
+    assert!(argv.contains(&format!("Read(/{repo_str}/.handover.md)")));
+
+    // The handover file is context, not a deliverable: never committed, never a violation.
+    assert!(
+        !second.stdout.contains("ROLE-06"),
+        "stdout: {}",
+        second.stdout
+    );
+    let tracked = sb.git(&repo, &["ls-files"]);
+    assert!(!tracked.contains(".handover.md"), "tracked: {tracked}");
+}
+
+#[test]
+fn no_quota_dirty_still_refused() {
+    // No Dev run at all: a dirty plan file is refused as before.
+    let sb = Sandbox::new();
+    let repo = setup_lead_task(&sb);
+    std::fs::write(repo.join("src/app.py"), "sửa tay").unwrap();
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(ok_entry(vec![])));
+    assert_eq!(out.code, 1, "stderr: {}", out.stderr);
+    assert!(
+        out.stderr.contains("Working tree có thay đổi chưa commit"),
+        "stderr: {}",
+        out.stderr
+    );
+    assert!(out.stderr.contains("  src/app.py"));
+
+    // A previous Dev run that failed for another reason is not a quota stop either.
+    let sb = Sandbox::new();
+    let repo = setup_lead_task(&sb);
+    let failing = json!({
+        "ops": [write_op("src/app.py", "dở dang")],
+        "events": [init_event(), json!({
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": true,
+            "result": "boom",
+            "num_turns": 1,
+            "session_id": "fake-quota",
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+            "permission_denials": []
+        })],
+        "exit_code": 1,
+    });
+    let first = sb.run(&["run", "dev", "web-ban-hang"], Some(failing));
+    assert_eq!(first.code, 1, "stderr: {}", first.stderr);
+    let id = last_run_id(&sb, "dev");
+    assert_ne!(run_row(&sb, id).1.as_deref(), Some("quota"));
+    let second = sb.run(&["run", "dev", "web-ban-hang"], Some(ok_entry(vec![])));
+    assert_eq!(second.code, 1, "stderr: {}", second.stderr);
+    assert!(
+        second
+            .stderr
+            .contains("Working tree có thay đổi chưa commit"),
+        "stderr: {}",
+        second.stderr
+    );
+    assert!(sb
+        .git(&repo, &["status", "--porcelain"])
+        .contains("src/app.py"));
+}
