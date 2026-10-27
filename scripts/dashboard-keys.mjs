@@ -627,6 +627,198 @@ async function main() {
   }
   console.log('OK return-dialog');
 
+  // Check L (06-17), change-team dialog on task 1: Enter on `Đổi đội hình` opens it with focus on
+  // the selected radio (the current team, doi-thu), the primary is disabled with its reason while
+  // the selection is the current team, ArrowDown picks another team (primary enabled), Escape
+  // closes without any POST and focus returns to `Đổi đội hình`.
+  await evaluate('window.location.hash = "#/task/1"');
+  await waitFor(`
+    (() => {
+      if (!document.querySelector('[data-screen="task"][data-loaded="yes"]')) return false;
+      const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const btn = document.getElementById("ab-act-change_team");
+      return vis(btn) && !btn.disabled && btn.textContent.trim() === "Đổi đội hình";
+    })()
+  `, 5000, 'change-team', 'Không thấy nút "Đổi đội hình" (#ab-act-change_team) hiển thị và đang bật trên task/1');
+
+  const teamBefore = await evaluate(`
+    fetch('/api/tasks/1')
+      .then(r => r.json())
+      .then(d => ({ rev: d.rev, team: d.team ? d.team.name : null, history: Array.isArray(d.team_history) ? d.team_history.length : -1 }))
+  `);
+  await evaluate('document.getElementById("ab-act-change_team").focus()');
+  await pressKeyText('Enter', 'Enter', 13, '\r');
+  await waitFor(`
+    (() => {
+      const dlg = document.querySelector("[role=dialog][aria-labelledby=ab-tdlg-title]");
+      const open = Boolean(dlg && (dlg.offsetWidth || dlg.offsetHeight || dlg.getClientRects().length));
+      const a = document.activeElement;
+      return open && a && a.name === "dlg-team" && a.value === "doi-thu" && a.checked;
+    })()
+  `, 3000, 'change-team', 'Enter trên "Đổi đội hình" không mở dialog hoặc focus không ở radio doi-thu đang chọn');
+
+  const dlgState = await evaluate(`
+    (() => {
+      const ok = document.getElementById("ab-tdlg-ok");
+      const reason = document.getElementById("ab-tdlg-reason");
+      const chips = Array.from(document.querySelectorAll("[data-tdlg-option=doi-thu] span")).map(e => e.textContent.trim());
+      return {
+        title: document.getElementById("ab-tdlg-title").textContent.trim(),
+        okDisabled: ok.disabled,
+        okLabel: ok.textContent.trim(),
+        reason: reason ? reason.textContent.trim() : '',
+        current: chips.includes("đang dùng"),
+      };
+    })()
+  `);
+  if (dlgState.title !== 'Đổi đội hình cho task sua-app' || !dlgState.okDisabled || dlgState.okLabel !== 'Đổi đội hình'
+      || dlgState.reason !== 'Chọn đội hình khác đội hình hiện tại.' || !dlgState.current) {
+    throw new Error(`LỖI change-team: trạng thái dialog sai: ${JSON.stringify(dlgState)}`);
+  }
+
+  await pressKey('ArrowDown', 'ArrowDown', 40);
+  await waitFor(`
+    (() => {
+      const ok = document.getElementById("ab-tdlg-ok");
+      const a = document.activeElement;
+      return a && a.name === "dlg-team" && a.value !== "doi-thu" && a.checked && !ok.disabled;
+    })()
+  `, 2000, 'change-team', 'ArrowDown không chọn đội hình khác hoặc nút "Đổi đội hình" vẫn bị tắt');
+
+  await pressKey('Escape', 'Escape', 27);
+  await waitFor(
+    '!Array.from(document.querySelectorAll("[role=dialog]")).some(el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length))',
+    1000,
+    'change-team',
+    'dialog đổi đội hình vẫn hiển thị sau khi bấm Escape'
+  );
+  await waitFor(
+    'document.activeElement && document.activeElement.id === "ab-act-change_team"',
+    1500,
+    'change-team',
+    'Focus không trở về nút "Đổi đội hình" sau khi đóng dialog bằng Escape'
+  );
+  const teamAfter = await evaluate(`
+    fetch('/api/tasks/1')
+      .then(r => r.json())
+      .then(d => ({ rev: d.rev, team: d.team ? d.team.name : null, history: Array.isArray(d.team_history) ? d.team_history.length : -1 }))
+  `);
+  if (teamAfter.rev !== teamBefore.rev || teamAfter.team !== teamBefore.team || teamAfter.history !== teamBefore.history) {
+    throw new Error(`LỖI change-team: task 1 đã đổi sau Escape (${JSON.stringify(teamBefore)} → ${JSON.stringify(teamAfter)})`);
+  }
+  console.log('OK change-team');
+
+  // Check M (06-17), quota stop on task 3 (Dev on deepseek ran out of quota): Tab reaches
+  // `Chạy lại bước này bằng đội hình…`, Enter opens the re-run dialog with focus on the first
+  // radio and nothing preselected, Escape closes it and focus returns to the banner button.
+  // `Thử lại sau` collapses the banner to the hint with no request; a reload shows the full banner.
+  await evaluate('window.location.hash = "#/task/3"');
+  await waitFor(`
+    (() => {
+      if (!document.querySelector('[data-screen="task"][data-loaded="yes"]')) return false;
+      const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const btn = document.getElementById("ab-act-quota_rerun");
+      return vis(document.querySelector("[data-stop-banner]")) && vis(btn) && !btn.disabled
+        && btn.textContent.trim() === "Chạy lại bước này bằng đội hình…";
+    })()
+  `, 5000, 'task-quota', 'Không thấy banner quota với nút "Chạy lại bước này bằng đội hình…" đang bật trên task/3');
+
+  const quotaSnapshot = `
+    fetch('/api/tasks/3')
+      .then(r => r.json())
+      .then(d => ({ rev: d.rev, runs: Array.isArray(d.runs) ? d.runs.length : 0, team: d.team ? d.team.name : null, history: Array.isArray(d.team_history) ? d.team_history.length : -1 }))
+  `;
+  const quotaBefore = await evaluate(quotaSnapshot);
+
+  await evaluate('document.activeElement && document.activeElement.blur()');
+  let reached = false;
+  for (let i = 0; i < 12 && !reached; i++) {
+    await pressKey('Tab', 'Tab', 9);
+    reached = await evaluate('Boolean(document.activeElement && document.activeElement.id === "ab-act-quota_rerun")');
+  }
+  if (!reached) {
+    throw new Error('LỖI task-quota: Tab không tới được nút "Chạy lại bước này bằng đội hình…" trong 12 lần bấm');
+  }
+
+  await pressKeyText('Enter', 'Enter', 13, '\r');
+  await waitFor(`
+    (() => {
+      const dlg = document.querySelector("[role=dialog][aria-labelledby=ab-tdlg-title]");
+      const open = Boolean(dlg && (dlg.offsetWidth || dlg.offsetHeight || dlg.getClientRects().length));
+      const first = document.querySelector('input[name="dlg-team"]');
+      return open && first && document.activeElement === first;
+    })()
+  `, 3000, 'task-quota', 'Enter trên nút quota không mở dialog hoặc focus không ở radio đầu tiên');
+
+  const rerunState = await evaluate(`
+    (() => {
+      const ok = document.getElementById("ab-tdlg-ok");
+      const reason = document.getElementById("ab-tdlg-reason");
+      const radios = Array.from(document.querySelectorAll('input[name="dlg-team"]'));
+      const opt = (name) => {
+        const el = document.querySelector('[data-tdlg-option="' + name + '"]');
+        return el ? el.textContent.replace(/\\s+/g, ' ').trim() : '';
+      };
+      return {
+        title: document.getElementById("ab-tdlg-title").textContent.trim(),
+        anyChecked: radios.some(r => r.checked),
+        okDisabled: ok.disabled,
+        okLabel: ok.textContent.trim(),
+        reason: reason ? reason.textContent.trim() : '',
+        tiet: opt("tiet-kiem"),
+        mac: opt("mac-dinh"),
+      };
+    })()
+  `);
+  if (rerunState.title !== 'Chạy lại bước Code bằng đội hình nào?' || rerunState.anyChecked || !rerunState.okDisabled
+      || rerunState.okLabel !== 'Chạy lại bước này' || rerunState.reason !== 'Chọn một đội hình.') {
+    throw new Error(`LỖI task-quota: trạng thái dialog chạy lại sai: ${JSON.stringify(rerunState)}`);
+  }
+  if (!rerunState.tiet.includes('Bước Code sẽ chạy bằng: deepseek') || !rerunState.tiet.includes('vẫn là deepseek')
+      || !rerunState.mac.includes('Bước Code sẽ chạy bằng: claude') || rerunState.mac.includes('vẫn là')) {
+    throw new Error(`LỖI task-quota: dòng engine / chip của các đội hình sai: ${JSON.stringify(rerunState)}`);
+  }
+
+  await pressKey('Escape', 'Escape', 27);
+  await waitFor(
+    '!Array.from(document.querySelectorAll("[role=dialog]")).some(el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length))',
+    1000,
+    'task-quota',
+    'dialog chạy lại vẫn hiển thị sau khi bấm Escape'
+  );
+  await waitFor(
+    'document.activeElement && document.activeElement.id === "ab-act-quota_rerun"',
+    1500,
+    'task-quota',
+    'Focus không trở về nút "Chạy lại bước này bằng đội hình…" sau khi đóng dialog bằng Escape'
+  );
+
+  await evaluate('document.getElementById("ab-act-quota_later").focus()');
+  await pressKeyText('Enter', 'Enter', 13, '\r');
+  await waitFor(`
+    (() => {
+      const banner = document.querySelector("[data-stop-banner]");
+      const text = banner ? banner.textContent.replace(/\\s+/g, ' ') : '';
+      const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      return text.includes("Đã hoãn. Khi quota hồi phục, bấm ") && text.includes("ở dưới để chạy lại bằng engine deepseek.")
+        && !vis(document.getElementById("ab-act-quota_rerun")) && !vis(document.getElementById("ab-act-quota_later"));
+    })()
+  `, 2000, 'task-quota', '"Thử lại sau" không thu banner về dòng "Đã hoãn. ..." (hoặc nút còn hiện)');
+  const quotaAfter = await evaluate(quotaSnapshot);
+  if (JSON.stringify(quotaAfter) !== JSON.stringify(quotaBefore)) {
+    throw new Error(`LỖI task-quota: task 3 đã đổi sau Escape / Thử lại sau (${JSON.stringify(quotaBefore)} → ${JSON.stringify(quotaAfter)})`);
+  }
+
+  await evaluate('location.reload()');
+  await waitFor(`
+    (() => {
+      if (!document.querySelector('[data-screen="task"][data-loaded="yes"]')) return false;
+      const vis = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      return vis(document.getElementById("ab-act-quota_rerun")) && vis(document.getElementById("ab-act-quota_later"));
+    })()
+  `, 8000, 'task-quota', 'Sau khi tải lại trang banner quota không hiện đủ hai nút');
+  console.log('OK task-quota');
+
   // Check H, Quy trình picker on Giao việc: ArrowDown moves the selection
   // from mac-dinh to nhanh (native radio group).
   await evaluate('window.location.hash = "#/assign"');

@@ -27,6 +27,23 @@
       _pipeStarted: 0,
       _left: false,
 
+      // 06-17: change-team / quota re-run dialog (one panel, two modes: '' closed,
+      // 'change' or 'rerun'). The team lists are fetched when a dialog opens, never
+      // on the 3 s poll.
+      teamDlgMode: '',
+      teamDlgTeams: [],
+      teamDlgPick: '',
+      teamDlgBusy: false,
+      teamDlgError: '',
+      teamDlgLoading: false,
+      teamDlgFailed: false,
+      teamDlgNotReady: {},
+      teamRefusal: '',
+      quotaRefusal: '',
+      quotaPostponedRun: null,
+      staffVer: 0,
+      _staffLoaded: false,
+
       stageTitles: {
         start: 'Bắt đầu',
         plan: 'Lên plan',
@@ -149,6 +166,7 @@
               self.pipe = res.data;
               self.pipeError = '';
               self.pipeStale = false;
+              self.ensureStaffNames();
             } else if (res && res.status === 404) {
               // nothing (load() shows the not-found state)
             } else {
@@ -387,6 +405,507 @@
         return window.AB.stepGlyph(this.bannerState);
       },
 
+      // ---- Staff names for human engine texts (read once, only when a human run shows) ----
+      // `người` or `người:{id}` (a person did / will do the step).
+      isHumanEngine: function (engine) {
+        return String(engine === null || engine === undefined ? '' : engine).indexOf('người') === 0;
+      },
+
+      pipeHasHumanEngine: function () {
+        var p = this.pipe;
+        if (!p) return false;
+        var gs = p.groups || [];
+        for (var i = 0; i < gs.length; i++) {
+          var cs = (gs[i] && gs[i].cards) ? gs[i].cards : [];
+          for (var j = 0; j < cs.length; j++) {
+            if (cs[j] && this.isHumanEngine(cs[j].engine)) return true;
+          }
+        }
+        var rows = this.ledgerAllRows;
+        for (var k = 0; k < rows.length; k++) {
+          if (rows[k] && this.isHumanEngine(rows[k].engine)) return true;
+        }
+        return false;
+      },
+
+      // `AB.setStaffNames` feeds `AB.engineText`; the version bump re-renders the engine texts.
+      ensureStaffNames: function () {
+        var self = this;
+        if (this._staffLoaded || !this.pipeHasHumanEngine()) return;
+        this._staffLoaded = true;
+        return this.fetchStaffMap().then(function (names) {
+          if (names) {
+            window.AB.setStaffNames(names);
+            self.staffVer += 1;
+          } else {
+            self._staffLoaded = false;
+          }
+        });
+      },
+
+      // {id: display_name} from GET /api/staff, or null when it could not be read.
+      fetchStaffMap: function () {
+        return window.AB.api('GET', '/api/staff').then(function (res) {
+          if (!(res && res.ok && res.data && Array.isArray(res.data.staff))) return null;
+          var names = {};
+          for (var i = 0; i < res.data.staff.length; i++) {
+            var m = res.data.staff[i];
+            if (m && m.id) names[m.id] = m.display_name || m.id;
+          }
+          return names;
+        });
+      },
+
+      // ---- Team line, history (D-13) — only the task-detail payload ----
+      get teamView() {
+        return (this.task && this.task.team) ? this.task.team : null;
+      },
+
+      get teamName() {
+        return this.teamView ? (this.teamView.name || '') : '';
+      },
+
+      get teamLineText() {
+        var t = this.teamView;
+        if (!t) return '';
+        if (t.legacy) {
+          return 'Đội hình: ' + t.name + ' (task tạo trước Phase 6 — mọi vai trò chạy bằng claude)';
+        }
+        if (t.missing) {
+          return 'Đội hình: ' + t.name + ' — không còn trong teams.json';
+        }
+        return 'Đội hình: ' + t.name + (t.summary ? ' · ' + t.summary : '');
+      },
+
+      get hasTeamLine() {
+        return this.teamLineText !== '';
+      },
+
+      get teamMissing() {
+        var t = this.teamView;
+        return Boolean(t && t.missing && !t.legacy);
+      },
+
+      get teamMissingText() {
+        return 'Chọn đội hình khác bằng Đổi đội hình trước khi chạy bước tiếp.';
+      },
+
+      histTime: function (ms) {
+        if (ms === null || ms === undefined || isNaN(ms)) return '—';
+        var d = new Date(ms);
+        if (isNaN(d.getTime())) return '—';
+        function pad(v) { return v < 10 ? '0' + v : String(v); }
+        return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+      },
+
+      histBy: function (by) {
+        if (by === 'telegram') return 'bạn qua Telegram';
+        if (by === 'cli') return 'bạn qua CLI';
+        return 'bạn qua dashboard';
+      },
+
+      // Oldest first, no cap.
+      get teamHistoryLines() {
+        var h = (this.task && Array.isArray(this.task.team_history)) ? this.task.team_history : [];
+        var lines = [];
+        for (var i = 0; i < h.length; i++) {
+          var e = h[i];
+          if (!e) continue;
+          lines.push(this.histTime(e.at) + ' · ' + this.histBy(e.by) + ': ' + e.from + ' → ' + e.to);
+        }
+        return lines;
+      },
+
+      get hasTeamHistory() {
+        return this.teamHistoryLines.length > 0;
+      },
+
+      get changeTeamAction() {
+        var acts = this.actionList;
+        for (var i = 0; i < acts.length; i++) {
+          if (acts[i] && acts[i].id === 'change_team') return acts[i];
+        }
+        return null;
+      },
+
+      // The button renders only when the payload carries the action.
+      get teamControls() {
+        var a = this.changeTeamAction;
+        return a ? [a] : [];
+      },
+
+      get changeTeamReason() {
+        var a = this.changeTeamAction;
+        return a ? this.reasonText(a) : '';
+      },
+
+      // ---- Quota stop (D-15 / D-16 / D-18) ----
+      get quotaView() {
+        return (this.task && this.task.quota) ? this.task.quota : null;
+      },
+
+      get hasQuota() {
+        return Boolean(this.quotaView);
+      },
+
+      get quotaRerunAction() {
+        var acts = this.actionList;
+        for (var i = 0; i < acts.length; i++) {
+          if (acts[i] && acts[i].id === 'quota_rerun') return acts[i];
+        }
+        return null;
+      },
+
+      // `Thử lại sau` is client-only: it remembers the run it was pressed for, so a reload
+      // (or a newer quota stop) shows the full banner again.
+      get quotaPostponed() {
+        var q = this.quotaView;
+        return Boolean(q && this.quotaPostponedRun !== null && this.quotaPostponedRun === q.run_id);
+      },
+
+      get quotaBannerFull() {
+        return this.hasQuota && !this.quotaPostponed;
+      },
+
+      get quotaHint() {
+        var q = this.quotaView;
+        if (!q) return '';
+        var label = q.retry_label ? q.retry_label : 'nút chạy lại của bước';
+        return 'Đã hoãn. Khi quota hồi phục, bấm ' + label + ' ở dưới để chạy lại bằng engine ' + q.engine + '.';
+      },
+
+      get quotaBody2() {
+        return this.quotaBannerFull
+          ? 'Chạy lại bằng đội hình khác sẽ tiếp tục trên thư mục làm việc hiện tại: giữ nguyên diff đang có, đọc lại .plan.md (cùng .handover.md nếu có).'
+          : '';
+      },
+
+      postponeQuota: function () {
+        var q = this.quotaView;
+        if (!q) return;
+        this.quotaPostponedRun = q.run_id;
+        this.quotaRefusal = '';
+        // Writes nothing and starts nothing (D-16): the step's own button stays in the strip.
+        window.AB.focusLater('ab-stop-heading', 'screen');
+      },
+
+      // Shown reason of an action: the server's when it is disabled, else the last refusal.
+      reasonText: function (a) {
+        if (!a) return '';
+        if (!a.enabled && a.reason) return a.reason;
+        if (a.id === 'change_team') return this.teamRefusal;
+        if (a.id === 'quota_rerun') return this.quotaRefusal;
+        return '';
+      },
+
+      // ---- Team dialogs (change team / quota re-run) ----
+      get teamDlgOpen() {
+        return this.teamDlgMode !== '';
+      },
+
+      get rerunOpen() {
+        return this.teamDlgMode === 'rerun';
+      },
+
+      get teamDlgTitle() {
+        if (this.teamDlgMode === 'change') {
+          return 'Đổi đội hình cho task ' + ((this.task && this.task.slug) ? this.task.slug : '');
+        }
+        if (this.teamDlgMode === 'rerun') {
+          var q = this.quotaView;
+          return 'Chạy lại bước ' + (q ? q.step_name : '') + ' bằng đội hình nào?';
+        }
+        return '';
+      },
+
+      get teamDlgBody() {
+        if (this.teamDlgMode === 'change') {
+          return 'Đội hình mới áp dụng từ bước kế tiếp; các run đã chạy giữ nguyên engine của chúng. Việc đổi được ghi lại trong lịch sử.';
+        }
+        if (this.teamDlgMode === 'rerun') {
+          return 'Đội hình bạn chọn thành đội hình của task từ bước này trở đi. Engine mới tiếp tục từ thư mục làm việc hiện tại, không làm lại từ đầu.';
+        }
+        return '';
+      },
+
+      get teamDlgOkLabel() {
+        if (this.teamDlgMode === 'rerun') return this.teamDlgBusy ? 'Đang giao...' : 'Chạy lại bước này';
+        return this.teamDlgBusy ? 'Đang đổi...' : 'Đổi đội hình';
+      },
+
+      get teamDlgCancelLabel() {
+        return this.teamDlgMode === 'rerun' ? 'Không chạy lại' : 'Giữ đội hình hiện tại';
+      },
+
+      // First failing reason, shown under the primary button while it is disabled.
+      get teamDlgReason() {
+        if (this.teamDlgLoading || this.teamDlgBusy) return '';
+        if (this.teamDlgMode === 'change') {
+          if (!this.teamDlgPick || this.teamDlgPick === this.teamName) return 'Chọn đội hình khác đội hình hiện tại.';
+          return '';
+        }
+        if (this.teamDlgMode === 'rerun') {
+          return this.teamDlgPick ? '' : 'Chọn một đội hình.';
+        }
+        return '';
+      },
+
+      get teamDlgOkDisabled() {
+        if (this.teamDlgBusy || this.teamDlgLoading || Boolean(this.busyAction)) return true;
+        return this.teamDlgReason !== '';
+      },
+
+      get hasTeamDlgReason() {
+        return this.teamDlgReason !== '';
+      },
+
+      get hasTeamDlgError() {
+        return this.teamDlgError !== '';
+      },
+
+      get teamDlgLoadFailed() {
+        return this.teamDlgFailed && !this.teamDlgLoading;
+      },
+
+      teamDlgRadioId: function (t) {
+        return 'ab-tdlg-radio-' + (t ? t.name : '');
+      },
+
+      teamDlgChecked: function (t) {
+        return Boolean(t && this.teamDlgPick && t.name === this.teamDlgPick);
+      },
+
+      teamDlgOptionClass: function (t) {
+        if (this.teamDlgChecked(t)) {
+          return 'bg-indigo-50 ring-2 ring-indigo-600 dark:bg-indigo-900/20 dark:ring-indigo-400';
+        }
+        return 'ring-1 ring-slate-300 hover:bg-slate-50 dark:ring-slate-600 dark:hover:bg-slate-700/50';
+      },
+
+      // Engine of the stopped step's role under team `t`: `lead`, `plan_review` ... keys.
+      teamDlgRoleEngine: function (t) {
+        var q = this.quotaView;
+        if (!q || !t || !t.roles) return '';
+        var key = String(q.role || '').replace(/-/g, '_');
+        var eng = t.roles[key];
+        return eng ? String(eng) : '';
+      },
+
+      teamDlgChips: function (t) {
+        if (!t) return [];
+        var chips = [];
+        if (this.teamDlgMode === 'change' && t.name === this.teamName) chips.push('đang dùng');
+        chips.push(t.source === 'builtin' ? 'có sẵn' : 'từ teams.json');
+        if (this.teamDlgMode === 'rerun') {
+          var q = this.quotaView;
+          var eng = this.teamDlgRoleEngine(t);
+          if (q && eng && eng === q.engine) chips.push('vẫn là ' + q.engine);
+        }
+        return chips;
+      },
+
+      // `Bước {step} sẽ chạy bằng: {engine}` (re-run dialog only).
+      teamDlgStepLine: function (t) {
+        if (this.teamDlgMode !== 'rerun') return '';
+        var q = this.quotaView;
+        var eng = this.teamDlgRoleEngine(t);
+        if (!q || !eng) return '';
+        return 'Bước ' + q.step_name + ' sẽ chạy bằng: ' + window.AB.engineText(eng);
+      },
+
+      // Engines of the team's roles that are not ready, as Giao việc shows them.
+      teamDlgReadinessLines: function (t) {
+        var lines = [];
+        if (!t || !t.roles) return lines;
+        var order = ['claude', 'deepseek', 'agy'];
+        var roles = ['lead', 'dev', 'qa', 'plan_review', 'code_review'];
+        var used = {};
+        for (var i = 0; i < roles.length; i++) {
+          if (t.roles[roles[i]]) used[t.roles[roles[i]]] = true;
+        }
+        for (var j = 0; j < order.length; j++) {
+          var word = this.teamDlgNotReady ? this.teamDlgNotReady[order[j]] : '';
+          if (used[order[j]] && word) lines.push('! ' + order[j] + ': ' + word);
+        }
+        return lines;
+      },
+
+      onTeamDlgChange: function (event) {
+        var target = event && event.target;
+        this.pickDlgTeam((target && target.value) ? target.value : this.teamDlgPick);
+      },
+
+      pickDlgTeam: function (name) {
+        if (!name || this.teamDlgBusy) return;
+        this.teamDlgPick = name;
+        this.teamDlgError = '';
+      },
+
+      pickRerunTeam: function (name) {
+        this.pickDlgTeam(name);
+      },
+
+      // GET /api/teams + /api/engines + /api/staff when a dialog opens.
+      loadTeamDlg: function () {
+        var self = this;
+        this.teamDlgLoading = true;
+        this.teamDlgFailed = false;
+        var teams = window.AB.api('GET', '/api/teams').then(function (res) {
+          if (res && res.ok && res.data && Array.isArray(res.data.teams)) {
+            self.teamDlgTeams = res.data.teams;
+            self.teamDlgFailed = false;
+          } else {
+            self.teamDlgTeams = [];
+            self.teamDlgFailed = true;
+          }
+        });
+        var engines = window.AB.api('GET', '/api/engines').then(function (res) {
+          var map = {};
+          if (res && res.ok && res.data && Array.isArray(res.data.engines)) {
+            for (var i = 0; i < res.data.engines.length; i++) {
+              var e = res.data.engines[i];
+              if (e && e.name && e.readiness && e.readiness !== 'san_sang') {
+                map[e.name] = e.word || e.readiness;
+              }
+            }
+          }
+          self.teamDlgNotReady = map;
+        }).catch(function () {
+          self.teamDlgNotReady = {};
+        });
+        var staff = this.fetchStaffMap().then(function (names) {
+          if (names) {
+            window.AB.setStaffNames(names);
+            self.staffVer += 1;
+          }
+        }).catch(function () {});
+        return Promise.all([teams, engines, staff]).then(function () {
+          self.teamDlgLoading = false;
+        });
+      },
+
+      // Initial focus: the selected radio, else the first one, else Giữ / Không chạy lại.
+      focusTeamDlg: function () {
+        var pick = this.teamDlgPick;
+        var list = this.teamDlgTeams || [];
+        var target = null;
+        for (var i = 0; i < list.length; i++) {
+          if (list[i] && list[i].name === pick) target = list[i];
+        }
+        if (!target && list.length > 0) target = list[0];
+        window.AB.focusLater(target ? this.teamDlgRadioId(target) : 'ab-tdlg-cancel', 'ab-tdlg-cancel');
+      },
+
+      openTeamDlg: function (mode, pick, focusBack) {
+        var self = this;
+        this.teamDlgMode = mode;
+        this.teamDlgPick = pick;
+        this.teamDlgBusy = false;
+        this.teamDlgError = '';
+        this.lastFocusId = focusBack;
+        window.AB.lockScroll(true);
+        return this.loadTeamDlg().then(function () {
+          if (self.teamDlgMode === mode) self.focusTeamDlg();
+        });
+      },
+
+      closeTeamDlg: function () {
+        var back = this.lastFocusId;
+        this.teamDlgMode = '';
+        this.teamDlgPick = '';
+        this.teamDlgBusy = false;
+        this.teamDlgError = '';
+        this.lastFocusId = '';
+        window.AB.lockScroll(false);
+        window.AB.focusLater(back || 'screen', 'screen');
+      },
+
+      teamDlgCancel: function () {
+        if (this.teamDlgBusy) return;
+        this.closeTeamDlg();
+      },
+
+      openChangeTeam: function () {
+        if (this.busyAction || !this.task) return;
+        this.teamRefusal = '';
+        return this.openTeamDlg('change', this.teamName, 'ab-act-change_team');
+      },
+
+      closeChangeTeam: function () {
+        this.teamDlgCancel();
+      },
+
+      openQuotaRerun: function () {
+        if (this.busyAction || !this.quotaView) return;
+        this.quotaRefusal = '';
+        return this.openTeamDlg('rerun', '', 'ab-act-quota_rerun');
+      },
+
+      closeQuotaRerun: function () {
+        this.teamDlgCancel();
+      },
+
+      teamDlgOk: function () {
+        if (this.teamDlgMode === 'rerun') return this.confirmQuotaRerun();
+        return this.confirmChangeTeam();
+      },
+
+      // POST /api/tasks/{id}/team {team, rev} → {ok, from, to}; a refusal shows `data.error`
+      // inside the dialog and on the Đổi đội hình reason line.
+      confirmChangeTeam: function () {
+        var self = this;
+        if (this.teamDlgMode !== 'change' || this.teamDlgOkDisabled) return;
+        var pick = this.teamDlgPick;
+        var rev = (this.task && this.task.rev !== undefined) ? this.task.rev : null;
+        this.teamDlgBusy = true;
+        this.busyAction = 'change_team';
+        this.teamDlgError = '';
+        return window.AB.api('POST', '/api/tasks/' + this.id + '/team', { team: pick, rev: rev }).then(function (res) {
+          self.teamDlgBusy = false;
+          self.busyAction = '';
+          if (res && res.status === 200 && res.data && res.data.ok) {
+            self.teamRefusal = '';
+            self.closeTeamDlg();
+            self.message = 'Đã đổi đội hình: ' + res.data.from + ' → ' + res.data.to + '.';
+            self.load();
+          } else {
+            var text = (res && res.data && res.data.error) ? res.data.error : window.AB.errorText(res);
+            self.teamDlgError = text;
+            self.teamRefusal = text;
+            if (res && res.data && res.data.kind === 'stale') self.load();
+          }
+        });
+      },
+
+      // POST /api/tasks/{id}/quota-rerun {team, rev} → {job_id}; the chosen team becomes the
+      // task's team (history written by the server).
+      confirmQuotaRerun: function () {
+        var self = this;
+        if (this.teamDlgMode !== 'rerun' || this.teamDlgOkDisabled) return;
+        var pick = this.teamDlgPick;
+        var q = this.quotaView;
+        var step = q ? q.step_name : '';
+        var rev = (this.task && this.task.rev !== undefined) ? this.task.rev : null;
+        this.teamDlgBusy = true;
+        this.busyAction = 'quota_rerun';
+        this.teamDlgError = '';
+        return window.AB.api('POST', '/api/tasks/' + this.id + '/quota-rerun', { team: pick, rev: rev }).then(function (res) {
+          self.teamDlgBusy = false;
+          self.busyAction = '';
+          if (res && (res.status === 202 || res.status === 200) && res.data && res.data.job_id !== undefined) {
+            self.quotaRefusal = '';
+            self.closeTeamDlg();
+            self.message = 'Đã đổi sang đội hình ' + pick + ' và giao lại bước ' + step + ' (job ' + res.data.job_id + ').';
+            self.load();
+          } else {
+            var text = (res && res.data && res.data.error) ? res.data.error : window.AB.errorText(res);
+            self.teamDlgError = text;
+            self.quotaRefusal = text;
+            if (res && res.data && res.data.kind === 'stale') self.load();
+          }
+        });
+      },
+
       get ledgerAllRows() {
         if (!this.pipe || !this.pipe.ledger || !this.pipe.ledger.groups) return [];
         var all = [];
@@ -456,7 +975,21 @@
       get totalText() {
         var total = (this.pipe && this.pipe.ledger && this.pipe.ledger.total) ? this.pipe.ledger.total : null;
         if (!total) return '';
-        return total.runs + ' lượt chạy claude · ' + window.AB.fmtMinutes(total.duration_ms) + ' · ' + window.AB.fmtUsd(total.cost_usd);
+        return total.runs + ' lượt chạy · ' + window.AB.fmtMinutes(total.duration_ms) + ' · ' + window.AB.fmtUsd(total.cost_usd);
+      },
+
+      // C16: minutes count agent runs only; the helper says how many human runs were left out.
+      get humanRunsNote() {
+        var total = (this.pipe && this.pipe.ledger && this.pipe.ledger.total) ? this.pipe.ledger.total : null;
+        var k = total ? total.human_runs : 0;
+        if (k && k >= 1) {
+          return 'Không tính thời gian chờ của ' + k + ' lượt do người làm.';
+        }
+        return '';
+      },
+
+      get hasHumanRunsNote() {
+        return this.humanRunsNote !== '';
       },
 
       get costNote() {
@@ -484,12 +1017,14 @@
       },
 
       get isBlocked() {
-        if (this.showBanner && this.autoView.stop_reason === 'vuong_mac') return false;
+        if (this.hasQuota) return false;
+        if (this.showAutoStop && this.autoView.stop_reason === 'vuong_mac') return false;
         return this.blockedCause;
       },
 
       get isQaFix() {
-        if (this.showBanner && this.autoView.stop_reason === 'het_vong' && this.autoView.stopped_in === 'qa') return false;
+        if (this.hasQuota) return false;
+        if (this.showAutoStop && this.autoView.stop_reason === 'het_vong' && this.autoView.stopped_in === 'qa') return false;
         return this.qaFixCause;
       },
 
@@ -955,7 +1490,24 @@
 
       flowCardMetrics: function (c) {
         if (!c || !c.has_run) return '—';
+        if (this.isHumanEngine(c.engine) && !c.engine_planned) {
+          // A person's step has no tokens or cost: the wait time stands in.
+          if (c.state === 'cho_nguoi') return 'đã chờ ' + window.AB.fmtWait(c.duration_ms);
+          return window.AB.fmtWait(c.duration_ms) + ' · không có token';
+        }
         return window.AB.fmtMinutes(c.duration_ms) + ' · ' + window.AB.fmtUsd(c.cost_usd);
+      },
+
+      // Engine line (D-14): the latest run's engine, or `dự kiến {engine}` before the card runs.
+      flowCardEngine: function (c) {
+        if (!c || !c.engine) return '';
+        void this.staffVer;
+        var shown = window.AB.engineText(c.engine);
+        return c.engine_planned ? 'dự kiến ' + shown : shown;
+      },
+
+      flowCardHasEngine: function (c) {
+        return this.flowCardEngine(c) !== '';
       },
 
       groupStopped: function (key) {
@@ -1127,18 +1679,25 @@
 
       // Stop banner (05.2): autopilot stopped with a reason. Heading, body and
       // reasons are server strings; the banner reads only the task detail.
-      get showBanner() {
+      get showAutoStop() {
         return this.autoState === 'stopped';
       },
 
+      // The slot also carries the quota stop (06-17), for manual and autopilot tasks alike.
+      get showBanner() {
+        return this.hasQuota || this.showAutoStop;
+      },
+
       get bannerHeading() {
-        if (!this.showBanner) return '';
+        if (this.hasQuota) return 'Hết quota engine ' + this.quotaView.engine;
+        if (!this.showAutoStop) return '';
         var word = this.autoView.stop_word;
         return word ? 'Autopilot dừng · ' + word : 'Autopilot dừng';
       },
 
       get bannerBody() {
-        return (this.showBanner && this.autoView.stop_detail) ? this.autoView.stop_detail : '';
+        if (this.hasQuota) return this.quotaPostponed ? this.quotaHint : (this.quotaView.detail || '');
+        return (this.showAutoStop && this.autoView.stop_detail) ? this.autoView.stop_detail : '';
       },
 
       get stopGlyph() {
@@ -1146,7 +1705,7 @@
       },
 
       get bannerIsBudget() {
-        return Boolean(this.showBanner && this.autoView.stop_reason === 'het_ngan_sach');
+        return Boolean(!this.hasQuota && this.showAutoStop && this.autoView.stop_reason === 'het_ngan_sach');
       },
 
       get bannerBudget() {
@@ -1154,7 +1713,16 @@
       },
 
       get bannerControls() {
-        if (!this.showBanner) return [];
+        if (this.hasQuota) {
+          if (this.quotaPostponed) return [];
+          var qout = [];
+          if (this.quotaRerunAction) qout.push(this.quotaRerunAction);
+          qout.push({ id: 'quota_later', label: 'Thử lại sau', enabled: true, reason: null });
+          var qend = this.controlById('auto_end');
+          if (qend) qout.push(qend);
+          return qout;
+        }
+        if (!this.showAutoStop) return [];
         var out = [];
         var more = this.controlById('auto_more_round');
         if (more) out.push(more);
@@ -1254,8 +1822,12 @@
       // Action strip: task actions, plus the gate controls when they cannot be
       // drawn in the Bạn card; relead moves to the stop banner while it shows.
       get stripActions() {
-        var acts = this.actionList.slice();
-        if (this.showBanner) {
+        // Rendered elsewhere: the team line, the quota banner and the human callout.
+        var elsewhere = { change_team: true, quota_rerun: true, human_done: true, human_return: true };
+        var acts = this.actionList.filter(function (a) {
+          return a && !elsewhere[a.id];
+        });
+        if (this.showAutoStop && !this.hasQuota) {
           acts = acts.filter(function (a) {
             return a && a.id !== 'relead';
           });
@@ -1302,8 +1874,17 @@
         return 'Bước hiện tại: ' + title;
       },
 
-      // One primary per section: Duyệt plan > Chạy thêm 1 vòng > first enabled
-      // action of the strip. Red stays Kill only.
+      // The quota banner's primary is on screen (06-17).
+      get quotaRerunShown() {
+        var cs = this.bannerControls;
+        for (var i = 0; i < cs.length; i++) {
+          if (cs[i] && cs[i].id === 'quota_rerun') return true;
+        }
+        return false;
+      },
+
+      // One primary per section: Duyệt plan > Chạy lại bước này bằng đội hình… (quota) >
+      // Chạy thêm 1 vòng > first enabled action of the strip. Red stays Kill only.
       actionClass: function (a) {
         var primary = 'bg-indigo-600 text-white hover:bg-indigo-700';
         var secondary = 'text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700';
@@ -1312,12 +1893,15 @@
           return 'bg-rose-600 text-white hover:bg-rose-700';
         }
         if (a.id === 'approve') return primary;
-        if (a.id === 'return_lead' || a.id === 'auto_start' || a.id === 'auto_stop' || a.id === 'auto_end') {
+        if (a.id === 'return_lead' || a.id === 'auto_start' || a.id === 'auto_stop' || a.id === 'auto_end' ||
+            a.id === 'change_team' || a.id === 'quota_later') {
           return secondary;
         }
         if (this.approveShown) return secondary;
+        if (a.id === 'quota_rerun') return primary;
+        if (this.quotaRerunShown) return secondary;
         if (a.id === 'auto_more_round') return primary;
-        if (this.controlById('auto_more_round') && this.showBanner) return secondary;
+        if (this.controlById('auto_more_round') && this.showAutoStop) return secondary;
         var strip = this.stripActions;
         var firstEnabled = null;
         for (var i = 0; i < strip.length; i++) {
@@ -1339,6 +1923,7 @@
           if (a.id === 'auto_start') return 'Đang bật...';
           if (a.id === 'approve') return 'Đang duyệt...';
           if (a.id === 'kill' || a.id === 'auto_stop' || a.id === 'auto_end') return 'Đang dừng...';
+          if (a.id === 'change_team') return 'Đang đổi...';
           return 'Đang giao...';
         }
         return a.label;
@@ -1349,7 +1934,7 @@
       },
 
       showReason: function (a) {
-        return !a.enabled && Boolean(a.reason);
+        return this.reasonText(a) !== '';
       },
 
       actionHelp: function (a) {
@@ -1366,7 +1951,13 @@
 
       onAction: function (a) {
         if (!a) return;
-        if (a.id === 'kill' || a.id === 'relead') {
+        if (a.id === 'change_team') {
+          this.openChangeTeam();
+        } else if (a.id === 'quota_rerun') {
+          this.openQuotaRerun();
+        } else if (a.id === 'quota_later') {
+          this.postponeQuota();
+        } else if (a.id === 'kill' || a.id === 'relead') {
           this.lastFocusId = this.actionId(a);
           this.dialog = a;
           window.AB.lockScroll(true);
@@ -1602,10 +2193,23 @@
       },
 
       // Counts first (review / QA, unknown counts omitted), then the 05.1 figures.
+      // `Vòng {n} · {kind} · {engine}` (the server label plus the engine, D-14).
+      rowLabel: function (r) {
+        if (!r) return '';
+        var base = r.label || '';
+        if (!r.engine) return base;
+        void this.staffVer;
+        return base + ' · ' + window.AB.engineText(r.engine);
+      },
+
       rowMetrics: function (r) {
         if (!r) return '— · — · —';
         var turns = (r.turns !== null && r.turns !== undefined) ? (r.turns + ' lượt') : '—';
         var figures = turns + ' · ' + window.AB.fmtMinutes(r.duration_ms) + ' · ' + window.AB.fmtUsd(r.cost_usd);
+        if (r.human) {
+          // Turns and cost do not apply to a person's run; the wait time is shown instead.
+          figures = window.AB.fmtWait(r.duration_ms) + ' · không có token';
+        }
         var counts = window.AB.countParts(r.counts);
         return counts.length > 0 ? counts.join(' · ') + ' · ' + figures : figures;
       },
@@ -1613,6 +2217,7 @@
       // Visible token line, only for the selected row (05.1-UI-REVIEW fix 2).
       tokenLineFor: function (r) {
         if (!this.isSelectedRow(r)) return '';
+        if (r.human) return 'Token: không có — run do người làm.';
         if (!window.AB.tokensKnown(r)) return 'Token: vào — · ra — · cache — / —';
         var AB = window.AB;
         return 'Token: vào ' + AB.fmtNum(r.input_tokens) + ' · ra ' + AB.fmtNum(r.output_tokens) +
@@ -1622,6 +2227,7 @@
       rowTitle: function (r) {
         if (!r) return '— · vào — · ra — · cache — / —';
         var dur = window.AB.fmtDuration(r.duration_ms);
+        if (r.human) return dur + ' · không có token';
         var tokens = window.AB.tokensKnown(r)
           ? ('vào ' + window.AB.fmtNum(r.input_tokens) + ' · ra ' + window.AB.fmtNum(r.output_tokens) + ' · cache ' + window.AB.fmtNum(r.cache_read_tokens) + ' / ' + window.AB.fmtNum(r.cache_write_tokens))
           : 'vào — · ra — · cache — / —';

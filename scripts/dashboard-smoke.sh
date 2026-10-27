@@ -315,7 +315,7 @@ EOF
 # Task 1 (default mac-dinh workflow): one Review plan run that approved the
 # plan, and autopilot paused at the Bạn gate.
 python3 - "$AGENT_BRAIN_DB" <<'PYEOF'
-import sys, sqlite3
+import sys, sqlite3, json
 conn = sqlite3.connect(sys.argv[1], timeout=5)
 cur = conn.cursor()
 cur.execute("SELECT project_id, workflow_json FROM tasks WHERE id = 1")
@@ -350,6 +350,9 @@ if cur.rowcount < 1:
     print("Lỗi seeding: Lead run của task 1 không có dòng log nào", file=sys.stderr)
     sys.exit(1)
 cur.execute("UPDATE tasks SET auto_state = 'gate' WHERE id = 1")
+# 06-17: the task runs on `doi-thu` after one change made on the dashboard.
+team = {"name": "doi-thu", "history": [{"at": started_at, "by": "dashboard", "from": "mac-dinh", "to": "doi-thu"}]}
+cur.execute("UPDATE tasks SET team_json = ? WHERE id = 1", (json.dumps(team),))
 conn.commit()
 conn.close()
 PYEOF
@@ -446,6 +449,53 @@ conn.commit()
 conn.close()
 PYEOF
 
+# Task 3 (quota-test, 06-17): team `tiet-kiem`, a Lead run on claude and a Dev run on deepseek
+# that stopped on quota (outcome `quota`). `run lead` checks out task/quota-test from the
+# current HEAD; the fake Lead writes a different plan so the plan commit is not empty.
+cat << 'EOF' > "$TMP/fake_claude_scenario_quota.json"
+{
+  "ops": [
+    {
+      "op": "read",
+      "path": "src/app.py"
+    },
+    {
+      "op": "write",
+      "path": ".plan.md",
+      "content": "# Plan: Hết quota\n## Mục tiêu\nThực hiện Hết quota\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | src/app.py | app | trả về 3 | yêu cầu |\n## Không được đụng tới\n\n## Cách kiểm tra\npython3 -m unittest\n## Vướng mắc (Dev ghi vào đây nếu có)\n\n",
+      "keep_meta": true
+    }
+  ]
+}
+EOF
+
+FAKE_CLAUDE_SCENARIO="$TMP/fake_claude_scenario_quota.json" \
+  "$BIN" run lead --name quota-test -- web-ban-hang "hết quota" >/dev/null 2>&1
+
+python3 - "$AGENT_BRAIN_DB" <<'PYEOF'
+import sys, sqlite3, json
+conn = sqlite3.connect(sys.argv[1], timeout=5)
+cur = conn.cursor()
+cur.execute("SELECT id, project_id FROM tasks WHERE slug = 'quota-test'")
+row = cur.fetchone()
+if not row or row[0] != 3:
+    print(f"Lỗi seeding: task quota-test có id {row[0] if row else None} (kỳ vọng 3)", file=sys.stderr)
+    sys.exit(1)
+task_id, project_id = row
+cur.execute("SELECT MAX(COALESCE(ended_at, started_at)) FROM runs WHERE task_id = ?", (task_id,))
+started_at = cur.fetchone()[0] + 1000
+ended_at = started_at + 4 * 60000
+cur.execute("""
+    INSERT INTO runs (task_id, project_id, role, engine, status, profile, model, outcome, usage_source, cost_usd,
+                      num_turns, started_at, ended_at, stage, round)
+    VALUES (?, ?, 'dev', 'deepseek', 'failed', 'work', 'sonnet', 'quota', 'result', 0.3, 5, ?, ?, 'implement', 1)
+""", (task_id, project_id, started_at, ended_at))
+team = {"name": "tiet-kiem", "history": []}
+cur.execute("UPDATE tasks SET team_json = ? WHERE id = ?", (json.dumps(team), task_id))
+conn.commit()
+conn.close()
+PYEOF
+
 # Task 1 stays the checked-out task (its actions, e.g. Chạy lại Lead for the
 # keys confirm-dialog check, need its branch checked out).
 git -C "$REPO_DIR" checkout task/sua-app >/dev/null 2>&1
@@ -520,6 +570,7 @@ for s in "${SCREENS[@]}"; do
     assign) HASH="#/assign" ;;
     task) HASH="#/task/1" ;;
     task-stop) HASH="#/task/2"; SCREEN_NAME="task" ;;
+    task-quota) HASH="#/task/3"; SCREEN_NAME="task" ;;
     stats) HASH="#/stats" ;;
     projects) HASH="#/projects" ;;
     board) HASH="#/board" ;;
@@ -575,7 +626,7 @@ for s in "${SCREENS[@]}"; do
     exit 1
   fi
 
-  if [[ "$s" == "task" || "$s" == "task-stop" ]]; then
+  if [[ "$s" == "task" || "$s" == "task-stop" || "$s" == "task-quota" ]]; then
     if ! python3 - "$DOM_OUT" "$s" <<'EOF'
 import sys
 from html.parser import HTMLParser
@@ -610,6 +661,10 @@ class PipelineParser(HTMLParser):
         self.textareas = {}
         self.ledger_text = ''
         self.token_lines = []
+        self.team_line_text = ''
+        self.team_buttons = set()
+        self.team_history = []
+        self.strip_text = ''
         self.depth = 0
         self.captures = []
         self.current_card = None
@@ -643,6 +698,8 @@ class PipelineParser(HTMLParser):
                     self.banner_buttons.add(bid)
                 elif kind == 'strip':
                     self.strip_buttons.add(bid)
+                elif kind == 'teamline':
+                    self.team_buttons.add(bid)
 
         if tag == 'textarea' and 'id' in attr_dict:
             self.textareas[attr_dict['id']] = attr_dict
@@ -673,6 +730,13 @@ class PipelineParser(HTMLParser):
                 self.captures.append((self.depth, 'banner', len(self.banners) - 1))
             if 'data-action-strip' in attr_dict:
                 self.captures.append((self.depth, 'strip', None))
+            if 'data-team-line' in attr_dict:
+                self.captures.append((self.depth, 'teamline', None))
+            if 'data-team-history' in attr_dict:
+                self.captures.append((self.depth, 'teamhist', None))
+            if tag == 'li' and any(k == 'teamhist' for _, k, _ in self.captures):
+                self.team_history.append('')
+                self.captures.append((self.depth, 'teamitem', len(self.team_history) - 1))
             if 'data-ledger' in attr_dict:
                 self.captures.append((self.depth, 'ledger', None))
             if 'data-token-line' in attr_dict:
@@ -723,6 +787,12 @@ class PipelineParser(HTMLParser):
                     self.ledger_text += data
                 elif kind == 'token':
                     self.token_lines[ref]['text'] += data
+                elif kind == 'strip':
+                    self.strip_text += data
+                elif kind == 'teamline':
+                    self.team_line_text += data
+                elif kind == 'teamitem':
+                    self.team_history[ref] += data
             if self.in_chip:
                 self.chips[-1]['text'] += data
             if self.in_ledger_total:
@@ -756,6 +826,49 @@ if parser.data_pipeline != "ready":
 def fail(msg):
     print(f"Lỗi ({screen}): {msg}", file=sys.stderr)
     sys.exit(1)
+
+if screen == 'task-quota':
+    # Task 3 (06-17): the Dev run on deepseek stopped on quota; the stop slot carries the quota banner.
+    if len(parser.banners) != 1:
+        fail(f"Số phần tử data-stop-banner là {len(parser.banners)}, kỳ vọng 1")
+    banner = parser.banners[0]
+    btext = ' '.join(banner['text'].split())
+    if banner['aria_live'] != 'polite':
+        fail(f"data-stop-banner có aria-live='{banner['aria_live']}', kỳ vọng 'polite'")
+    if 'display: none' in banner['style']:
+        fail("data-stop-banner đang bị ẩn")
+    for needle in ('Hết quota engine deepseek', 'Chạy lại bước này bằng đội hình…', 'Thử lại sau',
+                   '(dev) trên engine deepseek dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine.',
+                   'Chạy lại bằng đội hình khác sẽ tiếp tục trên thư mục làm việc hiện tại'):
+        if needle not in btext:
+            fail(f"Banner quota không chứa '{needle}' (nội dung: '{btext}')")
+    if 'Dừng hẳn' in btext:
+        fail("Banner quota không được có 'Dừng hẳn' khi autopilot tắt")
+    for bid in ('ab-act-quota_rerun', 'ab-act-quota_later'):
+        if bid not in parser.banner_buttons:
+            fail(f"Thiếu nút {bid} trong banner quota (nút trong banner: {parser.banner_buttons})")
+    if 'ab-act-quota_rerun' in parser.strip_buttons or 'ab-act-change_team' in parser.strip_buttons:
+        fail("quota_rerun / change_team không được nằm trong dải hành động")
+    code_text = ' '.join(parser.card_texts.get('code', '').split())
+    if 'deepseek' not in code_text or 'hết quota' not in code_text:
+        fail(f"Card code không có engine 'deepseek' và 'hết quota' (nội dung: '{code_text}')")
+    if parser.cards.get('code') != 'het_quota':
+        fail(f"Card code có state '{parser.cards.get('code')}', kỳ vọng 'het_quota'")
+    ledger = ' '.join(parser.ledger_text.split())
+    if '· deepseek' not in ledger or 'hết quota' not in ledger:
+        fail(f"Sổ lượt chạy không có '· deepseek' và 'hết quota' (nội dung: '{ledger}')")
+    total = ' '.join(parser.ledger_total_text.split())
+    if 'lượt chạy ·' not in total or 'claude' in total:
+        fail(f"Dòng tổng phải là '{{N}} lượt chạy · …' không có 'claude' (nội dung: '{total}')")
+    if len(parser.legend_items) != 7:
+        fail(f"Số lượng data-legend-item là {len(parser.legend_items)}, kỳ vọng 7")
+    team_text = ' '.join(parser.team_line_text.split())
+    if 'Đội hình: tiet-kiem' not in team_text:
+        fail(f"data-team-line không chứa 'Đội hình: tiet-kiem' (nội dung: '{team_text}')")
+    if parser.team_history:
+        fail(f"Task 3 không có lịch sử đổi đội hình (nhận được: {parser.team_history})")
+    print("OK task-quota")
+    sys.exit(0)
 
 if screen == 'task-stop':
     # Task 2: autopilot stopped in the build loop after 3 / 3 rounds (hết vòng).
@@ -880,8 +993,23 @@ if len(parser.legend_items) != 7:
     print(f"Lỗi: Số lượng data-legend-item là {len(parser.legend_items)}, kỳ vọng 7", file=sys.stderr)
     sys.exit(1)
 
-if 'vướng mắc / cần sửa / sửa lại' not in parser.full_text:
-    print("Lỗi: chú thích thứ 7 không chứa 'vướng mắc / cần sửa / sửa lại'", file=sys.stderr)
+if 'vướng mắc / cần sửa / sửa lại / hết quota' not in parser.full_text:
+    print("Lỗi: chú thích thứ 7 không chứa 'vướng mắc / cần sửa / sửa lại / hết quota'", file=sys.stderr)
+    sys.exit(1)
+
+if 'đang chạy / chờ người' not in parser.full_text:
+    print("Lỗi: chú thích thứ 2 không chứa 'đang chạy / chờ người'", file=sys.stderr)
+    sys.exit(1)
+
+# 06-17 engine lines: a card with a run names its engine, a card without one `dự kiến {engine}`
+# from the task's team (doi-thu: Dev on deepseek).
+plan_engine = ' '.join(parser.card_texts.get('plan', '').split())
+code_engine = ' '.join(parser.card_texts.get('code', '').split())
+if 'Engine: claude' not in plan_engine:
+    print(f"Lỗi: card plan không có dòng engine 'Engine: claude' (nội dung: '{plan_engine}')", file=sys.stderr)
+    sys.exit(1)
+if 'Engine: dự kiến deepseek' not in code_engine:
+    print(f"Lỗi: card code không có dòng engine 'Engine: dự kiến deepseek' (nội dung: '{code_engine}')", file=sys.stderr)
     sys.exit(1)
 
 if len(parser.chips) != 1:
@@ -958,6 +1086,23 @@ for b in parser.banners:
 
 print("Pipeline DOM OK")
 
+# 06-17 team line: `Đội hình: {name} · {summary}`, one history line, the change button outside the strip.
+team_text = ' '.join(parser.team_line_text.split())
+if 'Đội hình: doi-thu' not in team_text:
+    print(f"Lỗi: data-team-line không chứa 'Đội hình: doi-thu' (nội dung: '{team_text}')", file=sys.stderr)
+    sys.exit(1)
+if 'Đổi đội hình' not in team_text or 'ab-act-change_team' not in parser.team_buttons:
+    print(f"Lỗi: thiếu nút 'Đổi đội hình' trong data-team-line (nút: {parser.team_buttons}, nội dung: '{team_text}')", file=sys.stderr)
+    sys.exit(1)
+history = [' '.join(t.split()) for t in parser.team_history]
+if len(history) != 1 or 'bạn qua dashboard: mac-dinh → doi-thu' not in history[0]:
+    print(f"Lỗi: lịch sử đổi đội hình không phải một dòng 'bạn qua dashboard: mac-dinh → doi-thu' (nhận được: {history})", file=sys.stderr)
+    sys.exit(1)
+if 'ab-act-change_team' in parser.strip_buttons or 'Đổi đội hình' in parser.strip_text:
+    print("Lỗi: 'Đổi đội hình' không được nằm trong dải hành động", file=sys.stderr)
+    sys.exit(1)
+print("OK task-team")
+
 if len(parser.ledger_rows) != 2:
     print(f"Lỗi: Số lượng data-ledger-row là {len(parser.ledger_rows)}, kỳ vọng 2", file=sys.stderr)
     sys.exit(1)
@@ -967,8 +1112,12 @@ if len(selected_rows) != 1:
     print(f"Lỗi: Số data-ledger-row có aria-current='true' là {len(selected_rows)}, kỳ vọng 1", file=sys.stderr)
     sys.exit(1)
 
-if '2 lượt chạy claude' not in parser.ledger_total_text:
-    print(f"Lỗi: data-ledger-total không chứa '2 lượt chạy claude' (nội dung: '{parser.ledger_total_text}')", file=sys.stderr)
+if '2 lượt chạy ·' not in parser.ledger_total_text:
+    print(f"Lỗi: data-ledger-total không chứa '2 lượt chạy ·' (nội dung: '{parser.ledger_total_text}')", file=sys.stderr)
+    sys.exit(1)
+
+if 'Vòng 1 · plan · claude' not in ' '.join(parser.ledger_text.split()):
+    print(f"Lỗi: sổ lượt chạy không có nhãn 'Vòng 1 · plan · claude' (nội dung: '{' '.join(parser.ledger_text.split())}')", file=sys.stderr)
     sys.exit(1)
 
 if 'Sổ lượt chạy' not in parser.full_text:
@@ -1482,5 +1631,5 @@ EOF
 
   stop_chrome
   cat "$TMP/keys.out"
-  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, picker, layout-5.2, board-keys, board-layout"
+  echo "Keys OK: combobox, gate-stop, confirm-dialog, raw-dialog, ledger, layout, gate-buttons, return-dialog, change-team, task-quota, picker, layout-5.2, board-keys, board-layout"
 fi
