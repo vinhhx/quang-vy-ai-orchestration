@@ -5,7 +5,7 @@ pub mod review;
 
 use crate::app::Ctx;
 use crate::config::Config;
-use crate::error::{BrainError, BrainResult};
+use crate::error::{BrainError, BrainResult, EXIT_QUOTA};
 use crate::projects::Project;
 use crate::runner::RunOutcome;
 use crate::stream::Summary;
@@ -463,6 +463,7 @@ pub fn execute_role_staged(
 
     let stderr_path = run_dir.join("stderr.txt");
     let stream_path = run_dir.join("stream.jsonl");
+    let quota_stderr_path = stderr_path.clone();
 
     let req = crate::runner::RunRequest {
         argv: ep.argv.clone(),
@@ -598,6 +599,22 @@ pub fn execute_role_staged(
     let outcome = crate::runner::supervise(&req, &mut obs)?;
     obs.summary.finish();
 
+    // ENG-02 / D-15: one detector decides quota for every claude-format run (claude, deepseek)
+    // that was not killed or timed out. A hit only stops the step (D-16).
+    let quota_hit = if ep.stream == crate::engine::StreamFormat::Claude
+        && !matches!(
+            outcome.status,
+            crate::runner::RunStatus::Killed | crate::runner::RunStatus::TimedOut
+        ) {
+        crate::quota::detect_claude(
+            &obs.summary,
+            outcome.exit_code,
+            &crate::quota::stderr_tail(&quota_stderr_path, 4096),
+        )
+    } else {
+        None
+    };
+
     if let Some(run_id) = obs.run_id {
         let finish = crate::db::RunFinish {
             status: outcome.status.as_str().to_string(),
@@ -630,7 +647,7 @@ pub fn execute_role_staged(
                 .as_ref()
                 .map(|v| v.len() as i64),
             permission_denials: obs.summary.permission_denials,
-            error: None,
+            error: quota_hit.as_ref().map(|h| format!("quota: {}", h.detail)),
         };
         crate::db::finish_run(&ctx.conn, run_id, &finish)?;
         crate::term::emit(&crate::term::summary_line(
@@ -639,6 +656,29 @@ pub fn execute_role_staged(
             outcome.status.as_str(),
             &obs.summary,
             outcome.elapsed,
+        ));
+        if let Some(hit) = &quota_hit {
+            crate::db::set_run_outcome(&ctx.conn, run_id, crate::quota::OUTCOME_QUOTA)?;
+            crate::db::merge_run_metrics(
+                &ctx.conn,
+                run_id,
+                &serde_json::json!({
+                    "quota": {
+                        "engine": ep.display,
+                        "signal": hit.signal,
+                        "reset_at": hit.reset_at_ms,
+                    }
+                }),
+            )?;
+        }
+    }
+
+    // The role code after this call never runs on a quota stop: nothing is committed, nothing
+    // retries and no other engine is tried. `main` prints the message on stderr.
+    if let Some(hit) = quota_hit {
+        return Err(BrainError::new(
+            crate::quota::user_message(&ep.display, &hit),
+            EXIT_QUOTA,
         ));
     }
 

@@ -12,7 +12,7 @@ use crate::autopilot::decide::{
     AutoJson, Decision, Loop, Replan, Stage, StageRun, StopInfo, StopReason,
 };
 use crate::error::{
-    BrainError, BrainResult, EXIT_BLOCKED, EXIT_INTERRUPTED, EXIT_OK, EXIT_PROTOCOL,
+    BrainError, BrainResult, EXIT_BLOCKED, EXIT_INTERRUPTED, EXIT_OK, EXIT_PROTOCOL, EXIT_QUOTA,
 };
 use crate::workflows::Workflow;
 use std::io::BufRead;
@@ -327,7 +327,7 @@ fn max_run_id(ctx: &Ctx, task_id: i64) -> BrainResult<i64> {
         .unwrap_or(0))
 }
 
-/// Con thoát với mã lỗi (không phải 0, 3, 4, 130) trong khi run mới nhất của task
+/// Con thoát với mã lỗi (không phải 0, 3, 4, 5 = hết quota, 130) trong khi run mới nhất của task
 /// `succeeded` mà chưa có outcome: vai trò hỏng sau run (vd. commit bị hook từ chối).
 /// Dừng `run lỗi` gắn run đó, không để `decide` chạy lại bước (WR-02, D-27).
 /// Run failed / timed_out / killed hoặc đã có outcome thì để `decide` (D2) xử lý.
@@ -338,7 +338,18 @@ fn child_error_stop(
     outcome: &ChildOutcome,
 ) -> BrainResult<Option<StopInfo>> {
     let code = match outcome.exit_code {
-        Some(c) if ![EXIT_OK, EXIT_PROTOCOL, EXIT_BLOCKED, EXIT_INTERRUPTED].contains(&c) => c,
+        Some(c)
+            if ![
+                EXIT_OK,
+                EXIT_PROTOCOL,
+                EXIT_BLOCKED,
+                EXIT_QUOTA,
+                EXIT_INTERRUPTED,
+            ]
+            .contains(&c) =>
+        {
+            c
+        }
         _ => return Ok(None),
     };
     let run = match crate::db::latest_run_for_task(&ctx.conn, task_id)? {

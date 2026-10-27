@@ -12,6 +12,29 @@ pub const DEV_DISALLOWED_TOOLS: [&str; 6] = [
     "Task",
 ];
 
+/// Context file a previous engine may leave for the next one (Phase 4); read-only for Dev.
+const HANDOVER_FILE: &str = ".handover.md";
+
+/// ENG-03 / D-18: true when the latest Dev run of the task on the current branch ended with
+/// outcome `quota`. Read-only — never creates a task row. The old session is never resumed.
+fn quota_continuation(
+    conn: &rusqlite::Connection,
+    project_slug: &str,
+    root: &Path,
+) -> BrainResult<bool> {
+    let Some(branch) = crate::gitops::current_branch(root) else {
+        return Ok(false);
+    };
+    let Ok(project_row) = crate::db::project_row_id(conn, project_slug) else {
+        return Ok(false);
+    };
+    let Some(task) = crate::db::find_task_by_branch(conn, project_row, &branch)? else {
+        return Ok(false);
+    };
+    let latest = crate::db::latest_run_for_task_role(conn, task.id, "dev")?;
+    Ok(latest.and_then(|r| r.outcome).as_deref() == Some(crate::quota::OUTCOME_QUOTA))
+}
+
 pub fn dev_allowed_tools(files: &[String], root: Option<&Path>) -> Vec<String> {
     let mut all_files = files.to_vec();
     if !all_files
@@ -83,21 +106,45 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     // Con của autopilot chỉ chạy trên nhánh của đúng task autopilot (CR-01).
     crate::roles::autopilot_task_guard(&ctx.conn, &proj.id, &proj_path)?;
 
+    // ENG-03 / D-18: the latest Dev run of this task stopped on quota, so the partial diff it left
+    // is the work to continue, not something to refuse. Read-only: no task row is created.
+    let continuation = quota_continuation(&ctx.conn, &proj.id, &proj_path)?;
+    let plan = crate::planfile::parse_plan(&text);
+
     let dirty = crate::gitops::changed_paths(&proj_path)?;
     if !dirty.is_empty() {
-        let mut sorted_dirty: Vec<String> = dirty.into_iter().collect();
+        let mut sorted_dirty: Vec<String> = if continuation {
+            // Only the plan's files, protocol files and `.handover.md` may be dirty; anything
+            // else is still refused with the same message.
+            let plan_set: std::collections::BTreeSet<String> = crate::planfile::plan_files(&plan)
+                .iter()
+                .map(|f| crate::planfile::normalize_plan_path(f).nfc().collect())
+                .collect();
+            dirty
+                .into_iter()
+                .filter(|p| {
+                    let n: String = p.nfc().collect();
+                    !(plan_set.contains(&n)
+                        || crate::stream::PROTOCOL_FILES.contains(&n.as_str())
+                        || n == HANDOVER_FILE)
+                })
+                .collect()
+        } else {
+            dirty.into_iter().collect()
+        };
         sorted_dirty.sort();
-        let list = sorted_dirty
-            .iter()
-            .map(|p| format!("  {p}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(BrainError::error(format!(
-            "Working tree có thay đổi chưa commit — hãy commit thay đổi tay với message '{task}: plan':\n{list}"
-        )));
+        if !sorted_dirty.is_empty() {
+            let list = sorted_dirty
+                .iter()
+                .map(|p| format!("  {p}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(BrainError::error(format!(
+                "Working tree có thay đổi chưa commit — hãy commit thay đổi tay với message '{task}: plan':\n{list}"
+            )));
+        }
     }
 
-    let plan = crate::planfile::parse_plan(&text);
     let errors = crate::planfile::validate_plan(&plan, Some(&proj_path));
     let files = crate::planfile::plan_files(&plan);
     if !errors.is_empty() || files.is_empty() {
@@ -121,7 +168,9 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     }
 
     let mut named_list: Vec<String> = Vec::new();
-    let (active_files, allowed, user_input, prompt_path, is_fix) = if let Some(fix) = opts.fix {
+    let (active_files, mut allowed, mut user_input, prompt_path, is_fix) = if let Some(fix) =
+        opts.fix
+    {
         let report_file = fix.report_file();
         let report_path = proj_path.join(report_file);
         if !report_path.is_file() {
@@ -232,6 +281,29 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         )
     };
 
+    // `.handover.md` (Phase 4) is included only when the file exists.
+    let handover_exists = continuation && proj_path.join(HANDOVER_FILE).is_file();
+    if continuation {
+        let handover = if handover_exists {
+            ", đọc .handover.md"
+        } else {
+            ""
+        };
+        user_input.push_str(&format!(
+            "\n\nTiếp tục việc dở của lượt trước (dừng vì hết quota): đọc .plan.md, xem thay đổi hiện có bằng git diff và git status{handover}; làm tiếp phần còn thiếu, không làm lại từ đầu và không hoàn tác thay đổi đã có."
+        ));
+        allowed.push("Bash(git diff *)".to_string());
+        allowed.push("Bash(git status *)".to_string());
+        if handover_exists {
+            allowed.push(format!("Read(./{HANDOVER_FILE})"));
+            allowed.extend(crate::roles::abs_rules(
+                &proj_path,
+                &[HANDOVER_FILE],
+                &["Read"],
+            ));
+        }
+    }
+
     let disallowed = DEV_DISALLOWED_TOOLS
         .iter()
         .map(|s| s.to_string())
@@ -302,6 +374,9 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
 
         let mut read_allow = write_allow.clone();
         read_allow.push(proj_path.join(fix.report_file()));
+        if handover_exists {
+            read_allow.push(proj_path.join(HANDOVER_FILE));
+        }
 
         crate::guard::write_hook_settings(
             &run_dir,
@@ -317,10 +392,14 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         }
         allow_paths.push(proj_path.join(".plan.md"));
 
+        let mut read_allow = allow_paths.clone();
+        if handover_exists {
+            read_allow.push(proj_path.join(HANDOVER_FILE));
+        }
         crate::guard::write_hook_settings(
             &run_dir,
             &proj_path,
-            Some(&allow_paths),
+            Some(&read_allow),
             &allow_paths,
             &exe,
         )?
@@ -359,19 +438,23 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     };
 
     let stage = if let Some(fix) = opts.fix {
+        let mut metrics = serde_json::json!({
+            "fix_for": fix.metrics_value(),
+            "named_files": named_list,
+        });
+        if continuation {
+            metrics["continuation"] = serde_json::Value::Bool(true);
+        }
         crate::roles::RunStage {
             stage: Some("fix".to_string()),
             round: opts.round,
-            metrics: Some(serde_json::json!({
-                "fix_for": fix.metrics_value(),
-                "named_files": named_list,
-            })),
+            metrics: Some(metrics),
         }
     } else {
         crate::roles::RunStage {
             stage: Some("implement".to_string()),
             round: opts.round,
-            metrics: None,
+            metrics: continuation.then(|| serde_json::json!({ "continuation": true })),
         }
     };
 
@@ -429,8 +512,12 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     let mut all_changed = diff_tree;
     all_changed.extend(uncommitted);
 
-    let all_changed_nfc: std::collections::BTreeSet<String> =
+    let mut all_changed_nfc: std::collections::BTreeSet<String> =
         all_changed.into_iter().map(|p| p.nfc().collect()).collect();
+    if handover_exists {
+        // Read-only context left for the continuation; neither a scope violation nor a deliverable.
+        all_changed_nfc.remove(HANDOVER_FILE);
+    }
 
     let mut allowed_nfc: std::collections::BTreeSet<String> = active_files
         .iter()
@@ -458,7 +545,10 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     let plan_curr = crate::planfile::parse_plan(&plan_curr_text);
     let has_block = crate::planfile::has_blockers(&plan_curr);
 
-    let pending = crate::gitops::changed_paths(&proj_path)?;
+    let mut pending = crate::gitops::changed_paths(&proj_path)?;
+    if handover_exists {
+        pending.remove(HANDOVER_FILE);
+    }
     if !pending.is_empty() {
         let msg = if has_block {
             format!("{task}: vướng mắc")

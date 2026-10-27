@@ -43,6 +43,7 @@ fn manual_round(conn: &rusqlite::Connection, task_id: i64) -> BrainResult<i64> {
     facts.push(RunFact {
         id: next_id,
         role: "lead".to_string(),
+        engine: "claude".to_string(),
         stage: Some(Stage::Plan),
         fix_for: None,
         round: None,
