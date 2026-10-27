@@ -1,6 +1,6 @@
 //! API đọc danh sách quy trình (workflows) cho dashboard.
 
-use crate::dashboard::{blocking, json_error, AppState};
+use crate::dashboard::{blocking, json_error, settings_store, AppState};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -12,11 +12,22 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new().route("/api/workflows", get(get_workflows))
 }
 
+/// The `GET /api/workflows` body; also the fresh list a workflow write answers with.
+pub fn workflows_payload(st: &AppState) -> crate::error::BrainResult<serde_json::Value> {
+    let map = crate::projects::load_map(&st.map_path)?;
+    let (loaded, version) = match settings_store::read_doc(&crate::workflows::workflows_path()) {
+        Ok((text, version)) => (
+            crate::workflows::load_from(text.as_deref(), &st.cfg),
+            version,
+        ),
+        Err(_) => (crate::workflows::load(&st.cfg), "unreadable".to_string()),
+    };
+    Ok(workflows_json(&loaded, &map, &version))
+}
+
 async fn get_workflows(State(st): State<Arc<AppState>>) -> Response {
     let res = blocking(move || {
-        let map = crate::projects::load_map(&st.map_path)?;
-        let loaded = crate::workflows::load(&st.cfg);
-        let val = workflows_json(&loaded, &map);
+        let val = workflows_payload(&st)?;
         Ok((
             StatusCode::OK,
             [(
@@ -44,6 +55,7 @@ async fn get_workflows(State(st): State<Arc<AppState>>) -> Response {
 pub fn workflows_json(
     loaded: &crate::workflows::LoadedWorkflows,
     map: &serde_json::Value,
+    version: &str,
 ) -> serde_json::Value {
     let projects = crate::projects::projects_of(map);
 
@@ -99,6 +111,7 @@ pub fn workflows_json(
                 "budget_usd": wf.budget_usd,
                 "limits": wf.limits_text(),
                 "default_for": default_for,
+                "edit": wf.to_file_entry(),
             })
         })
         .collect();
@@ -107,5 +120,6 @@ pub fn workflows_json(
         "workflows": workflows_list,
         "errors": loaded.errors,
         "project_defaults": serde_json::Value::Object(project_defaults),
+        "version": version,
     })
 }

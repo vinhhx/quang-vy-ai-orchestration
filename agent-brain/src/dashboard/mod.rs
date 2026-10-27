@@ -1,6 +1,7 @@
 pub mod api_board;
 pub mod api_projects;
 pub mod api_runs;
+pub mod api_settings;
 pub mod api_stats;
 pub mod api_tasks;
 pub mod api_workflows;
@@ -12,6 +13,7 @@ pub mod jobs;
 pub mod lock;
 pub mod pipeline;
 pub mod pump;
+pub mod settings_store;
 pub mod sse;
 pub mod taskstate;
 
@@ -70,6 +72,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .merge(api_projects::routes())
         .merge(api_stats::routes())
         .merge(api_workflows::routes())
+        .merge(api_settings::routes())
         .merge(api_board::routes())
         .route("/api/runs/{id}/stream", axum::routing::get(sse::stream))
         .fallback(assets::serve)

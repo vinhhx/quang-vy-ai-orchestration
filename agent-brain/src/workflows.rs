@@ -112,6 +112,35 @@ impl Workflow {
         }
     }
 
+    /// The workflows.json entry for this workflow (all six keys, `loops` always an object),
+    /// so `validate_entry` reads it back to the same workflow. A whole `budget_usd` is
+    /// written as an integer.
+    pub fn to_file_entry(&self) -> serde_json::Value {
+        let mut loops = serde_json::Map::new();
+        if self.has_loop("plan") {
+            loops.insert("plan".to_string(), "plan-review".into());
+        }
+        if self.has_loop("build") || self.has_loop("implement") {
+            loops.insert("implement".to_string(), "code-review".into());
+        }
+        if self.has_loop("qa") {
+            loops.insert("qa".to_string(), "fix".into());
+        }
+        let budget_usd = if self.budget_usd.fract() == 0.0 && self.budget_usd.abs() < 1e12 {
+            serde_json::Value::from(self.budget_usd as u64)
+        } else {
+            serde_json::Value::from(self.budget_usd)
+        };
+        let mut entry = serde_json::Map::new();
+        entry.insert("stages".to_string(), serde_json::json!(self.stages));
+        entry.insert("loops".to_string(), serde_json::Value::Object(loops));
+        entry.insert("auto".to_string(), serde_json::Value::Bool(self.auto));
+        entry.insert("max_rounds".to_string(), self.max_rounds.into());
+        entry.insert("budget_minutes".to_string(), self.budget_minutes.into());
+        entry.insert("budget_usd".to_string(), budget_usd);
+        serde_json::Value::Object(entry)
+    }
+
     pub fn to_snapshot(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
@@ -455,7 +484,7 @@ pub fn key_lines(text: &str) -> BTreeMap<String, usize> {
     map
 }
 
-fn validate_entry(
+pub fn validate_entry(
     name: &str,
     val: &serde_json::Value,
     lines: &BTreeMap<String, usize>,
@@ -867,9 +896,12 @@ pub fn load_path(path: &Path, cfg: &Config) -> LoadedWorkflows {
     }
 }
 
+pub fn workflows_path() -> std::path::PathBuf {
+    crate::config::config_dir().join("workflows.json")
+}
+
 pub fn load(cfg: &Config) -> LoadedWorkflows {
-    let p = crate::config::config_dir().join("workflows.json");
-    load_path(&p, cfg)
+    load_path(&workflows_path(), cfg)
 }
 
 #[cfg(test)]
@@ -881,6 +913,62 @@ mod tests {
             &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn to_file_entry_round_trips() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        assert_eq!(loaded.names(), vec!["mac-dinh", "nhanh"]);
+        for wf in &loaded.workflows {
+            let entry = wf.to_file_entry();
+            let keys: Vec<&String> = entry.as_object().unwrap().keys().collect();
+            assert_eq!(
+                keys,
+                [
+                    "stages",
+                    "loops",
+                    "auto",
+                    "max_rounds",
+                    "budget_minutes",
+                    "budget_usd"
+                ]
+            );
+            let back = validate_entry(&wf.name, &entry, &BTreeMap::new(), &cfg, &wf.source)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", wf.name));
+            assert_eq!(&back, wf);
+        }
+
+        let mac = loaded.get("mac-dinh").unwrap().to_file_entry();
+        assert_eq!(
+            mac["loops"],
+            serde_json::json!({"plan": "plan-review", "implement": "code-review", "qa": "fix"})
+        );
+        assert_eq!(mac["budget_usd"], serde_json::json!(20));
+        assert_eq!(
+            loaded.get("nhanh").unwrap().to_file_entry()["loops"],
+            serde_json::json!({})
+        );
+
+        // A fractional budget and a partial loop set survive the round trip.
+        let wf = Workflow {
+            name: "le".to_string(),
+            stages: ["plan", "plan-review", "gate:you", "implement"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            loops: vec!["plan".to_string()],
+            max_rounds: 2,
+            budget_minutes: 15,
+            budget_usd: 7.5,
+            auto: true,
+            source: "file".to_string(),
+        };
+        let entry = wf.to_file_entry();
+        assert_eq!(entry["budget_usd"], serde_json::json!(7.5));
+        assert_eq!(entry["loops"], serde_json::json!({"plan": "plan-review"}));
+        let back = validate_entry("le", &entry, &BTreeMap::new(), &cfg, "file").unwrap();
+        assert_eq!(back, wf);
     }
 
     #[test]
