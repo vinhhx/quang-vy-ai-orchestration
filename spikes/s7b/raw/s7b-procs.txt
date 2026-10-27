@@ -1,0 +1,21 @@
+# 2026-10-27T09:24:23Z new pids=1123982
+1123982 1123978 1123978 agy -p Tạo file probe.txt chứa đúng chữ ok rồi trả lời DONE. --output-format stream-json --print-timeout 120s --mode accept-edits
+# 2026-10-27T09:24:25Z new pids=1124111,1124133
+1124111 1123982 1123978 npm exec chrome-devtools-mcp@latest
+1124133 1123982 1123978 agy -p Tạo file probe.txt chứa đúng chữ ok rồi trả lời DONE. --output-format stream-json --print-timeout 120s --mode accept-edits
+# 2026-10-27T09:24:26Z new pids=1124173,1124174
+1124173 1124111 1123978 sh -c 'chrome-devtools-mcp'
+1124174 1124173 1123978 chrome-devtools-mcp
+# 2026-10-27T09:24:26Z new pids=1124209
+1124209 1124174 1124209 /usr/bin/node ~/.npm/_npx/15c61037b1978c83/node_modules/chrome-devtools-mcp/build/src/telemetry/watchdog/main.js --parent-pid=1124174 --app-version=1.12.0 --os-type=3
+leftover_after_exit=0
+# 2026-10-27T09:24:39Z new pids=1125014
+1125014 1125010 1125010 agy -p Đếm chậm từ 1 đến 300, mỗi số một dòng, nghỉ giữa các số. --output-format stream-json --print-timeout 120s
+# 2026-10-27T09:24:40Z new pids=1125070
+1125070 1125014 1125010 npm exec chrome-devtools-mcp@latest
+# 2026-10-27T09:24:41Z new pids=1125125,1125126
+1125125 1125070 1125010 sh -c 'chrome-devtools-mcp'
+1125126 1125125 1125010 chrome-devtools-mcp
+# SIGTERM -> PID đã ghi 1125010
+survivors_after_kill=0
+survivors_after_sweep=0
