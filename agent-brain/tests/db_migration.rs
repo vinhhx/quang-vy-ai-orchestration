@@ -1091,3 +1091,127 @@ fn team_json_missing_task() {
     assert!(!agent_brain::db::set_task_team_if_null(&conn, 999, "{}").unwrap());
     assert!(!agent_brain::db::set_task_team_cas(&conn, 999, None, "{}").unwrap());
 }
+
+/// "người" in NFC, written with escapes so the test cannot silently use a decomposed form.
+const HUMAN_ENGINE_NFC: &str = "ng\u{01b0}\u{1edd}i";
+
+fn sample_new_run(task_id: i64, proj_id: i64) -> agent_brain::db::NewRun {
+    agent_brain::db::NewRun {
+        task_id: Some(task_id),
+        project_id: proj_id,
+        role: "dev".to_string(),
+        profile: "work".to_string(),
+        model: Some("sonnet".to_string()),
+        pid: 4242,
+        pgid: 4242,
+        pid_start: 7,
+        base_commit: Some("abc123".to_string()),
+        run_dir: Some("/tmp/run-dir".to_string()),
+    }
+}
+
+fn sample_human_run(task_id: i64, proj_id: i64) -> agent_brain::db::HumanRun {
+    agent_brain::db::HumanRun {
+        task_id,
+        project_id: proj_id,
+        role: "dev".to_string(),
+        profile: "work".to_string(),
+        stage: Some("implement".to_string()),
+        round: Some(2),
+        started_at: 1000,
+        ended_at: 61000,
+        outcome: None,
+        base_commit: Some("base1".to_string()),
+        metrics_json: "{\"team\":\"tieu-doi\",\"staff\":\"ha\"}".to_string(),
+    }
+}
+
+#[test]
+fn insert_run_with_engine_stores_engine() {
+    let (_tmp, conn, proj_id, task_id) = fresh_task_db();
+    let new_run = sample_new_run(task_id, proj_id);
+
+    let ds_id = agent_brain::db::insert_run_with_engine(&conn, &new_run, "deepseek").unwrap();
+    let ds = agent_brain::db::get_run(&conn, ds_id).unwrap().unwrap();
+    assert_eq!(ds.engine, "deepseek");
+    assert_eq!(ds.status, "running");
+    assert_eq!(ds.pid, Some(4242));
+    assert_eq!(ds.pgid, Some(4242));
+    assert_eq!(ds.pid_start, Some(7));
+    assert_eq!(ds.model.as_deref(), Some("sonnet"));
+    assert_eq!(ds.base_commit.as_deref(), Some("abc123"));
+    assert_eq!(ds.run_dir.as_deref(), Some("/tmp/run-dir"));
+
+    // insert_run keeps its signature and stores `claude`.
+    let cl_id = agent_brain::db::insert_run(&conn, &new_run).unwrap();
+    let cl = agent_brain::db::get_run(&conn, cl_id).unwrap().unwrap();
+    assert_eq!(cl.engine, "claude");
+    assert_eq!(cl.status, "running");
+    assert_eq!(cl.pid, ds.pid);
+}
+
+#[test]
+fn insert_human_run_shape() {
+    let (_tmp, conn, proj_id, task_id) = fresh_task_db();
+    let h = sample_human_run(task_id, proj_id);
+
+    let id = agent_brain::db::insert_human_run(&conn, &h).unwrap();
+    let run = agent_brain::db::get_run(&conn, id).unwrap().unwrap();
+
+    assert_eq!(run.engine, HUMAN_ENGINE_NFC);
+    assert_eq!(run.status, "succeeded");
+    assert_eq!(run.usage_source, "none");
+    assert_eq!(run.task_id, Some(task_id));
+    assert_eq!(run.project_id, proj_id);
+    assert_eq!(run.role, "dev");
+    assert_eq!(run.profile, "work");
+    assert_eq!(run.stage.as_deref(), Some("implement"));
+    assert_eq!(run.round, Some(2));
+    assert_eq!(run.started_at, 1000);
+    assert_eq!(run.ended_at, Some(61000));
+    assert_eq!(run.outcome, None);
+    assert_eq!(run.base_commit.as_deref(), Some("base1"));
+    assert_eq!(
+        run.metrics_json.as_deref(),
+        Some("{\"team\":\"tieu-doi\",\"staff\":\"ha\"}")
+    );
+
+    assert_eq!(run.input_tokens, 0);
+    assert_eq!(run.output_tokens, 0);
+    assert_eq!(run.cache_read_tokens, 0);
+    assert_eq!(run.cache_write_tokens, 0);
+    assert_eq!(run.cost_usd, 0.0);
+    assert_eq!(run.model, None);
+    assert_eq!(run.pid, None);
+    assert_eq!(run.pgid, None);
+    assert_eq!(run.pid_start, None);
+    assert_eq!(run.run_dir, None);
+    assert_eq!(run.session_id, None);
+
+    // Never a running row.
+    assert!(agent_brain::db::running_runs(&conn).unwrap().is_empty());
+}
+
+#[test]
+fn insert_human_run_stores_outcome_as_given() {
+    let (_tmp, conn, proj_id, task_id) = fresh_task_db();
+    let mut h = sample_human_run(task_id, proj_id);
+    h.outcome = Some("protocol_violation".to_string());
+
+    let id = agent_brain::db::insert_human_run(&conn, &h).unwrap();
+    let run = agent_brain::db::get_run(&conn, id).unwrap().unwrap();
+    assert_eq!(run.outcome.as_deref(), Some("protocol_violation"));
+    assert_eq!(run.status, "succeeded");
+}
+
+#[test]
+fn human_run_not_reconciled() {
+    let (_tmp, conn, proj_id, task_id) = fresh_task_db();
+    let id = agent_brain::db::insert_human_run(&conn, &sample_human_run(task_id, proj_id)).unwrap();
+
+    let lost = agent_brain::runner::reconcile_stale_runs(&conn).unwrap();
+    assert_eq!(lost, 0);
+    let run = agent_brain::db::get_run(&conn, id).unwrap().unwrap();
+    assert_eq!(run.status, "succeeded");
+    assert_eq!(run.engine, HUMAN_ENGINE_NFC);
+}

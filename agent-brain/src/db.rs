@@ -342,6 +342,34 @@ pub fn insert_run(conn: &Connection, r: &NewRun) -> BrainResult<i64> {
     Ok(conn.last_insert_rowid())
 }
 
+pub fn insert_run_with_engine(conn: &Connection, r: &NewRun, _engine: &str) -> BrainResult<i64> {
+    insert_run(conn, r)
+}
+
+#[derive(Debug, Clone)]
+pub struct HumanRun {
+    pub task_id: i64,
+    pub project_id: i64,
+    pub role: String,
+    pub profile: String,
+    pub stage: Option<String>,
+    pub round: Option<i64>,
+    pub started_at: i64,
+    pub ended_at: i64,
+    pub outcome: Option<String>,
+    pub base_commit: Option<String>,
+    pub metrics_json: String,
+}
+
+pub fn insert_human_run(conn: &Connection, h: &HumanRun) -> BrainResult<i64> {
+    conn.execute(
+        "INSERT INTO runs (task_id, project_id, role, profile, status, started_at)
+         VALUES (?1, ?2, ?3, ?4, 'succeeded', ?5)",
+        params![h.task_id, h.project_id, h.role, h.profile, h.started_at],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
 pub fn insert_event(
     conn: &Connection,
     run_id: i64,
