@@ -687,6 +687,198 @@ const sections = [
     },
   },
   {
+    name: 'assign-team',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      const assignJsSrc = fs.readFileSync(
+        path.join(repoRoot, 'agent-brain/assets/dashboard/js/assign.js'),
+        'utf8'
+      );
+      vm.runInContext(assignJsSrc, ctx, { filename: 'assign.js' });
+      if (typeof factories.assign !== 'function') {
+        check('assign-team: factory registered', false, 'factories.assign not found');
+        return;
+      }
+
+      const ROLES_CLAUDE = { lead: 'claude', dev: 'claude', qa: 'claude', plan_review: 'claude', code_review: 'claude' };
+      const TEAM_LIST = [
+        { name: 'mac-dinh', source: 'builtin', description: 'Mọi vai trò dùng claude.', summary: 'claude: lead, dev, qa, review plan, review code', roles: ROLES_CLAUDE },
+        { name: 'tiet-kiem', source: 'builtin', description: 'Dev dùng deepseek.', summary: 'claude: lead, qa, review plan, review code · deepseek: dev', roles: { ...ROLES_CLAUDE, dev: 'deepseek' } },
+        { name: 'doi-thu', source: 'file', description: 'Thử.', summary: 'claude: lead, qa · người Hà: dev', roles: { ...ROLES_CLAUDE, dev: 'người:ha' } },
+      ];
+      const NOTE = "Đội hình 'x' của dự án không có trong teams.json — dùng mac-dinh.";
+      const PROJECT_DEFAULTS = {
+        web: { team: 'doi-thu', effective: 'doi-thu', note: null },
+        app: { team: null, effective: 'mac-dinh', note: null },
+        cu: { team: 'x', effective: 'mac-dinh', note: NOTE },
+      };
+      let teamsResponse;
+      let enginesResponse;
+      let staffResponse;
+      const resetResponses = () => {
+        teamsResponse = {
+          ok: true,
+          status: 200,
+          data: { teams: TEAM_LIST, errors: [], builtin_names: ['mac-dinh', 'tiet-kiem'], project_defaults: PROJECT_DEFAULTS },
+        };
+        enginesResponse = {
+          ok: true,
+          status: 200,
+          data: { engines: [
+            { name: 'claude', readiness: 'san_sang', word: 'sẵn sàng' },
+            { name: 'deepseek', readiness: 'thieu_key', word: 'thiếu key' },
+            { name: 'agy', readiness: 'san_sang', word: 'sẵn sàng' },
+            { name: 'người', readiness: 'san_sang', word: 'sẵn sàng' },
+          ] },
+        };
+        staffResponse = { ok: true, status: 200, data: { staff: [{ id: 'ha', display_name: 'Hà' }], errors: [] } };
+      };
+      resetResponses();
+      const posts = [];
+      const savedApi = ctx.AB.api;
+      ctx.AB.api = function (method, url, body) {
+        if (method === 'GET' && url === '/api/teams') return Promise.resolve(teamsResponse);
+        if (method === 'GET' && url === '/api/engines') return Promise.resolve(enginesResponse);
+        if (method === 'GET' && url === '/api/staff') return Promise.resolve(staffResponse);
+        if (method === 'POST' && url === '/api/tasks') {
+          posts.push(body);
+          return Promise.resolve({ ok: false, status: 422, data: { error: 'Đội hình không hợp lệ' } });
+        }
+        return Promise.resolve({ ok: false, status: 404, data: null });
+      };
+
+      const web = { id: 'web', name_vi: 'Web', profile: 'work', workflow: null };
+      const app = { id: 'app', name_vi: 'App', profile: 'work', workflow: null };
+      const cu = { id: 'cu', name_vi: 'Cũ', profile: 'work', workflow: null };
+      try {
+        const c = factories.assign();
+        check('assign-team: teamsLoading starts true', c.teamsLoading === true, `got ${c.teamsLoading}`);
+        check('assign-team: teamName starts mac-dinh', c.teamName === 'mac-dinh', `got "${c.teamName}"`);
+        check('assign-team: loading → no team key in the request', !Object.prototype.hasOwnProperty.call(c.postBody, 'team'), `got ${JSON.stringify(c.postBody)}`);
+        await c.loadTeams();
+        check('assign-team: teams in server order', c.teams.map((t) => t.name).join(',') === 'mac-dinh,tiet-kiem,doi-thu', `got ${c.teams.map((t) => t.name).join(',')}`);
+        check('assign-team: teamsLoading false after load', c.teamsLoading === false && c.teamsFailed === false);
+        check('assign-team: no project → mac-dinh', c.teamName === 'mac-dinh', `got "${c.teamName}"`);
+
+        // chips and option classes
+        check('assign-team: builtin chips', JSON.stringify(c.teamChips(TEAM_LIST[0])) === JSON.stringify(['có sẵn']), `got ${JSON.stringify(c.teamChips(TEAM_LIST[0]))}`);
+        check('assign-team: file chips', JSON.stringify(c.teamChips(TEAM_LIST[2])) === JSON.stringify(['từ teams.json']), `got ${JSON.stringify(c.teamChips(TEAM_LIST[2]))}`);
+        check('assign-team: selected option class', c.teamOptionClass(TEAM_LIST[0]) === 'bg-indigo-50 ring-2 ring-indigo-600 dark:bg-indigo-900/20 dark:ring-indigo-400', `got "${c.teamOptionClass(TEAM_LIST[0])}"`);
+        check('assign-team: unselected option class', c.teamOptionClass(TEAM_LIST[1]).includes('ring-1 ring-slate-300') && !c.teamOptionClass(TEAM_LIST[1]).includes('indigo'), `got "${c.teamOptionClass(TEAM_LIST[1])}"`);
+        check('assign-team: teamChecked', c.teamChecked(TEAM_LIST[0]) === true && c.teamChecked(TEAM_LIST[1]) === false);
+
+        // default = project default
+        c.choose(web);
+        check('assign-team: choose web → doi-thu (project default)', c.teamName === 'doi-thu', `got "${c.teamName}"`);
+        check('assign-team: teamTouched stays false after choose', c.teamTouched === false, `got ${c.teamTouched}`);
+        check('assign-team: project default chip on doi-thu', JSON.stringify(c.teamChips(TEAM_LIST[2])) === JSON.stringify(['mặc định của dự án', 'từ teams.json']), `got ${JSON.stringify(c.teamChips(TEAM_LIST[2]))}`);
+        check('assign-team: no default chip on tiet-kiem', JSON.stringify(c.teamChips(TEAM_LIST[1])) === JSON.stringify(['có sẵn']), `got ${JSON.stringify(c.teamChips(TEAM_LIST[1]))}`);
+
+        // project change re-selects unless touched
+        c.choose(app);
+        check('assign-team: choose app → mac-dinh', c.teamName === 'mac-dinh', `got "${c.teamName}"`);
+        c.choose(web);
+        c.onTeamChange({ target: { value: 'tiet-kiem' } });
+        check('assign-team: onTeamChange picks the radio value', c.teamName === 'tiet-kiem', `got "${c.teamName}"`);
+        check('assign-team: onTeamChange sets teamTouched', c.teamTouched === true, `got ${c.teamTouched}`);
+        c.choose(app);
+        check('assign-team: touched selection survives a project change', c.teamName === 'tiet-kiem', `got "${c.teamName}"`);
+        c.pickTeam('mac-dinh');
+        c.choose(web);
+        check('assign-team: pickTeam then choose keeps the pick', c.teamName === 'mac-dinh', `got "${c.teamName}"`);
+
+        // readiness lines and warning callout (deepseek is thieu_key)
+        check('assign-team: readiness line for tiet-kiem', JSON.stringify(c.teamReadinessLines(TEAM_LIST[1])) === JSON.stringify(['! deepseek: thiếu key']), `got ${JSON.stringify(c.teamReadinessLines(TEAM_LIST[1]))}`);
+        check('assign-team: no readiness line for mac-dinh', c.teamReadinessLines(TEAM_LIST[0]).length === 0, `got ${JSON.stringify(c.teamReadinessLines(TEAM_LIST[0]))}`);
+        check('assign-team: no warning while mac-dinh is selected', c.hasTeamWarning === false && c.teamWarningText === '', `got "${c.teamWarningText}"`);
+        c.pickTeam('tiet-kiem');
+        check('assign-team: warning callout text', c.teamWarningText === 'Đội hình tiet-kiem dùng engine chưa sẵn sàng: deepseek (thiếu key). Task vẫn giao được, nhưng bước dùng engine này sẽ dừng với lỗi.', `got "${c.teamWarningText}"`);
+        check('assign-team: hasTeamWarning', c.hasTeamWarning === true);
+
+        // human Dev role helper
+        c.pickTeam('doi-thu');
+        const HUMAN = 'Bước do Hà làm sẽ chờ ở trạng thái "Chờ Hà làm" cho tới khi bạn bấm Xong ở màn hình task.';
+        check('assign-team: human helper line', c.teamHelpLines.length === 1 && c.teamHelpLines[0] === HUMAN, `got ${JSON.stringify(c.teamHelpLines)}`);
+        check('assign-team: human role is not a readiness warning', c.hasTeamWarning === false, `got "${c.teamWarningText}"`);
+        c.pickTeam('mac-dinh');
+        check('assign-team: no helper for an all-claude team', c.teamHelpLines.length === 0, `got ${JSON.stringify(c.teamHelpLines)}`);
+
+        // project default note, verbatim
+        const cNote = factories.assign();
+        await cNote.loadTeams();
+        cNote.choose(cu);
+        check('assign-team: unknown project default → mac-dinh', cNote.teamName === 'mac-dinh', `got "${cNote.teamName}"`);
+        check('assign-team: project default note verbatim', cNote.teamHelpLines.length === 1 && cNote.teamHelpLines[0] === NOTE, `got ${JSON.stringify(cNote.teamHelpLines)}`);
+
+        // the picker adds no disabled reason: the same reasons, whatever team is picked
+        const noProject = factories.assign();
+        await noProject.loadTeams();
+        const reasonBefore = noProject.disabledReason;
+        noProject.pickTeam('tiet-kiem');
+        check('assign-team: no-project reason unchanged by the picker', reasonBefore === 'Chọn đúng một dự án trong danh sách' && noProject.disabledReason === reasonBefore, `got "${reasonBefore}" → "${noProject.disabledReason}"`);
+        c.choose(web);
+        check('assign-team: reason after a project is Nhập yêu cầu', c.disabledReason === 'Nhập yêu cầu', `got "${c.disabledReason}"`);
+        c.request = 'sửa app';
+        c.slug = 'sua-app';
+        c.preflight = { can_start: true };
+        c.preflightPending = false;
+        c.pickTeam('tiet-kiem');
+        check('assign-team: Giao việc stays enabled with a not-ready team', c.startDisabled === false, `got ${c.startDisabled}`);
+        c.pickTeam('doi-thu');
+        check('assign-team: Giao việc stays enabled with a human role', c.startDisabled === false, `got ${c.startDisabled}`);
+        c.pickTeam('tiet-kiem');
+
+        // request carries team once loaded
+        check('assign-team: postBody.team == teamName', c.postBody.team === 'tiet-kiem' && c.postBody.project === 'web', `got ${JSON.stringify(c.postBody)}`);
+        await c.submit();
+        check('assign-team: submit posts once', posts.length === 1, `got ${posts.length}`);
+        check('assign-team: submit POST body has team', posts[0] && posts[0].team === 'tiet-kiem' && posts[0].name === 'sua-app', `got ${JSON.stringify(posts[0])}`);
+
+        // invalid teams.json: 12 lines → 10 + remainder, closing line names the built-ins
+        const errs = [];
+        for (let i = 1; i <= 12; i++) errs.push(`Dòng ${i}: lỗi ${i}`);
+        teamsResponse = { ok: true, status: 200, data: { teams: TEAM_LIST.slice(0, 2), errors: errs, builtin_names: ['mac-dinh', 'tiet-kiem'], project_defaults: {} } };
+        const c3 = factories.assign();
+        await c3.loadTeams();
+        check('assign-team: hasTeamErrors', c3.hasTeamErrors === true);
+        check('assign-team: teamErrorLines has 11 lines', c3.teamErrorLines.length === 11, `got ${c3.teamErrorLines.length}`);
+        check('assign-team: teamErrorLines first is server line 1', c3.teamErrorLines[0] === 'Dòng 1: lỗi 1', `got "${c3.teamErrorLines[0]}"`);
+        check('assign-team: teamErrorLines tenth is server line 10', c3.teamErrorLines[9] === 'Dòng 10: lỗi 10', `got "${c3.teamErrorLines[9]}"`);
+        check('assign-team: teamErrorLines last is the remainder', c3.teamErrorLines[10] === '… và 2 lỗi khác', `got "${c3.teamErrorLines[10]}"`);
+        check('assign-team: invalid-file closing line', c3.teamErrorClosing === 'Đang dùng các đội hình có sẵn (mac-dinh, tiet-kiem) cho đến khi bạn sửa xong file.', `got "${c3.teamErrorClosing}"`);
+        check('assign-team: built-ins still selectable with errors', c3.teams.length === 2 && c3.teamName === 'mac-dinh' && c3.postBody.team === 'mac-dinh', `got ${c3.teams.length} / "${c3.teamName}"`);
+
+        // failed teams fetch: failure flag, no team key in the request
+        resetResponses();
+        teamsResponse = { ok: false, status: 0, data: null };
+        const c4 = factories.assign();
+        await c4.loadTeams();
+        check('assign-team: teamsFailed on fetch failure', c4.teamsFailed === true && c4.teamsLoading === false, `got ${c4.teamsFailed} / ${c4.teamsLoading}`);
+        c4.choose(web);
+        check('assign-team: failed list → postBody has no team key', !Object.prototype.hasOwnProperty.call(c4.postBody, 'team'), `got ${JSON.stringify(c4.postBody)}`);
+        check('assign-team: failed list → no warning, no helper', c4.hasTeamWarning === false && c4.teamHelpLines.length === 0);
+
+        // the readiness and staff calls only feed the warnings: both failing hides them, the list stays
+        resetResponses();
+        enginesResponse = { ok: false, status: 500, data: null };
+        staffResponse = { ok: false, status: 500, data: null };
+        const c5 = factories.assign();
+        await c5.loadTeams();
+        c5.pickTeam('tiet-kiem');
+        check('assign-team: engines failure hides readiness only', c5.teamsFailed === false && c5.teams.length === 3 && c5.teamReadinessLines(TEAM_LIST[1]).length === 0 && c5.hasTeamWarning === false);
+        c5.pickTeam('doi-thu');
+        check('assign-team: staff failure falls back to the id in the helper', c5.teamHelpLines.length === 1 && c5.teamHelpLines[0].indexOf('Bước do ha làm') === 0, `got ${JSON.stringify(c5.teamHelpLines)}`);
+      } finally {
+        ctx.AB.api = savedApi;
+      }
+    },
+  },
+  {
     name: 'projects-workflows',
     async run(ctx) {
       const factories = {};

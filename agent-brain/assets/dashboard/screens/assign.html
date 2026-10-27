@@ -62,6 +62,44 @@
       <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" aria-live="polite" x-show="selectedHelp" x-text="selectedHelp"></p>
     </fieldset>
 
+    <fieldset class="space-y-2 min-w-0">
+      <legend class="text-sm font-semibold leading-normal">Đội hình</legend>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đội hình chọn engine chạy từng vai trò. Chọn ở đây chỉ đổi cho task này; đội hình mặc định của dự án nằm trong projects_map.json.</p>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="teamsLoading">Đang tải đội hình...</p>
+      <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 text-base font-normal leading-normal" x-show="teamsFailed">Không tải được danh sách đội hình. Task sẽ chạy bằng đội hình mặc định của dự án.</div>
+      <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="hasTeamErrors">
+        <p class="font-semibold leading-normal">teams.json có lỗi</p>
+        <template x-for="(line, i) in teamErrorLines" :key="i">
+          <p class="text-sm font-normal leading-normal break-words" x-text="line"></p>
+        </template>
+        <p class="text-sm font-normal leading-normal break-words" x-text="teamErrorClosing"></p>
+      </div>
+      <template x-for="t in teams" :key="t.name">
+        <label class="flex min-h-12 cursor-pointer items-start gap-2 rounded-xl p-4 motion-safe:transition-colors" :class="teamOptionClass(t)" :data-team-option="t.name">
+          <input type="radio" name="team" :value="t.name" x-model="teamName" :checked="teamChecked(t)" @change="onTeamChange" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+          <span class="block min-w-0 space-y-1">
+            <span class="flex flex-wrap items-center gap-2">
+              <span class="font-mono text-base font-semibold leading-normal break-all" x-text="t.name"></span>
+              <template x-for="c in teamChips(t)" :key="c">
+                <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="c"></span>
+              </template>
+            </span>
+            <span class="block text-base font-normal leading-normal break-words" x-text="t.description"></span>
+            <span class="block text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="t.summary"></span>
+            <template x-for="line in teamReadinessLines(t)" :key="line">
+              <span class="block text-sm font-semibold leading-normal text-amber-900 dark:text-amber-200 break-words" x-text="line"></span>
+            </template>
+          </span>
+        </label>
+      </template>
+      <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 text-base font-normal leading-normal break-words" x-show="hasTeamWarning" x-text="teamWarningText"></div>
+      <div aria-live="polite" class="space-y-2">
+        <template x-for="(line, i) in teamHelpLines" :key="i">
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="line"></p>
+        </template>
+      </div>
+    </fieldset>
+
     <div class="space-y-2">
       <label for="ab-slug" class="text-sm font-semibold leading-normal">Tên task (slug)</label>
       <input id="ab-slug" type="text" maxlength="48" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 font-mono focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="slug" @input="onSlugInput" @blur="onSlugBlur">

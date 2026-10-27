@@ -160,6 +160,23 @@ pub fn teams_json(
 ) -> Value {
     let projects = crate::projects::projects_of(map);
 
+    let mut project_defaults = serde_json::Map::new();
+    for p in &projects {
+        let raw_team = crate::projects::team_of(map, &p.id);
+        let (effective, note) = match crate::teams::resolve(teams, None, raw_team.as_deref()) {
+            Ok(r) => (r.team.name, r.note),
+            Err(_) => (crate::teams::DEFAULT_TEAM.to_string(), None),
+        };
+        project_defaults.insert(
+            p.id.clone(),
+            json!({
+                "team": raw_team,
+                "effective": effective,
+                "note": note,
+            }),
+        );
+    }
+
     let list: Vec<Value> = teams
         .teams
         .iter()
@@ -203,6 +220,7 @@ pub fn teams_json(
     json!({
         "teams": list,
         "errors": teams.errors,
+        "project_defaults": Value::Object(project_defaults),
         "version": version,
         "builtin_names": builtin_names(crate::teams::BUILTIN_TEAMS_JSON),
     })

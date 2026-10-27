@@ -108,6 +108,46 @@ fn teams_get_save_get() {
     stop(srv);
 }
 
+#[test]
+fn teams_project_defaults() {
+    let sb = Sandbox::new();
+    let mk = |id: &str, team: Option<&str>| {
+        let mut e = sb.project_entry(&sb.xdg_config.join(id), id, "all");
+        e.as_object_mut().unwrap().remove("workflow");
+        if let Some(t) = team {
+            e["team"] = json!(t);
+        }
+        e
+    };
+    sb.write_teams(json!({"doi-thu": {"description": "Thử", "roles": {"dev": "agy"}}}));
+    sb.write_map(
+        json!([
+            mk("a-co", Some("doi-thu")),
+            mk("b-sai", Some("khong-co")),
+            mk("c-khong", None)
+        ]),
+        &[],
+    );
+    let srv = sb.serve(&[]);
+
+    let j = srv.get("/api/teams").json();
+    let d = &j["project_defaults"];
+    assert_eq!(d["a-co"]["team"], "doi-thu");
+    assert_eq!(d["a-co"]["effective"], "doi-thu");
+    assert_eq!(d["a-co"]["note"], Value::Null);
+
+    assert_eq!(d["b-sai"]["team"], "khong-co");
+    assert_eq!(d["b-sai"]["effective"], "mac-dinh");
+    let note = d["b-sai"]["note"].as_str().expect("note text");
+    assert!(note.contains("khong-co"), "note: {note}");
+
+    assert_eq!(d["c-khong"]["team"], Value::Null);
+    assert_eq!(d["c-khong"]["effective"], "mac-dinh");
+    assert_eq!(d["c-khong"]["note"], Value::Null);
+
+    stop(srv);
+}
+
 // ---- Task 2: team rules, delete, conflicts, staff ----
 
 fn team_entry(name: &str, description: &str, roles: Value) -> Value {
