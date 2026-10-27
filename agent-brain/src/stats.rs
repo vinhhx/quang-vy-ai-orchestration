@@ -58,6 +58,15 @@ pub struct EngineStats {
     pub priced: bool,
 }
 
+/// QA verdict counts for the runs of one Dev engine (ENG-07 / D-23): integers only, the UI turns
+/// them into a percentage.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct QaRate {
+    pub engine: String,
+    pub qa_fix: i64,
+    pub qa_total: i64,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StatsFilter {
     pub profile: Option<String>,
@@ -363,6 +372,47 @@ pub fn query_by_engine(
     Ok(rows)
 }
 
+/// QA `qa:pass` / `qa:fix` verdicts in the window, attributed to the engine of the latest Dev run
+/// (implement or fix, any engine, a person included) of the same task with a smaller run id. The
+/// run id is the insertion order, so it stays right for a human run whose `started_at` is the
+/// start of the wait. QA runs with no earlier Dev run are ignored; rows are sorted by engine.
+pub fn query_qa_by_dev_engine(
+    conn: &Connection,
+    profile: Option<&str>,
+    since_ms: Option<i64>,
+) -> BrainResult<Vec<QaRate>> {
+    let mut stmt = conn.prepare(
+        "SELECT dev_engine,
+                COALESCE(SUM(CASE WHEN outcome = 'qa:fix' THEN 1 ELSE 0 END), 0),
+                COUNT(*)
+         FROM (
+            SELECT q.outcome AS outcome,
+                   (SELECT d.engine FROM runs d
+                     WHERE d.task_id = q.task_id AND d.role = 'dev' AND d.id < q.id
+                     ORDER BY d.id DESC LIMIT 1) AS dev_engine
+              FROM runs q
+             WHERE q.role = 'qa'
+               AND q.outcome IN ('qa:pass', 'qa:fix')
+               AND q.task_id IS NOT NULL
+               AND (?1 IS NULL OR q.profile = ?1)
+               AND (?2 IS NULL OR q.started_at >= ?2)
+         )
+         WHERE dev_engine IS NOT NULL
+         GROUP BY dev_engine
+         ORDER BY dev_engine",
+    )?;
+    let rows = stmt
+        .query_map(params![profile, since_ms], |r| {
+            Ok(QaRate {
+                engine: r.get(0)?,
+                qa_fix: r.get(1)?,
+                qa_total: r.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn query_stats(
     conn: &Connection,
     profile: Option<&str>,
@@ -594,6 +644,73 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(query_by_engine(&conn, None, Some(i64::MAX), &pricing)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A finished run bound to `task_id`, with an optional verdict.
+    fn seed_task_run(
+        conn: &Connection,
+        proj_id: i64,
+        task_id: i64,
+        role: &str,
+        engine: &str,
+        outcome: Option<&str>,
+    ) -> i64 {
+        let id = crate::db::insert_run_with_engine(
+            conn,
+            &crate::db::NewRun {
+                task_id: Some(task_id),
+                project_id: proj_id,
+                role: role.to_string(),
+                profile: "work".to_string(),
+                model: None,
+                pid: 1,
+                pgid: 1,
+                pid_start: 1,
+                base_commit: None,
+                run_dir: None,
+            },
+            engine,
+        )
+        .unwrap();
+        if let Some(o) = outcome {
+            crate::db::set_run_outcome(conn, id, o).unwrap();
+        }
+        id
+    }
+
+    #[test]
+    fn qa_rate_attribution() {
+        let (_tmp, conn, proj_id) = temp_conn();
+        let t1 = crate::db::upsert_task(&conn, proj_id, "t1", "T1", "task/1", None, None).unwrap();
+        let t2 = crate::db::upsert_task(&conn, proj_id, "t2", "T2", "task/2", None, None).unwrap();
+
+        // t1: deepseek dev -> fix -> claude fix run -> pass. The verdict follows the latest Dev run.
+        seed_task_run(&conn, proj_id, t1, "dev", "deepseek", None);
+        seed_task_run(&conn, proj_id, t1, "qa", "claude", Some("qa:fix"));
+        seed_task_run(&conn, proj_id, t1, "dev", "claude", None);
+        seed_task_run(&conn, proj_id, t1, "qa", "claude", Some("qa:pass"));
+        // t2: a QA verdict with no earlier Dev run is ignored.
+        seed_task_run(&conn, proj_id, t2, "qa", "claude", Some("qa:pass"));
+
+        let rows = query_qa_by_dev_engine(&conn, None, None).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                QaRate {
+                    engine: "claude".to_string(),
+                    qa_fix: 0,
+                    qa_total: 1
+                },
+                QaRate {
+                    engine: "deepseek".to_string(),
+                    qa_fix: 1,
+                    qa_total: 1
+                },
+            ]
+        );
+        assert!(query_qa_by_dev_engine(&conn, Some("personal"), None)
             .unwrap()
             .is_empty());
     }
