@@ -40,6 +40,7 @@ async fn get_stats(State(st): State<Arc<AppState>>, Query(query): Query<StatsQue
         let report = crate::stats::query_report(&conn, profile_opt, since_opt, since_ms)?;
         let by_day = crate::stats::query_by_day(&conn, profile_opt, since_ms)?;
         let by_profile = crate::stats::query_by_profile(&conn, profile_opt, since_ms)?;
+        let engines = crate::stats::query_by_engine(&conn, profile_opt, since_ms, &st.cfg.pricing)?;
 
         let mut val = serde_json::to_value(&report)
             .map_err(|e| crate::error::BrainError::error(format!("Lỗi serialize JSON: {e}")))?;
@@ -54,6 +55,12 @@ async fn get_stats(State(st): State<Arc<AppState>>, Query(query): Query<StatsQue
                 "by_profile".to_string(),
                 serde_json::to_value(by_profile).map_err(|e| {
                     crate::error::BrainError::error(format!("Lỗi serialize by_profile: {e}"))
+                })?,
+            );
+            obj.insert(
+                "engines".to_string(),
+                serde_json::to_value(engines).map_err(|e| {
+                    crate::error::BrainError::error(format!("Lỗi serialize engines: {e}"))
                 })?,
             );
         }
