@@ -104,6 +104,21 @@ pub fn workflow_of(map: &serde_json::Value, project_id: &str) -> Option<String> 
     None
 }
 
+/// The project's default team name (D-12), trimmed; None when missing or blank.
+pub fn team_of(map: &serde_json::Value, project_id: &str) -> Option<String> {
+    let arr = map.get("projects").and_then(|p| p.as_array())?;
+    for p in arr {
+        if p.get("id").and_then(|v| v.as_str()) == Some(project_id) {
+            let team = p.get("team").and_then(|v| v.as_str())?;
+            let trimmed = team.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 pub fn load_map(path: &Path) -> BrainResult<serde_json::Value> {
     if !path.exists() {
         return Ok(serde_json::json!({"scan_roots": [], "projects": []}));
@@ -802,5 +817,23 @@ mod tests {
         assert_eq!(workflow_of(&map, "b"), None);
         assert_eq!(workflow_of(&map, "c"), None);
         assert_eq!(workflow_of(&map, "unknown"), None);
+    }
+
+    #[test]
+    fn team_of_reads_key() {
+        let map = serde_json::json!({
+            "projects": [
+                {"id": "web", "team": " tiet-kiem "},
+                {"id": "b"},
+                {"id": "c", "team": "  "},
+                {"id": "d", "team": 3}
+            ]
+        });
+        assert_eq!(team_of(&map, "web"), Some("tiet-kiem".to_string()));
+        assert_eq!(team_of(&map, "b"), None);
+        assert_eq!(team_of(&map, "c"), None);
+        assert_eq!(team_of(&map, "d"), None);
+        assert_eq!(team_of(&map, "unknown"), None);
+        assert_eq!(team_of(&serde_json::json!({}), "web"), None);
     }
 }

@@ -242,6 +242,30 @@ impl Sandbox {
         fs::write(wf_path, serde_json::to_string_pretty(&data).unwrap()).expect("write workflows");
     }
 
+    pub fn teams_path(&self) -> PathBuf {
+        self.xdg_config.join("agent-brain").join("teams.json")
+    }
+
+    pub fn write_teams(&self, data: serde_json::Value) {
+        let p = self.teams_path();
+        if let Some(dir) = p.parent() {
+            fs::create_dir_all(dir).expect("create teams dir");
+        }
+        fs::write(p, serde_json::to_string_pretty(&data).unwrap()).expect("write teams");
+    }
+
+    pub fn staff_path(&self) -> PathBuf {
+        self.xdg_config.join("agent-brain").join("staff.json")
+    }
+
+    pub fn write_staff(&self, data: serde_json::Value) {
+        let p = self.staff_path();
+        if let Some(dir) = p.parent() {
+            fs::create_dir_all(dir).expect("create staff dir");
+        }
+        fs::write(p, serde_json::to_string_pretty(&data).unwrap()).expect("write staff");
+    }
+
     pub fn queue_state_path(&self) -> PathBuf {
         PathBuf::from(format!("{}.state.json", self.scenario_file.display()))
     }

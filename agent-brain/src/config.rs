@@ -74,6 +74,182 @@ pub struct ProfileCfg {
     pub unset_env: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeepseekCfg {
+    /// Command that runs claude against the DeepSeek endpoint (default: `claude_bin`).
+    pub command: String,
+    pub base_url: String,
+    /// NAME of the environment variable that holds the key; the value is never read into Config (D-03).
+    pub key_env: String,
+    /// Model per role (`lead`, `dev`, `qa`, `plan-review`, `code-review`).
+    pub models: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgyCfg {
+    pub command: String,
+    pub print_timeout_margin_secs: u64,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnginesCfg {
+    pub deepseek: DeepseekCfg,
+    pub agy: AgyCfg,
+}
+
+pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/anthropic";
+pub const DEFAULT_DEEPSEEK_KEY_ENV: &str = "DEEPSEEK_API_KEY";
+pub const DEFAULT_AGY_COMMAND: &str = "agy";
+pub const DEFAULT_AGY_PRINT_TIMEOUT_MARGIN_SECS: u64 = 30;
+
+/// Role aliases the deepseek engine uses until a run decides otherwise (plan 06-11).
+pub fn default_deepseek_models() -> BTreeMap<String, String> {
+    [
+        ("lead", "opus"),
+        ("dev", "sonnet"),
+        ("qa", "sonnet"),
+        ("plan-review", "opus"),
+        ("code-review", "opus"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
+}
+
+fn valid_key_env(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_uppercase() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn parse_engines(v: Option<&serde_json::Value>, claude_bin: &str) -> BrainResult<EnginesCfg> {
+    let mut cfg = EnginesCfg {
+        deepseek: DeepseekCfg {
+            command: claude_bin.to_string(),
+            base_url: DEFAULT_DEEPSEEK_BASE_URL.to_string(),
+            key_env: DEFAULT_DEEPSEEK_KEY_ENV.to_string(),
+            models: default_deepseek_models(),
+        },
+        agy: AgyCfg {
+            command: DEFAULT_AGY_COMMAND.to_string(),
+            print_timeout_margin_secs: DEFAULT_AGY_PRINT_TIMEOUT_MARGIN_SECS,
+            model: None,
+        },
+    };
+
+    let engines = match v {
+        None | Some(serde_json::Value::Null) => return Ok(cfg),
+        Some(serde_json::Value::Object(o)) => o,
+        Some(_) => {
+            return Err(BrainError::error(
+                "Cấu hình engines không hợp lệ (phải là JSON object)",
+            ))
+        }
+    };
+
+    for key in engines.keys() {
+        if key != "deepseek" && key != "agy" {
+            return Err(BrainError::error(format!(
+                "Cấu hình engines.{key} không hợp lệ (chỉ deepseek, agy)"
+            )));
+        }
+    }
+
+    if let Some(d) = engines.get("deepseek").filter(|d| !d.is_null()) {
+        let d = d.as_object().ok_or_else(|| {
+            BrainError::error("Cấu hình engines.deepseek không hợp lệ (phải là JSON object)")
+        })?;
+        if let Some(c) = d.get("command").filter(|c| !c.is_null()) {
+            match c.as_str().map(str::trim) {
+                Some(s) if !s.is_empty() => cfg.deepseek.command = s.to_string(),
+                _ => {
+                    return Err(BrainError::error(
+                        "Cấu hình engines.deepseek.command không được rỗng",
+                    ))
+                }
+            }
+        }
+        if let Some(u) = d.get("base_url").filter(|u| !u.is_null()) {
+            match u.as_str().map(str::trim) {
+                Some(s) if s.starts_with("https://") => cfg.deepseek.base_url = s.to_string(),
+                _ => {
+                    return Err(BrainError::error(
+                        "Cấu hình engines.deepseek.base_url phải bắt đầu bằng https://",
+                    ))
+                }
+            }
+        }
+        if let Some(k) = d.get("key_env").filter(|k| !k.is_null()) {
+            match k.as_str() {
+                Some(s) if valid_key_env(s) => cfg.deepseek.key_env = s.to_string(),
+                _ => {
+                    return Err(BrainError::error(
+                        "Cấu hình engines.deepseek.key_env không hợp lệ (chỉ chữ hoa, số và _)",
+                    ))
+                }
+            }
+        }
+        if let Some(m) = d.get("models").filter(|m| !m.is_null()) {
+            let m = m.as_object().ok_or_else(|| {
+                BrainError::error(
+                    "Cấu hình engines.deepseek.models không hợp lệ (phải là JSON object)",
+                )
+            })?;
+            for (role, val) in m {
+                let known = cfg.deepseek.models.contains_key(role);
+                match val.as_str().map(str::trim) {
+                    Some(s) if known && !s.is_empty() => {
+                        cfg.deepseek.models.insert(role.clone(), s.to_string());
+                    }
+                    _ => {
+                        return Err(BrainError::error(format!(
+                            "Cấu hình engines.deepseek.models.{role} không hợp lệ"
+                        )))
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(a) = engines.get("agy").filter(|a| !a.is_null()) {
+        let a = a.as_object().ok_or_else(|| {
+            BrainError::error("Cấu hình engines.agy không hợp lệ (phải là JSON object)")
+        })?;
+        if let Some(c) = a.get("command").filter(|c| !c.is_null()) {
+            match c.as_str().map(str::trim) {
+                Some(s) if !s.is_empty() => cfg.agy.command = s.to_string(),
+                _ => {
+                    return Err(BrainError::error(
+                        "Cấu hình engines.agy.command không được rỗng",
+                    ))
+                }
+            }
+        }
+        if let Some(n) = a.get("print_timeout_margin_secs").filter(|n| !n.is_null()) {
+            match n.as_u64() {
+                Some(n) if n <= 3600 => cfg.agy.print_timeout_margin_secs = n,
+                _ => {
+                    return Err(BrainError::error(
+                        "Cấu hình engines.agy.print_timeout_margin_secs phải là số nguyên từ 0 đến 3600",
+                    ))
+                }
+            }
+        }
+        if let Some(m) = a.get("model").filter(|m| !m.is_null()) {
+            match m.as_str().map(str::trim) {
+                Some(s) if !s.is_empty() => cfg.agy.model = Some(s.to_string()),
+                _ => return Err(BrainError::error("Cấu hình engines.agy.model không hợp lệ")),
+            }
+        }
+    }
+
+    Ok(cfg)
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub claude_bin: String,
@@ -91,6 +267,8 @@ pub struct Config {
     pub pricing: BTreeMap<String, Price>,
     /// Tasks the Telegram bot may create per local day; 0 turns `/task` off.
     pub telegram_max_tasks_per_day: u32,
+    /// Optional `engines` block of config.json (D-08); absent means today's behaviour.
+    pub engines: EnginesCfg,
 }
 
 impl Config {
@@ -206,6 +384,8 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         .and_then(|s| s.as_str())
         .unwrap_or("claude")
         .to_string();
+
+    let engines = parse_engines(obj.get("engines"), &claude_bin)?;
 
     let inspect_model = obj
         .get("inspect_model")
@@ -386,6 +566,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         autopilot,
         pricing,
         telegram_max_tasks_per_day,
+        engines,
     })
 }
 
@@ -712,5 +893,120 @@ mod tests {
             let err = config_from_value(&v).unwrap_err();
             assert_eq!(err.message, TELEGRAM_CAP_ERR, "{bad}");
         }
+    }
+
+    fn base_with(extra: serde_json::Value) -> serde_json::Value {
+        let mut v: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        v.as_object_mut().unwrap().remove("engines");
+        if let Some(o) = extra.as_object() {
+            for (k, val) in o {
+                v.as_object_mut().unwrap().insert(k.clone(), val.clone());
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn engines_defaults() {
+        // No `engines` key at all (as in Sandbox configs) behaves like the documented defaults.
+        let cfg = config_from_value(&base_with(serde_json::json!({}))).unwrap();
+        assert_eq!(cfg.engines.deepseek.command, cfg.claude_bin);
+        assert_eq!(
+            cfg.engines.deepseek.base_url,
+            "https://api.deepseek.com/anthropic"
+        );
+        assert_eq!(cfg.engines.deepseek.key_env, "DEEPSEEK_API_KEY");
+        assert_eq!(cfg.engines.deepseek.models, default_deepseek_models());
+        assert_eq!(cfg.engines.deepseek.models["lead"], "opus");
+        assert_eq!(cfg.engines.deepseek.models["dev"], "sonnet");
+        assert_eq!(cfg.engines.deepseek.models["qa"], "sonnet");
+        assert_eq!(cfg.engines.deepseek.models["plan-review"], "opus");
+        assert_eq!(cfg.engines.deepseek.models["code-review"], "opus");
+        assert_eq!(cfg.engines.agy.command, "agy");
+        assert_eq!(cfg.engines.agy.print_timeout_margin_secs, 30);
+        assert_eq!(cfg.engines.agy.model, None);
+
+        // The default file documents the same values.
+        let documented =
+            config_from_value(&serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap()).unwrap();
+        assert_eq!(documented.engines, cfg.engines);
+
+        // The deepseek command follows a custom claude_bin.
+        let cfg = config_from_value(&base_with(serde_json::json!({"claude_bin": "/opt/claude"})))
+            .unwrap();
+        assert_eq!(cfg.engines.deepseek.command, "/opt/claude");
+
+        // Explicit values; a partial models map keeps defaults for the missing roles.
+        let cfg = config_from_value(&base_with(serde_json::json!({"engines": {
+            "deepseek": {
+                "command": "ds-claude",
+                "base_url": "https://example.test/anthropic",
+                "key_env": "MY_DS_KEY",
+                "models": {"dev": "deepseek-chat"}
+            },
+            "agy": {"command": "/usr/local/bin/agy", "print_timeout_margin_secs": 45, "model": "gemini"}
+        }})))
+        .unwrap();
+        assert_eq!(cfg.engines.deepseek.command, "ds-claude");
+        assert_eq!(
+            cfg.engines.deepseek.base_url,
+            "https://example.test/anthropic"
+        );
+        assert_eq!(cfg.engines.deepseek.key_env, "MY_DS_KEY");
+        assert_eq!(cfg.engines.deepseek.models["dev"], "deepseek-chat");
+        assert_eq!(cfg.engines.deepseek.models["lead"], "opus");
+        assert_eq!(cfg.engines.agy.command, "/usr/local/bin/agy");
+        assert_eq!(cfg.engines.agy.print_timeout_margin_secs, 45);
+        assert_eq!(cfg.engines.agy.model.as_deref(), Some("gemini"));
+    }
+
+    #[test]
+    fn engines_validation() {
+        let err = |engines: serde_json::Value| {
+            config_from_value(&base_with(serde_json::json!({ "engines": engines })))
+                .unwrap_err()
+                .message
+        };
+        assert_eq!(
+            err(serde_json::json!({"deepseek": {"key_env": "deepseek-key"}})),
+            "Cấu hình engines.deepseek.key_env không hợp lệ (chỉ chữ hoa, số và _)"
+        );
+        assert_eq!(
+            err(serde_json::json!({"deepseek": {"key_env": "1ABC"}})),
+            "Cấu hình engines.deepseek.key_env không hợp lệ (chỉ chữ hoa, số và _)"
+        );
+        assert_eq!(
+            err(serde_json::json!({"deepseek": {"base_url": "http://x"}})),
+            "Cấu hình engines.deepseek.base_url phải bắt đầu bằng https://"
+        );
+        assert_eq!(
+            err(serde_json::json!({"deepseek": {"command": ""}})),
+            "Cấu hình engines.deepseek.command không được rỗng"
+        );
+        assert_eq!(
+            err(serde_json::json!({"khac": {}})),
+            "Cấu hình engines.khac không hợp lệ (chỉ deepseek, agy)"
+        );
+        assert_eq!(
+            err(serde_json::json!({"deepseek": {"models": {"dev": ""}}})),
+            "Cấu hình engines.deepseek.models.dev không hợp lệ"
+        );
+        assert_eq!(
+            err(serde_json::json!({"deepseek": {"models": {"tester": "opus"}}})),
+            "Cấu hình engines.deepseek.models.tester không hợp lệ"
+        );
+        assert_eq!(
+            err(serde_json::json!({"agy": {"command": "  "}})),
+            "Cấu hình engines.agy.command không được rỗng"
+        );
+        assert_eq!(
+            err(serde_json::json!("x")),
+            "Cấu hình engines không hợp lệ (phải là JSON object)"
+        );
+        // `_` and digits after the first character are fine.
+        assert!(config_from_value(&base_with(serde_json::json!({"engines": {
+            "deepseek": {"key_env": "_DS_KEY_2"}
+        }})))
+        .is_ok());
     }
 }
