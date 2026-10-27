@@ -320,15 +320,21 @@ pub struct NewRun {
 }
 
 pub fn insert_run(conn: &Connection, r: &NewRun) -> BrainResult<i64> {
+    insert_run_with_engine(conn, r, "claude")
+}
+
+/// Inserts a `running` row recording the engine that executes it (D-14).
+pub fn insert_run_with_engine(conn: &Connection, r: &NewRun, engine: &str) -> BrainResult<i64> {
     let now = now_ms();
     conn.execute(
         "INSERT INTO runs (task_id, project_id, role, engine, profile, model, pid, pgid, pid_start,
                            status, started_at, base_commit, run_dir)
-         VALUES (?1, ?2, ?3, 'claude', ?4, ?5, ?6, ?7, ?8, 'running', ?9, ?10, ?11)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'running', ?10, ?11, ?12)",
         params![
             r.task_id,
             r.project_id,
             r.role,
+            engine,
             r.profile,
             r.model,
             r.pid,
@@ -340,10 +346,6 @@ pub fn insert_run(conn: &Connection, r: &NewRun) -> BrainResult<i64> {
         ],
     )?;
     Ok(conn.last_insert_rowid())
-}
-
-pub fn insert_run_with_engine(conn: &Connection, r: &NewRun, _engine: &str) -> BrainResult<i64> {
-    insert_run(conn, r)
 }
 
 #[derive(Debug, Clone)]
@@ -361,11 +363,27 @@ pub struct HumanRun {
     pub metrics_json: String,
 }
 
+/// Stores a person's finished work as a normal finished run (D-21): engine `người`, status
+/// `succeeded`, no tokens, no model, no process identity. Never inserts a `running` row, so
+/// `reconcile_stale_runs` (running rows without a live pid become `lost`) never touches it.
 pub fn insert_human_run(conn: &Connection, h: &HumanRun) -> BrainResult<i64> {
     conn.execute(
-        "INSERT INTO runs (task_id, project_id, role, profile, status, started_at)
-         VALUES (?1, ?2, ?3, ?4, 'succeeded', ?5)",
-        params![h.task_id, h.project_id, h.role, h.profile, h.started_at],
+        "INSERT INTO runs (task_id, project_id, role, engine, profile, model, status, outcome,
+                           started_at, ended_at, usage_source, base_commit, stage, round, metrics_json)
+         VALUES (?1, ?2, ?3, 'người', ?4, NULL, 'succeeded', ?5, ?6, ?7, 'none', ?8, ?9, ?10, ?11)",
+        params![
+            h.task_id,
+            h.project_id,
+            h.role,
+            h.profile,
+            h.outcome,
+            h.started_at,
+            h.ended_at,
+            h.base_commit,
+            h.stage,
+            h.round,
+            h.metrics_json,
+        ],
     )?;
     Ok(conn.last_insert_rowid())
 }
