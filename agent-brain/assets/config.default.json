@@ -9,6 +9,25 @@
     "--strict-mcp-config"
   ],
   "dashboard_port": 7437,
+  "engines": {
+    "deepseek": {
+      "command": "claude",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "key_env": "DEEPSEEK_API_KEY",
+      "models": {
+        "lead": "opus",
+        "dev": "sonnet",
+        "qa": "sonnet",
+        "plan-review": "opus",
+        "code-review": "opus"
+      }
+    },
+    "agy": {
+      "command": "agy",
+      "print_timeout_margin_secs": 30,
+      "model": null
+    }
+  },
   "inspect_max_diff_bytes": 100000,
   "inspect_model": "sonnet",
   "kill_grace_secs": 3,

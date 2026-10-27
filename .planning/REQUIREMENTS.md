@@ -188,6 +188,23 @@ Quyết định người dùng 2026-10-19, 2026-10-20, 2026-10-21 (ROADMAP Phase
 - [ ] **ENG-06**: Antigravity được tích hợp theo kết quả S7 (SPK-07): nếu headless thì chạy như engine; nếu không thì dùng thủ công (người dùng mở và giao `.plan.md`) và theo dõi qua `git diff` thay vì log. *(derived: 06-phase5 §2.2, §4)*
 - [ ] **ENG-07**: Tỉ lệ "Cần sửa" của QA được ghi theo engine để so sánh chất lượng; QA mặc định chạy bằng engine mạnh. *(derived: 06-phase5 §6)*
 
+### Multi-engine Teams & Settings (GSD Phase 6 — đội hình, Cài đặt, engine người, quota)
+
+Quyết định người dùng 2026-10-24 và 2026-10-26 (06-CONTEXT.md D-01…D-29). Mỗi vai trò chạy bằng engine của đội hình (team) gắn với task; hết quota thì dừng chờ người dùng, không tự đổi engine; nhân sự làm bước Dev trên máy của họ.
+
+- [ ] **TEAM-01**: Đội hình lưu trong `~/.config/agent-brain/teams.json` (sửa tay được, tối đa 256 KiB, lỗi kèm dòng/cột) cùng hai đội hình có sẵn `mac-dinh` (mọi vai trò claude) và `tiet-kiem` (Lead/QA claude, Dev deepseek); mỗi đội hình có tên slug tối đa 40 ký tự, mô tả tiếng Việt và engine cho `lead`, `dev`, `qa`, `plan-review`, `code-review` (`claude`, `deepseek`, `agy`, `người:<mã>`); QA phải là `claude`, `người` chỉ cho Dev; đội hình và quy trình là hai danh sách riêng nên được trùng tên. *(derived: 06-CONTEXT D-06, D-09, D-11, D-24, D-27)*
+- [ ] **TEAM-02**: Task lưu đội hình bền vững (`tasks.team_json`, lược đồ v4, có cổng quyết định và sao lưu) kèm lịch sử đổi (ai, lúc nào, từ → đến); chỉ đổi được khi không có run chạy, autopilot không chạy và không có bước người đang chờ, áp dụng từ bước kế tiếp; task có đội hình không còn trong teams.json thì bước kế bị từ chối kèm hướng dẫn. *(derived: 06-CONTEXT D-12, D-13, D-29)*
+- [ ] **TEAM-03**: Chọn đội hình khi giao việc: khóa `team` của dự án trong `projects_map.json` (không có thì `mac-dinh`), bộ chọn trên Giao việc, bước chọn đội hình của `/task` Telegram và cờ CLI `--team` (`run lead`, `auto --start`); đội hình được ghi vào task trước khi Lead chạy. *(derived: 06-CONTEXT D-12)*
+- [ ] **SET-01**: Màn hình mới `Cài đặt` (`#/settings`) với bốn mục `Đội hình`, `Quy trình`, `Nhân sự`, `Engine`; mục Engine chỉ xem độ sẵn sàng tính tại máy (`sẵn sàng`, `thiếu key`, `thiếu lệnh`, `chưa kiểm`), không gọi model, không có route nào ghi lệnh, endpoint hay tên biến key, không bao giờ hiện giá trị key. *(derived: 06-CONTEXT D-08, D-10; 06-UI-SPEC)*
+- [ ] **SET-02**: Tạo, sửa, nhân bản, xóa đội hình trên Cài đặt: ghi nguyên tử (file tạm, fsync, rename), cùng luật kiểm tra với bộ nạp file, kèm `version` để báo xung đột (409), không ghi đè file đang lỗi, đội hình có sẵn chỉ đọc nhưng nhân bản được, mọi route ghi nằm sau middleware token và header. *(derived: 06-CONTEXT D-10)*
+- [ ] **SET-03**: Tạo, sửa, nhân bản, xóa quy trình (`workflows.json`) trên Cài đặt với cùng cơ chế ghi, kiểm tra và xung đột như SET-02. *(derived: 06-CONTEXT D-10)*
+- [ ] **SET-04**: Nhân sự (mã, tên hiển thị, ghi chú) lưu trong `staff.json` riêng và quản lý trên Cài đặt; không xóa được nhân sự đang được một đội hình dùng. *(derived: 06-CONTEXT D-19)*
+- [ ] **SET-05**: Màn hình mới và các màn hình thay đổi đạt cổng giao diện của Phase 5 (Tailwind build sẵn, Alpine CSP, offline, tiếng Việt, sáng/tối, `dashboard-ui-lint.sh`, `build-css.sh --check`, JS check, smoke có `--keys`) và được người dùng xem ở 1024/768/480 px. *(derived: 06-CONTEXT Claude's Discretion; 06-UI-SPEC)*
+- [ ] **HUM-01**: Engine `người:<mã>` (chỉ cho Dev): bước Dev không chạy tiến trình nào, ghi dấu chờ vào task, đẩy nhánh task lên remote theo kiểu cố gắng (không bao giờ force; lỗi thì hiện tên nhánh và lệnh push), task hiện `Chờ <tên> làm`, autopilot nhả task ở trạng thái chờ người. *(derived: 06-CONTEXT D-19, D-24, D-25)*
+- [ ] **HUM-02**: Bấm `Xong` thì lấy nhánh từ remote vào thư mục làm việc chỉ theo fast-forward, kiểm tra phạm vi thay đổi như Dev rồi chạy tiếp quy trình (review code và QA quyết định); kết luận không đạt đưa bước về chế độ `Trả lại` kèm đường dẫn báo cáo cho đúng người đó. *(derived: 06-CONTEXT D-20)*
+- [ ] **HUM-03**: Lượt làm của người được ghi thành run lúc `Xong` (engine `người`, mã nhân sự, không token, thời gian chờ) và được tính trong thống kê theo engine và tỉ lệ Cần sửa. *(derived: 06-CONTEXT D-21)*
+- [ ] **QUOTA-01**: Bước dừng vì hết quota được chạy lại bằng đội hình khác từ dashboard (khung `Hết quota engine X`, hộp chọn đội hình) và từ Telegram (nút đội hình và lần bấm xác nhận thứ hai) qua cùng một hàm hành động; đội hình chọn thành đội hình của task và được ghi lịch sử; `Thử lại sau` giữ nguyên engine. *(derived: 06-CONTEXT D-16, D-17, D-28)*
+
 ### Media Branch (GSD Phase 6)
 
 - [ ] **MEDIA-01**: Dự án `type: media` không tạo Git worktree; file render nằm ngoài repo (thư mục riêng như `/video-studio`). *(src: P5-05)*
@@ -333,13 +350,25 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | ENG-05 | Phase 6 | Pending |
 | ENG-06 | Phase 6 | Pending |
 | ENG-07 | Phase 6 | Pending |
+| TEAM-01 | Phase 6 | Pending |
+| TEAM-02 | Phase 6 | Pending |
+| TEAM-03 | Phase 6 | Pending |
+| SET-01 | Phase 6 | Pending |
+| SET-02 | Phase 6 | Pending |
+| SET-03 | Phase 6 | Pending |
+| SET-04 | Phase 6 | Pending |
+| SET-05 | Phase 6 | Pending |
+| HUM-01 | Phase 6 | Pending |
+| HUM-02 | Phase 6 | Pending |
+| HUM-03 | Phase 6 | Pending |
+| QUOTA-01 | Phase 6 | Pending |
 | MEDIA-01 | Phase 06.1 | Pending |
 | MEDIA-02 | Phase 06.1 | Pending |
 | MEDIA-03 | Phase 06.1 | Pending |
 
 **Coverage:**
-- v1 requirements: 110 total (42 từ test case nguồn + 68 derived)
-- Mapped to phases: 110
+- v1 requirements: 122 total (42 từ test case nguồn + 80 derived)
+- Mapped to phases: 122
 - Unmapped: 0 ✓
 - Ngoài v1 (chưa gán, cần quyết định): FAST-03 (xem mục v2)
 
@@ -366,4 +395,4 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 
 ---
 *Requirements defined: 2026-10-14*
-*Last updated: 2026-10-24 — BOARD-01..14 complete (Phase 5.5); MEDIA-01..03 moved to Phase 06.1*
+*Last updated: 2026-10-27 — added TEAM-01..03, SET-01..05, HUM-01..03, QUOTA-01 (Phase 6)*

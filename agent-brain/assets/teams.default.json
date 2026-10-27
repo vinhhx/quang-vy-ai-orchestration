@@ -1,0 +1,22 @@
+{
+  "mac-dinh": {
+    "description": "Mọi vai trò chạy bằng claude theo profile của dự án.",
+    "roles": {
+      "lead": "claude",
+      "dev": "claude",
+      "qa": "claude",
+      "plan-review": "claude",
+      "code-review": "claude"
+    }
+  },
+  "tiet-kiem": {
+    "description": "Lead và QA dùng claude, Dev dùng deepseek để tiết kiệm chi phí.",
+    "roles": {
+      "lead": "claude",
+      "dev": "deepseek",
+      "qa": "claude",
+      "plan-review": "claude",
+      "code-review": "claude"
+    }
+  }
+}
