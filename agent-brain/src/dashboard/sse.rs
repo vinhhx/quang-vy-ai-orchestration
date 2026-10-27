@@ -21,7 +21,7 @@ pub fn row_kind(ev_kind: &str, text: &str) -> &'static str {
         "error"
     } else if ev_kind == "user" {
         "tool_result"
-    } else if ev_kind == "result" {
+    } else if ev_kind == "result" || ev_kind == "agy/result" {
         "result"
     } else if ev_kind == "assistant" {
         if text.starts_with("tool ") {
@@ -308,6 +308,23 @@ mod tests {
         assert_eq!(row_kind("result", "foo"), "result");
         assert_eq!(row_kind("assistant", "tool Bash ls"), "tool");
         assert_eq!(row_kind("assistant", "assistant: hello"), "assistant");
+    }
+
+    #[test]
+    fn agy_row_kinds() {
+        assert_eq!(row_kind("agy/result", "kết quả · SUCCESS"), "result");
+        assert_eq!(
+            row_kind("agy/init", "init · agy · request-review"),
+            "system"
+        );
+        assert_eq!(
+            row_kind("agy/step_update", "bước 1 · tool · DONE"),
+            "system"
+        );
+        let raw = r#"{"event":"result","result":{"status":"ERROR"}}"#;
+        let v = row_json(3, 1700000000200, "agy/result", raw);
+        assert_eq!(v["kind"], "result");
+        assert_eq!(v["text"], "kết quả · ERROR");
     }
 
     #[test]

@@ -532,3 +532,238 @@ fn claude_dev_unchanged_for_planning_path() {
     let files = sb.git(&repo, &["show", "--name-only", "--format=", "HEAD"]);
     assert!(files.lines().any(|l| l == ".planning/x.md"), "{files}");
 }
+
+// ---------------------------------------------------------------------------
+// Task 3: quota, timeout, permission_mode check, kill
+// ---------------------------------------------------------------------------
+
+#[test]
+fn agy_quota_stops() {
+    let sb = Sandbox::new();
+    agy_config(&sb);
+    write_doi_agy(&sb, json!({"lead": "agy"}));
+    let repo = setup_project(&sb, "work");
+
+    let env = AgyEnv::new(
+        &sb,
+        json!({
+            "status": "ERROR",
+            "error": "HTTP 429 RESOURCE_EXHAUSTED: Resource has been exhausted (e.g. check quota).",
+            "response": "",
+            "exit_code": 1,
+        }),
+    );
+    let res = run_lead(&sb, &env);
+    assert_eq!(
+        res.code, 5,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+
+    let row = run_row(&sb, "lead");
+    assert_eq!(row.engine, "agy");
+    assert_eq!(row.outcome.as_deref(), Some("quota"));
+    assert_eq!(
+        row.metrics["quota"]["engine"],
+        json!("agy"),
+        "{}",
+        row.metrics
+    );
+    assert_eq!(
+        row.metrics["quota"]["signal"],
+        json!("agy.result.error"),
+        "{}",
+        row.metrics
+    );
+    // A quota stop writes nothing and commits nothing.
+    let subjects = sb.git(&repo, &["log", "--format=%s"]);
+    assert!(
+        !subjects.lines().any(|l| l == "sua-app: plan"),
+        "{subjects}"
+    );
+}
+
+#[test]
+fn agy_permission_mode_mismatch_warns() {
+    let sb = Sandbox::new();
+    agy_config(&sb);
+    write_doi_agy(&sb, json!({"lead": "agy"}));
+    setup_project(&sb, "work");
+
+    // The fake reports a mode other than the one the probe showed for a flag-less run.
+    let env = AgyEnv::new(
+        &sb,
+        json!({
+            "permission_mode": "always-proceed",
+            "response": lead_plan_text(),
+        }),
+    );
+    let res = run_lead(&sb, &env);
+    assert_ok(&res, "run lead (agy, mode mismatch)");
+    assert!(
+        res.stderr.contains(
+            "Cảnh báo: agy chạy với permission_mode always-proceed, mong đợi request-review"
+        ),
+        "stderr: {}",
+        res.stderr
+    );
+    let row = run_row(&sb, "lead");
+    assert_eq!(
+        row.metrics["agy"],
+        json!({"permission_mode": "always-proceed", "expected": "request-review"}),
+        "{}",
+        row.metrics
+    );
+
+    // The expected mode raises no warning and stores nothing.
+    let sb = Sandbox::new();
+    agy_config(&sb);
+    write_doi_agy(&sb, json!({"lead": "agy"}));
+    setup_project(&sb, "work");
+    let env = AgyEnv::new(&sb, json!({"response": lead_plan_text()}));
+    let res = run_lead(&sb, &env);
+    assert_ok(&res, "run lead (agy, expected mode)");
+    assert!(
+        !res.stderr.contains("Cảnh báo: agy chạy với"),
+        "{}",
+        res.stderr
+    );
+    assert!(run_row(&sb, "lead").metrics.get("agy").is_none());
+}
+
+#[test]
+fn agy_timeout_mapping() {
+    // S7b: a `--print-timeout` expiry is status SUCCESS, exit 0 and an empty response; the stderr
+    // line is the only signal.
+    let sb = Sandbox::new();
+    agy_config(&sb);
+    write_doi_agy(&sb, json!({"lead": "agy"}));
+    setup_project(&sb, "work");
+    let env = AgyEnv::new(
+        &sb,
+        json!({
+            "stderr": "[agy] print timeout after 5s with turn in progress; returning partial output\n",
+            "response": "",
+        }),
+    );
+    let res = run_lead(&sb, &env);
+    assert_ne!(
+        res.code, 0,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        res.stderr.contains("quá thời gian"),
+        "stderr: {}",
+        res.stderr
+    );
+    let row = run_row(&sb, "lead");
+    assert_eq!(row.status, "timed_out");
+
+    // A plain non-zero exit stays `failed`.
+    let sb = Sandbox::new();
+    agy_config(&sb);
+    write_doi_agy(&sb, json!({"lead": "agy"}));
+    setup_project(&sb, "work");
+    let env = AgyEnv::new(
+        &sb,
+        json!({"stderr": "boom\n", "exit_code": 2, "response": ""}),
+    );
+    let res = run_lead(&sb, &env);
+    assert_ne!(res.code, 0);
+    assert_eq!(run_row(&sb, "lead").status, "failed");
+}
+
+#[test]
+fn agy_kill_s4() {
+    use std::time::Duration;
+
+    let sb = Sandbox::new();
+    agy_config(&sb);
+    write_doi_agy(&sb, json!({"lead": "agy"}));
+    setup_project(&sb, "work");
+
+    let pidfile = sb.root.join("agy.pid");
+    let env = AgyEnv::new(
+        &sb,
+        json!({
+            "sleep_s": 30,
+            "spawn_child": true,
+            "pidfile": pidfile.to_str().unwrap(),
+            "response": "",
+        }),
+    );
+    let mut run_child = sb.spawn_env(
+        &[
+            "run",
+            "lead",
+            "--team",
+            "doi-agy",
+            "--name",
+            "sua-app",
+            "--",
+            "web",
+            "sửa app",
+        ],
+        None,
+        &env.vars(),
+    );
+
+    // The fake wrote "{agy pid} {child pid}".
+    let mut pids: Option<(i32, i32)> = None;
+    common::wait_until(Duration::from_secs(10), || {
+        if let Ok(c) = std::fs::read_to_string(&pidfile) {
+            let p: Vec<i32> = c
+                .split_whitespace()
+                .filter_map(|x| x.parse().ok())
+                .collect();
+            if p.len() == 2 {
+                pids = Some((p[0], p[1]));
+                return true;
+            }
+        }
+        false
+    });
+    let (agy_pid, child_pid) = pids.expect("fake agy did not write its pidfile");
+    let procs = vec![
+        agent_brain::procs::proc_id(agy_pid).expect("agy proc_id"),
+        agent_brain::procs::proc_id(child_pid).expect("child proc_id"),
+    ];
+    let _guard = common::ProcGuard(procs.clone());
+
+    // The run row is `running` once the process is recorded.
+    let running = common::wait_until(Duration::from_secs(10), || {
+        sb.db()
+            .query_row(
+                "SELECT COUNT(*) FROM runs WHERE status = 'running'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n == 1)
+            .unwrap_or(false)
+    });
+    assert!(running, "no running run row");
+    let task_id: i64 = sb
+        .db()
+        .query_row("SELECT id FROM tasks ORDER BY id DESC LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+
+    let kill = sb.run(&["kill", &task_id.to_string()], None);
+    assert_eq!(
+        kill.code, 0,
+        "kill failed: {}\n{}",
+        kill.stderr, kill.stdout
+    );
+    let _ = run_child.wait();
+
+    assert_eq!(run_row(&sb, "lead").status, "killed");
+    std::thread::sleep(Duration::from_secs(3));
+    for p in &procs {
+        assert!(
+            !agent_brain::procs::alive(*p),
+            "process {p:?} survived the kill"
+        );
+    }
+}

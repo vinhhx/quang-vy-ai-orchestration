@@ -165,6 +165,35 @@ pub fn event_text(ev: &StreamEvent, verbose: bool) -> String {
             .and_then(|s| s.as_str())
             .unwrap_or("");
         format!("rate_limit {status}")
+    } else if ev.kind == "agy/init" {
+        let mode = val
+            .get("init")
+            .and_then(|i| i.get("permission_mode"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("");
+        format!("init · agy · {mode}")
+    } else if ev.kind == "agy/step_update" {
+        let step = val.get("step_update");
+        let idx = step
+            .and_then(|s| s.get("step_index"))
+            .and_then(|i| i.as_i64())
+            .unwrap_or(0);
+        let step_type = step
+            .and_then(|s| s.get("step_type"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        let state = step
+            .and_then(|s| s.get("state"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        format!("bước {idx} · {step_type} · {state}")
+    } else if ev.kind == "agy/result" {
+        let status = val
+            .get("result")
+            .and_then(|r| r.get("status"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        format!("kết quả · {status}")
     } else {
         ev.kind.clone()
     }
@@ -226,6 +255,27 @@ mod tests {
         let tool_ev = classify(lines[3].as_bytes()).expect("classify tool_use");
         let tool_txt = event_text(&tool_ev, false);
         assert!(tool_txt.starts_with("tool Bash"), "got: {tool_txt}");
+    }
+
+    #[test]
+    fn agy_events_render() {
+        let render = |l: &str| event_text(&classify(l.as_bytes()).unwrap(), false);
+        assert_eq!(
+            render(
+                r#"{"event":"init","conversation_id":"c1","init":{"permission_mode":"request-review"}}"#
+            ),
+            "init · agy · request-review"
+        );
+        assert_eq!(
+            render(
+                r#"{"event":"step_update","step_update":{"step_index":3,"state":"DONE","step_type":"tool"}}"#
+            ),
+            "bước 3 · tool · DONE"
+        );
+        assert_eq!(
+            render(r#"{"event":"result","result":{"status":"SUCCESS"}}"#),
+            "kết quả · SUCCESS"
+        );
     }
 
     #[test]

@@ -600,8 +600,16 @@ pub fn execute_role_staged(
     let mut outcome = crate::runner::supervise(&req, &mut obs)?;
     obs.summary.finish();
 
-    // agy exits 0 with a non-SUCCESS result more often than not (S7): the result decides.
+    // agy exits 0 with a non-SUCCESS result more often than not (S7): the result decides. A
+    // `--print-timeout` expiry looks like a success too (status SUCCESS, exit 0, empty response,
+    // S7b); its only signal is a stderr line, so that line is what maps it to `timed_out`.
     let agy_stream = ep.stream == crate::engine::StreamFormat::Agy;
+    if agy_stream
+        && outcome.status == crate::runner::RunStatus::Succeeded
+        && agy_print_timeout_hit(&crate::quota::stderr_tail(&quota_stderr_path, 4096))
+    {
+        outcome.status = crate::runner::RunStatus::TimedOut;
+    }
     if agy_stream
         && outcome.status == crate::runner::RunStatus::Succeeded
         && obs.summary.result_seen()
@@ -619,6 +627,18 @@ pub fn execute_role_staged(
         ) {
         crate::quota::detect_claude(
             &obs.summary,
+            outcome.exit_code,
+            &crate::quota::stderr_tail(&quota_stderr_path, 4096),
+        )
+    } else if agy_stream
+        && !matches!(
+            outcome.status,
+            crate::runner::RunStatus::Killed | crate::runner::RunStatus::TimedOut
+        )
+    {
+        crate::quota::detect_agy(
+            obs.summary.agy_status.as_deref(),
+            obs.summary.agy_error.as_deref(),
             outcome.exit_code,
             &crate::quota::stderr_tail(&quota_stderr_path, 4096),
         )
@@ -667,6 +687,21 @@ pub fn execute_role_staged(
                 run_id,
                 &serde_json::json!({"thinking_tokens": obs.summary.thinking_tokens}),
             )?;
+            // The permission_mode agy reports is compared with what the probe showed for the
+            // flag used (S7b). A difference is stored and printed, never silently accepted.
+            let expected = crate::engine::agy_expected_permission_mode(&plan.role);
+            if let Some(seen) = obs.summary.agy_permission_mode.as_deref() {
+                if seen != expected {
+                    crate::db::merge_run_metrics(
+                        &ctx.conn,
+                        run_id,
+                        &serde_json::json!({"agy": {"permission_mode": seen, "expected": expected}}),
+                    )?;
+                    crate::term::emit(&format!(
+                        "Cảnh báo: agy chạy với permission_mode {seen}, mong đợi {expected}"
+                    ));
+                }
+            }
         }
         crate::term::emit(&crate::term::summary_line(
             run_id,
@@ -721,6 +756,14 @@ pub fn execute_role_staged(
         summary: obs.summary,
         run_dir,
     })
+}
+
+/// True when agy's stderr tail carries the `--print-timeout` expiry line:
+/// `[agy] print timeout after Ns with turn in progress; returning partial output`.
+fn agy_print_timeout_hit(stderr_tail: &str) -> bool {
+    stderr_tail
+        .lines()
+        .any(|l| l.contains("print timeout after") && l.contains("returning partial output"))
 }
 
 /// Removes one outer code-fence wrapper (first line starts with three backticks and the last
@@ -829,6 +872,15 @@ pub fn cmd_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agy_print_timeout_line_detected() {
+        assert!(agy_print_timeout_hit(
+            "[agy] print timeout after 5s with turn in progress; returning partial output\n"
+        ));
+        assert!(!agy_print_timeout_hit("error: context canceled\n"));
+        assert!(!agy_print_timeout_hit(""));
+    }
 
     #[test]
     fn unwrap_code_fence_rules() {

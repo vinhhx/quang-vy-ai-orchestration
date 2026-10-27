@@ -22,6 +22,8 @@ Environment:
     error           result.error (default: the stderr text) when status is not SUCCESS
     sleep_s         sleep before the result line
     spawn_child     start one long-lived child (python3 sleeping 300 s) first and leave it running
+    pidfile         path; written as "{own pid} {child pid}" once the child runs (needs spawn_child)
+    permission_mode init.permission_mode to print (default: derived from argv)
 
 Permission, from argv: --dangerously-skip-permissions -> always-proceed, --mode accept-edits ->
 accept-edits, --sandbox -> sandbox, otherwise request-review.
@@ -149,12 +151,18 @@ def main() -> None:
         sys.stderr.flush()
 
     if scenario.get("spawn_child"):
-        subprocess.Popen(
+        child = subprocess.Popen(
             ["python3", "-c", "import time; time.sleep(300)"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        pidfile = scenario.get("pidfile")
+        if pidfile:
+            tmp = f"{pidfile}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(f"{os.getpid()} {child.pid}\n")
+            os.replace(tmp, pidfile)
 
     # file operations: executed only when a permission flag is present, soft-denied otherwise
     ops = [o for o in scenario.get("ops", []) if isinstance(o, dict) and o.get("op") == "write"]
@@ -191,7 +199,7 @@ def main() -> None:
             "init": {
                 "cwd": os.getcwd(),
                 "tools": ["run_command", "view_file", "write_to_file"],
-                "permission_mode": perm,
+                "permission_mode": scenario.get("permission_mode", perm),
             },
         }), False))
         idx = 0
@@ -201,7 +209,8 @@ def main() -> None:
             idx += 1
             entries.append((json.dumps({"event": "step_update", "step_update": {
                 "conversation_id": cid, "step_index": idx, "state": "DONE", "step_type": "tool",
-                "tool": {"name": "write_file", "path": o.get("path", "")}}}), False))
+                "tool_name": "write_file",
+                "tool_info": {"name": "write_file", "parameters": {"Path": o.get("path", "")}}}}), False))
         idx += 1
         entries.append((json.dumps({"event": "step_update", "step_update": {
             "conversation_id": cid, "step_index": idx, "state": "DONE", "step_type": "agent_response",
