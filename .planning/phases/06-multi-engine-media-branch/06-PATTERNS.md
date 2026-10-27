@@ -1,252 +1,286 @@
-# Phase 6: Multi-engine Teams - Pattern Map
+# Phase 6: Multi-engine & Media Branch - Pattern Map
 
-**Mapped:** 2026-10-26
-**Files analyzed:** 36 new/modified (media excluded, moved to 06.1)
-**Analogs found:** 34 / 36
-**Tracked-source gate:** every analog path below was checked to be in `git ls-files` (all under `agent-brain/`, `tests/`, `scripts/`, `spikes/`). No `.gsd/capabilities` mirror paths are used. Paths are relative to repo root; `agent-brain/src/...` is abbreviated `src/...` only inside excerpts headings.
+Scoped re-map for the D-30 … D-44 work of 2026-10-28 (replacement 06-11, new 06-20 … 06-24, revised 06-19). Analogs are current code written by executed Phase 6 plans. The pre-code version is in git history.
 
-Decisions that change how analogs are copied: D-24 (human engine Dev-only), D-27 (team name cap 40 = `workflows::validate_name`, not UI-SPEC 48), D-28 (Telegram needs a second confirm tap), D-29 (team change refused while human step waits).
+**Mapped:** 2026-10-28
+**Files analyzed:** 41 (new or modified)
+**Analogs found:** 40 / 41 (all analog paths verified git-tracked; paths are relative to repo root, `agent-brain/` prefix kept)
+
+Line numbers are for the current tree and drift as 06-11 lands; re-grep before relying on them after an earlier plan in the chain.
 
 ## File Classification
 
-| New/Modified File | Role | Data Flow | Closest Analog | Match |
-|---|---|---|---|---|
-| `agent-brain/src/engine.rs` (new) | service (EnginePlan, env, readiness) | request-response | `agent-brain/src/profile.rs` + `roles/mod.rs::build_command_with_prompt` | role-match |
-| `agent-brain/src/teams.rs` (new) | model/loader | file-I/O | `agent-brain/src/workflows.rs` | exact |
-| `agent-brain/src/staff.rs` (new) | model/loader | file-I/O | `agent-brain/src/workflows.rs` | exact |
-| `agent-brain/assets/teams.default.json` (new) | config | file-I/O | `agent-brain/assets/workflows.default.json` | exact |
-| `agent-brain/src/settings_store.rs` (new) | utility (atomic write, version token) | file-I/O | `agent-brain/src/projects.rs::save_map` (l.335-395) | exact |
-| `agent-brain/src/secrets.rs` (new) | utility (redactor, scan) | transform | `agent-brain/src/report.rs::sensitive_path` + `profile.rs` env filter | partial |
-| `agent-brain/src/quota.rs` (new) | utility (pure detector) | transform | `agent-brain/src/stream.rs` (`Summary`, `classify`) + `tests/fixtures/stream/*.jsonl` | role-match |
-| `agent-brain/src/human.rs` (new) | service | event-driven/git | `agent-brain/src/gitops.rs` + `roles/dev.rs` post-run block | partial |
-| `agent-brain/src/error.rs` (mod: `EXIT_QUOTA=5`, `EXIT_WAITING=6`) | config | n/a | same file l.1-6 | exact |
-| `agent-brain/src/db.rs` (mod: v4 migration, `NewRun.engine`, team helpers) | model/migration | CRUD | same file (`MIGRATIONS`, `set_task_workflow_if_null`, `insert_run`) | exact |
-| `agent-brain/src/runner.rs` (mod: redact, stdout_file) | service | streaming | same file l.215-240, 315-335 | exact |
-| `agent-brain/src/roles/mod.rs` (mod: `execute_role_staged` engine seam, header) | service | request-response | same file l.131-178, 400-560 | exact |
-| `agent-brain/src/roles/{lead,dev,qa,review}.rs` (mod: resolve team, continuation) | controller (cmd_*) | request-response | `roles/dev.rs` l.84-104, 428-456 | exact |
-| `agent-brain/src/stream.rs` (mod: agy branch, quota fields) | utility | streaming/transform | same file l.140-205 | exact |
-| `agent-brain/src/pricing.rs` (mod: engine-first lookup) | utility | transform | same file l.1-40 | exact |
-| `agent-brain/src/stats.rs` + `dashboard/api_stats.rs` (mod) | service | CRUD (read) | `stats.rs` by_role query l.150-190 | exact |
-| `agent-brain/src/projects.rs` (mod: `team_of`) | utility | transform | `projects.rs::workflow_of` l.93-105 | exact |
-| `agent-brain/src/autopilot/decide.rs`, `view.rs`, `mod.rs` (mod: `HetQuota`, waiting_human) | service | event-driven | same files (`StopReason`, `reason_word`) | exact |
-| `agent-brain/src/dashboard/api_settings.rs` (new) | controller | CRUD | `dashboard/api_workflows.rs` (read) + `projects.rs::save_map` (write) | role-match |
-| `agent-brain/src/dashboard/api_workflows.rs` (mod: payload editable shape + version) | controller | request-response | same file | exact |
-| `agent-brain/src/dashboard/api_tasks.rs` (mod: `NewTask.team`, `change_team`, `quota_rerun`, `human_done`, `human_return`) | controller | request-response | same file `run_task_action` l.1489+, `ActionSource` l.1764 | exact |
-| `agent-brain/src/dashboard/taskstate.rs`, `pipeline.rs` (mod) | service | transform | same files | exact |
-| `agent-brain/src/dashboard/assets.rs`, `mod.rs` (mod: routes + ASSETS) | config | request-response | same files l.11-76 / l.71-72 | exact |
-| `agent-brain/src/telegram/{callback,detect,render}.rs` (mod) | controller | event-driven | same files (`Op`, `EventKind`, `buttons_for`) | exact |
-| `agent-brain/src/main.rs` (mod: `--team`) | config (CLI) | request-response | `--workflow` / `--origin` flag handling | exact |
-| `agent-brain/assets/dashboard/screens/settings.html` (new) | component | CRUD | `screens/projects.html` | role-match |
-| `agent-brain/assets/dashboard/js/settings.js` (new) | component (Alpine) | CRUD | `js/projects.js` | role-match |
-| `agent-brain/assets/dashboard/{index.html,js/app.js}` (mod: nav, router, status maps, `AB.fmtWait` etc.) | component | request-response | same files (`router`, `screenTitles`) | exact |
-| `agent-brain/assets/dashboard/{screens/assign,task,stats}.html`, `js/{assign,task,stats}.js` (mod) | component | request-response | themselves | exact |
-| `agent-brain/assets/dashboard/app.css` (rebuilt) | config | build | `scripts/build-css.sh` | exact |
-| `tests/fakes/fake_agy.py` (new) | test fake | streaming | `tests/fakes/fake_claude.py` | role-match |
-| `tests/fakes/fake_claude.py` (mod: record env names) | test fake | streaming | same file | exact |
-| `agent-brain/tests/{engine_routing,engine_quota,engine_secrets,engine_agy,human_engine,task_team}.rs` (new) | test | request-response | `tests/task_origin.rs`, `tests/cli_dev.rs`, `tests/telegram_actions.rs` | exact |
-| `agent-brain/tests/dashboard_settings.rs` (new) | test | request-response | `tests/dashboard_workflows.rs` | exact |
-| `agent-brain/tests/{dashboard_assets,db_migration,dashboard_stats}.rs` (mod) | test | n/a | themselves | exact |
-| `agent-brain/tests/fixtures/stream/*.jsonl` (new quota/agy fixtures) | fixture | n/a | `tests/fixtures/stream/dev_blocked.jsonl` (see Pitfall 15: Rust-only, not `tests/contract/stream.json`) | exact |
+| New/Modified File | Plan | Role | Data Flow | Closest Analog | Match |
+|---|---|---|---|---|---|
+| `agent-brain/src/config.rs` (engine list parse) | 06-11 | config | transform | same file `parse_engines` :129-251 + tests :913-1012 | exact |
+| `agent-brain/assets/config.default.json` | 06-11 | config | static | same file `engines` block | exact |
+| `agent-brain/src/engine.rs` (`Engine::Named`, `EngineDef`, `readiness`, `plan_for`) | 06-11 | service | request-response | same file, agy arm `agy_plan` :377-436 | exact |
+| `agent-brain/src/teams.rs` (parse, summary, QA rule, `team_profile_refusal`) | 06-11 / 06-22 | model/validator | transform | same file `validate_entry` :195-233 | exact |
+| `agent-brain/src/pricing.rs` | 06-11 | utility | transform | same file `engine_price`/`is_priced` :38-71 | exact |
+| `agent-brain/src/roles/mod.rs` (seam: `String` engine, refusal backstop) | 06-11 | service | request-response | same file :428-445, :486-510, :592-672 | exact |
+| `agent-brain/src/roles/dev.rs` (`kind_of` gate, `dsh:empty`) | 06-11 / 06-23 | service | batch | same file :575-612 (`is_agy`) | exact |
+| `agent-brain/src/profile.rs` (`pin_profile` env) | 06-11 | utility | transform | same file `build_env` :67-100 | exact |
+| `agent-brain/src/dashboard/api_settings.rs` (`get_engines`, save refusal) | 06-11 / 06-22 | route | request-response | same file :811-826, :355-375 | exact |
+| `agent-brain/src/dsh.rs` (stub in 06-11, full in 06-23) | 06-11 / 06-23 | service | streaming (text) | `engine.rs` `agy_plan` + `quota.rs` `detect_agy` | role-match |
+| `agent-brain/src/lib.rs` | 06-11 | config | static | same file (module list) | exact |
+| `docs/config.engines.example.json` + loader test | 06-11 | config/test | static | same file (already array-shaped; update to D-41) | exact |
+| `tests/fakes/fake_claude.py` (`echo_env`) | 06-11 / 06-21 | test fake | event-driven | same file :40-66 (record block) | exact |
+| `agent-brain/tests/engine_routing.rs`, `dashboard_settings.rs` | 06-11 / 06-22 | test | request-response | same files (`engines_readiness_no_secret` :998) | exact |
+| `spikes/e09/{run.sh,verify.sh,NOTES.md}` | 06-20 | script | batch | same files | exact |
+| `spikes/s6/run.sh` (`--kill-wrapper`) | 06-20 | script | batch | same file `--kill` variants | exact |
+| `agent-brain/src/runner.rs` (`redact`; later stop hook) | 06-21 / 06-23 | service | streaming | same file `RunRequest` :162-172, `cmd_kill` :55-160 | exact |
+| `agent-brain/tests/engine_secrets.rs` | 06-21 | test | request-response | `tests/engine_agy.rs` `agy_env_and_argv_hygiene` :266 | role-match |
+| `agent-brain/src/roles/lead.rs`, `autopilot/mod.rs`, `dashboard/api_tasks.rs`, `telegram/intake.rs` (bind points) | 06-22 | controller | request-response | `api_tasks.rs` `start_new_task` :670 + `change_team` :1403 | exact |
+| `agent-brain/tests/{task_team,telegram_quota,cli_autopilot}.rs` | 06-22 | test | request-response | `tests/engine_routing.rs` | role-match |
+| `agent-brain/assets/dashboard/js/{settings,assign}.js`, `screens/*.html`, `scripts/dashboard-js-check.mjs`, `scripts/dashboard-smoke.sh` | 06-24 | component | request-response | `settings.js` `engineRows` :1540-1575 | exact |
+| `.planning/phases/06-.../06-UI-SPEC.md` (delta, D-44) | 06-24 | doc | static | same file | exact |
+| `agent-brain/src/stream.rs`, `term.rs`, `dashboard/sse.rs` (text stream) | 06-23 | service | streaming | same files, agy branch | role-match |
+| `agent-brain/src/quota.rs` (`detect_text`) | 06-23 | utility | transform | same file `detect_agy` :60-110 | exact |
+| `agent-brain/src/autopilot/{decide,view}.rs`, `dashboard/taskstate.rs` (`dsh:empty`) | 06-23 | service | transform | same files (`agy:empty`) | exact |
+| `tests/fakes/fake_docker.py`, `tests/fakes/fake_dsh.py` | 06-23 | test fake | event-driven | `tests/fakes/fake_agy.py` | exact |
+| `agent-brain/tests/engine_dsh.rs` | 06-23 | test | request-response | `tests/engine_agy.rs` | exact |
+| `scripts/phase6-live-check.sh` | 06-19 | script | batch | `scripts/board-live-check.sh` | role-match |
+| `agent-brain/README.md` (§5, §11, §14) | 06-19 | doc | static | same file | exact |
+| `agent-brain/LIVE-CHECKS.md` (§ 8, P6-01 … P6-10) | 06-19 | doc | static | same file § 7 Phase 5.5 | exact |
 
 ## Pattern Assignments
 
-### `agent-brain/src/teams.rs` and `staff.rs` (loader, file-I/O)
+### `agent-brain/src/engine.rs` (service, request-response) — 06-11 core
 
-**Analog:** `agent-brain/src/workflows.rs`
+**Analog:** itself, the agy arm. Replace the closed enum with an id-bearing one and dispatch on kind.
 
-**Constants / built-ins** (l.1-17):
+**Current closed set to replace** (lines 11-26, 28-56):
 ```rust
-pub const BUILTIN_WORKFLOWS_JSON: &str = include_str!("../assets/workflows.default.json");
-pub const DEFAULT_WORKFLOW: &str = "mac-dinh";
-pub const MAX_FILE_BYTES: u64 = 262_144;
+pub const ENGINE_ORDER: [&str; 4] = ["claude", "deepseek", "agy", "người"];
+pub enum Engine { Claude, Deepseek, Agy, Human(String) }
+// parse: trim + NFC, then match literal names; "người:" prefix via crate::staff::validate_id
+pub fn as_db_str(&self) -> &'static str   // must become String/&str (S1, S2)
 ```
-Copy as `BUILTIN_TEAMS_JSON`, `DEFAULT_TEAM = "mac-dinh"`, same cap.
+Keep the `trim().nfc().collect()` and `HUMAN_PREFIX` + `staff::validate_id` shape in `parse`; add `Named(String)` for a valid slug.
 
-**Slug rule** (l.138-143): reuse `crate::workflows::validate_name` directly (40-byte cap, D-27). Do not write a second validator.
+**Dispatch seam to extend** (`plan_for`, 309-340): `match &resolved.engine { Engine::Claude => Ok(EnginePlan{...}), Engine::Agy => agy_plan(cfg, role, claude_argv, base_env, timeout), Engine::Deepseek => Err(...), Engine::Human(_) => Err(...) }`. New: dispatch on `cfg.engines.kind_of(id)` to `anthropic_plan` / `agy_plan` (parameterised by the entry) / `dsh::plan` (stub returning `"Engine dsh chưa được bật"`; 06-11 leaves it so 06-21/06-23 never edit `plan_for`). Every error returns before any run row exists.
 
-**Loader shape** (l.781-836): `load_from(text: Option<&str>, cfg) -> Loaded{ items, errors }`; builtins first; size cap message; serde error `Dòng {line}, cột {col}: ... không phải JSON hợp lệ.`; non-object message `Dòng 1: ... phải là một object`; `key_lines(file_text)` for per-entry line numbers; source tag `"override"` when the name matches a builtin else `"file"`; invalid entries push to `errors` while valid ones still load. Extend per-entry validation with: QA must be `claude` (D-06); `người:<id>` only on role `dev` (D-24); unknown staff id is a warning not an error; missing role defaults to `claude`.
-Also copy `load_path` (exists/metadata/size check) and `pub fn load(cfg)` wrapper used by `api_workflows.rs` (`crate::workflows::load(&st.cfg)`).
-**Test analog:** unit tests at bottom of `workflows.rs` + `tests/cli_workflow.rs`.
+**EnginePlan** (290-303): change `db_engine: &'static str` to `String`; add `StreamFormat::Text` for dsh (283-287 enum is `Claude, Agy`).
 
-### `agent-brain/src/settings_store.rs` (atomic write)
-
-**Analog:** `agent-brain/src/projects.rs::save_map` (l.335-395). Copy verbatim: parent dir create with `0o700`, tmp name `{stem}_{pid}_{nanos}.tmp`, `OpenOptions::new().write(true).create_new(true)` + `.mode(0o600)`, `write_all`, `flush`, `sync_all`, `rename`, `remove_file(&tmp)` on every failure, Vietnamese `BrainError::error(format!("Không thể ghi ..."))`.
+**Env hygiene to generalise (D-32, ENG-05)** (`agy_plan` 415-421):
 ```rust
-let mut opts = std::fs::OpenOptions::new();
-opts.write(true).create_new(true);
-use std::os::unix::fs::OpenOptionsExt; opts.mode(0o600);
-let mut f = opts.open(&tmp_path)?;
-f.write_all(json_str.as_bytes())?; f.write_all(b"\n")?; f.flush()?; f.sync_all()?;
-...
-if let Err(e) = std::fs::rename(&tmp_path, path) { let _ = std::fs::remove_file(&tmp_path); ... }
+env.retain(|k, _| !(k.starts_with("ANTHROPIC_") || k == "CLAUDE_CONFIG_DIR"
+    || k == "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR" || k == "CLAUDE_CODE_SUBAGENT_MODEL"
+    || k == &cfg.engines.deepseek.key_env));
 ```
-Delta: add a directory `fsync` after `rename` (D-10), generalize the tmp prefix, and add the version token (hash of raw bytes or `"absent"`) compared under a process-wide `Mutex` just before rename. Operate on `serde_json::Value` (preserve_order) so untouched entries are not rewritten.
+Becomes `|| cfg.engines.all_key_envs().contains(k)`. The `anthropic` arm strips the OTHER entries' key variables and sets `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` from the entry's `key_env` value (read from env at spawn, never stored).
 
-### `agent-brain/src/db.rs` (schema v4, NewRun.engine, team CAS)
+**Readiness** (169-215): iterate catalog. Per-entry check pattern to copy: `command_status(name, cmd, path_var, DESC)` then, for key kinds, `env.get(&key_env).map_or(false, |v| !v.trim().is_empty())` else `Readiness::ThieuKey` with `reason: "Chưa đặt biến môi trường {key_env}."`. Never copy an env value. Add `kind`, `label`, `evidence` fields additively; D-40 `chưa kiểm` = no E-09 evidence; dsh container not running reuses `thiếu lệnh` with a reason (D-44). Default catalog order must stay `claude, deepseek, agy, người` (asserted at `tests/dashboard_settings.rs:1018-1028`).
 
-**Migration vector tail** (l.58-61):
+**Append only (06-21):** `scan_for_secrets`, no `plan_for` change.
+
+---
+
+### `agent-brain/src/config.rs` (config, transform) — 06-11
+
+**Analog:** `parse_engines` (129-251), error texts asserted at tests 971-1004.
+
+**Style to keep:** key_env validator (`valid_key_env`, :111-118, uppercase/digit/_), per-field Vietnamese errors `"Cấu hình engines.{id}.{field} không hợp lệ (…)"`, `command` non-empty check, `print_timeout_margin_secs` bound 0..=3600 (:225-236). Legacy object shape errors stay byte-identical (`"Cấu hình engines.khac không hợp lệ (chỉ deepseek, agy)"`). New: accept array; reject `claude` id (D-41, "remove it" text), `command` is an executable string only, `pin_profile`, `allowed_profiles` (`work`/`personal`), dsh discrete fields (container, dsh profile). Struct shape: `EnginesCfg { list: Vec<EngineDef> }` with `get`, `kind_of`, `all_key_envs`; keep a legacy-object test as back-compat proof and keep `engines_defaults` equality (:913-932).
+
+---
+
+### `agent-brain/src/teams.rs` (validator, transform) — 06-11 / 06-22
+
+**Analog:** `validate_entry` role loop (204-233).
 ```rust
-    "ALTER TABLE tasks ADD COLUMN origin TEXT;",
-];
-pub const SCHEMA_VERSION: i64 = 3;
+let engine = match raw.as_str().and_then(Engine::parse) { Some(e) => e, None => { errors.push(field_error(role, format!("Engine không hợp lệ cho {role}: {shown} (dùng …)"))); continue; } };
+if role == "qa" && engine != Engine::Claude { errors.push(field_error(role, "QA phải dùng engine claude.")); continue; }
+if engine.is_human() && role != "dev" { errors.push(field_error(role, "Engine người chỉ dùng cho vai trò dev.")); continue; }
 ```
-Append `"ALTER TABLE tasks ADD COLUMN team_json TEXT;",` and set `SCHEMA_VERSION = 4`. Test: copy the shape of `tests/db_migration.rs`. Gate: first task is a `checkpoint:decision` copying `.planning/phases/05.4-telegram-task-intake/05.4-02-PLAN.md` Task 1.
+Copy this `field_error` + `continue` shape for the D-37 rule (dsh only for dev: refuse for lead/plan-review/code-review/qa with a Vietnamese message, in the loader and on save) and the D-39 rule (pinned profile not for QA; the QA rule stays exact `Claude`). Validation is syntax-only at load (unknown id = warning, not error; same as the `warnings.push("Nhân sự … không còn…")` branch at :227-231). Update the "Engine không hợp lệ" text (no longer a fixed list). `Team::summary` sort (54-87) and `engine_text` (131-140) become catalog-ordered.
 
-**Helper style** (l.641-647), copy for `set_task_team_if_null` and a CAS `set_task_team_cas(conn, id, old, new)` (`... WHERE id = ?3 AND team_json IS ?4`, also bump `updated_at`):
+**`team_profile_refusal` (06-22)**: one pure function, modelled on `resolve` (377-418) returning `BrainResult`/`Option<String>`; takes team, catalog, project profile. D-42: at save time refuse only when already bound (project default `team` in `projects_map.json` or an open task); otherwise at use.
+
+---
+
+### Bind points for the guard (controller, request-response) — 06-22
+
+**Analog (closest to the pattern, copy shape):** `dashboard/api_tasks.rs:667-678`
 ```rust
-pub fn set_task_workflow_if_null(conn: &Connection, task_id: i64, json: &str) -> BrainResult<bool> {
-    let changes = conn.execute(
-        "UPDATE tasks SET workflow_json = ?1 WHERE id = ?2 AND workflow_json IS NULL",
-        params![json, task_id],
-    )?;
-    Ok(changes == 1)
+let (teams_loaded, _staff) = crate::teams::load();
+let team = match crate::teams::resolve(&teams_loaded, req.team, crate::projects::team_of(&map, &project.id).as_deref()) {
+    Ok(r) => r,
+    Err(e) => return Ok(StartOutcome::Invalid(e.message)),
+};
+```
+Add the refusal right after `resolve`, returning `StartOutcome::Invalid(msg)` (the live check expects HTTP 422 on `POST /api/tasks`). Same site list: `roles/lead.rs:101-110` (`resolve(...)?` then emit note; return `Err(BrainError::error(msg))`), `autopilot/mod.rs:620` (`resolve(&teams_loaded, Some(requested), None)?`), `api_tasks.rs:1403 change_team` (add after the `state.teams.get(team).is_none()` check as `TeamOutcome::Invalid`/`Refused { reason, kind }`), `api_tasks.rs:1715 quota_rerun`, `api_settings.rs:355 save_team_blocking` (use `refusal(TEAMS_HEADING, vec![field_err(...)])` as at :370-372), Telegram `/task` goes through `start_new_task` (intake.rs 597, 1163, 1172). Run-time backstop at the `roles/mod.rs` seam after `resolve_for_run`, before `plan_for`.
+
+---
+
+### `agent-brain/src/profile.rs` (utility, transform) — 06-11 Task 3
+
+**Analog:** `build_env` (67-100): clones base env, strips `NESTED_SESSION_VARS`, applies profile `unset_env`, sets or removes `CLAUDE_CONFIG_DIR` with `~` expansion. `pin_profile` reuses the SAME builder by passing the pinned profile name instead of `project.profile` (do not duplicate the `~` logic). Call site: `roles/mod.rs:431-435`. Refuse (not strip) when the project profile is not allowed (D-36/D-38).
+
+---
+
+### `agent-brain/src/roles/mod.rs` (service, request-response) — 06-11, 06-21, 06-23 (serial)
+
+**Seam** (427-445): `resolve_for_run` -> `build_env` -> `plan_for` -> run dir -> header `"[agent-brain] {} · {} · profile {} ({}) · engine {} · model {}"` (add the D-40 unverified mark here and `metrics_json.unverified`). Observer field `db_engine: &'static str` (486) -> `String`; passed to `insert_run_with_engine(&self.ctx.conn, &new_run, self.db_engine)` (510; already `&str`).
+
+**Post-run branches to extend** (606-672): `agy_stream` flag, `agy_print_timeout_hit` -> `TimedOut`, non-SUCCESS -> `Failed`, then `if ep.stream == StreamFormat::Claude && !Killed/TimedOut { detect_claude } else if agy_stream && ... { detect_agy } else { None }`. `anthropic` reuses the Claude branch unchanged; dsh adds a `StreamFormat::Text` branch calling `quota::detect_text`. Cost fallback `if ep.db_engine == ENGINE_CLAUDE {cost} else {0.0}` (667) -> "native" test (claude or anthropic without `base_url`).
+
+---
+
+### `agent-brain/src/roles/dev.rs` (service, batch) — 06-11 gate, 06-23 `dsh:empty`
+
+**Analog:** 575-612.
+```rust
+let is_agy = crate::db::get_run(&ctx.conn, role_run.run_id)?
+    .map(|r| r.engine == crate::engine::ENGINE_AGY).unwrap_or(false);
+// ... .planning/ and sensitive_path violations when is_agy ...
+if is_agy && all_changed_nfc.is_empty() {
+    crate::term::emit_out(AGY_EMPTY_MESSAGE);
+    crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "agy:empty")?;
+    return Ok(crate::error::EXIT_BLOCKED);
 }
 ```
-**insert_run** (l.311-340): add `pub engine: String` to `NewRun` and replace the literal `'claude'` in the INSERT with `?` (shift params). Callers to update: `roles/mod.rs` Observer `on_spawn` and db tests. Add `insert_human_run` next to it (status `succeeded`, `usage_source='none'`, pid NULLs). `runs.status` CHECK forbids a new status (l.34), hence marker-not-run for the wait.
+Change the predicate to `matches!(ctx.cfg.engines.kind_of(&r.engine), Some(Agy | Dsh))`; outcome string per kind (`agy:empty`, `dsh:empty`). Add `dsh:empty` in `autopilot/decide.rs` (~294, ~935-945), `dashboard/taskstate.rs:110`, `autopilot/view.rs:347`, next to each `agy:empty`.
 
-### `agent-brain/src/roles/mod.rs` (the engine seam)
+---
 
-**Analog:** itself. Three excerpts to modify.
+### `agent-brain/src/dsh.rs` (service, streaming text) — stub 06-11, full 06-23
 
-1. Argv builder to keep as the claude-family builder (l.131-178): `cfg.claude_bin -p <input> --output-format stream-json --verbose --model <m> --append-system-prompt <prompt>` then `common_args`, `--max-turns`, `extra_args`, `--allowedTools`, `--disallowedTools`. Add `build_agy_command` beside it; `check_forbidden_args` (l.94-107) must keep refusing `--dangerously-skip-permissions` for claude-family; the agy Dev builder adds its permission flag itself (D-26: probe `--mode accept-edits`/`--sandbox` first), with a unit test that non-Dev agy argv has none.
-2. Env + header (l.~425-450):
+**Analog:** `agy_plan` (engine.rs 377-436) for plan building, `detect_agy` (quota.rs ~60-110) for the detector. Build `argv = ["docker", "exec", "-w", cwd, container, "dsh", "--profile", dsh_profile, prompt]` from discrete config fields; `stdout_file: true` like agy (stdout is the stream file, never a pipe); stdin `/dev/null` is already the runner behaviour. Plain text: no usage (`usage_source none`). `detect_text(stderr_tail/outcome)` copies the `agy_regex` + `first_matching_line` + `QuotaHit { signal, detail, reset_at_ms: None }` shape (quota.rs `one_line`, `first_matching_line`). D-37: Dev only. No analog for the in-container stop hook (see No Analog).
+
+---
+
+### `agent-brain/src/runner.rs` (service, streaming) — 06-21 redact, 06-23 stop hook
+
+**Analog:** `RunRequest` (162-172: `argv, cwd, env, stderr_path, stream_path, timeout, kill_grace, stdout_file`). Add `redact: Vec<String>` (06-21; secrets = values of the run's engine `key_env` variables) applied to anything written to disk, and an optional stop hook (06-23). Kill path analog: `cmd_kill` (55-160): `procs::alive(root)`, `db::mark_kill_requested`, `procs::kill_tree(root, Duration::from_secs(ctx.cfg.kill_grace_secs), &force)`, poll `get_run` for up to 2 s. The container spec is persisted in `runs.metrics_json.dsh` and read back by `cmd_kill` from `RunRow.metrics_json` (db.rs `RunRow.metrics_json`, `UPDATE runs SET metrics_json` helper at db.rs:871). Never kill by process name (CLAUDE.md, S4).
+
+---
+
+### `agent-brain/src/pricing.rs` (utility, transform) — 06-11
+
+**Analog:** `engine_price` 38-47 (`claude`/`người` -> `None`, else `table.get(engine)`), `is_priced` 64-71, `estimate_usd` 77-89 (`r.engine == ENGINE_CLAUDE` family lookup). Native = `claude` or an `anthropic` entry with no `base_url`; price gateway/agy/dsh by id. Callers to keep compiling: `stats.rs:356`, `autopilot/decide.rs:390`, `api_tasks.rs:2140`. A no-usage engine (dsh) needs a hint so the UI does not read "chưa có giá" as "no tokens" (stats.rs `query_by_engine` is generic; only `api_stats.rs:43` calls).
+
+---
+
+### `agent-brain/src/dashboard/api_settings.rs` (route, request-response) — 06-11 payload
+
+**Analog:** `get_engines` (815-826):
 ```rust
-let env = crate::profile::build_env(&project.profile, &ctx.cfg.profiles, &crate::profile::current_env())?;
-...
-crate::term::emit(&format!("[agent-brain] {} · {} · profile {} ({}) · model {}",
-    plan.role, project.id, project.profile, p_desc, plan.model));
+let res = blocking(move || {
+    let staff = crate::staff::load();
+    let engines = crate::engine::readiness(&st.cfg, &crate::profile::current_env(), staff.staff.len());
+    Ok(json!({ "engines": engines }))
+}).await;
+match res { Ok(v) => json_response(StatusCode::OK, v), Err(e) => internal_read(&e.message) }
 ```
-Replace with `engine::env_for(engine, env)` applied AFTER `build_env` (Pitfall 5) and add ` · engine {engine}` to the header (D-14).
-3. `RunRequest { argv, cwd, env, stderr_path, stream_path, timeout, kill_grace }` and `Observer::on_spawn` building `NewRun` (add `engine`), `on_line` doing `summary.feed` then `insert_event` then `term::emit` (redaction must precede this, see runner). After `finish_run`, call `quota::detect` and return `Err(BrainError::new(msg, EXIT_QUOTA))`; every `cmd_*` already propagates with `?`.
+Add `kind`, `label`, `description`, `evidence` to `EngineStatus`; D-43 warning `engine chưa khai báo` for `deepseek` missing from the list is computed in `teams_json` (154-230), which has `st.cfg`. Never emit an env value (test `engines_readiness_no_secret`, `tests/dashboard_settings.rs:998`).
 
-### `agent-brain/src/runner.rs` (redaction, agy stdout-to-file)
+---
 
-**Env isolation** (l.226-233):
+### `agent-brain/assets/dashboard/js/settings.js`, `assign.js` (component, request-response) — 06-24
+
+**Analog:** `engineRows` (settings.js 1540-1575): builds rows from a fixed `ENGINE_ORDER` (:32) + `ENGINE_DESC` (:33-45) and `FIXED_ENGINES` (:45, used in `roleOptions` 901-907), special-casing `name === 'deepseek'` for key/model rows. Rewrite to loop `this.engines` from `GET /api/engines` (server sends `kind`, `label`, `description`), keep the synthetic `người` row, show `Biến key:` (NAME only) for every key-bearing entry. Keep the `READINESS_WORDS` lookup and `chua_kiem` default (:1549) and the unchanged `engineBadgeClass`/`engineGlyph` helpers. `assign.js:5` `ENGINE_ORDER = ['claude','deepseek','agy']` and the readiness lines at :218-240: iterate the API order; `chua_kiem` is a soft hint, not "bước này sẽ dừng với lỗi" (:757-760). `settings.js:618` QA rule `this.tQa !== 'claude'` stays. Gates: `scripts/dashboard-js-check.mjs`, `scripts/dashboard-smoke.sh`, `scripts/dashboard-ui-lint.sh`, `scripts/build-css.sh --check`. First task = UI-SPEC delta + checkpoint (D-44).
+
+---
+
+### `tests/fakes/fake_claude.py` (test fake, event-driven) — 06-11 / 06-21
+
+**Analog:** record block 44-56:
+```python
+record_path = os.environ.get("FAKE_CLAUDE_RECORD")
+if record_path:
+    record = {"argv": sys.argv[1:], "cwd": os.getcwd(), "claude_config_dir": os.environ.get("CLAUDE_CONFIG_DIR"),
+              "present_vars": present_vars, "settings": settings_val, "blocked": blocked}
+    with open(record_path, "a", encoding="utf-8") as f: f.write(json.dumps(record) + "\n")
+```
+Extend the record additively (e.g. names-only `env_names`, `base_url` presence as in `fake_agy.py`'s `env_names` record). `echo_env` scenario key (06-21) makes the fake print the env values into its output so the redaction/leak scan can be proven.
+
+---
+
+### `tests/fakes/fake_docker.py`, `tests/fakes/fake_dsh.py` (test fake, event-driven) — 06-23
+
+**Analog:** `tests/fakes/fake_agy.py` (docstring 2-26, `parse_argv` 49-80): scenario file via `FAKE_AGY_SCENARIO`, record via `FAKE_AGY_RECORD` (one JSON line per call with argv/cwd/env_names), keys `lines`, `raw_lines`, `delay_ms`, `final_newline`, `exit_code`, `stderr`, `ops` (writes files), `sleep_s`, `spawn_child`, `pidfile` (`"{own pid} {child pid}"`). Use `FAKE_DSH_*` / `FAKE_DOCKER_*` names. `fake_docker.py` accepts `exec -w CWD CONTAINER dsh --profile P PROMPT` and `exec CONTAINER ps`/`kill` for the marker-file kill check; no real Docker in any automated test. Plain-text output, no usage.
+
+---
+
+### `agent-brain/tests/engine_dsh.rs` (test, request-response) — 06-23
+
+**Analog:** `tests/engine_agy.rs` (769 lines).
 ```rust
-cmd.env_clear(); cmd.envs(&req.env);
-cmd.stdin(std::process::Stdio::null());
-cmd.stdout(std::process::Stdio::piped());
-cmd.stderr(stderr_file);
-cmd.process_group(0); cmd.kill_on_drop(true);
+mod common;
+#[allow(dead_code)] #[path = "support/protocol.rs"] mod protocol;
+use common::{RunOut, Sandbox};
+fn fake_agy() -> PathBuf { common::repo_root().join("tests").join("fakes").join("fake_agy.py").canonicalize().expect(..) }
+fn agy_config(sb: &Sandbox) { sb.write_config(json!({"engines": {"agy": {"command": fake_agy()...}}})); }
+struct AgyEnv { scenario, record }  // vars() -> FAKE_AGY_SCENARIO / FAKE_AGY_RECORD; records() parses JSON lines
+fn write_doi_agy(sb, roles) { sb.write_teams(json!({"doi-agy": {"description": .., "roles": roles}})); }
+fn setup_project(sb, profile) -> PathBuf   // make_repo + project_entry + write_map (lines 114-125)
+fn run_row(sb, role) -> RunRow             // SELECT engine,status,outcome,usage_source,...,metrics_json FROM runs (158-185)
 ```
-**Line sink** (l.322-329): `stream_file.write_all(&line); stream_file.flush(); obs.on_line(&line);`. Add `RunRequest.redact: Vec<String>` and `RunRequest.stdout_file: Option<PathBuf>`; apply redaction to `line` before BOTH calls; for agy spawn with the file as stdout and tail it (poll 100-200 ms, last line without newline, 2 s drain). Kill path (`procs::kill_tree`, `cmd_kill`) untouched (S4). Test analog: `tests/runner_kill.rs`.
+Tests to mirror: `agy_lead_tracer` (189), `agy_env_and_argv_hygiene` (266), `agy_dev_edits_in_scope` (411), `agy_dev_empty_diff_suspicious` (498 -> `dsh:empty` NOT hit when the fake edits), `agy_quota_stops` (541), `agy_kill_s4` (678-769: `spawn_child` + `pidfile`, `sb.spawn_env(["run", ...])`, `sb.run(&["kill", &task_id])`, assert `status == "killed"`, assert recorded PIDs are gone). dsh config: `engines` array with a `kind: "dsh"` entry whose `docker` points at `fake_docker.py`, container `fake-dsh`, `allowed_profiles: ["personal"]`; assert `usage_source none`, no `.planning/` blocks, refusal on a work project.
 
-### `agent-brain/src/stream.rs` (agy branch + quota fields)
+---
 
-**classify** (l.146-163) currently maps only `type`. Add before the `else`: a line with an `event` key and no `type` becomes `agy/{event}`. `Summary` (l.179-205, private `result_seen`) gains optional tolerant fields `rate_limit_rejected`, `using_overage`, `api_error_status`, `terminal_reason`, `last_retry_error` and an agy format flag reading `result.status/response/usage` (usage mapping per RESEARCH Engine Facts). Also teach `term::event_text` and `dashboard/sse.rs::row_kind` the `agy/*` kinds. Fixtures: `tests/fixtures/stream/dev_blocked.jsonl` style; real agy lines in `spikes/s7/raw/s7-stream.jsonl`; real `allowed_warning` line in `spikes/s1/raw/s1.jsonl` line 5.
+### `agent-brain/tests/{engine_routing,dashboard_settings,task_team,telegram_quota,cli_autopilot}.rs` (tests) — 06-11 / 06-22
 
-### `agent-brain/src/quota.rs` (pure detector)
-No exact analog (no detector exists). Use the RESEARCH sketch (`detect_claude`, agy variant) and test it like `tests/contract_stream.rs` does for stream parsing but Rust-only fixtures. Negative fixture is mandatory: `system/api_retry` rate_limit then success must NOT stop.
+**Analog:** `tests/engine_routing.rs` header (1-17) and helpers (`setup_auto_project`:57, `assert_ok`:74, `team_json`:82, `run_of`:104, `write_doi_claude`:117, test `team_flag_routes_and_records`:126). Add `tiet_kiem_routes_lead_dev_qa` on a custom id (06-11 tracer) and `eng10_*` refusal tests (06-22) in the same style; `dashboard_settings.rs:998-1040` for the readiness payload, additively. Update literal `deepseek` assertions where the enum changes; keep legacy-shape tests (config.rs 971-1004) as back-compat proof.
 
-### `agent-brain/src/roles/dev.rs` (continuation + agy diff check)
+---
 
-**Dirty-tree refusal to relax in continuation mode** (l.86-99): `changed_paths(&proj_path)?` non-empty returns `Working tree có thay đổi chưa commit ...`. When the latest Dev run outcome is `quota`, allow dirty paths inside plan files + protocol files (Pitfall 1).
-**Post-run scope check to reuse for agy and human `Xong`** (l.428-456):
-```rust
-let uncommitted = crate::gitops::changed_paths(&proj_path)?;
-all_changed.extend(uncommitted);
-let violations: Vec<String> = all_changed_nfc.difference(&allowed_nfc).cloned().collect();
-if !violations.is_empty() {
-    crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
-    return Ok(crate::error::EXIT_PROTOCOL);
-}
-```
-Add an empty-diff check for agy Dev (`agy:empty`) and `report::sensitive_path` for secret-looking paths. Return handling for the human wait: `EXIT_WAITING`.
+### `docs/config.engines.example.json` (config, static) — 06-11
 
-### `agent-brain/src/gitops.rs` (human `Xong`)
-Use the existing `git(root, args)` (l.18, sets `GIT_TERMINAL_PROMPT=0`), `current_branch`, `changed_paths`, `branch_exists`, `commit_paths`. Add `push_branch` (never `--force`, D-25, best effort) and `fetch_branch` + `merge_ff_only` (never `pull`/`reset`, Pitfall 18).
+**Analog:** itself. It already has a `_comment` and array entries `claude`, `claude-max` with `command` as an argv array and `env.CLAUDE_CONFIG_DIR`. D-41 changes it to the FINAL shape: `command` = executable only, `pin_profile` instead of `env.CLAUDE_CONFIG_DIR`, no `claude` entry (reserved id), dsh entry with discrete fields and `allowed_profiles: ["personal"]` (D-38), `key_env` NAMES only. Add a test that loads it through the real parser (pattern: `config.rs` tests that parse JSON text via `parse_engines`).
 
-### `agent-brain/src/autopilot/decide.rs` + `view.rs` (HetQuota)
+---
 
-**Enum** (decide.rs l.112-121) and `as_str`:
-```rust
-#[serde(rename_all = "snake_case")]
-pub enum StopReason { HetVong, HetNganSach, ViPhamGiaoThuc, VuongMac, DungBoiBan, RunLoi }
-```
-Add `HetQuota` => `"het_quota"`; `view.rs::reason_word` (l.7-14) add `StopReason::HetQuota => "hết quota"`. Insert the D2 rule testing `outcome == "quota"` BEFORE the `failed` branch at decide.rs l.826 (`if last_run.status == "failed" || ... "timed_out" || ... "lost"`; the `Decision::Stop(StopInfo{...})` literal there is the template). `build_facts` round counting: drop superseded quota runs (Pitfall 2). Child exit handling `child_error_stop` in `autopilot/mod.rs` (~l.340) ignores `[EXIT_OK, EXIT_PROTOCOL, EXIT_BLOCKED, EXIT_INTERRUPTED]`; add `EXIT_WAITING`.
+### `spikes/e09/{run.sh,verify.sh,NOTES.md}`, `spikes/s6/run.sh` (script, batch) — 06-20
 
-### `agent-brain/src/dashboard/api_settings.rs` (new routes)
+**Analog:** `spikes/e09/run.sh` itself. Conventions to keep: `set -u`, `. "$(dirname "${BASH_SOURCE[0]}")/../lib/env.sh"`, `die()` helper, env knobs (`E09_CLAUDE_BIN`, `E09_BASE_URL`, `E09_MODEL`, `E09_EXTRA_MODEL`), `E09_OFFLINE=1` self-test using `tests/fakes/fake_claude.py` and a planted key (`KEY="e09-offline-planted-0123456789"`), stage output outside the repo, scrub, leak-check, then copy; exit codes 0/1/2 (missing key)/3 (leak gate). New: parameterise per endpoint (gateway via `E09_BASE_URL`/`E09_MODEL`, key-variable name as a parameter, key only in the env). `spikes/s6/run.sh`: keep `guard_scr`, `docker exec "$C" ... </dev/null`, "no name-based signalling", marker/PID approach; `--kill-wrapper` and optional `--uid` variants are user-run. Fixtures `tests/fixtures/stream/anthropic_e09_*` are user output, never written by an agent.
 
-**Route/handler shape analog:** `dashboard/api_workflows.rs` l.1-40:
-```rust
-pub fn routes() -> Router<Arc<AppState>> { Router::new().route("/api/workflows", get(get_workflows)) }
-async fn get_workflows(State(st): State<Arc<AppState>>) -> Response {
-    let res = blocking(move || { ... Ok((StatusCode::OK, [(CONTENT_TYPE, "application/json; charset=utf-8")], axum::Json(val)).into_response()) }).await;
-    match res { Ok(resp) => resp, Err(e) => { crate::term::emit(&format!("Lỗi nội bộ ...: {e}")); json_error(StatusCode::INTERNAL_SERVER_ERROR, "...") } }
-}
-```
-Imports: `crate::dashboard::{blocking, json_error, AppState}`. Register: `dashboard/mod.rs` l.71-72 `.merge(api_workflows::routes())` add `.merge(api_settings::routes())`; the auth gate layer and `DefaultBodyLimit::max(65536)` are inherited. Writes use POST (not DELETE). Write core = `settings_store` above; refuse with 409 when the loaded file has `errors`. Make `workflows::validate_entry` `pub(crate)` and add `Workflow::to_file_entry()`.
-**Test analog:** `tests/dashboard_workflows.rs` (`Sandbox::new`, `sb.serve(&[])`, `srv.get`, `r.json()`); POST helpers in `tests/dashboard_actions.rs`.
+---
 
-### `agent-brain/src/dashboard/api_tasks.rs` (team + four new actions)
+### `scripts/phase6-live-check.sh` (script, batch) — 06-19 Task 1
 
-**Shared action seam** (`run_task_action` l.1489-1530): load state by `load_task_state`, stale check against `state.rev`, find the action in `state.view.actions`, refuse with `ControlOutcome::Refused { reason, kind }` when disabled. Add `change_team`, `quota_rerun`, `human_done`, `human_return` in this family so dashboard and Telegram share them. Source enum (l.1764): `ActionSource { Dashboard, Telegram }`; Telegram re-run is not plan approval (`TELEGRAM_APPROVE_REFUSED`, l.1770 stays). `task_rev` (l.955-967) must hash `team_json`. `NewTask` has `#[serde(deny_unknown_fields)]` (l.26): add `team: Option<String>` and emit `--team` in `new_task_args` only when set (Pitfall 16; existing argv assertions must hold).
+**Analog:** `scripts/board-live-check.sh` (442 lines): `set -euo pipefail`; `SCRIPT_DIR`/`REPO_ROOT` via `cd -P`; arg loop with `--keep` and exit 2 on unknown; `BIN="${AB_BIN:-$REPO_ROOT/agent-brain/target/debug/agent-brain}"` with a build hint; tool check loop (`python3 curl`); isolated `TMP="$(mktemp -d)"` with HOME, XDG_*, `AGENT_BRAIN_DB`, `AGENT_BRAIN_CONFIG` inside it; serve in the background with the PID recorded and stopped by exact PID (no pkill); cookie through curl stdin (`-K -`), never on argv; `fetch NAME QUERY` writes `$TMP/out/NAME.json` + `.code`; final line `"... live check OK"`. Phase 6 additions per the research table: array-shape config (`gw` anthropic with fake claude, `agy` fake, `dsh` with `fake_docker.py`, `claude-max` with `pin_profile`), two planted keys exported and swept by grep, assertions listed in "06-19 Revision" (engines `claude, gw, claude`; dsh `usage_source none`; quota then re-run on `mac-dinh`; `claude-max` refused with 422 on the work project `live-p6`, accepted on a personal scratch project; `/api/stats` rows per id). The "E-09 failed -> skip" truth is deleted.
 
-### `agent-brain/src/telegram/{callback,detect,render}.rs`
+---
 
-**Grammar** (callback.rs l.1-30): `{op}:{task}:{rev}`, 1-char op, `MAX_LEN = 64`, ops listed in `enum Op` + `ALL_OPS` (update the array length). Add team pick `t:{task}:{idx}:{ver4}:{rev}` and confirm `u:{...}` (D-28 second tap; Kill ask/confirm/cancel is the precedent: `KillAsk/KillConfirm/KillCancel`).
-**Events** (detect.rs l.37-42): `enum EventKind { Gate, Stop, QaPass, RunFailed }` add `Quota` (key `quota:{run_id}`) and exclude `outcome=quota` from `RunFailed`.
-**Buttons** (render.rs l.307-344): `buttons_for` matches on `ev.kind`, builds `button("label", Op::X, s, None)` rows gated by `has_control/has_action`. Add a `Quota` arm. Tests: `tests/telegram_actions.rs`, `tests/telegram_notify.rs`, helpers `tests/support/telegram.rs`, fake `tests/fakes/fake_telegram.py`.
+### `agent-brain/LIVE-CHECKS.md` and `README.md` (doc) — 06-19 Task 2
 
-### `agent-brain/src/stats.rs` / `api_stats.rs`
+**Analog (LIVE-CHECKS):** § 7 Phase 5.5 and § 6 Phase 5.4 (`## N. Nghiệm thu Phase X`, then `### P5.4-00: Chuẩn bị môi trường cô lập` followed by numbered `### P5.4-0N: ...` scenarios, ending `### Dọn dẹp`). There is no `## 8` yet: add `## 8. Nghiệm thu Phase 6` with `### P6-00 … P6-10` (11 headings; acceptance grep `^### P6-(0[0-9]|10)`). P6-02 uses the endpoint that passed E-09; add P6-09 (dsh black box, kill, no `ab-dsh-` marker, root-owned file check) and P6-10 (`claude-max` refused on work, runs on personal).
 
-**Analog:** `by_role` query (stats.rs l.150-190): `SELECT runs.role, COUNT(*), COALESCE(SUM(...),0)... FROM runs WHERE (?1 IS NULL OR runs.profile = ?1) AND (?2 IS NULL OR runs.started_at >= ?2) GROUP BY runs.role ORDER BY runs.role` mapped to `RoleStats { role, totals: Totals{...} }`. Copy as `by_engine` with `GROUP BY runs.engine`; add the QA-by-Dev-engine SQL from RESEARCH Pattern 9. Test analogs: `tests/db_stats.rs`, `tests/dashboard_stats.rs`.
-**pricing.rs** l.8-39: `price_for` substring match falls back to the most expensive entry (Pitfall 6): add engine-first exact lookup returning `Option`.
-
-### `agent-brain/src/projects.rs::team_of`
-**Analog:** `workflow_of` (l.93-105): reads `p.get("workflow").and_then(as_str)`, trims, returns `None` when blank. Copy with key `"team"`. No struct change.
-
-### `agent-brain/src/dashboard/assets.rs` (+ tests)
-**Pattern** (l.11-76): `Asset { path: "/js/stats.js", mime: "text/javascript; charset=utf-8", body: include_bytes!("../../assets/dashboard/js/stats.js") }`. Add `/js/settings.js` and `/screens/settings.html`. Tests: `tests/dashboard_assets.rs` (no external loads check), `tests/assets_parity.rs`.
-
-### `assets/dashboard/js/settings.js` and `screens/settings.html`
-**Analog:** `js/projects.js` (l.1-40) and `screens/projects.html`.
-```js
-(function () {
-  window.AB.onReady('projects', function () {
-    return { ...flat state..., init: function () { ...window.AB.onLeave(function () {...}); } };
-  });
-})();
-```
-```html
-<section data-screen="projects" x-data="projects" :data-loaded="loadedAttr" class="space-y-6">
-```
-Use `data-screen="settings"`, `x-data="settings"`, `:data-loaded`. Card/Primary/Secondary/callout class strings: copy from `projects.html` l.1-25 (Card `rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700`, Secondary button string with `focus-visible:outline-2 ...` FOCUS suffix, amber callout `rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 ...`). Alpine CSP rules: flat fields, no arrows/ternaries/templates. Router registration in `js/app.js` l.395-445: add `settings: 'Cài đặt'` to `screenTitles`, an `if (h === '#/settings')` branch in `parseHash`, and `loadScript('settings')` (file must be self-contained). Serialize edits to `app.js`/`index.html` across plans (Pitfall 17). UI gates: `scripts/dashboard-ui-lint.sh` (scans every `screens/*.html`), `scripts/build-css.sh --check`, `scripts/dashboard-js-check.mjs`, `scripts/dashboard-smoke.sh`.
-
-### `tests/fakes/fake_agy.py` (new) and `fake_claude.py` (mod)
-**Analog:** `tests/fakes/fake_claude.py` l.1-80: `FAKE_CLAUDE_RECORD` appends `{argv, cwd, ...}` JSON per call; `FAKE_CLAUDE_SCENARIO` JSON with `events`, `raw_lines`, `exit_code`, `stderr`, `by_role` (role detected from first line of `--append-system-prompt`). Extend the record with env var NAMES and a boolean sentinel check, never values (Pitfall 5). `fake_agy.py` emits `{"event":"init"...}`, `step_update`, `result` lines slowly to stdout, final line without newline, scenario-driven exit code. Test harness: `tests/common/mod.rs` `Sandbox` (`make_repo`, `write_map`, `serve`) and `tests/support/protocol.rs`. Test style analog `tests/task_origin.rs` (scenario helpers like `plan_review_entry`).
+**Analog (README):** sections at `## 5. Cấu hình` (91; keys table 101-197, workflows 211, autopilot 252), `## 11. An toàn dữ liệu` (335), `## 14. Dashboard web` (376). README currently has no engines text: add the array shape, kinds, fields, `key_env` NAME only, `allowed_profiles`/`pin_profile`, both shapes, built-in `tiet-kiem`/`deepseek` note (D-43), a minimal `config.json` to §5; dsh blast radius (root, `/mnt/data`, docker.sock, root-owned files) to §11; Settings "Engine" list to §14. Exit-code table (§4) unchanged.
 
 ## Shared Patterns
 
-### Vietnamese errors with line/column
-**Source:** `workflows.rs` l.806-820. Apply to teams/staff loaders and every Settings validation message.
+### Fail before any run row
+**Source:** `agent-brain/src/roles/mod.rs:427-445` + `engine.rs plan_for` returns `BrainResult`.
+**Apply to:** unknown engine id, profile refusal, dsh stub, `claude` reserved id at run time. Return `BrainError::error("<Vietnamese message>")` before `insert_run`; never switch engines silently (D-16).
 
-### One shared action function for dashboard, Telegram, CLI
-**Source:** `api_tasks.rs::run_task_action` l.1489+. Apply to `change_team`, `quota_rerun`, `human_done`, `human_return`; never add a Telegram-only path.
+### Secrets: names only, strip all key variables, scrub output
+**Source:** `engine.rs:415-421` (env retain), `config.rs:111-118` (`valid_key_env`), `EnginePlan.redact`.
+**Apply to:** anthropic, agy, dsh arms; `get_engines` payload; README/example. Test against planted keys (`tests/engine_agy.rs:266`, `spikes/e09/run.sh` planted key).
 
-### Atomic file writes at 0600 with tmp cleanup
-**Source:** `projects.rs::save_map` l.335-395. Apply to `teams.json`, `staff.json`, `workflows.json` writes.
-
-### Secrets never in logs
-**Source:** env building `profile.rs::build_env` (+ `unset_env` in `assets/config.default.json`) and runner `env_clear`. Apply: key value only read at spawn; redact in runner before file/event/term/job sinks; `Config` holds only the variable name; `secrets::scan_paths` before `commit_paths` for secret-bearing engines; scrub fixtures with `spikes/lib/scan-secrets.sh`.
-
-### Kill and process safety
-**Source:** `runner.rs` `process_group(0)`, `kill_on_drop`, `procs::kill_tree`, `cmd_kill`. Apply to deepseek (it is `claude`) and agy unchanged.
+### Vietnamese field-level validation errors
+**Source:** `teams.rs:204-233` (`field_error(role, "...")` then `continue`), `config.rs` `"Cấu hình engines.<x> không hợp lệ (...)"`.
+**Apply to:** D-37, D-39, D-41 refusals and all new config fields.
 
 ### Test sandbox
-**Source:** `tests/common/mod.rs` `Sandbox`, fake claude/agy, temp brain.db. Real quota/keys are never used.
+**Source:** `tests/common/mod.rs` `Sandbox` (`write_config`, `write_teams`, `write_map`, `make_repo`, `project_entry`, `run_env`, `spawn_env`, `db`, `root`).
+**Apply to:** every new Rust integration test; fakes are launched by absolute path via `common::repo_root().join("tests").join("fakes")`.
+
+### Process safety
+**Source:** CLAUDE.md "How to call agy", `runner.rs cmd_kill`, `tests/engine_agy.rs:678-769`.
+**Apply to:** dsh stop hook and kill test: record descendants, SIGTERM the recorded PID, sweep recorded descendants; no `pkill`/`killall`.
 
 ## No Analog Found
 
-| File | Role | Data Flow | Reason |
+| File / part | Role | Data Flow | Reason |
 |---|---|---|---|
-| `agent-brain/src/quota.rs` | utility | transform | No quota detection exists; no real quota stream captured (only `allowed_warning`); use RESEARCH sketch plus probes |
-| `agent-brain/src/human.rs` (marker + `Xong` fetch) | service | event-driven | No human-wait state or remote fetch exists; compose from `gitops.rs` helpers and the `cmd_dev` post-run block |
-| `agent-brain/src/secrets.rs` (redactor) | utility | transform | Only path-based `report::sensitive_path` exists; no value redaction |
-| E-09 / agy probe plans (user-run) | probe | n/a | Closest format: `spikes/s7/run.sh`, `spikes/s7/verify.sh`, `spikes/s7/NOTES.md` |
+| dsh in-container stop hook (marker/PID file, `docker exec C kill`) in `runner.rs` | service | event-driven | Runner only kills host process trees; use `spikes/s6/run.sh --kill` marker approach and RESEARCH "The dsh kind" |
+| `docs/config.engines.example.json` loader test | test | static | No existing test loads a `docs/` file; follow the `config.rs` parse tests and add a `repo_root()`-relative read |
 
 ## Metadata
 
-**Analog search scope:** `agent-brain/src`, `agent-brain/tests`, `agent-brain/assets`, `tests/fakes`, `scripts`, `spikes/s7`
-**Files scanned:** about 25 read in full or by section, tracked-file list reviewed (about 250 paths)
-**Pattern extraction date:** 2026-10-26
+**Analog search scope:** `agent-brain/src`, `agent-brain/tests`, `agent-brain/assets/dashboard/js`, `tests/fakes`, `spikes/e09`, `spikes/s6`, `scripts`, `docs`, `agent-brain/{README,LIVE-CHECKS}.md`
+**Tracked-source check:** `engine.rs`, `tests/fakes/fake_agy.py`, `docs/config.engines.example.json`, `spikes/s6/run.sh` confirmed by `git ls-files`; no `.gsd` mirror paths used.
+**Pattern extraction date:** 2026-10-28
