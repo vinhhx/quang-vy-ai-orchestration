@@ -665,3 +665,404 @@ fn staff_crud_and_usage() {
 
     stop(srv);
 }
+
+// ---- Task 3: workflows, engines, gate ----
+
+fn workflow_entry(name: &str, stages: Value, loops: Value) -> Value {
+    json!({
+        "name": name,
+        "stages": stages,
+        "loops": loops,
+        "auto": false,
+        "max_rounds": 3,
+        "budget_minutes": 60,
+        "budget_usd": 20
+    })
+}
+
+fn save_workflow(
+    srv: &common::Serve,
+    version: &str,
+    create: bool,
+    entry: Value,
+) -> common::HttpResp {
+    srv.post_json(
+        "/api/workflows/save",
+        &json!({"version": version, "create": create, "entry": entry}),
+    )
+}
+
+fn delete_workflow(srv: &common::Serve, version: &str, name: &str) -> common::HttpResp {
+    srv.post_json(
+        "/api/workflows/delete",
+        &json!({"version": version, "name": name}),
+    )
+}
+
+fn workflows_version(srv: &common::Serve) -> String {
+    srv.get("/api/workflows").json()["version"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn workflow_refusal(r: &common::HttpResp) -> Value {
+    assert_eq!(r.status, 422, "{}", r.text());
+    let j = r.json();
+    assert_eq!(j["error"], "Không lưu được quy trình");
+    let errs = j["errors"].as_array().unwrap();
+    assert_eq!(errs.len(), 1, "{j}");
+    errs[0].clone()
+}
+
+const READONLY_WORKFLOW: &str = "Quy trình có sẵn chỉ đọc — bấm Nhân bản để tạo bản riêng.";
+
+#[test]
+fn workflows_get_has_version_and_edit() {
+    let sb = Sandbox::new();
+    let srv = sb.serve(&[]);
+
+    let r = srv.get("/api/workflows");
+    assert_eq!(r.status, 200);
+    let j = r.json();
+    assert_eq!(j["version"], "absent");
+    // Every Phase 5.2 field is still there.
+    assert_eq!(j["errors"], json!([]));
+    assert!(j["project_defaults"].is_object());
+    let md = find(&j, "workflows", "name", "mac-dinh");
+    for key in [
+        "source",
+        "summary",
+        "auto",
+        "loops",
+        "loop_names",
+        "stages",
+        "max_rounds",
+        "budget_minutes",
+        "budget_usd",
+        "limits",
+        "default_for",
+    ] {
+        assert!(md.get(key).is_some(), "missing {key}: {md}");
+    }
+    assert_eq!(
+        md["edit"],
+        json!({
+            "stages": ["plan", "plan-review", "gate:you", "implement", "code-review", "qa", "fix"],
+            "loops": {"plan": "plan-review", "implement": "code-review", "qa": "fix"},
+            "auto": true,
+            "max_rounds": 3,
+            "budget_minutes": 60,
+            "budget_usd": 20
+        })
+    );
+    let nhanh = find(&j, "workflows", "name", "nhanh");
+    assert_eq!(
+        nhanh["edit"],
+        json!({
+            "stages": ["plan", "gate:you", "implement", "qa"],
+            "loops": {},
+            "auto": false,
+            "max_rounds": 3,
+            "budget_minutes": 60,
+            "budget_usd": 20
+        })
+    );
+
+    stop(srv);
+}
+
+#[test]
+fn workflows_save_rules() {
+    let sb = Sandbox::new();
+    let srv = sb.serve(&[]);
+    let v = workflows_version(&srv);
+    assert_eq!(v, "absent");
+
+    let stages = json!(["plan", "gate:you", "implement", "qa"]);
+    let r = save_workflow(
+        &srv,
+        &v,
+        true,
+        workflow_entry("nhanh-2", stages.clone(), json!({})),
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    let j = r.json();
+    assert_eq!(j["ok"], true);
+    let nh = find(&j, "workflows", "name", "nhanh-2");
+    assert_eq!(nh["source"], "file");
+    assert_eq!(nh["edit"]["stages"], stages);
+    let v = j["version"].as_str().unwrap().to_string();
+    assert!(is_hex16(&v));
+    let mode = std::fs::metadata(sb.workflows_path())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+
+    // An invalid stage: the loader's text without its "Dòng N: " prefix, no field.
+    let r = save_workflow(
+        &srv,
+        &v,
+        true,
+        workflow_entry("moi", json!(["plan", "deploy"]), json!({})),
+    );
+    let e = workflow_refusal(&r);
+    assert!(e["field"].is_null(), "{e}");
+    let msg = e["message"].as_str().unwrap();
+    assert!(!msg.starts_with("Dòng"), "{msg}");
+    assert!(msg.contains("giai đoạn \"deploy\" không hợp lệ"), "{msg}");
+
+    // A loop whose stages are missing.
+    let r = save_workflow(
+        &srv,
+        &v,
+        true,
+        workflow_entry("moi", stages.clone(), json!({"plan": "plan-review"})),
+    );
+    let e = workflow_refusal(&r);
+    assert!(e["message"].as_str().unwrap().contains("\"loops\""), "{e}");
+
+    // Built-in names.
+    let r = save_workflow(
+        &srv,
+        &v,
+        true,
+        workflow_entry("mac-dinh", stages.clone(), json!({})),
+    );
+    let e = workflow_refusal(&r);
+    assert_eq!(e["field"], "name");
+    assert_eq!(
+        e["message"],
+        "'mac-dinh' là quy trình có sẵn, không ghi đè được. Đặt tên khác."
+    );
+    let r = save_workflow(
+        &srv,
+        &v,
+        false,
+        workflow_entry("nhanh", stages.clone(), json!({})),
+    );
+    assert_eq!(workflow_refusal(&r)["message"], READONLY_WORKFLOW);
+    let r = delete_workflow(&srv, &v, "nhanh");
+    assert_eq!(workflow_refusal(&r)["message"], READONLY_WORKFLOW);
+
+    // Duplicate and unknown.
+    let r = save_workflow(
+        &srv,
+        &v,
+        true,
+        workflow_entry("nhanh-2", stages.clone(), json!({})),
+    );
+    assert_eq!(
+        workflow_refusal(&r)["message"],
+        "Đã có quy trình tên 'nhanh-2'."
+    );
+    let r = save_workflow(
+        &srv,
+        &v,
+        false,
+        workflow_entry("x", stages.clone(), json!({})),
+    );
+    assert_eq!(
+        workflow_refusal(&r)["message"],
+        "Không có quy trình 'x' trong workflows.json."
+    );
+    let r = delete_workflow(&srv, &v, "x");
+    assert_eq!(
+        workflow_refusal(&r)["message"],
+        "Không có quy trình 'x' trong workflows.json."
+    );
+
+    // Update keeps the name; the stored entry is normalised.
+    let mut upd = workflow_entry("nhanh-2", stages.clone(), json!({}));
+    upd["auto"] = json!(true);
+    upd["budget_usd"] = json!(7.5);
+    let r = save_workflow(&srv, &v, false, upd);
+    assert_eq!(r.status, 200, "{}", r.text());
+    let j = r.json();
+    let nh = find(&j, "workflows", "name", "nhanh-2");
+    assert_eq!(nh["edit"]["auto"], true);
+    assert_eq!(nh["edit"]["budget_usd"], 7.5);
+    let v = j["version"].as_str().unwrap().to_string();
+
+    // A stale token is a conflict and writes nothing.
+    let stale = v.clone();
+    sb.write_workflows(json!({
+        "nhanh-2": {"stages": ["plan", "gate:you", "implement", "qa"]},
+        "tay": {"stages": ["plan", "gate:you", "implement"]}
+    }));
+    let before = std::fs::read(sb.workflows_path()).unwrap();
+    let r = save_workflow(
+        &srv,
+        &stale,
+        true,
+        workflow_entry("moi", stages.clone(), json!({})),
+    );
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(r.json()["code"], "conflict");
+    assert_eq!(r.json()["error"], "workflows.json vừa bị sửa ở nơi khác");
+    assert_eq!(std::fs::read(sb.workflows_path()).unwrap(), before);
+    let r = delete_workflow(&srv, &stale, "tay");
+    assert_eq!(r.status, 409);
+
+    // Delete with the fresh token.
+    let v = workflows_version(&srv);
+    let r = delete_workflow(&srv, &v, "nhanh-2");
+    assert_eq!(r.status, 200, "{}", r.text());
+    let j = r.json();
+    let names: Vec<&str> = j["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["mac-dinh", "nhanh", "tay"]);
+    let disk = disk_json(&sb.workflows_path());
+    assert_eq!(
+        disk,
+        json!({"tay": {"stages": ["plan", "gate:you", "implement"]}})
+    );
+
+    // An invalid workflows.json is never overwritten.
+    std::fs::write(
+        sb.workflows_path(),
+        r#"{"x": {"stages": ["plan"], "max_rounds": 0}}"#,
+    )
+    .unwrap();
+    let before = std::fs::read(sb.workflows_path()).unwrap();
+    let v = workflows_version(&srv);
+    let r = save_workflow(
+        &srv,
+        &v,
+        true,
+        workflow_entry("moi", stages.clone(), json!({})),
+    );
+    assert_eq!(r.status, 409, "{}", r.text());
+    let j = r.json();
+    assert_eq!(j["code"], "invalid_file");
+    assert_eq!(j["errors"].as_array().unwrap().len(), 1);
+    let r = delete_workflow(&srv, &v, "x");
+    assert_eq!(r.status, 409);
+    assert_eq!(std::fs::read(sb.workflows_path()).unwrap(), before);
+
+    stop(srv);
+}
+
+fn exec_script(path: &std::path::Path) {
+    std::fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn engines_readiness_no_secret() {
+    let sb = Sandbox::new();
+    let bin_dir = sb.root.join("stub-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    exec_script(&bin_dir.join("claude"));
+    exec_script(&bin_dir.join("agy"));
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let planted = "planted-key-value-0123456789";
+
+    let srv = sb.serve(&[("PATH", path.as_str()), ("DEEPSEEK_API_KEY", planted)]);
+    let r = srv.get("/api/engines");
+    assert_eq!(r.status, 200);
+    let raw = r.text();
+    assert!(!raw.contains(planted), "key value leaked: {raw}");
+    assert!(raw.contains("DEEPSEEK_API_KEY"));
+    let j = r.json();
+    let names: Vec<&str> = j["engines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["claude", "deepseek", "agy", "người"]);
+    let ds = find(&j, "engines", "name", "deepseek");
+    assert_eq!(ds["readiness"], "san_sang");
+    assert_eq!(ds["key_env"], "DEEPSEEK_API_KEY");
+    assert_eq!(find(&j, "engines", "name", "agy")["readiness"], "san_sang");
+    assert_eq!(
+        find(&j, "engines", "name", "người")["readiness"],
+        "san_sang"
+    );
+    stop(srv);
+
+    // Without the variable: thieu_key, and still no value anywhere.
+    let srv = sb.serve(&[("PATH", path.as_str())]);
+    let r = srv.get("/api/engines");
+    assert_eq!(r.status, 200);
+    let j = r.json();
+    let ds = find(&j, "engines", "name", "deepseek");
+    assert_eq!(ds["readiness"], "thieu_key");
+    assert_eq!(ds["reason"], "Chưa đặt biến môi trường DEEPSEEK_API_KEY.");
+    assert!(!r.text().contains(planted));
+    stop(srv);
+}
+
+#[test]
+fn settings_routes_gated() {
+    let sb = Sandbox::new();
+    let srv = sb.serve(&[]);
+
+    // No cookie: every settings route answers 401.
+    for path in ["/api/teams", "/api/staff", "/api/engines"] {
+        let r = srv.request("GET", path, &[], b"");
+        assert_eq!(r.status, 401, "GET {path}");
+    }
+    let body =
+        serde_json::to_vec(&json!({"version": "absent", "create": true, "entry": {"name": "x"}}))
+            .unwrap();
+    let origin = format!("http://127.0.0.1:{}", srv.port);
+    for path in [
+        "/api/teams/save",
+        "/api/teams/delete",
+        "/api/staff/save",
+        "/api/staff/delete",
+        "/api/workflows/save",
+        "/api/workflows/delete",
+    ] {
+        let r = srv.request(
+            "POST",
+            path,
+            &[
+                ("Origin", origin.as_str()),
+                ("Content-Type", "application/json"),
+            ],
+            &body,
+        );
+        assert_eq!(r.status, 401, "POST {path}");
+    }
+    assert!(!sb.teams_path().exists());
+
+    // No engines write route exists, with or without the cookie.
+    for path in ["/api/engines", "/api/engines/save", "/api/engines/delete"] {
+        let r = srv.post_json(
+            path,
+            &json!({"command": "rm", "base_url": "https://x", "key_env": "X"}),
+        );
+        assert!(
+            r.status == 404 || r.status == 405,
+            "POST {path}: {}",
+            r.status
+        );
+        let r = srv.request("POST", path, &[], b"{}");
+        assert_eq!(r.status, 401, "POST {path} without cookie");
+    }
+    let r = srv.put_json("/api/engines", &json!({}));
+    assert!(r.status == 404 || r.status == 405, "PUT: {}", r.status);
+
+    // A body that names an engine definition is refused by the body shape.
+    let r = srv.post_json(
+        "/api/teams/save",
+        &json!({"version": "absent", "create": true, "command": "rm", "entry": {"name": "x"}}),
+    );
+    assert!(r.status == 400 || r.status == 422, "{}", r.status);
+    assert!(!sb.teams_path().exists());
+
+    stop(srv);
+}
