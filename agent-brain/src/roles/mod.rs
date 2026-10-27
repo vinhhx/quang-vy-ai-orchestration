@@ -473,6 +473,7 @@ pub fn execute_role_staged(
         stream_path,
         timeout: plan.timeout,
         kill_grace: Duration::from_secs(ctx.cfg.kill_grace_secs),
+        stdout_file: ep.stdout_file,
     };
 
     struct Observer<'a> {
@@ -596,8 +597,18 @@ pub fn execute_role_staged(
         seq: 0,
     };
 
-    let outcome = crate::runner::supervise(&req, &mut obs)?;
+    let mut outcome = crate::runner::supervise(&req, &mut obs)?;
     obs.summary.finish();
+
+    // agy exits 0 with a non-SUCCESS result more often than not (S7): the result decides.
+    let agy_stream = ep.stream == crate::engine::StreamFormat::Agy;
+    if agy_stream
+        && outcome.status == crate::runner::RunStatus::Succeeded
+        && obs.summary.result_seen()
+        && obs.summary.agy_status.as_deref() != Some("SUCCESS")
+    {
+        outcome.status = crate::runner::RunStatus::Failed;
+    }
 
     // ENG-02 / D-15: one detector decides quota for every claude-format run (claude, deepseek)
     // that was not killed or timed out. A hit only stops the step (D-16).
@@ -650,6 +661,13 @@ pub fn execute_role_staged(
             error: quota_hit.as_ref().map(|h| format!("quota: {}", h.detail)),
         };
         crate::db::finish_run(&ctx.conn, run_id, &finish)?;
+        if agy_stream {
+            crate::db::merge_run_metrics(
+                &ctx.conn,
+                run_id,
+                &serde_json::json!({"thinking_tokens": obs.summary.thinking_tokens}),
+            )?;
+        }
         crate::term::emit(&crate::term::summary_line(
             run_id,
             plan.task_id,
@@ -682,6 +700,20 @@ pub fn execute_role_staged(
         ));
     }
 
+    // D-05: a read-only agy role answers with the whole protocol file; agent-brain writes it, and
+    // the role's own checks (meta, plan validation, review front matter) decide what it is worth.
+    if agy_stream && outcome.status == crate::runner::RunStatus::Succeeded {
+        if let (Some(file), Some(resp)) = (ep.response_file, obs.summary.agy_response.as_deref()) {
+            if obs.summary.agy_status.as_deref() == Some("SUCCESS") && !resp.trim().is_empty() {
+                let mut body = unwrap_code_fence(resp);
+                if !body.ends_with('\n') {
+                    body.push('\n');
+                }
+                std::fs::write(root.join(file), body)?;
+            }
+        }
+    }
+
     let run_id = obs.run_id.unwrap_or(0);
     Ok(RoleRun {
         run_id,
@@ -689,6 +721,21 @@ pub fn execute_role_staged(
         summary: obs.summary,
         run_dir,
     })
+}
+
+/// Removes one outer code-fence wrapper (first line starts with three backticks and the last
+/// non-empty line is three backticks); any other text is returned unchanged.
+pub(crate) fn unwrap_code_fence(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let last = lines.iter().rposition(|l| !l.trim().is_empty());
+    match (lines.first(), last) {
+        (Some(first), Some(end))
+            if end > 0 && first.trim_start().starts_with("```") && lines[end].trim() == "```" =>
+        {
+            lines[1..end].join("\n")
+        }
+        _ => text.to_string(),
+    }
 }
 
 pub fn cmd_run(
@@ -782,6 +829,16 @@ pub fn cmd_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unwrap_code_fence_rules() {
+        assert_eq!(unwrap_code_fence("```markdown\nA\nB\n```\n"), "A\nB");
+        assert_eq!(unwrap_code_fence("```\nA\n```"), "A");
+        assert_eq!(unwrap_code_fence("A\n```x\nB\n```"), "A\n```x\nB\n```");
+        assert_eq!(unwrap_code_fence("---\nmeta\n---\nA"), "---\nmeta\n---\nA");
+        assert_eq!(unwrap_code_fence("```"), "```");
+        assert_eq!(unwrap_code_fence(""), "");
+    }
 
     #[test]
     fn test_shell_join() {

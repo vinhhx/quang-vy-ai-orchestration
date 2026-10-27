@@ -315,7 +315,6 @@ pub fn plan_for(
     base_env: BTreeMap<String, String>,
     timeout: Duration,
 ) -> BrainResult<EnginePlan> {
-    let _ = (cfg, role, timeout);
     match &resolved.engine {
         Engine::Claude => Ok(EnginePlan {
             engine: Engine::Claude,
@@ -329,7 +328,8 @@ pub fn plan_for(
             redact: Vec::new(),
             response_file: None,
         }),
-        Engine::Deepseek | Engine::Agy => Err(BrainError::error(format!(
+        Engine::Agy => agy_plan(cfg, role, claude_argv, base_env, timeout),
+        Engine::Deepseek => Err(BrainError::error(format!(
             "Engine {} chưa được bật trong bản agent-brain này",
             resolved.engine.as_db_str()
         ))),
@@ -337,6 +337,93 @@ pub fn plan_for(
             "Engine người không chạy tiến trình — bước Dev của nhân sự bắt đầu bằng agent-brain run dev",
         )),
     }
+}
+
+/// `--print-timeout` seconds for an agy run: the role timeout minus the margin when the timeout is
+/// more than twice the margin, else half the timeout (never below 1). agy has no turn limit, so
+/// time is the only bound (S7).
+pub fn agy_print_timeout(timeout_secs: u64, margin: u64) -> u64 {
+    if timeout_secs > margin.saturating_mul(2) {
+        timeout_secs - margin
+    } else {
+        (timeout_secs / 2).max(1)
+    }
+}
+
+/// The protocol file a read-only agy role answers with; agent-brain writes it from
+/// `result.response` (D-05). Dev and qa have none.
+pub fn response_file_for(role: &str) -> Option<&'static str> {
+    match role {
+        "lead" => Some(".plan.md"),
+        "plan-review" => Some(".plan-review.md"),
+        "code-review" => Some(".code-review.md"),
+        _ => None,
+    }
+}
+
+/// The `init.permission_mode` agy 1.4.7 reports for a run of `role`. The probe showed
+/// `--mode accept-edits` is NOT reflected in `init` (it stays `request-review`), so every role
+/// expects `request-review`; the real proof for Dev is the diff (D-05).
+pub fn agy_expected_permission_mode(role: &str) -> &'static str {
+    let _ = role;
+    "request-review"
+}
+
+fn agy_plan(
+    cfg: &Config,
+    role: &str,
+    claude_argv: &[String],
+    base_env: BTreeMap<String, String>,
+    timeout: Duration,
+) -> BrainResult<EnginePlan> {
+    let (input, prompt) = claude_argv_parts(claude_argv)
+        .ok_or_else(|| BrainError::error("Không dựng được lệnh agy từ lệnh claude"))?;
+    let response_file = response_file_for(role);
+    let text = match response_file {
+        Some(file) if role != "dev" => format!(
+            "{prompt}\n\n---\nBạn đang chạy ở chế độ chỉ đọc: không sửa và không tạo file nào. Trả lời bằng TOÀN BỘ nội dung file {file} theo đúng định dạng ở trên, không thêm lời dẫn, không bọc trong khối mã.\n\n---\n{input}"
+        ),
+        _ => format!("{prompt}\n\n---\n{input}"),
+    };
+
+    let acfg = &cfg.engines.agy;
+    let secs = agy_print_timeout(timeout.as_secs(), acfg.print_timeout_margin_secs);
+    let mut argv = vec![
+        acfg.command.clone(),
+        "-p".to_string(),
+        text,
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--print-timeout".to_string(),
+        format!("{secs}s"),
+    ];
+    if let Some(m) = &acfg.model {
+        argv.push("--model".to_string());
+        argv.push(m.clone());
+    }
+
+    // agy never sees claude or DeepSeek credentials or config (T-06-35).
+    let mut env = base_env;
+    env.retain(|k, _| {
+        !(k.starts_with("ANTHROPIC_")
+            || k == "CLAUDE_CONFIG_DIR"
+            || k == "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"
+            || k == "CLAUDE_CODE_SUBAGENT_MODEL"
+            || k == &cfg.engines.deepseek.key_env)
+    });
+
+    Ok(EnginePlan {
+        engine: Engine::Agy,
+        db_engine: ENGINE_AGY,
+        display: ENGINE_AGY.to_string(),
+        argv,
+        env,
+        model_label: acfg.model.clone().unwrap_or_else(|| "mặc định".to_string()),
+        stream: StreamFormat::Agy,
+        stdout_file: true,
+        redact: Vec::new(),
+        response_file,
+    })
 }
 
 /// `(-p input, --append-system-prompt text)` of a claude-family argv; `None` when either is missing.
@@ -404,16 +491,10 @@ mod tests {
         assert_eq!(p.model_label, "sonnet");
         assert_eq!(p.stream, StreamFormat::Claude);
 
-        for (engine, text) in [
-            (
-                Engine::Deepseek,
-                "Engine deepseek chưa được bật trong bản agent-brain này",
-            ),
-            (
-                Engine::Agy,
-                "Engine agy chưa được bật trong bản agent-brain này",
-            ),
-        ] {
+        for (engine, text) in [(
+            Engine::Deepseek,
+            "Engine deepseek chưa được bật trong bản agent-brain này",
+        )] {
             let r = ResolvedEngine {
                 engine,
                 team: None,
@@ -429,6 +510,94 @@ mod tests {
             wait: None,
         };
         assert!(plan_for(&cfg, &r, "dev", &argv, "m", BTreeMap::new(), Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn agy_print_timeout_rules() {
+        assert_eq!(agy_print_timeout(1800, 30), 1770);
+        assert_eq!(agy_print_timeout(61, 30), 31);
+        assert_eq!(agy_print_timeout(60, 30), 30);
+        assert_eq!(agy_print_timeout(30, 30), 15);
+        assert_eq!(agy_print_timeout(1, 30), 1);
+        assert_eq!(agy_print_timeout(0, 30), 1);
+    }
+
+    #[test]
+    fn response_files_by_role() {
+        assert_eq!(response_file_for("lead"), Some(".plan.md"));
+        assert_eq!(response_file_for("plan-review"), Some(".plan-review.md"));
+        assert_eq!(response_file_for("code-review"), Some(".code-review.md"));
+        assert_eq!(response_file_for("dev"), None);
+        assert_eq!(response_file_for("qa"), None);
+    }
+
+    #[test]
+    fn plan_for_agy_builds_headless_argv_and_strips_env() {
+        let cfg = test_cfg(serde_json::json!({
+            "engines": {"agy": {"command": "agy-bin", "model": "gemini-x"}}
+        }));
+        let resolved = ResolvedEngine {
+            engine: Engine::Agy,
+            team: None,
+            wait: None,
+        };
+        let claude = vec![
+            "claude".to_string(),
+            "-p".to_string(),
+            "yêu cầu".to_string(),
+            "--append-system-prompt".to_string(),
+            "luật".to_string(),
+        ];
+        let mut env = BTreeMap::new();
+        for k in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CONFIG_DIR",
+            "DEEPSEEK_API_KEY",
+            "HOME",
+            "PATH",
+        ] {
+            env.insert(k.to_string(), "v".to_string());
+        }
+        let p = plan_for(
+            &cfg,
+            &resolved,
+            "lead",
+            &claude,
+            "opus",
+            env,
+            Duration::from_secs(1800),
+        )
+        .unwrap();
+        assert_eq!(p.argv[0], "agy-bin");
+        assert_eq!(p.argv[1], "-p");
+        assert!(p.argv[2].starts_with("luật\n\n---\n"));
+        assert!(p.argv[2].contains(".plan.md"));
+        assert!(p.argv[2].ends_with("yêu cầu"));
+        assert_eq!(
+            &p.argv[3..7],
+            ["--output-format", "stream-json", "--print-timeout", "1770s"]
+        );
+        assert_eq!(&p.argv[7..], ["--model", "gemini-x"]);
+        assert_eq!(p.model_label, "gemini-x");
+        assert_eq!(p.db_engine, "agy");
+        assert_eq!(p.stream, StreamFormat::Agy);
+        assert!(p.stdout_file);
+        assert_eq!(p.response_file, Some(".plan.md"));
+        let names: Vec<&str> = p.env.keys().map(String::as_str).collect();
+        assert_eq!(names, ["HOME", "PATH"]);
+
+        let bad = plan_for(
+            &cfg,
+            &resolved,
+            "lead",
+            &["claude".to_string()],
+            "m",
+            BTreeMap::new(),
+            Duration::from_secs(60),
+        )
+        .unwrap_err();
+        assert_eq!(bad.message, "Không dựng được lệnh agy từ lệnh claude");
     }
 
     fn test_cfg(extra: serde_json::Value) -> Config {

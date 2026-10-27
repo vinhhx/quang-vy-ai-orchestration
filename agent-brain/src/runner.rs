@@ -167,6 +167,8 @@ pub struct RunRequest {
     pub stream_path: PathBuf,
     pub timeout: Duration,
     pub kill_grace: Duration,
+    /// true: the child's stdout is `stream_path` itself (never a pipe) and the runner tails it.
+    pub stdout_file: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -229,7 +231,18 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
     cmd.env_clear();
     cmd.envs(&req.env);
     cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
+    if req.stdout_file {
+        use std::os::unix::fs::OpenOptionsExt;
+        let out = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&req.stream_path)?;
+        cmd.stdout(out);
+    } else {
+        cmd.stdout(std::process::Stdio::piped());
+    }
     cmd.stderr(stderr_file);
     cmd.process_group(0);
     cmd.kill_on_drop(true);
@@ -273,34 +286,77 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         return Err(e);
     }
 
-    let mut stream_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&req.stream_path)?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| BrainError::error("Không lấy được stdout của tiến trình con"))?;
+    // Pipe mode: the runner writes each line to the stream file. File mode: the child already
+    // writes it, so the runner only tails it.
+    let mut stream_file = if req.stdout_file {
+        None
+    } else {
+        Some(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&req.stream_path)?,
+        )
+    };
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let reader_handle = tokio::spawn(async move {
-        use tokio::io::AsyncBufReadExt;
-        let mut reader = tokio::io::BufReader::new(stdout);
-        let mut buf = Vec::new();
-        loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
-                Ok(0) => break,
-                Ok(_) => {
-                    if tx.send(buf.clone()).is_err() {
-                        break;
+    let tail_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader_handle = if req.stdout_file {
+        let path = req.stream_path.clone();
+        let done = tail_done.clone();
+        tokio::spawn(async move {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut offset: u64 = 0;
+            let mut pending: Vec<u8> = Vec::new();
+            loop {
+                let finished = done.load(std::sync::atomic::Ordering::Relaxed);
+                if let Ok(mut f) = std::fs::File::open(&path) {
+                    if f.seek(SeekFrom::Start(offset)).is_ok() {
+                        let mut chunk = Vec::new();
+                        if let Ok(n) = f.read_to_end(&mut chunk) {
+                            offset += n as u64;
+                            pending.extend_from_slice(&chunk);
+                        }
                     }
                 }
-                Err(_) => break,
+                while let Some(pos) = pending.iter().position(|b| *b == b'\n') {
+                    let line: Vec<u8> = pending.drain(..=pos).collect();
+                    if tx.send(line).is_err() {
+                        return;
+                    }
+                }
+                if finished {
+                    if !pending.is_empty() {
+                        let _ = tx.send(std::mem::take(&mut pending));
+                    }
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(150)).await;
             }
-        }
-    });
+        })
+    } else {
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| BrainError::error("Không lấy được stdout của tiến trình con"))?;
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match reader.read_until(b'\n', &mut buf).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if tx.send(buf.clone()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+    };
 
     #[derive(PartialEq, Eq)]
     enum StopReason {
@@ -322,9 +378,11 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
             line = rx.recv() => {
                 match line {
                     Some(line) => {
-                        use std::io::Write;
-                        let _ = stream_file.write_all(&line);
-                        let _ = stream_file.flush();
+                        if let Some(f) = stream_file.as_mut() {
+                            use std::io::Write;
+                            let _ = f.write_all(&line);
+                            let _ = f.flush();
+                        }
                         obs.on_line(&line);
                     }
                     None => {}
@@ -395,6 +453,7 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         child_exit = Some(child.wait().await?);
     }
 
+    tail_done.store(true, std::sync::atomic::Ordering::Relaxed);
     let drain_deadline = tokio::time::sleep(Duration::from_secs(2));
     tokio::pin!(drain_deadline);
     loop {
@@ -402,9 +461,11 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
             line = rx.recv() => {
                 match line {
                     Some(line) => {
-                        use std::io::Write;
-                        let _ = stream_file.write_all(&line);
-                        let _ = stream_file.flush();
+                        if let Some(f) = stream_file.as_mut() {
+                            use std::io::Write;
+                            let _ = f.write_all(&line);
+                            let _ = f.flush();
+                        }
                         obs.on_line(&line);
                     }
                     None => {
