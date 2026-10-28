@@ -151,6 +151,72 @@ fn open_task_count(conn: &Connection, team: &str) -> i64 {
     .unwrap_or(0)
 }
 
+/// Open tasks (any status other than `qa_pass`) whose team is `team`, grouped by the profile of
+/// their project (D-42).
+fn open_tasks_by_profile(conn: &Connection, team: &str) -> Vec<(String, i64)> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT p.profile, COUNT(*) FROM tasks t JOIN projects p ON p.id = t.project_id \
+         WHERE t.status != 'qa_pass' \
+         AND CASE WHEN json_valid(t.team_json) THEN json_extract(t.team_json, '$.name') END = ?1 \
+         GROUP BY p.profile ORDER BY p.profile",
+    ) else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([team], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    });
+    match rows {
+        Ok(rows) => rows.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// D-42: `Some(message)` when saving `team` is refused because it is already bound to a project
+/// whose profile one of its engines forbids: the project's default `team` in projects_map.json, or
+/// an open task of such a project. A team bound to nothing, or only to projects the engines allow,
+/// saves freely.
+fn team_bound_refusal(
+    team: &crate::teams::Team,
+    engines: &crate::config::EnginesCfg,
+    map: &Value,
+    conn: Option<&Connection>,
+) -> Option<String> {
+    let projects = crate::projects::projects_of(map);
+    for role in crate::teams::ROLES {
+        let crate::engine::Engine::Named(id) = team.engine_for(role) else {
+            continue;
+        };
+        let Some(allowed) = engines
+            .get(&id)
+            .and_then(|d| d.effective_allowed_profiles())
+        else {
+            continue;
+        };
+        let text = |profile: &str, whereabouts: &str| {
+            format!(
+                "Đội hình '{}' đang được dùng trên dự án profile {profile} ({whereabouts}) — engine '{id}' chỉ dùng cho dự án profile {}. Đổi đội hình của dự án hoặc task đó trước rồi lưu lại.",
+                team.name,
+                allowed.join(", ")
+            )
+        };
+        for p in &projects {
+            if crate::projects::team_of(map, &p.id).as_deref() == Some(team.name.as_str())
+                && !allowed.iter().any(|a| *a == p.profile)
+            {
+                return Some(text(&p.profile, &format!("dự án '{}'", p.id)));
+            }
+        }
+        if let Some(conn) = conn {
+            for (profile, n) in open_tasks_by_profile(conn, &team.name) {
+                if !allowed.iter().any(|a| *a == profile) {
+                    return Some(text(&profile, &format!("{n} task đang mở")));
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn teams_json(
     teams: &LoadedTeams,
     staff: &LoadedStaff,
@@ -217,7 +283,12 @@ pub fn teams_json(
                     "code_review": role("code-review"),
                 },
                 "summary": t.summary(staff),
-                "warnings": t.warnings,
+                "warnings": t
+                    .warnings
+                    .iter()
+                    .cloned()
+                    .chain(crate::teams::catalog_warnings(t, engines))
+                    .collect::<Vec<String>>(),
                 "default_for": default_for,
                 "used_by": { "projects": used_projects, "open_tasks": open_tasks },
             })
@@ -236,7 +307,7 @@ pub fn teams_json(
 fn teams_payload(st: &AppState) -> BrainResult<Value> {
     let staff = crate::staff::load();
     let (text, version) = settings_store::read_doc(&crate::teams::teams_path())?;
-    let teams = crate::teams::load_from(text.as_deref(), &staff);
+    let teams = crate::teams::load_from_with(text.as_deref(), &staff, Some(&st.cfg.engines));
     let map = crate::projects::load_map(&st.map_path)
         .unwrap_or_else(|_| json!({"scan_roots": [], "projects": []}));
     let conn = crate::db::open(&st.db_path).ok();
@@ -373,7 +444,8 @@ fn save_team_blocking(st: &AppState, body: TeamSaveBody) -> Response {
         Ok(x) => x,
         Err(resp) => return resp,
     };
-    let loaded = crate::teams::load_from(text.as_deref(), &staff);
+    // An existing D-37 violation blocks writes like any other invalid line.
+    let loaded = crate::teams::load_from_with(text.as_deref(), &staff, Some(&st.cfg.engines));
     if !loaded.errors.is_empty() {
         return invalid_file("teams.json", &loaded.errors);
     }
@@ -385,13 +457,26 @@ fn save_team_blocking(st: &AppState, body: TeamSaveBody) -> Response {
     if let Some(msg) = team_name_rule(&loaded, &name, body.create) {
         return refusal(TEAMS_HEADING, vec![field_err("name", msg)]);
     }
-    let file_entry =
+    let team =
         match crate::teams::validate_entry(&name, &team_file_entry(&body.entry), &staff, "file") {
-            Ok(team) => team.to_file_entry(),
+            Ok(team) => team,
             Err(errs) => {
                 return refusal(TEAMS_HEADING, errs.into_iter().map(ui_field).collect());
             }
         };
+    // D-37 (dsh only for dev) and D-43 (an unknown id cannot be saved).
+    let catalog = crate::teams::catalog_errors(&team, &st.cfg.engines, true);
+    if !catalog.is_empty() {
+        return refusal(TEAMS_HEADING, catalog.into_iter().map(ui_field).collect());
+    }
+    // D-42: a team already bound to a project the engines forbid cannot be saved.
+    let map = crate::projects::load_map(&st.map_path)
+        .unwrap_or_else(|_| json!({"scan_roots": [], "projects": []}));
+    let conn = crate::db::open(&st.db_path).ok();
+    if let Some(msg) = team_bound_refusal(&team, &st.cfg.engines, &map, conn.as_ref()) {
+        return refusal(TEAMS_HEADING, vec![field_err("name", msg)]);
+    }
+    let file_entry = team.to_file_entry();
 
     if let Err(e) = settings_store::write_object(&path, &body.version, |m| {
         m.insert(name.clone(), file_entry);
