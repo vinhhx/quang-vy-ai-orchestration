@@ -1097,3 +1097,77 @@ fn dsh_empty_stops_autopilot() {
         "{roles:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Plan 06-25 Task 2: a text-only quota failure stops the dsh step (ENG-02)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dsh_quota_stops() {
+    let sb = Sandbox::new();
+    let dsh = Dsh::new(
+        &sb,
+        json!({
+            "stderr": "Error: rate limit exceeded, try again later\n",
+            "lines": [],
+            "exit_code": 1,
+        }),
+    );
+    let repo = setup(&sb, vec![], &[]);
+    let before = sb.git(&repo, &["rev-parse", "HEAD"]);
+    let runs_before = dev_run_count(&sb);
+
+    let res = run_dev(&sb, &dsh.vars(&[]));
+    assert_eq!(
+        res.code, 5,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        res.stderr.contains("Hết quota engine dsh"),
+        "stderr: {}",
+        res.stderr
+    );
+    assert!(
+        res.stderr.contains("agent-brain không tự đổi engine"),
+        "stderr: {}",
+        res.stderr
+    );
+
+    let (status, outcome, error, metrics) = dev_outcome(&sb);
+    assert_eq!(status, "failed");
+    assert_eq!(outcome.as_deref(), Some("quota"));
+    assert!(
+        error.as_deref().unwrap_or("").starts_with("quota: "),
+        "error: {error:?}"
+    );
+    assert_eq!(metrics["quota"]["engine"], json!("dsh"), "{metrics}");
+    assert_eq!(metrics["quota"]["signal"], json!("text"), "{metrics}");
+    assert_eq!(metrics["quota"]["reset_at"], Value::Null, "{metrics}");
+
+    // no retry, no other engine, nothing committed
+    assert_eq!(dev_run_count(&sb), runs_before + 1);
+    assert_eq!(sb.git(&repo, &["rev-parse", "HEAD"]), before, "no commit");
+}
+
+#[test]
+fn dsh_quota_text_exit0_not_quota() {
+    let sb = Sandbox::new();
+    let dsh = Dsh::new(
+        &sb,
+        json!({"lines": ["Error: rate limit exceeded, try again later"], "exit_code": 0}),
+    );
+    setup(&sb, vec![], &[]);
+
+    let res = run_dev(&sb, &dsh.vars(&[]));
+    assert_eq!(
+        res.code, 4,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(!res.stderr.contains("Hết quota"), "stderr: {}", res.stderr);
+    let (status, outcome, _, metrics) = dev_outcome(&sb);
+    assert_eq!(status, "succeeded");
+    assert_eq!(outcome.as_deref(), Some("dsh:empty"));
+    assert!(metrics.get("quota").is_none(), "{metrics}");
+}

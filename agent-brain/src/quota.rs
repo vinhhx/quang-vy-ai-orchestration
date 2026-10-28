@@ -483,6 +483,40 @@ mod tests {
     }
 
     #[test]
+    fn detect_text_rules() {
+        // stderr first
+        let hit = detect_text(
+            Some(1),
+            "",
+            "boot\nError: 429 Too Many Requests — rate limit exceeded\n",
+        )
+        .expect("hit");
+        assert_eq!(hit.signal, "text");
+        assert_eq!(
+            hit.detail,
+            "Error: 429 Too Many Requests — rate limit exceeded"
+        );
+        assert_eq!(hit.reset_at_ms, None);
+
+        // a limit phrase only in the stdout tail
+        let hit = detect_text(Some(2), "đang chạy\nYou've hit your session limit\n", "")
+            .expect("stdout hit");
+        assert_eq!(hit.signal, "text");
+        assert_eq!(hit.detail, "You've hit your session limit");
+
+        // stderr wins over stdout
+        let hit = detect_text(Some(1), "usage limit reached", "rate limit exceeded").unwrap();
+        assert_eq!(hit.detail, "rate limit exceeded");
+
+        // exit 0 and unknown exit are never quota, whatever the text says
+        assert_eq!(detect_text(Some(0), "rate limit", "429"), None);
+        assert_eq!(detect_text(None, "rate limit", "429"), None);
+        // an ordinary error is not quota
+        assert_eq!(detect_text(Some(1), "", "Error: ENOENT"), None);
+        assert_eq!(detect_text(Some(1), "", ""), None);
+    }
+
+    #[test]
     fn stderr_tail_reads_the_end_of_a_file() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("stderr.txt");
