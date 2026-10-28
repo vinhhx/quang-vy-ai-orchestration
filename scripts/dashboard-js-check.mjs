@@ -4643,6 +4643,120 @@ const sections = [
       }
     },
   },
+  {
+    // 06.2-02: the read-only Telegram screen (GET /api/telegram).
+    name: 'telegram',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      const dash = (f) => path.join(repoRoot, 'agent-brain/assets/dashboard', f);
+      vm.runInContext(fs.readFileSync(dash('js/telegram.js'), 'utf8'), ctx, { filename: 'telegram.js' });
+      check('telegram: factory registered', typeof factories.telegram === 'function');
+      if (typeof factories.telegram !== 'function') return;
+
+      const PLANTED = '4242:planted-telegram-token-123456';
+      const base = { message: null, bot_username: null, chat_id: null, paired_at: null, last_ok_at: null, outbox_pending: 0, tasks_today: 0, tasks_per_day_limit: 10, config_path: '/home/x/.config/agent-brain/telegram.json' };
+      const payload = (over) => Object.assign({ state: 'off' }, base, over, { token: PLANTED, url: 'https://api.telegram.org/bot' + PLANTED + '/getMe' });
+      const savedApi = ctx.AB.api;
+      let current = payload({});
+      let reply = () => Promise.resolve({ ok: true, status: 200, data: JSON.parse(JSON.stringify(current)) });
+      const calls = [];
+      ctx.AB.api = function (method, url) {
+        calls.push({ method, url });
+        return reply();
+      };
+      const make = async (over) => {
+        current = payload(over);
+        const c = factories.telegram();
+        await c.load();
+        return c;
+      };
+      try {
+        // ---- Badge words and colours per state ----
+        const words = { off: 'Chưa cấu hình', error: 'Lỗi cấu hình', starting: 'Đang khởi động', running: 'Đang chạy', degraded: 'Mất kết nối' };
+        for (const state of Object.keys(words)) {
+          const c = await make({ state, message: state === 'error' || state === 'degraded' ? 'Lý do ' + state : null });
+          check('telegram: badge word for ' + state, c.stateWord === words[state], c.stateWord);
+          check('telegram: badge for ' + state + ' shares the readiness colours and glyph', typeof c.stateBadgeClass === 'string' && c.stateBadgeClass.indexOf('rounded-full') >= 0 && c.stateGlyph.length > 0, c.stateBadgeClass);
+        }
+        const running = await make({ state: 'running' });
+        const errored = await make({ state: 'error', message: 'x' });
+        const degraded = await make({ state: 'degraded', message: 'x' });
+        check('telegram: running is green, error is red, degraded is amber', running.stateBadgeClass.indexOf('emerald') >= 0 && errored.stateBadgeClass.indexOf('rose') >= 0 && degraded.stateBadgeClass.indexOf('amber') >= 0);
+        check('telegram: a state the server does not know reads like off', (await make({ state: 'zzz' })).stateWord === 'Chưa cấu hình');
+
+        // ---- Rows are hidden when there is no data ----
+        const labelsOf = (c) => c.rows.map((r) => r.label);
+        const off = await make({ state: 'off' });
+        check('telegram: off shows only the config file row', JSON.stringify(labelsOf(off)) === JSON.stringify(['Tệp cấu hình']), JSON.stringify(labelsOf(off)));
+        check('telegram: off shows the setup text and the command', off.isOff === true && off.offText === 'Bot Telegram chưa bật. Chạy "agent-brain telegram setup" trong terminal để ghép cặp bot, rồi khởi động lại agent-brain serve.' && off.setupCommand === 'agent-brain telegram setup', off.offText);
+        check('telegram: off has no alert message', off.hasMessage === false);
+        const starting = await make({ state: 'starting', chat_id: 5555, paired_at: 1700000000000 });
+        check('telegram: starting hides Bot and last contact until they exist', JSON.stringify(labelsOf(starting)) === JSON.stringify(['Chat ID', 'Đã ghép cặp lúc', 'Tin chờ gửi', 'Task giao qua Telegram hôm nay', 'Tệp cấu hình']), JSON.stringify(labelsOf(starting)));
+        check('telegram: starting is not the off view', starting.isOff === false);
+        const full = await make({ state: 'running', bot_username: 'ab_bot', chat_id: 5555, paired_at: 1700000000000, last_ok_at: 1700000100000, outbox_pending: 3, tasks_today: 2, tasks_per_day_limit: 10 });
+        const row = (c, id) => c.rows.filter((r) => r.id === id)[0];
+        check('telegram: running shows every row', labelsOf(full).join('|') === 'Bot|Chat ID|Đã ghép cặp lúc|Lần liên lạc thành công gần nhất|Tin chờ gửi|Task giao qua Telegram hôm nay|Tệp cấu hình', labelsOf(full).join('|'));
+        check('telegram: Bot row reads @username', row(full, 'bot').value === '@ab_bot');
+        check('telegram: Chat ID, outbox and config rows', row(full, 'chat').value === '5555' && row(full, 'outbox').value === '3' && row(full, 'config').value === '/home/x/.config/agent-brain/telegram.json');
+        check('telegram: tasks today reads {n}/{limit}', row(full, 'tasks').value === '2/10', row(full, 'tasks').value);
+        const zero = await make({ state: 'running', bot_username: 'ab_bot', tasks_today: 0, tasks_per_day_limit: 0 });
+        check('telegram: limit 0 means giao việc is off, not unlimited', row(zero, 'tasks').value.indexOf('0/0') === 0 && row(zero, 'tasks').value.indexOf('đang tắt') >= 0 && row(zero, 'tasks').value.indexOf('không giới hạn') === -1, row(zero, 'tasks').value);
+        const noCount = await make({ state: 'running', bot_username: 'ab_bot', tasks_today: null });
+        check('telegram: no task row when the count is unknown', row(noCount, 'tasks') === undefined);
+
+        // ---- Message verbatim for error and degraded ----
+        const msg = '/x/telegram.json có quyền đọc cho nhóm/người khác — chạy: chmod 600 /x/telegram.json';
+        const e = await make({ state: 'error', message: msg });
+        check('telegram: error shows the server message verbatim', e.hasMessage === true && e.messageText === msg && e.messageClass.indexOf('rose') >= 0, e.messageText);
+        const d = await make({ state: 'degraded', message: 'Không tới được Telegram (x)', bot_username: 'ab_bot' });
+        check('telegram: degraded shows the server message in the amber alert', d.hasMessage === true && d.messageText === 'Không tới được Telegram (x)' && d.messageClass.indexOf('amber') >= 0);
+        check('telegram: running never shows a message', (await make({ state: 'running', message: 'cũ', bot_username: 'a' })).hasMessage === false);
+
+        // ---- The token never reaches a rendered view ----
+        const shown = JSON.stringify({ full: full.rows, e: e.rows, d: d.rows, off: off.rows });
+        check('telegram: a token in the payload is never rendered', shown.indexOf(PLANTED) === -1 && shown.indexOf('planted-telegram-token') === -1, 'planted token found');
+
+        // ---- Polling: GET /api/telegram every 5 s, timer cleared on leave ----
+        const before = ctx.AB._timers.length;
+        calls.length = 0;
+        const polled = factories.telegram();
+        polled.init();
+        check('telegram: init loads GET /api/telegram once', calls.length === 1 && calls[0].method === 'GET' && calls[0].url === '/api/telegram', JSON.stringify(calls));
+        check('telegram: a poll timer is registered with the router', ctx.AB._timers.length === before + 1);
+        ctx.AB._timers.splice(before).forEach((t) => ctx.clearInterval(t));
+        check('telegram: only GET calls were made', calls.every((x) => x.method === 'GET'));
+
+        // ---- Failures reuse the existing behaviour ----
+        reply = () => Promise.resolve({ ok: false, status: 0, data: null });
+        const down = factories.telegram();
+        await down.load();
+        check('telegram: first failure shows the error with a retry', down.hasError === true && down.errorBody.indexOf('Mất kết nối tới agent-brain serve') === 0);
+        reply = () => Promise.resolve({ ok: true, status: 200, data: JSON.parse(JSON.stringify(payload({ state: 'running', bot_username: 'a' }))) });
+        await down.load();
+        check('telegram: it recovers on the next poll', down.hasError === false && down.stateWord === 'Đang chạy');
+        reply = () => Promise.resolve({ ok: false, status: 0, data: null });
+        await down.load();
+        check('telegram: a later failure keeps the data and marks it stale', down.stale === true && down.hasStatus === true && down.stateWord === 'Đang chạy');
+      } finally {
+        ctx.AB.api = savedApi;
+      }
+
+      // ---- Markup: link, route, title, registered assets, no way to enter or change a token ----
+      const html = fs.readFileSync(dash('screens/telegram.html'), 'utf8');
+      const index = fs.readFileSync(dash('index.html'), 'utf8');
+      const appJs = fs.readFileSync(dash('js/app.js'), 'utf8');
+      check('telegram: the screen has no input, textarea, select or form', !/<(input|textarea|select|form)\b/i.test(html));
+      check('telegram: the screen has no token field or x-model', !/token/i.test(html.replace(/token không bao giờ hiện ở đây/i, '')) && html.indexOf('x-model') === -1 && html.indexOf('x-html') === -1 && !/\sstyle=/.test(html));
+      check('telegram: the only button is the retry button', (html.match(/<button\b/g) || []).length === 1 && html.indexOf('@click="reload"') >= 0);
+      check('telegram: nav link with navClass and navCurrent', index.indexOf('href="#/telegram"') >= 0 && index.indexOf("navClass('telegram')") >= 0 && index.indexOf("navCurrent('telegram')") >= 0 && />Telegram<\/a>/.test(index));
+      check('telegram: app.js has the route and the title', appJs.indexOf("'#/telegram'") >= 0 && appJs.indexOf("telegram: 'Telegram'") >= 0);
+    },
+  },
 ];
 
 // A promise that never settles would let node exit 0 with no output; fail loudly instead.

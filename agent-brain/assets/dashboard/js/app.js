@@ -469,6 +469,7 @@
       projects: 'Dự án',
       settings: 'Cài đặt',
       board: 'Bảng công việc',
+      telegram: 'Telegram',
     };
 
     function parseHash(hash) {
@@ -490,6 +491,9 @@
       }
       if (h === '#/settings') {
         return { name: 'settings', params: {} };
+      }
+      if (h === '#/telegram') {
+        return { name: 'telegram', params: {} };
       }
       var m = h.match(/^#\/task\/(\d+)$/);
       if (m) {
