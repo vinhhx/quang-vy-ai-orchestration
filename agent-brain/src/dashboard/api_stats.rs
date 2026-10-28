@@ -43,6 +43,20 @@ async fn get_stats(State(st): State<Arc<AppState>>, Query(query): Query<StatsQue
         let engines = crate::stats::query_by_engine(&conn, profile_opt, since_ms, &st.cfg.pricing)?;
         let qa_by_dev_engine = crate::stats::query_qa_by_dev_engine(&conn, profile_opt, since_ms)?;
 
+        // Research S17: a black-box engine (dsh) and a person have no token count, so the screen
+        // can say "không đếm token" rather than "chưa có giá". An id no longer in config.json
+        // reads `tokens`.
+        let mut engines = serde_json::to_value(engines)
+            .map_err(|e| crate::error::BrainError::error(format!("Lỗi serialize engines: {e}")))?;
+        if let Some(rows) = engines.as_array_mut() {
+            for row in rows {
+                let id = row["engine"].as_str().unwrap_or_default().to_string();
+                let no_tokens = id == crate::engine::ENGINE_HUMAN
+                    || st.cfg.engines.kind_of(&id) == Some(crate::config::EngineKind::Dsh);
+                row["usage"] = serde_json::json!(if no_tokens { "none" } else { "tokens" });
+            }
+        }
+
         let mut val = serde_json::to_value(&report)
             .map_err(|e| crate::error::BrainError::error(format!("Lỗi serialize JSON: {e}")))?;
         if let Some(obj) = val.as_object_mut() {
@@ -58,12 +72,7 @@ async fn get_stats(State(st): State<Arc<AppState>>, Query(query): Query<StatsQue
                     crate::error::BrainError::error(format!("Lỗi serialize by_profile: {e}"))
                 })?,
             );
-            obj.insert(
-                "engines".to_string(),
-                serde_json::to_value(engines).map_err(|e| {
-                    crate::error::BrainError::error(format!("Lỗi serialize engines: {e}"))
-                })?,
-            );
+            obj.insert("engines".to_string(), engines);
             obj.insert(
                 "qa_by_dev_engine".to_string(),
                 serde_json::to_value(qa_by_dev_engine).map_err(|e| {

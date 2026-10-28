@@ -926,6 +926,36 @@ pub fn runs_dir(cfg: &Config) -> PathBuf {
     }
 }
 
+/// File every engine price in the pricing table under its own key (D-23, ENG-04): an entry's
+/// `pricing` as `engine:<id>`, a native entry as the `native:<id>` marker (zero price: it is
+/// priced by model family like `claude`), and a legacy top-level `pricing.<id>` (the old shape,
+/// keyed by engine id) is moved to `engine:<id>` unless the entry has its own `pricing`. A key
+/// that is a default family name stays a family price. Engine keys never take part in the Claude
+/// family lookup (`pricing::price_for`).
+fn file_engine_prices(pricing: &mut BTreeMap<String, Price>, engines: &EnginesCfg) {
+    let families = default_pricing();
+    for def in &engines.list {
+        let legacy = if families.contains_key(&def.id) {
+            None
+        } else {
+            pricing.remove(&def.id)
+        };
+        if def.is_native() {
+            pricing.insert(
+                crate::pricing::native_key(&def.id),
+                Price {
+                    input: 0.0,
+                    output: 0.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            );
+        } else if let Some(price) = def.pricing.or(legacy) {
+            pricing.insert(crate::pricing::engine_key(&def.id), price);
+        }
+    }
+}
+
 pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
     let obj = v
         .as_object()
@@ -1131,6 +1161,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
             }
         }
     }
+    file_engine_prices(&mut pricing, &engines);
 
     Ok(Config {
         claude_bin,

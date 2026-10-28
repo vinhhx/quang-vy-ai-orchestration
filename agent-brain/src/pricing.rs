@@ -18,45 +18,49 @@ pub fn native_key(id: &str) -> String {
     format!("{NATIVE_ENGINE_PREFIX}{id}")
 }
 
+fn is_engine_key(key: &str) -> bool {
+    key.starts_with(ENGINE_PRICE_PREFIX) || key.starts_with(NATIVE_ENGINE_PREFIX)
+}
+
 /// Tra cứu giá theo model family (lowercased substring match) hoặc lấy họ đắt nhất trong bảng.
-/// Nếu bảng rỗng, fallback về giá mặc định.
+/// Nếu bảng rỗng, fallback về giá mặc định. Các khóa giá của engine (`engine:<id>`, `native:<id>`)
+/// không bao giờ tham gia: giá của một gateway không được làm đổi giá Claude (Pitfall A10).
 pub fn price_for(model: Option<&str>, table: &BTreeMap<String, Price>) -> Price {
+    let families = || table.iter().filter(|(k, _)| !is_engine_key(k));
+
     if let Some(m) = model {
         let m_lower = m.to_ascii_lowercase();
-        for (family, p) in table {
-            if m_lower.contains(family) {
+        for (family, p) in families() {
+            if m_lower.contains(family.as_str()) {
                 return *p;
             }
         }
     }
 
-    if table.is_empty() {
-        Price {
+    families()
+        .map(|(_, p)| p)
+        .max_by(|a, b| {
+            a.input
+                .partial_cmp(&b.input)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .copied()
+        .unwrap_or(Price {
             input: 4.0,
             output: 20.0,
             cache_read: 0.2,
             cache_write: 8.0,
-        }
-    } else {
-        table
-            .values()
-            .max_by(|a, b| {
-                a.input
-                    .partial_cmp(&b.input)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .copied()
-            .unwrap()
-    }
+        })
 }
 
-/// Price of an engine's own `pricing.<engine>` entry. `claude` → `None`: the model-family lookup
-/// (`price_for`) applies to it instead. A person (`người`) has no price either.
+/// Price of an engine's own entry (`engine:<id>`, filed by the config loader from the entry's
+/// `pricing` or the legacy `pricing.<id>`). `claude` and a native entry give `None`: the
+/// model-family lookup (`price_for`) applies to them instead. A person (`người`) has no price either.
 pub fn engine_price(engine: &str, table: &BTreeMap<String, Price>) -> Option<Price> {
     if engine == crate::engine::ENGINE_CLAUDE || engine == crate::engine::ENGINE_HUMAN {
         return None;
     }
-    table.get(engine).copied()
+    table.get(&engine_key(engine)).copied()
 }
 
 /// USD cost of `usage` on a non-claude engine; `None` for claude and for an unpriced engine.
@@ -75,7 +79,8 @@ pub fn cost_for_engine(
     )
 }
 
-/// Whether the engine has a price: claude always (family lookup), a person never, else the key exists.
+/// Whether the engine has a price: claude always (family lookup), a person never, a native entry
+/// always (family lookup, like claude), else the `engine:<id>` key exists.
 pub fn is_priced(engine: &str, table: &BTreeMap<String, Price>) -> bool {
     if engine == crate::engine::ENGINE_CLAUDE {
         return true;
@@ -83,23 +88,25 @@ pub fn is_priced(engine: &str, table: &BTreeMap<String, Price>) -> bool {
     if engine == crate::engine::ENGINE_HUMAN {
         return false;
     }
-    table.contains_key(engine)
+    table.contains_key(&native_key(engine)) || table.contains_key(&engine_key(engine))
 }
 
 /// Ước tính chi phí USD dựa trên token và bảng giá.
 /// Các hệ số nhân lấy từ bảng config.json đã khớp với các run thực tế (RESEARCH §3.8).
 /// Một run bị killed hoặc partial luôn được ước tính để trần ngân sách không bị bypass (D-19).
 pub fn estimate_usd(r: &RunRow, table: &BTreeMap<String, Price>) -> f64 {
-    // D-23 / Pitfall 6: a non-claude run is priced only from `pricing.<engine>`; with no entry it
-    // costs 0 and is never billed at the most expensive Anthropic family.
-    let p = if r.engine == crate::engine::ENGINE_CLAUDE {
-        price_for(r.model.as_deref(), table)
-    } else {
-        match engine_price(&r.engine, table) {
-            Some(p) => p,
-            None => return 0.0,
-        }
-    };
+    // D-23 / Pitfall 6: a gateway or agy run is priced only from its entry's price; with none it
+    // costs 0 and is never billed at the most expensive Anthropic family. A native entry runs
+    // claude, so it is priced by model family like `claude`.
+    let p =
+        if r.engine == crate::engine::ENGINE_CLAUDE || table.contains_key(&native_key(&r.engine)) {
+            price_for(r.model.as_deref(), table)
+        } else {
+            match engine_price(&r.engine, table) {
+                Some(p) => p,
+                None => return 0.0,
+            }
+        };
     (r.input_tokens as f64 * p.input
         + r.output_tokens as f64 * p.output
         + r.cache_read_tokens as f64 * p.cache_read
