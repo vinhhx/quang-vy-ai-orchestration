@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# E-09 observation printer (D-02). Observation only: prints name=value lines, never a verdict, never a key.
+# E-09 observation printer (D-02, D-34). Observation only: prints name=value lines, never a verdict, never a key.
 #
 #   bash spikes/e09/verify.sh DIR
 #
-# DIR holds e09-{a,a2,b,c}.jsonl (+ .stderr.txt, .exit, .file) written by spikes/e09/run.sh.
+# DIR holds e09-{a,a2,b,c}.jsonl (+ .stderr.txt, .exit, .file) written by spikes/e09/run.sh: one model directory
+# (spikes/e09/raw/{name}/m{k}/). Probe b exists only in m1.
 # Prints `<probe>.<name>=<value>`; probes a2 and c appear only when their files exist. Always exits 0.
-# The key (DEEPSEEK_API_KEY, if set) is only used to test presence with grep -qF; it is never printed.
+# The key (the variable named by E09_KEY_ENV, default DEEPSEEK_API_KEY, if set) is only used to test presence with
+# grep -qF; it is never printed.
 set -u
 
 DIR="${1:-}"
@@ -14,7 +16,12 @@ if [ -z "$DIR" ] || [ ! -d "$DIR" ]; then
   exit 0
 fi
 
-KEY="${DEEPSEEK_API_KEY:-}"
+KEY_VAR="${E09_KEY_ENV:-DEEPSEEK_API_KEY}"
+KEY=""
+# indirect expansion of an arbitrary string is unsafe: accept only a plain variable name
+if [[ "$KEY_VAR" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+  KEY="${!KEY_VAR:-}"
+fi
 
 for p in a a2 b c; do
   f="$DIR/e09-$p.jsonl"
