@@ -676,6 +676,18 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
         Err(e) => return Ok(StartOutcome::Invalid(e.message)),
     };
 
+    // ENG-10 / D-36 / D-42: a team that names a profile-restricted engine cannot be bound to a
+    // project of another profile. Decided here, before the preflight, any job, branch or row.
+    // Giao việc, Telegram `/task` and a forbidden project default all pass through this function.
+    if let Some(msg) = crate::teams::team_profile_refusal(
+        &team.team,
+        &st.cfg.engines,
+        &project.id,
+        &project.profile,
+    ) {
+        return Ok(StartOutcome::Invalid(msg));
+    }
+
     let conn = crate::db::open(&st.db_path)?;
     let pf = lead_preflight(&conn, &st.jobs, &project, &proj_root, &slug)?;
     if !pf.can_start {
@@ -1421,8 +1433,17 @@ pub fn change_team(
     if let Some(refusal) = change_team_refusal(&state) {
         return Ok(refusal);
     }
-    if state.teams.get(team).is_none() {
+    let Some(picked) = state.teams.get(team) else {
         return Ok(TeamOutcome::Invalid(unknown_team_message(&state, team)));
+    };
+    // ENG-10 / D-36 / D-42: refused before the team is written.
+    if let Some(msg) = crate::teams::team_profile_refusal(
+        picked,
+        &st.cfg.engines,
+        &state.project.id,
+        &state.project.profile,
+    ) {
+        return Ok(TeamOutcome::Invalid(msg));
     }
     if team == current_team_name(&state) {
         return Ok(TeamOutcome::Refused {
@@ -1754,8 +1775,17 @@ pub fn quota_rerun(
     if !action.enabled {
         return Ok(refusal(action.reason.clone().unwrap_or_default()));
     }
-    if state.teams.get(team).is_none() {
+    let Some(picked) = state.teams.get(team) else {
         return Ok(ControlOutcome::Invalid(unknown_team_message(&state, team)));
+    };
+    // ENG-10 / D-36 / D-42: refused before the team is written and before any job is queued.
+    if let Some(msg) = crate::teams::team_profile_refusal(
+        picked,
+        &st.cfg.engines,
+        &state.project.id,
+        &state.project.profile,
+    ) {
+        return Ok(ControlOutcome::Invalid(msg));
     }
 
     let Some(run) = state

@@ -616,11 +616,18 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
         let team_name = match opts.team.as_deref() {
             Some(requested) => {
                 let (teams_loaded, _staff) = crate::teams::load();
-                Some(
-                    crate::teams::resolve(&teams_loaded, Some(requested), None)?
-                        .team
-                        .name,
-                )
+                let resolved_team = crate::teams::resolve(&teams_loaded, Some(requested), None)?;
+                // ENG-10 / D-36 / D-42: the same refusal as the other bind points, before
+                // anything is spawned.
+                if let Some(msg) = crate::teams::team_profile_refusal(
+                    &resolved_team.team,
+                    &ctx.cfg.engines,
+                    &project.id,
+                    &project.profile,
+                ) {
+                    return Err(BrainError::error(msg));
+                }
+                Some(resolved_team.team.name)
             }
             None => None,
         };

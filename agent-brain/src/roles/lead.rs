@@ -106,6 +106,17 @@ pub fn cmd_lead(
     if let Some(ref team_note) = team_res.note {
         crate::term::emit(team_note);
     }
+    // ENG-10 / D-36 / D-42: a team naming a profile-restricted engine cannot be bound to a project
+    // of another profile (explicit `--team` or the project default). Refused before any branch or
+    // task row.
+    if let Some(msg) = crate::teams::team_profile_refusal(
+        &team_res.team,
+        &ctx.cfg.engines,
+        &proj.id,
+        &proj.profile,
+    ) {
+        return Err(BrainError::error(msg));
+    }
 
     let curr_branch = crate::gitops::current_branch(&proj_path);
     let is_replan = curr_branch.as_deref() == Some(&branch);

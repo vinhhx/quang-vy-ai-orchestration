@@ -255,6 +255,74 @@ pub fn validate_entry(
     }
 }
 
+/// ENG-10 (D-36, D-38, D-42): the first role of `team`, in `ROLES` order, whose configured engine
+/// is restricted to profiles that exclude `project_profile`. Returns the `engine::profile_refusal`
+/// text unchanged so every bind point shows the same words. An id missing from the list is not
+/// this rule's job (D-43 handles it); `claude` and people have no restriction.
+pub fn team_profile_refusal(
+    team: &Team,
+    engines: &crate::config::EnginesCfg,
+    project_id: &str,
+    project_profile: &str,
+) -> Option<String> {
+    ROLES.iter().find_map(|role| {
+        let Engine::Named(id) = team.engine_for(role) else {
+            return None;
+        };
+        let def = engines.get(&id)?;
+        crate::engine::profile_refusal(def, project_id, project_profile, role)
+    })
+}
+
+/// D-37 / D-43: rules between a team and the engine list in config.json.
+///
+/// - a non-dev role on a `dsh`-kind id is an error (dsh has no read-only mode);
+/// - with `strict`, an id missing from the list is an error too (Settings save). The loader passes
+///   `strict = false`, so a hand-edited team that names an unknown id still loads (the built-in
+///   `tiet-kiem` keeps `deepseek`) and is only warned about, see `catalog_warnings`.
+pub fn catalog_errors(
+    team: &Team,
+    engines: &crate::config::EnginesCfg,
+    strict: bool,
+) -> Vec<FieldError> {
+    let mut errors = Vec::new();
+    for role in ROLES {
+        let Engine::Named(id) = team.engine_for(role) else {
+            continue;
+        };
+        match engines.kind_of(&id) {
+            Some(crate::config::EngineKind::Dsh) if role != "dev" => errors.push(field_error(
+                role,
+                format!("Engine '{id}' là kiểu dsh, chỉ dùng cho vai trò dev."),
+            )),
+            None if strict => errors.push(field_error(
+                role,
+                format!("Engine '{id}' không có trong config.json (engines)."),
+            )),
+            _ => {}
+        }
+    }
+    errors
+}
+
+/// D-43: one line per engine id the team names that config.json does not declare, in role order,
+/// without repeats. Nothing resolves such an id to another endpoint.
+pub fn catalog_warnings(team: &Team, engines: &crate::config::EnginesCfg) -> Vec<String> {
+    let mut warnings: Vec<String> = Vec::new();
+    for role in ROLES {
+        let Engine::Named(id) = team.engine_for(role) else {
+            continue;
+        };
+        if engines.get(&id).is_none() {
+            let line = format!("Engine '{id}' chưa khai báo trong config.json.");
+            if !warnings.contains(&line) {
+                warnings.push(line);
+            }
+        }
+    }
+    warnings
+}
+
 pub fn teams_path() -> PathBuf {
     crate::config::config_dir().join("teams.json")
 }
@@ -274,6 +342,16 @@ fn load_builtins(staff: &LoadedStaff) -> Vec<Team> {
 }
 
 pub fn load_from(text: Option<&str>, staff: &LoadedStaff) -> LoadedTeams {
+    load_from_with(text, staff, None)
+}
+
+/// As `load_from`; with `Some(engines)` an entry that breaks the D-37 role rule (`catalog_errors`
+/// with `strict = false`) becomes an error line and is not usable.
+pub fn load_from_with(
+    text: Option<&str>,
+    staff: &LoadedStaff,
+    engines: Option<&crate::config::EnginesCfg>,
+) -> LoadedTeams {
     let mut teams = load_builtins(staff);
     let mut errors = Vec::new();
 
@@ -315,10 +393,21 @@ pub fn load_from(text: Option<&str>, staff: &LoadedStaff) -> LoadedTeams {
             "file"
         };
         match validate_entry(name, value, staff, source) {
-            Ok(team) => match existing {
-                Some(pos) => teams[pos] = team,
-                None => teams.push(team),
-            },
+            Ok(team) => {
+                let catalog = engines
+                    .map(|e| catalog_errors(&team, e, false))
+                    .unwrap_or_default();
+                if catalog.is_empty() {
+                    match existing {
+                        Some(pos) => teams[pos] = team,
+                        None => teams.push(team),
+                    }
+                } else {
+                    for e in catalog {
+                        errors.push(format!("Dòng {line}: đội hình '{name}': {}", e.message));
+                    }
+                }
+            }
             Err(errs) => {
                 for e in errs {
                     errors.push(format!("Dòng {line}: đội hình '{name}': {}", e.message));
@@ -331,37 +420,51 @@ pub fn load_from(text: Option<&str>, staff: &LoadedStaff) -> LoadedTeams {
 }
 
 pub fn load_path(path: &Path, staff: &LoadedStaff) -> LoadedTeams {
+    load_path_with(path, staff, None)
+}
+
+pub fn load_path_with(
+    path: &Path,
+    staff: &LoadedStaff,
+    engines: Option<&crate::config::EnginesCfg>,
+) -> LoadedTeams {
     if !path.exists() {
-        return load_from(None, staff);
+        return load_from_with(None, staff, engines);
     }
     match std::fs::metadata(path) {
         Ok(m) if m.len() > MAX_FILE_BYTES => {
-            let mut l = load_from(None, staff);
+            let mut l = load_from_with(None, staff, engines);
             l.errors
                 .push("teams.json lớn quá 256 KiB — bỏ qua file.".to_string());
             return l;
         }
         Ok(_) => {}
         Err(e) => {
-            let mut l = load_from(None, staff);
+            let mut l = load_from_with(None, staff, engines);
             l.errors.push(format!("Không đọc được teams.json: {e}"));
             return l;
         }
     }
     match std::fs::read_to_string(path) {
-        Ok(text) => load_from(Some(&text), staff),
+        Ok(text) => load_from_with(Some(&text), staff, engines),
         Err(e) => {
-            let mut l = load_from(None, staff);
+            let mut l = load_from_with(None, staff, engines);
             l.errors.push(format!("Không đọc được teams.json: {e}"));
             l
         }
     }
 }
 
-/// Loads staff first, then teams with that staff.
+/// Loads staff first, then teams with that staff and the engines of the configuration (D-37). A
+/// configuration that cannot be read falls back to the default engine list, so the teams still
+/// load; the caller that needs the configuration reports its own error.
 pub fn load() -> (LoadedTeams, LoadedStaff) {
     let staff = crate::staff::load();
-    let teams = load_path(&teams_path(), &staff);
+    let engines = match crate::config::load_config() {
+        Ok(cfg) => cfg.engines,
+        Err(_) => crate::config::EnginesCfg::defaults("claude"),
+    };
+    let teams = load_path_with(&teams_path(), &staff, Some(&engines));
     (teams, staff)
 }
 
@@ -734,6 +837,139 @@ mod tests {
         // An explicit request wins over the project default.
         let r = resolve(&l, Some("tiet-kiem"), Some("doi-a")).unwrap();
         assert_eq!(r.team.name, "tiet-kiem");
+    }
+
+    fn engines_with_claude_max() -> crate::config::EnginesCfg {
+        let mut v: serde_json::Value =
+            serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap();
+        v["engines"] = serde_json::json!([{
+            "id": "claude-max",
+            "kind": "anthropic",
+            "command": "claude",
+            "pin_profile": "personal",
+            "models": {"lead": "opus", "dev": "opus"}
+        }]);
+        crate::config::config_from_value(&v)
+            .expect("config with claude-max")
+            .engines
+    }
+
+    fn team_of(roles: &[(&str, &str)]) -> Team {
+        let mut map = serde_json::Map::new();
+        for (r, e) in roles {
+            map.insert(r.to_string(), serde_json::Value::String(e.to_string()));
+        }
+        validate_entry(
+            "doi-t",
+            &serde_json::json!({"description": "t", "roles": map}),
+            &no_staff(),
+            "file",
+        )
+        .expect("valid team")
+    }
+
+    #[test]
+    fn team_profile_refusal_rules() {
+        let engines = engines_with_claude_max();
+
+        let dev_max = team_of(&[("dev", "claude-max")]);
+        let text = team_profile_refusal(&dev_max, &engines, "web", "work").expect("work refused");
+        assert_eq!(
+            text,
+            "Engine 'claude-max' chỉ dùng cho dự án profile personal — dự án 'web' dùng profile work (ranh giới work/personal, SPK-10). Đổi engine của vai trò dev hoặc chọn đội hình khác."
+        );
+        assert_eq!(
+            team_profile_refusal(&dev_max, &engines, "web", "personal"),
+            None
+        );
+
+        // The role named is the one that carries the restricted engine.
+        let lead_max = team_of(&[("lead", "claude-max")]);
+        let text = team_profile_refusal(&lead_max, &engines, "web", "work").unwrap();
+        assert!(text.ends_with("Đổi engine của vai trò lead hoặc chọn đội hình khác."));
+
+        // An id that is not in the list is not this rule's job.
+        let unknown = team_of(&[("dev", "khong-co")]);
+        assert_eq!(
+            team_profile_refusal(&unknown, &engines, "web", "work"),
+            None
+        );
+
+        // An all-claude team and a team on an unrestricted entry are never refused.
+        let all_claude = team_of(&[]);
+        assert_eq!(
+            team_profile_refusal(&all_claude, &engines, "web", "work"),
+            None
+        );
+    }
+
+    #[test]
+    fn catalog_rules() {
+        let mut v: serde_json::Value =
+            serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap();
+        v["engines"] = serde_json::json!([
+            {"id": "dsh", "kind": "dsh", "container": "fake-dsh"},
+            {"id": "deepseek", "kind": "anthropic", "command": "claude",
+             "base_url": "https://example.invalid/anthropic", "key_env": "DEEPSEEK_API_KEY",
+             "models": {"dev": "deepseek-chat"}}
+        ]);
+        let engines = crate::config::config_from_value(&v)
+            .expect("config with a dsh entry")
+            .engines;
+
+        // D-37: dsh on lead is one error on that role; on dev it is accepted.
+        let lead_dsh = team_of(&[("lead", "dsh")]);
+        assert_eq!(
+            catalog_errors(&lead_dsh, &engines, false),
+            [FieldError {
+                field: "lead".to_string(),
+                message: "Engine 'dsh' là kiểu dsh, chỉ dùng cho vai trò dev.".to_string()
+            }]
+        );
+        let dev_dsh = team_of(&[("dev", "dsh")]);
+        assert!(catalog_errors(&dev_dsh, &engines, true).is_empty());
+
+        // D-43: an unknown id is no error for the loader, an error for Settings save.
+        let unknown = team_of(&[("dev", "khong-co"), ("plan-review", "khong-co")]);
+        assert!(catalog_errors(&unknown, &engines, false).is_empty());
+        let strict = catalog_errors(&unknown, &engines, true);
+        assert_eq!(
+            strict
+                .iter()
+                .map(|e| (e.field.as_str(), e.message.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "dev",
+                    "Engine 'khong-co' không có trong config.json (engines)."
+                ),
+                (
+                    "plan-review",
+                    "Engine 'khong-co' không có trong config.json (engines)."
+                )
+            ]
+        );
+        // ... and one warning, however many roles name it.
+        assert_eq!(
+            catalog_warnings(&unknown, &engines),
+            ["Engine 'khong-co' chưa khai báo trong config.json."]
+        );
+        assert!(catalog_warnings(&dev_dsh, &engines).is_empty());
+
+        // The loader drops a team that breaks D-37 and keeps one with an unknown id.
+        let text = r#"{
+"doi-sai": {"description": "Sai", "roles": {"lead": "dsh"}},
+"doi-cu": {"description": "Cũ", "roles": {"dev": "khong-co"}}
+}"#;
+        let l = load_from_with(Some(text), &no_staff(), Some(&engines));
+        assert_eq!(names(&l), ["mac-dinh", "tiet-kiem", "doi-cu"]);
+        assert_eq!(
+            l.errors,
+            ["Dòng 2: đội hình 'doi-sai': Engine 'dsh' là kiểu dsh, chỉ dùng cho vai trò dev."]
+        );
+        // Without the engine list nothing is checked (every pre-existing caller).
+        let l = load_from(Some(text), &no_staff());
+        assert!(l.errors.is_empty());
     }
 
     #[test]
