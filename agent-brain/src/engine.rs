@@ -118,6 +118,18 @@ pub struct EngineStatus {
     pub model: Option<String>,
     pub description: &'static str,
     pub detail: Option<String>,
+    /// `claude` | `anthropic` | `agy` | `dsh` | `người` (D-30).
+    pub kind: String,
+    /// The entry's label from config.json.
+    pub label: Option<String>,
+    /// The user's `verified` text for an `anthropic` entry (the E-09 evidence, D-40).
+    pub evidence: Option<String>,
+    /// `tokens` when runs report token usage, `none` for a black-box engine (dsh) and for `người`.
+    pub usage: &'static str,
+    pub pin_profile: Option<String>,
+    pub allowed_profiles: Option<Vec<String>>,
+    /// The container name of a `dsh` entry.
+    pub container: Option<String>,
 }
 
 fn is_executable_file(p: &Path) -> bool {
@@ -153,8 +165,12 @@ const DESC_NATIVE: &str = "claude chạy trên máy theo profile của dự án 
 const DESC_DSH: &str = "DeepSeek Harness chạy trong container (hộp đen, chỉ văn bản).";
 const DESC_HUMAN: &str = "Nhân sự làm trên máy của họ và đẩy nhánh task lên remote.";
 
+const REASON_UNVERIFIED: &str = "Endpoint chưa có bằng chứng E-09 — chạy spikes/e09/run.sh rồi ghi \"verified\" cho engine này trong config.json.";
+const DSH_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 fn command_status(
     name: &str,
+    kind: &str,
     command: &str,
     path_var: Option<&str>,
     description: &'static str,
@@ -175,20 +191,89 @@ fn command_status(
         model: None,
         description,
         detail: None,
+        kind: kind.to_string(),
+        label: None,
+        evidence: None,
+        usage: "tokens",
+        pin_profile: None,
+        allowed_profiles: None,
+        container: None,
     }
 }
 
-/// Readiness of every engine, in `engine_order`, from local checks only: a PATH lookup and
-/// whether the key variable is set. No model call, and no env VALUE is ever copied into the
-/// result (D-03). Today's rules; the `chưa kiểm` mark and the container probe come with plan 06-26.
+fn set_readiness(st: &mut EngineStatus, r: Readiness, reason: Option<String>) {
+    st.readiness = r.key();
+    st.word = r.word();
+    st.reason = reason;
+}
+
+/// Container status text from `{docker} ps --filter name=^{container}$ --format {{.Status}}`:
+/// stdin null, stderr discarded, at most 3 s, read-only. `None` on any failure. Only the child
+/// handle spawned here is ever killed.
+pub fn docker_status_probe(docker: &str, container: &str) -> Option<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(docker)
+        .args(["ps", "--filter"])
+        .arg(format!("name=^{container}$"))
+        .args(["--format", "{{.Status}}"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + DSH_PROBE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                break;
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => return None,
+        }
+    }
+    let mut out = String::new();
+    child.stdout.take()?.read_to_string(&mut out).ok()?;
+    out.lines()
+        .next()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+}
+
+/// Readiness of every engine, in `engine_order`, from local checks only: a PATH lookup, whether
+/// the key variable is set, the user's `verified` text, and for `dsh` the container status
+/// through `docker_status_probe`. No model call, and no env VALUE is ever copied into the
+/// result (D-03).
 pub fn readiness(
     cfg: &Config,
     env: &BTreeMap<String, String>,
     staff_count: usize,
 ) -> Vec<EngineStatus> {
+    readiness_with(cfg, env, staff_count, &docker_status_probe)
+}
+
+/// `readiness` with the container probe injected: `probe(docker, container)` returns the status
+/// text of the container, or `None` when it cannot be read. Tests never run a real docker.
+pub fn readiness_with(
+    cfg: &Config,
+    env: &BTreeMap<String, String>,
+    staff_count: usize,
+    probe: &dyn Fn(&str, &str) -> Option<String>,
+) -> Vec<EngineStatus> {
     let path_var = env.get("PATH").map(String::as_str);
 
     let mut out = vec![command_status(
+        ENGINE_CLAUDE,
         ENGINE_CLAUDE,
         &cfg.claude_bin,
         path_var,
@@ -196,20 +281,15 @@ pub fn readiness(
     )];
 
     for def in &cfg.engines.list {
-        out.push(entry_status(def, env, path_var));
+        out.push(entry_status(def, env, path_var, probe));
     }
 
-    out.push(EngineStatus {
-        name: ENGINE_HUMAN.to_string(),
-        readiness: Readiness::SanSang.key(),
-        word: Readiness::SanSang.word(),
-        reason: None,
-        command: None,
-        key_env: None,
-        model: None,
-        description: DESC_HUMAN,
-        detail: Some(format!("{staff_count} nhân sự")),
-    });
+    let mut human = command_status(ENGINE_HUMAN, ENGINE_HUMAN, "", path_var, DESC_HUMAN);
+    set_readiness(&mut human, Readiness::SanSang, None);
+    human.command = None;
+    human.detail = Some(format!("{staff_count} nhân sự"));
+    human.usage = "none";
+    out.push(human);
     out
 }
 
@@ -217,8 +297,10 @@ fn entry_status(
     def: &EngineDef,
     env: &BTreeMap<String, String>,
     path_var: Option<&str>,
+    probe: &dyn Fn(&str, &str) -> Option<String>,
 ) -> EngineStatus {
-    match &def.spec {
+    let kind = def.kind().as_str();
+    let mut st = match &def.spec {
         EngineSpec::Anthropic(a) => {
             let description = if a.base_url.is_none() {
                 DESC_NATIVE
@@ -227,8 +309,10 @@ fn entry_status(
             } else {
                 DESC_ANTHROPIC
             };
-            let mut st = command_status(&def.id, &a.command, path_var, description);
+            let mut st = command_status(&def.id, kind, &a.command, path_var, description);
             st.key_env = a.key_env.clone();
+            st.evidence = a.verified.clone();
+            st.pin_profile = a.pin_profile.clone();
             let mut models: Vec<&str> = Vec::new();
             for role in crate::teams::ROLES {
                 if let Some(m) = a.models.get(role) {
@@ -240,25 +324,55 @@ fn entry_status(
             if !models.is_empty() {
                 st.model = Some(models.join(", "));
             }
-            if st.readiness == Readiness::SanSang.key() {
-                if let Some(key_env) = &a.key_env {
-                    let key_set = env.get(key_env).map_or(false, |v| !v.trim().is_empty());
-                    if !key_set {
-                        st.readiness = Readiness::ThieuKey.key();
-                        st.word = Readiness::ThieuKey.word();
-                        st.reason = Some(format!("Chưa đặt biến môi trường {key_env}."));
-                    }
+            // thiếu lệnh and thiếu key both win over chưa kiểm (D-40).
+            if st.readiness == Readiness::SanSang.key() && a.base_url.is_some() {
+                let key_unset = a
+                    .key_env
+                    .as_ref()
+                    .filter(|k| !env.get(*k).map_or(false, |v| !v.trim().is_empty()));
+                if let Some(key_env) = key_unset {
+                    set_readiness(
+                        &mut st,
+                        Readiness::ThieuKey,
+                        Some(format!("Chưa đặt biến môi trường {key_env}.")),
+                    );
+                } else if a.verified.is_none() {
+                    set_readiness(
+                        &mut st,
+                        Readiness::ChuaKiem,
+                        Some(REASON_UNVERIFIED.to_string()),
+                    );
                 }
             }
             st
         }
         EngineSpec::Agy(a) => {
-            let mut st = command_status(&def.id, &a.command, path_var, DESC_AGY);
+            let mut st = command_status(&def.id, kind, &a.command, path_var, DESC_AGY);
             st.model = a.model.clone();
             st
         }
-        EngineSpec::Dsh(d) => command_status(&def.id, &d.docker, path_var, DESC_DSH),
-    }
+        EngineSpec::Dsh(d) => {
+            let mut st = command_status(&def.id, kind, &d.docker, path_var, DESC_DSH);
+            st.model = Some(d.dsh_profile.clone());
+            st.container = Some(d.container.clone());
+            st.usage = "none";
+            if st.readiness == Readiness::SanSang.key() {
+                let running = probe(&d.docker, &d.container)
+                    .map_or(false, |status| status.trim_start().starts_with("Up"));
+                if !running {
+                    set_readiness(
+                        &mut st,
+                        Readiness::ThieuLenh,
+                        Some(format!("Container {} chưa chạy.", d.container)),
+                    );
+                }
+            }
+            st
+        }
+    };
+    st.label = def.label.clone();
+    st.allowed_profiles = def.effective_allowed_profiles();
+    st
 }
 
 // ---- the engine seam (D-14): one decision per role run ----
@@ -1288,11 +1402,15 @@ mod tests {
             all.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             ["claude", "deepseek", "agy", "người"]
         );
-        for s in &all {
+        for s in all.iter().filter(|s| s.name != "deepseek") {
             assert_eq!(s.readiness, "san_sang", "{}", s.name);
             assert_eq!(s.word, "sẵn sàng");
             assert_eq!(s.reason, None);
         }
+        // D-40: the default deepseek entry has no `verified`, so a set key reads `chưa kiểm`.
+        assert_eq!(all[1].readiness, "chua_kiem");
+        assert_eq!(all[1].word, "chưa kiểm");
+        assert_eq!(all[1].reason.as_deref(), Some(REASON_UNVERIFIED));
         assert_eq!(all[0].command.as_deref(), Some("claude"));
         assert_eq!(all[1].key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
         assert_eq!(all[1].model.as_deref(), Some("opus, sonnet"));
@@ -1335,7 +1453,7 @@ mod tests {
             r[2].reason.as_deref(),
             Some("Không tìm thấy lệnh khong-co-lenh trên máy.")
         );
-        assert_eq!(r[1].readiness, "san_sang");
+        assert_eq!(r[1].readiness, "chua_kiem");
 
         // An absolute command path must be an executable file.
         let abs = dir.path().join("agy");
@@ -1359,6 +1477,214 @@ mod tests {
         let mut env_nokey = BTreeMap::new();
         env_nokey.insert("PATH".to_string(), "/khong/co/thu-muc".to_string());
         assert_eq!(readiness(&cfg, &env_nokey, 0)[1].readiness, "thieu_lenh");
+    }
+
+    fn gateway_cfg(verified: Option<&str>) -> Config {
+        let mut entry = serde_json::json!({
+            "id": "gw", "kind": "anthropic", "command": "claude",
+            "base_url": "https://gw.example.test/x", "key_env": "GW_KEY",
+            "models": {"dev": "m-dev"}
+        });
+        if let Some(v) = verified {
+            entry["verified"] = serde_json::json!(v);
+        }
+        test_cfg(serde_json::json!({ "engines": [entry] }))
+    }
+
+    fn no_probe(_: &str, _: &str) -> Option<String> {
+        panic!("the container probe must not run");
+    }
+
+    #[test]
+    fn readiness_chua_kiem() {
+        let dir = tempfile::tempdir().unwrap();
+        make_exec(dir.path(), "claude");
+        let mut env = BTreeMap::new();
+        env.insert("PATH".to_string(), dir.path().to_str().unwrap().to_string());
+        env.insert("GW_KEY".to_string(), "planted-gw-key-zzz".to_string());
+
+        // No `verified`: runs, but is marked.
+        let r = readiness_with(&gateway_cfg(None), &env, 0, &no_probe);
+        assert_eq!(r[1].readiness, "chua_kiem");
+        assert_eq!(r[1].word, "chưa kiểm");
+        assert_eq!(
+            r[1].reason.as_deref(),
+            Some("Endpoint chưa có bằng chứng E-09 — chạy spikes/e09/run.sh rồi ghi \"verified\" cho engine này trong config.json.")
+        );
+        assert_eq!(r[1].evidence, None);
+
+        // With `verified`: san_sang and the text is carried.
+        let r = readiness_with(&gateway_cfg(Some("2026-10-28 E-09")), &env, 0, &no_probe);
+        assert_eq!(r[1].readiness, "san_sang");
+        assert_eq!(r[1].reason, None);
+        assert_eq!(r[1].evidence.as_deref(), Some("2026-10-28 E-09"));
+
+        // Key unset (or blank): thieu_key wins over chua_kiem.
+        let mut no_key = env.clone();
+        no_key.remove("GW_KEY");
+        let r = readiness_with(&gateway_cfg(None), &no_key, 0, &no_probe);
+        assert_eq!(r[1].readiness, "thieu_key");
+        assert_eq!(
+            r[1].reason.as_deref(),
+            Some("Chưa đặt biến môi trường GW_KEY.")
+        );
+        no_key.insert("GW_KEY".to_string(), "  ".to_string());
+        let r = readiness_with(&gateway_cfg(None), &no_key, 0, &no_probe);
+        assert_eq!(r[1].readiness, "thieu_key");
+
+        // Command missing: thieu_lenh wins over both.
+        let mut no_cmd = env.clone();
+        no_cmd.insert("PATH".to_string(), "/khong/co/thu-muc".to_string());
+        let r = readiness_with(&gateway_cfg(None), &no_cmd, 0, &no_probe);
+        assert_eq!(r[1].readiness, "thieu_lenh");
+        assert_eq!(
+            r[1].reason.as_deref(),
+            Some("Không tìm thấy lệnh claude trên máy.")
+        );
+
+        // The planted key value never reaches a row.
+        let json =
+            serde_json::to_string(&readiness_with(&gateway_cfg(None), &env, 0, &no_probe)).unwrap();
+        assert!(!json.contains("planted-gw-key-zzz"), "{json}");
+        assert!(!json.contains("gw.example.test"), "{json}");
+
+        // A native entry has no endpoint to verify: san_sang by its command alone.
+        let native = test_cfg(serde_json::json!({"engines": [
+            {"id": "claude-max", "kind": "anthropic", "command": "claude",
+             "pin_profile": "personal", "models": {"dev": "opus"}}
+        ]}));
+        let r = readiness_with(&native, &env, 0, &no_probe);
+        assert_eq!(r[1].readiness, "san_sang");
+        assert_eq!(r[1].pin_profile.as_deref(), Some("personal"));
+        assert_eq!(
+            r[1].allowed_profiles.as_deref(),
+            Some(&["personal".to_string()][..])
+        );
+        let r = readiness_with(&native, &no_cmd, 0, &no_probe);
+        assert_eq!(r[1].readiness, "thieu_lenh");
+    }
+
+    #[test]
+    fn readiness_dsh() {
+        let dir = tempfile::tempdir().unwrap();
+        make_exec(dir.path(), "claude");
+        make_exec(dir.path(), "docker-fake");
+        let docker = dir.path().join("docker-fake");
+        let mut env = BTreeMap::new();
+        env.insert("PATH".to_string(), dir.path().to_str().unwrap().to_string());
+        let dsh = |docker: &str| {
+            test_cfg(serde_json::json!({"engines": [
+                {"id": "dsh-x", "kind": "dsh", "label": "Hộp đen", "docker": docker,
+                 "container": "dsh-x", "dsh_profile": "headless",
+                 "allowed_profiles": ["personal"]}
+            ]}))
+        };
+        let cfg = dsh(docker.to_str().unwrap());
+
+        let up = |_: &str, c: &str| {
+            assert_eq!(c, "dsh-x");
+            Some("Up 3 minutes".to_string())
+        };
+        let r = readiness_with(&cfg, &env, 0, &up);
+        assert_eq!(r[1].name, "dsh-x");
+        assert_eq!(r[1].kind, "dsh");
+        assert_eq!(r[1].readiness, "san_sang");
+        assert_eq!(r[1].reason, None);
+        assert_eq!(r[1].usage, "none");
+        assert_eq!(r[1].container.as_deref(), Some("dsh-x"));
+        assert_eq!(r[1].label.as_deref(), Some("Hộp đen"));
+        assert_eq!(r[1].model.as_deref(), Some("headless"));
+        assert_eq!(
+            r[1].allowed_profiles.as_deref(),
+            Some(&["personal".to_string()][..])
+        );
+
+        for status in [Some("Exited (0) 2 hours ago".to_string()), None] {
+            let probe = move |_: &str, _: &str| status.clone();
+            let r = readiness_with(&cfg, &env, 0, &probe);
+            assert_eq!(r[1].readiness, "thieu_lenh");
+            assert_eq!(r[1].word, "thiếu lệnh");
+            assert_eq!(r[1].reason.as_deref(), Some("Container dsh-x chưa chạy."));
+        }
+
+        // A docker that is not an executable: no probe, the usual missing-command reason.
+        let cfg = dsh("/khong/co/docker-test");
+        let r = readiness_with(&cfg, &env, 0, &no_probe);
+        assert_eq!(r[1].readiness, "thieu_lenh");
+        assert_eq!(
+            r[1].reason.as_deref(),
+            Some("Không tìm thấy lệnh /khong/co/docker-test trên máy.")
+        );
+
+        // `người` and the default list carry the no-token hint where it applies.
+        let last = r.last().unwrap();
+        assert_eq!(last.name, "người");
+        assert_eq!(last.usage, "none");
+        assert_eq!(last.kind, "người");
+        assert_eq!(r[0].usage, "tokens");
+    }
+
+    #[test]
+    fn docker_status_probe_reads_first_line_and_fails_soft() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = |name: &str, body: &str| {
+            use std::os::unix::fs::PermissionsExt;
+            let p = dir.path().join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p.to_str().unwrap().to_string()
+        };
+        // The argv is exactly `ps --filter name=^<container>$ --format {{.Status}}`.
+        let ok = script(
+            "ok",
+            "[ \"$1 $2 $3 $4 $5\" = 'ps --filter name=^c1$ --format {{.Status}}' ] && echo 'Up 5 seconds' && echo second",
+        );
+        assert_eq!(
+            docker_status_probe(&ok, "c1").as_deref(),
+            Some("Up 5 seconds")
+        );
+        let fail = script("fail", "echo nope; exit 1");
+        assert_eq!(docker_status_probe(&fail, "c1"), None);
+        let empty = script("empty", "exit 0");
+        assert_eq!(docker_status_probe(&empty, "c1"), None);
+        assert_eq!(docker_status_probe("/khong/co/docker", "c1"), None);
+    }
+
+    #[test]
+    fn readiness_list_order() {
+        let cfg = test_cfg(serde_json::json!({}));
+        let r = readiness(&cfg, &BTreeMap::new(), 0);
+        assert_eq!(
+            r.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["claude", "deepseek", "agy", "người"]
+        );
+        assert_eq!(
+            r.iter().map(|s| s.kind.as_str()).collect::<Vec<_>>(),
+            ["claude", "anthropic", "agy", "người"]
+        );
+
+        let cfg = test_cfg(serde_json::json!({"engines": [
+            {"id": "zz", "kind": "agy", "command": "agy"},
+            {"id": "aa", "kind": "anthropic", "command": "claude",
+             "base_url": "https://a.example.test", "key_env": "AA_KEY",
+             "models": {"dev": "m"}},
+            {"id": "dd", "kind": "dsh", "docker": "docker", "container": "c",
+             "dsh_profile": "headless"}
+        ]}));
+        let probe = |_: &str, _: &str| None;
+        let r = readiness_with(&cfg, &BTreeMap::new(), 2, &probe);
+        assert_eq!(
+            r.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["claude", "zz", "aa", "dd", "người"]
+        );
+        assert_eq!(
+            r.iter().map(|s| s.kind.as_str()).collect::<Vec<_>>(),
+            ["claude", "agy", "anthropic", "dsh", "người"]
+        );
+        assert_eq!(
+            r.iter().map(|s| s.usage).collect::<Vec<_>>(),
+            ["tokens", "tokens", "tokens", "none", "none"]
+        );
     }
 
     #[test]

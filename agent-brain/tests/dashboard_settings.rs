@@ -1118,7 +1118,15 @@ fn engines_list_payload() {
     let kinds: Vec<&str> = rows.iter().map(|e| e["kind"].as_str().unwrap()).collect();
     assert_eq!(
         kinds,
-        ["claude", "anthropic", "anthropic", "anthropic", "agy", "dsh", "người"]
+        [
+            "claude",
+            "anthropic",
+            "anthropic",
+            "anthropic",
+            "agy",
+            "dsh",
+            "người"
+        ]
     );
 
     let gw = find(&j, "engines", "name", "gw");
