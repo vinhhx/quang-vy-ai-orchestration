@@ -355,7 +355,7 @@ cat << EOF > "$TMP/xdg_config/agent-brain/projects_map.json"
 EOF
 
 # Kịch bản claude giả theo vai trò. Dev: [xong (task 1), hết quota (task 2), xong (task 2 chạy lại),
-# hết quota (task chỉ tạo khi --keep)]. Dsh: ghi src/app.py của task 3 rồi in hai dòng.
+# hết quota rồi xong (task chỉ tạo khi --keep, để bấm chạy lại trong trình duyệt)]. Dsh: ghi src/app.py của task 3 rồi in hai dòng.
 python3 -I - "$TMP" << 'PYEOF'
 import json
 import sys
@@ -462,6 +462,7 @@ scenario = {
             dev_quota("phần 1"),
             dev_ok("def app():\n    return 3\n"),
             dev_quota("phần 1"),
+            dev_ok("def app():\n    return 5\n"),
         ],
         "qa": [{"ops": [write_op(".qa-report.md", qa_report)]}],
     }
