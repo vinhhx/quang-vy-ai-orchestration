@@ -1611,3 +1611,386 @@ Mọi ca chạy trong môi trường cô lập do `scripts/board-live-check.sh` 
 1. Trong terminal của script nhấn Ctrl+C: script gửi tín hiệu tới đúng PID `serve` đã ghi, chờ tối đa 10 giây rồi mới buộc dừng PID đó, và xóa thư mục tạm (gồm bảng mẫu SHOP, `brain.db` riêng và token của phiên).
 2. Kiểm tra `serve` của bạn ở cổng 7437 (nếu đang chạy) vẫn chạy bình thường và `git status --porcelain` của repo này không có thay đổi mới do đợt nghiệm thu.
 3. Không lệnh nào trong phần này ghi vào `~/.local/share/agent-brain`, `~/.config/agent-brain` hay `~/.claude-orca`, và `.planning/` của repo này chỉ bị đọc.
+
+---
+
+## 8. Nghiệm thu Phase 6 (Đội hình nhiều engine, ENG-01…11)
+
+Nghiệm thu đội hình nhiều engine: danh sách engine trong `config.json`, task `tiet-kiem` với Dev trên một endpoint đã khai báo, hết quota rồi chạy lại bằng đội hình khác, agy làm Dev, nhân sự làm Dev bằng bản clone thứ hai, dsh như hộp đen trong container, `claude-max` chỉ cho dự án personal, quét key và màn hình Cài đặt. Phần tự động (P6-00) và phần chạy thử nâng lược đồ (P6-01) dùng **binary thật với engine giả** và không tốn tiền; P6-02 … P6-10 dùng **engine thật** hoặc **mắt của bạn** và là việc của bạn. P6-08 là tùy chọn.
+
+Cần chuẩn bị cho phần thật: key của endpoint đã qua E-09 (ghi trong `spikes/e09/NOTES.md`, mục `## Endpoint: <tên>` có `Quyết định: pass`; thử cổng nội bộ trước), agy đã đăng nhập, một remote git cho P6-05 (một repo trần cục bộ là đủ), container `dsh-deepseek-harness` đang chạy cho P6-09, và trình duyệt Chrome hoặc Firefox. Kết quả E-09 chưa có cũng không chặn gì (D-40): P6-02 vẫn chạy trên endpoint bạn chọn và đóng vai thu thập bằng chứng (run được đánh dấu `chưa kiểm E-09`); khi đó cổng thật của ENG-01 được báo là **chưa xong** trong biên bản UAT.
+
+Phần tự động và chạy thử lược đồ do `scripts/phase6-live-check.sh` đảm nhiệm. Ở chế độ tự động script dựng môi trường cô lập: `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `AGENT_BRAIN_DB`, `AGENT_BRAIN_CONFIG` nằm trong một thư mục tạm; `serve` cổng ngẫu nhiên (`--port 0`); claude, agy và dsh là engine giả (`tests/fakes`), dsh đi qua `docker` giả; hai key chỉ là giá trị cài sẵn. `~/.config/agent-brain`, `brain.db` thật, `~/.claude-orca`, `serve` cổng 7437 và container dsh thật không bị đụng tới. P6-02 và các ca sau chạy trong thư mục `$LIVE` của riêng bạn (cấu hình, dữ liệu và `brain.db` riêng); chúng dùng `HOME` thật để claude thấy profile thật (cần cho E-09, vì khối `env` trong `settings.json` của profile có thể thắng biến môi trường của agent-brain).
+
+> [!CAUTION]
+> **An toàn key, tiến trình, container và tài khoản**:
+> - Key chỉ được **bạn** `export` trong shell của bạn (`export <TÊN_BIẾN>=…`). Không dán key vào chat với Claude, không ghi vào `config.json`, `teams.json`, `env.sh` hay bất kỳ file nào, không đưa key vào dòng lệnh (`ps` thấy). Mọi bước kiểm key dưới đây chỉ in `yes` / `no`, không in giá trị.
+> - URL do `--keep` in ra có token của phiên: chỉ mở trong trình duyệt của bạn, không dán vào chat hay file kết quả.
+> - Chỉ dừng tiến trình bằng `$AB kill <task_id>`, Ctrl+C trong terminal của chính tiến trình đó, hoặc `kill -INT <PID>` với PID đã ghi lại. Không dùng `pkill`, `killall` hay lệnh dừng theo tên. Không gửi tín hiệu nào cho `serve` cổng 7437 của bạn.
+> - `ps` chỉ dùng để đọc. Với container dsh chỉ dùng các lệnh đọc nêu trong P6-09; không khởi động, dừng hay khởi động lại container; không dùng `docker inspect` không kèm `--format`.
+> - Container dsh chạy bằng root với `/mnt/data` đọc-ghi: P6-09 **chỉ** chạy trên một repo nháp personal mới tạo, không trên dự án thật.
+> - Không chạy hai run `personal` cùng lúc (E-06): P6-04, P6-05, P6-09 và P6-10 làm lần lượt.
+
+---
+
+### P6-00: Kiểm tra tự động
+- **Mục tiêu**: Binary thật chạy đúng danh sách engine với engine giả (ENG-01 … ENG-11): task `tiet-kiem` trên một gateway đã khai báo chạy Lead → Dev → QA với engine `claude`, `gw`, `claude` và `/api/stats` có dòng `claude` và `gw`; một Dev trên `gw` gặp hết quota (`quota.engine` là `gw`), `quota-rerun` sang `mac-dinh` chạy Dev trên `claude` ở cùng thư mục làm việc, có đúng một dòng `team_history` và không có run nào chen giữa; một Dev trên `dsh` (docker giả) ở dự án personal: engine `dsh`, `usage_source` `none`, thay đổi đã commit; `doi-max` bị từ chối (422) ở dự án work và chạy ở dự án personal với thư mục profile personal; `GET /api/engines` đúng thứ tự `claude, gw, deepseek, claude-max, agy, dsh, người` và độ sẵn sàng; không key nào trong số hai key cài sẵn nằm trong file nào của thư mục tạm; repo này không bị thay đổi.
+- **Tiền điều kiện**: `python3`, `curl` và `git` có trong `PATH`.
+- **Lệnh thực hiện** (từ gốc repo):
+  ```bash
+  cargo build --manifest-path agent-brain/Cargo.toml --offline --locked
+  TRUOC="$(mktemp)"
+  git status --porcelain > "$TRUOC"
+  bash scripts/phase6-live-check.sh
+  git status --porcelain | diff "$TRUOC" - && echo "repo không đổi"
+  rm -f "$TRUOC"
+  ```
+- **Kết quả mong đợi**: Script in các dòng `LIVE OK: …`, hai dòng `key_absent[PHASE6_GW_KEY]=yes` và `key_absent[DEEPSEEK_API_KEY]=yes`, rồi `Phase 6 live check OK` và thoát `0`; `diff` không in gì và in `repo không đổi`. Một dòng bắt đầu bằng `LỖI live:` nghĩa là một điều kiện sai (script dừng ở điều kiện đầu tiên sai); `key_absent[…]=no` kèm tên file chứa key là lỗi rò key.
+- **Ghi nhận**: Dòng `P6-00`: các dòng `LIVE OK:`, hai dòng `key_absent`, `Phase 6 live check OK`, `repo không đổi`.
+- **Dọn dẹp**: Không (script tự xóa thư mục tạm và dừng `serve` của nó khi kết thúc, bằng đúng PID đã ghi).
+
+---
+
+### P6-01: Chạy thử nâng lược đồ trên bản sao brain.db
+- **Mục tiêu**: Chứng minh bước nâng một chiều lên lược đồ 4 chạy được trên **dữ liệu thật của bạn** mà không đụng tới file thật. Phase 6 chỉ thêm cột `tasks.team_json`; engine và đội hình không đổi lược đồ.
+- **Tiền điều kiện**: Đã dựng binary mới (P6-00). **Dừng `agent-brain serve` và các run/autopilot đang chạy**: bản sao của một database đang được ghi có thể không nhất quán. Không có tiến trình `agent-brain` nào đang mở `~/.local/share/agent-brain/brain.db`.
+- **Lệnh thực hiện** (từ gốc repo):
+  ```bash
+  bash scripts/phase6-live-check.sh --schema-dry-run
+  ```
+  Script lưu danh sách thư mục dữ liệu (`ls -la --time-style=full-iso`) và sha256 của `brain.db`, `brain.db-wal`, `brain.db-shm` (nếu có), chép các file đó bằng `cp -p` vào một thư mục tạm (SQLite **không bao giờ** mở đường dẫn thật), đọc `user_version` và số dòng `projects` / `tasks` / `runs` / `events` từ bản sao, mở bản sao bằng binary mới (`stats --json` với `AGENT_BRAIN_DB` là bản sao), đọc lại rồi so sánh, và so thư mục dữ liệu thật trước và sau.
+- **Kết quả mong đợi**: Hai dòng cuối là `Schema v4 dry run OK (từ v2)` (hoặc `từ v3`, `từ v4` nếu đã nâng) và `real_dir_unchanged=yes`; thoát `0`. Dòng `LỖI dry run: …` nghĩa là migration không chạy được trên dữ liệu thật: **dừng, không cài binary mới**, báo lại (không sửa database bằng tay).
+- **Ghi nhận**: Dòng `P6-01`: hai dòng cuối nguyên văn.
+- **Dọn dẹp**: Không (thư mục tạm tự xóa). Sao lưu `brain.db.bak-pre-6-<ngày>` trước khi cài binary mới là việc riêng, xem README mục 2.
+
+---
+
+### P6-02: Task tiet-kiem thật trên endpoint đã qua E-09 (ENG-01)
+- **Mục tiêu**: Một task `tiet-kiem` chạy hết Lead → Dev → QA trên engine thật: Lead và QA trên `claude`, Dev trên endpoint đã qua E-09 (cổng nội bộ trước), `runs.engine` và dòng đầu log đúng, màn hình Thống kê tách theo engine (cổng ENG-01 thật).
+- **Tiền điều kiện**: P6-00 xong; chọn endpoint: mở `spikes/e09/NOTES.md`, lấy mục `## Endpoint: <tên>` ghi `Quyết định: pass` (cổng nội bộ trước); chưa có mục nào `pass` thì chọn endpoint bạn định dùng (D-40: run được đánh dấu `chưa kiểm E-09`); biết tên biến key của endpoint (`key_env`).
+- **Lệnh thực hiện**:
+  1. Dựng binary và thư mục riêng (quyền `0700`), dùng `HOME` thật:
+     ```bash
+     cd /mnt/data/IDE/QuangVy-Orchestration
+     cargo build --release --manifest-path agent-brain/Cargo.toml --offline --locked
+     REPO="$PWD"; AB="$REPO/agent-brain/target/release/agent-brain"
+     LIVE="$(mktemp -d /tmp/p6-live.XXXXXX)"
+     (umask 077; mkdir -p "$LIVE/xdg/agent-brain" "$LIVE/data/agent-brain" "$LIVE/repos")
+     cat > "$LIVE/gitconfig" <<'EOF'
+     [user]
+       name = P6 Live
+       email = p6-live@example.com
+     [commit]
+       gpgsign = false
+     [init]
+       defaultBranch = main
+     EOF
+     cat > "$LIVE/env.sh" <<EOF
+     export LIVE="$LIVE"
+     export REPO="$REPO"
+     export AB="$AB"
+     export XDG_CONFIG_HOME="\$LIVE/xdg"
+     export XDG_DATA_HOME="\$LIVE/data"
+     export AGENT_BRAIN_DB="\$LIVE/data/agent-brain/brain.db"
+     export AGENT_BRAIN_CONFIG="\$LIVE/config.json"
+     export GIT_CONFIG_GLOBAL="\$LIVE/gitconfig"
+     export GIT_CONFIG_NOSYSTEM=1
+     q() { python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1], timeout=10); [print(*r, sep=" | ") for r in c.execute(sys.argv[2])]' "\$AGENT_BRAIN_DB" "\$@"; }
+     EOF
+     chmod 600 "$LIVE/env.sh"; source "$LIVE/env.sh"
+     ```
+  2. Ghi `$LIVE/config.json` với đúng mục engine của endpoint đã chọn (thay `id`, `base_url`, `key_env`, `models`; thêm `"verified": "<ngày> E-09"` chỉ khi endpoint đã `pass`; mẫu cổng nội bộ lấy từ `docs/config.engines.example.json`). Chỉ ghi **tên** biến key:
+     ```bash
+     cat > "$LIVE/config.json" <<'EOF'
+     {
+       "models": { "lead": "opus", "dev": "sonnet", "qa": "sonnet" },
+       "profiles": {
+         "work": { "claude_config_dir": null, "unset_env": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"] },
+         "personal": { "claude_config_dir": "~/.claude-orca", "unset_env": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"] }
+       },
+       "engines": [
+         {
+           "id": "vcadm-deepseek",
+           "kind": "anthropic",
+           "command": "claude",
+           "base_url": "https://ai-gateway.vcadm.vn/proxyllm",
+           "key_env": "VCADM_GATEWAY_KEY",
+           "models": { "dev": "deepseek/deepseek-chat" }
+         }
+       ]
+     }
+     EOF
+     ```
+  3. Nếu id của mục engine **không** là `deepseek`, ghi đè `tiet-kiem` để Dev trỏ vào mục đó (D-43; không ghi đè thì Dev báo `engine chưa khai báo`):
+     ```bash
+     cat > "$XDG_CONFIG_HOME/agent-brain/teams.json" <<'EOF'
+     { "tiet-kiem": { "description": "Dev qua endpoint đã kiểm.", "roles": { "dev": "vcadm-deepseek" } } }
+     EOF
+     ```
+  4. Tạo repo nháp work và đăng ký (một lệnh `python3` ghi `projects_map.json`):
+     ```bash
+     mkdir -p "$LIVE/repos/nhap-p6/src" && git -C "$LIVE/repos/nhap-p6" init -q -b main
+     printf 'def hello():\n    return "xin chào"\n' > "$LIVE/repos/nhap-p6/src/hello.py"
+     git -C "$LIVE/repos/nhap-p6" add src/hello.py && git -C "$LIVE/repos/nhap-p6" commit -q -m init
+     python3 - "$XDG_CONFIG_HOME/agent-brain/projects_map.json" "$LIVE/repos/nhap-p6" <<'EOF'
+     import json, sys
+     json.dump({"scan_roots": [], "projects": [{"id": "nhap-p6", "path": sys.argv[2], "name_vi": "Nháp P6", "aliases": [], "type": "code", "repo": None, "profile": "work", "missing": False, "workflow": "nhanh"}]}, open(sys.argv[1], "w"), ensure_ascii=False, indent=2)
+     EOF
+     ```
+  5. **Bạn** `export` key trong shell của bạn (đúng tên biến ở `key_env`, bạn tự gõ, không dán vào chat), rồi chạy ba bước:
+     ```bash
+     export VCADM_GATEWAY_KEY=…      # bạn tự gõ giá trị
+     "$AB" run lead --team tiet-kiem --name p6-tiet-kiem -- nhap-p6 "thêm hàm chao(ten) vào src/hello.py"
+     "$AB" run dev -- nhap-p6
+     "$AB" run qa -- nhap-p6
+     q "SELECT id, role, engine, status, outcome, usage_source FROM runs ORDER BY id"
+     ```
+  6. Mở Thống kê: `"$AB" serve --port 0 > "$LIVE/serve.out" 2>&1 < /dev/null & echo $! > "$LIVE/serve.pid"`, đọc URL trong `$LIVE/serve.out` (có token: chỉ mở trong trình duyệt), vào `#/stats`.
+- **Kết quả mong đợi**:
+  1. Dòng đầu log của Lead và QA kết thúc `· engine claude`; của Dev kết thúc `· engine <id>` (cộng `chưa kiểm E-09` khi mục engine chưa có `verified`).
+  2. `q` in ba run: `lead | claude`, `dev | <id>`, `qa | claude`, cả ba `succeeded`; run Dev có `usage_source` là `result` (có token từ kết quả cuối của stream) và tên model đúng theo `models.dev`.
+  3. Màn hình Thống kê mục `Theo engine` có dòng `claude` và dòng `<id>`.
+  4. Dán các dòng E-09 (`a.*`, `b.*`) cho **từng model** mà mục engine dùng (từ `spikes/e09/NOTES.md`) vào biên bản; chưa chạy E-09 thì ghi `chưa kiểm`.
+- **Ghi nhận**: Dòng `P6-02`: id endpoint, ba dòng `q`, dòng đầu log của ba run (không có key), có/không `chưa kiểm E-09`, dòng `Theo engine`, các dòng E-09.
+- **Dọn dẹp**: Không. Giữ `$LIVE`, `$AB` và PID `serve` cho các ca sau (P6-04, P6-05, P6-06, P6-10 dùng lại cùng `$LIVE`).
+
+---
+
+### P6-03: Hết quota giả lập trên dashboard (ENG-02, ENG-03)
+- **Mục tiêu**: Khi một bước dừng vì hết quota, dashboard dừng chờ bạn và **không** tự chạy gì; bạn chạy lại bước bằng đội hình khác và engine mới tiếp tục trên thư mục làm việc dở (D-15, D-16, D-18).
+- **Tiền điều kiện**: P6-00 xong (dùng engine giả, không tốn tiền); trình duyệt.
+- **Lệnh thực hiện**:
+  1. Trong một terminal (từ gốc repo), giữ nguyên terminal này tới hết P6-03 và P6-07:
+     ```bash
+     bash scripts/phase6-live-check.sh --keep
+     ```
+  2. Sau dòng `Phase 6 live check OK`, script tạo thêm một task dừng vì hết quota và in `Task N đang dừng vì hết quota: <URL>#/task/N` rồi URL `#/settings`. Mở URL của task trong trình duyệt.
+  3. Đọc banner và các nút; quan sát sổ run (không có run mới nào tự xuất hiện). Bấm `Chạy lại bước này bằng đội hình…`, chọn `mac-dinh`, xác nhận.
+- **Kết quả mong đợi**:
+  1. Task ở trạng thái `Chờ bạn · hết quota`; phần chi tiết nêu run Dev `trên engine gw dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine.`; có hai nút `Chạy lại bước này bằng đội hình…` và `Thử lại sau`; sổ run chỉ có run Lead và run Dev dừng vì quota, **không có run nào chạy thêm** khi bạn chưa bấm.
+  2. Sau khi chọn `mac-dinh` và xác nhận: một run Dev mới trên `claude` chạy và `succeeded` ở cùng thư mục làm việc (phần diff dở của lượt trước được giữ), banner hết quota biến mất, màn hình task có đúng một dòng lịch sử `tiet-kiem → mac-dinh`.
+  3. Dòng đội hình của task giờ là `mac-dinh`.
+- **Ghi nhận**: Dòng `P6-03`: đạt hoặc không đạt cho từng ý; ghi mọi chữ khó hiểu trong banner.
+- **Dọn dẹp**: Không. Giữ `serve` của script cho P6-07.
+
+---
+
+### P6-04: agy làm Dev một việc nhỏ (ENG-06)
+- **Mục tiêu**: Antigravity thật làm một bước Dev nhỏ: chạy `agy -p … --output-format stream-json` ở chế độ quyền Dev đã ghi trong `spikes/s7b/NOTES.md` (`accept-edits`), sửa đúng file của plan, token lấy từ `result.usage`, và kiểm tra diff sau lượt chạy (D-04, D-05, D-26).
+- **Tiền điều kiện**: P6-02 xong (dùng lại `$LIVE`, `source "$LIVE/env.sh"`); agy đã đăng nhập; `agy` có trong `PATH`; không có run `personal` nào đang chạy. Chỉ dùng CLI `agy` (không chạy binary `antigravity`).
+- **Lệnh thực hiện**:
+  1. Thêm mục agy vào `engines` của `$LIVE/config.json` (một mục `{"id": "agy", "kind": "agy", "command": "agy"}`) và một đội hình trong `teams.json`:
+     ```bash
+     python3 - "$AGENT_BRAIN_CONFIG" "$XDG_CONFIG_HOME/agent-brain/teams.json" <<'EOF'
+     import json, sys
+     cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+     cfg["engines"] = [e for e in cfg["engines"] if e["id"] != "agy"] + [{"id": "agy", "kind": "agy", "command": "agy"}]
+     json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+     try:
+         teams = json.load(open(sys.argv[2], encoding="utf-8"))
+     except FileNotFoundError:
+         teams = {}
+     teams["doi-agy"] = {"description": "Dev trên agy.", "roles": {"dev": "agy"}}
+     json.dump(teams, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+     EOF
+     ```
+  2. Chạy một việc nhỏ (Lead bằng claude thật, Dev bằng agy):
+     ```bash
+     "$AB" run lead --team doi-agy --name p6-agy -- nhap-p6 "thêm hằng SO_LAN = 3 vào src/hello.py"
+     "$AB" run dev -- nhap-p6
+     q "SELECT id, role, engine, status, outcome, usage_source, input_tokens, output_tokens FROM runs ORDER BY id DESC LIMIT 2"
+     git -C "$LIVE/repos/nhap-p6" log --oneline -3
+     git -C "$LIVE/repos/nhap-p6" show --stat --format= HEAD
+     ```
+- **Kết quả mong đợi**: Run Dev có `engine` là `agy`; hoặc `succeeded` với commit chỉ sửa `src/hello.py` (file của plan), token từ `result.usage`, hoặc dừng với `agy không sửa file nào — có thể bị từ chối quyền (xem stderr.txt của run).` (ghi lại; đó là kết quả hợp lệ của quyền Dev, không phải thành công). Agy hết quota của nó thì run dừng với outcome `quota` (`Hết quota engine agy`): ghi lại như một quan sát về phát hiện quota của agy. Không file ngoài plan nào bị sửa; không tiến trình `agy` còn sót (`ps -eo pid,ppid,args | grep '[a]gy -p'` rỗng).
+- **Ghi nhận**: Dòng `P6-04`: `engine`, outcome, số token, file trong commit, có/không dòng `agy không sửa file nào`.
+- **Dọn dẹp**: Không.
+
+---
+
+### P6-05: Nhân sự làm Dev bằng bản clone thứ hai (HUM)
+- **Mục tiêu**: Bước Dev thuộc nhân sự: agent-brain chuẩn bị nhánh và dừng ở `Chờ <tên> làm`; nhân sự (bản clone thứ hai của bạn) sửa và đẩy nhánh; `Xong` lấy commit về bằng `fast-forward` và quy trình chạy tiếp tới QA (D-19, D-20, D-25).
+- **Tiền điều kiện**: P6-02 xong (`$LIVE`); một remote git: dùng repo trần cục bộ.
+- **Lệnh thực hiện**:
+  1. Remote và bản clone thứ hai:
+     ```bash
+     git init -q --bare "$LIVE/remote.git"
+     git -C "$LIVE/repos/nhap-p6" remote add origin "$LIVE/remote.git"
+     git -C "$LIVE/repos/nhap-p6" push -q origin main
+     git clone -q "$LIVE/remote.git" "$LIVE/repos/nhap-p6-nguoi"
+     ```
+  2. Nhân sự và đội hình (`staff.json`, `teams.json`):
+     ```bash
+     python3 - "$XDG_CONFIG_HOME/agent-brain" <<'EOF'
+     import json, os, sys
+     d = sys.argv[1]
+     json.dump({"ha": {"display_name": "Hà", "notes": "bản clone thứ hai"}}, open(os.path.join(d, "staff.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+     p = os.path.join(d, "teams.json")
+     teams = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
+     teams["doi-nguoi"] = {"description": "Dev do người làm.", "roles": {"dev": "người:ha"}}
+     json.dump(teams, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+     EOF
+     ```
+  3. Chạy Lead rồi Dev (Dev dừng chờ người, mã thoát `6`):
+     ```bash
+     "$AB" run lead --team doi-nguoi --name p6-nguoi -- nhap-p6 "thêm hàm tam_biet() vào src/hello.py"
+     "$AB" run dev -- nhap-p6; echo "exit=$?"
+     ```
+  4. **Nhân sự** (bản clone thứ hai): lấy nhánh, sửa đúng file của plan, commit và đẩy:
+     ```bash
+     git -C "$LIVE/repos/nhap-p6-nguoi" fetch -q origin
+     git -C "$LIVE/repos/nhap-p6-nguoi" checkout -q task/p6-nguoi
+     printf '\n\ndef tam_biet():\n    return "tạm biệt"\n' >> "$LIVE/repos/nhap-p6-nguoi/src/hello.py"
+     git -C "$LIVE/repos/nhap-p6-nguoi" commit -q -am "p6-nguoi: tam_biet"
+     git -C "$LIVE/repos/nhap-p6-nguoi" push -q origin task/p6-nguoi
+     ```
+  5. Trên dashboard (hoặc CLI) bấm `Xong`, rồi chạy QA:
+     ```bash
+     "$AB" human done $(q "SELECT max(id) FROM tasks")
+     "$AB" run qa -- nhap-p6
+     q "SELECT id, role, engine, status, outcome, input_tokens FROM runs ORDER BY id DESC LIMIT 3"
+     ```
+- **Kết quả mong đợi**: Bước Dev in `Chờ Hà làm bước … trên nhánh task/p6-nguoi.`, thoát `6`, không có run Dev nào; nhánh `task/p6-nguoi` có trên remote (hoặc màn hình nêu lệnh `git push` nếu việc đẩy thất bại); trong lúc chờ, đổi đội hình của task bị từ chối; `Xong` in kết quả lấy nhánh bằng `fast-forward`, ghi run Dev engine `người` với `input_tokens` = 0, và QA chạy được; file ngoài plan do nhân sự sửa thì bị đánh `vi phạm giao thức` (thoát `3`).
+- **Ghi nhận**: Dòng `P6-05`: mã thoát bước Dev, dòng `Chờ Hà làm`, kết quả `Xong`, ba run cuối.
+- **Dọn dẹp**: Không.
+
+---
+
+### P6-06: Quét key của mọi engine (ENG-05)
+- **Mục tiêu**: Sau khi chạy engine thật, không giá trị key nào nằm trong thư mục run, bản dump của `brain.db` hay lịch sử git của repo nháp (D-32, ENG-05).
+- **Tiền điều kiện**: P6-02 (và các ca chạy thêm) xong; các biến `key_env` vẫn được `export` trong shell của bạn.
+- **Lệnh thực hiện** (chỉ in `yes` / `no`; giá trị key không bao giờ xuất hiện trên dòng lệnh vì đi qua `-f`):
+  ```bash
+  source "$LIVE/env.sh"
+  mkdir -p "$LIVE/sweep"
+  python3 -c 'import sqlite3, sys; c = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True); open(sys.argv[2], "w", encoding="utf-8").write("\n".join(c.iterdump()))' "$AGENT_BRAIN_DB" "$LIVE/sweep/brain.sql"
+  for r in "$LIVE"/repos/*/; do git -C "$r" log -p --all > "$LIVE/sweep/$(basename "$r").gitlog.txt"; done
+  for var in VCADM_GATEWAY_KEY DEEPSEEK_API_KEY; do        # mọi tên key_env bạn đã dùng
+    if [ -z "${!var:-}" ]; then echo "key_absent[$var]=bỏ qua (biến chưa đặt)"; continue; fi
+    if grep -rlF -f <(printf '%s' "${!var}") "$LIVE" > "$LIVE/sweep/hits.txt" 2>/dev/null; then
+      echo "key_absent[$var]=no"; sed "s#^$LIVE/#  tệp chứa key: #" "$LIVE/sweep/hits.txt"
+    else
+      echo "key_absent[$var]=yes"
+    fi
+  done
+  ```
+- **Kết quả mong đợi**: Mọi dòng là `key_absent[…]=yes` (hoặc `bỏ qua` cho biến chưa dùng). Dòng `no` kèm tên file là lỗi nghiêm trọng: **thu hồi key đó ngay**, báo lại tên file (không dán nội dung).
+- **Ghi nhận**: Dòng `P6-06`: các dòng `key_absent[…]`.
+- **Dọn dẹp**: `rm -rf "$LIVE/sweep"` (bản dump chứa dữ liệu run của bạn).
+
+---
+
+### P6-07: Màn hình Cài đặt sáng/tối, 1024 / 768 / 480 px (SET-05)
+- **Mục tiêu**: Màn hình Cài đặt đọc rõ ở giao diện sáng và tối, ở ba độ rộng, và mục Engine hiện đúng danh sách đã khai báo với độ sẵn sàng trung thực (D-44, ENG-11).
+- **Tiền điều kiện**: P6-03 xong và `serve` của `--keep` vẫn chạy.
+- **Lệnh thực hiện**:
+  1. Mở URL `#/settings` mà script `--keep` đã in.
+  2. Xem mục **Engine**; sau đó **Đội hình**: bấm sửa một đội hình, mở danh sách engine của vai trò Dev rồi vai trò Lead; **Giao việc** (bộ chọn đội hình), màn hình task và **Thống kê** (`Theo engine`).
+  3. Đổi giao diện sáng ↔ tối, rồi dùng công cụ nhà phát triển của trình duyệt đặt độ rộng 1024, 768 và 480 px và lặp lại.
+- **Kết quả mong đợi**:
+  1. Mục Engine liệt kê theo đúng thứ tự `claude, gw, deepseek, claude-max, agy, dsh, người`; `gw`, `claude-max`, `agy`, `dsh` hiện `sẵn sàng`; `deepseek` hiện `chưa kiểm` kèm lý do (chưa có bằng chứng E-09, không bị chặn); mỗi dòng có loại, và chỉ hiện **tên** biến key (không có giá trị, không có endpoint).
+  2. Trong trình sửa đội hình, `dsh` và `người` chỉ chọn được ở vai trò Dev; QA luôn là `claude`; engine `chưa kiểm` hiện gợi ý nhẹ, không chặn.
+  3. Ở cả hai giao diện chữ và viền đủ tương phản; ở 1024 / 768 / 480 px trang không cuộn ngang, các nút đủ lớn để bấm.
+- **Ghi nhận**: Dòng `P6-07`: đạt hoặc không đạt cho từng độ rộng và từng giao diện; ghi chỗ tương phản yếu hoặc chữ bị cắt.
+- **Dọn dẹp**: Không.
+
+---
+
+### P6-08 (không bắt buộc): Nút Telegram khi hết quota
+- **Mục tiêu**: Tin Telegram khi một bước hết quota có nút chọn đội hình và cần **hai lần bấm** trước khi chạy lại (D-17, D-28); `/task` có bước chọn đội hình.
+- **Tiền điều kiện**: Môi trường của P5.4-00 (bot thật, fake claude, `$LIVE` riêng của mục 6) đã ghép nối; thêm vào `config.json` của môi trường đó một engine gateway chạy bằng fake claude và một `teams.json` có đội hình thứ hai; kịch bản Dev của fake claude là hết quota rồi thành công.
+- **Lệnh thực hiện**: Giao một việc bằng `/task`, chọn đội hình ở màn hình `Chọn đội hình cho task:`; để Dev chạy tới khi hết quota; trên điện thoại bấm nút `Đội hình <tên>` rồi `Chạy lại bước này`.
+- **Kết quả mong đợi**: Tin `Hết quota engine <id> · task N …` có tối đa 8 nút đội hình; bấm một nút chỉ sửa tin thành `Chạy lại bước … bằng đội hình …?` (chưa chạy gì); chỉ `Chạy lại bước này` mới chạy; không có nút `Xong` / `Trả lại` nào trên Telegram.
+- **Ghi nhận**: Dòng `P6-08`: đạt hoặc không đạt, hoặc `bỏ qua`.
+- **Dọn dẹp**: Như P5.4 (dừng `serve` bằng PID đã ghi).
+
+---
+
+### P6-09: dsh như hộp đen trên repo nháp personal (ENG-09)
+- **Mục tiêu**: Lần chạy dsh thật đầu tiên, trên một repo nháp personal: một việc Dev nhỏ chạy qua `docker exec`, Kill dừng **bên trong container** (không còn tiến trình `ab-dsh-`), file dsh ghi thuộc root như đã nêu trong README mục 11, và `git` trong repo nháp vẫn dùng được (D-35, D-38, A18).
+- **Tiền điều kiện**: P6-02 xong (`$LIVE`); container `dsh-deepseek-harness` đang chạy (`docker ps --filter name=^dsh-deepseek-harness$ --format '{{.Status}}'` in `Up …`); `kill-wrapper` của `spikes/s6/NOTES.md` ghi `ok` (nếu `not-ok`, dừng và báo lại người lập kế hoạch); không có run `personal` nào khác đang chạy.
+- **Lệnh thực hiện**:
+  1. Repo nháp personal **mới tạo** dưới `/mnt/data` (container thấy cùng đường dẫn), đăng ký, và mục engine dsh bị giới hạn `personal`:
+     ```bash
+     source "$LIVE/env.sh"
+     SCR=/mnt/data/IDE/p6-dsh-nhap
+     mkdir -p "$SCR/src" && git -C "$SCR" init -q -b main
+     printf 'def app():\n    return 1\n' > "$SCR/src/app.py"
+     git -C "$SCR" add src/app.py && git -C "$SCR" commit -q -m init
+     python3 - "$AGENT_BRAIN_CONFIG" "$XDG_CONFIG_HOME/agent-brain" "$SCR" <<'EOF'
+     import json, os, sys
+     cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+     cfg["engines"] = [e for e in cfg["engines"] if e["id"] != "dsh"] + [{"id": "dsh", "kind": "dsh", "container": "dsh-deepseek-harness", "dsh_profile": "headless", "allowed_profiles": ["personal"]}]
+     json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+     d = sys.argv[2]
+     p = os.path.join(d, "teams.json")
+     teams = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
+     teams["doi-dsh"] = {"description": "Dev trên dsh (hộp đen).", "roles": {"dev": "dsh"}}
+     json.dump(teams, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+     m = os.path.join(d, "projects_map.json")
+     pm = json.load(open(m, encoding="utf-8"))
+     pm["projects"] = [x for x in pm["projects"] if x["id"] != "nhap-dsh"] + [{"id": "nhap-dsh", "path": sys.argv[3], "name_vi": "Nháp dsh", "aliases": [], "type": "code", "repo": None, "profile": "personal", "missing": False, "workflow": "nhanh", "team": "doi-dsh"}]
+     json.dump(pm, open(m, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+     EOF
+     ```
+  2. Lead (claude, profile personal) rồi một Dev nhỏ trên dsh:
+     ```bash
+     "$AB" run lead --name p6-dsh -- nhap-dsh "thêm dòng chú thích đầu file src/app.py"
+     "$AB" run dev -- nhap-dsh; echo "exit=$?"
+     q "SELECT id, role, engine, status, outcome, usage_source, input_tokens, output_tokens FROM runs ORDER BY id DESC LIMIT 1"
+     stat -c '%u:%g %n' "$SCR/src/app.py"
+     git -C "$SCR" status --short
+     ```
+  3. Kill khi đang chạy: lập một task thứ hai có plan lớn hơn (ví dụ thêm năm hàm) và chạy Dev của nó ở **terminal A**; ở **terminal B** (cùng `source "$LIVE/env.sh"`) chờ tới khi run Dev ở trạng thái `running` rồi Kill và đọc container (chỉ lệnh đọc):
+     ```bash
+     # terminal A
+     "$AB" run lead --name p6-dsh-2 -- nhap-dsh "thêm năm hàm nhỏ vào src/app.py, mỗi hàm một dòng"
+     "$AB" run dev -- nhap-dsh; echo "exit=$?"
+     # terminal B (khi q báo run dev đang running)
+     q "SELECT id, role, status FROM runs ORDER BY id DESC LIMIT 1"
+     "$AB" kill $(q "SELECT max(id) FROM tasks")
+     docker exec dsh-deepseek-harness ps -ww -eo pid=,args= </dev/null | grep -c 'ab-dsh-'
+     ```
+- **Kết quả mong đợi**: Run Dev có `engine` là `dsh`, `usage_source` là `none`, token 0, `succeeded` với một commit Dev (hoặc dừng với outcome `dsh:empty` và lời `dsh không sửa file nào trong lượt này — …` nếu dsh không đổi gì: ghi lại); `stat` của file đã đổi in `0:0` (thuộc root, đúng như tài liệu); `git status` trong repo nháp chạy được (có thể báo `dubious ownership` nếu file root-owned: ghi lại nguyên văn); sau Kill, `grep -c 'ab-dsh-'` in `0` (không còn tiến trình mang dấu `ab-dsh-` trong container), terminal Kill in `Đã dừng {n} tiến trình trong container dsh-deepseek-harness`.
+- **Ghi nhận**: Dòng `P6-09`: dòng `q` của run Dev, kết quả `stat`, kết quả `git status`, số tiến trình `ab-dsh-` còn lại sau Kill, mọi bất thường (file root-owned chặn `git`, lệnh `docker` lỗi). Chưa nên bỏ giới hạn `allowed_profiles: ["personal"]` cho tới khi bạn chấp nhận kết quả này.
+- **Dọn dẹp**: File dsh ghi thuộc root nên chỉ xóa được từ bên trong container (đúng cách `spikes/s6` dọn): `docker exec dsh-deepseek-harness rm -rf -- /mnt/data/IDE/p6-dsh-nhap </dev/null`; kiểm tra `ls /mnt/data/IDE/p6-dsh-nhap` báo không còn.
+
+---
+
+### P6-10: claude-max chỉ cho dự án personal (ENG-10)
+- **Mục tiêu**: Đội hình dùng `claude-max` (engine bản địa buộc profile `personal`) bị từ chối ở dự án work với lời nhắc SPK-10, và chạy trên `~/.claude-orca` ở dự án personal (D-36, D-42).
+- **Tiền điều kiện**: P6-02 xong (`$LIVE`; dự án work `nhap-p6`, dự án personal `nhap-dsh` hoặc một repo nháp personal khác); không có run `personal` nào đang chạy (E-06: **không bao giờ hai run personal cùng lúc**).
+- **Lệnh thực hiện**:
+  1. Thêm engine và đội hình:
+     ```bash
+     python3 - "$AGENT_BRAIN_CONFIG" "$XDG_CONFIG_HOME/agent-brain/teams.json" <<'EOF'
+     import json, sys
+     cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+     cfg["engines"] = [e for e in cfg["engines"] if e["id"] != "claude-max"] + [{"id": "claude-max", "kind": "anthropic", "command": "claude", "pin_profile": "personal", "models": {"lead": "opus", "dev": "opus"}}]
+     json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+     teams = json.load(open(sys.argv[2], encoding="utf-8"))
+     teams["doi-max"] = {"description": "Lead và Dev trên Claude Max, chỉ dự án personal.", "roles": {"lead": "claude-max", "dev": "claude-max"}}
+     json.dump(teams, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+     EOF
+     ```
+  2. Dự án work bị từ chối (CLI, rồi Giao việc trên dashboard với đội hình `doi-max`):
+     ```bash
+     "$AB" run lead --team doi-max --name p6-max-work -- nhap-p6 "việc thử"; echo "exit=$?"
+     ```
+  3. Dự án personal chạy (một Lead nhỏ), rồi xem profile của run:
+     ```bash
+     "$AB" run lead --team doi-max --name p6-max -- nhap-dsh "thêm chú thích vào src/app.py"; echo "exit=$?"
+     q "SELECT id, role, engine, profile, status FROM runs ORDER BY id DESC LIMIT 1"
+     ```
+- **Kết quả mong đợi**: Ở dự án work lệnh dừng với `Engine 'claude-max' chỉ dùng cho dự án profile personal — dự án 'nhap-p6' dùng profile work (ranh giới work/personal, SPK-10). …`, thoát khác `0`, không có nhánh nào được tạo và không có run nào được ghi; Giao việc trên dashboard cho cùng lời từ chối (`422`). Ở dự án personal run Lead có `engine` là `claude-max`, `profile` là `personal`, dòng đầu log ghi `profile personal … engine claude-max`; phiên claude dùng thư mục profile `~/.claude-orca` (đúng cấu hình `profiles.personal`).
+- **Ghi nhận**: Dòng `P6-10`: lời từ chối ở dự án work (nguyên văn), dòng `q` của run personal.
+- **Dọn dẹp**: Không.
+
+---
+
+### Dọn dẹp
+1. Dừng `serve` của P6-02 / P6-07 bằng PID đã ghi (`kill -INT "$(cat "$LIVE/serve.pid")"`) và Ctrl+C trong terminal của `bash scripts/phase6-live-check.sh --keep` (script gửi tín hiệu tới đúng PID `serve` của nó và xóa thư mục tạm).
+2. Xóa môi trường riêng: `rm -rf "$LIVE"` (chứa `brain.db` riêng, các repo nháp, bản dump quét key; bạn chỉ cần giữ biên bản kết quả).
+3. Repo nháp của P6-09 chỉ xóa được từ trong container (xem P6-09, Dọn dẹp). Không dùng `rm` thường trên file thuộc root.
+4. Kiểm tra `serve` của bạn ở cổng 7437 (nếu đang chạy) vẫn chạy bình thường và `git status --porcelain` của repo này không có thay đổi mới do đợt nghiệm thu; không lệnh nào trong phần này ghi vào `~/.local/share/agent-brain` hay `~/.config/agent-brain` (mọi ca dùng `XDG_*` và `AGENT_BRAIN_*` trong `$LIVE`).
+5. Nếu P6-06 cho `key_absent[…]=no`: thu hồi và đổi key đó trước khi làm bất kỳ việc nào khác.
