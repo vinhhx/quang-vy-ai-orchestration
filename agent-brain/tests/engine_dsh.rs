@@ -645,3 +645,164 @@ fn fake_docker_ps_status() {
         assert_eq!(r["argv"][0], json!("ps"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Task 2: stopping a run stops it inside the container
+// ---------------------------------------------------------------------------
+
+fn sleeping_scenario(pidfile: &Path) -> Value {
+    json!({
+        "lines": ["bắt đầu"],
+        "sleep_s": 30,
+        "spawn_child": true,
+        "pidfile": pidfile.to_str().unwrap(),
+    })
+}
+
+#[test]
+fn dsh_kill_inside_container() {
+    let sb = Sandbox::new();
+    let pidfile = sb.root.join("dsh.pid");
+    let dsh = Dsh::new(&sb, sleeping_scenario(&pidfile));
+    setup(&sb, vec![], &[]);
+
+    let mut child = sb.spawn_env(
+        &["run", "dev", "--", "web-ban-hang"],
+        None,
+        &refs(&dsh.vars(&[])),
+    );
+    let pids = read_pids(&pidfile, Duration::from_secs(15)).expect("fake dsh wrote no pidfile");
+    let _guard = guard_pids(pids);
+    let marker = wait_marker(&sb);
+    assert!(!procs_with(&marker).is_empty(), "no container-side process");
+
+    let task_id: i64 = sb
+        .db()
+        .query_row("SELECT id FROM tasks ORDER BY id DESC LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let kill = sb.run(&["kill", &task_id.to_string()], None);
+    assert_eq!(
+        kill.code, 0,
+        "kill failed: {}\n{}",
+        kill.stderr, kill.stdout
+    );
+    assert!(
+        kill.stderr.contains("fake-dsh"),
+        "the kill reports the container: {}",
+        kill.stderr
+    );
+    let _ = child.wait();
+
+    assert_eq!(dev_row(&sb).status, "killed");
+    assert_gone(&marker, pids);
+}
+
+#[test]
+fn dsh_timeout_kills_inside_container() {
+    let sb = Sandbox::new();
+    let pidfile = sb.root.join("dsh.pid");
+    let dsh = Dsh::new(&sb, sleeping_scenario(&pidfile));
+    setup(&sb, vec![], &[]);
+    // the full map: a partial `timeout_seconds` would drop the other roles' values
+    let mut cfg: Value =
+        serde_json::from_str(&std::fs::read_to_string(&sb.config_path).unwrap()).unwrap();
+    cfg["timeout_seconds"] = json!({
+        "lead": 30, "dev": 3, "qa": 30, "inspect": 30, "plan-review": 30, "code-review": 30
+    });
+    std::fs::write(&sb.config_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+
+    let res = run_dev(&sb, &dsh.vars(&[]));
+    assert_ne!(res.code, 0, "stderr: {}", res.stderr);
+    let pids = read_pids(&pidfile, Duration::from_secs(5)).expect("fake dsh wrote no pidfile");
+    let _guard = guard_pids(pids);
+    let row = dev_row(&sb);
+    assert_eq!(row.status, "timed_out");
+    let marker = row.metrics["dsh"]["marker"].as_str().unwrap().to_string();
+    assert!(is_marker(&marker));
+    assert_gone(&marker, pids);
+}
+
+#[test]
+fn dsh_sigint_kills_inside_container() {
+    let sb = Sandbox::new();
+    let pidfile = sb.root.join("dsh.pid");
+    let dsh = Dsh::new(&sb, sleeping_scenario(&pidfile));
+    setup(&sb, vec![], &[]);
+
+    let mut child = sb.spawn_env(
+        &["run", "dev", "--", "web-ban-hang"],
+        None,
+        &refs(&dsh.vars(&[])),
+    );
+    let pids = read_pids(&pidfile, Duration::from_secs(15)).expect("fake dsh wrote no pidfile");
+    let _guard = guard_pids(pids);
+    let marker = wait_marker(&sb);
+
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGINT);
+    }
+    let _ = child.wait();
+
+    assert_eq!(dev_row(&sb).status, "killed");
+    assert_gone(&marker, pids);
+}
+
+#[test]
+fn dsh_leftover_warns() {
+    use std::os::unix::process::CommandExt;
+
+    let sb = Sandbox::new();
+    let dsh = Dsh::new(&sb, json!({"ops": [write_app()]}));
+    setup(&sb, vec![], &[]);
+
+    // A process of an earlier run: a marker token on its command line. The trailing command keeps
+    // the shell from replacing itself with `sleep`.
+    let mut old = std::process::Command::new("sh");
+    old.args(["-c", ": ab-dsh-000000000000; sleep 30; exit 0"]);
+    old.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    old.process_group(0);
+    let mut old = old.spawn().unwrap();
+    let old_pid = old.id() as i32;
+    let sh_id = agent_brain::procs::proc_id(old_pid).expect("proc_id of the old shell");
+    let mut recorded = vec![sh_id];
+    let seen = common::wait_until(Duration::from_secs(5), || {
+        let d = agent_brain::procs::descendants(old_pid);
+        if d.is_empty() {
+            false
+        } else {
+            recorded.extend(d);
+            true
+        }
+    });
+    assert!(seen, "the old shell did not start its sleep");
+    let _guard = common::ProcGuard(recorded.clone());
+
+    let res = run_dev(&sb, &dsh.vars(&[]));
+    assert_ok(&res, "run dev (dsh, leftover)");
+    assert!(
+        res.stderr
+            .contains("Cảnh báo: container fake-dsh còn tiến trình của run dsh trước"),
+        "stderr: {}",
+        res.stderr
+    );
+    assert!(
+        res.stderr.contains(&old_pid.to_string()),
+        "the warning names the pid: {}",
+        res.stderr
+    );
+    // never signalled by agent-brain
+    assert!(
+        agent_brain::procs::alive(sh_id),
+        "the old process was killed"
+    );
+
+    // the test ends it by its recorded pids
+    for p in &recorded {
+        agent_brain::procs::signal_proc(*p, libc::SIGKILL);
+    }
+    let _ = old.wait();
+}
