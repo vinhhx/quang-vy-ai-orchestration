@@ -5,7 +5,7 @@ pub mod review;
 
 use crate::app::Ctx;
 use crate::config::Config;
-use crate::error::{BrainError, BrainResult, EXIT_QUOTA};
+use crate::error::{BrainError, BrainResult, EXIT_PROTOCOL, EXIT_QUOTA};
 use crate::projects::Project;
 use crate::runner::RunOutcome;
 use crate::stream::Summary;
@@ -492,6 +492,7 @@ pub fn execute_role_staged(
         timeout: plan.timeout,
         kill_grace: Duration::from_secs(ctx.cfg.kill_grace_secs),
         stdout_file: ep.stdout_file,
+        redact: ep.redact.clone(),
     };
 
     struct Observer<'a> {
@@ -697,7 +698,11 @@ pub fn execute_role_staged(
                 .as_ref()
                 .map(|v| v.len() as i64),
             permission_denials: obs.summary.permission_denials,
-            error: quota_hit.as_ref().map(|h| format!("quota: {}", h.detail)),
+            // Built from the already-redacted summary and stderr tail; redacted once more as a
+            // defence so no later change to the detector can store a key here (ENG-05).
+            error: quota_hit
+                .as_ref()
+                .map(|h| crate::secrets::redact_str(&format!("quota: {}", h.detail), &ep.redact)),
         };
         crate::db::finish_run(&ctx.conn, run_id, &finish)?;
         if agy_stream {
@@ -749,9 +754,48 @@ pub fn execute_role_staged(
     // retries and no other engine is tried. `main` prints the message on stderr.
     if let Some(hit) = quota_hit {
         return Err(BrainError::new(
-            crate::quota::user_message(&ep.display, &hit),
+            crate::secrets::redact_str(&crate::quota::user_message(&ep.display, &hit), &ep.redact),
             EXIT_QUOTA,
         ));
+    }
+
+    // ENG-05 / Pitfall 10: redaction covers what agent-brain writes, not what the model writes into
+    // the project. After a run that ended by itself, the files it changed (uncommitted, plus
+    // committed since the run's base) are scanned for this run's key BEFORE the role code gets to
+    // commit anything. A hit stops the step; only the paths are reported, never the value.
+    if !ep.redact.is_empty()
+        && !matches!(
+            outcome.status,
+            crate::runner::RunStatus::Killed | crate::runner::RunStatus::TimedOut
+        )
+    {
+        let mut paths = crate::gitops::changed_paths(root).unwrap_or_default();
+        if let Some(base) = plan.base_commit.as_deref() {
+            if let Ok(names) = crate::gitops::diff_names(root, base, "HEAD") {
+                paths.extend(names);
+            }
+        }
+        let paths: Vec<String> = paths.into_iter().collect();
+        let leaked = crate::secrets::scan_for_secrets(root, &paths, &ep.redact);
+        if !leaked.is_empty() {
+            if let Some(run_id) = obs.run_id {
+                crate::db::set_run_outcome(&ctx.conn, run_id, "protocol_violation")?;
+                crate::db::merge_run_metrics(
+                    &ctx.conn,
+                    run_id,
+                    &serde_json::json!({ "secret_leak": leaked }),
+                )?;
+            }
+            let msg = format!(
+                "Phát hiện key của engine {} trong file: {} — không commit. Xóa key khỏi file (và khỏi lịch sử git nếu đã commit) rồi chạy lại.",
+                ep.db_engine,
+                leaked.join(", ")
+            );
+            return Err(BrainError::new(
+                crate::secrets::redact_str(&msg, &ep.redact),
+                EXIT_PROTOCOL,
+            ));
+        }
     }
 
     // D-05: a read-only agy role answers with the whole protocol file; agent-brain writes it, and

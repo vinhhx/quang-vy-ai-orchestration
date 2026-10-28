@@ -169,6 +169,10 @@ pub struct RunRequest {
     pub kill_grace: Duration,
     /// true: the child's stdout is `stream_path` itself (never a pipe) and the runner tails it.
     pub stdout_file: bool,
+    /// Secret values of THIS run's engine (ENG-05): scrubbed from every stdout line before it is
+    /// written or shown, and from `stderr.txt` when the child is gone. Empty for an engine that
+    /// carries no key, and then nothing is copied or rewritten.
+    pub redact: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +206,36 @@ impl Drop for TreeGuard {
     }
 }
 
+/// Rewrites `stderr.txt` without the run's secrets when the supervisor is left by any path that
+/// did not reach the explicit rewrite (an error return, a panic): the child wrote that file
+/// directly, so it is the one sink the line filter cannot cover.
+struct StderrGuard<'a> {
+    req: &'a RunRequest,
+    armed: bool,
+}
+
+impl Drop for StderrGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            scrub_stderr_file(self.req);
+        }
+    }
+}
+
+/// Rewrites `stderr.txt` redacted. If the rewrite fails the file is removed: an absent log is
+/// better than one that holds a key. Returns the failure text for the caller to report.
+fn scrub_stderr_file(req: &RunRequest) -> Option<String> {
+    match crate::secrets::redact_file(&req.stderr_path, &req.redact) {
+        Ok(()) => None,
+        Err(e) => {
+            let _ = std::fs::remove_file(&req.stderr_path);
+            Some(format!(
+                "Không ẩn được key trong stderr.txt ({e}) — đã xóa file để không lưu key"
+            ))
+        }
+    }
+}
+
 pub fn supervise(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainResult<RunOutcome> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -215,6 +249,13 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         return Err(BrainError::error("argv rỗng"));
     }
     let argv0 = &req.argv[0];
+    // The stdout file is written by the child itself, so no line passes through the filter. An
+    // engine that needs a key must therefore never use that mode.
+    if req.stdout_file && !req.redact.is_empty() {
+        return Err(BrainError::error(
+            "Engine ghi stdout ra file không được mang key — lỗi cấu hình engine",
+        ));
+    }
 
     let mut sigint = signal(SignalKind::interrupt())
         .map_err(|e| BrainError::error(format!("Lỗi đăng ký SIGINT: {e}")))?;
@@ -224,6 +265,7 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         .map_err(|e| BrainError::error(format!("Lỗi đăng ký SIGHUP: {e}")))?;
 
     let stderr_file = std::fs::File::create(&req.stderr_path)?;
+    let mut stderr_guard = StderrGuard { req, armed: true };
 
     let mut cmd = tokio::process::Command::new(argv0);
     cmd.args(&req.argv[1..]);
@@ -283,7 +325,7 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
     if let Err(e) = obs.on_spawn(pid, pgid, pid_start) {
         let _ = child.start_kill();
         let _ = child.wait().await;
-        return Err(e);
+        return Err(e); // `stderr_guard` rewrites stderr.txt on the way out
     }
 
     // Pipe mode: the runner writes each line to the stream file. File mode: the child already
@@ -378,6 +420,11 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
             line = rx.recv() => {
                 match line {
                     Some(line) => {
+                        let line = if req.redact.is_empty() {
+                            line
+                        } else {
+                            crate::secrets::redact_line(&line, &req.redact)
+                        };
                         if let Some(f) = stream_file.as_mut() {
                             use std::io::Write;
                             let _ = f.write_all(&line);
@@ -461,6 +508,11 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
             line = rx.recv() => {
                 match line {
                     Some(line) => {
+                        let line = if req.redact.is_empty() {
+                            line
+                        } else {
+                            crate::secrets::redact_line(&line, &req.redact)
+                        };
                         if let Some(f) = stream_file.as_mut() {
                             use std::io::Write;
                             let _ = f.write_all(&line);
@@ -493,6 +545,13 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         }
     }
     guard.armed = false;
+
+    // Every exit path (normal, signal, timeout, `agent-brain kill`) reaches this point with the
+    // child tree gone, so stderr.txt is final and can be rewritten once.
+    stderr_guard.armed = false;
+    if let Some(msg) = scrub_stderr_file(req) {
+        obs.on_notice(&msg);
+    }
 
     let elapsed = start_time.elapsed();
     let exit_status = child_exit.unwrap();
