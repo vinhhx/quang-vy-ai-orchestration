@@ -14,15 +14,22 @@ use std::path::{Path, PathBuf};
 const GW_KEY: &str = "test-planted-gw-key-0123456789";
 const REDACTED: &str = "[đã ẩn]";
 
+/// A text for a failure message: both planted keys masked, so a failing test never prints one.
+fn safe(text: &str) -> String {
+    text.replace(GW_KEY, "<key>").replace(GW_B_KEY, "<key-b>")
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 fn assert_ok(res: &RunOut, what: &str) {
     assert_eq!(
-        res.code, 0,
+        res.code,
+        0,
         "{what} failed: stderr: {}\nstdout: {}",
-        res.stderr, res.stdout
+        safe(&res.stderr),
+        safe(&res.stdout)
     );
 }
 
@@ -326,7 +333,13 @@ fn eng05_quota_detail_redacted() {
         "exit_code": 1,
     });
     let res = sb.run_env(&["run", "dev", "--", "web-ban-hang"], Some(sc), &env);
-    assert_eq!(res.code, 5, "quota exit: {}\n{}", res.stderr, res.stdout);
+    assert_eq!(
+        res.code,
+        5,
+        "quota exit: {}\n{}",
+        safe(&res.stderr),
+        safe(&res.stdout)
+    );
 
     let (_, outcome, error, _) = run_row(&sb, "dev");
     assert_eq!(outcome.as_deref(), Some("quota"));
@@ -414,7 +427,13 @@ fn eng05_killed_run_redacted() {
     let child = spawn_dev(&sb, echo_then_sleep_scenario(), &env);
     let task_id = wait_dev_streaming(&sb);
     let killed = sb.run(&["kill", &task_id.to_string()], None);
-    assert_eq!(killed.code, 0, "kill: {}\n{}", killed.stderr, killed.stdout);
+    assert_eq!(
+        killed.code,
+        0,
+        "kill: {}\n{}",
+        safe(&killed.stderr),
+        safe(&killed.stdout)
+    );
     let (_, out, err) = finish(child);
 
     let (status, _, error, _) = run_row(&sb, "dev");
@@ -724,4 +743,186 @@ fn claude_stream_unchanged_without_secrets() {
         stream == expected.as_bytes(),
         "stream.jsonl differs from the fake's stdout"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Task 3: the post-run scan before any commit, and the dry run
+// ---------------------------------------------------------------------------
+
+/// Subjects of every commit of the repo, newest first.
+fn commit_subjects(sb: &Sandbox, repo: &Path) -> Vec<String> {
+    sb.git(repo, &["log", "--all", "--format=%s"])
+        .lines()
+        .map(|l| l.to_string())
+        .collect()
+}
+
+fn leak_message(id: &str, paths: &str) -> String {
+    format!("Phát hiện key của engine {id} trong file: {paths} — không commit.")
+}
+
+#[test]
+fn eng05_key_written_to_plan_not_committed() {
+    let sb = Sandbox::new();
+    sb.write_config(json!({"engines": [
+        gateway_entry("gw", "https://gw.invalid/x", "GW_KEY"),
+    ]}));
+    sb.write_teams(json!({"doi-gw": {
+        "description": "Lead qua gateway.",
+        "roles": {"lead": "gw"}
+    }}));
+    let repo = app_repo(&sb, "web-ban-hang");
+    let mut entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    let obj = entry.as_object_mut().unwrap();
+    obj.remove("workflow");
+    obj.insert("team".to_string(), json!("doi-gw"));
+    sb.write_map(Value::Array(vec![entry]), &[]);
+
+    // The Lead writes a valid plan and then copies its token into it.
+    let mut ops = lead_plan_entry()["ops"].as_array().unwrap().clone();
+    ops.push(json!({
+        "op": "echo_env", "var": "ANTHROPIC_AUTH_TOKEN", "to": "file",
+        "path": ".plan.md", "append": true
+    }));
+    let res = sb.run_env(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(json!({ "ops": ops })),
+        &gw_env(),
+    );
+    assert_eq!(
+        res.code,
+        3,
+        "exit: {}\n{}",
+        safe(&res.stderr),
+        safe(&res.stdout)
+    );
+    let all = format!("{}{}", res.stdout, res.stderr);
+    assert!(
+        all.contains(&leak_message("gw", ".plan.md")),
+        "the leak message is missing"
+    );
+    assert!(
+        all.contains("Xóa key khỏi file (và khỏi lịch sử git nếu đã commit) rồi chạy lại."),
+        "the leak message lacks its instruction"
+    );
+    assert!(!all.contains(GW_KEY), "key found in the CLI output");
+
+    let subjects = commit_subjects(&sb, &repo);
+    assert!(
+        !subjects.iter().any(|s| s == "sua-app: plan"),
+        "the plan was committed: {subjects:?}"
+    );
+    let (_, outcome, _, metrics) = run_row(&sb, "lead");
+    assert_eq!(outcome.as_deref(), Some("protocol_violation"));
+    assert_eq!(metrics["secret_leak"], json!([".plan.md"]));
+    assert_absent_everywhere(&sb, GW_KEY, &[]);
+}
+
+#[test]
+fn eng05_dev_file_with_key_not_committed() {
+    let sb = Sandbox::new();
+    let repo = gw_setup(&sb);
+    let env = gw_env();
+    run_lead(&sb, &env);
+    let before = sb.git(&repo, &["rev-parse", "HEAD"]);
+
+    let mut ops = dev_ops_prefix();
+    ops.push(json!({
+        "op": "echo_env", "var": "ANTHROPIC_AUTH_TOKEN", "to": "file",
+        "path": "src/app.py", "append": true
+    }));
+    let res = sb.run_env(
+        &["run", "dev", "--", "web-ban-hang"],
+        Some(json!({ "ops": ops })),
+        &env,
+    );
+    assert_eq!(
+        res.code,
+        3,
+        "exit: {}\n{}",
+        safe(&res.stderr),
+        safe(&res.stdout)
+    );
+    let all = format!("{}{}", res.stdout, res.stderr);
+    assert!(all.contains(&leak_message("gw", "src/app.py")));
+    assert!(!all.contains(GW_KEY), "key found in the CLI output");
+
+    assert_eq!(
+        sb.git(&repo, &["rev-parse", "HEAD"]),
+        before,
+        "agent-brain committed after a key leak"
+    );
+    let (_, outcome, _, metrics) = run_row(&sb, "dev");
+    assert_eq!(outcome.as_deref(), Some("protocol_violation"));
+    assert_eq!(metrics["secret_leak"], json!(["src/app.py"]));
+    assert_absent_everywhere(&sb, GW_KEY, &[]);
+}
+
+#[test]
+fn eng05_committed_key_detected() {
+    // The agent commits the key itself: the scan also reads what changed since the run's base.
+    let sb = Sandbox::new();
+    let repo = gw_setup(&sb);
+    let env = gw_env();
+    run_lead(&sb, &env);
+
+    let mut ops = dev_ops_prefix();
+    ops.push(json!({
+        "op": "echo_env", "var": "ANTHROPIC_AUTH_TOKEN", "to": "file",
+        "path": "src/app.py", "append": true
+    }));
+    ops.extend(dev_ops_suffix());
+    let res = sb.run_env(
+        &["run", "dev", "--", "web-ban-hang"],
+        Some(json!({ "ops": ops })),
+        &env,
+    );
+    assert_eq!(
+        res.code,
+        3,
+        "exit: {}\n{}",
+        safe(&res.stderr),
+        safe(&res.stdout)
+    );
+    let all = format!("{}{}", res.stdout, res.stderr);
+    assert!(all.contains(&leak_message("gw", "src/app.py")));
+    assert!(!all.contains(GW_KEY), "key found in the CLI output");
+    let (_, outcome, _, metrics) = run_row(&sb, "dev");
+    assert_eq!(outcome.as_deref(), Some("protocol_violation"));
+    assert_eq!(metrics["secret_leak"], json!(["src/app.py"]));
+}
+
+#[test]
+fn dry_run_has_no_key() {
+    let sb = Sandbox::new();
+    gw_setup(&sb);
+    let env = gw_env();
+    run_lead(&sb, &env);
+
+    for role in ["dev", "lead"] {
+        let args: Vec<&str> = if role == "dev" {
+            vec!["run", "dev", "--dry-run", "--", "web-ban-hang"]
+        } else {
+            vec!["run", "lead", "--dry-run", "--", "web-ban-hang", "sửa app"]
+        };
+        let res = sb.run_env(&args, None, &env);
+        assert_eq!(
+            res.code,
+            0,
+            "dry run {role}: {}\n{}",
+            safe(&res.stderr),
+            safe(&res.stdout)
+        );
+        let all = format!("{}{}", res.stdout, res.stderr);
+        assert!(!all.contains(GW_KEY), "key found in the {role} dry run");
+        assert!(!all.is_empty(), "the {role} dry run printed nothing");
+    }
 }
