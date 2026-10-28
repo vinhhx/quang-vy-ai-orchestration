@@ -108,6 +108,7 @@ pub fn step_state(run: Option<&RunRow>) -> (&'static str, &'static str) {
         Some("review:pass") => return ("dat", "đạt"),
         Some(crate::quota::OUTCOME_QUOTA) => return ("het_quota", "hết quota"),
         Some("agy:empty") => return ("vuong_mac", "agy không sửa file"),
+        Some("dsh:empty") => return ("vuong_mac", "dsh không sửa file"),
         _ => {}
     }
     match r.status.as_str() {
