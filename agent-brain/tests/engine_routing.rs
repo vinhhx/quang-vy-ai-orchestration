@@ -1088,3 +1088,250 @@ fn unknown_engine_refused_before_run() {
     assert_eq!(run_count(&sb), runs_before);
     assert_eq!(sb.records().len(), records_before);
 }
+
+// ---------------------------------------------------------------------------
+// Plan 06-11 Task 2: the profile guard (D-36 / D-38 / D-42), the unverified mark (D-40), QA (D-39)
+// ---------------------------------------------------------------------------
+
+/// A native entry pinned to the personal profile, run by the fake claude.
+fn claude_max_entry() -> Value {
+    json!({
+        "id": "claude-max",
+        "kind": "anthropic",
+        "command": fake_cmd(),
+        "pin_profile": "personal",
+        "models": {"lead": "opus", "dev": "opus"}
+    })
+}
+
+#[test]
+fn eng10_seam_backstop() {
+    let sb = Sandbox::new();
+    sb.write_config(json!({"engines": [claude_max_entry()]}));
+    sb.write_teams(
+        json!({"doi-max": {"description": "Dev trên Claude Max", "roles": {"dev": "claude-max"}}}),
+    );
+    let repo = app_repo(&sb, "web-ban-hang");
+    write_map_of(
+        &sb,
+        vec![team_project_entry(
+            &sb,
+            &repo,
+            "web-ban-hang",
+            "work",
+            "mac-dinh",
+        )],
+    );
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+    );
+    assert_ok(&res, "run lead");
+    // The hand-edited case: the task row names a team whose Dev is the pinned engine.
+    set_team_json(&sb, Some(r#"{"name":"doi-max","history":[]}"#));
+    let runs_before = run_count(&sb);
+    let records_before = sb.records().len();
+
+    let res = sb.run(
+        &["run", "dev", "--", "web-ban-hang"],
+        Some(dev_entry_for("sua-app")),
+    );
+    assert_eq!(res.code, 1, "stderr: {}", res.stderr);
+    assert!(
+        res.stderr.contains(
+            "Engine 'claude-max' chỉ dùng cho dự án profile personal — dự án 'web-ban-hang' dùng profile work (ranh giới work/personal, SPK-10). Đổi engine của vai trò dev hoặc chọn đội hình khác."
+        ),
+        "stderr: {}",
+        res.stderr
+    );
+    assert_eq!(run_count(&sb), runs_before, "no run row for a refused step");
+    assert_eq!(sb.records().len(), records_before, "nothing was spawned");
+}
+
+#[test]
+fn pinned_engine_runs_on_personal_project() {
+    let sb = Sandbox::new();
+    sb.write_config(json!({"engines": [claude_max_entry()]}));
+    sb.write_teams(
+        json!({"doi-max": {"description": "Dev trên Claude Max", "roles": {"dev": "claude-max"}}}),
+    );
+    let repo = app_repo(&sb, "web-ban-hang");
+    write_map_of(
+        &sb,
+        vec![team_project_entry(
+            &sb,
+            &repo,
+            "web-ban-hang",
+            "personal",
+            "doi-max",
+        )],
+    );
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+    );
+    assert_ok(&res, "run lead");
+    let res = sb.run(
+        &["run", "dev", "--", "web-ban-hang"],
+        Some(dev_entry_for("sua-app")),
+    );
+    assert_ok(&res, "run dev on the pinned engine");
+
+    assert_eq!(engines_of_runs(&sb), ["claude", "claude-max"]);
+    let dev = &sb.records()[1];
+    // The project's own profile env: no account is borrowed, nothing is injected.
+    assert_eq!(
+        dev["claude_config_dir"],
+        json!(sb.personal_dir.to_str().unwrap())
+    );
+    assert_eq!(dev["anthropic_base_url"], Value::Null);
+    let argv = rec_argv(dev);
+    let m = argv.iter().position(|a| a == "--model").unwrap();
+    assert_eq!(argv[m + 1], "opus");
+    assert!(res.stderr.contains("· engine claude-max · model opus"));
+    // A native run is not an unverified endpoint.
+    let (_, metrics) = run_of(&sb, "dev");
+    assert!(metrics.get("unverified").is_none(), "metrics: {metrics}");
+}
+
+/// One Dev run on a gateway entry; returns the CLI result of `run dev`.
+fn run_gateway_dev(sb: &Sandbox, entry: Value) -> RunOut {
+    sb.write_config(json!({ "engines": [entry] }));
+    sb.write_teams(
+        json!({"doi-gw": {"description": "Dev qua gateway", "roles": {"dev": "vcadm-deepseek"}}}),
+    );
+    let repo = app_repo(sb, "web-ban-hang");
+    write_map_of(
+        sb,
+        vec![team_project_entry(
+            sb,
+            &repo,
+            "web-ban-hang",
+            "work",
+            "doi-gw",
+        )],
+    );
+    let env = [("VCADM_GATEWAY_KEY", PLANTED_GW_KEY)];
+    let res = sb.run_env(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+        &env,
+    );
+    assert_ok(&res, "run lead");
+    let res = sb.run_env(
+        &["run", "dev", "--", "web-ban-hang"],
+        Some(dev_entry_for("sua-app")),
+        &env,
+    );
+    assert_ok(&res, "run dev");
+    res
+}
+
+#[test]
+fn unverified_endpoint_marked() {
+    // No `verified` text: the run happens, and is marked.
+    let sb = Sandbox::new();
+    let mut entry = gateway_entry(
+        "vcadm-deepseek",
+        "https://gateway.invalid/proxyllm",
+        "VCADM_GATEWAY_KEY",
+    );
+    entry.as_object_mut().unwrap().remove("verified");
+    let res = run_gateway_dev(&sb, entry);
+    let header = res
+        .stderr
+        .lines()
+        .find(|l| l.starts_with("[agent-brain] dev "))
+        .unwrap_or_else(|| panic!("no dev header: {}", res.stderr));
+    assert!(
+        header.ends_with("· engine vcadm-deepseek · model deepseek/deepseek-chat · chưa kiểm E-09"),
+        "header: {header}"
+    );
+    let (engine, metrics) = run_of(&sb, "dev");
+    assert_eq!(engine, "vcadm-deepseek");
+    assert_eq!(metrics["unverified"], json!(true), "metrics: {metrics}");
+
+    // With E-09 evidence: no mark.
+    let sb = Sandbox::new();
+    let mut entry = gateway_entry(
+        "vcadm-deepseek",
+        "https://gateway.invalid/proxyllm",
+        "VCADM_GATEWAY_KEY",
+    );
+    entry["verified"] = json!("2026-10-28 E-09");
+    let res = run_gateway_dev(&sb, entry);
+    let header = res
+        .stderr
+        .lines()
+        .find(|l| l.starts_with("[agent-brain] dev "))
+        .unwrap_or_else(|| panic!("no dev header: {}", res.stderr));
+    assert!(!header.contains("chưa kiểm"), "header: {header}");
+    assert!(
+        header.ends_with("· model deepseek/deepseek-chat"),
+        "header: {header}"
+    );
+    let (_, metrics) = run_of(&sb, "dev");
+    assert!(
+        metrics
+            .get("unverified")
+            .map_or(true, |v| v == &json!(false)),
+        "metrics: {metrics}"
+    );
+}
+
+#[test]
+fn qa_on_list_id_refused() {
+    // D-39: QA stays the built-in claude, a pinned `claude-max` included.
+    let sb = Sandbox::new();
+    sb.write_config(json!({"engines": [claude_max_entry()]}));
+    sb.write_teams(
+        json!({"doi-qa": {"description": "QA trên Claude Max", "roles": {"qa": "claude-max"}}}),
+    );
+    setup_auto_project(&sb, "personal");
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--team",
+            "doi-qa",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+    );
+    assert_eq!(res.code, 1, "stderr: {}", res.stderr);
+    assert!(
+        res.stderr.contains("Không có đội hình 'doi-qa'"),
+        "stderr: {}",
+        res.stderr
+    );
+    assert_eq!(task_count(&sb), 0);
+    assert!(sb.records().is_empty(), "no process may be spawned");
+}

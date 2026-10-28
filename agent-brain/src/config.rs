@@ -1720,4 +1720,348 @@ mod tests {
         // `claude` is a built-in, never a list entry.
         assert_eq!(cfg.engines.kind_of("claude"), None);
     }
+
+    /// The message of loading `engines` = `[entry]` (entry 0), or of `[prefix.., entry]`.
+    fn entry_err(entry: serde_json::Value) -> String {
+        config_from_value(&base_with(serde_json::json!({ "engines": [entry] })))
+            .expect_err("entry must be refused")
+            .message
+    }
+
+    fn engines_err(engines: serde_json::Value) -> String {
+        config_from_value(&base_with(serde_json::json!({ "engines": engines })))
+            .expect_err("engines must be refused")
+            .message
+    }
+
+    #[test]
+    fn engine_list_errors() {
+        use serde_json::json;
+        let gw = |extra: serde_json::Value| {
+            let mut e = gateway("a", "https://a.invalid/x", "A_KEY");
+            for (k, v) in extra.as_object().unwrap() {
+                e[k] = v.clone();
+            }
+            e
+        };
+
+        // entry and top level
+        assert_eq!(
+            entry_err(json!(1)),
+            "Cấu hình engines[0] không hợp lệ (phải là JSON object)"
+        );
+        assert_eq!(
+            engines_err(json!(5)),
+            "Cấu hình engines không hợp lệ (phải là mảng hoặc JSON object)"
+        );
+
+        // id
+        let bad_id =
+            "Cấu hình engines[0].id không hợp lệ (chữ thường không dấu, số và -, tối đa 32 ký tự)";
+        assert_eq!(entry_err(json!({"kind": "agy"})), bad_id);
+        assert_eq!(entry_err(json!({"id": "Bad Id", "kind": "agy"})), bad_id);
+        assert_eq!(
+            entry_err(json!({"id": "a".repeat(33), "kind": "agy"})),
+            bad_id
+        );
+        assert_eq!(entry_err(json!({"id": 7, "kind": "agy"})), bad_id);
+        assert_eq!(
+            entry_err(json!({"id": "claude", "kind": "agy"})),
+            "Cấu hình engines[0].id 'claude' là engine có sẵn — xóa mục này khỏi danh sách engines."
+        );
+        use unicode_normalization::UnicodeNormalization;
+        let nfc = "người";
+        let nfd: String = nfc.nfd().collect();
+        assert_ne!(nfc, nfd, "test needs a genuinely different spelling");
+        for spelling in [nfc.to_string(), nfd] {
+            assert_eq!(
+                engines_err(json!([{"id": "ok", "kind": "agy"}, {"id": spelling, "kind": "agy"}])),
+                format!(
+                    "Cấu hình engines[1].id '{spelling}' là engine có sẵn — xóa mục này khỏi danh sách engines."
+                )
+            );
+        }
+        assert_eq!(
+            engines_err(
+                json!([{"id": "a", "kind": "agy"}, {"id": "b", "kind": "agy"}, {"id": "a", "kind": "agy"}])
+            ),
+            "Cấu hình engines.a bị khai báo hai lần (engines[0] và engines[2])"
+        );
+
+        // kind
+        let bad_kind = "Cấu hình engines.a.kind không hợp lệ (chỉ anthropic, agy, dsh)";
+        assert_eq!(entry_err(json!({"id": "a", "kind": "openai"})), bad_kind);
+        assert_eq!(entry_err(json!({"id": "a"})), bad_kind);
+
+        // keys outside the kind's list; `_` keys are comments
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "agy", "env": {"A": "b"}})),
+            "Cấu hình engines.a: khóa lạ env"
+        );
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "anthropic", "docker": "docker"})),
+            "Cấu hình engines.a: khóa lạ docker"
+        );
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "dsh", "container": "c", "command": "x"})),
+            "Cấu hình engines.a: khóa lạ command"
+        );
+        assert_eq!(
+            entry_err(gw(json!({"args": ["--x"]}))),
+            "Cấu hình engines.a: khóa lạ args"
+        );
+        assert!(config_from_value(&base_with(
+            json!({"engines": [gw(json!({"_note": "ghi chú", "_x": {"y": 1}}))]})
+        ))
+        .is_ok());
+
+        // label
+        let bad_label = "Cấu hình engines.a.label không hợp lệ (một dòng, tối đa 120 ký tự)";
+        assert_eq!(entry_err(gw(json!({"label": "a\nb"}))), bad_label);
+        assert_eq!(entry_err(gw(json!({"label": "x".repeat(121)}))), bad_label);
+        assert_eq!(entry_err(gw(json!({"label": 5}))), bad_label);
+        assert!(config_from_value(&base_with(
+            json!({"engines": [gw(json!({"label": "x".repeat(120)}))]})
+        ))
+        .is_ok());
+
+        // allowed_profiles
+        let bad_allowed =
+            "Cấu hình engines.a.allowed_profiles không hợp lệ (danh sách tên profile có trong profiles)";
+        for v in [
+            json!([]),
+            json!(["khong-co"]),
+            json!("personal"),
+            json!([1]),
+        ] {
+            assert_eq!(entry_err(gw(json!({"allowed_profiles": v}))), bad_allowed);
+        }
+        assert_eq!(
+            entry_err(
+                json!({"id": "a", "kind": "anthropic", "pin_profile": "personal", "allowed_profiles": ["work"]})
+            ),
+            "Cấu hình engines.a.allowed_profiles phải chứa pin_profile 'personal'"
+        );
+
+        // pricing
+        let bad_price = "Cấu hình engines.a.pricing không hợp lệ (cần input, output, cache_read, cache_write là số không âm)";
+        assert_eq!(entry_err(gw(json!({"pricing": {"input": 1}}))), bad_price);
+        assert_eq!(
+            entry_err(gw(
+                json!({"pricing": {"input": -1, "output": 1, "cache_read": 1, "cache_write": 1}})
+            )),
+            bad_price
+        );
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "agy", "pricing": "x"})),
+            bad_price
+        );
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "dsh", "container": "c",
+                "pricing": {"input": 1, "output": 1, "cache_read": 1, "cache_write": 1}})),
+            "Cấu hình engines.a.pricing không dùng cho engine dsh (không có token)"
+        );
+
+        // command (anthropic and agy) and docker (dsh): an executable only
+        assert_eq!(
+            entry_err(gw(json!({"command": ""}))),
+            "Cấu hình engines.a.command không được rỗng"
+        );
+        assert_eq!(
+            entry_err(gw(json!({"command": []}))),
+            "Cấu hình engines.a.command không được rỗng"
+        );
+        assert_eq!(
+            entry_err(gw(json!({"command": ["claude", "-p"]}))),
+            "Cấu hình engines.a.command chỉ nhận tên lệnh, không nhận tham số"
+        );
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "agy", "command": ["agy", "--x"]})),
+            "Cấu hình engines.a.command chỉ nhận tên lệnh, không nhận tham số"
+        );
+        assert_eq!(
+            entry_err(
+                json!({"id": "a", "kind": "dsh", "container": "c", "docker": ["docker", "exec"]})
+            ),
+            "Cấu hình engines.a.docker chỉ nhận tên lệnh, không nhận tham số"
+        );
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "dsh", "container": "c", "docker": " "})),
+            "Cấu hình engines.a.docker không được rỗng"
+        );
+        let one = config_from_value(&base_with(
+            json!({"engines": [gw(json!({"command": ["my-claude"]}))]}),
+        ))
+        .unwrap();
+        assert_eq!(
+            one.engines.get("a").unwrap().anthropic().unwrap().command,
+            "my-claude"
+        );
+
+        // base_url / key_env
+        assert_eq!(
+            entry_err(gw(json!({"base_url": "http://x"}))),
+            "Cấu hình engines.a.base_url phải bắt đầu bằng https://"
+        );
+        assert_eq!(
+            entry_err(
+                json!({"id": "a", "kind": "anthropic", "base_url": "https://x.invalid", "models": {"dev": "m"}})
+            ),
+            "Cấu hình engines.a.key_env bắt buộc khi có base_url"
+        );
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "anthropic", "key_env": "A_KEY"})),
+            "Cấu hình engines.a.key_env chỉ dùng cùng base_url"
+        );
+        for bad in ["a_key", "1KEY", "A-KEY", ""] {
+            assert_eq!(
+                entry_err(gw(json!({"key_env": bad}))),
+                "Cấu hình engines.a.key_env không hợp lệ (chỉ chữ hoa, số và _)",
+                "{bad:?}"
+            );
+        }
+
+        // models
+        assert_eq!(
+            entry_err(gw(json!({"models": {"dev": "m", "tester": "x"}}))),
+            "Cấu hình engines.a.models.tester không hợp lệ"
+        );
+        assert_eq!(
+            entry_err(gw(json!({"models": {"dev": ""}}))),
+            "Cấu hình engines.a.models.dev không hợp lệ"
+        );
+        assert_eq!(
+            entry_err(gw(json!({"models": {"lead": "m"}}))),
+            "Cấu hình engines.a.models.dev bắt buộc khi có base_url"
+        );
+        assert_eq!(
+            entry_err(gw(json!({"models": ["m"]}))),
+            "Cấu hình engines.a.models không hợp lệ (phải là JSON object)"
+        );
+
+        // pin_profile
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "anthropic", "pin_profile": "khong-co"})),
+            "Cấu hình engines.a.pin_profile 'khong-co' không có trong profiles"
+        );
+        assert_eq!(
+            entry_err(gw(json!({"pin_profile": "personal"}))),
+            "Cấu hình engines.a.pin_profile chỉ dùng cho engine không có base_url"
+        );
+
+        // compat
+        let bad_compat = "Cấu hình engines.a.compat không hợp lệ (chỉ disable_experimental_betas, disable_adaptive_thinking, cùng base_url)";
+        assert_eq!(entry_err(gw(json!({"compat": ["bat-ky"]}))), bad_compat);
+        assert_eq!(entry_err(gw(json!({"compat": "x"}))), bad_compat);
+        assert_eq!(
+            entry_err(
+                json!({"id": "a", "kind": "anthropic", "compat": ["disable_experimental_betas"]})
+            ),
+            bad_compat
+        );
+
+        // verified
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "anthropic", "verified": "x"})),
+            "Cấu hình engines.a.verified chỉ dùng cùng base_url"
+        );
+        let bad_verified = "Cấu hình engines.a.verified không hợp lệ (một dòng, tối đa 200 ký tự)";
+        assert_eq!(entry_err(gw(json!({"verified": "x\ny"}))), bad_verified);
+        assert_eq!(
+            entry_err(gw(json!({"verified": "x".repeat(201)}))),
+            bad_verified
+        );
+
+        // agy fields (the legacy texts with `engines.{id}.`)
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "agy", "print_timeout_margin_secs": 3601})),
+            "Cấu hình engines.a.print_timeout_margin_secs phải là số nguyên từ 0 đến 3600"
+        );
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "agy", "model": " "})),
+            "Cấu hình engines.a.model không hợp lệ"
+        );
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "agy", "dev_permission": "skip"})),
+            "Cấu hình engines.a.dev_permission không hợp lệ (chỉ accept-edits)"
+        );
+
+        // dsh fields
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "dsh"})),
+            "Cấu hình engines.a.container không được rỗng"
+        );
+        assert_eq!(
+            entry_err(json!({"id": "a", "kind": "dsh", "container": ""})),
+            "Cấu hình engines.a.container không được rỗng"
+        );
+        let bad_container =
+            "Cấu hình engines.a.container không hợp lệ (chữ, số, _ . -; tối đa 64 ký tự)";
+        for bad in ["-x", "a b", "a/b", &"c".repeat(65)] {
+            assert_eq!(
+                entry_err(json!({"id": "a", "kind": "dsh", "container": bad})),
+                bad_container,
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            entry_err(
+                json!({"id": "a", "kind": "dsh", "container": "c", "dsh_profile": "Bad Name"})
+            ),
+            "Cấu hình engines.a.dsh_profile không hợp lệ"
+        );
+        let ok = config_from_value(&base_with(
+            json!({"engines": [{"id": "a", "kind": "dsh", "container": "Dsh_1.x-y"}]}),
+        ))
+        .unwrap();
+        assert_eq!(
+            ok.engines.get("a").unwrap().dsh().unwrap().container,
+            "Dsh_1.x-y"
+        );
+    }
+
+    #[test]
+    fn example_engines_file_loads() {
+        let text = include_str!("../../docs/config.engines.example.json");
+        let example: serde_json::Value = serde_json::from_str(text).expect("example is JSON");
+        let engines = example["engines"].clone();
+        assert!(engines.is_array(), "the example has an `engines` array");
+
+        // Only `engines` is merged, so `profiles` stays the documented default, which declares
+        // the `personal` profile the example's `pin_profile` and `allowed_profiles` name.
+        let merged = base_with(serde_json::json!({ "engines": engines }));
+        assert!(
+            merged["profiles"].get("personal").is_some(),
+            "the default profiles must declare `personal`"
+        );
+        let cfg = config_from_value(&merged).expect("the shipped example must load");
+
+        assert_eq!(
+            cfg.engines.ids(),
+            ["deepseek", "vcadm-deepseek", "claude-max", "agy", "dsh"]
+        );
+        assert!(cfg.engines.get("claude").is_none());
+        let max = cfg.engines.get("claude-max").unwrap();
+        assert!(max.is_native());
+        assert_eq!(
+            max.effective_allowed_profiles(),
+            Some(vec!["personal".to_string()])
+        );
+        let dsh = cfg.engines.get("dsh").unwrap();
+        assert_eq!(dsh.allowed_profiles, Some(vec!["personal".to_string()]));
+        assert_eq!(dsh.dsh().unwrap().container, "dsh-deepseek-harness");
+        assert_eq!(
+            cfg.engines.all_key_envs(),
+            ["DEEPSEEK_API_KEY", "VCADM_GATEWAY_KEY"]
+        );
+        // Key NAMES only: no entry carries an env map or a command array.
+        for e in engines_array(&example) {
+            assert!(e.get("env").is_none(), "{e}");
+            assert!(!e["command"].is_array(), "{e}");
+        }
+    }
+
+    fn engines_array(example: &serde_json::Value) -> Vec<&serde_json::Value> {
+        example["engines"].as_array().unwrap().iter().collect()
+    }
 }
