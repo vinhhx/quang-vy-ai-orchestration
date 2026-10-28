@@ -649,3 +649,442 @@ fn claude_cost_unchanged() {
     assert_eq!(engine, "claude");
     assert!((cost - 1.25).abs() < 1e-9, "stored cost {cost}");
 }
+
+// ---------------------------------------------------------------------------
+// Plan 06-11: the engine list (D-30) — `anthropic` entries, ids in teams and in `runs.engine`
+// ---------------------------------------------------------------------------
+
+const PLANTED_GW_KEY: &str = "test-planted-gw-key-0123456789";
+
+fn fake_cmd() -> String {
+    Sandbox::fake_claude().to_str().unwrap().to_string()
+}
+
+/// A gateway entry: `anthropic` kind with `base_url`, run by the fake claude.
+fn gateway_entry(id: &str, base_url: &str, key_env: &str) -> Value {
+    json!({
+        "id": id,
+        "kind": "anthropic",
+        "command": fake_cmd(),
+        "base_url": base_url,
+        "key_env": key_env,
+        "models": {
+            "lead": "deepseek/deepseek-reasoner",
+            "dev": "deepseek/deepseek-chat",
+            "qa": "deepseek/deepseek-chat"
+        },
+        "verified": "test"
+    })
+}
+
+fn write_map_of(sb: &Sandbox, entries: Vec<Value>) {
+    sb.write_map(Value::Array(entries), &[]);
+}
+
+/// Map entry with the given default team and no workflow (the manual flow).
+fn team_project_entry(
+    sb: &Sandbox,
+    repo: &std::path::Path,
+    id: &str,
+    profile: &str,
+    team: &str,
+) -> Value {
+    let mut entry = sb.project_entry(repo, id, profile);
+    let obj = entry.as_object_mut().unwrap();
+    obj.remove("workflow");
+    obj.insert("team".to_string(), json!(team));
+    entry
+}
+
+fn app_repo(sb: &Sandbox, name: &str) -> PathBuf {
+    sb.make_repo(
+        name,
+        &[("src/app.py", "def app():\n    return 1\n")],
+        None,
+        None,
+    )
+}
+
+fn dev_entry_for(name: &str) -> Value {
+    json!({"ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "read", "path": "src/app.py"},
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+        {"op": "git", "args": ["add", "src/app.py"]},
+        {"op": "git", "args": ["commit", "-m", format!("{name}: sửa app")]}
+    ]})
+}
+
+fn qa_entry() -> Value {
+    json!({"ops": [{
+        "op": "write",
+        "path": ".qa-report.md",
+        "content": "# QA: sửa app\n## Thay đổi có khớp plan không (từng mục)\n- src/app.py: khớp.\n## Sửa ngoài plan (nếu có)\nKhông.\n## Rủi ro\nKhông phát hiện rủi ro.\n## Kết luận\nĐạt\n",
+        "keep_meta": true
+    }]})
+}
+
+fn rec_argv(rec: &Value) -> Vec<String> {
+    rec["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect()
+}
+
+fn rec_env_names(rec: &Value) -> Vec<String> {
+    rec["env_names"]
+        .as_array()
+        .unwrap_or_else(|| panic!("record has no env_names: {rec}"))
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect()
+}
+
+fn engines_of_runs(sb: &Sandbox) -> Vec<String> {
+    let db = sb.db();
+    let mut stmt = db.prepare("SELECT engine FROM runs ORDER BY id").unwrap();
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
+#[test]
+fn tiet_kiem_routes_lead_dev_qa() {
+    let sb = Sandbox::new();
+    sb.write_config(json!({"engines": [
+        gateway_entry("vcadm-deepseek", "https://gateway.invalid/proxyllm", "VCADM_GATEWAY_KEY"),
+        {
+            "id": "deepseek", "kind": "anthropic", "command": fake_cmd(),
+            "base_url": "https://api.deepseek.com/anthropic", "key_env": "DEEPSEEK_API_KEY",
+            "models": {"dev": "sonnet"}
+        }
+    ]}));
+    // The D-43 override path: the built-in `tiet-kiem` with Dev on the configured gateway id.
+    sb.write_teams(json!({"tiet-kiem": {
+        "description": "Dev qua gateway công ty.",
+        "roles": {"dev": "vcadm-deepseek"}
+    }}));
+    let repo = app_repo(&sb, "web-ban-hang");
+    write_map_of(
+        &sb,
+        vec![team_project_entry(
+            &sb,
+            &repo,
+            "web-ban-hang",
+            "work",
+            "tiet-kiem",
+        )],
+    );
+
+    let env = [
+        ("VCADM_GATEWAY_KEY", PLANTED_GW_KEY),
+        ("FAKE_CLAUDE_EXPECT_TOKEN", PLANTED_GW_KEY),
+        ("ANTHROPIC_MODEL", "x"),
+        ("DEEPSEEK_API_KEY", "y"),
+    ];
+
+    let res = sb.run_env(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+        &env,
+    );
+    assert_ok(&res, "run lead");
+    let res = sb.run_env(
+        &["run", "dev", "--", "web-ban-hang"],
+        Some(dev_entry_for("sua-app")),
+        &env,
+    );
+    assert_ok(&res, "run dev");
+    assert!(
+        res.stderr
+            .contains("· engine vcadm-deepseek · model deepseek/deepseek-chat"),
+        "dev header: {}",
+        res.stderr
+    );
+    let res = sb.run_env(&["run", "qa", "--", "web-ban-hang"], Some(qa_entry()), &env);
+    assert_ok(&res, "run qa");
+
+    assert_eq!(
+        engines_of_runs(&sb),
+        ["claude", "vcadm-deepseek", "claude"],
+        "one run per role, each on its own engine"
+    );
+
+    let recs = sb.records();
+    assert_eq!(recs.len(), 3, "records: {recs:?}");
+
+    let dev = &recs[1];
+    assert_eq!(
+        dev["anthropic_base_url"],
+        json!("https://gateway.invalid/proxyllm")
+    );
+    assert_eq!(dev["auth_token_matches_expected"], json!(true));
+    let argv = rec_argv(dev);
+    let m = argv.iter().position(|a| a == "--model").unwrap();
+    assert_eq!(argv[m + 1], "deepseek/deepseek-chat");
+    for flag in [
+        "-p",
+        "--output-format",
+        "--verbose",
+        "--settings",
+        "--append-system-prompt",
+        "--allowedTools",
+        "--disallowedTools",
+    ] {
+        assert!(
+            argv.iter().any(|a| a == flag),
+            "dev argv lacks {flag}: {argv:?}"
+        );
+    }
+    let names = rec_env_names(dev);
+    for gone in [
+        "VCADM_GATEWAY_KEY",
+        "DEEPSEEK_API_KEY",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_API_KEY",
+    ] {
+        assert!(!names.iter().any(|n| n == gone), "dev env still has {gone}");
+    }
+    assert!(names.iter().any(|n| n == "ANTHROPIC_AUTH_TOKEN"));
+    assert!(names
+        .iter()
+        .any(|n| n == "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"));
+
+    for rec in [&recs[0], &recs[2]] {
+        assert_eq!(rec["anthropic_base_url"], Value::Null);
+        assert_eq!(rec["auth_token_matches_expected"], Value::Null);
+        let names = rec_env_names(rec);
+        for gone in ["VCADM_GATEWAY_KEY", "DEEPSEEK_API_KEY"] {
+            assert!(
+                !names.iter().any(|n| n == gone),
+                "claude run still has {gone}: {names:?}"
+            );
+        }
+    }
+    // The planted key never reaches what is stored for the run.
+    let (_, metrics) = run_of(&sb, "dev");
+    assert!(!metrics.to_string().contains(PLANTED_GW_KEY));
+}
+
+#[test]
+fn two_anthropic_endpoints() {
+    let sb = Sandbox::new();
+    sb.write_config(json!({"engines": [
+        gateway_entry("gw-a", "https://a.invalid/x", "GW_A_KEY"),
+        gateway_entry("gw-b", "https://b.invalid/x", "GW_B_KEY"),
+    ]}));
+    sb.write_teams(json!({
+        "doi-a": {"description": "Dev trên gw-a", "roles": {"dev": "gw-a"}},
+        "doi-b": {"description": "Dev trên gw-b", "roles": {"dev": "gw-b"}},
+    }));
+    let repo_a = app_repo(&sb, "proj-a");
+    let repo_b = app_repo(&sb, "proj-b");
+    write_map_of(
+        &sb,
+        vec![
+            team_project_entry(&sb, &repo_a, "proj-a", "work", "doi-a"),
+            team_project_entry(&sb, &repo_b, "proj-b", "work", "doi-b"),
+        ],
+    );
+    let key_a = "test-planted-gw-key-aaaaaaaaaa";
+    let key_b = "test-planted-gw-key-bbbbbbbbbb";
+    // Both keys are in the serve/CLI environment on every call.
+    for (proj, name, expect) in [("proj-a", "sua-a", key_a), ("proj-b", "sua-b", key_b)] {
+        let env = [
+            ("GW_A_KEY", key_a),
+            ("GW_B_KEY", key_b),
+            ("FAKE_CLAUDE_EXPECT_TOKEN", expect),
+        ];
+        let res = sb.run_env(
+            &["run", "lead", "--name", name, "--", proj, "sửa app"],
+            Some(lead_plan_entry()),
+            &env,
+        );
+        assert_ok(&res, "run lead");
+        let res = sb.run_env(&["run", "dev", "--", proj], Some(dev_entry_for(name)), &env);
+        assert_ok(&res, "run dev");
+    }
+
+    assert_eq!(engines_of_runs(&sb), ["claude", "gw-a", "claude", "gw-b"]);
+    let recs = sb.records();
+    assert_eq!(recs.len(), 4);
+    for (rec, base) in [
+        (&recs[1], "https://a.invalid/x"),
+        (&recs[3], "https://b.invalid/x"),
+    ] {
+        assert_eq!(rec["anthropic_base_url"], json!(base));
+        assert_eq!(rec["auth_token_matches_expected"], json!(true));
+        let names = rec_env_names(rec);
+        for gone in ["GW_A_KEY", "GW_B_KEY"] {
+            assert!(
+                !names.iter().any(|n| n == gone),
+                "{base}: env still has {gone}"
+            );
+        }
+    }
+}
+
+#[test]
+fn anthropic_missing_key_refused() {
+    let sb = Sandbox::new();
+    sb.write_config(json!({"engines": [
+        gateway_entry("vcadm-deepseek", "https://gateway.invalid/proxyllm", "VCADM_GATEWAY_KEY"),
+    ]}));
+    sb.write_teams(
+        json!({"doi-gw": {"description": "Dev qua gateway", "roles": {"dev": "vcadm-deepseek"}}}),
+    );
+    let repo = app_repo(&sb, "web-ban-hang");
+    write_map_of(
+        &sb,
+        vec![team_project_entry(
+            &sb,
+            &repo,
+            "web-ban-hang",
+            "work",
+            "doi-gw",
+        )],
+    );
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+    );
+    assert_ok(&res, "run lead");
+    let runs_before = run_count(&sb);
+    let records_before = sb.records().len();
+
+    // An empty value counts as missing.
+    for env in [vec![], vec![("VCADM_GATEWAY_KEY", "  ")]] {
+        let res = sb.run_env(
+            &["run", "dev", "--", "web-ban-hang"],
+            Some(dev_entry_for("sua-app")),
+            &env,
+        );
+        assert_eq!(res.code, 1, "stderr: {}", res.stderr);
+        assert!(
+            res.stderr.contains(
+                "Chưa đặt biến môi trường VCADM_GATEWAY_KEY cho engine vcadm-deepseek — đặt biến này trong shell chạy agent-brain (serve hoặc CLI) rồi chạy lại."
+            ),
+            "stderr: {}",
+            res.stderr
+        );
+        assert_eq!(run_count(&sb), runs_before, "no run row for a refused step");
+        assert_eq!(sb.records().len(), records_before, "nothing was spawned");
+    }
+}
+
+#[test]
+fn legacy_object_shape_still_routes() {
+    let sb = Sandbox::new();
+    sb.write_config(json!({"engines": {"deepseek": {"command": fake_cmd()}}}));
+    let repo = app_repo(&sb, "web-ban-hang");
+    write_map_of(
+        &sb,
+        vec![team_project_entry(
+            &sb,
+            &repo,
+            "web-ban-hang",
+            "work",
+            "tiet-kiem",
+        )],
+    );
+    let env = [
+        ("DEEPSEEK_API_KEY", PLANTED_GW_KEY),
+        ("FAKE_CLAUDE_EXPECT_TOKEN", PLANTED_GW_KEY),
+    ];
+
+    let res = sb.run_env(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+        &env,
+    );
+    assert_ok(&res, "run lead");
+    let res = sb.run_env(
+        &["run", "dev", "--", "web-ban-hang"],
+        Some(dev_entry_for("sua-app")),
+        &env,
+    );
+    assert_ok(&res, "run dev");
+
+    assert_eq!(engines_of_runs(&sb), ["claude", "deepseek"]);
+    let dev = &sb.records()[1];
+    assert_eq!(
+        dev["anthropic_base_url"],
+        json!("https://api.deepseek.com/anthropic")
+    );
+    assert_eq!(dev["auth_token_matches_expected"], json!(true));
+    assert!(!rec_env_names(dev).iter().any(|n| n == "DEEPSEEK_API_KEY"));
+}
+
+#[test]
+fn unknown_engine_refused_before_run() {
+    let sb = Sandbox::new();
+    sb.write_teams(
+        json!({"doi-x": {"description": "Dev trên engine không có", "roles": {"dev": "khong-co"}}}),
+    );
+    let repo = app_repo(&sb, "web-ban-hang");
+    write_map_of(
+        &sb,
+        vec![team_project_entry(
+            &sb,
+            &repo,
+            "web-ban-hang",
+            "work",
+            "doi-x",
+        )],
+    );
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+    );
+    assert_ok(&res, "run lead");
+    let runs_before = run_count(&sb);
+    let records_before = sb.records().len();
+
+    let res = sb.run(
+        &["run", "dev", "--", "web-ban-hang"],
+        Some(dev_entry_for("sua-app")),
+    );
+    assert_eq!(res.code, 1, "stderr: {}", res.stderr);
+    assert!(
+        res.stderr.contains(
+            "Engine 'khong-co' của đội hình 'doi-x' không có trong config.json (engines) — thêm engine hoặc đổi đội hình rồi chạy lại."
+        ),
+        "stderr: {}",
+        res.stderr
+    );
+    assert_eq!(run_count(&sb), runs_before);
+    assert_eq!(sb.records().len(), records_before);
+}
