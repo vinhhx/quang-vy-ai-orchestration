@@ -182,6 +182,34 @@ pub fn detect_claude(s: &Summary, exit_code: Option<i32>, stderr_tail: &str) -> 
     None
 }
 
+/// Quota decision for a text-output engine (dsh, ENG-02 / D-15): there is no structured result, so
+/// only a failed run can be a stop. A non-zero exit code whose stderr tail (first) or stdout tail
+/// names a limit or balance phrase (`text_matches`) is a hit; an exit of 0 or an unknown exit is
+/// never one, because a normal answer cannot be told from a quota notice (the empty-diff stop
+/// catches the no-work case). dsh's real failure output was never captured (A25): the raw lines
+/// stay in `events` for recalibration after the first real stop.
+pub fn detect_text(
+    exit_code: Option<i32>,
+    stdout_tail: &str,
+    stderr_tail: &str,
+) -> Option<QuotaHit> {
+    match exit_code {
+        Some(code) if code != 0 => {}
+        _ => return None,
+    }
+    let re = text_regex();
+    for tail in [stderr_tail, stdout_tail] {
+        if re.is_match(tail) {
+            return Some(QuotaHit {
+                signal: "text",
+                detail: first_matching_line(tail, re),
+                reset_at_ms: None,
+            });
+        }
+    }
+    None
+}
+
 /// The last `max_bytes` of a file as lossy UTF-8; a missing or unreadable file gives "".
 pub fn stderr_tail(path: &std::path::Path, max_bytes: u64) -> String {
     use std::io::{Read, Seek, SeekFrom};
