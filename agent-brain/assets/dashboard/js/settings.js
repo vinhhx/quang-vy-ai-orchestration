@@ -29,20 +29,31 @@
     { key: 'qa', a: 'qa', b: 'fix', nameA: 'QA', nameB: 'Sửa', label: 'QA ⇄ Sửa' },
   ];
 
-  var ENGINE_ORDER = ['claude', 'deepseek', 'agy', 'người'];
-  var ENGINE_DESC = {
-    'claude': 'Dùng profile của dự án (work hoặc personal), không có tài khoản riêng.',
-    'deepseek': 'claude chạy trên máy với endpoint của DeepSeek.',
-    'agy': 'Antigravity chạy không giao diện (headless).',
-    'người': 'Nhân sự làm trên máy của họ và đẩy nhánh task lên remote.',
+  // Per-kind copy of the Engine section (UI-SPEC Delta 2026-10-28, D-44). The list of engines
+  // itself comes from GET /api/engines; nothing here names a configured engine.
+  var KIND_CHIP = {
+    'claude': 'có sẵn',
+    'người': 'có sẵn',
+    'anthropic': 'anthropic',
+    'agy': 'agy',
+    'dsh': 'dsh',
   };
+  var KIND_DESC = {
+    'claude': 'Dùng profile của dự án (work hoặc personal), không có tài khoản riêng.',
+    'người': 'Nhân sự làm trên máy của họ và đẩy nhánh task lên remote.',
+    'agy': 'Antigravity chạy không giao diện (headless).',
+    'dsh': 'DeepSeek Harness trong container, chạy như hộp đen: chỉ văn bản, không đếm token.',
+  };
+  var DESC_ANTHROPIC_ENDPOINT = 'claude chạy trên máy với một endpoint định dạng Anthropic.';
+  var DESC_ANTHROPIC_NATIVE = 'claude chạy trên máy bằng tài khoản Claude của profile dự án.';
+  var HUMAN_ENGINE = 'người';
+  var NO_TOKEN_LINE = 'Không đếm token (chỉ văn bản).';
   var READINESS_WORDS = {
     san_sang: 'sẵn sàng',
     thieu_key: 'thiếu key',
     thieu_lenh: 'thiếu lệnh',
     chua_kiem: 'chưa kiểm',
   };
-  var FIXED_ENGINES = ['claude', 'deepseek', 'agy'];
 
   // Per-kind constants. `pfx` prefixes the editor state fields (teamMode, wMode, sMode ...).
   var KIND = {
@@ -902,9 +913,17 @@
         var opts = [];
         var seen = {};
         var i;
-        for (i = 0; i < FIXED_ENGINES.length; i++) {
-          opts.push({ value: FIXED_ENGINES[i], label: this.engineOptionLabel(FIXED_ENGINES[i]) });
-          seen[FIXED_ENGINES[i]] = true;
+        // `claude` is always first (and the only QA engine); the configured ids follow in API order.
+        opts.push({ value: 'claude', label: this.engineOptionLabel('claude') });
+        seen['claude'] = true;
+        var list = this.engines || [];
+        for (i = 0; i < list.length; i++) {
+          var e = list[i];
+          if (!e || !e.name || e.name === HUMAN_ENGINE || seen[e.name]) continue;
+          // D-37: a dsh engine is offered only in the Dev select.
+          if (e.kind === 'dsh' && role !== 'dev') continue;
+          opts.push({ value: e.name, label: this.engineOptionLabel(e.name) });
+          seen[e.name] = true;
         }
         if (role === 'dev') {
           for (i = 0; i < this.staff.length; i++) {
@@ -1535,36 +1554,53 @@
 
       // ---- engines (read-only, D-08) ----
 
-      // Rows come from a whitelist of fields: name, readiness, word, reason, command,
-      // key variable NAME, model and the staff count. Nothing else of the payload is read.
+      // Rows come from a whitelist of fields of GET /api/engines, in API order: id, kind, label,
+      // readiness, reason, command, key variable NAME, model, pin / allowed profiles, evidence,
+      // container, usage and the staff count. Nothing else of the payload is read (D-03).
       get engineRows() {
         var self = this;
-        var byName = {};
-        (this.engines || []).forEach(function (e) {
-          if (e && e.name) byName[e.name] = e;
-        });
-        return ENGINE_ORDER.map(function (name) {
-          var e = byName[name];
-          var key = (e && READINESS_WORDS[e.readiness]) ? e.readiness : 'chua_kiem';
+        var list = (this.engines || []).filter(function (e) { return e && e.name; });
+        // The section is never empty: `claude` and `người` always have a row.
+        if (list.length === 0) list = [{ name: 'claude' }, { name: HUMAN_ENGINE }];
+        return list.map(function (e) {
+          var name = String(e.name);
+          var kind = e.kind;
+          if (!kind) kind = (name === 'claude' || name === HUMAN_ENGINE) ? name : '';
+          var key = READINESS_WORDS[e.readiness] ? e.readiness : 'chua_kiem';
           var details = [];
-          if (name === 'người') {
-            details.push({ label: '', value: (e && e.detail) ? String(e.detail) : (self.staff.length + ' nhân sự'), cls: '' });
-          } else if (e) {
+          if (kind === HUMAN_ENGINE) {
+            details.push({ label: '', value: e.detail ? String(e.detail) : (self.staff.length + ' nhân sự'), cls: '' });
+          } else {
             if (e.command) details.push({ label: 'Lệnh: ', value: String(e.command), cls: 'font-mono' });
-            if (name === 'deepseek') {
-              if (e.key_env) details.push({ label: 'Biến key: ', value: String(e.key_env), cls: 'font-mono' });
-              if (e.model) details.push({ label: 'Model: ', value: String(e.model), cls: 'font-mono' });
+            if (e.key_env) details.push({ label: 'Biến key: ', value: String(e.key_env), cls: 'font-mono' });
+            if (e.model && kind !== 'dsh') details.push({ label: 'Model: ', value: String(e.model), cls: 'font-mono' });
+            if (e.pin_profile) details.push({ label: 'Profile cố định: ', value: String(e.pin_profile), cls: 'font-mono' });
+            var allowed = Array.isArray(e.allowed_profiles) ? e.allowed_profiles : [];
+            var onlyPin = allowed.length === 1 && String(allowed[0]) === String(e.pin_profile || '');
+            if (allowed.length > 0 && !onlyPin) {
+              details.push({ label: 'Chỉ cho dự án profile: ', value: allowed.join(', '), cls: 'font-mono' });
             }
+            if (e.evidence) details.push({ label: 'Bằng chứng E-09: ', value: String(e.evidence), cls: '' });
+            if (e.container) details.push({ label: 'Container: ', value: String(e.container), cls: 'font-mono' });
+            if (kind === 'dsh' || e.usage === 'none') details.push({ label: '', value: NO_TOKEN_LINE, cls: '' });
           }
+          var description = KIND_DESC[kind];
+          if (kind === 'anthropic') {
+            description = e.key_env ? DESC_ANTHROPIC_ENDPOINT : DESC_ANTHROPIC_NATIVE;
+          }
+          if (!description) description = e.description ? String(e.description) : '';
           var reason = '';
-          if (e && key !== 'san_sang' && key !== 'chua_kiem' && e.reason) {
-            reason = String(e.reason);
-          }
+          if (key !== 'san_sang' && e.reason) reason = String(e.reason);
+          var label = e.label ? String(e.label) : '';
           return {
             name: name,
+            kind: kind,
+            chip: KIND_CHIP[kind] || kind,
             key: key,
             word: READINESS_WORDS[key],
-            description: ENGINE_DESC[name],
+            label: label,
+            hasLabel: label !== '',
+            description: description,
             details: details,
             reason: reason,
             hasReason: reason !== '',

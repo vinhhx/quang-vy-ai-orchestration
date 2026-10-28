@@ -98,6 +98,10 @@ export FAKE_CLAUDE_SCENARIO="$TMP/fake_claude_scenario.json"
 export FAKE_CLAUDE_RECORD="$TMP/fake_claude_record.jsonl"
 export CLAUDECODE=1
 export CLAUDE_CODE_ENTRYPOINT=cli
+# 06-24: two planted gateway keys; the serve process reads them through the key variables named
+# in config.json, and no rendered page may ever contain their values.
+export SMOKE_GW_KEY="smoke-planted-gw-key-7f3a91c20b"
+export SMOKE_GW2_KEY="smoke-planted-gw2-key-5d8e44a1c7"
 
 mkdir -p "$TMP/home" "$TMP/xdg_config/agent-brain" "$TMP/xdg_data/agent-brain" "$TMP/runs" "$TMP/personal_cfg" "$TMP/repos"
 
@@ -236,6 +240,12 @@ cat << 'EOF' > "$TMP/xdg_config/agent-brain/teams.json"
     "roles": {
       "dev": "người:ha"
     }
+  },
+  "thu-cong": {
+    "description": "Đội hình có Dev chạy endpoint chưa có bằng chứng E-09 (smoke 06-24).",
+    "roles": {
+      "dev": "gw-chua"
+    }
   }
 }
 EOF
@@ -288,7 +298,54 @@ cat << EOF > "$TMP/brain_config.json"
   },
   "runs_dir": "$TMP/runs",
   "kill_grace_secs": 1,
-  "inspect_max_diff_bytes": 100000
+  "inspect_max_diff_bytes": 100000,
+  "engines": [
+    {
+      "id": "deepseek",
+      "kind": "anthropic",
+      "command": "$REPO_ROOT/tests/fakes/fake_claude.py",
+      "base_url": "https://deepseek.invalid/anthropic",
+      "key_env": "SMOKE_DEEPSEEK_KEY",
+      "models": {"dev": "sonnet"}
+    },
+    {
+      "id": "gw-thu",
+      "kind": "anthropic",
+      "label": "Cổng thử nghiệm của smoke",
+      "command": "$REPO_ROOT/tests/fakes/fake_claude.py",
+      "base_url": "https://gw-thu.invalid/anthropic",
+      "key_env": "SMOKE_GW_KEY",
+      "models": {"dev": "sonnet"},
+      "verified": "2026-10-28 smoke E-09"
+    },
+    {
+      "id": "gw-chua",
+      "kind": "anthropic",
+      "command": "$REPO_ROOT/tests/fakes/fake_claude.py",
+      "base_url": "https://gw-chua.invalid/anthropic",
+      "key_env": "SMOKE_GW2_KEY",
+      "models": {"dev": "sonnet"}
+    },
+    {
+      "id": "claude-max",
+      "kind": "anthropic",
+      "command": "$REPO_ROOT/tests/fakes/fake_claude.py",
+      "pin_profile": "personal",
+      "models": {"dev": "opus"}
+    },
+    {
+      "id": "agy",
+      "kind": "agy",
+      "command": "$REPO_ROOT/tests/fakes/fake_agy.py"
+    },
+    {
+      "id": "dsh",
+      "kind": "dsh",
+      "docker": "$TMP/khong-co-docker",
+      "container": "dsh-smoke",
+      "allowed_profiles": ["personal"]
+    }
+  ]
 }
 EOF
 
@@ -1492,6 +1549,33 @@ if screen == 'assign':
     if not pd or pd.get('effective') != 'doi-thu' or pd.get('team') != 'doi-thu':
         fail(f"project_defaults['web-ban-hang'] là {pd}, kỳ vọng team và effective 'doi-thu'")
     print("OK assign-team")
+
+    # 06-24: option readiness lines come from the engine list; chưa kiểm is a line, not a block.
+    import os
+    opt_text = {o.attrs.get('data-team-option'): collapse_ws(o.text()) for o in options}
+    if '! deepseek: thiếu key' not in opt_text.get('tiet-kiem', ''):
+        fail(f"Đội hình tiet-kiem thiếu dòng '! deepseek: thiếu key' (nội dung: '{opt_text.get('tiet-kiem')}')")
+    if '! gw-chua: chưa kiểm' not in opt_text.get('thu-cong', ''):
+        fail(f"Đội hình thu-cong thiếu dòng '! gw-chua: chưa kiểm' (nội dung: '{opt_text.get('thu-cong')}')")
+    req = urllib.request.Request(
+        f"{base.scheme}://{base.netloc}/api/engines",
+        headers={'Cookie': f"agent_brain_token={token}"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        raw_engines = resp.read().decode('utf-8')
+    engines_payload = json.loads(raw_engines)
+    ids = [e.get('name') for e in engines_payload.get('engines', [])]
+    want = ['claude', 'deepseek', 'gw-thu', 'gw-chua', 'claude-max', 'agy', 'dsh', 'người']
+    if ids != want:
+        fail(f"/api/engines trả {ids}, kỳ vọng {want}")
+    states = {e['name']: e['readiness'] for e in engines_payload['engines']}
+    if states.get('gw-chua') != 'chua_kiem' or states.get('deepseek') != 'thieu_key' or states.get('dsh') != 'thieu_lenh' or states.get('gw-thu') != 'san_sang':
+        fail(f"Trạng thái engine không như kỳ vọng: {states}")
+    for var in ('SMOKE_GW_KEY', 'SMOKE_GW2_KEY'):
+        value = os.environ.get(var, '')
+        if not value or value in html or value in raw_engines:
+            fail(f"Giá trị của {var} xuất hiện trong DOM Giao việc hoặc trong /api/engines (hoặc không được đặt)")
+    print("OK assign-engines")
     sys.exit(0)
 
 if screen == 'projects':
@@ -1720,6 +1804,38 @@ if screen == 'settings':
     if collapse(link[0].text()) != 'Cài đặt':
         fail(f"Liên kết menu #/settings có nhãn '{collapse(link[0].text())}', kỳ vọng 'Cài đặt'")
     print("OK settings-shell")
+
+    # 06-24: the Engine section lists the configured engines in config order (D-30, D-44).
+    import os
+    eng_rows = root.find(lambda n: 'data-engine-row' in n.attrs)
+    eng_names = [n.attrs.get('data-engine-row') for n in eng_rows]
+    want = ['claude', 'deepseek', 'gw-thu', 'gw-chua', 'claude-max', 'agy', 'dsh', 'người']
+    if eng_names != want:
+        fail(f"Hàng engine là {eng_names}, kỳ vọng {want}")
+    # The Engine section sits behind the sub-nav (x-show), so read each row's own visible text
+    # (hidden parents are not a reason to skip the row; hidden children still are).
+    eng_text = {n.attrs.get('data-engine-row'): collapse(n._own_text()) for n in eng_rows}
+    expect = {
+        'claude': ['có sẵn', 'sẵn sàng'],
+        'deepseek': ['anthropic', 'thiếu key', 'Chưa đặt biến môi trường SMOKE_DEEPSEEK_KEY.', 'Biến key: SMOKE_DEEPSEEK_KEY'],
+        'gw-thu': ['Cổng thử nghiệm của smoke', 'sẵn sàng', 'Bằng chứng E-09: 2026-10-28 smoke E-09', 'Biến key: SMOKE_GW_KEY'],
+        'gw-chua': ['chưa kiểm', 'Endpoint chưa có bằng chứng E-09', 'Biến key: SMOKE_GW2_KEY'],
+        'claude-max': ['Profile cố định: personal', 'claude chạy trên máy bằng tài khoản Claude của profile dự án.'],
+        'agy': ['agy', 'sẵn sàng'],
+        'dsh': ['dsh', 'thiếu lệnh', 'Không tìm thấy lệnh', 'Container: dsh-smoke', 'Không đếm token (chỉ văn bản).'],
+        'người': ['có sẵn', 'nhân sự'],
+    }
+    for name, needles in expect.items():
+        for needle in needles:
+            if needle not in eng_text[name]:
+                fail(f"Hàng engine '{name}' không chứa '{needle}' (nội dung: '{eng_text[name]}')")
+    if 'chưa kiểm' in eng_text['gw-thu'] or 'Endpoint chưa có bằng chứng' in eng_text['gw-thu']:
+        fail(f"Hàng engine 'gw-thu' đã có bằng chứng nhưng vẫn hiện chưa kiểm (nội dung: '{eng_text['gw-thu']}')")
+    for var in ('SMOKE_GW_KEY', 'SMOKE_GW2_KEY'):
+        value = os.environ.get(var, '')
+        if not value or value in html:
+            fail(f"Giá trị của {var} xuất hiện trong DOM Cài đặt (hoặc không được đặt)")
+    print("OK settings-engines")
     sys.exit(0)
 
 if screen == 'stats':

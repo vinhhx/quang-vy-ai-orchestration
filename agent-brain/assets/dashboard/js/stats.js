@@ -261,7 +261,10 @@
           ? (AB.fmtNum(e.cache_read) + ' / ' + AB.fmtNum(e.cache_write))
           : '—';
         // An engine without a price never reads `≈ $0`: the cost is unknown, not zero.
-        var line2 = (e.priced ? AB.fmtCost(e.cost) : 'chưa có giá') + ' · ' + runs + ' run';
+        // A black-box engine (dsh, `usage: none`) counts no tokens at all: say so instead.
+        var line2 = e.usage === 'none'
+          ? 'không đếm token · ' + runs + ' run'
+          : (e.priced ? AB.fmtCost(e.cost) : 'chưa có giá') + ' · ' + runs + ' run';
         return {
           key: name,
           name: name,
