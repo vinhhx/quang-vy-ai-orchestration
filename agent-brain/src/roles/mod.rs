@@ -441,6 +441,7 @@ pub fn execute_role_staged(
         &plan.model,
         base_env,
         plan.timeout,
+        root,
     )?;
     let run_dir = match &plan.run_dir {
         Some(rd) => {
@@ -483,7 +484,7 @@ pub fn execute_role_staged(
         project_id: &'a str,
         profile: &'a str,
         run_dir: &'a Path,
-        db_engine: &'static str,
+        db_engine: String,
         model_label: String,
         team: Option<String>,
         summary: Summary,
@@ -507,7 +508,7 @@ pub fn execute_role_staged(
                 run_dir: Some(self.run_dir.to_string_lossy().to_string()),
             };
             let run_id =
-                crate::db::insert_run_with_engine(&self.ctx.conn, &new_run, self.db_engine)?;
+                crate::db::insert_run_with_engine(&self.ctx.conn, &new_run, &self.db_engine)?;
             self.run_id = Some(run_id);
             if self.stage.stage.is_some() || self.stage.round.is_some() {
                 crate::db::set_run_stage_round(
@@ -589,7 +590,7 @@ pub fn execute_role_staged(
         project_id: &project.id,
         profile: &project.profile,
         run_dir: &run_dir,
-        db_engine: ep.db_engine,
+        db_engine: ep.db_engine.clone(),
         model_label: ep.model_label.clone(),
         team: resolved.team.clone(),
         summary: Summary::new(plan.plan_files.clone(), Some(root.to_path_buf())),
@@ -657,18 +658,14 @@ pub fn execute_role_staged(
             },
             usage: obs.summary.usage,
             usage_source: obs.summary.usage_source.as_str().to_string(),
-            // claude keeps the cost from its result event; other engines are priced from
-            // `pricing.<engine>` and cost 0 when unpriced (D-23).
+            // claude (and a native entry) keeps the cost from its result event; other engines are
+            // priced from `pricing.<engine>` and cost 0 when unpriced (D-23).
             cost_usd: crate::pricing::cost_for_engine(
-                ep.db_engine,
+                &ep.db_engine,
                 &obs.summary.usage,
                 &ctx.cfg.pricing,
             )
-            .unwrap_or(if ep.db_engine == crate::engine::ENGINE_CLAUDE {
-                obs.summary.cost_usd
-            } else {
-                0.0
-            }),
+            .unwrap_or(if ep.native { obs.summary.cost_usd } else { 0.0 }),
             num_turns: obs.summary.num_turns,
             assistant_turns: Some(obs.summary.assistant_turns),
             turns_before_first_edit: obs.summary.turns_before_first_edit,
