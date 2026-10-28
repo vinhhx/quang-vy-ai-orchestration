@@ -171,10 +171,24 @@ fn gateway_entry(id: &str, key_env: &str) -> Value {
 /// A personal project `web-ban-hang` whose default team is `doi-dsh` (dev on dsh); a claude Lead
 /// run has written and committed the plan. Returns the repo path.
 fn setup(sb: &Sandbox, extra_engines: Vec<Value>, lead_env: &[(String, String)]) -> PathBuf {
+    setup_plan(sb, extra_engines, "dsh", &["src/app.py"], lead_env)
+}
+
+/// Same as `setup`, with the Dev engine of team `doi-dsh` and the files the plan lists chosen by
+/// the caller.
+fn setup_plan(
+    sb: &Sandbox,
+    extra_engines: Vec<Value>,
+    dev_engine: &str,
+    plan_files: &[&str],
+    lead_env: &[(String, String)],
+) -> PathBuf {
     let mut engines = vec![dsh_entry()];
     engines.extend(extra_engines);
     sb.write_config(json!({ "engines": engines }));
-    sb.write_teams(json!({"doi-dsh": {"description": "Dev trên dsh", "roles": {"dev": "dsh"}}}));
+    sb.write_teams(
+        json!({"doi-dsh": {"description": "Dev trên dsh", "roles": {"dev": dev_engine}}}),
+    );
     let repo = sb.make_repo(
         "web-ban-hang",
         &[("src/app.py", "def app():\n    return 1\n")],
@@ -186,6 +200,10 @@ fn setup(sb: &Sandbox, extra_engines: Vec<Value>, lead_env: &[(String, String)])
     obj.remove("workflow");
     obj.insert("team".to_string(), json!("doi-dsh"));
     sb.write_map(json!([entry]), &[]);
+    let rows: Vec<(&str, &str, &str, &str)> = plan_files
+        .iter()
+        .map(|f| (*f, "toàn file", "sửa", "demo"))
+        .collect();
     let res = sb.run_env(
         &[
             "run",
@@ -196,12 +214,7 @@ fn setup(sb: &Sandbox, extra_engines: Vec<Value>, lead_env: &[(String, String)])
             "web-ban-hang",
             "sửa app",
         ],
-        Some(protocol::lead_scenario(&[(
-            "src/app.py",
-            "app()",
-            "trả về 2",
-            "demo",
-        )])),
+        Some(protocol::lead_scenario(&rows)),
         &refs(lead_env),
     );
     assert_ok(&res, "run lead (claude)");
@@ -817,4 +830,270 @@ fn dsh_leftover_warns() {
         agent_brain::procs::signal_proc(*p, libc::SIGKILL);
     }
     let _ = old.wait();
+}
+
+// ---------------------------------------------------------------------------
+// Plan 06-25 Task 1 (tracer): dsh Dev diff checks and the `dsh:empty` stop
+// ---------------------------------------------------------------------------
+
+const DSH_EMPTY_MESSAGE: &str = "dsh không sửa file nào trong lượt này — có thể container không ghi được vào dự án hoặc dsh chỉ trả lời. Xem log rồi chạy lại hoặc đổi đội hình.";
+
+/// `(status, outcome, error, metrics)` of the newest dev run.
+fn dev_outcome(sb: &Sandbox) -> (String, Option<String>, Option<String>, Value) {
+    let (status, outcome, error, metrics): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sb
+        .db()
+        .query_row(
+            "SELECT status, outcome, error, metrics_json FROM runs WHERE role = 'dev' \
+             ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .expect("no dev run row");
+    let metrics = serde_json::from_str(&metrics.unwrap_or_else(|| "{}".to_string())).unwrap();
+    (status, outcome, error, metrics)
+}
+
+#[test]
+fn dsh_dev_outcomes() {
+    // (a) dsh prints a line and edits nothing: empty-diff stop, nothing committed.
+    {
+        let sb = Sandbox::new();
+        let dsh = Dsh::new(&sb, json!({"lines": ["chỉ trả lời, không sửa gì"]}));
+        let repo = setup(&sb, vec![], &[]);
+        let before = sb.git(&repo, &["rev-parse", "HEAD"]);
+        let res = run_dev(&sb, &dsh.vars(&[]));
+        assert_eq!(
+            res.code, 4,
+            "stderr: {}\nstdout: {}",
+            res.stderr, res.stdout
+        );
+        assert!(
+            res.stdout.contains(DSH_EMPTY_MESSAGE),
+            "stdout: {}",
+            res.stdout
+        );
+        let (status, outcome, _, _) = dev_outcome(&sb);
+        assert_eq!(status, "succeeded");
+        assert_eq!(outcome.as_deref(), Some("dsh:empty"));
+        assert_eq!(sb.git(&repo, &["rev-parse", "HEAD"]), before, "no commit");
+    }
+
+    // (b) the plan lists `.planning/ghi-chu.md` and dsh writes it: still a protocol violation.
+    {
+        let sb = Sandbox::new();
+        let dsh = Dsh::new(
+            &sb,
+            json!({"ops": [{"op": "write", "path": ".planning/ghi-chu.md", "content": "x\n"}]}),
+        );
+        let repo = setup_plan(&sb, vec![], "dsh", &[".planning/ghi-chu.md"], &[]);
+        let before = sb.git(&repo, &["rev-parse", "HEAD"]);
+        let res = run_dev(&sb, &dsh.vars(&[]));
+        assert_eq!(
+            res.code, 3,
+            "stderr: {}\nstdout: {}",
+            res.stderr, res.stdout
+        );
+        assert!(
+            res.stdout.contains(".planning/ghi-chu.md"),
+            "stdout: {}",
+            res.stdout
+        );
+        assert_eq!(dev_outcome(&sb).1.as_deref(), Some("protocol_violation"));
+        assert_eq!(sb.git(&repo, &["rev-parse", "HEAD"]), before, "no commit");
+    }
+
+    // (c) dsh writes a file outside the plan.
+    {
+        let sb = Sandbox::new();
+        let dsh = Dsh::new(
+            &sb,
+            json!({"ops": [
+                write_app(),
+                {"op": "write", "path": "src/other.py", "content": "y = 1\n"}
+            ]}),
+        );
+        setup(&sb, vec![], &[]);
+        let res = run_dev(&sb, &dsh.vars(&[]));
+        assert_eq!(
+            res.code, 3,
+            "stderr: {}\nstdout: {}",
+            res.stderr, res.stdout
+        );
+        assert!(
+            res.stdout.contains("src/other.py"),
+            "stdout: {}",
+            res.stdout
+        );
+        assert_eq!(dev_outcome(&sb).1.as_deref(), Some("protocol_violation"));
+    }
+
+    // (d) a secret-looking path is a violation even when the plan lists it.
+    {
+        let sb = Sandbox::new();
+        let dsh = Dsh::new(
+            &sb,
+            json!({"ops": [{"op": "write", "path": ".env", "content": "A=1\n"}]}),
+        );
+        setup_plan(&sb, vec![], "dsh", &[".env"], &[]);
+        let res = run_dev(&sb, &dsh.vars(&[]));
+        assert_eq!(
+            res.code, 3,
+            "stderr: {}\nstdout: {}",
+            res.stderr, res.stdout
+        );
+        assert_eq!(dev_outcome(&sb).1.as_deref(), Some("protocol_violation"));
+    }
+}
+
+/// An agy-kind entry whose id is not `agy` gets the same empty-diff stop as `agy` (D-35: the
+/// check keys on the engine kind, not the id).
+#[test]
+fn dsh_agy_kind_other_id_gets_agy_empty() {
+    let sb = Sandbox::new();
+    let fake_agy = fake_path("fake_agy.py");
+    let scenario = sb.root.join("fake_agy_scenario.json");
+    std::fs::write(&scenario, "{}").unwrap();
+    let agy2 = json!({"id": "agy2", "kind": "agy", "command": fake_agy.to_str().unwrap()});
+    let repo = setup_plan(&sb, vec![agy2], "agy2", &["src/app.py"], &[]);
+    let before = sb.git(&repo, &["rev-parse", "HEAD"]);
+    let res = run_dev(
+        &sb,
+        &[(
+            "FAKE_AGY_SCENARIO".to_string(),
+            scenario.to_str().unwrap().to_string(),
+        )],
+    );
+    assert_eq!(
+        res.code, 4,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        res.stdout
+            .contains("agy không sửa file nào — có thể bị từ chối quyền (xem stderr.txt của run)."),
+        "stdout: {}",
+        res.stdout
+    );
+    assert_eq!(dev_row(&sb).engine, "agy2");
+    assert_eq!(dev_outcome(&sb).1.as_deref(), Some("agy:empty"));
+    assert_eq!(sb.git(&repo, &["rev-parse", "HEAD"]), before, "no commit");
+}
+
+fn review_report(verdict: &str) -> String {
+    format!(
+        "---\nverdict: {verdict}\nblocking: 0\nadvisory: 0\nfiles: []\n---\n# Review: sửa app\n## Mục chặn (blocking)\n## Góp ý (advisory)\n"
+    )
+}
+
+/// Personal project `web-ban-hang` on team `doi-dsh` (Dev on dsh), no plan yet, for `auto`.
+fn setup_auto(sb: &Sandbox) {
+    sb.write_config(json!({ "engines": [dsh_entry()] }));
+    sb.write_teams(json!({"doi-dsh": {"description": "Dev trên dsh", "roles": {"dev": "dsh"}}}));
+    let repo = sb.make_repo(
+        "web-ban-hang",
+        &[("src/app.py", "def app():\n    return 1\n")],
+        None,
+        None,
+    );
+    let mut entry = sb.project_entry(&repo, "web-ban-hang", "personal");
+    let obj = entry.as_object_mut().unwrap();
+    obj.remove("workflow");
+    obj.insert("team".to_string(), json!("doi-dsh"));
+    sb.write_map(json!([entry]), &[]);
+}
+
+/// `auto --start` (Lead plans, plan-review approves, the driver waits at the gate) then
+/// `approve 1` (the driver runs Dev on dsh). Returns the `approve` result.
+fn drive_to_dev(sb: &Sandbox, env: &[(String, String)]) -> RunOut {
+    let scenario = json!({"by_role": {
+        "lead": [protocol::lead_scenario(&[("src/app.py", "app()", "trả về 2", "demo")])],
+        "plan-review": [{"ops": [{
+            "op": "write",
+            "path": ".plan-review.md",
+            "content": review_report("approve"),
+        }]}],
+    }});
+    let res = sb.run_env(
+        &[
+            "auto",
+            "--start",
+            "--name",
+            "sua-app",
+            "--workflow",
+            "mac-dinh",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(scenario.clone()),
+        &refs(env),
+    );
+    assert_ok(&res, "auto --start");
+    sb.run_env(&["approve", "1"], Some(scenario), &refs(env))
+}
+
+/// `(auto_state, auto_json)` of task 1.
+fn auto_state(sb: &Sandbox) -> (Option<String>, Value) {
+    let (state, aj): (Option<String>, Option<String>) = sb
+        .db()
+        .query_row(
+            "SELECT auto_state, auto_json FROM tasks WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    (
+        state,
+        serde_json::from_str(&aj.unwrap_or_else(|| "{}".into())).unwrap(),
+    )
+}
+
+/// `(role, outcome)` of every run, oldest first.
+fn run_roles(sb: &Sandbox) -> Vec<(String, Option<String>)> {
+    let conn = sb.db();
+    let mut stmt = conn
+        .prepare("SELECT role, outcome FROM runs ORDER BY id")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+
+#[test]
+fn dsh_empty_stops_autopilot() {
+    let sb = Sandbox::new();
+    let dsh = Dsh::new(&sb, json!({"lines": ["chỉ trả lời, không sửa gì"]}));
+    setup_auto(&sb);
+    let res = drive_to_dev(&sb, &dsh.vars(&[]));
+    assert_eq!(
+        res.code, 4,
+        "driver stop exits 4; stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+
+    let (state, aj) = auto_state(&sb);
+    assert_eq!(state.as_deref(), Some("stopped"), "aj: {aj}");
+    assert_eq!(aj["stop"]["reason"], "vuong_mac", "aj: {aj}");
+    assert_eq!(aj["stop"]["role"], "dev");
+    assert_eq!(aj["stop"]["detail_line"], json!(DSH_EMPTY_MESSAGE));
+
+    // nothing started after the empty dev run
+    let roles = run_roles(&sb);
+    assert_eq!(roles.last().unwrap().0, "dev", "{roles:?}");
+    assert_eq!(roles.last().unwrap().1.as_deref(), Some("dsh:empty"));
+    assert_eq!(
+        roles.iter().filter(|r| r.0 == "dev").count(),
+        1,
+        "{roles:?}"
+    );
+    assert!(
+        roles.iter().all(|r| r.0 != "qa" && r.0 != "code-review"),
+        "{roles:?}"
+    );
 }

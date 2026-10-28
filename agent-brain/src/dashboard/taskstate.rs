@@ -2882,6 +2882,12 @@ mod tests {
     }
 
     #[test]
+    fn step_state_dsh_empty() {
+        let r = dummy_run(3, "dev", "failed", Some("dsh:empty"));
+        assert_eq!(step_state(Some(&r)), ("vuong_mac", "dsh không sửa file"));
+    }
+
+    #[test]
     fn run_dev_continuation_gate() {
         let task = dummy_task("planned");
         let mut git = GitFacts {

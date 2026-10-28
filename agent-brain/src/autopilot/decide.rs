@@ -2783,6 +2783,50 @@ mod tests {
     }
 
     #[test]
+    fn d2_dsh_empty_stops_vuong_mac() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let aj = AutoJson::default();
+
+        let r = dummy_run(
+            6,
+            "dev",
+            Some("implement"),
+            Some(1),
+            "succeeded",
+            Some("dsh:empty"),
+            None,
+        );
+        assert!(!RunFact::from_row(&r).is_ok());
+        let f = build_facts(wf, &[r], &auto, &aj, Some("p1"), &pricing, 9500, false);
+        assert_eq!(
+            decide(wf, &f),
+            Decision::Stop(StopInfo {
+                reason: StopReason::VuongMac,
+                loop_name: Some(Loop::Build),
+                stage: Some(Stage::Implement),
+                round: Some(1),
+                cap: None,
+                run_id: Some(6),
+                role: Some("dev".to_string()),
+                at_ms: 9500,
+                detail_line: Some(crate::roles::dev::DSH_EMPTY_MESSAGE.to_string()),
+                used_ms: None,
+                used_usd: None,
+                estimated: None,
+                limit_minutes: None,
+                limit_usd: None,
+            })
+        );
+    }
+
+    #[test]
     fn last_run_failures() {
         let cfg = test_cfg();
         let loaded = load_from(None, &cfg);
