@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 # S6 - DeepSeek through the dsh-deepseek-harness container (SPK-06, D-07). Re-runnable.
-#   bash spikes/s6/run.sh          basic: headless call via docker exec, help, file edit, output format, cleanup
-#   bash spikes/s6/run.sh --kill   kill-from-outside variants (a) and (b); run by the USER, not the agent
+#   bash spikes/s6/run.sh                 basic: headless call via docker exec, help, file edit, output format, cleanup
+#   bash spikes/s6/run.sh --kill          kill-from-outside variants (a) and (b); run by the USER, not the agent
+#   bash spikes/s6/run.sh --kill-wrapper  D-35, user-run: the exact marker wrapper agent-brain will use (plan 06-23),
+#                                         marker_visible / sh_parent_kept, then the kill the way agent-brain does it
+#   bash spikes/s6/run.sh --uid-probe     D-35 / assumption A19, user-run: the basic task as `docker exec -u <uid>:<gid>`;
+#                                         observes only, nothing depends on it
 # Secrets (D-07): never lists the container environment, never runs docker inspect, never reads .env.docker,
 # never restarts/stops/rebuilds the container. Signals go only to the host-side docker exec client this script
 # started and to in-container PIDs that carry this run's unique marker (or descendants recorded before the kill).
 # No name-based signalling tool is used. Numbers and yes/no only; no verdict.
+# Safety rules that hold for every mode (also --kill-wrapper and --uid-probe): signals only to recorded PIDs (re-matched
+# by pid and args prefix before any KILL); no container lifecycle command (no start, stop, restart, rebuild); no
+# environment listing; the only look at the container is `docker ps --filter ... --format`; scratch is removed from
+# inside the container.
 set -u
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/env.sh"
 
@@ -208,8 +216,134 @@ mode_kill() {
   echo "S6 kill done:"; cat "$RAW/s6-kill-a.txt" "$RAW/s6-kill-b.txt"
 }
 
+# wrapper_shape SNAPSHOT_FILE MARKER : marker_visible=yes|no (a row carries the marker) and sh_parent_kept=yes|no
+#   (a row carrying the marker is the PARENT of the dsh row, i.e. the sh wrapper stayed alive above dsh).
+wrapper_shape() {
+  python3 -I - "$@" <<'PY'
+import re, sys
+snap, marker = sys.argv[1], sys.argv[2]
+rows = {}
+for ln in open(snap, errors="replace"):
+    m = re.match(r"\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$", ln)
+    if m:
+        rows[int(m.group(1))] = (int(m.group(2)), m.group(4))
+marked = {p for p, (pp, a) in rows.items() if marker in a}
+dsh = {p for p, (pp, a) in rows.items() if marker not in a and re.search(r"(^|[ /])dsh( |$)", a)}
+print("marker_visible=" + ("yes" if marked else "no"))
+print("sh_parent_kept=" + ("yes" if any(rows[p][0] in marked for p in dsh) else "no"))
+PY
+}
+
+# ---------------------------------------------------------------- kill-wrapper (D-35, user-run)
+# The wrapper text below, the marker excepted, is byte for byte the one agent-brain ships (plan 06-23, agent-brain/src/dsh.rs):
+#   sh -c ': ab-dsh-<12 hex>; dsh --profile "$1" "$2"; rc=$?; exit $rc' sh headless <prompt>
+mode_kill_wrapper() {
+  need_container || return 3
+  make_scr || return 3
+  trap cleanup_scr EXIT
+  local NONCE MARK WRAP PROMPT TD OUT S1 S2 BEF LAUNCH CLIENT i seen=no sleepseen=no shape PIDS PIDS2
+  NONCE="$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  MARK="ab-dsh-$NONCE"
+  WRAP=': '"$MARK"'; dsh --profile "$1" "$2"; rc=$?; exit $rc'
+  PROMPT="Run the bash command sleep 120 and wait for it, then reply DONE."
+  TD="$SPIKE_WORK_ROOT/s6"; mkdir -p "$TD"
+  OUT="$RAW/s6-kill-wrapper.txt"; S1="$TD/snap1-wrapper.txt"; S2="$TD/snap2-wrapper.txt"; BEF="$TD/before-wrapper.txt"
+  : > "$OUT"
+  echo "variant=wrapper" >> "$OUT"
+  echo "marker=$MARK" >> "$OUT"
+
+  timeout 300 docker exec -w "$SCR" "$C" sh -c "$WRAP" sh headless "$PROMPT" </dev/null > "$TD/wrapper-stdout.txt" 2>&1 &
+  LAUNCH=$!
+  sleep 1
+  CLIENT="$(pgrep -P "$LAUNCH" | head -n1)"   # the host-side docker exec client is the only child of timeout
+  echo "launcher_pid=$LAUNCH client_pid=${CLIENT:-none}" >> "$OUT"
+
+  # wait up to 120 s for the marker process and its sleep descendant to exist in the container
+  : > "$S1"
+  for i in $(seq 1 40); do
+    snapshot > "$S1"
+    if [ -n "$(tree "$S1" "$MARK")" ]; then seen=yes; fi
+    if [ "$seen" = yes ] && tree "$S1" "$MARK" | awk '{ $1=$2=$3=""; print }' | grep -qE '^ *sleep 120'; then sleepseen=yes; break; fi
+    sleep 3
+  done
+  shape="$(wrapper_shape "$S1" "$MARK")"
+  echo "$shape" >> "$OUT"
+  echo "sleep_child_seen=$sleepseen" >> "$OUT"
+  tree "$S1" "$MARK" > "$BEF"
+  { echo "before:"; sed 's/^/  /' "$BEF"; } >> "$OUT"
+
+  if [ "$seen" != yes ]; then
+    echo "marker-not-started" >> "$OUT"
+    [ -n "${CLIENT:-}" ] && kill -TERM "$CLIENT" 2>/dev/null   # only the client this script started
+    wait "$LAUNCH" 2>/dev/null
+    echo "leftover: none" >> "$OUT"; echo "sweep: none" >> "$OUT"; echo "final: none" >> "$OUT"
+  else
+    # the stop, the way agent-brain does it: TERM to the recorded pids, poll, KILL survivors re-matched by pid and args
+    PIDS="$(awk '{print $1}' "$BEF" | tr '\n' ' ')"
+    echo "signal: TERM pids=$PIDS" >> "$OUT"
+    # shellcheck disable=SC2086
+    docker exec "$C" kill -TERM $PIDS </dev/null >/dev/null 2>&1
+    for i in 1 2 3 4 5; do
+      sleep 1
+      snapshot > "$S2"
+      tree "$S2" "$MARK" "$BEF" > "$S2.left"
+      [ -s "$S2.left" ] || break
+    done
+    if [ -s "$S2.left" ]; then
+      echo "leftover:" >> "$OUT"; sed 's/^/  /' "$S2.left" >> "$OUT"
+      PIDS2="$(awk '{print $1}' "$S2.left" | tr '\n' ' ')"
+      # shellcheck disable=SC2086
+      docker exec "$C" kill -KILL $PIDS2 </dev/null >/dev/null 2>&1
+      sleep 1
+      echo "sweep: KILL pids=${PIDS2:-none}" >> "$OUT"
+    else
+      echo "leftover: none" >> "$OUT"
+      echo "sweep: none" >> "$OUT"
+    fi
+    wait "$LAUNCH" 2>/dev/null; echo "launcher_exit_code=$?" >> "$OUT"
+    snapshot > "$S2"; tree "$S2" "$MARK" "$BEF" > "$S2.left"
+    if [ -s "$S2.left" ]; then echo "final:" >> "$OUT"; sed 's/^/  /' "$S2.left" >> "$OUT"; else echo "final: none" >> "$OUT"; fi
+  fi
+  rm -f "$S1" "$S2" "$S2.left" "$BEF" "$TD/wrapper-stdout.txt"
+  cleanup_scr
+  trap - EXIT
+  scrub_raw "$RAW" >/dev/null
+  echo "S6 kill-wrapper done:"; cat "$OUT"
+}
+
+# ---------------------------------------------------------------- uid-probe (D-35 / A19, user-run)
+mode_uid_probe() {
+  need_container || return 3
+  make_scr || return 3
+  trap cleanup_scr EXIT
+  local ug ec TD OUT
+  ug="$(id -u):$(id -g)"
+  TD="$SPIKE_WORK_ROOT/s6"; mkdir -p "$TD"
+  OUT="$RAW/s6-uid-probe.txt"
+  timeout 300 docker exec -u "$ug" -w "$SCR" "$C" \
+    dsh --profile headless "Append the line 'edited-by-dsh' to a.txt, then reply DONE" </dev/null \
+    > "$TD/uid-stdout.txt" 2> "$TD/uid-stderr.txt"
+  ec=$?
+  {
+    echo "run_as uid:gid=$ug"
+    echo "uid_run_exit=$ec"
+    echo "owner uid:gid=$(stat -c '%u:%g' "$SCR/a.txt" 2>/dev/null || echo missing)"
+    echo "contains_edited_by_dsh=$(grep -qx 'edited-by-dsh' "$SCR/a.txt" 2>/dev/null && echo yes || echo no)"
+    echo "stdout_lines=$(wc -l < "$TD/uid-stdout.txt" | tr -d ' ')"
+    echo "stderr_head:"
+    head -n 5 "$TD/uid-stderr.txt" | cut -c1-200 | sed 's/^/  /'
+  } > "$OUT"
+  rm -f "$TD/uid-stdout.txt" "$TD/uid-stderr.txt"
+  cleanup_scr
+  trap - EXIT
+  scrub_raw "$RAW" >/dev/null
+  echo "S6 uid-probe done:"; cat "$OUT"
+}
+
 case "${1:-}" in
   "") mode_basic ;;
   --kill) mode_kill ;;
-  *) echo "usage: bash spikes/s6/run.sh [--kill]" >&2; exit 2 ;;
+  --kill-wrapper) mode_kill_wrapper ;;
+  --uid-probe) mode_uid_probe ;;
+  *) echo "usage: bash spikes/s6/run.sh [--kill|--kill-wrapper|--uid-probe]" >&2; exit 2 ;;
 esac

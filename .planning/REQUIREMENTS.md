@@ -180,22 +180,26 @@ Quyết định người dùng 2026-10-19, 2026-10-20, 2026-10-21 (ROADMAP Phase
 
 ### Multi-engine Routing (GSD Phase 6 — nguồn Phase 5)
 
-- [ ] **ENG-01**: Chạy task với đội hình `tiet-kiem` (trong `teams.json`): Lead và QA chạy Claude, Dev chạy DeepSeek; log ghi đúng engine cho từng run. Đây là cổng phase: 1 task trộn engine chạy end-to-end. *(src: P5-01)*
+- [ ] **ENG-01**: Chạy task với đội hình `tiet-kiem` (trong `teams.json`): Lead và QA chạy Claude, Dev chạy trên một engine `anthropic` đã có bằng chứng E-09, endpoint DeepSeek chính thức hoặc gateway; log ghi đúng engine cho từng run. Đây là cổng phase: 1 task trộn engine chạy end-to-end. *(src: P5-01; sửa theo 06-CONTEXT D-34)*
 - [ ] **ENG-02**: Giả lập hết quota giữa task thì hệ thống báo lỗi quota/rate-limit (nhận diện từ stream hoặc mã thoát), đề xuất đổi đội hình và không tự đổi ngầm. *(src: P5-02)*
 - [ ] **ENG-03**: Đổi engine giữa task thì engine mới tiếp tục từ `.plan.md` (và `.handover.md` nếu có), không làm lại từ đầu. *(src: P5-03)*
 - [ ] **ENG-04**: Thống kê theo engine tách đúng số token của từng engine. *(src: P5-04)*
-- [ ] **ENG-05**: Key DeepSeek không xuất hiện trong file đã commit hay trong log (key đọc từ biến môi trường; lọc biến nhạy cảm trước khi ghi log). *(src: P5-07)*
+- [ ] **ENG-05**: Key của mọi engine (mọi biến `key_env`) không xuất hiện trong file đã commit hay trong log (key đọc từ biến môi trường; lọc biến nhạy cảm trước khi ghi log). *(src: P5-07; sửa theo 06-CONTEXT D-30)*
 - [ ] **ENG-06**: Antigravity được tích hợp theo kết quả S7 (SPK-07): nếu headless thì chạy như engine; nếu không thì dùng thủ công (người dùng mở và giao `.plan.md`) và theo dõi qua `git diff` thay vì log. *(derived: 06-phase5 §2.2, §4)*
 - [ ] **ENG-07**: Tỉ lệ "Cần sửa" của QA được ghi theo engine để so sánh chất lượng; QA mặc định chạy bằng engine mạnh. *(derived: 06-phase5 §6)*
+- [ ] **ENG-08**: Danh sách engine do người dùng khai báo trong `config.json` (`engines`: mảng mục có `id`, `kind` = `anthropic` | `agy` | `dsh`, lệnh, `base_url` + tên biến `key_env` + model theo vai trò, giá); đội hình gọi engine theo `id` (cùng `claude` và `người:<mã>`); nhiều mục cùng loại được phép (gateway công ty và endpoint DeepSeek chính thức); dạng object `engines.deepseek` / `engines.agy` cũ vẫn đọc được; `runs.engine` ghi `id`; dashboard chỉ xem, không route nào ghi engine. *(derived: 06-CONTEXT D-30, D-31, D-32, D-33)*
+- [ ] **ENG-09**: Engine kiểu `dsh` chạy như hộp đen qua `docker exec` (chỉ văn bản, không token, dừng được bên trong container theo marker và quét các tiến trình con đã ghi, không theo tên, không khởi động lại container), kiểm tra git diff sau khi chạy như Dev của agy, và từ chối dự án nằm ngoài thư mục container thấy cùng đường dẫn; chỉ dùng cho Dev. *(derived: 06-CONTEXT D-35, D-37)*
+- [ ] **ENG-10**: Engine có `pin_profile` hoặc `allowed_profiles` chỉ chạy trên dự án có profile phù hợp: lưu đội hình dùng engine đó, giao việc, đổi đội hình, chạy lại khi hết quota, `run lead --team`, `auto --start --team` và chạy bước trên dự án khác profile đều bị từ chối bằng thông báo tiếng Việt, không đường nào mượn quota của profile khác (ranh giới SPK-10). *(derived: 06-CONTEXT D-36, D-38, D-42)*
+- [ ] **ENG-11**: Mỗi endpoint `anthropic` có `base_url` cần bằng chứng E-09 (stream-json, tool use, usage, sửa file, không lộ key) theo từng model trước khi được tin; chưa có thì hiện `chưa kiểm`; script thăm dò nhận tên biến key và nhãn endpoint; quyết định do người dùng chạy. *(derived: 06-CONTEXT D-34, D-40)*
 
 ### Multi-engine Teams & Settings (GSD Phase 6 — đội hình, Cài đặt, engine người, quota)
 
-Quyết định người dùng 2026-10-24 và 2026-10-26 (06-CONTEXT.md D-01…D-29). Mỗi vai trò chạy bằng engine của đội hình (team) gắn với task; hết quota thì dừng chờ người dùng, không tự đổi engine; nhân sự làm bước Dev trên máy của họ.
+Quyết định người dùng 2026-10-24 và 2026-10-26 (06-CONTEXT.md D-01…D-44). Mỗi vai trò chạy bằng engine của đội hình (team) gắn với task; hết quota thì dừng chờ người dùng, không tự đổi engine; nhân sự làm bước Dev trên máy của họ.
 
-- [ ] **TEAM-01**: Đội hình lưu trong `~/.config/agent-brain/teams.json` (sửa tay được, tối đa 256 KiB, lỗi kèm dòng/cột) cùng hai đội hình có sẵn `mac-dinh` (mọi vai trò claude) và `tiet-kiem` (Lead/QA claude, Dev deepseek); mỗi đội hình có tên slug tối đa 40 ký tự, mô tả tiếng Việt và engine cho `lead`, `dev`, `qa`, `plan-review`, `code-review` (`claude`, `deepseek`, `agy`, `người:<mã>`); QA phải là `claude`, `người` chỉ cho Dev; đội hình và quy trình là hai danh sách riêng nên được trùng tên. *(derived: 06-CONTEXT D-06, D-09, D-11, D-24, D-27)*
+- [ ] **TEAM-01**: Đội hình lưu trong `~/.config/agent-brain/teams.json` (sửa tay được, tối đa 256 KiB, lỗi kèm dòng/cột) cùng hai đội hình có sẵn `mac-dinh` (mọi vai trò claude) và `tiet-kiem` (Lead/QA claude, Dev deepseek); mỗi đội hình có tên slug tối đa 40 ký tự, mô tả tiếng Việt và engine cho `lead`, `dev`, `qa`, `plan-review`, `code-review` (`claude`, id engine khai báo trong `config.json`, `người:<mã>`); QA phải là `claude`, `người` chỉ cho Dev; đội hình và quy trình là hai danh sách riêng nên được trùng tên. *(derived: 06-CONTEXT D-06, D-09, D-11, D-24, D-27)*
 - [ ] **TEAM-02**: Task lưu đội hình bền vững (`tasks.team_json`, lược đồ v4, có cổng quyết định và sao lưu) kèm lịch sử đổi (ai, lúc nào, từ → đến); chỉ đổi được khi không có run chạy, autopilot không chạy và không có bước người đang chờ, áp dụng từ bước kế tiếp; task có đội hình không còn trong teams.json thì bước kế bị từ chối kèm hướng dẫn. *(derived: 06-CONTEXT D-12, D-13, D-29)*
 - [ ] **TEAM-03**: Chọn đội hình khi giao việc: khóa `team` của dự án trong `projects_map.json` (không có thì `mac-dinh`), bộ chọn trên Giao việc, bước chọn đội hình của `/task` Telegram và cờ CLI `--team` (`run lead`, `auto --start`); đội hình được ghi vào task trước khi Lead chạy. *(derived: 06-CONTEXT D-12)*
-- [ ] **SET-01**: Màn hình mới `Cài đặt` (`#/settings`) với bốn mục `Đội hình`, `Quy trình`, `Nhân sự`, `Engine`; mục Engine chỉ xem độ sẵn sàng tính tại máy (`sẵn sàng`, `thiếu key`, `thiếu lệnh`, `chưa kiểm`), không gọi model, không có route nào ghi lệnh, endpoint hay tên biến key, không bao giờ hiện giá trị key. *(derived: 06-CONTEXT D-08, D-10; 06-UI-SPEC)*
+- [ ] **SET-01**: Màn hình mới `Cài đặt` (`#/settings`) với bốn mục `Đội hình`, `Quy trình`, `Nhân sự`, `Engine`; mục Engine liệt kê các engine khai báo trong `config.json` cùng độ sẵn sàng tính tại máy (`sẵn sàng`, `thiếu key`, `thiếu lệnh`, `chưa kiểm` khi thiếu bằng chứng E-09), chỉ để xem, không gọi model, không có route nào ghi lệnh, endpoint hay tên biến key, không bao giờ hiện giá trị key. *(derived: 06-CONTEXT D-08, D-10; 06-UI-SPEC)*
 - [ ] **SET-02**: Tạo, sửa, nhân bản, xóa đội hình trên Cài đặt: ghi nguyên tử (file tạm, fsync, rename), cùng luật kiểm tra với bộ nạp file, kèm `version` để báo xung đột (409), không ghi đè file đang lỗi, đội hình có sẵn chỉ đọc nhưng nhân bản được, mọi route ghi nằm sau middleware token và header. *(derived: 06-CONTEXT D-10)*
 - [ ] **SET-03**: Tạo, sửa, nhân bản, xóa quy trình (`workflows.json`) trên Cài đặt với cùng cơ chế ghi, kiểm tra và xung đột như SET-02. *(derived: 06-CONTEXT D-10)*
 - [ ] **SET-04**: Nhân sự (mã, tên hiển thị, ghi chú) lưu trong `staff.json` riêng và quản lý trên Cài đặt; không xóa được nhân sự đang được một đội hình dùng. *(derived: 06-CONTEXT D-19)*
@@ -350,6 +354,10 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | ENG-05 | Phase 6 | Pending |
 | ENG-06 | Phase 6 | Pending |
 | ENG-07 | Phase 6 | Pending |
+| ENG-08 | Phase 6 | Pending |
+| ENG-09 | Phase 6 | Pending |
+| ENG-10 | Phase 6 | Pending |
+| ENG-11 | Phase 6 | Pending |
 | TEAM-01 | Phase 6 | Pending |
 | TEAM-02 | Phase 6 | Pending |
 | TEAM-03 | Phase 6 | Pending |
@@ -367,8 +375,8 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | MEDIA-03 | Phase 06.1 | Pending |
 
 **Coverage:**
-- v1 requirements: 122 total (42 từ test case nguồn + 80 derived)
-- Mapped to phases: 122
+- v1 requirements: 126 total (42 từ test case nguồn + 84 derived)
+- Mapped to phases: 126
 - Unmapped: 0 ✓
 - Ngoài v1 (chưa gán, cần quyết định): FAST-03 (xem mục v2)
 
@@ -395,4 +403,4 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 
 ---
 *Requirements defined: 2026-10-14*
-*Last updated: 2026-10-27 — added TEAM-01..03, SET-01..05, HUM-01..03, QUOTA-01 (Phase 6)*
+*Last updated: 2026-10-28 — added ENG-08..11 (Phase 6, D-30…D-44)*
