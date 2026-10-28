@@ -412,7 +412,7 @@ Plans:
   4. *(chuyển sang Phase 06.1)*
   5. Antigravity được xử lý theo kết quả S7 (chạy headless như engine, hoặc dùng thủ công và theo dõi qua `git diff`), và tỉ lệ "Cần sửa" của QA được ghi theo engine.
 
-**Plans:** 17/26 plans executed
+**Plans:** 18/26 plans executed
 
 Plans:
 **Wave 1**
@@ -447,7 +447,7 @@ Plans:
 - [x] 06-18-PLAN.md — Human callout, Tổng quan and Thống kê screens (wave 7)
 
 **Wave 8** *(blocked on Wave 7 completion)* — engine list re-plan (D-30…D-44)
-- [ ] 06-11-PLAN.md — Engine list in config.json, `anthropic` kind, run-seam guards (unknown id, profile, unverified mark), final example config (wave 8)
+- [x] 06-11-PLAN.md — Engine list in config.json, `anthropic` kind, run-seam guards (unknown id, profile, unverified mark), final example config (wave 8)
 - [ ] 06-20-PLAN.md — E-09 per endpoint (gateway first) and dsh kill-wrapper probe (user-run), COVERAGE.md, ENG-08…11 registered (wave 8)
 
 **Wave 9** *(blocked on Wave 8 completion)*
@@ -503,4 +503,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 13/13 | Complete    | 2026-10-19 |
-| 6. Multi-engine & Media Branch | 17/26 | In Progress | - |
+| 6. Multi-engine & Media Branch | 18/26 | In Progress | - |
