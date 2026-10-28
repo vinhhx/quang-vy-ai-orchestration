@@ -658,7 +658,7 @@ No third-party code, font, icon or image enters the dashboard in this phase; the
 
 ## Delta 2026-10-28 — danh sách engine (D-30 … D-44)
 
-> Trạng thái: **chờ người dùng duyệt (D-44)**. Chưa file nào dưới `agent-brain/assets/dashboard/` hay `scripts/dashboard-*` được đổi. Delta này thay mục `Section Engine` ở trên, dòng `chưa kiểm` của bảng trạng thái, dòng engine của bảng `Data the UI reads and writes`, cảnh báo `Đội hình … dùng engine chưa sẵn sàng` của màn Giao việc, và dòng `chưa có giá` của Thống kê. Mọi thứ khác giữ nguyên. Chuỗi đánh dấu (server) hiển thị nguyên văn, UI không viết lại. Căn cứ: D-30, D-35, D-36, D-37, D-38, D-39, D-40, D-41, D-43, D-44; plan 06-26 và 06-22 (payload `/api/engines`, cảnh báo đội hình).
+> Trạng thái: **đã duyệt (D-44), 2026-10-28**, người dùng trả lời `ok` trực tiếp cho danh sách mười thay đổi. Delta này thay mục `Section Engine` ở trên, dòng `chưa kiểm` của bảng trạng thái, dòng engine của bảng `Data the UI reads and writes`, cảnh báo `Đội hình … dùng engine chưa sẵn sàng` của màn Giao việc, và dòng `chưa có giá` của Thống kê. Mọi thứ khác giữ nguyên. Chuỗi đánh dấu (server) hiển thị nguyên văn, UI không viết lại. Căn cứ: D-30, D-35, D-36, D-37, D-38, D-39, D-40, D-41, D-43, D-44; plan 06-26 và 06-22 (payload `/api/engines`, cảnh báo đội hình).
 
 ### 1. Mục Engine: lời dẫn
 
