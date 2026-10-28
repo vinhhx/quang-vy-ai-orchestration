@@ -191,7 +191,13 @@ bash scripts/phase6-live-check.sh --schema-dry-run
 
 and pastes the last two lines. Claude then records them here. Accepted: `Schema v4 dry run OK (từ v2)` (or `từ v3`, `từ v4`) plus `real_dir_unchanged=yes`. On `LỖI dry run: …` the phase cannot pass verification (open a gap for the planner; never fix the database by hand).
 
-**Pasted line:** _(pending)_
+**Pasted line** (user, 2026-10-28, serve still running at the time of the copy):
+```
+Bản sao: user_version=2 integrity=ok projects=179 tasks=10 runs=17 events=252
+Schema v4 dry run OK (từ v2)
+real_dir_unchanged=yes
+```
+Result: ok. Backup taken after: `brain.db.bak-pre-6-20261028` (sqlite backup API, integrity ok, v2, 10 tasks). New musl binary sha256 `73944f27…` installed to `~/.local/bin/agent-brain`; old one kept as `agent-brain.bak-20261021`.
 
 ## Human checks for the end-of-phase UAT (`<human-check>`, harvested into 06-UAT.md)
 
