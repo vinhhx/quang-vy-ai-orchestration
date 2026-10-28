@@ -165,6 +165,14 @@ pub fn event_text(ev: &StreamEvent, verbose: bool) -> String {
             .and_then(|s| s.as_str())
             .unwrap_or("");
         format!("rate_limit {status}")
+    } else if ev.kind == "dsh/text" {
+        let text = val.get("text").and_then(|t| t.as_str()).unwrap_or("");
+        if verbose {
+            text.to_string()
+        } else {
+            let single_line = text.replace(['\n', '\r'], " ");
+            truncate_chars(&single_line, 200)
+        }
     } else if ev.kind == "agy/init" {
         let mode = val
             .get("init")

@@ -122,7 +122,9 @@ impl Dsh {
 }
 
 fn refs(v: &[(String, String)]) -> Vec<(&str, &str)> {
-    v.iter().map(|(k, val)| (k.as_str(), val.as_str())).collect()
+    v.iter()
+        .map(|(k, val)| (k.as_str(), val.as_str()))
+        .collect()
 }
 
 fn read_jsonl(path: &Path) -> Vec<Value> {
@@ -243,8 +245,7 @@ fn dev_row(sb: &Sandbox) -> DevRow {
                     input: r.get(5)?,
                     output: r.get(6)?,
                     cost: r.get(7)?,
-                    metrics: serde_json::from_str(&metrics.unwrap_or_else(|| "{}".into()))
-                        .unwrap(),
+                    metrics: serde_json::from_str(&metrics.unwrap_or_else(|| "{}".into())).unwrap(),
                 })
             },
         )
@@ -430,7 +431,10 @@ fn dsh_dev_tracer() {
     assert_eq!(stream, "đọc plan\nsửa src/app.py\n");
 
     let dsh_meta = &row.metrics["dsh"];
-    assert!(is_marker(dsh_meta["marker"].as_str().unwrap()), "{dsh_meta}");
+    assert!(
+        is_marker(dsh_meta["marker"].as_str().unwrap()),
+        "{dsh_meta}"
+    );
     assert_eq!(dsh_meta["container"], json!("fake-dsh"));
     assert_eq!(
         dsh_meta["docker"],
@@ -483,7 +487,10 @@ fn dsh_argv_and_stdin() {
 
     let recs = dsh.dsh_records();
     assert_eq!(recs.len(), 1);
-    assert_eq!(argv_of(&recs[0]), ["--profile", "headless", prompt.as_str()]);
+    assert_eq!(
+        argv_of(&recs[0]),
+        ["--profile", "headless", prompt.as_str()]
+    );
     assert_eq!(recs[0]["stdin_is_null"], json!(true));
     assert_eq!(recs[0]["cwd"], json!(root));
 }
@@ -571,7 +578,10 @@ fn dsh_mount_preflight() {
         "Mode": "", "RW": true, "Propagation": "rprivate"
     }])
     .to_string();
-    let res = run_dev(&sb, &dsh.vars(&[("FAKE_DOCKER_MOUNTS", ok_mounts.as_str())]));
+    let res = run_dev(
+        &sb,
+        &dsh.vars(&[("FAKE_DOCKER_MOUNTS", ok_mounts.as_str())]),
+    );
     assert_ok(&res, "run dev (dsh, same-path bind)");
 }
 
@@ -615,7 +625,13 @@ fn fake_docker_ps_status() {
     assert_eq!(
         run(
             None,
-            &["ps", "--format", "{{.Status}}", "--filter", "name=^fake-dsh$"]
+            &[
+                "ps",
+                "--format",
+                "{{.Status}}",
+                "--filter",
+                "name=^fake-dsh$"
+            ]
         ),
         (0, "Up 1 minute\n".to_string())
     );
@@ -629,4 +645,3 @@ fn fake_docker_ps_status() {
         assert_eq!(r["argv"][0], json!("ps"));
     }
 }
-

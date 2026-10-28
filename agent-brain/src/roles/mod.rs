@@ -505,6 +505,8 @@ pub fn execute_role_staged(
         db_engine: String,
         model_label: String,
         unverified: bool,
+        stream: crate::engine::StreamFormat,
+        dsh: Option<crate::dsh::DshRun>,
         team: Option<String>,
         summary: Summary,
         run_id: Option<i64>,
@@ -552,6 +554,14 @@ pub fn execute_role_staged(
             if self.unverified {
                 patch.insert("unverified".to_string(), serde_json::Value::Bool(true));
             }
+            // ENG-09: what a kill from another process needs to find the container-side
+            // processes of this run. Written here, before any kill can arrive.
+            if let Some(run) = &self.dsh {
+                patch.insert(
+                    "dsh".to_string(),
+                    serde_json::to_value(run).unwrap_or(serde_json::Value::Null),
+                );
+            }
             crate::db::merge_run_metrics(
                 &self.ctx.conn,
                 run_id,
@@ -566,6 +576,20 @@ pub fn execute_role_staged(
         }
 
         fn on_line(&mut self, line: &[u8]) {
+            // D-35: dsh prints plain text. Each non-blank line becomes one `dsh/text` event so the
+            // terminal, the database and the dashboard see it as text, never as a broken JSON line.
+            let wrapped;
+            let line = if self.stream == crate::engine::StreamFormat::Text {
+                let text = String::from_utf8_lossy(line);
+                let text = text.trim_end_matches(['\n', '\r']);
+                if text.trim().is_empty() {
+                    return;
+                }
+                wrapped = crate::dsh::text_event(text);
+                wrapped.as_bytes()
+            } else {
+                line
+            };
             if let Some(ev) = self.summary.feed(line) {
                 self.seq += 1;
                 if let Some(run_id) = self.run_id {
@@ -615,6 +639,8 @@ pub fn execute_role_staged(
         db_engine: ep.db_engine.clone(),
         model_label: ep.model_label.clone(),
         unverified: ep.unverified,
+        stream: ep.stream,
+        dsh: ep.dsh.clone(),
         team: resolved.team.clone(),
         summary: Summary::new(plan.plan_files.clone(), Some(root.to_path_buf())),
         run_id: None,
