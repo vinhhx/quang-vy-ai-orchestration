@@ -245,6 +245,12 @@ None - no external service configuration required. To use a gateway, export its 
 - Residual risk recorded in the plan: a profile `settings.json` `env` block that pins `ANTHROPIC_*` overrides what is injected; only the user-run E-09 of plan 06-20 can see it.
 - No blockers.
 
+## Self-Check: PASSED
+
+- Files present: `dsh.rs`, `config.rs`, `engine.rs`, `engine_routing.rs`, `config.engines.example.json`, `fake_claude.py`, this SUMMARY.
+- Commits in history: `03f0fbe`, `ad3d93c`, `e0e854d`, `381d622` (task commits), `6ff22f0` (SUMMARY).
+- Verify commands re-run after the last code commit: `engine_routing` 22/22, the three named unit tests 3/3, the full suite green (every result line `ok`), `cargo fmt --check` clean, `Cargo.toml` / `Cargo.lock` identical to `574b6cd`, `scan-secrets: OK`.
+
 ---
 *Phase: 06-multi-engine-media-branch*
 *Completed: 2026-10-28*
