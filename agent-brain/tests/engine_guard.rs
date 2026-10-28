@@ -392,3 +392,224 @@ fn eng10_quota_rerun_refused() {
     assert_eq!(run_count(&sb), runs_before, "no new run row");
     assert_eq!(srv.get("/api/jobs/2").status, 404, "no new job");
 }
+
+// ---------------------------------------------------------------------------
+// Task 3: loader and Settings save know the engine list
+// ---------------------------------------------------------------------------
+
+fn team_entry(name: &str, roles: Value) -> Value {
+    let mut full = json!({
+        "lead": "claude", "dev": "claude", "qa": "claude",
+        "plan_review": "claude", "code_review": "claude"
+    });
+    for (k, v) in roles.as_object().unwrap() {
+        full[k] = v.clone();
+    }
+    json!({"name": name, "description": "Thử", "roles": full})
+}
+
+fn teams_version(srv: &Serve) -> String {
+    srv.get("/api/teams").json()["version"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn save_team(srv: &Serve, version: &str, entry: Value) -> common::HttpResp {
+    srv.post_json(
+        "/api/teams/save",
+        &json!({"version": version, "create": true, "entry": entry}),
+    )
+}
+
+/// The `(field, message)` pairs of a 422 save refusal.
+fn refusals(resp: &common::HttpResp) -> Vec<(String, String)> {
+    assert_eq!(resp.status, 422, "{}", resp.text());
+    let j = resp.json();
+    assert_eq!(j["error"], "Không lưu được đội hình");
+    j["errors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("errors array in {j}"))
+        .iter()
+        .map(|e| {
+            (
+                e["field"].as_str().unwrap_or("").to_string(),
+                e["message"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn team_named<'a>(j: &'a Value, name: &str) -> Option<&'a Value> {
+    j["teams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == name)
+}
+
+fn teams_on_disk(sb: &Sandbox) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(sb.teams_path()).unwrap()).unwrap()
+}
+
+const DSH_ONLY_DEV: &str = "Engine 'dsh' là kiểu dsh, chỉ dùng cho vai trò dev.";
+
+#[test]
+fn d37_dsh_only_dev_loader_and_save() {
+    let sb = Sandbox::new();
+    write_doi_max(&sb);
+    sb.write_teams(json!({}));
+    let srv = sb.serve(&[]);
+    let v = teams_version(&srv);
+
+    // Settings save: dsh on a read-only role is refused with a field error on that role.
+    let r = save_team(&srv, &v, team_entry("doi-x", json!({"plan_review": "dsh"})));
+    assert_eq!(
+        refusals(&r),
+        [("plan_review".to_string(), DSH_ONLY_DEV.to_string())]
+    );
+    assert_eq!(teams_on_disk(&sb), json!({}), "nothing was written");
+
+    // dsh on dev is accepted.
+    let r = save_team(&srv, &v, team_entry("doi-dev", json!({"dev": "dsh"})));
+    assert_eq!(r.status, 200, "{}", r.text());
+
+    // A hand-edited file with dsh on Lead: the loader reports the line and drops the team.
+    sb.write_teams(json!({
+        "doi-dev": {"description": "Thử", "roles": {"dev": "dsh"}},
+        "doi-dsh-sai": {"description": "Sai", "roles": {"lead": "dsh"}}
+    }));
+    let j = srv.get("/api/teams").json();
+    let errors: Vec<String> = j["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(errors.len(), 1, "errors: {errors:?}");
+    assert!(
+        errors[0].starts_with("Dòng ")
+            && errors[0].ends_with(&format!("đội hình 'doi-dsh-sai': {DSH_ONLY_DEV}")),
+        "errors: {errors:?}"
+    );
+    assert!(team_named(&j, "doi-dsh-sai").is_none(), "teams: {j}");
+    assert!(team_named(&j, "doi-dev").is_some(), "teams: {j}");
+}
+
+#[test]
+fn team_unknown_engine_warns_and_save_refused() {
+    let sb = Sandbox::new();
+    // A list without `deepseek`: the built-in `tiet-kiem` keeps naming it.
+    sb.write_config(json!({"engines": [claude_max_entry()]}));
+    sb.write_teams(json!({"doi-cu": {"description": "Cũ", "roles": {"dev": "khong-co"}}}));
+    let srv = sb.serve(&[]);
+
+    let j = srv.get("/api/teams").json();
+    assert_eq!(j["errors"], json!([]), "teams: {j}");
+    let cu = team_named(&j, "doi-cu").expect("a hand-edited team with an unknown id still loads");
+    assert_eq!(
+        cu["warnings"],
+        json!(["Engine 'khong-co' chưa khai báo trong config.json."])
+    );
+    let tk = team_named(&j, "tiet-kiem").expect("built-in team");
+    assert_eq!(tk["roles"]["dev"], "deepseek");
+    assert_eq!(
+        tk["warnings"],
+        json!(["Engine 'deepseek' chưa khai báo trong config.json."])
+    );
+
+    // Saving one is refused; nothing resolves it to another endpoint.
+    let v = j["version"].as_str().unwrap().to_string();
+    let r = save_team(&srv, &v, team_entry("doi-y", json!({"dev": "khong-co"})));
+    assert_eq!(
+        refusals(&r),
+        [(
+            "dev".to_string(),
+            "Engine 'khong-co' không có trong config.json (engines).".to_string()
+        )]
+    );
+}
+
+fn d42_text(profile: &str, whereabouts: &str) -> String {
+    format!(
+        "Đội hình '{TEAM_ID}' đang được dùng trên dự án profile {profile} ({whereabouts}) — engine 'claude-max' chỉ dùng cho dự án profile personal. Đổi đội hình của dự án hoặc task đó trước rồi lưu lại."
+    )
+}
+
+fn save_doi_max(srv: &Serve) -> common::HttpResp {
+    let v = teams_version(srv);
+    save_team(srv, &v, team_entry(TEAM_ID, json!({"dev": "claude-max"})))
+}
+
+/// Plans a task on the project, then points its team_json at `doi-max` directly in the DB.
+fn bind_open_task(sb: &Sandbox) {
+    let res = sb.run(
+        &["run", "lead", "--name", "sua-app", "--", PROJECT, "sửa app"],
+        Some(lead_plan()),
+    );
+    assert_eq!(
+        res.code, 0,
+        "run lead failed: stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    sb.db()
+        .execute(
+            "UPDATE tasks SET team_json = ?1 WHERE id = 1",
+            [format!(r#"{{"name":"{TEAM_ID}","history":[]}}"#)],
+        )
+        .unwrap();
+}
+
+#[test]
+fn d42_save_refused_only_when_bound() {
+    // No binding: the save succeeds.
+    let sb = Sandbox::new();
+    write_doi_max(&sb);
+    sb.write_teams(json!({}));
+    setup_project_with(&sb, "work", None);
+    let srv = sb.serve(&[]);
+    let r = save_doi_max(&srv);
+    assert_eq!(r.status, 200, "{}", r.text());
+    drop(srv);
+
+    // A work project has it as its default team.
+    let sb = Sandbox::new();
+    write_doi_max(&sb);
+    sb.write_teams(json!({}));
+    setup_project_with(&sb, "work", Some(TEAM_ID));
+    let srv = sb.serve(&[]);
+    let r = save_doi_max(&srv);
+    assert_eq!(
+        refusals(&r),
+        [(
+            "name".to_string(),
+            d42_text("work", &format!("dự án '{PROJECT}'"))
+        )]
+    );
+    assert_eq!(teams_on_disk(&sb), json!({}), "nothing was written");
+    drop(srv);
+
+    // No default, but an open task of a work project uses it.
+    let sb = Sandbox::new();
+    write_doi_max(&sb);
+    sb.write_teams(json!({}));
+    setup_project_with(&sb, "work", None);
+    bind_open_task(&sb);
+    let srv = sb.serve(&[]);
+    let r = save_doi_max(&srv);
+    assert_eq!(
+        refusals(&r),
+        [("name".to_string(), d42_text("work", "1 task đang mở"))]
+    );
+    drop(srv);
+
+    // The same bindings on a personal project are fine.
+    let sb = Sandbox::new();
+    write_doi_max(&sb);
+    sb.write_teams(json!({}));
+    setup_project_with(&sb, "personal", Some(TEAM_ID));
+    bind_open_task(&sb);
+    let srv = sb.serve(&[]);
+    let r = save_doi_max(&srv);
+    assert_eq!(r.status, 200, "{}", r.text());
+}
