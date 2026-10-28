@@ -1,0 +1,15 @@
+variant=wrapper
+marker=ab-dsh-a19c252176ff
+launcher_pid=2817452 client_pid=2817454
+marker_visible=yes
+sh_parent_kept=yes
+sleep_child_seen=yes
+before:
+  38615 0 38615 sh -c : ab-dsh-a19c252176ff; dsh --profile "$1" "$2"; rc=$?; exit $rc sh headless Run the bash comma
+  38621 38615 38615 node /usr/local/bin/dsh --profile headless Run the bash command sleep 120 and wait for it, then repl
+  38641 38621 38641 sleep 120
+signal: TERM pids=38615 38621 38641 
+leftover: none
+sweep: none
+launcher_exit_code=143
+final: none
