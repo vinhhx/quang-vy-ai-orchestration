@@ -148,6 +148,34 @@ def main() -> None:
     tool_events: list[dict] = []
     for i, op in enumerate(ops):
         op_type = op.get("op")
+        if op_type == "echo_env":
+            # Plan 06-21: print the value of an env variable (a model that echoes its own
+            # environment). An absent variable echoes an empty string.
+            value = os.environ.get(op.get("var", ""), "")
+            dest = op.get("to", "stdout")
+            if dest == "stderr":
+                sys.stderr.write(f"echo_env: {value}\n")
+                sys.stderr.flush()
+            elif dest == "file":
+                echo_path = Path(op["path"])
+                if not echo_path.is_absolute():
+                    echo_path = Path(os.getcwd()) / echo_path
+                echo_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(echo_path, "a" if op.get("append") else "w", encoding="utf-8") as f:
+                    f.write(value)
+            else:
+                tool_events.append(
+                    {
+                        "type": "assistant",
+                        "session_id": "fake-session",
+                        "message": {
+                            "id": f"msg_{i}",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": f"echo_env: {value}"}],
+                        },
+                    }
+                )
+            continue
         target_path: Path | None = None
         path_for_blocked = ""
         content = ""
@@ -341,6 +369,10 @@ def main() -> None:
         for ev in tool_events:
             sys.stdout.write(json.dumps(ev) + "\n")
             sys.stdout.flush()
+
+        # Plan 06-21: stay alive after the events (a run that is killed or times out mid-stream).
+        if "sleep_after" in scenario:
+            time.sleep(float(scenario["sleep_after"]))
 
         total_cost = scenario.get("result_cost", 0)
         res_tokens = scenario.get("result_tokens")
