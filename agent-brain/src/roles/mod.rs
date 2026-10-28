@@ -5,7 +5,7 @@ pub mod review;
 
 use crate::app::Ctx;
 use crate::config::Config;
-use crate::error::{BrainError, BrainResult, EXIT_QUOTA};
+use crate::error::{BrainError, BrainResult, EXIT_PROTOCOL, EXIT_QUOTA};
 use crate::projects::Project;
 use crate::runner::RunOutcome;
 use crate::stream::Summary;
@@ -757,6 +757,45 @@ pub fn execute_role_staged(
             crate::secrets::redact_str(&crate::quota::user_message(&ep.display, &hit), &ep.redact),
             EXIT_QUOTA,
         ));
+    }
+
+    // ENG-05 / Pitfall 10: redaction covers what agent-brain writes, not what the model writes into
+    // the project. After a run that ended by itself, the files it changed (uncommitted, plus
+    // committed since the run's base) are scanned for this run's key BEFORE the role code gets to
+    // commit anything. A hit stops the step; only the paths are reported, never the value.
+    if !ep.redact.is_empty()
+        && !matches!(
+            outcome.status,
+            crate::runner::RunStatus::Killed | crate::runner::RunStatus::TimedOut
+        )
+    {
+        let mut paths = crate::gitops::changed_paths(root).unwrap_or_default();
+        if let Some(base) = plan.base_commit.as_deref() {
+            if let Ok(names) = crate::gitops::diff_names(root, base, "HEAD") {
+                paths.extend(names);
+            }
+        }
+        let paths: Vec<String> = paths.into_iter().collect();
+        let leaked = crate::secrets::scan_for_secrets(root, &paths, &ep.redact);
+        if !leaked.is_empty() {
+            if let Some(run_id) = obs.run_id {
+                crate::db::set_run_outcome(&ctx.conn, run_id, "protocol_violation")?;
+                crate::db::merge_run_metrics(
+                    &ctx.conn,
+                    run_id,
+                    &serde_json::json!({ "secret_leak": leaked }),
+                )?;
+            }
+            let msg = format!(
+                "Phát hiện key của engine {} trong file: {} — không commit. Xóa key khỏi file (và khỏi lịch sử git nếu đã commit) rồi chạy lại.",
+                ep.db_engine,
+                leaked.join(", ")
+            );
+            return Err(BrainError::new(
+                crate::secrets::redact_str(&msg, &ep.redact),
+                EXIT_PROTOCOL,
+            ));
+        }
     }
 
     // D-05: a read-only agy role answers with the whole protocol file; agent-brain writes it, and

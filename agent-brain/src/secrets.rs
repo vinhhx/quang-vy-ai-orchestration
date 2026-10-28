@@ -129,11 +129,81 @@ pub fn redact_file(path: &Path, secrets: &[String]) -> std::io::Result<()> {
     written
 }
 
+/// Files larger than this are not scanned by `scan_for_secrets`.
+pub const SECRET_SCAN_MAX_BYTES: u64 = 1_048_576;
+
+/// The paths (relative to `root`, in the order given) of the regular files that hold a secret.
+/// A missing file, a directory, a symlink and a file over `SECRET_SCAN_MAX_BYTES` are skipped.
+/// Only paths come back, never a value (Pitfall 10).
+pub fn scan_for_secrets(root: &Path, paths: &[String], secrets: &[String]) -> Vec<String> {
+    let pats = patterns(secrets);
+    if pats.is_empty() {
+        return Vec::new();
+    }
+    let mut hits = Vec::new();
+    for rel in paths {
+        let full = root.join(rel);
+        let Ok(meta) = std::fs::symlink_metadata(&full) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > SECRET_SCAN_MAX_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&full) else {
+            continue;
+        };
+        if pats.iter().any(|p| find(&bytes, p, 0).is_some()) {
+            hits.push(rel.clone());
+        }
+    }
+    hits
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const KEY: &str = "test-planted-gw-key-0123456789";
+
+    #[test]
+    fn scan_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/b/deep.txt"), format!("x {KEY} y")).unwrap();
+        std::fs::write(root.join("clean.txt"), "nothing here").unwrap();
+        std::fs::write(root.join("z.txt"), KEY).unwrap();
+        // Over the cap: skipped even though it holds the key.
+        let mut big = vec![b'a'; SECRET_SCAN_MAX_BYTES as usize];
+        big.extend_from_slice(KEY.as_bytes());
+        std::fs::write(root.join("big.bin"), &big).unwrap();
+        // A symlink to a file with the key is not followed.
+        std::os::unix::fs::symlink(root.join("z.txt"), root.join("link.txt")).unwrap();
+        std::fs::write(root.join("short.txt"), "abc1234").unwrap();
+
+        let paths: Vec<String> = [
+            "z.txt",
+            "missing.txt",
+            "clean.txt",
+            "big.bin",
+            "link.txt",
+            "a",
+            "a/b/deep.txt",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            scan_for_secrets(root, &paths, &[KEY.to_string()]),
+            ["z.txt", "a/b/deep.txt"],
+            "input order, regular files up to the cap only"
+        );
+        // A secret under 8 bytes is ignored.
+        assert!(
+            scan_for_secrets(root, &["short.txt".to_string()], &["abc1234".to_string()]).is_empty()
+        );
+        assert!(scan_for_secrets(root, &paths, &[]).is_empty());
+    }
 
     fn key() -> Vec<String> {
         vec![KEY.to_string()]

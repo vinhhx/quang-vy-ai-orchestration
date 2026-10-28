@@ -870,7 +870,7 @@ fn eng05_dev_file_with_key_not_committed() {
 fn eng05_committed_key_detected() {
     // The agent commits the key itself: the scan also reads what changed since the run's base.
     let sb = Sandbox::new();
-    let repo = gw_setup(&sb);
+    gw_setup(&sb);
     let env = gw_env();
     run_lead(&sb, &env);
 
