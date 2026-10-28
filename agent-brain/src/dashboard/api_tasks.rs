@@ -1433,8 +1433,17 @@ pub fn change_team(
     if let Some(refusal) = change_team_refusal(&state) {
         return Ok(refusal);
     }
-    if state.teams.get(team).is_none() {
+    let Some(picked) = state.teams.get(team) else {
         return Ok(TeamOutcome::Invalid(unknown_team_message(&state, team)));
+    };
+    // ENG-10 / D-36 / D-42: refused before the team is written.
+    if let Some(msg) = crate::teams::team_profile_refusal(
+        picked,
+        &st.cfg.engines,
+        &state.project.id,
+        &state.project.profile,
+    ) {
+        return Ok(TeamOutcome::Invalid(msg));
     }
     if team == current_team_name(&state) {
         return Ok(TeamOutcome::Refused {
@@ -1766,8 +1775,17 @@ pub fn quota_rerun(
     if !action.enabled {
         return Ok(refusal(action.reason.clone().unwrap_or_default()));
     }
-    if state.teams.get(team).is_none() {
+    let Some(picked) = state.teams.get(team) else {
         return Ok(ControlOutcome::Invalid(unknown_team_message(&state, team)));
+    };
+    // ENG-10 / D-36 / D-42: refused before the team is written and before any job is queued.
+    if let Some(msg) = crate::teams::team_profile_refusal(
+        picked,
+        &st.cfg.engines,
+        &state.project.id,
+        &state.project.profile,
+    ) {
+        return Ok(ControlOutcome::Invalid(msg));
     }
 
     let Some(run) = state

@@ -157,6 +157,7 @@ pub fn teams_json(
     map: &Value,
     conn: Option<&Connection>,
     version: &str,
+    engines: &crate::config::EnginesCfg,
 ) -> Value {
     let projects = crate::projects::projects_of(map);
 
@@ -164,7 +165,13 @@ pub fn teams_json(
     for p in &projects {
         let raw_team = crate::projects::team_of(map, &p.id);
         let (effective, note) = match crate::teams::resolve(teams, None, raw_team.as_deref()) {
-            Ok(r) => (r.team.name, r.note),
+            Ok(r) => {
+                // ENG-10 / D-42: a default team the project's profile forbids says why, with the
+                // same text the bind points refuse with.
+                let refusal =
+                    crate::teams::team_profile_refusal(&r.team, engines, &p.id, &p.profile);
+                (r.team.name, refusal.or(r.note))
+            }
             Err(_) => (crate::teams::DEFAULT_TEAM.to_string(), None),
         };
         project_defaults.insert(
@@ -233,7 +240,14 @@ fn teams_payload(st: &AppState) -> BrainResult<Value> {
     let map = crate::projects::load_map(&st.map_path)
         .unwrap_or_else(|_| json!({"scan_roots": [], "projects": []}));
     let conn = crate::db::open(&st.db_path).ok();
-    Ok(teams_json(&teams, &staff, &map, conn.as_ref(), &version))
+    Ok(teams_json(
+        &teams,
+        &staff,
+        &map,
+        conn.as_ref(),
+        &version,
+        &st.cfg.engines,
+    ))
 }
 
 async fn get_teams(State(st): State<Arc<AppState>>) -> Response {
