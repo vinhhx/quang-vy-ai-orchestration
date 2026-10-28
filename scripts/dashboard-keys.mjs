@@ -413,8 +413,10 @@ async function main() {
   `, 3000, 'ledger', `Dòng ${firstRowRunId} không có aria-current="true", chưa giữ focus hoặc #ab-stream-line không chứa run ${firstRowRunId}`);
   console.log('OK ledger');
 
-  // Check E, layout at 1024 / 768 / 480 px
-  for (const width of [1024, 768, 480]) {
+  // Check E, layout at 1280 / 1024 / 768 / 480 px. The left sidebar (md:w-64)
+  // takes 256 px, so the pipeline region needs a 1280 px viewport to fit
+  // without scrolling (the old 1024 px header layout had the same content width).
+  for (const width of [1280, 1024, 768, 480]) {
     await cdp('Emulation.setDeviceMetricsOverride', {
       width,
       height: 900,
@@ -466,12 +468,19 @@ async function main() {
       throw new Error(`LỖI layout: ${width}px trang bị tràn ngang (phần tử rộng nhất: ${info.widest})`);
     }
 
-    if (width === 1024) {
+    if (width === 1280) {
       if (info.flowDir !== 'row') {
-        throw new Error(`LỖI layout: 1024px flowDir là "${info.flowDir}", kỳ vọng "row"`);
+        throw new Error(`LỖI layout: 1280px flowDir là "${info.flowDir}", kỳ vọng "row"`);
       }
       if (info.regionScrolls !== false) {
-        throw new Error(`LỖI layout: 1024px regionScrolls là ${info.regionScrolls}, kỳ vọng false`);
+        throw new Error(`LỖI layout: 1280px regionScrolls là ${info.regionScrolls}, kỳ vọng false`);
+      }
+      if (info.rowDir !== 'row') {
+        throw new Error(`LỖI layout: 1280px rowDir là "${info.rowDir}", kỳ vọng "row"`);
+      }
+    } else if (width === 1024) {
+      if (info.flowDir !== 'row') {
+        throw new Error(`LỖI layout: 1024px flowDir là "${info.flowDir}", kỳ vọng "row"`);
       }
       if (info.rowDir !== 'row') {
         throw new Error(`LỖI layout: 1024px rowDir là "${info.rowDir}", kỳ vọng "row"`);
