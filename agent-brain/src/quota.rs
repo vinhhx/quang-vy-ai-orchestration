@@ -182,6 +182,34 @@ pub fn detect_claude(s: &Summary, exit_code: Option<i32>, stderr_tail: &str) -> 
     None
 }
 
+/// Quota decision for a text-output engine (dsh, ENG-02 / D-15): there is no structured result, so
+/// only a failed run can be a stop. A non-zero exit code whose stderr tail (first) or stdout tail
+/// names a limit or balance phrase (`text_matches`) is a hit; an exit of 0 or an unknown exit is
+/// never one, because a normal answer cannot be told from a quota notice (the empty-diff stop
+/// catches the no-work case). dsh's real failure output was never captured (A25): the raw lines
+/// stay in `events` for recalibration after the first real stop.
+pub fn detect_text(
+    exit_code: Option<i32>,
+    stdout_tail: &str,
+    stderr_tail: &str,
+) -> Option<QuotaHit> {
+    match exit_code {
+        Some(code) if code != 0 => {}
+        _ => return None,
+    }
+    let re = text_regex();
+    for tail in [stderr_tail, stdout_tail] {
+        if re.is_match(tail) {
+            return Some(QuotaHit {
+                signal: "text",
+                detail: first_matching_line(tail, re),
+                reset_at_ms: None,
+            });
+        }
+    }
+    None
+}
+
 /// The last `max_bytes` of a file as lossy UTF-8; a missing or unreadable file gives "".
 pub fn stderr_tail(path: &std::path::Path, max_bytes: u64) -> String {
     use std::io::{Read, Seek, SeekFrom};
@@ -480,6 +508,40 @@ mod tests {
             None
         );
         assert_eq!(detect_agy(None, None, None, "429"), None);
+    }
+
+    #[test]
+    fn detect_text_rules() {
+        // stderr first
+        let hit = detect_text(
+            Some(1),
+            "",
+            "boot\nError: 429 Too Many Requests — rate limit exceeded\n",
+        )
+        .expect("hit");
+        assert_eq!(hit.signal, "text");
+        assert_eq!(
+            hit.detail,
+            "Error: 429 Too Many Requests — rate limit exceeded"
+        );
+        assert_eq!(hit.reset_at_ms, None);
+
+        // a limit phrase only in the stdout tail
+        let hit = detect_text(Some(2), "đang chạy\nYou've hit your session limit\n", "")
+            .expect("stdout hit");
+        assert_eq!(hit.signal, "text");
+        assert_eq!(hit.detail, "You've hit your session limit");
+
+        // stderr wins over stdout
+        let hit = detect_text(Some(1), "usage limit reached", "rate limit exceeded").unwrap();
+        assert_eq!(hit.detail, "rate limit exceeded");
+
+        // exit 0 and unknown exit are never quota, whatever the text says
+        assert_eq!(detect_text(Some(0), "rate limit", "429"), None);
+        assert_eq!(detect_text(None, "rate limit", "429"), None);
+        // an ordinary error is not quota
+        assert_eq!(detect_text(Some(1), "", "Error: ENOENT"), None);
+        assert_eq!(detect_text(Some(1), "", ""), None);
     }
 
     #[test]

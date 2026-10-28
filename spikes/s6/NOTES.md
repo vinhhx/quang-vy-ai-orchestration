@@ -32,7 +32,7 @@ Cách ghi: sau khi chạy, dán nội dung các file raw vào cuộc trò chuy�
 
 ## Kết quả kill-wrapper
 
-Kết quả: not-run
+Kết quả: ok (2026-10-28, `spikes/s6/raw/s6-kill-wrapper.txt`): `marker_visible=yes`, `sh_parent_kept=yes`, `sleep_child_seen=yes`, `leftover: none`, `final: none`. Giả định A18 đúng trên container thật.
 
 ## Kết quả uid-probe
 

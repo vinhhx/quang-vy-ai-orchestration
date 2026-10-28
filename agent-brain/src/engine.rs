@@ -1119,7 +1119,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_id_and_dsh_stub_are_refused() {
+    fn unknown_id_and_dsh_non_dev_are_refused() {
         let cfg = test_cfg(serde_json::json!({"engines": [
             {"id": "dsh", "kind": "dsh", "container": "dsh-x"},
         ]}));
@@ -1161,11 +1161,12 @@ mod tests {
             .is_err());
         }
 
-        // dsh is parsed and dispatched, but not enabled until plan 06-23.
+        // dsh is dispatched to `dsh::plan` (plan 06-23): a read-only role is refused there,
+        // before any docker call (the run seam of the dev role is covered by engine_dsh.rs).
         let e = run_plan(
             &cfg,
             &named("dsh"),
-            "dev",
+            "lead",
             &argv,
             "m",
             BTreeMap::new(),
@@ -1174,7 +1175,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             e.message,
-            "Engine dsh chưa được bật trong bản agent-brain này"
+            "Engine 'dsh' là kiểu dsh, chỉ dùng cho vai trò dev."
         );
     }
 

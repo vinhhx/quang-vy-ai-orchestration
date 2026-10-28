@@ -357,6 +357,16 @@ mod tests {
             "agy không sửa file nào — có thể bị từ chối quyền (xem stderr.txt của run)."
         );
 
+        // the dsh empty stop prints its own detail line
+        let stop_dsh_empty = StopInfo {
+            detail_line: Some(crate::roles::dev::DSH_EMPTY_MESSAGE.to_string()),
+            ..stop_blocked.clone()
+        };
+        assert_eq!(
+            stop_detail(&stop_dsh_empty, "sua-app"),
+            crate::roles::dev::DSH_EMPTY_MESSAGE
+        );
+
         // dừng bởi bạn at_ms t
         let t = 1_700_000_000_000i64;
         let stop_user = StopInfo {

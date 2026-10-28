@@ -46,7 +46,10 @@ fn e09_fixtures_parse() {
         assert!(s.result_seen(), "{name}: không có result");
         assert!(s.usage.input_tokens > 0, "{name}: input_tokens phải > 0");
         assert!(s.usage.output_tokens > 0, "{name}: output_tokens phải > 0");
-        println!("{name}: ok (in={} out={})", s.usage.input_tokens, s.usage.output_tokens);
+        println!(
+            "{name}: ok (in={} out={})",
+            s.usage.input_tokens, s.usage.output_tokens
+        );
     }
 
     for path in &errors {

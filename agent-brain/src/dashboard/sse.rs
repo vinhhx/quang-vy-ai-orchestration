@@ -23,6 +23,8 @@ pub fn row_kind(ev_kind: &str, text: &str) -> &'static str {
         "tool_result"
     } else if ev_kind == "result" || ev_kind == "agy/result" {
         "result"
+    } else if ev_kind == "dsh/text" {
+        "assistant"
     } else if ev_kind == "assistant" {
         if text.starts_with("tool ") {
             "tool"

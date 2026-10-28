@@ -119,6 +119,9 @@ impl UsageSource {
     }
 }
 
+/// How much of a dsh run's text `Summary::result_text` keeps.
+const DSH_TEXT_KEEP: usize = 8 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct StreamEvent {
     pub kind: String,
@@ -161,6 +164,10 @@ pub fn classify(line: &[u8]) -> Option<StreamEvent> {
             } else if let Some(e) = val.get("event").and_then(|v| v.as_str()) {
                 // agy keys its events by `event` (S7), not `type`.
                 format!("agy/{e}")
+            } else if let Some(d) = val.get("dsh").and_then(|v| v.as_str()) {
+                // dsh (D-35) has no stream of its own: agent-brain wraps each text line as
+                // `{"dsh":"text","text":...}`.
+                format!("dsh/{d}")
             } else {
                 "unknown:".to_string()
             };
@@ -496,6 +503,22 @@ impl Summary {
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0);
                 }
+            } else if ev.kind == "dsh/text" {
+                // A black box: only the text, last 8 KiB kept; usage stays untouched (none).
+                if let Some(t) = obj.get("text").and_then(|v| v.as_str()) {
+                    let acc = self.result_text.get_or_insert_with(String::new);
+                    if !acc.is_empty() {
+                        acc.push('\n');
+                    }
+                    acc.push_str(t);
+                    if acc.len() > DSH_TEXT_KEEP {
+                        let mut cut = acc.len() - DSH_TEXT_KEEP;
+                        while !acc.is_char_boundary(cut) {
+                            cut += 1;
+                        }
+                        acc.drain(..cut);
+                    }
+                }
             } else if ev.kind == "agy/init" {
                 if self.session_id.is_empty() {
                     if let Some(c) = obj.get("conversation_id").and_then(|v| v.as_str()) {
@@ -804,6 +827,33 @@ mod tests {
         assert_eq!(classify(res).unwrap().kind, "agy/result");
         // A claude line keeps its own kinds.
         assert_eq!(classify(br#"{"type":"result"}"#).unwrap().kind, "result");
+    }
+
+    #[test]
+    fn dsh_text_events() {
+        let ev = classify(br#"{"dsh":"text","text":"xin chao"}"#).unwrap();
+        assert_eq!(ev.kind, "dsh/text");
+        // Neither claude nor agy keys are disturbed.
+        assert_eq!(classify(br#"{"type":"result"}"#).unwrap().kind, "result");
+        assert_eq!(classify(br#"{"event":"init"}"#).unwrap().kind, "agy/init");
+
+        let s = feed_all(&[
+            r#"{"dsh":"text","text":"dòng một"}"#,
+            r#"{"dsh":"text","text":"dòng hai"}"#,
+        ]);
+        assert_eq!(s.result_text.as_deref(), Some("dòng một\ndòng hai"));
+        assert_eq!(s.bad_lines, 0);
+        assert_eq!(s.usage.input_tokens, 0);
+        assert_eq!(s.usage_source, UsageSource::None);
+        assert!(!s.result_seen());
+
+        // only the last 8 KiB are kept, cut on a character boundary
+        let long = "ệ".repeat(5000);
+        let line = format!(r#"{{"dsh":"text","text":"{long}"}}"#);
+        let s = feed_all(&[line.as_str(), line.as_str()]);
+        let kept = s.result_text.unwrap();
+        assert!(kept.len() <= DSH_TEXT_KEEP, "{}", kept.len());
+        assert!(kept.ends_with('ệ'));
     }
 
     #[test]
