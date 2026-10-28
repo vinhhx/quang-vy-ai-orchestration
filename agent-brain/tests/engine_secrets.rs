@@ -157,7 +157,9 @@ fn db_hits(sb: &Sandbox, needle: &str) -> Vec<String> {
     let db = sb.db();
     let tables: Vec<String> = {
         let mut st = db
-            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            )
             .unwrap();
         let rows = st.query_map([], |r| r.get::<_, String>(0)).unwrap();
         rows.map(|r| r.unwrap()).collect()
@@ -258,7 +260,10 @@ fn eng05_key_absent_everywhere() {
     assert_absent_everywhere(
         &sb,
         GW_KEY,
-        &[("agent-brain stdout", &res.stdout), ("agent-brain stderr", &res.stderr)],
+        &[
+            ("agent-brain stdout", &res.stdout),
+            ("agent-brain stderr", &res.stderr),
+        ],
     );
 
     // The echo really happened and was scrubbed, not skipped.
@@ -281,7 +286,10 @@ fn eng05_key_absent_everywhere() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(events_with_mark >= 1, "events.raw_json lacks the redacted echo");
+    assert!(
+        events_with_mark >= 1,
+        "events.raw_json lacks the redacted echo"
+    );
 }
 
 #[test]
@@ -298,7 +306,7 @@ fn eng05_quota_detail_redacted() {
             {"type": "system", "subtype": "init", "session_id": "fake-gw", "model": "fake"},
             {
                 "type": "result", "subtype": "success", "is_error": true,
-                "api_error_status": 429, "terminal_reason": "blocking_limit",
+                "terminal_reason": "blocking_limit",
                 "result": text, "num_turns": 1, "session_id": "fake-gw",
                 "total_cost_usd": 0,
                 "usage": {"input_tokens": 0, "output_tokens": 0,
@@ -318,6 +326,9 @@ fn eng05_quota_detail_redacted() {
     assert_absent_everywhere(
         &sb,
         GW_KEY,
-        &[("agent-brain stdout", &res.stdout), ("agent-brain stderr", &res.stderr)],
+        &[
+            ("agent-brain stdout", &res.stdout),
+            ("agent-brain stderr", &res.stderr),
+        ],
     );
 }

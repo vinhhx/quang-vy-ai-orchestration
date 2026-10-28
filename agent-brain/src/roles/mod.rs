@@ -492,6 +492,7 @@ pub fn execute_role_staged(
         timeout: plan.timeout,
         kill_grace: Duration::from_secs(ctx.cfg.kill_grace_secs),
         stdout_file: ep.stdout_file,
+        redact: ep.redact.clone(),
     };
 
     struct Observer<'a> {
@@ -697,7 +698,11 @@ pub fn execute_role_staged(
                 .as_ref()
                 .map(|v| v.len() as i64),
             permission_denials: obs.summary.permission_denials,
-            error: quota_hit.as_ref().map(|h| format!("quota: {}", h.detail)),
+            // Built from the already-redacted summary and stderr tail; redacted once more as a
+            // defence so no later change to the detector can store a key here (ENG-05).
+            error: quota_hit
+                .as_ref()
+                .map(|h| crate::secrets::redact_str(&format!("quota: {}", h.detail), &ep.redact)),
         };
         crate::db::finish_run(&ctx.conn, run_id, &finish)?;
         if agy_stream {
@@ -749,7 +754,7 @@ pub fn execute_role_staged(
     // retries and no other engine is tried. `main` prints the message on stderr.
     if let Some(hit) = quota_hit {
         return Err(BrainError::new(
-            crate::quota::user_message(&ep.display, &hit),
+            crate::secrets::redact_str(&crate::quota::user_message(&ep.display, &hit), &ep.redact),
             EXIT_QUOTA,
         ));
     }
