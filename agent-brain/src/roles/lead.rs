@@ -15,6 +15,64 @@ pub const LEAD_ALLOWED_TOOLS: [&str; 9] = [
 
 pub const LEAD_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
 pub const MAX_NOTE_CHARS: usize = 500;
+pub const LEAD_AGY_EMPTY_MESSAGE: &str =
+    "agy không trả kế hoạch nào — có thể bị từ chối quyền chạy lệnh (xem stderr.txt của run). Chạy lại hoặc đổi engine cho bước plan.";
+
+pub const GIT_CONTEXT_MAX_BYTES: usize = 16 * 1024;
+
+pub fn truncate_git_block(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut cut = max_bytes;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let prefix = &s[..cut];
+    if prefix.ends_with('\n') {
+        format!("{prefix}… (đã cắt)\n")
+    } else {
+        format!("{prefix}\n… (đã cắt)\n")
+    }
+}
+
+pub fn git_context_block(
+    branch: Option<&str>,
+    status: Option<&str>,
+    log: Option<&str>,
+) -> String {
+    let mut out = String::from(
+        "## Ngữ cảnh git (chỉ đọc, agent-brain lấy sẵn — bạn không chạy được lệnh shell)\n",
+    );
+    if let Some(b) = branch.filter(|s| !s.trim().is_empty()) {
+        out.push_str(&format!("- Nhánh hiện tại: {b}\n"));
+    }
+    if let Some(st) = status {
+        out.push_str("\n### git status --short\n");
+        let truncated = truncate_git_block(st, GIT_CONTEXT_MAX_BYTES);
+        if truncated.trim().is_empty() {
+            out.push_str("(trống)\n");
+        } else {
+            out.push_str(&truncated);
+            if !truncated.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+    }
+    if let Some(lg) = log {
+        out.push_str("\n### git log -n 20 --stat --date=iso\n");
+        let truncated = truncate_git_block(lg, GIT_CONTEXT_MAX_BYTES);
+        if truncated.trim().is_empty() {
+            out.push_str("(trống)\n");
+        } else {
+            out.push_str(&truncated);
+            if !truncated.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
 
 /// Opening / closing delimiter lines of the forwarded-text block (followed by the nonce and `>>>`).
 /// `telegram::compose` writes them, `cmd_lead` looks for them.
@@ -149,7 +207,7 @@ pub fn cmd_lead(
     let plan_path = proj_path.join(".plan.md");
     let keep_plan = is_replan && (opts.review || note.is_some()) && plan_path.is_file();
 
-    let user_input = if keep_plan {
+    let mut user_input = if keep_plan {
         let mut s = format!(
             "Yêu cầu: {}\nTask: {}\nFile .plan.md ở gốc dự án là bản plan hiện tại; sửa trực tiếp trên bản này, giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo).",
             request, task_slug
@@ -171,6 +229,45 @@ pub fn cmd_lead(
         }
         s
     };
+
+    let existing_task_team = crate::db::project_row_id(&ctx.conn, &proj.id)
+        .ok()
+        .and_then(|pid| {
+            ctx.conn
+                .query_row(
+                    "SELECT team_json FROM tasks WHERE project_id = ?1 AND branch = ?2",
+                    rusqlite::params![pid, branch],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten()
+        })
+        .and_then(|j| crate::teams::TaskTeam::parse(Some(&j)))
+        .and_then(|tt| teams_loaded.get(&tt.name).cloned());
+    let effective_team = existing_task_team.as_ref().unwrap_or(&team_res.team);
+    let lead_engine = effective_team.engine_for("lead");
+    let is_agy_lead = match &lead_engine {
+        crate::engine::Engine::Named(id) => {
+            ctx.cfg.engines.kind_of(id) == Some(crate::config::EngineKind::Agy)
+        }
+        _ => false,
+    };
+    if is_agy_lead {
+        let status_res = crate::gitops::git(&proj_path, &["status", "--short"]);
+        let log_res = crate::gitops::git(
+            &proj_path,
+            &["log", "-n", "20", "--stat", "--date=iso"],
+        );
+        let block = git_context_block(
+            curr_branch.as_deref(),
+            status_res.as_deref().ok(),
+            log_res.as_deref().ok(),
+        );
+        if !block.is_empty() {
+            user_input.push_str("\n\n");
+            user_input.push_str(&block);
+        }
+    }
 
     let abs_plan_rules = crate::roles::abs_rules(&proj_path, &[".plan.md"], &["Write", "Edit"]);
     let mut allowed = LEAD_ALLOWED_TOOLS
@@ -303,17 +400,21 @@ pub fn cmd_lead(
         crate::gitops::create_branch(&proj_path, &branch)?;
     }
 
-    if keep_plan {
+    let skeleton = crate::planfile::render_plan_skeleton(request, &meta);
+    let initial_plan_text = if keep_plan {
         let text = std::fs::read_to_string(&plan_path)?;
         let curr_m = crate::planfile::read_meta(&text);
         if curr_m.as_ref() != Some(&meta) {
             let updated = crate::planfile::set_meta(&text, &meta);
-            std::fs::write(&plan_path, updated)?;
+            std::fs::write(&plan_path, &updated)?;
+            updated
+        } else {
+            text
         }
     } else {
-        let skeleton = crate::planfile::render_plan_skeleton(request, &meta);
-        std::fs::write(&plan_path, skeleton)?;
-    }
+        std::fs::write(&plan_path, &skeleton)?;
+        skeleton.clone()
+    };
 
     let proj_row_id = crate::db::project_row_id(&ctx.conn, &proj.id)?;
     let task_id = crate::db::upsert_task(
@@ -436,6 +537,26 @@ pub fn cmd_lead(
         _ => {}
     }
 
+    let engine_kind = crate::db::get_run(&ctx.conn, role_run.run_id)?
+        .and_then(|r| ctx.cfg.engines.kind_of(&r.engine));
+    let is_agy_run = engine_kind == Some(crate::config::EngineKind::Agy);
+    let agy_empty_or_failed = role_run
+        .summary
+        .agy_response
+        .as_deref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+        || role_run.summary.agy_status.as_deref() != Some("SUCCESS");
+
+    let current_plan_text = std::fs::read_to_string(&plan_path).unwrap_or_default();
+    let plan_unchanged = current_plan_text == initial_plan_text || current_plan_text == skeleton;
+
+    if is_agy_run && agy_empty_or_failed && plan_unchanged {
+        crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "agy:empty")?;
+        crate::term::emit_out(LEAD_AGY_EMPTY_MESSAGE);
+        return Err(BrainError::error(LEAD_AGY_EMPTY_MESSAGE));
+    }
+
     let mut extra = crate::gitops::changed_paths(&proj_path)?;
     extra.remove(".plan.md");
     if !extra.is_empty() {
@@ -494,4 +615,79 @@ pub fn cmd_lead(
     crate::db::set_task_status(&ctx.conn, task_id, "planned")?;
     crate::term::emit_out(&plan_path.to_string_lossy());
     Ok(crate::error::EXIT_OK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_git_context_block_truncates_at_16k_utf8_safely() {
+        // Build a string where byte 16384 cuts into the middle of a multibyte character.
+        // Crab emoji 🦀 is 4 bytes: [0xF0, 0x9F, 0xA6, 0x80].
+        // With 16383 single-byte 'a's followed by 🦀, byte 16384 is inside 🦀.
+        let mut text = "a".repeat(GIT_CONTEXT_MAX_BYTES - 1);
+        text.push_str("🦀extra content after 16k boundary");
+
+        let out = truncate_git_block(&text, GIT_CONTEXT_MAX_BYTES);
+        assert!(out.contains("… (đã cắt)"));
+        let cut_part = out.strip_suffix("\n… (đã cắt)\n").unwrap();
+        assert!(cut_part.len() <= GIT_CONTEXT_MAX_BYTES);
+        assert_eq!(cut_part.len(), GIT_CONTEXT_MAX_BYTES - 1);
+        assert!(!cut_part.contains('🦀'));
+
+        // Large status and log: both truncated at 16 KiB
+        let large_status = "x".repeat(20_000);
+        let large_log = "y".repeat(25_000);
+        let block = git_context_block(
+            Some("main"),
+            Some(large_status.as_str()),
+            Some(large_log.as_str()),
+        );
+        assert!(block.contains("Ngữ cảnh git"));
+        assert!(block.contains("- Nhánh hiện tại: main"));
+        assert!(block.contains("### git status --short"));
+        assert!(block.contains("### git log -n 20 --stat --date=iso"));
+        assert_eq!(block.matches("… (đã cắt)").count(), 2);
+    }
+
+    #[test]
+    fn test_git_context_block_omits_error_blocks() {
+        // status is None (simulating git status error), log is Some
+        let block_status_err = git_context_block(
+            Some("main"),
+            None,
+            Some("commit 123 - first commit\n"),
+        );
+        assert!(!block_status_err.contains("### git status --short"));
+        assert!(block_status_err.contains("### git log -n 20 --stat --date=iso"));
+        assert!(block_status_err.contains("commit 123"));
+
+        // log is None (simulating git log error), status is Some
+        let block_log_err = git_context_block(
+            Some("main"),
+            Some("M file.txt\n"),
+            None,
+        );
+        assert!(block_log_err.contains("### git status --short"));
+        assert!(block_log_err.contains("M file.txt"));
+        assert!(!block_log_err.contains("### git log -n 20 --stat --date=iso"));
+
+        // both are None (both git commands failed)
+        let block_both_err = git_context_block(
+            Some("feature-x"),
+            None,
+            None,
+        );
+        assert!(block_both_err.contains("- Nhánh hiện tại: feature-x"));
+        assert!(!block_both_err.contains("### git status --short"));
+        assert!(!block_both_err.contains("### git log -n 20 --stat --date=iso"));
+    }
+
+    #[test]
+    fn test_git_context_block_empty_output_shows_trong() {
+        let block = git_context_block(Some("main"), Some(""), Some(""));
+        assert!(block.contains("### git status --short\n(trống)\n"));
+        assert!(block.contains("### git log -n 20 --stat --date=iso\n(trống)\n"));
+    }
 }
