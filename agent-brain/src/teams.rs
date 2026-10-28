@@ -255,6 +255,25 @@ pub fn validate_entry(
     }
 }
 
+/// ENG-10 (D-36, D-38, D-42): the first role of `team`, in `ROLES` order, whose configured engine
+/// is restricted to profiles that exclude `project_profile`. Returns the `engine::profile_refusal`
+/// text unchanged so every bind point shows the same words. An id missing from the list is not
+/// this rule's job (D-43 handles it); `claude` and people have no restriction.
+pub fn team_profile_refusal(
+    team: &Team,
+    engines: &crate::config::EnginesCfg,
+    project_id: &str,
+    project_profile: &str,
+) -> Option<String> {
+    ROLES.iter().find_map(|role| {
+        let Engine::Named(id) = team.engine_for(role) else {
+            return None;
+        };
+        let def = engines.get(&id)?;
+        crate::engine::profile_refusal(def, project_id, project_profile, role)
+    })
+}
+
 pub fn teams_path() -> PathBuf {
     crate::config::config_dir().join("teams.json")
 }
@@ -734,6 +753,70 @@ mod tests {
         // An explicit request wins over the project default.
         let r = resolve(&l, Some("tiet-kiem"), Some("doi-a")).unwrap();
         assert_eq!(r.team.name, "tiet-kiem");
+    }
+
+    fn engines_with_claude_max() -> crate::config::EnginesCfg {
+        let mut v: serde_json::Value =
+            serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap();
+        v["engines"] = serde_json::json!([{
+            "id": "claude-max",
+            "kind": "anthropic",
+            "command": "claude",
+            "pin_profile": "personal",
+            "models": {"lead": "opus", "dev": "opus"}
+        }]);
+        crate::config::config_from_value(&v)
+            .expect("config with claude-max")
+            .engines
+    }
+
+    fn team_of(roles: &[(&str, &str)]) -> Team {
+        let mut map = serde_json::Map::new();
+        for (r, e) in roles {
+            map.insert(r.to_string(), serde_json::Value::String(e.to_string()));
+        }
+        validate_entry(
+            "doi-t",
+            &serde_json::json!({"description": "t", "roles": map}),
+            &no_staff(),
+            "file",
+        )
+        .expect("valid team")
+    }
+
+    #[test]
+    fn team_profile_refusal_rules() {
+        let engines = engines_with_claude_max();
+
+        let dev_max = team_of(&[("dev", "claude-max")]);
+        let text = team_profile_refusal(&dev_max, &engines, "web", "work").expect("work refused");
+        assert_eq!(
+            text,
+            "Engine 'claude-max' chỉ dùng cho dự án profile personal — dự án 'web' dùng profile work (ranh giới work/personal, SPK-10). Đổi engine của vai trò dev hoặc chọn đội hình khác."
+        );
+        assert_eq!(
+            team_profile_refusal(&dev_max, &engines, "web", "personal"),
+            None
+        );
+
+        // The role named is the one that carries the restricted engine.
+        let lead_max = team_of(&[("lead", "claude-max")]);
+        let text = team_profile_refusal(&lead_max, &engines, "web", "work").unwrap();
+        assert!(text.ends_with("Đổi engine của vai trò lead hoặc chọn đội hình khác."));
+
+        // An id that is not in the list is not this rule's job.
+        let unknown = team_of(&[("dev", "khong-co")]);
+        assert_eq!(
+            team_profile_refusal(&unknown, &engines, "web", "work"),
+            None
+        );
+
+        // An all-claude team and a team on an unrestricted entry are never refused.
+        let all_claude = team_of(&[]);
+        assert_eq!(
+            team_profile_refusal(&all_claude, &engines, "web", "work"),
+            None
+        );
     }
 
     #[test]

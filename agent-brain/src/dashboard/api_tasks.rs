@@ -676,6 +676,18 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
         Err(e) => return Ok(StartOutcome::Invalid(e.message)),
     };
 
+    // ENG-10 / D-36 / D-42: a team that names a profile-restricted engine cannot be bound to a
+    // project of another profile. Decided here, before the preflight, any job, branch or row.
+    // Giao việc, Telegram `/task` and a forbidden project default all pass through this function.
+    if let Some(msg) = crate::teams::team_profile_refusal(
+        &team.team,
+        &st.cfg.engines,
+        &project.id,
+        &project.profile,
+    ) {
+        return Ok(StartOutcome::Invalid(msg));
+    }
+
     let conn = crate::db::open(&st.db_path)?;
     let pf = lead_preflight(&conn, &st.jobs, &project, &proj_root, &slug)?;
     if !pf.can_start {
