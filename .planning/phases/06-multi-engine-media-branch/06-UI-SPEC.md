@@ -274,6 +274,8 @@ Card title `Nhân sự`, helper `Người nhận việc ở bước chạy bằn
 
 ### Section `Engine` (read-only, D-08)
 
+Đã thay bằng Delta 2026-10-28.
+
 Card title `Engine`, helper `Engine có sẵn trong agent-brain. Lệnh, endpoint và tên biến key nằm trong config.json; dashboard chỉ xem, không sửa.` Secondary button `Kiểm tra lại` (in flight `Đang kiểm tra...`) with helper `Chỉ xem biến môi trường và lệnh có trên máy; không gọi model, không tốn token.` `[ASSUMED C8]`
 
 One row per engine, fixed order `claude`, `deepseek`, `agy`, `người`: name (mono) + readiness badge, a one-line description, and read-only detail lines when the engine has them.
@@ -651,3 +653,132 @@ No third-party code, font, icon or image enters the dashboard in this phase; the
 - [ ] Dimension 7 Inventory Provenance: PASS
 
 **Approval:** pending
+
+---
+
+## Delta 2026-10-28 — danh sách engine (D-30 … D-44)
+
+> Trạng thái: **chờ người dùng duyệt (D-44)**. Chưa file nào dưới `agent-brain/assets/dashboard/` hay `scripts/dashboard-*` được đổi. Delta này thay mục `Section Engine` ở trên, dòng `chưa kiểm` của bảng trạng thái, dòng engine của bảng `Data the UI reads and writes`, cảnh báo `Đội hình … dùng engine chưa sẵn sàng` của màn Giao việc, và dòng `chưa có giá` của Thống kê. Mọi thứ khác giữ nguyên. Chuỗi đánh dấu (server) hiển thị nguyên văn, UI không viết lại. Căn cứ: D-30, D-35, D-36, D-37, D-38, D-39, D-40, D-41, D-43, D-44; plan 06-26 và 06-22 (payload `/api/engines`, cảnh báo đội hình).
+
+### 1. Mục Engine: lời dẫn
+
+Tiêu đề thẻ giữ `Engine`. Lời dẫn (thay lời dẫn cũ):
+
+`Engine khai báo trong config.json (mục engines), cùng claude (theo profile của dự án) và người. Lệnh, endpoint và tên biến key chỉ sửa trong file; dashboard chỉ xem.`
+
+Nút `Kiểm tra lại` (đang chạy `Đang kiểm tra...`) và lời giải thích đi kèm giữ nguyên (C8). Đây vẫn là control duy nhất của mục (D-08).
+
+### 2. Thứ tự và cấu tạo một dòng
+
+- Thứ tự là thứ tự của `GET /api/engines`: `claude`, các engine khai báo theo thứ tự trong config, `người`. `settings.js` không giữ danh sách tên engine cố định. Mục không bao giờ rỗng: `claude` và `người` luôn có dòng.
+- Một dòng, từ trên xuống: (a) hàng đầu `flex flex-wrap items-center gap-2`: id (mono, công thức `Row name`), chip loại, badge trạng thái (công thức Readiness badge); (b) dòng `label` khi entry có `label` (Body 400, `break-words`); (c) mô tả theo loại (Body 400, `break-words`); (d) các dòng chi tiết (14 / 400, `break-words`, phần giá trị mono); (e) dòng lý do của server (14 / 400, màu amber) cho **mọi** trạng thái khác `sẵn sàng`, kể cả `chưa kiểm`.
+- Dòng không có `label` vẫn có mô tả theo loại nên không bao giờ trống.
+
+### 3. Chip loại (công thức Row chips, slate)
+
+| Loại | Chip |
+|------|------|
+| `claude`, `người` | `có sẵn` |
+| `anthropic` | `anthropic` |
+| `agy` | `agy` |
+| `dsh` | `dsh` |
+
+### 4. Mô tả theo loại (chính xác)
+
+| Loại | Mô tả |
+|------|-------|
+| `claude` | `Dùng profile của dự án (work hoặc personal), không có tài khoản riêng.` (không đổi) |
+| `người` | `Nhân sự làm trên máy của họ và đẩy nhánh task lên remote.` (không đổi) |
+| `agy` | `Antigravity chạy không giao diện (headless).` (không đổi) |
+| `anthropic`, có endpoint | `claude chạy trên máy với một endpoint định dạng Anthropic.` |
+| `anthropic`, không endpoint | `claude chạy trên máy bằng tài khoản Claude của profile dự án.` |
+| `dsh` | `DeepSeek Harness trong container, chạy như hộp đen: chỉ văn bản, không đếm token.` |
+
+### 5. Dòng chi tiết (nhãn chính xác, thứ tự cố định, chỉ hiện dòng có dữ liệu)
+
+| Nhãn | Giá trị | Ghi chú |
+|------|---------|---------|
+| `Lệnh: ` | `{command}` (mono) | Chỉ phần executable (D-41), không bao giờ argv |
+| `Biến key: ` | `{KEY_ENV}` (mono) | **Chỉ tên biến**, không bao giờ giá trị (D-03) |
+| `Model: ` | `{model}` (mono) | |
+| `Profile cố định: ` | `{pin_profile}` (mono) | `claude-max` ghim `personal` (D-36) |
+| `Chỉ cho dự án profile: ` | `{allowed_profiles}` nối bằng `, ` (mono) | D-38; không hiện lại khi chỉ lặp lại `pin_profile` |
+| `Bằng chứng E-09: ` | `{evidence}` | Chữ `verified` của người dùng trong config, chỉ khi có |
+| `Container: ` | `{container}` (mono) | Chỉ loại `dsh` |
+| (không nhãn) `Không đếm token (chỉ văn bản).` | | Chỉ loại `dsh` (`usage: none`) |
+
+Dòng của `người` vẫn là `{n} nhân sự` (không nhãn), như trước.
+
+### 6. Ý nghĩa các từ trạng thái (D-40, D-44)
+
+Bốn từ giữ nguyên, **không thêm từ thứ năm**: `sẵn sàng` · `thiếu key` · `thiếu lệnh` · `chưa kiểm`.
+
+- `chưa kiểm` đổi nghĩa thành `endpoint chưa có bằng chứng E-09` (không còn nghĩa "chưa kiểm lần đầu"). Màu, glyph ◌ và lớp class không đổi. Nó hiện cùng dòng lý do của server, và **không chặn** việc chạy (D-40).
+- Container dsh không chạy dùng lại `thiếu lệnh` với dòng lý do `Container {container} chưa chạy.` (D-44).
+
+Lý do của server (server, nguyên văn):
+
+| Trạng thái | Dòng lý do |
+|-----------|-----------|
+| `thiếu key` | `Chưa đặt biến môi trường {KEY_ENV}.` |
+| `thiếu lệnh` (lệnh) | `Không tìm thấy lệnh {command} trên máy.` |
+| `thiếu lệnh` (dsh) | `Container {container} chưa chạy.` |
+| `chưa kiểm` | `Endpoint chưa có bằng chứng E-09 — chạy spikes/e09/run.sh rồi ghi "verified" cho engine này trong config.json.` |
+
+### 7. Trình sửa đội hình: lựa chọn engine (D-37, D-39, D-24)
+
+Mỗi ô chọn vai trò lấy lựa chọn từ payload engine, theo thứ tự API:
+
+1. `claude`, rồi từng id đã khai báo (loại `dsh` **chỉ** có trong ô `Dev`), rồi (chỉ ô `Dev`) mỗi `người {tên hiển thị}` (giá trị `người:{id}`).
+2. Lựa chọn engine chưa sẵn sàng ghi `{id} — {từ trạng thái}` (ví dụ `gw-chua — chưa kiểm`) và vẫn chọn được.
+3. Ô `QA` hiện cùng danh sách như `Lead`, nhưng chọn khác `claude` vẫn báo lỗi tại chỗ `QA phải dùng engine claude.` và khóa `Lưu đội hình` (quy tắc cũ, không đổi).
+4. Giá trị sửa tay mà danh sách không đưa ra vẫn hiển thị và đang được chọn (không đổi lặng lẽ).
+
+### 8. Dòng đội hình: cảnh báo khai báo (D-43)
+
+Ngoài các dòng `! {engine}: {từ}` cho mọi engine chưa sẵn sàng (kể cả `chưa kiểm`), dòng đội hình hiện cảnh báo của server thành một dòng amber (công thức Readiness warning, bắt đầu bằng glyph `!`):
+
+`Engine '{id}' chưa khai báo trong config.json.` (server)
+
+Ví dụ: đội hình có sẵn `tiet-kiem` khi danh sách engine không có `deepseek`. Đội hình vẫn lưu và chọn được.
+
+### 9. Giao việc: callout theo mức độ (D-40)
+
+- Các dòng sẵn sàng của từng lựa chọn đội hình duyệt theo thứ tự API, cho mọi id mà đội hình dùng: `! {id}: {từ}`.
+- Engine chưa sẵn sàng của đội hình đang chọn tách thành **cứng** (`thiếu key`, `thiếu lệnh`) và **mềm** (`chưa kiểm`).
+- Chỉ có engine mềm (callout amber, không chặn):
+
+  `Đội hình {name} dùng endpoint chưa có bằng chứng E-09: {ids}. Task vẫn chạy; log của bước đó ghi "chưa kiểm E-09".`
+
+- Chỉ có engine cứng: câu hiện tại, nhưng chỉ liệt kê engine cứng:
+
+  `Đội hình {name} dùng engine chưa sẵn sàng: {id (từ)}. Task vẫn giao được, nhưng bước dùng engine này sẽ dừng với lỗi.`
+
+- Có cả hai: câu cứng (chỉ liệt kê engine `thiếu key` / `thiếu lệnh`), theo sau là câu mềm rút gọn trong cùng callout:
+
+  `Endpoint chưa có bằng chứng E-09: {ids}. Task vẫn chạy; log của bước đó ghi "chưa kiểm E-09".`
+
+- Không bao giờ có câu `sẽ dừng với lỗi` cho engine `chưa kiểm`. Giao việc vẫn không có lý do vô hiệu mới.
+
+### 10. Hợp đồng dữ liệu `/api/engines` (thay dòng `Engines read`)
+
+`engines[]` = `{name, readiness: "san_sang"|"thieu_key"|"thieu_lenh"|"chua_kiem", word, reason, command, key_env, model, description, detail, kind: "claude"|"anthropic"|"agy"|"dsh"|"người", label, evidence, usage: "tokens"|"none", pin_profile, allowed_profiles, container}`, thứ tự `claude` → thứ tự config → `người`. `key_env` chỉ là tên biến. **Không bao giờ** giá trị key, argv hay query của endpoint. `GET /api/teams`: `warnings[]` có thể chứa `Engine '{id}' chưa khai báo trong config.json.`; `errors[]` có thể chứa dòng D-37. `POST /api/teams/save` từ chối vai trò không phải Dev dùng `dsh` và id lạ bằng lỗi theo trường (422). UI chỉ đọc một whitelist trường; không có route hay control sửa engine.
+
+### 11. Thống kê: engine không đếm token (D-35)
+
+Trong thẻ `Theo engine`, dòng engine có `usage: "none"` (dsh) có dòng 2 là `không đếm token · {n} run` thay cho `chưa có giá · {n} run`. Engine có token nhưng chưa có giá vẫn là `chưa có giá · {n} run`; engine có giá không đổi; dòng `người` giữ copy riêng (`không có token` / `{n} lượt do người làm`). Dòng 1 và chân trang của thẻ không đổi.
+
+### 12. UI Considerations: các dòng thêm cho delta
+
+| Category | Element(s) | Status | Resolution / Reason |
+|----------|-----------|--------|---------------------|
+| empty | list-collection: Engine section | ✅ covered | Không bao giờ rỗng: `claude` và `người` luôn có dòng; dòng không có `label` hiện mô tả theo loại |
+| populated | list-collection: engine rows | ✅ covered | id, chip loại, badge, label, mô tả, dòng chi tiết, dòng lý do cho mọi trạng thái khác `sẵn sàng` (kể cả `chưa kiểm`) |
+| loading | interactive-control: engine `Kiểm tra lại` | ✅ covered | `Đang kiểm tra...`, giữ các dòng cũ tới khi có phản hồi |
+| partial | list-collection: team using a not-ready or undeclared engine | ✅ covered | Dòng amber `! {id}: {từ}` và `Engine '{id}' chưa khai báo trong config.json.`; vẫn lưu và chọn được |
+| partial | static-content: Giao việc, chỉ có engine `chưa kiểm` | ✅ covered | Callout mềm `Task vẫn chạy`, không bao giờ `sẽ dừng với lỗi` |
+| partial | form: Dev select vs other role selects | ✅ covered | `dsh` chỉ ở ô Dev; QA giữ lỗi `QA phải dùng engine claude.` |
+| partial | static-content: secrets in the Engine section and Giao việc | ✅ covered | Chỉ tên biến, lệnh, model, container; smoke phục vụ với hai key giả và grep cả hai DOM |
+| partial | list-collection: stats engine rows with `usage: none` | ✅ covered | `không đếm token · {n} run`, không bao giờ `chưa có giá` cho dsh |
+| overflow | list-collection: many configured engines, long labels | 🧪 backstop | `break-words`, không cuộn ngang ở 1024 / 768 / 480 px; kiểm bằng UAT (LIVE-CHECKS § 8 P6-07) |
+| populated | static-content: contrast of the kind chip and the dashed `chưa kiểm` badge | 🧪 backstop | Chip slate và badge dashed dùng class đã tính; kiểm sáng / tối bằng UAT |

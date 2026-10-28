@@ -4156,10 +4156,10 @@ const sections = [
       const secretEngine = (e) => Object.assign({ env: { DEEPSEEK_API_KEY: PLANTED }, secret_value: PLANTED, argv: ['--key', PLANTED] }, e);
       const ENGINES = {
         engines: [
-          secretEngine({ name: 'claude', readiness: 'san_sang', word: 'sẵn sàng', reason: null, command: 'claude', key_env: null, model: null }),
-          secretEngine({ name: 'deepseek', readiness: 'thieu_key', word: 'thiếu key', reason: 'Chưa đặt biến môi trường DEEPSEEK_API_KEY.', command: 'claude', key_env: 'DEEPSEEK_API_KEY', model: 'deepseek-chat' }),
-          secretEngine({ name: 'agy', readiness: 'thieu_lenh', word: 'thiếu lệnh', reason: 'Không tìm thấy lệnh agy trên máy.', command: 'agy', key_env: null, model: null }),
-          secretEngine({ name: 'người', readiness: 'san_sang', word: 'sẵn sàng', reason: null, command: null, key_env: null, model: null, detail: '1 nhân sự' }),
+          secretEngine({ name: 'claude', kind: 'claude', usage: 'tokens', readiness: 'san_sang', word: 'sẵn sàng', reason: null, command: 'claude', key_env: null, model: null }),
+          secretEngine({ name: 'deepseek', kind: 'anthropic', usage: 'tokens', readiness: 'thieu_key', word: 'thiếu key', reason: 'Chưa đặt biến môi trường DEEPSEEK_API_KEY.', command: 'claude', key_env: 'DEEPSEEK_API_KEY', model: 'deepseek-chat' }),
+          secretEngine({ name: 'agy', kind: 'agy', usage: 'tokens', readiness: 'thieu_lenh', word: 'thiếu lệnh', reason: 'Không tìm thấy lệnh agy trên máy.', command: 'agy', key_env: null, model: null }),
+          secretEngine({ name: 'người', kind: 'người', usage: 'none', readiness: 'san_sang', word: 'sẵn sàng', reason: null, command: null, key_env: null, model: null, detail: '1 nhân sự' }),
         ],
       };
 
@@ -4473,7 +4473,7 @@ const sections = [
         check('settings: claude and agy show only the command', JSON.stringify(detailOf(rows[0])) === JSON.stringify(['Lệnh: claude']) && JSON.stringify(detailOf(rows[2])) === JSON.stringify(['Lệnh: agy']));
         check('settings: người shows the staff count', JSON.stringify(detailOf(rows[3])) === JSON.stringify(['1 nhân sự']), JSON.stringify(detailOf(rows[3])));
         check('settings: server reason for a not-ready engine only', rows[1].reason === 'Chưa đặt biến môi trường DEEPSEEK_API_KEY.' && rows[2].reason === 'Không tìm thấy lệnh agy trên máy.' && rows[0].reason === '' && rows[0].hasReason === false);
-        check('settings: exact engine descriptions', rows[0].description === 'Dùng profile của dự án (work hoặc personal), không có tài khoản riêng.' && rows[1].description === 'claude chạy trên máy với endpoint của DeepSeek.' && rows[2].description === 'Antigravity chạy không giao diện (headless).' && rows[3].description === 'Nhân sự làm trên máy của họ và đẩy nhánh task lên remote.');
+        check('settings: exact engine descriptions', rows[0].description === 'Dùng profile của dự án (work hoặc personal), không có tài khoản riêng.' && rows[1].description === 'claude chạy trên máy với một endpoint định dạng Anthropic.' && rows[2].description === 'Antigravity chạy không giao diện (headless).' && rows[3].description === 'Nhân sự làm trên máy của họ và đẩy nhánh task lên remote.');
         const rendered = JSON.stringify({ rows, teams: c.teamRows, optionLabels: c.roleOptions('dev'), staff: c.staffRows });
         check('settings: a planted key value never reaches the engine rows or any other view', rendered.indexOf(PLANTED) === -1, 'planted value found in a rendered view');
         check('settings: the key variable NAME is shown, not its value', rendered.indexOf('DEEPSEEK_API_KEY') >= 0);
@@ -4493,6 +4493,151 @@ const sections = [
         await checking;
         check('settings: Kiểm tra lại done', c3.checkLabel === 'Kiểm tra lại' && c3.enginesFailed === false && c3.engineRows[1].key === 'thieu_key');
         check('settings: no engine write route is ever called', calls.every((x) => x.url.indexOf('/api/engines') !== 0 || x.method === 'GET'));
+      } finally {
+        ctx.AB.api = savedApi;
+      }
+    },
+  },
+  {
+    // 06-24 (D-30, D-37, D-40, D-43, D-44): the Settings Engine section, the team editor options,
+    // Giao việc and Thống kê are built from the configured engine list (GET /api/engines).
+    name: 'engine-list',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      const dash = (f) => path.join(repoRoot, 'agent-brain/assets/dashboard/js', f);
+      for (const f of ['settings.js', 'assign.js', 'stats.js']) {
+        vm.runInContext(fs.readFileSync(dash(f), 'utf8'), ctx, { filename: f });
+      }
+      const allThere = ['settings', 'assign', 'stats'].every((n) => typeof factories[n] === 'function');
+      check('engine-list: factories registered', allThere);
+      if (!allThere) return;
+
+      const PLANTED = 'planted-gateway-key-9876543210';
+      const withSecrets = (e) => Object.assign({ env: { GW_API_KEY: PLANTED }, secret_value: PLANTED, argv: ['--key', PLANTED], base_url: 'https://gw.invalid/x?token=' + PLANTED }, e);
+      const E = {
+        claude: withSecrets({ name: 'claude', kind: 'claude', usage: 'tokens', readiness: 'san_sang', word: 'sẵn sàng', reason: null, command: 'claude' }),
+        deepseek: withSecrets({ name: 'deepseek', kind: 'anthropic', usage: 'tokens', readiness: 'thieu_key', word: 'thiếu key', reason: 'Chưa đặt biến môi trường DEEPSEEK_API_KEY.', command: 'claude', key_env: 'DEEPSEEK_API_KEY', model: 'deepseek-chat' }),
+        gwThu: withSecrets({ name: 'gw-thu', kind: 'anthropic', usage: 'tokens', readiness: 'san_sang', word: 'sẵn sàng', reason: null, command: 'claude', key_env: 'GW_API_KEY', model: 'm-thu', label: 'Cổng thử nghiệm của công ty với một cái tên rất dài để kiểm tra việc xuống dòng', evidence: '2026-10-28 E-09' }),
+        gwChua: withSecrets({ name: 'gw-chua', kind: 'anthropic', usage: 'tokens', readiness: 'chua_kiem', word: 'chưa kiểm', reason: 'Endpoint chưa có bằng chứng E-09 — chạy spikes/e09/run.sh rồi ghi "verified" cho engine này trong config.json.', command: 'claude', key_env: 'GW2_API_KEY', model: 'm-chua' }),
+        claudeMax: withSecrets({ name: 'claude-max', kind: 'anthropic', usage: 'tokens', readiness: 'san_sang', word: 'sẵn sàng', reason: null, command: 'claude', pin_profile: 'personal', allowed_profiles: ['personal'] }),
+        agy: withSecrets({ name: 'agy', kind: 'agy', usage: 'tokens', readiness: 'san_sang', word: 'sẵn sàng', reason: null, command: 'agy', allowed_profiles: ['work', 'personal'] }),
+        dsh: withSecrets({ name: 'dsh', kind: 'dsh', usage: 'none', readiness: 'thieu_lenh', word: 'thiếu lệnh', reason: 'Container fake-dsh chưa chạy.', command: 'docker', model: 'headless', container: 'fake-dsh', allowed_profiles: ['personal'] }),
+        nguoi: withSecrets({ name: 'người', kind: 'người', usage: 'none', readiness: 'san_sang', word: 'sẵn sàng', reason: null, command: null, detail: '1 nhân sự' }),
+      };
+      const ENGINES = { engines: [E.claude, E.deepseek, E.gwThu, E.gwChua, E.claudeMax, E.agy, E.dsh, E.nguoi] };
+      const ROLES = (dev, extra) => Object.assign({ lead: 'claude', dev, qa: 'claude', plan_review: 'claude', code_review: 'claude' }, extra || {});
+      const team = (name, dev, extra, warnings) => Object.assign({
+        name, source: 'file', description: 'Mô tả ' + name, roles: ROLES(dev), summary: 'tóm tắt', warnings: warnings || [], default_for: [], used_by: { projects: [], open_tasks: 0 },
+      }, extra || {});
+      const TEAMS = {
+        teams: [
+          team('tiet-kiem', 'deepseek', { source: 'builtin' }, ["Engine 'deepseek' chưa khai báo trong config.json."]),
+          team('chi-chua', 'gw-chua'),
+          team('hon-hop', 'deepseek', { roles: ROLES('deepseek', { lead: 'gw-chua' }) }),
+          team('ca-ba', 'gw-thu', { roles: ROLES('gw-thu', { lead: 'gw-chua', plan_review: 'dsh' }) }),
+        ],
+        errors: [],
+        version: 'tv1',
+        builtin_names: ['tiet-kiem'],
+        project_defaults: {},
+      };
+      const STAFF = { staff: [{ id: 'ha', display_name: 'Hà', notes: '', used_in: [] }], errors: [], version: 'sv1' };
+      const ok = (data) => ({ ok: true, status: 200, data: JSON.parse(JSON.stringify(data)) });
+      let engines = ENGINES;
+      const calls = [];
+      const savedApi = ctx.AB.api;
+      ctx.AB.api = function (method, url, body) {
+        calls.push({ method, url, body });
+        if (method === 'GET' && url === '/api/engines') return Promise.resolve(ok(engines));
+        if (method === 'GET' && url === '/api/teams') return Promise.resolve(ok(TEAMS));
+        if (method === 'GET' && url === '/api/workflows') return Promise.resolve(ok({ workflows: [], errors: [], version: 'w' }));
+        if (method === 'GET' && url === '/api/staff') return Promise.resolve(ok(STAFF));
+        return Promise.resolve({ ok: false, status: 404, data: null });
+      };
+      try {
+        // ---- Settings: rows ----
+        const c = factories.settings();
+        await c.load();
+        await c.loadEngines();
+        const rows = c.engineRows;
+        const by = (n) => rows.filter((r) => r.name === n)[0];
+        const detailOf = (r) => r.details.map((d) => d.label + d.value);
+        check('engine-list: rows follow the API order', rows.map((r) => r.name).join(',') === 'claude,deepseek,gw-thu,gw-chua,claude-max,agy,dsh,người', rows.map((r) => r.name).join(','));
+        check('engine-list: kind chips', rows.map((r) => r.chip).join(',') === 'có sẵn,anthropic,anthropic,anthropic,anthropic,agy,dsh,có sẵn', rows.map((r) => r.chip).join(','));
+        check('engine-list: gw-thu shows label and the E-09 evidence', by('gw-thu').hasLabel === true && by('gw-thu').label.indexOf('Cổng thử nghiệm') === 0 && detailOf(by('gw-thu')).indexOf('Bằng chứng E-09: 2026-10-28 E-09') >= 0, JSON.stringify(detailOf(by('gw-thu'))));
+        check('engine-list: a row without label has no label line but a description', by('claude').hasLabel === false && by('claude').description !== '');
+        check('engine-list: gw-chua shows the server reason', by('gw-chua').hasReason === true && by('gw-chua').reason === E.gwChua.reason && by('gw-chua').word === 'chưa kiểm', JSON.stringify(by('gw-chua')));
+        check('engine-list: the ready rows have no reason', by('gw-thu').hasReason === false && by('claude').hasReason === false);
+        check('engine-list: dsh shows container, no-token line and the container reason', JSON.stringify(detailOf(by('dsh'))) === JSON.stringify(['Lệnh: docker', 'Chỉ cho dự án profile: personal', 'Container: fake-dsh', 'Không đếm token (chỉ văn bản).']) && by('dsh').reason === 'Container fake-dsh chưa chạy.' && by('dsh').key === 'thieu_lenh', JSON.stringify(detailOf(by('dsh'))));
+        check('engine-list: claude-max shows the pinned profile once', detailOf(by('claude-max')).indexOf('Profile cố định: personal') >= 0 && detailOf(by('claude-max')).every((l) => l.indexOf('Chỉ cho dự án profile') === -1), JSON.stringify(detailOf(by('claude-max'))));
+        check('engine-list: agy shows its allowed profiles', detailOf(by('agy')).indexOf('Chỉ cho dự án profile: work, personal') >= 0, JSON.stringify(detailOf(by('agy'))));
+        check('engine-list: anthropic descriptions', by('gw-thu').description === 'claude chạy trên máy với một endpoint định dạng Anthropic.' && by('claude-max').description === 'claude chạy trên máy bằng tài khoản Claude của profile dự án.');
+        check('engine-list: dsh description', by('dsh').description === 'DeepSeek Harness trong container, chạy như hộp đen: chỉ văn bản, không đếm token.');
+        check('engine-list: người shows the staff count only', JSON.stringify(detailOf(by('người'))) === JSON.stringify(['1 nhân sự']));
+        check('engine-list: only the variable NAME is shown for a key', detailOf(by('gw-thu')).indexOf('Biến key: GW_API_KEY') >= 0);
+        const everything = JSON.stringify({ rows, teams: c.teamRows, dev: c.roleOptions('dev'), lead: c.roleOptions('lead') });
+        check('engine-list: a planted key value or endpoint never reaches a rendered view', everything.indexOf(PLANTED) === -1 && everything.indexOf('gw.invalid') === -1, 'planted value found');
+
+        // ---- Settings: never empty, no hard-coded names ----
+        engines = { engines: [] };
+        const empty = factories.settings();
+        await empty.load();
+        await empty.loadEngines();
+        check('engine-list: with no payload claude and người still have rows', empty.engineRows.map((r) => r.name).join(',') === 'claude,người' && empty.engineRows.every((r) => r.description !== ''));
+        engines = ENGINES;
+
+        // ---- Settings: team editor options ----
+        const labels = (role) => c.roleOptions(role).map((o) => o.label);
+        const values = (role) => c.roleOptions(role).map((o) => o.value);
+        check('engine-list: lead options, no dsh, no people', values('lead').join(',') === 'claude,deepseek,gw-thu,gw-chua,claude-max,agy', values('lead').join(','));
+        check('engine-list: dev options add dsh and the people', values('dev').join(',') === 'claude,deepseek,gw-thu,gw-chua,claude-max,agy,dsh,người:ha', values('dev').join(','));
+        check('engine-list: qa offers the same list as lead', values('qa').join(',') === values('lead').join(','));
+        check('engine-list: a not-ready option reads {id} — {word}', labels('lead').indexOf('gw-chua — chưa kiểm') >= 0 && labels('lead').indexOf('deepseek — thiếu key') >= 0 && labels('dev').indexOf('dsh — thiếu lệnh') >= 0 && labels('lead').indexOf('gw-thu') >= 0, JSON.stringify(labels('dev')));
+        c.tDev = 'khong-co';
+        check('engine-list: a hand-edited value stays visible and selected', values('dev').indexOf('khong-co') >= 0 && c.optionSelected('dev', 'khong-co') === true);
+        c.tDev = 'claude';
+        c.tQa = 'gw-thu';
+        check('engine-list: QA keeps its inline error for a non-claude choice', c.fieldMsg('team', 'qa') === 'QA phải dùng engine claude.' || c.saveReason('team') === 'QA phải dùng engine claude.', c.fieldMsg('team', 'qa') + ' / ' + c.saveReason('team'));
+        c.tQa = 'claude';
+
+        // ---- Settings: team row warnings ----
+        const row = (n) => c.teamRows.filter((r) => r.name === n)[0];
+        check('engine-list: the server warning is a team row line (D-43)', row('tiet-kiem').warnings.indexOf("Engine 'deepseek' chưa khai báo trong config.json.") >= 0, JSON.stringify(row('tiet-kiem').warnings));
+        check('engine-list: chưa kiểm is also a readiness line on a team row', row('chi-chua').warnings.indexOf('gw-chua: chưa kiểm') >= 0, JSON.stringify(row('chi-chua').warnings));
+
+        // ---- Giao việc ----
+        const a = factories.assign();
+        await a.loadTeams();
+        check('engine-list: assign keeps the API order of engines', a.engineOrder.join(',') === 'claude,deepseek,gw-thu,gw-chua,claude-max,agy,dsh,người', a.engineOrder.join(','));
+        const t = (n) => TEAMS.teams.filter((x) => x.name === n)[0];
+        check('engine-list: soft-only team gets the soft callout, never "sẽ dừng với lỗi"', (() => { a.pickTeam('chi-chua'); return a.teamWarningText === 'Đội hình chi-chua dùng endpoint chưa có bằng chứng E-09: gw-chua. Task vẫn chạy; log của bước đó ghi "chưa kiểm E-09".' && a.teamWarningText.indexOf('sẽ dừng với lỗi') === -1; })(), a.teamWarningText);
+        check('engine-list: a mix lists only the hard engines, then the soft sentence', (() => { a.pickTeam('hon-hop'); return a.teamWarningText === 'Đội hình hon-hop dùng engine chưa sẵn sàng: deepseek (thiếu key). Task vẫn giao được, nhưng bước dùng engine này sẽ dừng với lỗi. Endpoint chưa có bằng chứng E-09: gw-chua. Task vẫn chạy; log của bước đó ghi "chưa kiểm E-09".'; })(), a.teamWarningText);
+        check('engine-list: readiness lines follow the API order', JSON.stringify(a.teamReadinessLines(t('hon-hop'))) === JSON.stringify(['! deepseek: thiếu key', '! gw-chua: chưa kiểm']) && JSON.stringify(a.teamReadinessLines(t('ca-ba'))) === JSON.stringify(['! gw-chua: chưa kiểm', '! dsh: thiếu lệnh']), JSON.stringify(a.teamReadinessLines(t('ca-ba'))));
+        check('engine-list: the hard text of a three-engine team lists only the hard engine', (() => { a.pickTeam('ca-ba'); return a.teamWarningText.indexOf('dsh (thiếu lệnh)') >= 0 && a.teamWarningText.indexOf('gw-chua (') === -1 && a.teamWarningText.indexOf('Endpoint chưa có bằng chứng E-09: gw-chua.') >= 0; })(), a.teamWarningText);
+        check('engine-list: no key value reaches the assign state', JSON.stringify({ o: a.engineOrder, r: a.engineReadiness, s: a.engineStates }).indexOf(PLANTED) === -1);
+
+        // ---- Thống kê ----
+        const st = factories.stats();
+        st.loaded = true;
+        st.report = {
+          total: { runs: 6, input_tokens: 1000, output_tokens: 100, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 0 },
+          by_day: [], by_profile: [], by_project: [], by_role: [],
+          engines: [
+            { engine: 'claude', runs: 2, input: 1000, output: 100, cache_read: 0, cache_write: 0, cost: 0.5, priced: true, usage: 'tokens' },
+            { engine: 'gw-chua', runs: 2, input: 500, output: 0, cache_read: 0, cache_write: 0, cost: 0, priced: false, usage: 'tokens' },
+            { engine: 'dsh', runs: 2, input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, priced: false, usage: 'none' },
+          ],
+          qa_by_dev_engine: [],
+        };
+        const srows = st.engineRows;
+        check('engine-list: a usage none engine reads không đếm token · {n} run', srows[2].line2 === 'không đếm token · 2 run', srows[2].line2);
+        check('engine-list: a token engine without a price still reads chưa có giá', srows[1].line2 === 'chưa có giá · 2 run' && srows[0].line2 === '≈ $0.5000 · 2 run', srows[1].line2 + ' / ' + srows[0].line2);
+        check('engine-list: no engine route is written', calls.every((x) => x.url.indexOf('/api/engines') !== 0 || x.method === 'GET'));
       } finally {
         ctx.AB.api = savedApi;
       }

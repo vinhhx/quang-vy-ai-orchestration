@@ -1,8 +1,10 @@
 // js/assign.js — Giao việc screen component
 (function () {
-  // Role keys of a team entry (`/api/teams` roles), and the fixed engines in display order.
+  // Role keys of a team entry (`/api/teams` roles). The engines and their order come from
+  // GET /api/engines (D-30); no engine name is kept here.
   var TEAM_ROLES = ['lead', 'dev', 'qa', 'plan_review', 'code_review'];
-  var ENGINE_ORDER = ['claude', 'deepseek', 'agy'];
+  // Readiness states that make a step stop with an error; `chua_kiem` is only a hint (D-40).
+  var HARD_STATES = { thieu_key: true, thieu_lenh: true };
   var BUILTIN_TEAM_NAMES = ['mac-dinh', 'tiet-kiem'];
 
   window.AB.onReady('assign', function () {
@@ -46,6 +48,8 @@
       teamName: 'mac-dinh',
       teamTouched: false,
       engineReadiness: {},
+      engineStates: {},
+      engineOrder: [],
       staffNames: {},
 
       _slugSeq: 0,
@@ -131,17 +135,26 @@
         var self = this;
         var engines = window.AB.api('GET', '/api/engines').then(function (res) {
           var map = {};
+          var states = {};
+          var order = [];
           if (res && res.ok && res.data && Array.isArray(res.data.engines)) {
             for (var i = 0; i < res.data.engines.length; i++) {
               var e = res.data.engines[i];
-              if (e && e.name && e.readiness && e.readiness !== 'san_sang') {
+              if (!e || !e.name) continue;
+              order.push(e.name);
+              if (e.readiness && e.readiness !== 'san_sang') {
                 map[e.name] = e.word || e.readiness;
+                states[e.name] = e.readiness;
               }
             }
           }
           self.engineReadiness = map;
+          self.engineStates = states;
+          self.engineOrder = order;
         }).catch(function () {
           self.engineReadiness = {};
+          self.engineStates = {};
+          self.engineOrder = [];
         });
         var staff = window.AB.api('GET', '/api/staff').then(function (res) {
           var names = {};
@@ -215,7 +228,8 @@
         return chips;
       },
 
-      // Engines of the team's roles that are not ready, in engine order: [{engine, word}].
+      // Engines of the team's roles that are not ready, in API order: [{engine, word, hard}].
+      // `hard` is true for `thiếu key` / `thiếu lệnh`; `chưa kiểm` is a soft hint.
       teamNotReady: function (t) {
         var out = [];
         if (!t || !t.roles) return out;
@@ -224,10 +238,12 @@
           var eng = t.roles[TEAM_ROLES[i]];
           if (eng) used[eng] = true;
         }
-        for (var j = 0; j < ENGINE_ORDER.length; j++) {
-          var name = ENGINE_ORDER[j];
+        var order = this.engineOrder || [];
+        for (var j = 0; j < order.length; j++) {
+          var name = order[j];
           if (used[name] && this.engineReadiness && this.engineReadiness[name]) {
-            out.push({ engine: name, word: this.engineReadiness[name] });
+            var st = this.engineStates ? this.engineStates[name] : '';
+            out.push({ engine: name, word: this.engineReadiness[name], hard: !!HARD_STATES[st] });
           }
         }
         return out;
@@ -748,16 +764,32 @@
       },
 
       // Amber callout for the selected team; a warning only, never a reason to disable Giao việc.
+      // Hard engines (`thiếu key`, `thiếu lệnh`) keep the stop warning; `chưa kiểm` endpoints
+      // get the soft sentence (the task runs, the log marks the step) — D-40.
       get teamWarningText() {
         var t = this.selectedTeam;
         var list = this.teamNotReady(t);
         if (!t || list.length === 0) return '';
-        var parts = [];
+        var hard = [];
+        var soft = [];
         for (var i = 0; i < list.length; i++) {
-          parts.push(list[i].engine + ' (' + list[i].word + ')');
+          if (list[i].hard) {
+            hard.push(list[i].engine + ' (' + list[i].word + ')');
+          } else {
+            soft.push(list[i].engine);
+          }
         }
-        return 'Đội hình ' + t.name + ' dùng engine chưa sẵn sàng: ' + parts.join(', ') +
-          '. Task vẫn giao được, nhưng bước dùng engine này sẽ dừng với lỗi.';
+        var softSentence = 'Task vẫn chạy; log của bước đó ghi "chưa kiểm E-09".';
+        if (hard.length > 0) {
+          var out = 'Đội hình ' + t.name + ' dùng engine chưa sẵn sàng: ' + hard.join(', ') +
+            '. Task vẫn giao được, nhưng bước dùng engine này sẽ dừng với lỗi.';
+          if (soft.length > 0) {
+            out += ' Endpoint chưa có bằng chứng E-09: ' + soft.join(', ') + '. ' + softSentence;
+          }
+          return out;
+        }
+        return 'Đội hình ' + t.name + ' dùng endpoint chưa có bằng chứng E-09: ' + soft.join(', ') +
+          '. ' + softSentence;
       },
 
       get hasTeamWarning() {

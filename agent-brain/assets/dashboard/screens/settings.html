@@ -347,7 +347,7 @@
       <h2 class="text-xl font-semibold leading-[1.2]">Engine</h2>
       <button id="ab-set-engines-check" type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="enginesChecking" @click="checkEngines" x-text="checkLabel">Kiểm tra lại</button>
     </div>
-    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Engine có sẵn trong agent-brain. Lệnh, endpoint và tên biến key nằm trong config.json; dashboard chỉ xem, không sửa.</p>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Engine khai báo trong config.json (mục engines), cùng claude (theo profile của dự án) và người. Lệnh, endpoint và tên biến key chỉ sửa trong file; dashboard chỉ xem.</p>
     <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Chỉ xem biến môi trường và lệnh có trên máy; không gọi model, không tốn token.</p>
     <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="enginesFailed">Không kiểm tra được. Bấm Kiểm tra lại để thử lại.</p>
     <ul class="space-y-4">
@@ -355,8 +355,10 @@
         <li :data-engine-row="row.name" class="space-y-2 rounded-xl p-4 ring-1 ring-slate-200 dark:ring-slate-700">
           <div class="flex flex-wrap items-center gap-2">
             <span class="font-mono text-base font-semibold leading-normal break-all" x-text="row.name"></span>
+            <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="row.chip"></span>
             <span :class="engineBadgeClass(row)"><span aria-hidden="true" class="w-6 text-center" x-text="engineGlyph(row)"></span><span x-text="row.word"></span></span>
           </div>
+          <p class="text-base font-normal leading-normal break-words" x-show="row.hasLabel" x-text="row.label"></p>
           <p class="text-base font-normal leading-normal break-words" x-text="row.description"></p>
           <template x-for="(d, i) in row.details" :key="i">
             <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words"><span x-text="d.label"></span><span :class="d.cls" x-text="d.value"></span></p>
