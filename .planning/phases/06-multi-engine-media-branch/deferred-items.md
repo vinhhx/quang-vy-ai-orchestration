@@ -12,3 +12,8 @@
 
 - **`agent-brain/assets/dashboard/js/task.js` `teamDlgReadinessLines` (about line 998)** still uses a fixed `['claude','deepseek','agy']` order, so the change-team and quota re-run dialogs show no `! {id}: {word}` line for other configured engine ids. Outside 06-24's files; needs a follow-up plan.
 - **dsh `Model:` line:** the Settings row for a dsh engine omits `Model:` because the server puts the profile name there; the approved delta lists `Model:` without a kind restriction. Re-add if wanted.
+
+## From plan 06-19
+
+- **`GET /api/tasks/{id}` `runs[]` has no `engine` / `usage_source` field** (the plan interface lists `runs[].engine`). The live check reads `runs.engine` and `usage_source` from its own temporary `brain.db` with python sqlite3 instead; the task screen shows engines through the pipeline cards. Add the two fields to the task payload only if a later plan wants the HTTP check to avoid the database.
+- **`bash scripts/build-css.sh --check` needs the ignored binary `agent-brain/tools/tailwindcss`**, which a fresh worktree does not have; copy it from the main checkout (`cp -p`) before running the CSS gate in a worktree.
