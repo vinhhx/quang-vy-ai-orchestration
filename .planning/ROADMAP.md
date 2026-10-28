@@ -465,6 +465,16 @@ Plans:
 **Wave 12** *(blocked on Wave 11 completion)*
 - [ ] 06-19-PLAN.md — Live check on the engine list, schema v4 dry run on a copy of brain.db, README, LIVE-CHECKS § 8, phase gate (wave 12)
 
+### Phase 06.2: UI/UX Fixes from Live Demo (INSERTED)
+
+**Goal:** Fix the UI/UX problems the user finds while using the dashboard live on the Phase 5 and 6 screens (Cài đặt, Giao việc, task screen, Thống kê, work board). Each problem is a small task, logged as the user reports it and fixed one by one; nothing here changes engines, schema or the run protocol.
+**Requirements**: TBD
+**Depends on:** Phase 6
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 06.2 to break down)
+
 ### Phase 06.1: Media Branch (INSERTED)
 
 **Goal**: Sản xuất video chạy ở nhánh riêng tách khỏi Git worktree nhưng vẫn điều phối chung một nơi: kịch bản đã duyệt → agent viết cấu hình/script render → runner chạy FFmpeg → file output.
