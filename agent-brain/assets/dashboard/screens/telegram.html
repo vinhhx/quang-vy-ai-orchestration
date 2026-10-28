@@ -1,0 +1,41 @@
+<section data-screen="telegram" x-data="telegram" :data-loaded="loadedAttr" class="space-y-6">
+  <div class="flex flex-wrap items-center gap-4">
+    <h1 class="text-2xl font-semibold leading-[1.2]">Telegram</h1>
+    <span role="status" data-telegram-state x-show="hasStatus" :class="stateBadgeClass"><span aria-hidden="true" class="w-6 text-center" x-text="stateGlyph"></span><span x-text="stateWord"></span></span>
+  </div>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Trạng thái bot Telegram của agent-brain serve. Màn hình chỉ xem, tự cập nhật mỗi 5 giây; token không bao giờ hiện ở đây.</p>
+
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="stale">Không cập nhật được — đang thử lại...</p>
+  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isLoading">Đang tải...</p>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="hasError">
+    <h2 class="text-xl font-semibold leading-[1.2]">Không tải được dữ liệu</h2>
+    <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="errorBody"></p>
+    <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="reload">Thử lại</button>
+  </div>
+
+  <div class="space-y-6" x-show="hasStatus">
+    <div role="alert" data-telegram-message :class="messageClass" x-show="hasMessage">
+      <p class="text-base font-normal leading-normal break-words" x-text="messageText"></p>
+    </div>
+
+    <div data-telegram-off class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="isOff">
+      <h2 class="text-xl font-semibold leading-[1.2]">Bot Telegram chưa bật</h2>
+      <p data-telegram-off-text class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100 break-words" x-text="offText"></p>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Lệnh cần chạy (bôi đen để sao chép):</p>
+      <p><code data-telegram-command class="select-all rounded-xl bg-slate-100 px-4 py-2 font-mono text-base text-slate-900 dark:bg-slate-900 dark:text-slate-100 break-all" x-text="setupCommand"></code></p>
+    </div>
+
+    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="hasStatus">
+      <h2 class="text-xl font-semibold leading-[1.2]">Thông tin bot</h2>
+      <dl class="space-y-3" data-telegram-rows>
+        <template x-for="row in rows" :key="row.id">
+          <div class="flex flex-col gap-1 md:flex-row md:gap-4" :data-telegram-row="row.id">
+            <dt class="text-sm font-semibold leading-normal md:w-72 md:shrink-0" x-text="row.label"></dt>
+            <dd class="text-base font-normal leading-normal break-all" x-text="row.value"></dd>
+          </div>
+        </template>
+      </dl>
+    </div>
+  </div>
+</section>

@@ -747,6 +747,7 @@ for s in "${SCREENS[@]}"; do
     projects) HASH="#/projects" ;;
     board) HASH="#/board" ;;
     settings) HASH="#/settings" ;;
+    telegram) HASH="#/telegram" ;;
     *)
       echo "Lỗi: Màn hình không xác định: $s" >&2
       exit 1
@@ -1377,7 +1378,7 @@ EOF
   fi
 
   # DOM assertions for the Giao việc, Dự án and Tổng quan screens (Phase 5.2).
-  if [[ "$s" == "assign" || "$s" == "projects" || "$s" == "overview" || "$s" == "board" || "$s" == "settings" || "$s" == "stats" ]]; then
+  if [[ "$s" == "assign" || "$s" == "projects" || "$s" == "overview" || "$s" == "board" || "$s" == "settings" || "$s" == "stats" || "$s" == "telegram" ]]; then
     if ! python3 - "$DOM_OUT" "$s" "$URL" <<'EOF'
 import sys
 from html.parser import HTMLParser
@@ -1796,8 +1797,8 @@ if screen == 'settings':
     if len(main_nav) != 1:
         fail(f"Số nav 'Điều hướng chính' là {len(main_nav)}, kỳ vọng 1")
     links = main_nav[0].find(lambda n: n.tag == 'a')
-    if len(links) != 6:
-        fail(f"Menu chính có {len(links)} mục, kỳ vọng 6")
+    if len(links) != 7:
+        fail(f"Menu chính có {len(links)} mục, kỳ vọng 7")
     link = [n for n in links if n.attrs.get('href') == '#/settings']
     if len(link) != 1 or link[0].attrs.get('aria-current') != 'page':
         fail(f"Liên kết menu #/settings thiếu aria-current=page (nhận được: {[n.attrs.get('aria-current') for n in link]})")
@@ -1836,6 +1837,49 @@ if screen == 'settings':
         if not value or value in html:
             fail(f"Giá trị của {var} xuất hiện trong DOM Cài đặt (hoặc không được đặt)")
     print("OK settings-engines")
+    sys.exit(0)
+
+if screen == 'telegram':
+    import os
+
+    def collapse(t):
+        return ' '.join(t.split())
+
+    # 06.2-02: the smoke sandbox has no telegram.json, so the bot is off.
+    screens = root.find(lambda n: n.attrs.get('data-screen') == 'telegram')
+    if len(screens) != 1:
+        fail(f"Số phần tử data-screen=\"telegram\" là {len(screens)}, kỳ vọng 1")
+    if screens[0].attrs.get('data-loaded') != 'yes':
+        fail(f"data-loaded của màn hình Telegram là '{screens[0].attrs.get('data-loaded')}', kỳ vọng 'yes'")
+    badge = root.find(lambda n: 'data-telegram-state' in n.attrs)
+    if len(badge) != 1 or not collapse(badge[0].text()).endswith('Chưa cấu hình'):
+        fail(f"Huy hiệu trạng thái Telegram là {[collapse(b.text()) for b in badge]}, kỳ vọng kết thúc bằng 'Chưa cấu hình'")
+    off_text = root.find(lambda n: 'data-telegram-off-text' in n.attrs)
+    want = 'Bot Telegram chưa bật. Chạy "agent-brain telegram setup" trong terminal để ghép cặp bot, rồi khởi động lại agent-brain serve.'
+    if len(off_text) != 1 or collapse(off_text[0].text()) != want:
+        fail(f"Câu hướng dẫn khi bot tắt là {[collapse(t.text()) for t in off_text]}, kỳ vọng '{want}'")
+    cmd = root.find(lambda n: 'data-telegram-command' in n.attrs)
+    if len(cmd) != 1 or collapse(cmd[0].text()) != 'agent-brain telegram setup':
+        fail(f"Lệnh ghép cặp hiện là {[collapse(c.text()) for c in cmd]}, kỳ vọng 'agent-brain telegram setup'")
+    if root.find(lambda n: 'data-telegram-message' in n.attrs and not n.hidden()):
+        fail("Màn hình Telegram hiện hộp cảnh báo dù bot chỉ chưa được bật")
+    rows = {n.attrs.get('data-telegram-row'): collapse(n.text()) for n in root.find(lambda n: 'data-telegram-row' in n.attrs)}
+    if sorted(rows) != ['config']:
+        fail(f"Khi bot tắt chỉ được có hàng 'config', nhận được {sorted(rows)}")
+    want_path = os.path.join(os.environ['XDG_CONFIG_HOME'], 'agent-brain', 'telegram.json')
+    if want_path not in rows['config'] or 'Tệp cấu hình' not in rows['config']:
+        fail(f"Hàng Tệp cấu hình là '{rows['config']}', kỳ vọng chứa '{want_path}'")
+    if root.find(lambda n: n.tag in ('input', 'textarea', 'form')):
+        fail("Màn hình Telegram không được có ô nhập hoặc form")
+    main_nav = root.find(lambda n: n.tag == 'nav' and n.attrs.get('aria-label') == 'Điều hướng chính')
+    if len(main_nav) != 1:
+        fail(f"Số nav 'Điều hướng chính' là {len(main_nav)}, kỳ vọng 1")
+    link = [n for n in main_nav[0].find(lambda n: n.tag == 'a') if n.attrs.get('href') == '#/telegram']
+    if len(link) != 1 or link[0].attrs.get('aria-current') != 'page':
+        fail(f"Liên kết menu #/telegram thiếu aria-current=page (nhận được: {[n.attrs.get('aria-current') for n in link]})")
+    if collapse(link[0].text()) != 'Telegram':
+        fail(f"Liên kết menu #/telegram có nhãn '{collapse(link[0].text())}', kỳ vọng 'Telegram'")
+    print("OK telegram-off")
     sys.exit(0)
 
 if screen == 'stats':

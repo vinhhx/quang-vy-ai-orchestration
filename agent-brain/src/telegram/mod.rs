@@ -14,6 +14,7 @@ pub mod outbox;
 pub mod prompt;
 pub mod render;
 pub mod setup;
+pub mod status;
 pub mod transport;
 
 use crate::dashboard::AppState;
@@ -56,6 +57,9 @@ impl Health {
     /// channel was failing before, i.e. an outage starts.
     pub fn failed(&self, ch: Channel, what: &str) -> bool {
         let prev = self.mask.fetch_or(ch.bit(), Ordering::SeqCst);
+        status::store().note_failed(&format!(
+            "Không tới được Telegram ({what}) — đang thử lại; thông báo được giữ lại, các run và autopilot vẫn chạy bình thường."
+        ));
         if prev == 0 {
             crate::term::emit(&format!(
                 "Telegram: không tới được Telegram ({what}) — đang thử lại; thông báo được giữ lại, các run và autopilot vẫn chạy bình thường."
@@ -70,6 +74,7 @@ impl Health {
     /// `ch` was the last failing channel, i.e. the outage ends.
     pub fn ok(&self, ch: Channel) -> bool {
         let prev = self.mask.fetch_and(!ch.bit(), Ordering::SeqCst);
+        status::store().note_ok(crate::db::now_ms(), prev & !ch.bit() == 0);
         if prev == ch.bit() {
             crate::term::emit_out("Telegram: đã kết nối lại");
             true
@@ -79,7 +84,8 @@ impl Health {
     }
 
     pub fn ok_quiet(&self, ch: Channel) {
-        self.mask.fetch_and(!ch.bit(), Ordering::SeqCst);
+        let prev = self.mask.fetch_and(!ch.bit(), Ordering::SeqCst);
+        status::store().note_ok(crate::db::now_ms(), prev & !ch.bit() == 0);
     }
 
     pub fn is_failing(&self) -> bool {
@@ -129,10 +135,14 @@ pub fn start(st: Arc<AppState>) -> Option<BotHandle> {
     let path = config::path();
     let cfg = match config::load(&path) {
         Ok(c) => c,
-        Err(config::LoadError::Missing) => return None,
+        Err(config::LoadError::Missing) => {
+            status::store().set_off();
+            return None;
+        }
         Err(e) => {
             if let Some(msg) = e.message() {
                 crate::term::emit(&format!("Telegram: lỗi — {msg}"));
+                status::store().set_error(&msg);
             }
             return None;
         }
@@ -141,12 +151,14 @@ pub fn start(st: Arc<AppState>) -> Option<BotHandle> {
         Ok(b) => b,
         Err(e) => {
             crate::term::emit(&format!("Telegram: lỗi — {e}"));
+            status::store().set_error(&e);
             return None;
         }
     };
     let curl = transport::curl_bin();
     if let Err(e) = transport::check_curl(&curl) {
         crate::term::emit(&format!("Telegram: lỗi — {e}"));
+        status::store().set_error(&e);
         return None;
     }
 
@@ -154,6 +166,7 @@ pub fn start(st: Arc<AppState>) -> Option<BotHandle> {
     let upload_dir = crate::config::data_dir().join("telegram-upload");
     let _ = std::fs::remove_dir_all(&upload_dir);
     let tx = transport::Transport::new(cfg.token.clone(), base, curl, upload_dir, stop.clone());
+    let (chat_id, paired_at, token) = (cfg.chat_id, cfg.paired_at, cfg.token.clone());
     let ctx = Arc::new(BotCtx {
         st,
         cfg,
@@ -163,6 +176,15 @@ pub fn start(st: Arc<AppState>) -> Option<BotHandle> {
         outbox: outbox::Outbox::new(),
         registry: std::sync::Mutex::new(outbox::Registry::default()),
     });
+
+    // The dashboard reads the bot's state from here (never the token).
+    let weak = Arc::downgrade(&ctx);
+    status::store().set_starting(
+        chat_id,
+        paired_at,
+        &token,
+        Box::new(move || weak.upgrade().map_or(0, |c| c.outbox.len())),
+    );
 
     // Notifications do not wait for getMe: the sender backs off while
     // Telegram is unreachable and the detector only queues.
@@ -176,6 +198,7 @@ pub fn start(st: Arc<AppState>) -> Option<BotHandle> {
         .spawn(move || poll_thread(ctx));
     if let Err(e) = spawned {
         crate::term::emit(&format!("Telegram: lỗi — không tạo được luồng bot: {e}"));
+        status::store().set_error(&format!("Không tạo được luồng bot: {e}"));
         // The sender and the detector are already running and nobody holds a
         // `BotHandle` to stop them.
         stop.store(true, Ordering::SeqCst);
@@ -198,6 +221,7 @@ fn poll_thread(ctx: Arc<BotCtx>) {
             Ok(me) => {
                 ctx.health.ok_quiet(Channel::Poll);
                 let username = me.get("username").and_then(|u| u.as_str()).unwrap_or("?");
+                status::store().set_connected(username);
                 crate::term::emit_out(&format!("Telegram: đã kết nối (@{username})"));
                 // The `/task` / `/huy` command menu (INTAKE-01): once, a failure is ignored.
                 let _ = ctx.tx.call(
@@ -215,6 +239,9 @@ fn poll_thread(ctx: Arc<BotCtx>) {
             Err(e) if e.is_unauthorized() => {
                 crate::term::emit(
                     "Telegram: lỗi — Telegram từ chối token (401) — chạy lại agent-brain telegram setup",
+                );
+                status::store().set_error(
+                    "Telegram từ chối token (401) — chạy lại agent-brain telegram setup",
                 );
                 ctx.stop.store(true, Ordering::SeqCst);
                 return;
@@ -234,6 +261,7 @@ fn poll_thread(ctx: Arc<BotCtx>) {
                         // token): stop the sender and the detector too, or they keep
                         // queueing events that are rejected one by one.
                         crate::term::emit(&format!("Telegram: lỗi — {}", e.text()));
+                        status::store().set_error(&e.text());
                         ctx.stop.store(true, Ordering::SeqCst);
                         return;
                     }
