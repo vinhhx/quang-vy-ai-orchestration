@@ -1,28 +1,13 @@
 {
-  "_comment": "Ví dụ danh sách engine với lệnh chạy cụ thể (Phase 6, D-30..D-34). CHƯA dùng được: binary hiện tại chỉ đọc engines dạng object. {prompt}, {model}, {print_timeout}, {cwd} do agent-brain điền khi chạy. Key không bao giờ nằm trong file: chỉ ghi tên biến (key_env). stdin luôn là /dev/null.",
+  "_comment": "Danh sách engine dạng cuối cùng mà binary đọc (Phase 6, D-30..D-44). Dán mảng \"engines\" vào ~/.config/agent-brain/config.json, cạnh \"models\" và \"profiles\" bắt buộc. Chỉ ghi TÊN biến của key (key_env), không bao giờ ghi giá trị. \"command\" (và \"docker\" của dsh) chỉ là tên chương trình: agent-brain tự dựng mọi tham số (hook bảo vệ, system prompt, danh sách công cụ được phép). \"claude\" và \"người\" là engine có sẵn, không khai báo ở đây. Ghi \"verified\" cho một endpoint sau khi spikes/e09/run.sh chạy đạt; endpoint chưa có \"verified\" vẫn chạy nhưng bị đánh dấu \"chưa kiểm E-09\".",
   "engines": [
     {
-      "id": "claude",
+      "id": "deepseek",
       "kind": "anthropic",
-      "label": "Claude theo profile của dự án (work = ~/.claude, personal = ~/.claude-orca)",
-      "command": [
-        "claude",
-        "-p",
-        "{prompt}",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--model",
-        "{model}",
-        "--max-turns",
-        "{max_turns}",
-        "--allowedTools",
-        "{allowed_tools}",
-        "--strict-mcp-config"
-      ],
-      "env": {
-        "CLAUDE_CONFIG_DIR": "{project_profile_dir}"
-      },
+      "label": "DeepSeek (endpoint chính thức)",
+      "command": "claude",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "key_env": "DEEPSEEK_API_KEY",
       "models": {
         "lead": "opus",
         "dev": "sonnet",
@@ -32,63 +17,12 @@
       }
     },
     {
-      "id": "claude-max",
-      "kind": "anthropic",
-      "label": "Claude tài khoản Max cá nhân (~/.claude-orca) — chỉ cho dự án personal (D-36)",
-      "_note": "Đội hình dùng engine này trên dự án work sẽ bị từ chối (ranh giới SPK-10).",
-      "command": [
-        "claude",
-        "-p",
-        "{prompt}",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--model",
-        "{model}",
-        "--max-turns",
-        "{max_turns}",
-        "--allowedTools",
-        "{allowed_tools}",
-        "--strict-mcp-config"
-      ],
-      "env": {
-        "CLAUDE_CONFIG_DIR": "~/.claude-orca"
-      },
-      "models": {
-        "lead": "opus",
-        "dev": "opus",
-        "qa": "sonnet"
-      },
-      "allowed_profiles": [
-        "personal"
-      ]
-    },
-    {
       "id": "vcadm-deepseek",
       "kind": "anthropic",
-      "label": "DeepSeek qua gateway công ty (cần gateway có /v1/messages)",
-      "command": [
-        "claude",
-        "-p",
-        "{prompt}",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--model",
-        "{model}",
-        "--max-turns",
-        "{max_turns}",
-        "--allowedTools",
-        "{allowed_tools}",
-        "--strict-mcp-config"
-      ],
+      "label": "DeepSeek qua gateway công ty",
+      "command": "claude",
       "base_url": "https://ai-gateway.vcadm.vn/proxyllm",
       "key_env": "VCADM_GATEWAY_KEY",
-      "env": {
-        "ANTHROPIC_BASE_URL": "{base_url}",
-        "ANTHROPIC_AUTH_TOKEN": "${VCADM_GATEWAY_KEY}",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
-      },
       "models": {
         "lead": "deepseek/deepseek-reasoner",
         "dev": "deepseek/deepseek-chat",
@@ -96,46 +30,34 @@
       }
     },
     {
+      "id": "claude-max",
+      "kind": "anthropic",
+      "label": "Claude Max cá nhân — chỉ dự án personal",
+      "_note": "Đội hình dùng engine này trên dự án work bị từ chối (ranh giới work/personal, SPK-10, D-36). QA luôn là claude có sẵn, không dùng engine này (D-39).",
+      "command": "claude",
+      "pin_profile": "personal",
+      "models": {
+        "lead": "opus",
+        "dev": "opus"
+      }
+    },
+    {
       "id": "agy",
       "kind": "agy",
-      "label": "Antigravity headless (đăng nhập của bạn trên máy này)",
-      "command": [
-        "timeout",
-        "{outer_timeout}",
-        "agy",
-        "-p",
-        "{prompt}",
-        "--output-format",
-        "stream-json",
-        "--print-timeout",
-        "{print_timeout}"
-      ],
-      "dev_extra_args": [
-        "--mode",
-        "accept-edits"
-      ],
-      "stdout": "file",
+      "label": "Antigravity headless",
+      "command": "agy",
       "print_timeout_margin_secs": 30,
-      "model": null
+      "dev_permission": "accept-edits"
     },
     {
       "id": "dsh",
       "kind": "dsh",
-      "label": "DeepSeek qua container dsh (hộp đen, D-35)",
-      "_note": "S6: chỉ văn bản, không token; kill trong container theo PID/marker, không theo tên. 'dsh web' không phải engine: nó chạy giao diện trình duyệt của DeepSeek Harness (dsh --profile web --host/--port/--no-open), dùng tay, agent-brain không điều khiển.",
-      "command": [
-        "docker",
-        "exec",
-        "-w",
-        "{cwd}",
-        "dsh-deepseek-harness",
-        "dsh",
-        "--profile",
-        "{profile}",
-        "{prompt}"
-      ],
-      "stdout": "text",
-      "profile": "headless"
+      "label": "DeepSeek Harness trong container (hộp đen)",
+      "_note": "Chỉ trả văn bản, không có token. Chỉ dùng cho vai trò Dev (D-37). Container chạy bằng root với /mnt/data đọc-ghi và docker.sock, nên chỉ cho dự án personal cho đến khi kiểm thực tế P6-09 (D-38). 'dsh web' không phải engine: nó mở giao diện trình duyệt của DeepSeek Harness, dùng tay, agent-brain không điều khiển.",
+      "docker": "docker",
+      "container": "dsh-deepseek-harness",
+      "dsh_profile": "headless",
+      "allowed_profiles": ["personal"]
     }
   ],
   "_dsh_web": "Mở UI dsh bằng tay: docker exec dsh-deepseek-harness dsh web --no-open --host 0.0.0.0 --port <port> (port phải được container publish)."

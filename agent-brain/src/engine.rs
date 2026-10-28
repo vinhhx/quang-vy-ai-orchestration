@@ -443,6 +443,28 @@ pub fn plan_for(
     }
 }
 
+/// ENG-10 / D-36 / D-38 / D-42: one pure guard. `Some(message)` when the entry may not run on a
+/// project of `project_profile` — an entry with `pin_profile` (which implies `allowed_profiles:
+/// [pin_profile]`) or with `allowed_profiles` never borrows another profile's account or quota
+/// (SPK-10). The run seam calls it before any run row exists; plan 06-22 binds it at the other
+/// points where a team is chosen.
+pub fn profile_refusal(
+    def: &EngineDef,
+    project_id: &str,
+    project_profile: &str,
+    role: &str,
+) -> Option<String> {
+    let allowed = def.effective_allowed_profiles()?;
+    if allowed.iter().any(|p| p == project_profile) {
+        return None;
+    }
+    Some(format!(
+        "Engine '{}' chỉ dùng cho dự án profile {} — dự án '{project_id}' dùng profile {project_profile} (ranh giới work/personal, SPK-10). Đổi engine của vai trò {role} hoặc chọn đội hình khác.",
+        def.id,
+        allowed.join(", ")
+    ))
+}
+
 /// An `anthropic` entry (ENG-01): the claude-family argv the role built, with argv[0] = the
 /// entry's `command` and the value after `--model` = the entry's model for the role. Nothing
 /// else in the argv changes (Pitfall A1): the guard hooks, the system prompt and the tool lists
@@ -1040,6 +1062,48 @@ mod tests {
             e.message,
             "Engine dsh chưa được bật trong bản agent-brain này"
         );
+    }
+
+    #[test]
+    fn profile_refusal_rules() {
+        let cfg = test_cfg(serde_json::json!({"engines": [
+            {"id": "claude-max", "kind": "anthropic", "pin_profile": "personal"},
+            {"id": "dsh", "kind": "dsh", "container": "dsh-x", "allowed_profiles": ["personal"]},
+            {"id": "both", "kind": "agy", "allowed_profiles": ["work", "personal"]},
+            {"id": "free", "kind": "agy"},
+        ]}));
+        let def = |id: &str| cfg.engines.get(id).unwrap();
+
+        // pin_profile personal: refused on a work project with the exact D-36 text.
+        assert_eq!(
+            profile_refusal(def("claude-max"), "web-ban-hang", "work", "dev").as_deref(),
+            Some("Engine 'claude-max' chỉ dùng cho dự án profile personal — dự án 'web-ban-hang' dùng profile work (ranh giới work/personal, SPK-10). Đổi engine của vai trò dev hoặc chọn đội hình khác.")
+        );
+        // ... and allowed on the personal one, where it runs on that project's own profile.
+        assert_eq!(
+            profile_refusal(def("claude-max"), "web-ban-hang", "personal", "dev"),
+            None
+        );
+        // allowed_profiles works for any kind.
+        let m = profile_refusal(def("dsh"), "p", "work", "dev").expect("dsh is personal-only");
+        assert!(m.starts_with(
+            "Engine 'dsh' chỉ dùng cho dự án profile personal — dự án 'p' dùng profile work"
+        ));
+        assert_eq!(profile_refusal(def("dsh"), "p", "personal", "dev"), None);
+        // A list of two is allowed on both and names both in a refusal.
+        for profile in ["work", "personal"] {
+            assert_eq!(profile_refusal(def("both"), "p", profile, "dev"), None);
+        }
+        let m = profile_refusal(def("both"), "p", "other", "qa").unwrap();
+        assert!(m.contains("profile work, personal"), "{m}");
+        assert!(
+            m.ends_with("Đổi engine của vai trò qa hoặc chọn đội hình khác."),
+            "{m}"
+        );
+        // No restriction: never refused.
+        for profile in ["work", "personal"] {
+            assert_eq!(profile_refusal(def("free"), "p", profile, "dev"), None);
+        }
     }
 
     #[test]

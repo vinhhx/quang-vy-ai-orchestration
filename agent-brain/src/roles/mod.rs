@@ -428,6 +428,17 @@ pub fn execute_role_staged(
     // ENG-01 / D-14: the one seam that decides the engine of a run. It runs before any run row
     // is inserted and before anything is spawned.
     let resolved = crate::engine::resolve_for_run(&ctx.conn, plan.task_id, &plan.role)?;
+    // ENG-10 / D-36 / D-42 backstop: an engine tied to a profile never runs on a project of
+    // another one (SPK-10), whatever team the task row names — a hand-edited team included.
+    if let crate::engine::Engine::Named(id) = &resolved.engine {
+        if let Some(def) = ctx.cfg.engines.get(id) {
+            if let Some(msg) =
+                crate::engine::profile_refusal(def, &project.id, &project.profile, &plan.role)
+            {
+                return Err(BrainError::error(msg));
+            }
+        }
+    }
     let base_env = crate::profile::build_env(
         &project.profile,
         &ctx.cfg.profiles,
@@ -457,9 +468,15 @@ pub fn execute_role_staged(
     };
 
     let p_desc = crate::profile::describe_profile(&project.profile, &ctx.cfg.profiles);
+    // D-40: an endpoint with no E-09 evidence runs, and the header says so.
+    let unverified_mark = if ep.unverified {
+        " · chưa kiểm E-09"
+    } else {
+        ""
+    };
     crate::term::emit(&format!(
-        "[agent-brain] {} · {} · profile {} ({}) · engine {} · model {}",
-        plan.role, project.id, project.profile, p_desc, ep.display, ep.model_label
+        "[agent-brain] {} · {} · profile {} ({}) · engine {} · model {}{}",
+        plan.role, project.id, project.profile, p_desc, ep.display, ep.model_label, unverified_mark
     ));
 
     let stderr_path = run_dir.join("stderr.txt");
@@ -486,6 +503,7 @@ pub fn execute_role_staged(
         run_dir: &'a Path,
         db_engine: String,
         model_label: String,
+        unverified: bool,
         team: Option<String>,
         summary: Summary,
         run_id: Option<i64>,
@@ -530,6 +548,9 @@ pub fn execute_role_staged(
                     None => serde_json::Value::Null,
                 },
             );
+            if self.unverified {
+                patch.insert("unverified".to_string(), serde_json::Value::Bool(true));
+            }
             crate::db::merge_run_metrics(
                 &self.ctx.conn,
                 run_id,
@@ -592,6 +613,7 @@ pub fn execute_role_staged(
         run_dir: &run_dir,
         db_engine: ep.db_engine.clone(),
         model_label: ep.model_label.clone(),
+        unverified: ep.unverified,
         team: resolved.team.clone(),
         summary: Summary::new(plan.plan_files.clone(), Some(root.to_path_buf())),
         run_id: None,
