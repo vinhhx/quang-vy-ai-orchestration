@@ -493,6 +493,7 @@ pub fn execute_role_staged(
         kill_grace: Duration::from_secs(ctx.cfg.kill_grace_secs),
         stdout_file: ep.stdout_file,
         redact: ep.redact.clone(),
+        container_stop: ep.dsh.clone(),
     };
 
     struct Observer<'a> {

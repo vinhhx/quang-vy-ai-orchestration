@@ -461,8 +461,17 @@ fn dsh_argv_and_stdin() {
         .to_string();
     assert!(is_marker(&marker));
 
+    // Order of the docker calls: the mount preflight, the leftover check (`exec ... ps`), then
+    // the one run exec, which is the only `exec` with `-w`.
+    let subs: Vec<String> = dsh
+        .docker_records()
+        .iter()
+        .map(|r| r["argv"][0].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(subs, ["inspect", "exec", "exec"], "{subs:?}");
     let execs = dsh.docker_calls("exec");
-    let first = argv_of(&execs[0]);
+    assert_eq!(argv_of(&execs[0])[2], "ps");
+    let first = argv_of(&execs[1]);
     let root = repo.to_str().unwrap();
     assert_eq!(first.len(), 10, "{first:?}");
     assert_eq!(
@@ -650,6 +659,17 @@ fn fake_docker_ps_status() {
 // Task 2: stopping a run stops it inside the container
 // ---------------------------------------------------------------------------
 
+/// `run dev` as a child process with its output in files, so it does not interleave with the
+/// test harness output.
+fn spawn_dev(sb: &Sandbox, env: &[(String, String)]) -> std::process::Child {
+    let _ = std::fs::remove_file(&sb.scenario_file);
+    let out = std::fs::File::create(sb.root.join("dev.stdout.txt")).unwrap();
+    let err = std::fs::File::create(sb.root.join("dev.stderr.txt")).unwrap();
+    let mut cmd = sb.command(&["run", "dev", "--", "web-ban-hang"], &refs(env));
+    cmd.stdout(out).stderr(err);
+    cmd.spawn().expect("spawn agent-brain")
+}
+
 fn sleeping_scenario(pidfile: &Path) -> Value {
     json!({
         "lines": ["bắt đầu"],
@@ -666,11 +686,7 @@ fn dsh_kill_inside_container() {
     let dsh = Dsh::new(&sb, sleeping_scenario(&pidfile));
     setup(&sb, vec![], &[]);
 
-    let mut child = sb.spawn_env(
-        &["run", "dev", "--", "web-ban-hang"],
-        None,
-        &refs(&dsh.vars(&[])),
-    );
+    let mut child = spawn_dev(&sb, &dsh.vars(&[]));
     let pids = read_pids(&pidfile, Duration::from_secs(15)).expect("fake dsh wrote no pidfile");
     let _guard = guard_pids(pids);
     let marker = wait_marker(&sb);
@@ -731,11 +747,7 @@ fn dsh_sigint_kills_inside_container() {
     let dsh = Dsh::new(&sb, sleeping_scenario(&pidfile));
     setup(&sb, vec![], &[]);
 
-    let mut child = sb.spawn_env(
-        &["run", "dev", "--", "web-ban-hang"],
-        None,
-        &refs(&dsh.vars(&[])),
-    );
+    let mut child = spawn_dev(&sb, &dsh.vars(&[]));
     let pids = read_pids(&pidfile, Duration::from_secs(15)).expect("fake dsh wrote no pidfile");
     let _guard = guard_pids(pids);
     let marker = wait_marker(&sb);

@@ -274,8 +274,220 @@ pub fn plan(
     })
 }
 
-/// Placeholder until the leftover check is wired (Task 2).
-fn warn_leftover(_def: &DshDef, _env: &BTreeMap<String, String>) {}
+/// One row of the container's process list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcRow {
+    pub pid: i32,
+    pub ppid: i32,
+    pub pgid: i32,
+    pub args: String,
+}
+
+/// Parses `ps -ww -eo pid=,ppid=,pgid=,args=`: three numbers (leading spaces allowed) and the
+/// rest of the line as the arguments. Blank and malformed lines are skipped.
+pub fn parse_ps(snapshot: &str) -> Vec<ProcRow> {
+    snapshot
+        .lines()
+        .filter_map(|line| {
+            let mut rest = line.trim_start();
+            let mut nums = [0i32; 3];
+            for n in nums.iter_mut() {
+                let end = rest.find(char::is_whitespace)?;
+                *n = rest[..end].parse().ok()?;
+                rest = rest[end..].trim_start();
+            }
+            Some(ProcRow {
+                pid: nums[0],
+                ppid: nums[1],
+                pgid: nums[2],
+                args: rest.trim_end().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn args_tokens(args: &str) -> impl Iterator<Item = &str> {
+    args.split(|c: char| c.is_whitespace() || c == ';')
+        .filter(|t| !t.is_empty())
+}
+
+/// A zombie keeps its row until its parent reaps it; it can neither be signalled nor matter.
+fn is_defunct(row: &ProcRow) -> bool {
+    row.args.ends_with("<defunct>")
+}
+
+/// The first 100 characters of the arguments: what a re-match compares (S6 `tree`).
+fn args_head(args: &str) -> String {
+    args.chars().take(100).collect()
+}
+
+/// The processes of the run that carries `marker`: the rows with a token EQUAL to the marker,
+/// their descendants by parent pid, and every `before` row that is still present with the same
+/// pid and the same first 100 characters of arguments (orphans re-parented by a kill). A pid that
+/// now runs something else is not selected (PID reuse). Sorted by pid; pid 1 is never included.
+pub fn marker_subtree(rows: &[ProcRow], marker: &str, before: &[ProcRow]) -> Vec<ProcRow> {
+    let live: Vec<&ProcRow> = rows.iter().filter(|r| !is_defunct(r)).collect();
+    let mut selected: std::collections::BTreeSet<i32> = live
+        .iter()
+        .filter(|r| args_tokens(&r.args).any(|t| t == marker))
+        .map(|r| r.pid)
+        .collect();
+    loop {
+        let mut grew = false;
+        for r in &live {
+            if selected.contains(&r.ppid) && selected.insert(r.pid) {
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    for b in before {
+        if let Some(r) = live.iter().find(|r| r.pid == b.pid) {
+            if args_head(&r.args) == args_head(&b.args) {
+                selected.insert(r.pid);
+            }
+        }
+    }
+    let mut out: Vec<ProcRow> = live
+        .into_iter()
+        .filter(|r| r.pid > 1 && selected.contains(&r.pid))
+        .cloned()
+        .collect();
+    out.sort_by_key(|r| r.pid);
+    out.dedup_by_key(|r| r.pid);
+    out
+}
+
+fn ps_args(container: &str) -> Vec<String> {
+    [
+        "exec",
+        container,
+        "ps",
+        "-ww",
+        "-eo",
+        "pid=,ppid=,pgid=,args=",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+fn ps_snapshot_env(run: &DshRun, env: &BTreeMap<String, String>) -> Option<String> {
+    match docker_capture(&run.docker, &ps_args(&run.container), env, DOCKER_CALL_CAP) {
+        Some((true, out)) => Some(out),
+        _ => None,
+    }
+}
+
+/// The container's process list, or `None` when the container cannot be reached.
+pub fn ps_snapshot(run: &DshRun) -> Option<String> {
+    ps_snapshot_env(run, &scrubbed_current_env())
+}
+
+/// Sends `sig` (`-TERM` / `-KILL`) to exactly these pids inside the container.
+fn signal_pids(run: &DshRun, env: &BTreeMap<String, String>, sig: &str, pids: &[i32]) {
+    if pids.is_empty() {
+        return;
+    }
+    let mut args = vec![
+        "exec".to_string(),
+        run.container.clone(),
+        "kill".to_string(),
+        sig.to_string(),
+    ];
+    args.extend(pids.iter().map(|p| p.to_string()));
+    let _ = docker_capture(&run.docker, &args, env, DOCKER_CALL_CAP);
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StopReport {
+    /// Pids recorded from the marker's subtree and sent TERM.
+    pub signalled: Vec<i32>,
+    /// Pids still carrying the run after TERM, the grace period and KILL.
+    pub survivors: Vec<i32>,
+}
+
+/// ENG-09 / D-35: stops one dsh run INSIDE the container. A host-side kill of the docker client
+/// leaves the container process running (S6 4a), so this always runs first: snapshot, record the
+/// marker's subtree, `kill -TERM` those pids, poll up to `grace` re-matching every pid by pid and
+/// arguments, `kill -KILL` what re-matched, final snapshot. Nothing is signalled by name and the
+/// container itself is never touched. An unreachable container or an invalid marker signals
+/// nothing.
+pub fn stop_in_container(run: &DshRun, grace: Duration) -> StopReport {
+    let mut report = StopReport::default();
+    if !is_valid_marker(&run.marker) {
+        return report;
+    }
+    let env = scrubbed_current_env();
+    let Some(first) = ps_snapshot_env(run, &env) else {
+        return report;
+    };
+    let recorded = marker_subtree(&parse_ps(&first), &run.marker, &[]);
+    if recorded.is_empty() {
+        return report;
+    }
+    report.signalled = recorded.iter().map(|r| r.pid).collect();
+    signal_pids(run, &env, "-TERM", &report.signalled);
+
+    let start = Instant::now();
+    let poll = Duration::from_millis(200);
+    // `None` while the container cannot be listed: then nothing is re-matched, so nothing more
+    // is signalled.
+    let mut alive: Option<Vec<ProcRow>>;
+    loop {
+        std::thread::sleep(poll.min(grace.max(Duration::from_millis(1))));
+        alive = ps_snapshot_env(run, &env)
+            .map(|s| marker_subtree(&parse_ps(&s), &run.marker, &recorded));
+        if alive.as_ref().is_some_and(|a| a.is_empty()) || start.elapsed() >= grace {
+            break;
+        }
+    }
+
+    match alive {
+        Some(a) if a.is_empty() => {}
+        Some(a) => {
+            let pids: Vec<i32> = a.iter().map(|r| r.pid).collect();
+            signal_pids(run, &env, "-KILL", &pids);
+            std::thread::sleep(Duration::from_millis(300));
+            report.survivors = match ps_snapshot_env(run, &env) {
+                Some(s) => marker_subtree(&parse_ps(&s), &run.marker, &recorded)
+                    .iter()
+                    .map(|r| r.pid)
+                    .collect(),
+                None => pids,
+            };
+        }
+        None => report.survivors = report.signalled.clone(),
+    }
+    report
+}
+
+/// A process of an earlier run (a marker token on its command line) is still in the container:
+/// it is reported and never signalled (a residual after SIGKILL of agent-brain).
+fn warn_leftover(def: &DshDef, env: &BTreeMap<String, String>) {
+    let run = DshRun {
+        docker: def.docker.clone(),
+        container: def.container.clone(),
+        marker: String::new(),
+    };
+    let Some(snapshot) = ps_snapshot_env(&run, env) else {
+        return;
+    };
+    let pids: Vec<String> = parse_ps(&snapshot)
+        .iter()
+        .filter(|r| !is_defunct(r) && args_tokens(&r.args).any(|t| t.starts_with(MARKER_PREFIX)))
+        .map(|r| r.pid.to_string())
+        .collect();
+    if !pids.is_empty() {
+        crate::term::emit(&format!(
+            "Cảnh báo: container {} còn tiến trình của run dsh trước (pid {}) — agent-brain không tự dừng chúng.",
+            def.container,
+            pids.join(", ")
+        ));
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -407,6 +619,91 @@ mod tests {
             assert_eq!(
                 e.message,
                 "Engine 'dsh' là kiểu dsh, chỉ dùng cho vai trò dev."
+            );
+        }
+    }
+
+    fn row(pid: i32, ppid: i32, args: &str) -> ProcRow {
+        ProcRow {
+            pid,
+            ppid,
+            pgid: pid,
+            args: args.to_string(),
+        }
+    }
+
+    #[test]
+    fn parse_ps_rows() {
+        let snap = "    1     0     1 /sbin/init\n  4242  4200  4242 sh -c : ab-dsh-0123456789ab; dsh --profile \"$1\" \"$2\"; rc=$?; exit $rc sh headless a   very  long    prompt\n\n   77\t1\t77\tsleep 30\nnot a row\n  12 34\n";
+        let rows = parse_ps(snap);
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert_eq!(rows[0], row(1, 0, "/sbin/init"));
+        assert_eq!(
+            (rows[1].pid, rows[1].ppid, rows[1].pgid),
+            (4242, 4200, 4242)
+        );
+        assert!(rows[1].args.starts_with("sh -c : ab-dsh-0123456789ab;"));
+        assert!(rows[1].args.ends_with("a   very  long    prompt"));
+        assert_eq!(rows[2].args, "sleep 30");
+        assert!(parse_ps("").is_empty());
+    }
+
+    #[test]
+    fn marker_subtree_rules() {
+        let m = "ab-dsh-0123456789ab";
+        let sh = format!("sh -c : {m}; dsh --profile \"$1\" \"$2\"; rc=$?; exit $rc sh p x");
+        let rows = vec![
+            row(1, 0, "/sbin/init"),
+            row(100, 1, &sh),
+            row(101, 100, "dsh --profile headless x"),
+            row(102, 101, "sleep 120"),
+            row(103, 102, "sleep 121"),
+            row(200, 1, "sleep 999"),
+            // a different marker that merely starts with ours
+            row(300, 1, "sh -c : ab-dsh-0123456789abcd; sleep 5"),
+            row(301, 300, "sleep 5"),
+        ];
+        let sel = marker_subtree(&rows, m, &[]);
+        let pids = |v: &[ProcRow]| v.iter().map(|r| r.pid).collect::<Vec<_>>();
+        assert_eq!(pids(&sel), [100, 101, 102, 103]);
+
+        // an orphan re-parented to init stays selected through `before`
+        let after = vec![
+            row(1, 0, "/sbin/init"),
+            row(102, 1, "sleep 120"),
+            row(200, 1, "sleep 999"),
+        ];
+        assert_eq!(pids(&marker_subtree(&after, m, &sel)), [102]);
+
+        // the same pid now running something else is NOT selected (PID reuse)
+        let reused = vec![row(1, 0, "/sbin/init"), row(102, 1, "tail -f /var/log/x")];
+        assert!(marker_subtree(&reused, m, &sel).is_empty());
+
+        // a zombie is never selected
+        let zombie = vec![row(100, 1, &sh), row(101, 100, "[dsh] <defunct>")];
+        assert_eq!(pids(&marker_subtree(&zombie, m, &[])), [100]);
+
+        // pid 1 is never selected, even when a `before` row names it
+        let init = vec![row(1, 0, "/sbin/init")];
+        assert!(marker_subtree(&init, m, &init).is_empty());
+
+        // the marker must be a whole token: inside another word it does not count
+        let embedded = vec![row(400, 1, &format!("echo x{m}y"))];
+        assert!(marker_subtree(&embedded, m, &[]).is_empty());
+    }
+
+    #[test]
+    fn stop_ignores_invalid_marker() {
+        // An empty or malformed marker would match unrelated processes: nothing is even run.
+        for marker in ["", "ab-dsh-", "ab-dsh-XYZ", "sleep"] {
+            let run = DshRun {
+                docker: "/khong/co/docker-test".to_string(),
+                container: "dsh-x".to_string(),
+                marker: marker.to_string(),
+            };
+            assert_eq!(
+                stop_in_container(&run, Duration::from_millis(10)),
+                StopReport::default()
             );
         }
     }

@@ -52,6 +52,17 @@ pub fn reconcile_stale_runs(conn: &Connection) -> BrainResult<usize> {
     Ok(lost_count)
 }
 
+/// The `dsh` object a dsh run stored in `runs.metrics_json` at spawn, when present and valid
+/// (a non-empty docker and container and a well-formed marker).
+fn dsh_run_of(metrics_json: Option<&str>) -> Option<crate::dsh::DshRun> {
+    let metrics: serde_json::Value = serde_json::from_str(metrics_json?).ok()?;
+    let run: crate::dsh::DshRun = serde_json::from_value(metrics.get("dsh")?.clone()).ok()?;
+    (!run.docker.is_empty()
+        && !run.container.is_empty()
+        && crate::dsh::is_valid_marker(&run.marker))
+    .then_some(run)
+}
+
 pub fn cmd_kill(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
     let task = crate::db::get_task(&ctx.conn, task_id)?;
     if task.is_none() {
@@ -117,9 +128,33 @@ pub fn cmd_kill(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
         run.id, root.pid
     ));
 
+    // ENG-09: a dsh run's processes live in the container, out of reach of the host kill below,
+    // so they are stopped first by the marker the run persisted at spawn. A kill that arrives from
+    // the dashboard or the Telegram bot reaches this same function.
+    let grace = Duration::from_secs(ctx.cfg.kill_grace_secs);
+    let container_stop = dsh_run_of(run.metrics_json.as_deref());
+    if let Some(dsh_run) = &container_stop {
+        let report = crate::dsh::stop_in_container(dsh_run, grace);
+        crate::term::emit(&format!(
+            "Đã dừng {} tiến trình trong container {}",
+            report
+                .signalled
+                .len()
+                .saturating_sub(report.survivors.len()),
+            dsh_run.container
+        ));
+        if !report.survivors.is_empty() {
+            let pids: Vec<String> = report.survivors.iter().map(|p| p.to_string()).collect();
+            crate::term::emit(&format!(
+                "CẢNH BÁO: còn tiến trình sót trong container {}: {}",
+                dsh_run.container,
+                pids.join(", ")
+            ));
+        }
+    }
+
     let force = std::sync::atomic::AtomicBool::new(false);
-    let report =
-        crate::procs::kill_tree(root, Duration::from_secs(ctx.cfg.kill_grace_secs), &force);
+    let report = crate::procs::kill_tree(root, grace, &force);
 
     let wait_start = std::time::Instant::now();
     let mut still_running = true;
@@ -173,6 +208,31 @@ pub struct RunRequest {
     /// written or shown, and from `stderr.txt` when the child is gone. Empty for an engine that
     /// carries no key, and then nothing is copied or rewritten.
     pub redact: Vec<String>,
+    /// A dsh run (ENG-09): every stop path first stops the run's processes INSIDE the container
+    /// (by marker and recorded pids), because killing the host-side docker client leaves them
+    /// running (S6 4a). `None` for every other engine.
+    pub container_stop: Option<crate::dsh::DshRun>,
+}
+
+/// What one stop of a run did: the container part (dsh only) and the host process tree.
+struct StopResult {
+    container: Option<crate::dsh::StopReport>,
+    host: crate::procs::KillReport,
+}
+
+/// The one stop used by every stop site (SIGINT, SIGTERM, SIGHUP, timeout): the container stop
+/// first, when the run has one, and only then the host S4 kill of the child tree.
+fn spawn_stop(
+    root: crate::procs::ProcId,
+    grace: Duration,
+    force: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    container_stop: Option<crate::dsh::DshRun>,
+) -> tokio::task::JoinHandle<StopResult> {
+    tokio::task::spawn_blocking(move || {
+        let container = container_stop.map(|run| crate::dsh::stop_in_container(&run, grace));
+        let host = crate::procs::kill_tree(root, grace, &force);
+        StopResult { container, host }
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -412,7 +472,7 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
 
     let mut stopping: Option<StopReason> = None;
     let force = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let mut kill_task: Option<tokio::task::JoinHandle<crate::procs::KillReport>> = None;
+    let mut kill_task: Option<tokio::task::JoinHandle<StopResult>> = None;
     let mut child_exit = None;
 
     loop {
@@ -446,11 +506,12 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
                         "Đang dừng run: SIGTERM nhóm tiến trình, chờ {}s (Ctrl+C lần nữa để dừng ngay)",
                         req.kill_grace.as_secs()
                     ));
-                    let force_clone = force.clone();
-                    let kill_grace = req.kill_grace;
-                    kill_task = Some(tokio::task::spawn_blocking(move || {
-                        crate::procs::kill_tree(root, kill_grace, &force_clone)
-                    }));
+                    kill_task = Some(spawn_stop(
+                        root,
+                        req.kill_grace,
+                        force.clone(),
+                        req.container_stop.clone(),
+                    ));
                 } else if !force.load(std::sync::atomic::Ordering::Relaxed) {
                     force.store(true, std::sync::atomic::Ordering::Relaxed);
                     obs.on_notice("Dừng ngay (SIGKILL)");
@@ -463,11 +524,12 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
                         "Đang dừng run: SIGTERM nhóm tiến trình, chờ {}s (Ctrl+C lần nữa để dừng ngay)",
                         req.kill_grace.as_secs()
                     ));
-                    let force_clone = force.clone();
-                    let kill_grace = req.kill_grace;
-                    kill_task = Some(tokio::task::spawn_blocking(move || {
-                        crate::procs::kill_tree(root, kill_grace, &force_clone)
-                    }));
+                    kill_task = Some(spawn_stop(
+                        root,
+                        req.kill_grace,
+                        force.clone(),
+                        req.container_stop.clone(),
+                    ));
                 }
             }
             _ = sighup.recv() => {
@@ -477,21 +539,23 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
                         "Đang dừng run: SIGTERM nhóm tiến trình, chờ {}s (Ctrl+C lần nữa để dừng ngay)",
                         req.kill_grace.as_secs()
                     ));
-                    let force_clone = force.clone();
-                    let kill_grace = req.kill_grace;
-                    kill_task = Some(tokio::task::spawn_blocking(move || {
-                        crate::procs::kill_tree(root, kill_grace, &force_clone)
-                    }));
+                    kill_task = Some(spawn_stop(
+                        root,
+                        req.kill_grace,
+                        force.clone(),
+                        req.container_stop.clone(),
+                    ));
                 }
             }
             _ = &mut sleep_fut, if stopping.is_none() => {
                 stopping = Some(StopReason::Timeout);
                 obs.on_notice(&format!("Quá thời gian {}s — dừng run", req.timeout.as_secs()));
-                let force_clone = force.clone();
-                let kill_grace = req.kill_grace;
-                kill_task = Some(tokio::task::spawn_blocking(move || {
-                    crate::procs::kill_tree(root, kill_grace, &force_clone)
-                }));
+                kill_task = Some(spawn_stop(
+                    root,
+                    req.kill_grace,
+                    force.clone(),
+                    req.container_stop.clone(),
+                ));
             }
         }
     }
@@ -533,10 +597,25 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
     reader_handle.abort();
 
     if let Some(task) = kill_task {
-        if let Ok(report) = task.await {
-            if !report.survivors.is_empty() {
-                let pids: Vec<String> =
-                    report.survivors.iter().map(|p| p.pid.to_string()).collect();
+        if let Ok(result) = task.await {
+            if let (Some(report), Some(run)) = (&result.container, &req.container_stop) {
+                if !report.survivors.is_empty() {
+                    let pids: Vec<String> =
+                        report.survivors.iter().map(|p| p.to_string()).collect();
+                    obs.on_notice(&format!(
+                        "CẢNH BÁO: còn tiến trình sót trong container {}: {}",
+                        run.container,
+                        pids.join(", ")
+                    ));
+                }
+            }
+            if !result.host.survivors.is_empty() {
+                let pids: Vec<String> = result
+                    .host
+                    .survivors
+                    .iter()
+                    .map(|p| p.pid.to_string())
+                    .collect();
                 obs.on_notice(&format!(
                     "CẢNH BÁO: còn tiến trình sót: {}",
                     pids.join(", ")
