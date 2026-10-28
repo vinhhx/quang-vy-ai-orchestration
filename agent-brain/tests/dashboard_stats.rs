@@ -710,3 +710,68 @@ fn eng04_engines_follow_filters() {
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
 }
+
+#[test]
+fn eng04_engines_priced_by_id() {
+    let sb = Sandbox::new();
+    let seed = EngineSeed::new(&sb);
+    seed.run(seed.id_a, "work", "dev", "gw", 1000, 100, 0.002, None);
+    seed.run(seed.id_a, "work", "dev", "gw2", 500, 50, 0.0, None);
+    seed.run(seed.id_a, "work", "dev", "claude-max", 300, 30, 0.5, None);
+    seed.run(seed.id_a, "work", "dev", "dsh", 0, 0, 0.0, None);
+    seed.human(seed.id_a, "work");
+
+    sb.write_config(serde_json::json!({
+        "engines": [
+            {"id": "gw", "kind": "anthropic", "command": "claude",
+             "base_url": "https://gw.example.test/x", "key_env": "GW_KEY",
+             "models": {"dev": "m"},
+             "pricing": {"input": 1.0, "output": 2.0, "cache_read": 0.0, "cache_write": 0.0}},
+            {"id": "gw2", "kind": "anthropic", "command": "claude",
+             "base_url": "https://gw2.example.test/x", "key_env": "GW2_KEY",
+             "models": {"dev": "m"}},
+            {"id": "claude-max", "kind": "anthropic", "command": "claude",
+             "pin_profile": "personal", "models": {"dev": "opus"}},
+            {"id": "dsh", "kind": "dsh", "docker": "/nonexistent/docker-test",
+             "container": "fake-dsh", "dsh_profile": "headless"}
+        ]
+    }));
+    let mut srv = sb.serve(&[]);
+    let r = srv.get("/api/stats");
+    assert_eq!(r.status, 200);
+    let j = r.json();
+    let engines = j["engines"].as_array().expect("engines array");
+
+    let gw = engine_row(engines, "gw");
+    assert_eq!(gw["priced"], true);
+    assert_eq!(gw["usage"], "tokens");
+    assert_eq!(gw["input"], 1000);
+
+    let gw2 = engine_row(engines, "gw2");
+    assert_eq!(gw2["priced"], false);
+    assert_eq!(gw2["usage"], "tokens");
+
+    // A native entry is priced like claude: the cost of its finished run is kept.
+    let max = engine_row(engines, "claude-max");
+    assert_eq!(max["priced"], true);
+    assert!((max["cost"].as_f64().unwrap() - 0.5).abs() < 1e-9);
+    assert_eq!(max["usage"], "tokens");
+
+    // A black-box engine and a person have no token count to show.
+    assert_eq!(engine_row(engines, "dsh")["usage"], "none");
+    assert_eq!(engine_row(engines, HUMAN_ENGINE)["usage"], "none");
+    assert_eq!(engine_row(engines, HUMAN_ENGINE)["priced"], false);
+
+    // An id that is no longer in config.json reads `tokens`.
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+    sb.write_config(serde_json::json!({}));
+    let mut srv = sb.serve(&[]);
+    let j = srv.get("/api/stats").json();
+    let engines = j["engines"].as_array().expect("engines array");
+    assert_eq!(engine_row(engines, "dsh")["usage"], "tokens");
+    assert_eq!(engine_row(engines, "gw")["priced"], false);
+    assert_eq!(engine_row(engines, HUMAN_ENGINE)["usage"], "none");
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
