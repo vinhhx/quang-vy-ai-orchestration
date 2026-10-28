@@ -725,7 +725,7 @@ fn agy_plan(
     let response_file = response_file_for(role);
     let text = match response_file {
         Some(file) if role != "dev" => format!(
-            "{prompt}\n\n---\nBạn đang chạy ở chế độ chỉ đọc: không sửa và không tạo file nào. Trả lời bằng TOÀN BỘ nội dung file {file} theo đúng định dạng ở trên, không thêm lời dẫn, không bọc trong khối mã.\n\n---\n{input}"
+            "{prompt}\n\n---\nBạn đang chạy ở chế độ chỉ đọc: không sửa và không tạo file nào. Bạn không chạy được lệnh shell (bị từ chối quyền); dùng ngữ cảnh đã cho và công cụ đọc file. Nếu thiếu thông tin, vẫn phải trả file đầy đủ, không được trả rỗng. Trả lời bằng TOÀN BỘ nội dung file {file} theo đúng định dạng ở trên, không thêm lời dẫn, không bọc trong khối mã.\n\n---\n{input}"
         ),
         _ => format!("{prompt}\n\n---\n{input}"),
     };
@@ -1774,5 +1774,53 @@ mod tests {
         assert_eq!(Readiness::ThieuKey.word(), "thiếu key");
         assert_eq!(Readiness::ThieuLenh.key(), "thieu_lenh");
         assert_eq!(Readiness::ChuaKiem.word(), "chưa kiểm");
+    }
+
+    #[test]
+    fn agy_readonly_prompt_guidance() {
+        let cfg = test_cfg(serde_json::json!({
+            "engines": {"agy": {"model": "gemini-x"}}
+        }));
+        let resolved = ResolvedEngine {
+            engine: Engine::Named("agy".to_string()),
+            team: None,
+            wait: None,
+        };
+        let claude = vec![
+            "claude".to_string(),
+            "-p".to_string(),
+            "việc".to_string(),
+            "--append-system-prompt".to_string(),
+            "luật".to_string(),
+        ];
+        let p_lead = run_plan(
+            &cfg,
+            &resolved,
+            "lead",
+            &claude,
+            "m",
+            BTreeMap::new(),
+            Duration::from_secs(600),
+        )
+        .unwrap();
+        let prompt_lead = &p_lead.argv[2];
+        assert!(prompt_lead.contains("chế độ chỉ đọc"));
+        assert!(prompt_lead.contains(
+            "Bạn không chạy được lệnh shell (bị từ chối quyền); dùng ngữ cảnh đã cho và công cụ đọc file. Nếu thiếu thông tin, vẫn phải trả file đầy đủ, không được trả rỗng."
+        ));
+
+        let p_dev = run_plan(
+            &cfg,
+            &resolved,
+            "dev",
+            &claude,
+            "m",
+            BTreeMap::new(),
+            Duration::from_secs(600),
+        )
+        .unwrap();
+        let prompt_dev = &p_dev.argv[2];
+        assert!(!prompt_dev.contains("chế độ chỉ đọc"));
+        assert!(!prompt_dev.contains("Bạn không chạy được lệnh shell"));
     }
 }
