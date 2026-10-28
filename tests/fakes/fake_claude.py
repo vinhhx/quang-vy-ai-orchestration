@@ -49,6 +49,13 @@ def main() -> None:
     record_path = os.environ.get("FAKE_CLAUDE_RECORD")
     if record_path:
         present_vars = [v for v in NESTED_SESSION_VARS if v in os.environ]
+        # The token itself is never recorded: only whether it equals the value the test expects.
+        expected_token = os.environ.get("FAKE_CLAUDE_EXPECT_TOKEN")
+        actual_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        if expected_token is None or actual_token is None:
+            token_matches = None
+        else:
+            token_matches = actual_token == expected_token
         record = {
             "argv": sys.argv[1:],
             "cwd": os.getcwd(),
@@ -56,6 +63,9 @@ def main() -> None:
             "present_vars": present_vars,
             "settings": settings_val,
             "blocked": blocked,
+            "env_names": sorted(os.environ.keys()),
+            "anthropic_base_url": os.environ.get("ANTHROPIC_BASE_URL"),
+            "auth_token_matches_expected": token_matches,
         }
         with open(record_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")

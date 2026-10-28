@@ -5,6 +5,7 @@ pub mod autopilot;
 pub mod config;
 pub mod dashboard;
 pub mod db;
+pub mod dsh;
 pub mod engine;
 pub mod error;
 pub mod fastpath;

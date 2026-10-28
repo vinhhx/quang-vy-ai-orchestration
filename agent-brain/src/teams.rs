@@ -66,14 +66,17 @@ impl Team {
             return format!("tất cả: {}", engine_text(&groups[0].0, staff));
         }
 
-        // claude, deepseek, agy, then people in staff-list order, unknown ids last in id order.
+        // claude, deepseek, agy, any other engine id ascending, then people in staff-list order,
+        // unknown ids last in id order. The summary has no config, so the UI-SPEC grammar's fixed
+        // order is kept for the two historical ids.
         groups.sort_by_key(|(engine, _)| match engine {
             Engine::Claude => (0usize, 0usize, String::new()),
-            Engine::Deepseek => (1, 0, String::new()),
-            Engine::Agy => (2, 0, String::new()),
+            Engine::Named(id) if id == crate::engine::ENGINE_DEEPSEEK => (1, 0, String::new()),
+            Engine::Named(id) if id == crate::engine::ENGINE_AGY => (2, 0, String::new()),
+            Engine::Named(id) => (3, 0, id.clone()),
             Engine::Human(id) => match staff.staff.iter().position(|s| s.id == *id) {
-                Some(idx) => (3, idx, String::new()),
-                None => (4, 0, id.clone()),
+                Some(idx) => (4, idx, String::new()),
+                None => (5, 0, id.clone()),
             },
         });
 
@@ -211,7 +214,7 @@ pub fn validate_entry(
                         errors.push(field_error(
                             role,
                             format!(
-                                "Engine không hợp lệ cho {role}: {shown} (dùng claude, deepseek, agy hoặc người:<mã>)"
+                                "Engine không hợp lệ cho {role}: {shown} (dùng claude, người:<mã> hoặc id của một engine trong config.json)"
                             ),
                         ));
                         continue;
@@ -514,7 +517,7 @@ mod tests {
             assert_eq!(md.engine_for(role), Engine::Claude);
         }
         let tk = l.get("tiet-kiem").unwrap();
-        assert_eq!(tk.engine_for("dev"), Engine::Deepseek);
+        assert_eq!(tk.engine_for("dev"), Engine::Named("deepseek".to_string()));
         assert_eq!(tk.engine_for("qa"), Engine::Claude);
         assert_eq!(tk.engine_for("lead"), Engine::Claude);
 
@@ -542,7 +545,10 @@ mod tests {
         let a = l.get("doi-a").unwrap();
         assert_eq!(a.source, "file");
         assert_eq!(a.engine_for("lead"), Engine::Claude);
-        assert_eq!(a.engine_for("plan-review"), Engine::Agy);
+        assert_eq!(
+            a.engine_for("plan-review"),
+            Engine::Named("agy".to_string())
+        );
         assert_eq!(
             a.summary(&no_staff()),
             "claude: lead, qa, review code · deepseek: dev · agy: review plan"
@@ -621,10 +627,10 @@ mod tests {
             ["Dòng 2: đội hình 'doi-x': Vai trò không hợp lệ: tester"]
         );
 
-        let e = one_error(r#""doi-x": {"description": "d", "roles": {"dev": "gpt"}}"#);
+        let e = one_error(r#""doi-x": {"description": "d", "roles": {"dev": "GPT 4"}}"#);
         assert_eq!(
             e,
-            ["Dòng 2: đội hình 'doi-x': Engine không hợp lệ cho dev: gpt (dùng claude, deepseek, agy hoặc người:<mã>)"]
+            ["Dòng 2: đội hình 'doi-x': Engine không hợp lệ cho dev: GPT 4 (dùng claude, người:<mã> hoặc id của một engine trong config.json)"]
         );
 
         let e = one_error(r#""doi-x": {"description": "  ", "roles": {}}"#);

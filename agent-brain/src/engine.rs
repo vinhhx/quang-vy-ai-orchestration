@@ -1,7 +1,7 @@
-//! Danh mục engine cố định (D-08): claude, deepseek, agy, người.
-//! Lệnh, endpoint và biến key chỉ nằm trong config.json; ở đây chỉ có kiểu và độ sẵn sàng tính tại máy.
+//! Danh mục engine (D-30): `claude` và `người` có sẵn, còn lại là danh sách `engines` của config.json.
+//! Lệnh, endpoint và biến key chỉ nằm trong config.json; ở đây chỉ có kiểu, cách dựng lệnh chạy và độ sẵn sàng tính tại máy.
 
-use crate::config::Config;
+use crate::config::{AgyDef, AnthropicDef, Config, EngineDef, EngineSpec};
 use crate::error::{BrainError, BrainResult};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -9,47 +9,59 @@ use std::time::Duration;
 use unicode_normalization::UnicodeNormalization;
 
 pub const ENGINE_CLAUDE: &str = "claude";
+/// Default catalog ids (used when `engines` is absent or in the legacy object shape).
 pub const ENGINE_DEEPSEEK: &str = "deepseek";
 pub const ENGINE_AGY: &str = "agy";
 /// `runs.engine` of a human run (NFC).
 pub const ENGINE_HUMAN: &str = "người";
-pub const ENGINE_ORDER: [&str; 4] = ["claude", "deepseek", "agy", "người"];
 
 const HUMAN_PREFIX: &str = "người:";
+/// Longest engine id a config entry may have.
+pub const MAX_ENGINE_ID_BYTES: usize = 32;
+
+/// Ids in display order: `claude`, the configured ids in file order, then `người`.
+pub fn engine_order(cfg: &Config) -> Vec<String> {
+    let mut order = vec![ENGINE_CLAUDE.to_string()];
+    order.extend(cfg.engines.list.iter().map(|e| e.id.clone()));
+    order.push(ENGINE_HUMAN.to_string());
+    order
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Engine {
     Claude,
-    Deepseek,
-    Agy,
+    /// The id of a configured engine (`config.json` `engines`).
+    Named(String),
     Human(String),
 }
 
 impl Engine {
-    /// Trim + NFC, then `claude` | `deepseek` | `agy` | `người:<id>` with a valid staff id.
+    /// Trim + NFC, then `claude` | `<engine id>` | `người:<id>` with a valid staff id. Whether a
+    /// named id exists in the engine list is decided at the run seam, not here (D-43).
     pub fn parse(s: &str) -> Option<Engine> {
         let normalized: String = s.trim().nfc().collect();
-        match normalized.as_str() {
-            ENGINE_CLAUDE => Some(Engine::Claude),
-            ENGINE_DEEPSEEK => Some(Engine::Deepseek),
-            ENGINE_AGY => Some(Engine::Agy),
-            other => {
-                let id = other.strip_prefix(HUMAN_PREFIX)?;
-                if crate::staff::validate_id(id) {
-                    Some(Engine::Human(id.to_string()))
-                } else {
-                    None
-                }
-            }
+        if normalized == ENGINE_CLAUDE {
+            return Some(Engine::Claude);
+        }
+        if let Some(id) = normalized.strip_prefix(HUMAN_PREFIX) {
+            return if crate::staff::validate_id(id) {
+                Some(Engine::Human(id.to_string()))
+            } else {
+                None
+            };
+        }
+        if crate::workflows::validate_name(&normalized) && normalized.len() <= MAX_ENGINE_ID_BYTES {
+            Some(Engine::Named(normalized))
+        } else {
+            None
         }
     }
 
     /// The value stored in `runs.engine`.
-    pub fn as_db_str(&self) -> &'static str {
+    pub fn as_db_str(&self) -> &str {
         match self {
             Engine::Claude => ENGINE_CLAUDE,
-            Engine::Deepseek => ENGINE_DEEPSEEK,
-            Engine::Agy => ENGINE_AGY,
+            Engine::Named(id) => id,
             Engine::Human(_) => ENGINE_HUMAN,
         }
     }
@@ -136,6 +148,9 @@ pub fn find_command(cmd: &str, path_var: Option<&str>) -> bool {
 const DESC_CLAUDE: &str = "Dùng profile của dự án (work hoặc personal), không có tài khoản riêng.";
 const DESC_DEEPSEEK: &str = "claude chạy trên máy với endpoint của DeepSeek.";
 const DESC_AGY: &str = "Antigravity chạy không giao diện (headless).";
+const DESC_ANTHROPIC: &str = "claude chạy trên máy với một endpoint định dạng Anthropic.";
+const DESC_NATIVE: &str = "claude chạy trên máy theo profile của dự án (không đổi endpoint).";
+const DESC_DSH: &str = "DeepSeek Harness chạy trong container (hộp đen, chỉ văn bản).";
 const DESC_HUMAN: &str = "Nhân sự làm trên máy của họ và đẩy nhánh task lên remote.";
 
 fn command_status(
@@ -163,9 +178,9 @@ fn command_status(
     }
 }
 
-/// Readiness of the four engines, in `ENGINE_ORDER`, from local checks only: a PATH
-/// lookup and whether the key variable is set. No model call, and no env VALUE is ever
-/// copied into the result (D-03).
+/// Readiness of every engine, in `engine_order`, from local checks only: a PATH lookup and
+/// whether the key variable is set. No model call, and no env VALUE is ever copied into the
+/// result (D-03). Today's rules; the `chưa kiểm` mark and the container probe come with plan 06-26.
 pub fn readiness(
     cfg: &Config,
     env: &BTreeMap<String, String>,
@@ -173,33 +188,18 @@ pub fn readiness(
 ) -> Vec<EngineStatus> {
     let path_var = env.get("PATH").map(String::as_str);
 
-    let claude = command_status(ENGINE_CLAUDE, &cfg.claude_bin, path_var, DESC_CLAUDE);
+    let mut out = vec![command_status(
+        ENGINE_CLAUDE,
+        &cfg.claude_bin,
+        path_var,
+        DESC_CLAUDE,
+    )];
 
-    let ds = &cfg.engines.deepseek;
-    let mut deepseek = command_status(ENGINE_DEEPSEEK, &ds.command, path_var, DESC_DEEPSEEK);
-    deepseek.key_env = Some(ds.key_env.clone());
-    let mut models: Vec<&str> = Vec::new();
-    for role in crate::teams::ROLES {
-        if let Some(m) = ds.models.get(role) {
-            if !models.contains(&m.as_str()) {
-                models.push(m);
-            }
-        }
-    }
-    deepseek.model = Some(models.join(", "));
-    if deepseek.readiness == Readiness::SanSang.key() {
-        let key_set = env.get(&ds.key_env).map_or(false, |v| !v.trim().is_empty());
-        if !key_set {
-            deepseek.readiness = Readiness::ThieuKey.key();
-            deepseek.word = Readiness::ThieuKey.word();
-            deepseek.reason = Some(format!("Chưa đặt biến môi trường {}.", ds.key_env));
-        }
+    for def in &cfg.engines.list {
+        out.push(entry_status(def, env, path_var));
     }
 
-    let mut agy = command_status(ENGINE_AGY, &cfg.engines.agy.command, path_var, DESC_AGY);
-    agy.model = cfg.engines.agy.model.clone();
-
-    let human = EngineStatus {
+    out.push(EngineStatus {
         name: ENGINE_HUMAN.to_string(),
         readiness: Readiness::SanSang.key(),
         word: Readiness::SanSang.word(),
@@ -209,9 +209,56 @@ pub fn readiness(
         model: None,
         description: DESC_HUMAN,
         detail: Some(format!("{staff_count} nhân sự")),
-    };
+    });
+    out
+}
 
-    vec![claude, deepseek, agy, human]
+fn entry_status(
+    def: &EngineDef,
+    env: &BTreeMap<String, String>,
+    path_var: Option<&str>,
+) -> EngineStatus {
+    match &def.spec {
+        EngineSpec::Anthropic(a) => {
+            let description = if a.base_url.is_none() {
+                DESC_NATIVE
+            } else if def.id == ENGINE_DEEPSEEK {
+                DESC_DEEPSEEK
+            } else {
+                DESC_ANTHROPIC
+            };
+            let mut st = command_status(&def.id, &a.command, path_var, description);
+            st.key_env = a.key_env.clone();
+            let mut models: Vec<&str> = Vec::new();
+            for role in crate::teams::ROLES {
+                if let Some(m) = a.models.get(role) {
+                    if !models.contains(&m.as_str()) {
+                        models.push(m);
+                    }
+                }
+            }
+            if !models.is_empty() {
+                st.model = Some(models.join(", "));
+            }
+            if st.readiness == Readiness::SanSang.key() {
+                if let Some(key_env) = &a.key_env {
+                    let key_set = env.get(key_env).map_or(false, |v| !v.trim().is_empty());
+                    if !key_set {
+                        st.readiness = Readiness::ThieuKey.key();
+                        st.word = Readiness::ThieuKey.word();
+                        st.reason = Some(format!("Chưa đặt biến môi trường {key_env}."));
+                    }
+                }
+            }
+            st
+        }
+        EngineSpec::Agy(a) => {
+            let mut st = command_status(&def.id, &a.command, path_var, DESC_AGY);
+            st.model = a.model.clone();
+            st
+        }
+        EngineSpec::Dsh(d) => command_status(&def.id, &d.docker, path_var, DESC_DSH),
+    }
 }
 
 // ---- the engine seam (D-14): one decision per role run ----
@@ -283,15 +330,17 @@ pub fn resolve_for_run(
 pub enum StreamFormat {
     Claude,
     Agy,
+    /// Plain text (an engine with no token stream, e.g. dsh).
+    Text,
 }
 
 /// What `execute_role_staged` spawns and records for one run.
 #[derive(Debug, Clone)]
 pub struct EnginePlan {
     pub engine: Engine,
-    /// Value stored in `runs.engine`.
-    pub db_engine: &'static str,
-    /// Header word: `claude` | `deepseek` | `agy` | `người:<id>`.
+    /// Value stored in `runs.engine`: the engine id.
+    pub db_engine: String,
+    /// Header word: `claude` | the engine id | `người:<id>`.
     pub display: String,
     pub argv: Vec<String>,
     pub env: BTreeMap<String, String>,
@@ -301,11 +350,48 @@ pub struct EnginePlan {
     /// Secret values to scrub from anything written to disk.
     pub redact: Vec<String>,
     pub response_file: Option<&'static str>,
+    /// Runs on the project's profile with nothing injected: `claude` and an `anthropic` entry
+    /// without `base_url`. Such a run keeps the cost claude reports.
+    pub native: bool,
+    /// An `anthropic` entry with `base_url` and no `verified` text: it runs, but is marked (D-40).
+    pub unverified: bool,
+    /// The container run a dsh engine persists for kill and cleanup (plan 06-23).
+    pub dsh: Option<crate::dsh::DshRun>,
+}
+
+/// Env variables an endpoint run never inherits: they would pick the account or the model instead
+/// of the endpoint the entry names.
+const ENDPOINT_STRIPPED_ENV: [&str; 6] = [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+];
+
+/// Removes the key variable of every configured engine from a child env (Pitfall A2): a child
+/// sees at most its own engine's token, and that one is injected under a different name.
+fn strip_key_envs(env: &mut BTreeMap<String, String>, cfg: &Config) {
+    for name in cfg.engines.all_key_envs() {
+        env.remove(&name);
+    }
+}
+
+/// D-43: a team names an engine id that is not in the engine list. The id is never resolved to
+/// another endpoint.
+fn unknown_engine_error(id: &str, team: Option<&str>) -> BrainError {
+    BrainError::error(format!(
+        "Engine '{id}' của đội hình '{}' không có trong config.json (engines) — thêm engine hoặc đổi đội hình rồi chạy lại.",
+        team.unwrap_or("-")
+    ))
 }
 
 /// `claude_argv` is the claude-family argv the role built; `base_env` is the project profile's
-/// env (D-07: the claude engine always uses it unchanged). Other engines derive their own argv
-/// from the claude one in later plans; until then they are refused here, before any run row.
+/// env (D-07: the claude engine always uses it unchanged, minus every engine's key variable).
+/// Every other engine derives its own argv from the claude one. Everything is decided here,
+/// before any run row exists.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_for(
     cfg: &Config,
     resolved: &ResolvedEngine,
@@ -314,29 +400,166 @@ pub fn plan_for(
     claude_model: &str,
     base_env: BTreeMap<String, String>,
     timeout: Duration,
+    cwd: &Path,
 ) -> BrainResult<EnginePlan> {
     match &resolved.engine {
-        Engine::Claude => Ok(EnginePlan {
-            engine: Engine::Claude,
-            db_engine: ENGINE_CLAUDE,
-            display: ENGINE_CLAUDE.to_string(),
-            argv: claude_argv.to_vec(),
-            env: base_env,
-            model_label: claude_model.to_string(),
-            stream: StreamFormat::Claude,
-            stdout_file: false,
-            redact: Vec::new(),
-            response_file: None,
-        }),
-        Engine::Agy => agy_plan(cfg, role, claude_argv, base_env, timeout),
-        Engine::Deepseek => Err(BrainError::error(format!(
-            "Engine {} chưa được bật trong bản agent-brain này",
-            resolved.engine.as_db_str()
-        ))),
+        Engine::Claude => {
+            let mut env = base_env;
+            strip_key_envs(&mut env, cfg);
+            Ok(EnginePlan {
+                engine: Engine::Claude,
+                db_engine: ENGINE_CLAUDE.to_string(),
+                display: ENGINE_CLAUDE.to_string(),
+                argv: claude_argv.to_vec(),
+                env,
+                model_label: claude_model.to_string(),
+                stream: StreamFormat::Claude,
+                stdout_file: false,
+                redact: Vec::new(),
+                response_file: None,
+                native: true,
+                unverified: false,
+                dsh: None,
+            })
+        }
         Engine::Human(_) => Err(BrainError::error(
             "Engine người không chạy tiến trình — bước Dev của nhân sự bắt đầu bằng agent-brain run dev",
         )),
+        Engine::Named(id) => {
+            let def = cfg
+                .engines
+                .get(id)
+                .ok_or_else(|| unknown_engine_error(id, resolved.team.as_deref()))?;
+            match &def.spec {
+                EngineSpec::Anthropic(a) => {
+                    anthropic_plan(cfg, def, a, role, claude_argv, claude_model, base_env)
+                }
+                EngineSpec::Agy(a) => agy_plan(cfg, &def.id, a, role, claude_argv, base_env, timeout),
+                EngineSpec::Dsh(d) => {
+                    crate::dsh::plan(cfg, &def.id, d, role, claude_argv, base_env, cwd)
+                }
+            }
+        }
     }
+}
+
+/// ENG-10 / D-36 / D-38 / D-42: one pure guard. `Some(message)` when the entry may not run on a
+/// project of `project_profile` — an entry with `pin_profile` (which implies `allowed_profiles:
+/// [pin_profile]`) or with `allowed_profiles` never borrows another profile's account or quota
+/// (SPK-10). The run seam calls it before any run row exists; plan 06-22 binds it at the other
+/// points where a team is chosen.
+pub fn profile_refusal(
+    def: &EngineDef,
+    project_id: &str,
+    project_profile: &str,
+    role: &str,
+) -> Option<String> {
+    let allowed = def.effective_allowed_profiles()?;
+    if allowed.iter().any(|p| p == project_profile) {
+        return None;
+    }
+    Some(format!(
+        "Engine '{}' chỉ dùng cho dự án profile {} — dự án '{project_id}' dùng profile {project_profile} (ranh giới work/personal, SPK-10). Đổi engine của vai trò {role} hoặc chọn đội hình khác.",
+        def.id,
+        allowed.join(", ")
+    ))
+}
+
+/// An `anthropic` entry (ENG-01): the claude-family argv the role built, with argv[0] = the
+/// entry's `command` and the value after `--model` = the entry's model for the role. Nothing
+/// else in the argv changes (Pitfall A1): the guard hooks, the system prompt and the tool lists
+/// stay exactly as the role built them.
+fn anthropic_plan(
+    cfg: &Config,
+    def: &EngineDef,
+    a: &AnthropicDef,
+    role: &str,
+    claude_argv: &[String],
+    claude_model: &str,
+    base_env: BTreeMap<String, String>,
+) -> BrainResult<EnginePlan> {
+    let model = match &a.base_url {
+        Some(_) => a.models.get(role).or_else(|| a.models.get("dev")),
+        None => a.models.get(role),
+    }
+    .cloned()
+    .unwrap_or_else(|| claude_model.to_string());
+
+    let mut argv = claude_argv.to_vec();
+    if let Some(first) = argv.first_mut() {
+        *first = a.command.clone();
+    }
+    match argv.iter().position(|x| x == "--model") {
+        Some(i) if i + 1 < argv.len() => argv[i + 1] = model.clone(),
+        _ => {
+            argv.push("--model".to_string());
+            argv.push(model.clone());
+        }
+    }
+
+    let mut env = base_env;
+    // A native entry (no `base_url`) runs on the project's profile with nothing injected.
+    let native = a.base_url.is_none();
+    let key = match (&a.base_url, a.key_env.as_deref()) {
+        (Some(_), Some(key_env)) => Some(
+            env.get(key_env)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| {
+                    BrainError::error(format!(
+                        "Chưa đặt biến môi trường {key_env} cho engine {} — đặt biến này trong shell chạy agent-brain (serve hoặc CLI) rồi chạy lại.",
+                        def.id
+                    ))
+                })?,
+        ),
+        _ => None,
+    };
+    strip_key_envs(&mut env, cfg);
+
+    // The endpoint variables go in AFTER `profile::build_env` already ran (Pitfall 5), so no
+    // profile `unset_env` can drop them and nothing from the serve process env can shadow them.
+    if let (Some(base_url), Some(key)) = (&a.base_url, &key) {
+        env.retain(|k, _| !ENDPOINT_STRIPPED_ENV.contains(&k.as_str()));
+        env.insert("ANTHROPIC_BASE_URL".to_string(), base_url.clone());
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), key.clone());
+        env.insert(
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_string(),
+            "1".to_string(),
+        );
+        for knob in &a.compat {
+            match knob.as_str() {
+                "disable_experimental_betas" => {
+                    env.insert(
+                        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS".to_string(),
+                        "1".to_string(),
+                    );
+                }
+                "disable_adaptive_thinking" => {
+                    env.insert(
+                        "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING".to_string(),
+                        "1".to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(EnginePlan {
+        engine: Engine::Named(def.id.clone()),
+        db_engine: def.id.clone(),
+        display: def.id.clone(),
+        argv,
+        env,
+        model_label: model,
+        stream: StreamFormat::Claude,
+        stdout_file: false,
+        redact: key.into_iter().collect(),
+        response_file: None,
+        native,
+        unverified: !native && a.verified.is_none(),
+        dsh: None,
+    })
 }
 
 /// `--print-timeout` seconds for an agy run: the role timeout minus the margin when the timeout is
@@ -376,6 +599,8 @@ pub fn agy_expected_permission_mode(role: &str) -> &'static str {
 
 fn agy_plan(
     cfg: &Config,
+    id: &str,
+    acfg: &AgyDef,
     role: &str,
     claude_argv: &[String],
     base_env: BTreeMap<String, String>,
@@ -391,7 +616,6 @@ fn agy_plan(
         _ => format!("{prompt}\n\n---\n{input}"),
     };
 
-    let acfg = &cfg.engines.agy;
     let secs = agy_print_timeout(timeout.as_secs(), acfg.print_timeout_margin_secs);
     let mut argv = vec![
         acfg.command.clone(),
@@ -407,23 +631,24 @@ fn agy_plan(
         argv.push(m.clone());
     }
     if role == "dev" {
-        argv.extend(AGY_DEV_PERMISSION.iter().map(|s| s.to_string()));
+        argv.push("--mode".to_string());
+        argv.push(acfg.dev_permission.clone());
     }
 
-    // agy never sees claude or DeepSeek credentials or config (T-06-35).
+    // agy never sees claude credentials or config, nor any engine's key (T-06-35, T-06-45).
     let mut env = base_env;
     env.retain(|k, _| {
         !(k.starts_with("ANTHROPIC_")
             || k == "CLAUDE_CONFIG_DIR"
             || k == "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"
-            || k == "CLAUDE_CODE_SUBAGENT_MODEL"
-            || k == &cfg.engines.deepseek.key_env)
+            || k == "CLAUDE_CODE_SUBAGENT_MODEL")
     });
+    strip_key_envs(&mut env, cfg);
 
     Ok(EnginePlan {
-        engine: Engine::Agy,
-        db_engine: ENGINE_AGY,
-        display: ENGINE_AGY.to_string(),
+        engine: Engine::Named(id.to_string()),
+        db_engine: id.to_string(),
+        display: id.to_string(),
         argv,
         env,
         model_label: acfg.model.clone().unwrap_or_else(|| "mặc định".to_string()),
@@ -431,6 +656,9 @@ fn agy_plan(
         stdout_file: true,
         redact: Vec::new(),
         response_file,
+        native: false,
+        unverified: false,
+        dsh: None,
     })
 }
 
@@ -471,6 +699,69 @@ mod tests {
         );
     }
 
+    /// `plan_for` with a fixed working directory (only a dsh run reads it).
+    fn run_plan(
+        cfg: &Config,
+        resolved: &ResolvedEngine,
+        role: &str,
+        argv: &[String],
+        model: &str,
+        env: BTreeMap<String, String>,
+        timeout: Duration,
+    ) -> BrainResult<EnginePlan> {
+        plan_for(
+            cfg,
+            resolved,
+            role,
+            argv,
+            model,
+            env,
+            timeout,
+            Path::new("/"),
+        )
+    }
+
+    fn named(id: &str) -> ResolvedEngine {
+        ResolvedEngine {
+            engine: Engine::Named(id.to_string()),
+            team: Some("doi-x".to_string()),
+            wait: None,
+        }
+    }
+
+    fn claude_argv_of(model: &str) -> Vec<String> {
+        [
+            "claude",
+            "-p",
+            "việc",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--model",
+            model,
+            "--append-system-prompt",
+            "luật",
+            "--settings",
+            "/run/settings.json",
+            "--max-turns",
+            "7",
+            "--allowedTools",
+            "Read",
+            "--disallowedTools",
+            "WebFetch",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    fn env_of(names: &[&str]) -> BTreeMap<String, String> {
+        names
+            .iter()
+            .map(|k| (k.to_string(), format!("value-of-{k}")))
+            .collect()
+    }
+
     #[test]
     fn plan_for_claude_keeps_argv_and_env() {
         let cfg = test_cfg(serde_json::json!({}));
@@ -482,7 +773,7 @@ mod tests {
         let argv = vec!["claude".to_string(), "-p".to_string(), "x".to_string()];
         let mut env = BTreeMap::new();
         env.insert("A".to_string(), "1".to_string());
-        let p = plan_for(
+        let p = run_plan(
             &cfg,
             &resolved,
             "dev",
@@ -498,26 +789,321 @@ mod tests {
         assert_eq!(p.display, "claude");
         assert_eq!(p.model_label, "sonnet");
         assert_eq!(p.stream, StreamFormat::Claude);
+        assert!(p.native);
+        assert!(!p.unverified);
+        assert_eq!(p.dsh, None);
 
-        for (engine, text) in [(
-            Engine::Deepseek,
-            "Engine deepseek chưa được bật trong bản agent-brain này",
-        )] {
-            let r = ResolvedEngine {
-                engine,
-                team: None,
-                wait: None,
-            };
-            let e =
-                plan_for(&cfg, &r, "dev", &argv, "m", BTreeMap::new(), Duration::ZERO).unwrap_err();
-            assert_eq!(e.message, text);
-        }
+        // A person never runs a process.
         let r = ResolvedEngine {
             engine: Engine::Human("ha".to_string()),
             team: None,
             wait: None,
         };
-        assert!(plan_for(&cfg, &r, "dev", &argv, "m", BTreeMap::new(), Duration::ZERO).is_err());
+        assert!(run_plan(&cfg, &r, "dev", &argv, "m", BTreeMap::new(), Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn claude_env_loses_every_key_variable() {
+        // Pitfall A2: claude never sees the key of any configured engine.
+        let cfg = test_cfg(serde_json::json!({"engines": [
+            {"id": "gw", "kind": "anthropic", "base_url": "https://gw.invalid/x", "key_env": "GW_KEY",
+             "models": {"dev": "m"}},
+            {"id": "ds", "kind": "anthropic", "base_url": "https://ds.invalid/x", "key_env": "DS_KEY",
+             "models": {"dev": "m"}},
+        ]}));
+        let resolved = ResolvedEngine {
+            engine: Engine::Claude,
+            team: None,
+            wait: None,
+        };
+        let p = run_plan(
+            &cfg,
+            &resolved,
+            "dev",
+            &claude_argv_of("sonnet"),
+            "sonnet",
+            env_of(&["GW_KEY", "DS_KEY", "HOME", "PATH"]),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let names: Vec<&str> = p.env.keys().map(String::as_str).collect();
+        assert_eq!(names, ["HOME", "PATH"]);
+    }
+
+    #[test]
+    fn anthropic_plan_builds_argv_and_env() {
+        let cfg = test_cfg(serde_json::json!({"engines": [
+            {"id": "gw", "kind": "anthropic", "command": "gw-claude", "base_url": "https://gw.invalid/x",
+             "key_env": "GW_KEY", "compat": ["disable_experimental_betas", "disable_adaptive_thinking"],
+             "models": {"lead": "m-lead", "dev": "m-dev"}},
+            {"id": "other", "kind": "anthropic", "base_url": "https://o.invalid/x", "key_env": "OTHER_KEY",
+             "models": {"dev": "m-o"}, "verified": "2026-10-28 E-09"},
+        ]}));
+        let mut env = env_of(&[
+            "GW_KEY",
+            "OTHER_KEY",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+            "CLAUDE_CONFIG_DIR",
+            "HOME",
+            "PATH",
+        ]);
+        env.insert(
+            "GW_KEY".to_string(),
+            "test-planted-gw-key-0123456789".to_string(),
+        );
+        let argv = claude_argv_of("opus");
+
+        // dev: the role's model; lead: its own entry; qa: falls back to models.dev.
+        for (role, model) in [("dev", "m-dev"), ("lead", "m-lead"), ("qa", "m-dev")] {
+            let p = run_plan(
+                &cfg,
+                &named("gw"),
+                role,
+                &argv,
+                "opus",
+                env.clone(),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+            // Only argv[0] and the value after --model differ from the role's own argv.
+            assert_eq!(p.argv[0], "gw-claude");
+            let m = p.argv.iter().position(|a| a == "--model").unwrap();
+            assert_eq!(p.argv[m + 1], model, "{role}");
+            let mut expected = argv.clone();
+            expected[0] = "gw-claude".to_string();
+            expected[m + 1] = model.to_string();
+            assert_eq!(p.argv, expected, "{role}");
+            assert_eq!(p.model_label, model);
+            assert_eq!(p.db_engine, "gw");
+            assert_eq!(p.display, "gw");
+            assert_eq!(p.stream, StreamFormat::Claude);
+            assert!(!p.stdout_file);
+            assert!(!p.native);
+            assert!(p.unverified, "no `verified` text: marked (D-40)");
+            assert_eq!(p.redact, ["test-planted-gw-key-0123456789"]);
+
+            assert_eq!(p.env["ANTHROPIC_BASE_URL"], "https://gw.invalid/x");
+            assert_eq!(
+                p.env["ANTHROPIC_AUTH_TOKEN"],
+                "test-planted-gw-key-0123456789"
+            );
+            assert_eq!(p.env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1");
+            assert_eq!(p.env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"], "1");
+            assert_eq!(p.env["CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"], "1");
+            for gone in [
+                "GW_KEY",
+                "OTHER_KEY",
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "CLAUDE_CODE_SUBAGENT_MODEL",
+            ] {
+                assert!(!p.env.contains_key(gone), "{gone} reached the child");
+            }
+            // The profile env (D-07) is otherwise untouched.
+            assert_eq!(p.env["CLAUDE_CONFIG_DIR"], "value-of-CLAUDE_CONFIG_DIR");
+            assert_eq!(p.env["HOME"], "value-of-HOME");
+        }
+
+        // A verified endpoint carries no mark, and no compat knob unless asked for.
+        let p = run_plan(
+            &cfg,
+            &named("other"),
+            "dev",
+            &argv,
+            "opus",
+            env.clone(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(!p.unverified);
+        assert!(!p.env.contains_key("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"));
+        assert!(!p.env.contains_key("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"));
+        assert_eq!(p.env["ANTHROPIC_BASE_URL"], "https://o.invalid/x");
+        // `other` has no key of its own in this env map: refused with the D-03 text.
+        env.remove("OTHER_KEY");
+        let e = run_plan(
+            &cfg,
+            &named("other"),
+            "dev",
+            &argv,
+            "opus",
+            env.clone(),
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert_eq!(
+            e.message,
+            "Chưa đặt biến môi trường OTHER_KEY cho engine other — đặt biến này trong shell chạy agent-brain (serve hoặc CLI) rồi chạy lại."
+        );
+        // A blank value is a missing one.
+        env.insert("OTHER_KEY".to_string(), "   ".to_string());
+        assert!(run_plan(
+            &cfg,
+            &named("other"),
+            "dev",
+            &argv,
+            "opus",
+            env,
+            Duration::from_secs(5)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn native_anthropic_entry_injects_nothing() {
+        let cfg = test_cfg(serde_json::json!({"engines": [
+            {"id": "claude-max", "kind": "anthropic", "command": "max-claude", "pin_profile": "personal",
+             "models": {"lead": "opus"}},
+            {"id": "gw", "kind": "anthropic", "base_url": "https://gw.invalid/x", "key_env": "GW_KEY",
+             "models": {"dev": "m"}},
+        ]}));
+        let argv = claude_argv_of("sonnet");
+        let env = env_of(&["GW_KEY", "ANTHROPIC_MODEL", "CLAUDE_CONFIG_DIR", "PATH"]);
+        let p = run_plan(
+            &cfg,
+            &named("claude-max"),
+            "lead",
+            &argv,
+            "sonnet",
+            env,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(p.native);
+        assert!(!p.unverified);
+        assert!(p.redact.is_empty());
+        assert_eq!(p.argv[0], "max-claude");
+        let m = p.argv.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(p.argv[m + 1], "opus", "models.lead of the entry");
+        assert_eq!(p.model_label, "opus");
+        // No key variable, nothing injected, the profile's own env kept as it was.
+        let names: Vec<&str> = p.env.keys().map(String::as_str).collect();
+        assert_eq!(names, ["ANTHROPIC_MODEL", "CLAUDE_CONFIG_DIR", "PATH"]);
+
+        // A role the entry has no model for keeps the model the role already chose.
+        let p = run_plan(
+            &cfg,
+            &named("claude-max"),
+            "dev",
+            &argv,
+            "sonnet",
+            BTreeMap::new(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let m = p.argv.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(p.argv[m + 1], "sonnet");
+        assert_eq!(p.model_label, "sonnet");
+    }
+
+    #[test]
+    fn unknown_id_and_dsh_stub_are_refused() {
+        let cfg = test_cfg(serde_json::json!({"engines": [
+            {"id": "dsh", "kind": "dsh", "container": "dsh-x"},
+        ]}));
+        let argv = claude_argv_of("sonnet");
+        let e = run_plan(
+            &cfg,
+            &named("khong-co"),
+            "dev",
+            &argv,
+            "m",
+            BTreeMap::new(),
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e.message,
+            "Engine 'khong-co' của đội hình 'doi-x' không có trong config.json (engines) — thêm engine hoặc đổi đội hình rồi chạy lại."
+        );
+        // A run with no team reads `-` in the team slot.
+        let r = ResolvedEngine {
+            engine: Engine::Named("khong-co".to_string()),
+            team: None,
+            wait: None,
+        };
+        let e = run_plan(&cfg, &r, "dev", &argv, "m", BTreeMap::new(), Duration::ZERO).unwrap_err();
+        assert!(e.message.contains("đội hình '-'"), "{}", e.message);
+
+        // The default `deepseek` / `agy` ids do not exist in this user list: never mapped elsewhere.
+        for id in ["deepseek", "agy"] {
+            assert!(run_plan(
+                &cfg,
+                &named(id),
+                "dev",
+                &argv,
+                "m",
+                BTreeMap::new(),
+                Duration::ZERO
+            )
+            .is_err());
+        }
+
+        // dsh is parsed and dispatched, but not enabled until plan 06-23.
+        let e = run_plan(
+            &cfg,
+            &named("dsh"),
+            "dev",
+            &argv,
+            "m",
+            BTreeMap::new(),
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e.message,
+            "Engine dsh chưa được bật trong bản agent-brain này"
+        );
+    }
+
+    #[test]
+    fn profile_refusal_rules() {
+        let cfg = test_cfg(serde_json::json!({"engines": [
+            {"id": "claude-max", "kind": "anthropic", "pin_profile": "personal"},
+            {"id": "dsh", "kind": "dsh", "container": "dsh-x", "allowed_profiles": ["personal"]},
+            {"id": "both", "kind": "agy", "allowed_profiles": ["work", "personal"]},
+            {"id": "free", "kind": "agy"},
+        ]}));
+        let def = |id: &str| cfg.engines.get(id).unwrap();
+
+        // pin_profile personal: refused on a work project with the exact D-36 text.
+        assert_eq!(
+            profile_refusal(def("claude-max"), "web-ban-hang", "work", "dev").as_deref(),
+            Some("Engine 'claude-max' chỉ dùng cho dự án profile personal — dự án 'web-ban-hang' dùng profile work (ranh giới work/personal, SPK-10). Đổi engine của vai trò dev hoặc chọn đội hình khác.")
+        );
+        // ... and allowed on the personal one, where it runs on that project's own profile.
+        assert_eq!(
+            profile_refusal(def("claude-max"), "web-ban-hang", "personal", "dev"),
+            None
+        );
+        // allowed_profiles works for any kind.
+        let m = profile_refusal(def("dsh"), "p", "work", "dev").expect("dsh is personal-only");
+        assert!(m.starts_with(
+            "Engine 'dsh' chỉ dùng cho dự án profile personal — dự án 'p' dùng profile work"
+        ));
+        assert_eq!(profile_refusal(def("dsh"), "p", "personal", "dev"), None);
+        // A list of two is allowed on both and names both in a refusal.
+        for profile in ["work", "personal"] {
+            assert_eq!(profile_refusal(def("both"), "p", profile, "dev"), None);
+        }
+        let m = profile_refusal(def("both"), "p", "other", "qa").unwrap();
+        assert!(m.contains("profile work, personal"), "{m}");
+        assert!(
+            m.ends_with("Đổi engine của vai trò qa hoặc chọn đội hình khác."),
+            "{m}"
+        );
+        // No restriction: never refused.
+        for profile in ["work", "personal"] {
+            assert_eq!(profile_refusal(def("free"), "p", profile, "dev"), None);
+        }
     }
 
     #[test]
@@ -545,7 +1131,7 @@ mod tests {
             "engines": {"agy": {"command": "agy-bin", "model": "gemini-x"}}
         }));
         let resolved = ResolvedEngine {
-            engine: Engine::Agy,
+            engine: Engine::Named("agy".to_string()),
             team: None,
             wait: None,
         };
@@ -567,7 +1153,7 @@ mod tests {
         ] {
             env.insert(k.to_string(), "v".to_string());
         }
-        let p = plan_for(
+        let p = run_plan(
             &cfg,
             &resolved,
             "lead",
@@ -595,7 +1181,7 @@ mod tests {
         let names: Vec<&str> = p.env.keys().map(String::as_str).collect();
         assert_eq!(names, ["HOME", "PATH"]);
 
-        let bad = plan_for(
+        let bad = run_plan(
             &cfg,
             &resolved,
             "lead",
@@ -614,7 +1200,7 @@ mod tests {
             "engines": {"agy": {"model": "gemini-x"}}
         }));
         let resolved = ResolvedEngine {
-            engine: Engine::Agy,
+            engine: Engine::Named("agy".to_string()),
             team: None,
             wait: None,
         };
@@ -626,7 +1212,7 @@ mod tests {
             "luật".to_string(),
         ];
         for role in ["lead", "plan-review", "code-review", "qa"] {
-            let p = plan_for(
+            let p = run_plan(
                 &cfg,
                 &resolved,
                 role,
@@ -640,7 +1226,7 @@ mod tests {
                 assert!(!p.argv.iter().any(|a| a == bad), "{role} got {bad}");
             }
         }
-        let p = plan_for(
+        let p = run_plan(
             &cfg,
             &resolved,
             "dev",
@@ -795,8 +1381,18 @@ mod tests {
     #[test]
     fn engine_parse() {
         assert_eq!(Engine::parse("claude"), Some(Engine::Claude));
-        assert_eq!(Engine::parse("deepseek"), Some(Engine::Deepseek));
-        assert_eq!(Engine::parse(" agy "), Some(Engine::Agy));
+        assert_eq!(
+            Engine::parse("deepseek"),
+            Some(Engine::Named("deepseek".to_string()))
+        );
+        assert_eq!(
+            Engine::parse(" agy "),
+            Some(Engine::Named("agy".to_string()))
+        );
+        assert_eq!(
+            Engine::parse("vcadm-deepseek"),
+            Some(Engine::Named("vcadm-deepseek".to_string()))
+        );
         assert_eq!(
             Engine::parse("người:ha"),
             Some(Engine::Human("ha".to_string()))
@@ -812,23 +1408,37 @@ mod tests {
             "người:",
             "người:Ha",
             "nguoi:ha",
-            "gpt",
+            "bad id",
+            "GPT",
             "",
             "người",
         ] {
             assert_eq!(Engine::parse(bad), None, "{bad:?} must not parse");
         }
+        // An id is at most 32 bytes.
+        let long = "a".repeat(33);
+        assert_eq!(Engine::parse(&long), None);
+        assert_eq!(
+            Engine::parse(&"a".repeat(32)),
+            Some(Engine::Named("a".repeat(32)))
+        );
 
         let h = Engine::Human("ha".to_string());
         assert_eq!(h.as_db_str(), "người");
         assert_eq!(h.to_config_string(), "người:ha");
         assert!(h.is_human());
         assert!(!Engine::Claude.is_human());
-        assert_eq!(Engine::Deepseek.to_config_string(), "deepseek");
+        assert_eq!(
+            Engine::Named("deepseek".to_string()).to_config_string(),
+            "deepseek"
+        );
 
         let nfc: String = ENGINE_HUMAN.nfc().collect();
         assert_eq!(nfc, ENGINE_HUMAN, "ENGINE_HUMAN must be NFC");
-        assert_eq!(ENGINE_ORDER, ["claude", "deepseek", "agy", "người"]);
+        assert_eq!(
+            engine_order(&test_cfg(serde_json::json!({}))),
+            ["claude", "deepseek", "agy", "người"]
+        );
     }
 
     #[test]
