@@ -693,6 +693,18 @@ pub fn execute_role_staged(
             outcome.exit_code,
             &crate::quota::stderr_tail(&quota_stderr_path, 4096),
         )
+    } else if ep.stream == crate::engine::StreamFormat::Text
+        && !matches!(
+            outcome.status,
+            crate::runner::RunStatus::Killed | crate::runner::RunStatus::TimedOut
+        )
+    {
+        // dsh: text only, so a quota stop needs a non-zero exit (never an exit-0 answer).
+        crate::quota::detect_text(
+            outcome.exit_code,
+            obs.summary.result_text.as_deref().unwrap_or(""),
+            &crate::quota::stderr_tail(&quota_stderr_path, 4096),
+        )
     } else {
         None
     };

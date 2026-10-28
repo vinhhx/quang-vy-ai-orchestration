@@ -16,6 +16,9 @@ pub const DEV_DISALLOWED_TOOLS: [&str; 6] = [
 pub const AGY_EMPTY_MESSAGE: &str =
     "agy không sửa file nào — có thể bị từ chối quyền (xem stderr.txt của run).";
 
+/// Printed when a successful dsh Dev run changed nothing (outcome `dsh:empty`).
+pub const DSH_EMPTY_MESSAGE: &str = "dsh không sửa file nào trong lượt này — có thể container không ghi được vào dự án hoặc dsh chỉ trả lời. Xem log rồi chạy lại hoặc đổi đội hình.";
+
 /// Context file a previous engine may leave for the next one (Phase 4); read-only for Dev.
 const HANDOVER_FILE: &str = ".handover.md";
 
@@ -574,15 +577,21 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         .collect();
     allowed_nfc.insert(".plan.md".to_string());
 
-    // D-05: an agy Dev edits with `--mode accept-edits`, so its diff gets two extra checks.
-    let is_agy = crate::db::get_run(&ctx.conn, role_run.run_id)?
-        .map(|r| r.engine == crate::engine::ENGINE_AGY)
-        .unwrap_or(false);
+    // D-05 / D-35: an agy Dev edits with `--mode accept-edits` and a dsh Dev writes through the
+    // container, so their diffs get two extra checks. They key on the engine KIND of the run's
+    // engine id, so every agy-kind and dsh-kind entry is covered; an unknown id gets neither.
+    let engine_kind = crate::db::get_run(&ctx.conn, role_run.run_id)?
+        .and_then(|r| ctx.cfg.engines.kind_of(&r.engine));
+    let empty_outcome: Option<(&str, &str)> = match engine_kind {
+        Some(crate::config::EngineKind::Agy) => Some(("agy:empty", AGY_EMPTY_MESSAGE)),
+        Some(crate::config::EngineKind::Dsh) => Some(("dsh:empty", DSH_EMPTY_MESSAGE)),
+        _ => None,
+    };
 
     let mut violations: Vec<String> = all_changed_nfc.difference(&allowed_nfc).cloned().collect();
-    if is_agy {
-        // `.planning/` and secret-looking paths are never agy's to change, even when the plan
-        // lists them.
+    if empty_outcome.is_some() {
+        // `.planning/` and secret-looking paths are never agy's or dsh's to change, even when
+        // the plan lists them.
         for p in &all_changed_nfc {
             if (p.starts_with(".planning/") || crate::report::sensitive_path(p))
                 && !violations.contains(p)
@@ -603,12 +612,15 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         return Ok(crate::error::EXIT_PROTOCOL);
     }
 
-    // T-06-33: agy answers SUCCESS even when its tools were soft-denied (S7b). An empty diff after
-    // a successful agy Dev run is therefore suspicious, not done.
-    if is_agy && all_changed_nfc.is_empty() {
-        crate::term::emit_out(AGY_EMPTY_MESSAGE);
-        crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "agy:empty")?;
-        return Ok(crate::error::EXIT_BLOCKED);
+    // T-06-33 / T-06-94: agy answers SUCCESS even when its tools were soft-denied (S7b), and dsh
+    // may only answer in text. An empty diff after a successful agy or dsh Dev run is therefore
+    // suspicious, not done.
+    if let Some((outcome, message)) = empty_outcome {
+        if all_changed_nfc.is_empty() {
+            crate::term::emit_out(message);
+            crate::db::set_run_outcome(&ctx.conn, role_run.run_id, outcome)?;
+            return Ok(crate::error::EXIT_BLOCKED);
+        }
     }
 
     let plan_curr_text = std::fs::read_to_string(&plan_path)?;

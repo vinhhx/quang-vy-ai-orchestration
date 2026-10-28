@@ -108,6 +108,7 @@ pub fn step_state(run: Option<&RunRow>) -> (&'static str, &'static str) {
         Some("review:pass") => return ("dat", "đạt"),
         Some(crate::quota::OUTCOME_QUOTA) => return ("het_quota", "hết quota"),
         Some("agy:empty") => return ("vuong_mac", "agy không sửa file"),
+        Some("dsh:empty") => return ("vuong_mac", "dsh không sửa file"),
         _ => {}
     }
     match r.status.as_str() {
@@ -2879,6 +2880,12 @@ mod tests {
 
         let r = dummy_run(2, "dev", "failed", Some("agy:empty"));
         assert_eq!(step_state(Some(&r)), ("vuong_mac", "agy không sửa file"));
+    }
+
+    #[test]
+    fn step_state_dsh_empty() {
+        let r = dummy_run(3, "dev", "failed", Some("dsh:empty"));
+        assert_eq!(step_state(Some(&r)), ("vuong_mac", "dsh không sửa file"));
     }
 
     #[test]
