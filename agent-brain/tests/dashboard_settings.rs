@@ -1023,7 +1023,13 @@ fn engines_readiness_no_secret() {
         .collect();
     assert_eq!(names, ["claude", "deepseek", "agy", "người"]);
     let ds = find(&j, "engines", "name", "deepseek");
-    assert_eq!(ds["readiness"], "san_sang");
+    // D-40: the default deepseek entry has no E-09 evidence, so a set key reads `chưa kiểm`.
+    assert_eq!(ds["readiness"], "chua_kiem");
+    assert_eq!(ds["word"], "chưa kiểm");
+    assert_eq!(
+        ds["reason"],
+        "Endpoint chưa có bằng chứng E-09 — chạy spikes/e09/run.sh rồi ghi \"verified\" cho engine này trong config.json."
+    );
     assert_eq!(ds["key_env"], "DEEPSEEK_API_KEY");
     assert_eq!(find(&j, "engines", "name", "agy")["readiness"], "san_sang");
     assert_eq!(
@@ -1041,6 +1047,108 @@ fn engines_readiness_no_secret() {
     assert_eq!(ds["readiness"], "thieu_key");
     assert_eq!(ds["reason"], "Chưa đặt biến môi trường DEEPSEEK_API_KEY.");
     assert!(!r.text().contains(planted));
+    stop(srv);
+}
+
+#[test]
+fn engines_list_payload() {
+    let sb = Sandbox::new();
+    let bin_dir = sb.root.join("stub-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    exec_script(&bin_dir.join("claude"));
+    exec_script(&bin_dir.join("agy"));
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let key_gw = "planted-gw-key-aaaa1111";
+    let key_gw2 = "planted-gw2-key-bbbb2222";
+    sb.write_config(json!({
+        "engines": [
+            {"id": "gw", "kind": "anthropic", "label": "Gateway thử", "command": "claude",
+             "base_url": "https://gw.example.test/proxy", "key_env": "GW_KEY",
+             "verified": "2026-10-28 E-09", "models": {"dev": "m-dev"}},
+            {"id": "gw2", "kind": "anthropic", "command": "claude",
+             "base_url": "https://gw2.example.test/proxy", "key_env": "GW2_KEY",
+             "models": {"dev": "m-dev"}},
+            {"id": "claude-max", "kind": "anthropic", "command": "claude",
+             "pin_profile": "personal", "models": {"lead": "opus", "dev": "opus"}},
+            {"id": "agy", "kind": "agy", "command": "agy"},
+            {"id": "dsh", "kind": "dsh", "docker": "/nonexistent/docker-test",
+             "container": "fake-dsh", "dsh_profile": "headless",
+             "allowed_profiles": ["personal"]}
+        ]
+    }));
+
+    let srv = sb.serve(&[
+        ("PATH", path.as_str()),
+        ("GW_KEY", key_gw),
+        ("GW2_KEY", key_gw2),
+    ]);
+    let r = srv.get("/api/engines");
+    assert_eq!(r.status, 200);
+    let raw = r.text();
+    assert!(!raw.contains(key_gw), "gw key leaked: {raw}");
+    assert!(!raw.contains(key_gw2), "gw2 key leaked: {raw}");
+    assert!(!raw.contains("gw.example.test"), "endpoint leaked: {raw}");
+    let j = r.json();
+    let rows = j["engines"].as_array().unwrap();
+    let names: Vec<&str> = rows.iter().map(|e| e["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        ["claude", "gw", "gw2", "claude-max", "agy", "dsh", "người"]
+    );
+    let readiness: Vec<&str> = rows
+        .iter()
+        .map(|e| e["readiness"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        readiness,
+        [
+            "san_sang",
+            "san_sang",
+            "chua_kiem",
+            "san_sang",
+            "san_sang",
+            "thieu_lenh",
+            "san_sang"
+        ]
+    );
+    let kinds: Vec<&str> = rows.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "claude",
+            "anthropic",
+            "anthropic",
+            "anthropic",
+            "agy",
+            "dsh",
+            "người"
+        ]
+    );
+
+    let gw = find(&j, "engines", "name", "gw");
+    assert_eq!(gw["evidence"], "2026-10-28 E-09");
+    assert_eq!(gw["label"], "Gateway thử");
+    assert_eq!(gw["usage"], "tokens");
+    assert_eq!(find(&j, "engines", "name", "gw2")["evidence"], Value::Null);
+    let cm = find(&j, "engines", "name", "claude-max");
+    assert_eq!(cm["pin_profile"], "personal");
+    assert_eq!(cm["allowed_profiles"], json!(["personal"]));
+    let dsh = find(&j, "engines", "name", "dsh");
+    assert_eq!(dsh["usage"], "none");
+    assert_eq!(dsh["container"], "fake-dsh");
+    assert_eq!(dsh["allowed_profiles"], json!(["personal"]));
+    assert_eq!(
+        dsh["reason"],
+        "Không tìm thấy lệnh /nonexistent/docker-test trên máy."
+    );
+    assert_eq!(find(&j, "engines", "name", "người")["usage"], "none");
+
+    let r = srv.put_json("/api/engines", &json!({}));
+    assert_eq!(r.status, 405, "PUT /api/engines");
     stop(srv);
 }
 

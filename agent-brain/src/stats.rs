@@ -627,7 +627,7 @@ mod tests {
         assert!(!rows[2].priced);
 
         pricing.insert(
-            "deepseek".to_string(),
+            "engine:deepseek".to_string(),
             Price {
                 input: 1.0,
                 output: 2.0,

@@ -926,6 +926,36 @@ pub fn runs_dir(cfg: &Config) -> PathBuf {
     }
 }
 
+/// File every engine price in the pricing table under its own key (D-23, ENG-04): an entry's
+/// `pricing` as `engine:<id>`, a native entry as the `native:<id>` marker (zero price: it is
+/// priced by model family like `claude`), and a legacy top-level `pricing.<id>` (the old shape,
+/// keyed by engine id) is moved to `engine:<id>` unless the entry has its own `pricing`. A key
+/// that is a default family name stays a family price. Engine keys never take part in the Claude
+/// family lookup (`pricing::price_for`).
+fn file_engine_prices(pricing: &mut BTreeMap<String, Price>, engines: &EnginesCfg) {
+    let families = default_pricing();
+    for def in &engines.list {
+        let legacy = if families.contains_key(&def.id) {
+            None
+        } else {
+            pricing.remove(&def.id)
+        };
+        if def.is_native() {
+            pricing.insert(
+                crate::pricing::native_key(&def.id),
+                Price {
+                    input: 0.0,
+                    output: 0.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            );
+        } else if let Some(price) = def.pricing.or(legacy) {
+            pricing.insert(crate::pricing::engine_key(&def.id), price);
+        }
+    }
+}
+
 pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
     let obj = v
         .as_object()
@@ -1131,6 +1161,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
             }
         }
     }
+    file_engine_prices(&mut pricing, &engines);
 
     Ok(Config {
         claude_bin,
@@ -1732,6 +1763,68 @@ mod tests {
         config_from_value(&base_with(serde_json::json!({ "engines": engines })))
             .expect_err("engines must be refused")
             .message
+    }
+
+    #[test]
+    fn engine_prices() {
+        let price = serde_json::json!({"input": 0.3, "output": 1.2, "cache_read": 0.03, "cache_write": 0.3});
+        let cfg = config_from_value(&base_with(serde_json::json!({"engines": [
+            {"id": "gw", "kind": "anthropic", "base_url": "https://gw.invalid", "key_env": "GW_KEY",
+             "models": {"dev": "m"}, "pricing": price},
+            {"id": "gw2", "kind": "anthropic", "base_url": "https://gw2.invalid", "key_env": "GW2_KEY",
+             "models": {"dev": "m"}},
+            {"id": "claude-max", "kind": "anthropic", "pin_profile": "personal", "models": {"lead": "opus"}},
+            {"id": "agy", "kind": "agy", "pricing": price}
+        ]})))
+        .unwrap();
+        // An entry's `pricing` is filed under `engine:<id>`; a native entry gets its marker.
+        assert_eq!(cfg.pricing["engine:gw"].output, 1.2);
+        assert_eq!(cfg.pricing["engine:agy"].input, 0.3);
+        assert!(cfg.pricing.contains_key("native:claude-max"));
+        assert!(!cfg.pricing.contains_key("engine:claude-max"));
+        assert!(!cfg.pricing.contains_key("engine:gw2"));
+        assert!(!cfg.pricing.contains_key("gw"));
+        // The family prices are untouched.
+        for (family, p) in default_pricing() {
+            assert_eq!(cfg.pricing[&family], p, "{family}");
+        }
+
+        // The legacy top-level `pricing.<id>` still works: moved to `engine:<id>`.
+        let cfg = config_from_value(&base_with(serde_json::json!({
+            "pricing": {"deepseek": {"input": 0.27, "output": 1.1, "cache_read": 0.07, "cache_write": 0.27}}
+        })))
+        .unwrap();
+        assert_eq!(cfg.pricing["engine:deepseek"].input, 0.27);
+        assert!(!cfg.pricing.contains_key("deepseek"));
+        assert!(crate::pricing::is_priced("deepseek", &cfg.pricing));
+
+        // An entry's own pricing wins over the legacy key, and the legacy key is still removed.
+        let cfg = config_from_value(&base_with(serde_json::json!({
+            "pricing": {"gw": {"input": 9.0, "output": 9.0, "cache_read": 9.0, "cache_write": 9.0}},
+            "engines": [
+                {"id": "gw", "kind": "anthropic", "base_url": "https://gw.invalid", "key_env": "GW_KEY",
+                 "models": {"dev": "m"}, "pricing": price}
+            ]
+        })))
+        .unwrap();
+        assert_eq!(cfg.pricing["engine:gw"].input, 0.3);
+        assert!(!cfg.pricing.contains_key("gw"));
+
+        // A legacy key for a family name stays a family price even if an engine uses that id.
+        let cfg = config_from_value(&base_with(serde_json::json!({
+            "pricing": {"opus": {"input": 7.0, "output": 7.0, "cache_read": 7.0, "cache_write": 7.0}},
+            "engines": [
+                {"id": "opus", "kind": "anthropic", "base_url": "https://gw.invalid", "key_env": "GW_KEY",
+                 "models": {"dev": "m"}}
+            ]
+        })))
+        .unwrap();
+        assert_eq!(cfg.pricing["opus"].input, 7.0);
+        assert!(!cfg.pricing.contains_key("engine:opus"));
+
+        // No engine prices and no native entry: the table is the default one.
+        let cfg = config_from_value(&base_with(serde_json::json!({}))).unwrap();
+        assert_eq!(cfg.pricing, default_pricing());
     }
 
     #[test]

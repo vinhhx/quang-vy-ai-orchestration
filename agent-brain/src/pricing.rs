@@ -3,45 +3,64 @@ use crate::db::RunRow;
 use crate::workflows::Workflow;
 use std::collections::BTreeMap;
 
+/// Key prefix of an engine's own price in the pricing table (`engine:<id>`, D-23). Family keys
+/// (`opus`, `sonnet`, ...) never carry it, so the two kinds of key cannot collide.
+pub const ENGINE_PRICE_PREFIX: &str = "engine:";
+/// Key prefix of the marker for a native entry (`native:<id>`): a claude-family engine that is
+/// priced by model family like `claude`, never by its own price.
+pub const NATIVE_ENGINE_PREFIX: &str = "native:";
+
+pub fn engine_key(id: &str) -> String {
+    format!("{ENGINE_PRICE_PREFIX}{id}")
+}
+
+pub fn native_key(id: &str) -> String {
+    format!("{NATIVE_ENGINE_PREFIX}{id}")
+}
+
+fn is_engine_key(key: &str) -> bool {
+    key.starts_with(ENGINE_PRICE_PREFIX) || key.starts_with(NATIVE_ENGINE_PREFIX)
+}
+
 /// Tra cứu giá theo model family (lowercased substring match) hoặc lấy họ đắt nhất trong bảng.
-/// Nếu bảng rỗng, fallback về giá mặc định.
+/// Nếu bảng rỗng, fallback về giá mặc định. Các khóa giá của engine (`engine:<id>`, `native:<id>`)
+/// không bao giờ tham gia: giá của một gateway không được làm đổi giá Claude (Pitfall A10).
 pub fn price_for(model: Option<&str>, table: &BTreeMap<String, Price>) -> Price {
+    let families = || table.iter().filter(|(k, _)| !is_engine_key(k));
+
     if let Some(m) = model {
         let m_lower = m.to_ascii_lowercase();
-        for (family, p) in table {
-            if m_lower.contains(family) {
+        for (family, p) in families() {
+            if m_lower.contains(family.as_str()) {
                 return *p;
             }
         }
     }
 
-    if table.is_empty() {
-        Price {
+    families()
+        .map(|(_, p)| p)
+        .max_by(|a, b| {
+            a.input
+                .partial_cmp(&b.input)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .copied()
+        .unwrap_or(Price {
             input: 4.0,
             output: 20.0,
             cache_read: 0.2,
             cache_write: 8.0,
-        }
-    } else {
-        table
-            .values()
-            .max_by(|a, b| {
-                a.input
-                    .partial_cmp(&b.input)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .copied()
-            .unwrap()
-    }
+        })
 }
 
-/// Price of an engine's own `pricing.<engine>` entry. `claude` → `None`: the model-family lookup
-/// (`price_for`) applies to it instead. A person (`người`) has no price either.
+/// Price of an engine's own entry (`engine:<id>`, filed by the config loader from the entry's
+/// `pricing` or the legacy `pricing.<id>`). `claude` and a native entry give `None`: the
+/// model-family lookup (`price_for`) applies to them instead. A person (`người`) has no price either.
 pub fn engine_price(engine: &str, table: &BTreeMap<String, Price>) -> Option<Price> {
     if engine == crate::engine::ENGINE_CLAUDE || engine == crate::engine::ENGINE_HUMAN {
         return None;
     }
-    table.get(engine).copied()
+    table.get(&engine_key(engine)).copied()
 }
 
 /// USD cost of `usage` on a non-claude engine; `None` for claude and for an unpriced engine.
@@ -60,7 +79,8 @@ pub fn cost_for_engine(
     )
 }
 
-/// Whether the engine has a price: claude always (family lookup), a person never, else the key exists.
+/// Whether the engine has a price: claude always (family lookup), a person never, a native entry
+/// always (family lookup, like claude), else the `engine:<id>` key exists.
 pub fn is_priced(engine: &str, table: &BTreeMap<String, Price>) -> bool {
     if engine == crate::engine::ENGINE_CLAUDE {
         return true;
@@ -68,23 +88,25 @@ pub fn is_priced(engine: &str, table: &BTreeMap<String, Price>) -> bool {
     if engine == crate::engine::ENGINE_HUMAN {
         return false;
     }
-    table.contains_key(engine)
+    table.contains_key(&native_key(engine)) || table.contains_key(&engine_key(engine))
 }
 
 /// Ước tính chi phí USD dựa trên token và bảng giá.
 /// Các hệ số nhân lấy từ bảng config.json đã khớp với các run thực tế (RESEARCH §3.8).
 /// Một run bị killed hoặc partial luôn được ước tính để trần ngân sách không bị bypass (D-19).
 pub fn estimate_usd(r: &RunRow, table: &BTreeMap<String, Price>) -> f64 {
-    // D-23 / Pitfall 6: a non-claude run is priced only from `pricing.<engine>`; with no entry it
-    // costs 0 and is never billed at the most expensive Anthropic family.
-    let p = if r.engine == crate::engine::ENGINE_CLAUDE {
-        price_for(r.model.as_deref(), table)
-    } else {
-        match engine_price(&r.engine, table) {
-            Some(p) => p,
-            None => return 0.0,
-        }
-    };
+    // D-23 / Pitfall 6: a gateway or agy run is priced only from its entry's price; with none it
+    // costs 0 and is never billed at the most expensive Anthropic family. A native entry runs
+    // claude, so it is priced by model family like `claude`.
+    let p =
+        if r.engine == crate::engine::ENGINE_CLAUDE || table.contains_key(&native_key(&r.engine)) {
+            price_for(r.model.as_deref(), table)
+        } else {
+            match engine_price(&r.engine, table) {
+                Some(p) => p,
+                None => return 0.0,
+            }
+        };
     (r.input_tokens as f64 * p.input
         + r.output_tokens as f64 * p.output
         + r.cache_read_tokens as f64 * p.cache_read
@@ -603,7 +625,7 @@ mod tests {
         let mut t = crate::config::default_pricing();
         if let Some(input) = input {
             t.insert(
-                "deepseek".to_string(),
+                "engine:deepseek".to_string(),
                 Price {
                     input,
                     output: 1.10,
@@ -633,7 +655,7 @@ mod tests {
         assert!(!is_priced("agy", &with));
 
         let mut agy = with.clone();
-        agy.insert("agy".to_string(), with["deepseek"]);
+        agy.insert("engine:agy".to_string(), with["engine:deepseek"]);
         assert!(is_priced("agy", &agy));
 
         let usage = crate::stream::Usage {
@@ -682,5 +704,106 @@ mod tests {
         let table = crate::config::default_pricing();
         let expected = price_for(Some("sonnet"), &table).input;
         assert!((estimate_usd(&r, &table) - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn engine_keys() {
+        let gw = Price {
+            input: 99.0,
+            output: 99.0,
+            cache_read: 99.0,
+            cache_write: 99.0,
+        };
+        let base = crate::config::default_pricing();
+        let mut t = base.clone();
+        t.insert("engine:opus-gw".to_string(), gw);
+        t.insert(
+            "native:claude-max".to_string(),
+            Price {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+        );
+
+        // Pitfall A10: engine prices never move the Claude family lookup, neither the
+        // substring match nor the most-expensive fallback.
+        assert_eq!(
+            price_for(Some("claude-opus-4"), &t),
+            price_for(Some("claude-opus-4"), &base)
+        );
+        assert_eq!(
+            price_for(Some("mystery-model"), &t),
+            price_for(Some("mystery-model"), &base)
+        );
+        assert_eq!(
+            price_for(Some("engine:opus-gw"), &t),
+            price_for(Some("mystery-model"), &base)
+        );
+        assert_eq!(price_for(None, &t), price_for(None, &base));
+        t.insert("native:zzz".to_string(), gw);
+        assert_eq!(
+            price_for(Some("mystery-model"), &t),
+            price_for(Some("mystery-model"), &base)
+        );
+
+        // Engine prices are read under `engine:<id>`; the key helpers spell that.
+        assert_eq!(ENGINE_PRICE_PREFIX, "engine:");
+        assert_eq!(NATIVE_ENGINE_PREFIX, "native:");
+        assert_eq!(engine_key("gw"), "engine:gw");
+        assert_eq!(native_key("claude-max"), "native:claude-max");
+        t.insert("engine:gw".to_string(), gw);
+        assert_eq!(engine_price("gw", &t), Some(gw));
+        assert_eq!(engine_price("claude", &t), None);
+        assert_eq!(engine_price("người", &t), None);
+        assert_eq!(engine_price("claude-max", &t), None);
+        // A plain key is no longer an engine price.
+        let mut plain = base.clone();
+        plain.insert("gw".to_string(), gw);
+        assert_eq!(engine_price("gw", &plain), None);
+        assert!(!is_priced("gw", &plain));
+
+        // is_priced: claude yes, người no, native marker yes, engine price yes, else no.
+        assert!(is_priced("claude", &t));
+        assert!(!is_priced("người", &t));
+        assert!(is_priced("claude-max", &t));
+        assert!(is_priced("gw", &t));
+        assert!(!is_priced("gw2", &t));
+        assert!(!is_priced("claude-max", &base));
+
+        // A killed native run is estimated by its model family, like claude.
+        let mut r = dummy_run(
+            "dev",
+            "killed",
+            Some("opus"),
+            "partial",
+            0.0,
+            0,
+            Some(1000),
+            1_000_000,
+            0,
+            0,
+            0,
+        );
+        r.engine = "claude-max".to_string();
+        let family = price_for(Some("opus"), &base).input;
+        assert!(family > 0.0);
+        assert!((estimate_usd(&r, &t) - family).abs() < 1e-9);
+        // Without the native marker it would be an unpriced engine: 0, never the family.
+        assert_eq!(estimate_usd(&r, &base), 0.0);
+        // A finished native run keeps the cost from its result.
+        r.status = "ok".to_string();
+        r.usage_source = "result".to_string();
+        r.cost_usd = 0.5;
+        assert_eq!(run_cost(&r, &t).usd, 0.5);
+
+        // A gateway run is priced from its entry; an unpriced one costs 0.
+        r.status = "killed".to_string();
+        r.usage_source = "partial".to_string();
+        r.engine = "gw".to_string();
+        assert!((estimate_usd(&r, &t) - 99.0).abs() < 1e-9);
+        r.engine = "gw2".to_string();
+        assert_eq!(estimate_usd(&r, &t), 0.0);
     }
 }
