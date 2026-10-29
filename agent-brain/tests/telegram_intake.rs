@@ -1478,7 +1478,7 @@ fn forwarded_task_is_not_a_command() {
 // ---------------------------------------------------------------------------
 
 const ACCEPTED_EDIT: &str = "Đã nhận — đang lập plan · dự án web-ban-hang · nhánh task/sua-app";
-const CREATED_TEXT: &str = "Đã tạo task 1 · task/sua-app. Plan đang được lập; khi xong sẽ có tin chờ duyệt — duyệt plan trên dashboard.";
+const CREATED_TEXT: &str = "Đã tạo task 1 · task/sua-app. Plan đang được lập; khi xong sẽ có tin chờ duyệt — duyệt plan trên Telegram hoặc dashboard.";
 const FAILED_START: &str = "Không tạo được task (task/sua-app):";
 
 /// `/task {request}` -> project 0 -> default workflow -> `Tạo task`; waits for the

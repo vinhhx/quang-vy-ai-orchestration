@@ -72,7 +72,7 @@ pub const MAX_WATCH: usize = 20;
 /// A watched job without a task row is dropped after this long (10 minutes).
 pub const WATCH_MAX_MS: i64 = 600_000;
 /// Sent once the task row of a started job exists (`{id}`, `{branch}`).
-pub const CREATED_FMT: &str = "Đã tạo task {id} · {branch}. Plan đang được lập; khi xong sẽ có tin chờ duyệt — duyệt plan trên dashboard.";
+pub const CREATED_FMT: &str = "Đã tạo task {id} · {branch}. Plan đang được lập; khi xong sẽ có tin chờ duyệt — duyệt plan trên Telegram hoặc dashboard.";
 /// First line of the report of a job that ended before its task row existed.
 pub const FAILED_PREFIX: &str = "Không tạo được task ({branch}):";
 const NO_ERROR_LINES: &str = "(không có thông báo lỗi)";
