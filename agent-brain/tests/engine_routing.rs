@@ -1304,8 +1304,8 @@ fn unverified_endpoint_marked() {
 }
 
 #[test]
-fn qa_on_list_id_refused() {
-    // D-39: QA stays the built-in claude, a pinned `claude-max` included.
+fn qa_on_list_id_accepted() {
+    // D-46: QA may use a list id such as a pinned `claude-max`; the team loads like any other.
     let sb = Sandbox::new();
     sb.write_config(json!({"engines": [claude_max_entry()]}));
     sb.write_teams(
@@ -1326,12 +1326,11 @@ fn qa_on_list_id_refused() {
         ],
         Some(lead_plan_entry()),
     );
-    assert_eq!(res.code, 1, "stderr: {}", res.stderr);
+    assert_ok(&res, "run lead on a team whose QA is claude-max");
     assert!(
-        res.stderr.contains("Không có đội hình 'doi-qa'"),
+        !res.stderr.contains("Không có đội hình"),
         "stderr: {}",
         res.stderr
     );
-    assert_eq!(task_count(&sb), 0);
-    assert!(sb.records().is_empty(), "no process may be spawned");
+    assert_eq!(engines_of_runs(&sb), ["claude"]);
 }

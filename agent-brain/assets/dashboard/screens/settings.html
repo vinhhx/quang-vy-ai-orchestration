@@ -81,7 +81,7 @@
                 <option :value="o.value" :selected="optionSelected('qa', o.value)" x-text="o.label"></option>
               </template>
             </select>
-            <p id="ab-set-team-qa-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">QA phải chạy bằng claude để kiểm tra lại việc của engine rẻ hơn.</p>
+            <p id="ab-set-team-qa-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">QA kiểm thử kết quả code. Chọn engine nào cũng được; nên chọn engine mạnh để kiểm tra lại việc của engine rẻ hơn.</p>
             <p id="ab-set-team-qa-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('team', 'qa')" x-text="fieldMsg('team', 'qa')"></p>
           </div>
           <div class="space-y-2">

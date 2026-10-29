@@ -1,5 +1,5 @@
 //! Đội hình (TEAM-01): `~/.config/agent-brain/teams.json` cộng hai đội hình có sẵn.
-//! Mỗi đội hình gán một engine cho năm vai trò; QA luôn là claude (D-06),
+//! Mỗi đội hình gán một engine cho năm vai trò; vai nào cũng dùng được engine nào (D-46),
 //! engine `người:<mã>` chỉ dành cho dev (D-24). Đội hình và quy trình là hai danh sách riêng (D-11).
 
 use crate::engine::Engine;
@@ -220,10 +220,6 @@ pub fn validate_entry(
                         continue;
                     }
                 };
-                if role == "qa" && engine != Engine::Claude {
-                    errors.push(field_error(role, "QA phải dùng engine claude."));
-                    continue;
-                }
                 if engine.is_human() && role != "dev" {
                     errors.push(field_error(role, "Engine người chỉ dùng cho vai trò dev."));
                     continue;
@@ -708,14 +704,23 @@ mod tests {
     fn entry_errors_keep_others() {
         // A valid entry after an invalid one still loads.
         let text = r#"{
-"doi-x": {"description": "Sai", "roles": {"qa": "deepseek"}},
+"doi-x": {"description": "Sai", "roles": {"qa": "người:ha"}},
 "doi-ok": {"description": "Tốt", "roles": {}}
 }"#;
         let l = load_from(Some(text), &no_staff());
         assert_eq!(names(&l), ["mac-dinh", "tiet-kiem", "doi-ok"]);
         assert_eq!(
             l.errors,
-            ["Dòng 2: đội hình 'doi-x': QA phải dùng engine claude."]
+            ["Dòng 2: đội hình 'doi-x': Engine người chỉ dùng cho vai trò dev."]
+        );
+
+        // D-46: QA takes any engine, not only claude.
+        let text = r#"{"doi-q": {"description": "Q", "roles": {"qa": "deepseek"}}}"#;
+        let l = load_from(Some(text), &no_staff());
+        assert!(l.errors.is_empty(), "{:?}", l.errors);
+        assert_eq!(
+            l.get("doi-q").unwrap().engine_for("qa"),
+            Engine::Named("deepseek".to_string())
         );
 
         let e = one_error(r#""doi-x": {"description": "d", "roles": {"lead": "người:ha"}}"#);

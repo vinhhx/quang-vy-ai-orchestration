@@ -4235,8 +4235,8 @@ const sections = [
         c.tDesc = 'Đội hình mới';
         check('settings: valid draft has no reason', c.saveReason('team') === '' && c.saveDisabled('team') === false, c.saveReason('team'));
         c.tQa = 'deepseek';
-        check('settings: QA must be claude', c.saveReason('team') === 'QA phải dùng engine claude.' && c.saveDisabled('team') === true, c.saveReason('team'));
-        check('settings: QA error shows at once', c.fieldMsg('team', 'qa') === 'QA phải dùng engine claude.' && c.invalidAttr('team', 'qa') === 'true');
+        check('settings: QA may use any engine', c.saveReason('team') === '' && c.saveDisabled('team') === false, c.saveReason('team'));
+        check('settings: QA shows no error for a non-claude engine', c.fieldMsg('team', 'qa') === '' && c.invalidAttr('team', 'qa') === false);
         check('settings: untouched empty name shows no error', c.fieldMsg('team', 'name') === '' && c.invalidAttr('team', 'name') === false);
         c.tQa = 'claude';
         check('settings: valid ring vs invalid ring', c.fieldClass('team', 'name').indexOf('ring-slate-500') >= 0);
@@ -4602,7 +4602,7 @@ const sections = [
         check('engine-list: a hand-edited value stays visible and selected', values('dev').indexOf('khong-co') >= 0 && c.optionSelected('dev', 'khong-co') === true);
         c.tDev = 'claude';
         c.tQa = 'gw-thu';
-        check('engine-list: QA keeps its inline error for a non-claude choice', c.fieldMsg('team', 'qa') === 'QA phải dùng engine claude.' || c.saveReason('team') === 'QA phải dùng engine claude.', c.fieldMsg('team', 'qa') + ' / ' + c.saveReason('team'));
+        check('engine-list: QA takes a non-claude choice without an error', c.fieldMsg('team', 'qa') === '', c.fieldMsg('team', 'qa') + ' / ' + c.saveReason('team'));
         c.tQa = 'claude';
 
         // ---- Settings: team row warnings ----

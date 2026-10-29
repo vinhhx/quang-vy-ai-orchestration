@@ -227,10 +227,10 @@ fn teams_save_rules() {
         &srv,
         &v,
         true,
-        team_entry("doi-x", "x", json!({"qa": "deepseek"})),
+        team_entry("doi-x", "x", json!({"qa": "người:ha"})),
     );
     assert_eq!(r.status, 422);
-    assert!(refusals(&r.json()).contains(&pair("qa", "QA phải dùng engine claude.")));
+    assert!(refusals(&r.json()).contains(&pair("qa", "Engine người chỉ dùng cho vai trò dev.")));
 
     let r = save_team(
         &srv,
@@ -283,8 +283,9 @@ fn teams_save_rules() {
         &srv,
         &v,
         true,
-        team_entry("doi-a", "Thử", json!({"dev": "agy"})),
+        team_entry("doi-a", "Thử", json!({"dev": "agy", "qa": "agy"})),
     );
+    // D-46: QA is free to use a non-claude engine.
     assert_eq!(r.status, 200, "{}", r.text());
     let v2 = r.json()["version"].as_str().unwrap().to_string();
     let r = save_team(&srv, &v2, true, team_entry("doi-a", "Thử", json!({})));
@@ -468,7 +469,7 @@ fn teams_conflict_keeps_file() {
 #[test]
 fn teams_invalid_file_blocks_writes() {
     let sb = Sandbox::new();
-    sb.write_teams(json!({"doi-x": {"description": "x", "roles": {"qa": "agy"}}}));
+    sb.write_teams(json!({"doi-x": {"description": "x", "roles": {"qa": "người:ha"}}}));
     let srv = sb.serve(&[]);
     let before = std::fs::read(sb.teams_path()).unwrap();
 
@@ -482,7 +483,7 @@ fn teams_invalid_file_blocks_writes() {
         .map(|e| e.as_str().unwrap().to_string())
         .collect();
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].ends_with("đội hình 'doi-x': QA phải dùng engine claude."));
+    assert!(errors[0].ends_with("đội hình 'doi-x': Engine người chỉ dùng cho vai trò dev."));
     assert_eq!(team_names(&gj), ["mac-dinh", "tiet-kiem"]);
     let v = gj["version"].as_str().unwrap().to_string();
 

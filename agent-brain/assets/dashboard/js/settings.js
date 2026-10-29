@@ -625,9 +625,6 @@
           if (this.tDesc.trim().length === 0) {
             out.push({ field: 'description', message: 'Nhập mô tả ngắn để chọn đội hình cho đúng.' });
           }
-          if (this.tQa !== 'claude') {
-            out.push({ field: 'qa', message: 'QA phải dùng engine claude.' });
-          }
         } else if (kind === 'workflow') {
           name = this.wName;
           if (!this.isEditMode('workflow')) {
@@ -689,7 +686,7 @@
       },
 
       // Field message: the server's first, then the client's once the field was
-      // touched (or a submit failed); the QA rule shows at once (D-06).
+      // touched (or a submit failed).
       fieldMsg: function (kind, field) {
         var p = KIND[kind].pfx;
         var server = this[p + 'FieldErrors'][field];
@@ -913,7 +910,7 @@
         var opts = [];
         var seen = {};
         var i;
-        // `claude` is always first (and the only QA engine); the configured ids follow in API order.
+        // `claude` is always first; the configured ids follow in API order.
         opts.push({ value: 'claude', label: this.engineOptionLabel('claude') });
         seen['claude'] = true;
         var list = this.engines || [];
