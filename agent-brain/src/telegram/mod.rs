@@ -15,6 +15,7 @@ pub mod prompt;
 pub mod render;
 pub mod setup;
 pub mod status;
+pub mod summary;
 pub mod transport;
 
 use crate::dashboard::AppState;

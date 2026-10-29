@@ -29,7 +29,8 @@ pub struct Button {
 pub struct Rendered {
     pub text: String,
     pub keyboard: Vec<Vec<Button>>,
-    /// `(file name, content)` of the plan document sent before the text (gate only).
+    /// `(file name, content)` of a document sent before the text: the plan (gate) or, for QA
+    /// pass, the summary that `outbox` adds (`summary::document`; never built here).
     pub document: Option<(String, String)>,
 }
 
@@ -189,7 +190,7 @@ pub fn result_suffix(what: &str, via_telegram: bool, at_ms: i64) -> String {
     }
 }
 
-fn slug_ok(slug: &str) -> bool {
+pub(crate) fn slug_ok(slug: &str) -> bool {
     !slug.is_empty()
         && slug
             .bytes()
@@ -312,6 +313,9 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
             lines.push(title_line(s));
             lines.push(project_line(s));
             lines.push(summary_line(s, now_ms));
+            lines.push(
+                "Tóm tắt (yêu cầu, cách làm, kết quả) ở file đính kèm ngay trên.".to_string(),
+            );
         }
         EventKind::Quota => {
             if let Some(r) = quota_run_of(ev, s) {

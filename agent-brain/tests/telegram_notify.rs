@@ -472,6 +472,62 @@ fn qa_pass_notifies_summary() {
 }
 
 #[test]
+fn qa_pass_sends_summary_file_before_text() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    auto_start_to_gate(&sb, full_flow_scenario());
+    wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    let res = sb.run(&["approve", "1"], Some(full_flow_scenario()));
+    assert_ok(&res, "approve 1");
+    let msg = wait_message(&tg, &srv, "QA đạt");
+
+    let docs = tg.calls("sendDocument");
+    let summary: Vec<&Value> = docs
+        .iter()
+        .filter(|d| d["form"]["document"]["filename"] == json!("sua-app.summary.md"))
+        .collect();
+    assert_eq!(summary.len(), 1, "{docs:#?}");
+    let content = summary[0]["form"]["document"]["content"]
+        .as_str()
+        .expect("summary content");
+    let p1 = content.find("## Yêu cầu").expect("Yêu cầu");
+    let p2 = content.find("## Cách thực hiện").expect("Cách thực hiện");
+    let p3 = content.find("## Kết quả").expect("Kết quả");
+    let p4 = content.find("## Tổng").expect("Tổng");
+    assert!(p1 < p2 && p2 < p3 && p3 < p4, "{content}");
+    assert!(!content.contains("\n+++ ") && !content.contains("\n@@ "), "{content}");
+    let caption = summary[0]["form"]["caption"].as_str().expect("caption");
+    assert!(caption.starts_with("Tóm tắt task 1:"), "{caption}");
+
+    // The text follows the file and points at it.
+    let doc_mid = summary[0]["response"]["result"]["message_id"]
+        .as_i64()
+        .expect("document message_id");
+    assert_eq!(
+        msg["json"]["reply_parameters"]["message_id"].as_i64(),
+        Some(doc_mid),
+        "{msg}"
+    );
+    assert!(text_of(&msg).contains("file đính kèm"), "{msg}");
+
+    std::thread::sleep(Duration::from_secs(2));
+    let again = tg
+        .calls("sendDocument")
+        .iter()
+        .filter(|d| d["form"]["document"]["filename"] == json!("sua-app.summary.md"))
+        .count();
+    assert_eq!(again, 1);
+    assert_plain_and_paired(&tg);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
 fn run_failed_notifies() {
     let sb = Sandbox::new();
     let tg = FakeTelegram::start(&sb);

@@ -301,11 +301,20 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
         if current_event(&s).map(|e| e.key) != Some(ev.key.clone()) {
             return Step::Done;
         }
-        let r = render::message_for(ev, &s);
+        let mut r = render::message_for(ev, &s);
+        // QA pass: the summary file goes first, like the gate's plan. Built once (git/file IO).
+        if ev.kind == EventKind::QaPass && !doc_done && r.document.is_none() {
+            r.document = Some(super::summary::document(&s));
+        }
 
         if let (Some((filename, content)), false) = (&r.document, doc_done) {
+            let label = if ev.kind == EventKind::QaPass {
+                "Tóm tắt"
+            } else {
+                "Plan"
+            };
             let caption = render::clip(
-                &format!("Plan task {task_id}: {}", s.task.title),
+                &format!("{label} task {task_id}: {}", s.task.title),
                 CAPTION_MAX,
             );
             let body = Body::Upload {
