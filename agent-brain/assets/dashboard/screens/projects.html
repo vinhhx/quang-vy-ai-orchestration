@@ -102,6 +102,16 @@
         <li>media: thư mục tư liệu, không cần git, không giao việc qua Telegram.</li>
       </ul>
     </div>
+    <div class="space-y-2">
+      <label for="ab-add-profile" class="text-sm font-semibold leading-normal">Profile</label>
+      <select id="ab-add-profile" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="newProfile">
+        <option value="">Chọn profile…</option>
+        <template x-for="o in profileOptions" :key="o">
+          <option :value="o" x-text="o"></option>
+        </template>
+      </select>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Dự án chưa có profile thì chưa chạy được task.</p>
+    </div>
     <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="adding" @click="addProject()" x-text="addLabel">Thêm dự án</button>
   </div>
 
@@ -126,7 +136,17 @@
           <span x-text="p.type"></span>
         </div>
         <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="projectWorkflowLine(p)"></p>
-        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Profile và quy trình mặc định chỉ đổi trong projects_map.json</p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Quy trình mặc định chỉ đổi trong projects_map.json</p>
+        <div class="space-y-2">
+          <label :for="profileSelectId(p)" class="text-sm font-semibold leading-normal">Profile</label>
+          <select :id="profileSelectId(p)" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="profileSaving" :value="p.profile" @change="setProfile(p, $event.target.value)">
+            <option value="" :selected="!p.profile">Chọn profile…</option>
+            <template x-for="o in profileOptions" :key="o">
+              <option :value="o" :selected="o === p.profile" x-text="o"></option>
+            </template>
+          </select>
+          <p class="text-sm font-semibold leading-normal text-amber-900 dark:text-amber-200 break-words" x-show="hasIssue(p)" x-text="issueText(p)"></p>
+        </div>
         <div class="flex flex-wrap items-center gap-2" x-show="notEditing(p)">
           <template x-for="a in p.aliases" :key="a">
             <span class="rounded-full bg-slate-100 px-2 py-1 text-sm text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="a"></span>

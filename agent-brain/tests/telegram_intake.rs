@@ -2526,3 +2526,77 @@ fn help_text_mentions_forwarding() {
     assert!(buttons(&reply).is_empty(), "{reply}");
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+/// Adds repo-backed projects to the map; each is `(id, profile)`. Returns nothing, writes the map.
+fn write_projects(sb: &Sandbox, specs: &[(&str, &str)]) {
+    let entries: Vec<Value> = specs
+        .iter()
+        .map(|(id, profile)| {
+            let repo = sb.make_repo(id, &[], None, None);
+            sb.project_entry(&repo, id, profile)
+        })
+        .collect();
+    sb.write_map(json!(entries), &[]);
+}
+
+#[test]
+fn task_refusal_lists_reasons_per_project() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    write_projects(&sb, &[("srt", ""), ("gone", "work"), ("media-x", "work")]);
+    let mut map = sb.read_map();
+    // `gone`: directory does not exist; `media-x`: media type.
+    map["projects"][1]["path"] = json!(sb.root.join("khong-ton-tai").to_str().unwrap());
+    map["projects"][2]["type"] = json!("media");
+    map["telegram_projects"] = json!(["srt", "gone", "media-x"]);
+    std::fs::write(sb.map_path(), serde_json::to_string_pretty(&map).unwrap()).unwrap();
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    send_text(&tg, "/task làm gì đó");
+    let reply = wait_message(
+        &tg,
+        &srv,
+        "Không có dự án nào trong telegram_projects chạy được",
+    );
+    let text = text_of(&reply);
+    let line = |id: &str| -> String {
+        text.lines()
+            .find(|l| l.starts_with(&format!("• {id}: ")))
+            .unwrap_or_else(|| panic!("no line for {id}: {text}"))
+            .to_string()
+    };
+    assert!(line("srt").contains("chưa đặt profile"), "{text}");
+    assert!(line("gone").contains("không tồn tại"), "{text}");
+    assert!(line("media-x").contains("media"), "{text}");
+    assert!(
+        !text.contains(sb.root.to_str().unwrap()),
+        "absolute path leaked: {text}"
+    );
+    assert!(text.contains("khong-ton-tai"), "{text}");
+    assert!(text.ends_with("projects_map.json."), "{text}");
+    assert!(buttons(&reply).is_empty(), "{reply}");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn task_with_one_runnable_project_still_offers_it() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    write_projects(&sb, &[("srt", ""), ("tot", "work")]);
+    allow_projects(&sb, &["srt", "tot"]);
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    send_text(&tg, "/task việc");
+    let screen = wait_message(&tg, &srv, "Chọn dự án cho task:");
+    let b = labels(&screen);
+    assert_eq!(b.len(), 2, "{screen}");
+    assert!(b[0].starts_with("tot") || b[0].contains("tot"), "{screen}");
+    assert!(!text_of(&screen).contains("srt"), "{screen}");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}

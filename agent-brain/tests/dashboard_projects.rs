@@ -865,3 +865,175 @@ fn fs_dirs_lists_directories_only() {
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
 }
+
+fn profile_put(srv: &common::Serve, id: &str, profile: &str, etag: &str) -> common::HttpResp {
+    srv.put_json(
+        &format!("/api/projects/{id}/profile"),
+        &serde_json::json!({"profile": profile, "etag": etag}),
+    )
+}
+
+#[test]
+fn profile_put_validates_and_writes_only_profile() {
+    let sb = Sandbox::new();
+    let repo_a = sb.make_repo("pf-a", &[], None, None);
+    let repo_b = sb.make_repo("pf-b", &[], None, None);
+    let mut ea = sb.project_entry(&repo_a, "pf-a", "");
+    ea["aliases"] = serde_json::json!(["alpha"]);
+    let eb = sb.project_entry(&repo_b, "pf-b", "work");
+    sb.write_map(serde_json::json!([ea, eb]), &[]);
+    patch_map(&sb, |m| {
+        m["telegram_projects"] = serde_json::json!(["pf-a"])
+    });
+    let mut srv = sb.serve(&[]);
+
+    // (a) valid profile is written, nothing else changes
+    let before = sb.read_map();
+    let etag = tg_etag(&srv);
+    let r = profile_put(&srv, "pf-a", "personal", &etag);
+    assert_eq!(r.status, 200, "{}", r.text());
+    let rj = r.json();
+    assert!(rj["etag"].as_str().is_some());
+    let pa = rj["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "pf-a")
+        .unwrap()
+        .clone();
+    assert_eq!(pa["profile"], "personal");
+    assert!(pa["runnable_issue"].is_null(), "{pa}");
+    let mut expected = before.clone();
+    expected["projects"][0]["profile"] = serde_json::json!("personal");
+    assert_eq!(sb.read_map(), expected);
+
+    // (b) invalid requests leave the file untouched
+    let snapshot = std::fs::read(sb.map_path()).unwrap();
+    let etag = tg_etag(&srv);
+    let r = profile_put(&srv, "pf-a", "khong-co", &etag);
+    assert_eq!(r.status, 422);
+    assert!(r.json()["error"]
+        .as_str()
+        .unwrap()
+        .contains("personal, work"));
+    assert_eq!(profile_put(&srv, "pf-a", "", &etag).status, 422);
+    assert_eq!(profile_put(&srv, "pf-a", "  ", &etag).status, 422);
+    assert_eq!(profile_put(&srv, "ghost", "work", &etag).status, 404);
+    assert_eq!(profile_put(&srv, "pf-a", "work", "old").status, 409);
+    let r = srv.put_json(
+        "/api/projects/pf-a/profile",
+        &serde_json::json!({"profile": "work", "etag": etag, "extra": 1}),
+    );
+    assert_eq!(r.status, 422);
+    assert_eq!(std::fs::read(sb.map_path()).unwrap(), snapshot);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn add_project_with_profile_and_warning() {
+    let sb = Sandbox::new();
+    sb.write_map(serde_json::json!([]), &[]);
+    let r1 = sb.make_repo("pa-one", &[], None, None);
+    let r2 = sb.make_repo("pa-two", &[], None, None);
+    let r1s = r1.to_str().unwrap().to_string();
+    let r2s = r2.to_str().unwrap().to_string();
+    let mut srv = sb.serve(&[]);
+
+    // (c) with profile -> written, no warning
+    let etag = tg_etag(&srv);
+    let r = srv.post_json(
+        "/api/projects",
+        &serde_json::json!({"path": r1s, "type": "code", "etag": etag, "profile": "work"}),
+    );
+    assert_eq!(r.status, 201, "{}", r.text());
+    let rj = r.json();
+    assert_eq!(rj["project"]["profile"], "work");
+    assert!(rj["project"]["runnable_issue"].is_null(), "{rj}");
+    assert_eq!(sb.read_map()["projects"][0]["profile"], "work");
+    assert!(rj["warnings"].as_array().unwrap().is_empty(), "{rj}");
+
+    // without profile -> empty profile + warning
+    let etag = tg_etag(&srv);
+    let r = add_post(&srv, &r2s, "code", &etag);
+    assert_eq!(r.status, 201);
+    let rj = r.json();
+    assert_eq!(rj["project"]["profile"], "");
+    assert!(rj["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w.as_str().unwrap().contains("chưa có profile")));
+    assert!(rj["project"]["runnable_issue"]
+        .as_str()
+        .unwrap()
+        .contains("profile"));
+
+    // an existing project with empty profile gets it filled; a set one is kept
+    let etag = tg_etag(&srv);
+    let r = srv.post_json(
+        "/api/projects",
+        &serde_json::json!({"path": r2s, "type": "code", "etag": etag, "profile": "personal"}),
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(sb.read_map()["projects"][1]["profile"], "personal");
+    let etag = tg_etag(&srv);
+    let r = srv.post_json(
+        "/api/projects",
+        &serde_json::json!({"path": r1s, "type": "code", "etag": etag, "profile": "personal"}),
+    );
+    assert_eq!(r.status, 200);
+    assert_eq!(sb.read_map()["projects"][0]["profile"], "work");
+
+    // invalid profile -> 422, map unchanged
+    let snapshot = std::fs::read(sb.map_path()).unwrap();
+    let etag = tg_etag(&srv);
+    let r = srv.post_json(
+        "/api/projects",
+        &serde_json::json!({"path": r1s, "type": "code", "etag": etag, "profile": "zzz"}),
+    );
+    assert_eq!(r.status, 422);
+    assert_eq!(std::fs::read(sb.map_path()).unwrap(), snapshot);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn runnable_issue_in_project_list() {
+    let sb = Sandbox::new();
+    let r_ok = sb.make_repo("ri-ok", &[], None, None);
+    let r_empty = sb.make_repo("ri-empty", &[], None, None);
+    let r_bad = sb.make_repo("ri-bad", &[], None, None);
+    let r_media = sb.make_repo("ri-media", &[], None, None);
+    let ok = sb.project_entry(&r_ok, "ri-ok", "work");
+    let empty = sb.project_entry(&r_empty, "ri-empty", "");
+    let bad = sb.project_entry(&r_bad, "ri-bad", "zzz");
+    let mut media = sb.project_entry(&r_media, "ri-media", "work");
+    media["type"] = serde_json::json!("media");
+    sb.write_map(serde_json::json!([ok, empty, bad, media]), &[]);
+    let mut srv = sb.serve(&[]);
+
+    let j = srv.get("/api/projects").json();
+    assert_eq!(j["profiles"], serde_json::json!(["personal", "work"]));
+    let issue = |id: &str| -> serde_json::Value {
+        j["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap()["runnable_issue"]
+            .clone()
+    };
+    assert!(issue("ri-ok").is_null());
+    assert!(issue("ri-empty")
+        .as_str()
+        .unwrap()
+        .contains("Chưa đặt profile"));
+    assert!(issue("ri-bad").as_str().unwrap().contains("zzz"));
+    assert!(issue("ri-media").as_str().unwrap().contains("media"));
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}

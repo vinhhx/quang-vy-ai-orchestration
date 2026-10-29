@@ -56,7 +56,11 @@ pub const EXPIRED: &str = "Hết thời gian (10 phút) — không tạo task.";
 pub const STALE_FLOW: &str = "Yêu cầu đã hết hạn — gõ /task để bắt đầu lại";
 pub const NO_FLOW: &str = "Không có yêu cầu nào đang mở.";
 pub const NO_ALLOWLIST: &str = "Chưa có telegram_projects trong projects_map.json — thêm id dự án được phép để giao việc từ Telegram.";
-pub const NONE_RUNNABLE: &str = "Không có dự án nào trong telegram_projects chạy được — kiểm tra id và đường dẫn trong projects_map.json.";
+pub const NONE_RUNNABLE: &str = "Không có dự án nào trong telegram_projects chạy được";
+/// Most refused projects listed in the "none runnable" message.
+const MAX_REASON_LINES: usize = 10;
+/// Longest reason kept per refused project.
+const MAX_REASON_CHARS: usize = 120;
 pub const REFUSED_PREFIX: &str = "Không giao được: ";
 /// Confirm-screen line of a forwarded flow: a typed text becomes the instruction.
 pub const ASK_INSTRUCTION: &str =
@@ -304,6 +308,50 @@ fn unknown_ids(map: &Value) -> Vec<String> {
         .collect()
 }
 
+/// Replaces absolute paths in a reason by their last directory name and cuts it
+/// to `MAX_REASON_CHARS`, so a Telegram message never carries a full path.
+fn short_reason(raw: &str) -> String {
+    let words: Vec<String> = raw
+        .split_whitespace()
+        .map(|w| {
+            if w.starts_with('/') || w.starts_with("~/") {
+                let trimmed = w.trim_end_matches(|c: char| ".,;:)'\"".contains(c));
+                let tail = &w[trimmed.len()..];
+                let base = trimmed
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("");
+                format!("{base}{tail}")
+            } else {
+                w.to_string()
+            }
+        })
+        .collect();
+    let joined = words.join(" ");
+    if joined.chars().count() > MAX_REASON_CHARS {
+        let cut: String = joined.chars().take(MAX_REASON_CHARS - 1).collect();
+        format!("{cut}…")
+    } else {
+        joined
+    }
+}
+
+fn none_runnable_message(reasons: &[(String, String)]) -> String {
+    let mut out = format!("{NONE_RUNNABLE}:");
+    for (id, reason) in reasons.iter().take(MAX_REASON_LINES) {
+        out.push_str(&format!("\n• {id}: {reason}"));
+    }
+    if reasons.len() > MAX_REASON_LINES {
+        out.push_str(&format!(
+            "\n… và {} dự án khác",
+            reasons.len() - MAX_REASON_LINES
+        ));
+    }
+    out.push_str("\nSửa trên màn Dự án của dashboard hoặc projects_map.json.");
+    out
+}
+
 /// OD-1: projects Telegram may offer — listed in `telegram_projects`, present,
 /// not `media`, not missing and runnable — in list order, at most `MAX_OFFERS`,
 /// plus the listed ids the map does not know. Fails closed: no list, no flow.
@@ -315,22 +363,33 @@ pub fn allowed_projects(map: &Value, cfg: &Config) -> Result<(Vec<Project>, Vec<
     let known = projects_of(map);
     let mut offers: Vec<Project> = Vec::new();
     let mut unknown: Vec<String> = Vec::new();
+    let mut reasons: Vec<(String, String)> = Vec::new();
     for id in &ids {
         match known.iter().find(|p| &p.id == id) {
-            None => unknown.push(id.clone()),
+            None => {
+                unknown.push(id.clone());
+                reasons.push((id.clone(), "không có trong projects_map.json".to_string()));
+            }
             Some(p) => {
-                if offers.len() < MAX_OFFERS
-                    && p.kind != "media"
-                    && !p.missing
-                    && require_runnable(p, cfg).is_ok()
-                {
-                    offers.push(p.clone());
+                if p.kind == "media" {
+                    reasons.push((id.clone(), "dự án loại media, không giao việc được".into()));
+                } else if p.missing {
+                    reasons.push((id.clone(), "thư mục dự án không còn (missing)".into()));
+                } else {
+                    match require_runnable(p, cfg) {
+                        Ok(_) => {
+                            if offers.len() < MAX_OFFERS {
+                                offers.push(p.clone());
+                            }
+                        }
+                        Err(e) => reasons.push((id.clone(), short_reason(&e.message))),
+                    }
                 }
             }
         }
     }
     if offers.is_empty() {
-        return Err(NONE_RUNNABLE.to_string());
+        return Err(none_runnable_message(&reasons));
     }
     Ok((offers, unknown))
 }
@@ -1663,14 +1722,22 @@ mod tests {
             "projects": projects,
             "telegram_projects": ["khong-co", "b-missing", "media-x", "not-a-repo"],
         });
-        assert_eq!(
-            allowed_projects(&map, &cfg).unwrap_err(),
-            NONE_RUNNABLE.to_string()
-        );
+        let err = allowed_projects(&map, &cfg).unwrap_err();
+        assert!(err.starts_with(NONE_RUNNABLE), "{err}");
+        for id in ["khong-co", "b-missing", "media-x", "not-a-repo"] {
+            assert!(err.contains(&format!("• {id}: ")), "{err}");
+        }
         let map = json!({"projects": projects, "telegram_projects": ["khong-co"]});
+        let err = allowed_projects(&map, &cfg).unwrap_err();
+        assert!(err.starts_with(NONE_RUNNABLE), "{err}");
+        assert!(
+            err.contains("• khong-co: không có trong projects_map.json"),
+            "{err}"
+        );
+
         assert_eq!(
-            allowed_projects(&map, &cfg).unwrap_err(),
-            NONE_RUNNABLE.to_string()
+            short_reason("Đường dẫn dự án 'x' không tồn tại: /home/u/work/srt"),
+            "Đường dẫn dự án 'x' không tồn tại: srt"
         );
     }
 

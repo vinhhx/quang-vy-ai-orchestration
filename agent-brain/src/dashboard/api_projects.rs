@@ -49,7 +49,33 @@ fn telegram_count(map: &serde_json::Value) -> usize {
         .count()
 }
 
-fn project_json(p: &crate::projects::Project, map: &serde_json::Value) -> serde_json::Value {
+type Profiles = std::collections::BTreeMap<String, crate::config::ProfileCfg>;
+
+/// Cheap reason (no git, no shadow) why a project cannot run a task yet.
+fn runnable_issue(p: &crate::projects::Project, profiles: &Profiles) -> Option<String> {
+    if p.missing {
+        return Some("Thư mục dự án không còn — chưa chạy được".to_string());
+    }
+    if p.kind == "media" {
+        return Some("Dự án loại media — không chạy task được".to_string());
+    }
+    if p.profile.trim().is_empty() {
+        return Some("Chưa đặt profile — chưa chạy được".to_string());
+    }
+    if !profiles.contains_key(&p.profile) {
+        return Some(format!(
+            "Profile '{}' không hợp lệ — chưa chạy được",
+            p.profile
+        ));
+    }
+    None
+}
+
+fn project_json(
+    p: &crate::projects::Project,
+    map: &serde_json::Value,
+    profiles: &Profiles,
+) -> serde_json::Value {
     let on_telegram = telegram_ids(map).iter().any(|i| i == &p.id);
     serde_json::json!({
         "telegram": on_telegram,
@@ -63,10 +89,11 @@ fn project_json(p: &crate::projects::Project, map: &serde_json::Value) -> serde_
         "repo": p.repo,
         "missing": p.missing,
         "workflow": crate::projects::workflow_of(map, &p.id),
+        "runnable_issue": runnable_issue(p, profiles),
     })
 }
 
-fn projects_body(map: &serde_json::Value, etag: String) -> serde_json::Value {
+fn projects_body(map: &serde_json::Value, etag: String, profiles: &Profiles) -> serde_json::Value {
     let scan_roots = map
         .get("scan_roots")
         .and_then(|r| r.as_array())
@@ -83,12 +110,13 @@ fn projects_body(map: &serde_json::Value, etag: String) -> serde_json::Value {
         .collect();
     let projects_json: Vec<serde_json::Value> = crate::projects::projects_of(map)
         .into_iter()
-        .map(|p| project_json(&p, map))
+        .map(|p| project_json(&p, map, profiles))
         .collect();
     serde_json::json!({
         "etag": etag,
         "scan_roots": scan_roots,
         "projects": projects_json,
+        "profiles": profiles.keys().cloned().collect::<Vec<_>>(),
         "duplicates": duplicates,
         "telegram_count": telegram_count(map),
         "telegram_max": crate::telegram::intake::MAX_OFFERS,
@@ -97,7 +125,7 @@ fn projects_body(map: &serde_json::Value, etag: String) -> serde_json::Value {
 
 fn conflict_response(st: &AppState, current_etag: String) -> crate::error::BrainResult<Response> {
     let map = crate::projects::load_map(&st.map_path)?;
-    let mut body = projects_body(&map, current_etag);
+    let mut body = projects_body(&map, current_etag, &st.cfg.profiles);
     body["error"] = serde_json::json!(
         "projects_map.json vừa thay đổi ở nơi khác — đã tải lại danh sách, hãy sửa lại"
     );
@@ -119,21 +147,32 @@ fn save_and_respond(
     status: StatusCode,
     extra: Option<(&str, serde_json::Value)>,
 ) -> crate::error::BrainResult<Response> {
+    save_and_respond_with(st, data, status, extra, Vec::new())
+}
+
+fn save_and_respond_with(
+    st: &AppState,
+    data: &serde_json::Value,
+    status: StatusCode,
+    extra: Option<(&str, serde_json::Value)>,
+    extra_warnings: Vec<String>,
+) -> crate::error::BrainResult<Response> {
     crate::projects::save_map(&st.map_path, data)?;
     if let Ok(conn) = crate::db::open(&st.db_path) {
         crate::db::sync_projects(&conn, &crate::projects::projects_of(data))?;
     }
     let new_etag = map_etag(&st.map_path);
-    let mut body = projects_body(data, new_etag);
+    let mut body = projects_body(data, new_etag, &st.cfg.profiles);
     let raw_projects = data
         .get("projects")
         .and_then(|p| p.as_array())
         .cloned()
         .unwrap_or_default();
-    let warnings: Vec<String> = crate::projects::find_duplicates(&raw_projects)
+    let mut warnings: Vec<String> = crate::projects::find_duplicates(&raw_projects)
         .iter()
         .map(|(key, ids)| format!("CẢNH BÁO: tên/alias trùng \"{key}\": {}", ids.join(", ")))
         .collect();
+    warnings.extend(extra_warnings);
     body["warnings"] = serde_json::json!(warnings);
     if let Some((k, v)) = extra {
         body[k] = v;
@@ -216,6 +255,15 @@ pub struct AddProjectBody {
     #[serde(rename = "type")]
     pub kind: String,
     pub etag: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProfileBody {
+    pub profile: String,
+    pub etag: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -237,6 +285,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/projects/scan", post(scan_projects))
         .route("/api/projects/{id}", put(update_aliases))
         .route("/api/projects/{id}/telegram", put(update_telegram))
+        .route("/api/projects/{id}/profile", put(update_profile))
         .route("/api/projects/{id}/status", get(project_status))
 }
 
@@ -256,11 +305,13 @@ async fn list_projects(
         let etag = map_etag(&st.map_path);
 
         let mut projects = crate::projects::projects_of(&map);
-        let mut body = projects_body(&map, etag);
+        let mut body = projects_body(&map, etag, &st.cfg.profiles);
         if let Some(prof) = profile_opt {
             projects.retain(|p| p.profile == prof);
-            let filtered: Vec<serde_json::Value> =
-                projects.iter().map(|p| project_json(p, &map)).collect();
+            let filtered: Vec<serde_json::Value> = projects
+                .iter()
+                .map(|p| project_json(p, &map, &st.cfg.profiles))
+                .collect();
             body["projects"] = serde_json::json!(filtered);
         }
 
@@ -470,6 +521,55 @@ async fn update_telegram(
     }
 }
 
+async fn update_profile(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<UpdateProfileBody>,
+) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if body.etag != current_etag {
+            return conflict_response(&st, current_etag);
+        }
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        let projects_arr = data
+            .get_mut("projects")
+            .and_then(|p| p.as_array_mut())
+            .ok_or_else(|| {
+                crate::error::BrainError::error("projects_map.json thiếu mảng 'projects'")
+            })?;
+        let project_obj = match projects_arr
+            .iter_mut()
+            .find(|obj| obj.get("id").and_then(|v| v.as_str()) == Some(&id))
+        {
+            Some(obj) => obj,
+            None => {
+                return Ok(json_error(
+                    StatusCode::NOT_FOUND,
+                    &format!("Không tìm thấy dự án {id}"),
+                ))
+            }
+        };
+
+        let profile = body.profile.trim().to_string();
+        if let Err(e) = crate::profile::check_profile(&profile, &st.cfg.profiles) {
+            return Ok(json_error(StatusCode::UNPROCESSABLE_ENTITY, &e.message));
+        }
+        project_obj["profile"] = serde_json::Value::String(profile);
+
+        save_and_respond(&st, &data, StatusCode::OK, None)
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
 async fn update_scan_roots(
     State(st): State<Arc<AppState>>,
     Json(body): Json<UpdateScanRootsBody>,
@@ -549,6 +649,18 @@ async fn add_project_api(
             ));
         }
 
+        let profile = body
+            .profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        if let Some(p) = &profile {
+            if let Err(e) = crate::profile::check_profile(p, &st.cfg.profiles) {
+                return Ok(json_error(StatusCode::UNPROCESSABLE_ENTITY, &e.message));
+            }
+        }
+
         let mut data = crate::projects::load_map(&st.map_path)?;
         let (entry, is_new) = crate::projects::add_project(&mut data, &dir, Some(&body.kind))?;
         let entry_id = entry
@@ -556,17 +668,52 @@ async fn add_project_api(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        if let Some(p) = &profile {
+            if let Some(obj) = data
+                .get_mut("projects")
+                .and_then(|a| a.as_array_mut())
+                .and_then(|a| {
+                    a.iter_mut()
+                        .find(|o| o.get("id").and_then(|v| v.as_str()) == Some(entry_id.as_str()))
+                })
+            {
+                let empty = obj
+                    .get("profile")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().is_empty())
+                    .unwrap_or(true);
+                if is_new || empty {
+                    obj["profile"] = serde_json::Value::String(p.clone());
+                }
+            }
+        }
         let project_val = crate::projects::projects_of(&data)
             .iter()
             .find(|p| p.id == entry_id)
-            .map(|p| project_json(p, &data))
+            .map(|p| project_json(p, &data, &st.cfg.profiles))
             .unwrap_or(serde_json::Value::Null);
         let status = if is_new {
             StatusCode::CREATED
         } else {
             StatusCode::OK
         };
-        save_and_respond(&st, &data, status, Some(("project", project_val)))
+        let profile_missing = crate::projects::projects_of(&data)
+            .iter()
+            .find(|p| p.id == entry_id)
+            .map(|p| p.profile.trim().is_empty())
+            .unwrap_or(false);
+        let extra_warnings = if profile_missing {
+            vec!["Dự án chưa có profile — đặt profile trước khi chạy task.".to_string()]
+        } else {
+            Vec::new()
+        };
+        save_and_respond_with(
+            &st,
+            &data,
+            status,
+            Some(("project", project_val)),
+            extra_warnings,
+        )
     })
     .await;
 
@@ -846,7 +993,7 @@ mod tests {
             ]
         });
         let projs = crate::projects::projects_of(&map);
-        let j = project_json(&projs[0], &map);
+        let j = project_json(&projs[0], &map, &Profiles::new());
         assert_eq!(j["workflow"], "nhanh");
     }
 }

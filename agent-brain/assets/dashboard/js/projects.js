@@ -16,6 +16,9 @@
       savingRoots: false,
       addPath: '',
       addType: 'code',
+      newProfile: '',
+      profileOptions: [],
+      profileSaving: false,
       adding: false,
       browseOpen: false,
       browsePath: '',
@@ -70,6 +73,7 @@
             self.duplicates = res.data.duplicates || [];
             self.telegramCount = res.data.telegram_count || 0;
             self.telegramMax = res.data.telegram_max || 30;
+            if (Array.isArray(res.data.profiles)) self.profileOptions = res.data.profiles;
             if (!self.rootsDirty) self.roots = (res.data.scan_roots || []).slice();
             self.loaded = true;
             self.stale = false;
@@ -219,6 +223,38 @@
         });
       },
 
+      // PUT /api/projects/{id}/profile: sets work|personal on one project.
+      setProfile: function (p, value) {
+        var self = this;
+        if (this.profileSaving || !value || value === p.profile) return Promise.resolve();
+        this.profileSaving = true;
+        this.message = '';
+        this.error = '';
+        return window.AB.api('PUT', '/api/projects/' + encodeURIComponent(p.id) + '/profile', { profile: value, etag: this.etag }).then(function (res) {
+          self.profileSaving = false;
+          if (res.ok && res.status === 200 && res.data) {
+            self.etag = res.data.etag || self.etag;
+            self.projects = res.data.projects || self.projects;
+            if (Array.isArray(res.data.profiles)) self.profileOptions = res.data.profiles;
+            self.message = 'Đã đặt profile ' + value + ' cho ' + (p.name_vi || p.id);
+            return self.load();
+          }
+          return self.conflictOrError(res);
+        });
+      },
+
+      issueText: function (p) {
+        return (p && p.runnable_issue) ? p.runnable_issue : '';
+      },
+
+      hasIssue: function (p) {
+        return Boolean(p && p.runnable_issue);
+      },
+
+      profileSelectId: function (p) {
+        return 'ab-profile-' + p.id;
+      },
+
       // 409 from a write: show the API message and reload the list.
       conflictOrError: function (res) {
         if (res.status === 409) {
@@ -321,15 +357,19 @@
         this.adding = true;
         this.message = '';
         this.error = '';
-        return window.AB.api('POST', '/api/projects', { path: (this.addPath || '').trim(), type: this.addType, etag: this.etag }).then(function (res) {
+        var payload = { path: (this.addPath || '').trim(), type: this.addType, etag: this.etag };
+        if (this.newProfile) payload.profile = this.newProfile;
+        return window.AB.api('POST', '/api/projects', payload).then(function (res) {
           self.adding = false;
           if (res.ok && (res.status === 201 || res.status === 200) && res.data) {
             self.etag = res.data.etag || self.etag;
             self.projects = res.data.projects || self.projects;
             self.telegramCount = res.data.telegram_count || 0;
             self.message = res.status === 201 ? 'Đã thêm dự án' : 'Dự án này đã có trong danh sách';
+            self.warnings = (res.data.warnings || []).slice();
             self.addPath = '';
             self.addType = 'code';
+            self.newProfile = '';
             return self.load();
           }
           return self.conflictOrError(res);
