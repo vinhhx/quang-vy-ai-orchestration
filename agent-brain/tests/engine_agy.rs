@@ -360,6 +360,109 @@ fn agy_error_status_fails() {
     assert_eq!(row.status, "failed");
 }
 
+#[test]
+fn agy_lead_empty_response_is_agy_empty() {
+    let sb = Sandbox::new();
+    agy_config(&sb);
+    write_doi_agy(&sb, json!({"lead": "agy"}));
+    setup_project(&sb, "work");
+
+    let env = AgyEnv::new(
+        &sb,
+        json!({
+            "lines": agy_lines("", "SUCCESS", "request-review"),
+        }),
+    );
+    let res = run_lead(&sb, &env);
+    assert_ne!(
+        res.code, 0,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    let combined_out = format!("{}\n{}", res.stdout, res.stderr);
+    assert!(
+        combined_out.contains("agy không trả kế hoạch nào"),
+        "expected empty lead message in output: {combined_out}"
+    );
+
+    let row = run_row(&sb, "lead");
+    assert_eq!(row.engine, "agy");
+    assert_eq!(row.status, "succeeded");
+    assert_eq!(row.outcome.as_deref(), Some("agy:empty"));
+}
+
+#[test]
+fn agy_lead_prompt_has_git_context() {
+    let sb = Sandbox::new();
+    agy_config(&sb);
+    write_doi_agy(&sb, json!({"lead": "agy"}));
+    let repo = setup_project(&sb, "work");
+    let branch = sb.git(&repo, &["branch", "--show-current"]).trim().to_string();
+
+    let env = AgyEnv::new(
+        &sb,
+        json!({
+            "lines": agy_lines(&lead_plan_text(), "SUCCESS", "request-review"),
+        }),
+    );
+    let res = run_lead(&sb, &env);
+    assert_ok(&res, "run lead (agy, git context)");
+
+    let recs = env.records();
+    assert_eq!(recs.len(), 1, "one agy call");
+    let argv: Vec<&str> = recs[0]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let p_idx = argv.iter().position(|&x| x == "-p").expect("argv has -p");
+    let prompt = argv[p_idx + 1];
+
+    assert!(
+        prompt.contains("## Ngữ cảnh git"),
+        "prompt lacks git context header: {prompt}"
+    );
+    assert!(
+        prompt.contains("### git status --short"),
+        "prompt lacks git status: {prompt}"
+    );
+    assert!(
+        prompt.contains("### git log -n 20 --stat --date=iso"),
+        "prompt lacks git log: {prompt}"
+    );
+    assert!(
+        prompt.contains(&branch),
+        "prompt lacks current branch '{branch}': {prompt}"
+    );
+}
+
+#[test]
+fn claude_lead_prompt_has_no_git_context() {
+    let sb = Sandbox::new();
+    setup_project(&sb, "work");
+
+    let scenario = protocol::lead_scenario(&[("src/app.py", "1-5", "sửa app", "yêu cầu")]);
+    let res = sb.run(&["run", "lead", "web", "sửa app"], Some(scenario));
+    assert_ok(&res, "run lead (claude)");
+
+    let recs = sb.records();
+    assert_eq!(recs.len(), 1, "one claude call");
+    let argv: Vec<&str> = recs[0]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let p_idx = argv.iter().position(|&x| x == "-p").expect("argv has -p");
+    let prompt = argv[p_idx + 1];
+
+    assert!(
+        !prompt.contains("## Ngữ cảnh git"),
+        "claude lead prompt must not contain git context: {prompt}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Task 2: agy Dev
 // ---------------------------------------------------------------------------
