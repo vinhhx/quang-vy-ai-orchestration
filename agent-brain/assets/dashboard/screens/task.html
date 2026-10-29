@@ -52,6 +52,30 @@
       </div>
     </div>
 
+    <!-- Plan grants (skill mode): commands and directories the Dev gets, shown before Duyệt plan -->
+    <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="hasGrants" data-plan-grants>
+      <h2 class="text-sm font-semibold leading-normal">Quyền chạy của plan</h2>
+      <p class="text-sm font-normal leading-normal">Duyệt plan nghĩa là cho phép Dev chạy các lệnh này trên máy của bạn và chỉ ghi vào các thư mục này.</p>
+      <div class="space-y-2" x-show="grantCommands.length > 0">
+        <h3 class="text-sm font-semibold leading-normal">Lệnh được chạy</h3>
+        <template x-for="c in grantCommands" :key="c">
+          <p class="font-mono text-sm leading-normal break-all" x-text="c"></p>
+        </template>
+      </div>
+      <div class="space-y-2" x-show="grantReadDirs.length > 0">
+        <h3 class="text-sm font-semibold leading-normal">Thư mục được đọc</h3>
+        <template x-for="d in grantReadDirs" :key="d">
+          <p class="font-mono text-sm leading-normal break-all" x-text="d"></p>
+        </template>
+      </div>
+      <div class="space-y-2" x-show="grantWriteDirs.length > 0">
+        <h3 class="text-sm font-semibold leading-normal">Thư mục được ghi</h3>
+        <template x-for="d in grantWriteDirs" :key="d">
+          <p class="font-mono text-sm leading-normal break-all" x-text="d"></p>
+        </template>
+      </div>
+    </div>
+
     <!-- Pipeline card -->
     <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
       <div class="flex flex-wrap items-center gap-2">

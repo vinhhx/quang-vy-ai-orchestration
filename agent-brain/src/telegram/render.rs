@@ -209,6 +209,46 @@ pub(crate) fn slug_ok(slug: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// Longest value of one grant line shown on Telegram; longer values are cut with `…`.
+const GRANT_VALUE_MAX: usize = 100;
+/// Lines of grants the gate message shows (the last may be `… và N mục khác`).
+pub const GATE_GRANT_LINES: usize = 6;
+/// Lines of grants the approval confirmation shows.
+pub const CONFIRM_GRANT_LINES: usize = 15;
+
+fn cut_value(v: &str) -> String {
+    let one: String = v.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() > GRANT_VALUE_MAX {
+        let head: String = one.chars().take(GRANT_VALUE_MAX).collect();
+        format!("{head}…")
+    } else {
+        one
+    }
+}
+
+/// `Lệnh sẽ chạy: …` for each command, then `Ghi vào: …` for each write directory, at most `max`
+/// lines; when there are more, the last line is `… và N mục khác`. Empty for a plan without
+/// grants.
+pub fn grant_lines(g: &crate::planfile::Grants, max: usize) -> Vec<String> {
+    let all: Vec<String> = g
+        .commands
+        .iter()
+        .map(|c| format!("Lệnh sẽ chạy: {}", cut_value(c)))
+        .chain(
+            g.write_dirs
+                .iter()
+                .map(|d| format!("Ghi vào: {}", cut_value(d))),
+        )
+        .collect();
+    if all.len() <= max {
+        return all;
+    }
+    let keep = max.saturating_sub(1);
+    let mut out: Vec<String> = all.iter().take(keep).cloned().collect();
+    out.push(format!("… và {} mục khác", all.len() - keep));
+    out
+}
+
 fn plan_lines(s: &TaskState, lines: &mut Vec<String>) {
     match &s.plan_text {
         Some(text) => {
@@ -227,6 +267,10 @@ fn plan_lines(s: &TaskState, lines: &mut Vec<String>) {
             if files.len() > MAX_FILES {
                 lines.push(format!("… và {} file khác", files.len() - MAX_FILES));
             }
+            lines.extend(grant_lines(
+                &crate::planfile::run_grants(&plan),
+                GATE_GRANT_LINES,
+            ));
         }
         None => lines.push("Plan: (không đọc được .plan.md)".to_string()),
     }
@@ -556,5 +600,55 @@ mod tests {
             ),
             "{b}"
         );
+    }
+}
+
+#[cfg(test)]
+mod grant_tests {
+    use super::*;
+    use crate::planfile::Grants;
+
+    fn g(cmds: usize, dirs: usize) -> Grants {
+        Grants {
+            commands: (0..cmds).map(|i| format!("tool{i} *")).collect(),
+            write_dirs: (0..dirs).map(|i| format!("d{i}/**")).collect(),
+            ..Grants::default()
+        }
+    }
+
+    #[test]
+    fn grant_lines_cap_and_summary() {
+        assert!(grant_lines(&Grants::default(), 6).is_empty());
+        let few = grant_lines(&g(2, 1), 6);
+        assert_eq!(
+            few,
+            vec![
+                "Lệnh sẽ chạy: tool0 *",
+                "Lệnh sẽ chạy: tool1 *",
+                "Ghi vào: d0/**"
+            ]
+        );
+        let many = grant_lines(&g(5, 5), 6);
+        assert_eq!(many.len(), 6);
+        assert_eq!(many[5], "… và 5 mục khác");
+        let long = grant_lines(
+            &Grants {
+                commands: vec!["x".repeat(300)],
+                ..Grants::default()
+            },
+            6,
+        );
+        assert!(long[0].chars().count() < 130);
+        assert!(long[0].ends_with('…'));
+    }
+
+    #[test]
+    fn confirm_text_lists_up_to_fifteen_lines() {
+        let t = crate::telegram::bot::approve_confirm_text(7, "T", &g(10, 10));
+        assert!(t.starts_with("Duyệt plan task 7?"));
+        assert!(t.contains("… và 6 mục khác"));
+        assert!(t.ends_with("Dev sẽ chạy các lệnh trên trên máy của bạn."));
+        let none = crate::telegram::bot::approve_confirm_text(7, "T", &Grants::default());
+        assert!(!none.contains("Dev sẽ chạy"));
     }
 }

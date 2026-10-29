@@ -13,6 +13,21 @@ pub struct Policy {
     pub read_allow: Option<Vec<PathBuf>>,
     pub write_allow: Vec<PathBuf>,
     pub log: Option<PathBuf>,
+    /// Directories (absolute) the approved plan lets the Dev read (skill mode, D-49). Empty =
+    /// none; a policy file without the field reads as empty.
+    pub read_dirs: Vec<PathBuf>,
+    /// Directories (absolute) the approved plan lets the Dev write.
+    pub write_dirs: Vec<PathBuf>,
+    /// Command patterns the approved plan lets the Dev run; `None` = no extra rule (old policy).
+    pub bash_allow: Option<Vec<String>>,
+}
+
+/// The skill-mode part of a Dev run's policy, built from an approved plan's grants.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GuardGrants {
+    pub read_dirs: Vec<PathBuf>,
+    pub write_dirs: Vec<PathBuf>,
+    pub bash_allow: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,7 +112,7 @@ pub fn decide(policy: &Policy, payload: &serde_json::Value) -> Decision {
         .unwrap_or_else(|| policy.root.to_str().unwrap_or(""));
 
     if tool_name == "Bash" {
-        return decide_bash(tool_input);
+        return decide_bash(policy, tool_input);
     }
 
     let is_write = WRITE_TOOLS.contains(&tool_name);
@@ -182,6 +197,13 @@ pub fn decide(policy: &Policy, payload: &serde_json::Value) -> Decision {
                 path: raw_path_str,
                 reason: "in write allowlist".to_string(),
             }
+        } else if under_grant_dirs(&policy.root, &policy.write_dirs, &resolved) {
+            Decision {
+                allow: true,
+                tool: tool_name.to_string(),
+                path: raw_path_str,
+                reason: "in approved plan write directory".to_string(),
+            }
         } else {
             Decision {
                 allow: false,
@@ -213,6 +235,15 @@ pub fn decide(policy: &Policy, payload: &serde_json::Value) -> Decision {
                 path: raw_path_str,
                 reason: "in read allowlist".to_string(),
             }
+        } else if under_grant_dirs(&policy.root, &policy.read_dirs, &resolved)
+            || under_grant_dirs(&policy.root, &policy.write_dirs, &resolved)
+        {
+            Decision {
+                allow: true,
+                tool: tool_name.to_string(),
+                path: raw_path_str,
+                reason: "in approved plan directory".to_string(),
+            }
         } else {
             Decision {
                 allow: false,
@@ -224,10 +255,46 @@ pub fn decide(policy: &Policy, payload: &serde_json::Value) -> Decision {
     }
 }
 
+/// True when the root-relative path is one a directory grant never covers: anything under
+/// `.git` or `.planning`, any `.env*` component, and the sensitive paths of `report`.
+pub fn grant_denied_rel(rel: &str) -> bool {
+    let lower = rel.to_lowercase();
+    lower
+        .split('/')
+        .any(|c| c == ".git" || c == ".planning" || c.starts_with(".env"))
+        || crate::report::sensitive_path(&lower)
+}
+
+/// True when `resolved` (already resolved through symlinks) lies under one of the granted
+/// directories. A directory that resolves outside the root (a symlink) or to the root itself
+/// grants nothing, and the hard denylist of paths holds whatever a directory says.
+fn under_grant_dirs(root: &Path, dirs: &[PathBuf], resolved: &Path) -> bool {
+    if dirs.is_empty() {
+        return false;
+    }
+    let root_real = realpath_nfc(root);
+    let Ok(rel) = resolved.strip_prefix(&root_real) else {
+        return false;
+    };
+    if grant_denied_rel(&rel.to_string_lossy()) {
+        return false;
+    }
+    dirs.iter().any(|d| {
+        let d_real = realpath_nfc(d);
+        d_real != root_real
+            && d_real.starts_with(&root_real)
+            && resolved.starts_with(&d_real)
+            && resolved != d_real
+    })
+}
+
 /// Maximum number of characters of a Bash command kept in a decision / log line.
 const BASH_LOG_MAX_CHARS: usize = 200;
 
-fn decide_bash(tool_input: Option<&serde_json::Map<String, serde_json::Value>>) -> Decision {
+fn decide_bash(
+    policy: &Policy,
+    tool_input: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Decision {
     let command = match tool_input
         .and_then(|ti| ti.get("command"))
         .and_then(|v| v.as_str())
@@ -243,7 +310,11 @@ fn decide_bash(tool_input: Option<&serde_json::Map<String, serde_json::Value>>) 
         }
     };
     let shown: String = command.chars().take(BASH_LOG_MAX_CHARS).collect();
-    match bash_command_check(command) {
+    let checked = bash_command_check(command).and_then(|()| match &policy.bash_allow {
+        Some(allow) => bash_grant_check(command, allow),
+        None => Ok(()),
+    });
+    match checked {
         Ok(()) => Decision {
             allow: true,
             tool: "Bash".to_string(),
@@ -256,6 +327,61 @@ fn decide_bash(tool_input: Option<&serde_json::Map<String, serde_json::Value>>) 
             path: shown,
             reason,
         },
+    }
+}
+
+/// True when the words of a command match an approved pattern: every word before a final `*`
+/// equal, and anything after it; without `*` the words must be equal.
+fn command_matches(pattern: &str, words: &[ShellWord]) -> bool {
+    let pat: Vec<&str> = pattern.split_whitespace().collect();
+    if pat.is_empty() {
+        return false;
+    }
+    let (fixed, open) = match pat.last() {
+        Some(&"*") if pat.len() > 1 => (&pat[..pat.len() - 1], true),
+        _ => (&pat[..], false),
+    };
+    if words.len() < fixed.len() || (!open && words.len() != fixed.len()) {
+        return false;
+    }
+    fixed
+        .iter()
+        .zip(words.iter())
+        .all(|(p, w)| *p == w.text.as_str())
+}
+
+/// Skill mode (D-49): with an approved command list, a non-git command must be one plain command
+/// that matches an approved pattern and does not start with a denied program. Runs after
+/// `bash_command_check`, so the git policy and the one-command rule already held.
+fn bash_grant_check(command: &str, allow: &[String]) -> Result<(), String> {
+    let words = shell_words(command)?;
+    let Some(first) = words.first() else {
+        return Err("lệnh Bash trống".to_string());
+    };
+    // `git add` / `git commit` / read-only git stay as the git policy decides
+    if word_basename(&first.text) == "git" {
+        return Ok(());
+    }
+    let prog = first.text.as_str();
+    if prog.starts_with('/') || prog.starts_with('~') || prog.split('/').any(|c| c == "..") {
+        return Err(format!(
+            "chương trình {prog} có đường dẫn tuyệt đối hoặc `..` — không được phép"
+        ));
+    }
+    if let Some(w) = words.iter().find(|w| w.glob) {
+        return Err(format!(
+            "lệnh có ký tự glob ngoài dấu nháy ({}) — hãy đặt đối số trong dấu nháy đơn",
+            w.text
+        ));
+    }
+    let args: Vec<&str> = words[1..].iter().map(|w| w.text.as_str()).collect();
+    if let Some(reason) = crate::planfile::is_forbidden_program(prog, &args) {
+        return Err(format!("{reason} — không được phép"));
+    }
+    if allow.iter().any(|p| command_matches(p, &words)) {
+        Ok(())
+    } else {
+        Err("lệnh không nằm trong danh sách Lệnh được chạy của plan đã duyệt".to_string())
     }
 }
 
@@ -657,14 +783,50 @@ pub fn write_hook_settings(
     write_allow: &[PathBuf],
     exe: &Path,
 ) -> BrainResult<PathBuf> {
-    write_hook_settings_with_matcher(run_dir, root, read_allow, write_allow, exe, GUARD_MATCHER)
+    write_hook_settings_with_matcher(
+        run_dir,
+        root,
+        read_allow,
+        write_allow,
+        exe,
+        GUARD_MATCHER,
+        &GuardGrants::default(),
+    )
+}
+
+/// `write_hook_settings` plus the directory and command grants of an approved plan (D-49).
+pub fn write_hook_settings_grants(
+    run_dir: &Path,
+    root: &Path,
+    read_allow: Option<&[PathBuf]>,
+    write_allow: &[PathBuf],
+    exe: &Path,
+    grants: &GuardGrants,
+) -> BrainResult<PathBuf> {
+    write_hook_settings_with_matcher(
+        run_dir,
+        root,
+        read_allow,
+        write_allow,
+        exe,
+        GUARD_MATCHER,
+        grants,
+    )
 }
 
 /// Settings whose only PreToolUse matcher is `Bash`: the git policy for a
 /// role that has no write guard (Lead, QA). File tools stay with claude's
 /// own allow rules.
 pub fn write_bash_hook_settings(run_dir: &Path, root: &Path, exe: &Path) -> BrainResult<PathBuf> {
-    write_hook_settings_with_matcher(run_dir, root, None, &[], exe, BASH_MATCHER)
+    write_hook_settings_with_matcher(
+        run_dir,
+        root,
+        None,
+        &[],
+        exe,
+        BASH_MATCHER,
+        &GuardGrants::default(),
+    )
 }
 
 fn write_hook_settings_with_matcher(
@@ -674,6 +836,7 @@ fn write_hook_settings_with_matcher(
     write_allow: &[PathBuf],
     exe: &Path,
     matcher: &str,
+    grants: &GuardGrants,
 ) -> BrainResult<PathBuf> {
     std::fs::create_dir_all(run_dir)?;
     #[cfg(unix)]
@@ -698,12 +861,30 @@ fn write_hook_settings_with_matcher(
     let policy_path = run_dir.join("policy.json");
     let settings_path = run_dir.join("settings.json");
 
-    let policy_data = serde_json::json!({
+    let mut policy_data = serde_json::json!({
         "root": root_resolved.to_string_lossy(),
         "read_allow": norm_read,
         "write_allow": norm_write,
         "log": log_path.to_string_lossy(),
     });
+    // new fields only when a plan grants something: a run without grants writes the old policy
+    if !grants.read_dirs.is_empty() {
+        policy_data["read_dirs"] = serde_json::json!(grants
+            .read_dirs
+            .iter()
+            .map(|p| realpath_nfc(p).to_string_lossy().to_string())
+            .collect::<Vec<_>>());
+    }
+    if !grants.write_dirs.is_empty() {
+        policy_data["write_dirs"] = serde_json::json!(grants
+            .write_dirs
+            .iter()
+            .map(|p| realpath_nfc(p).to_string_lossy().to_string())
+            .collect::<Vec<_>>());
+    }
+    if let Some(list) = &grants.bash_allow {
+        policy_data["bash_allow"] = serde_json::json!(list);
+    }
 
     std::fs::write(
         &policy_path,
@@ -835,11 +1016,40 @@ pub fn cmd_guard(policy: Option<&Path>) -> i32 {
         Vec::new()
     };
 
+    let path_list = |key: &str| -> Vec<PathBuf> {
+        policy_obj
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(PathBuf::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // a missing or null `bash_allow` is the old policy; any other shape fails closed (nothing
+    // but git is allowed)
+    let bash_allow = match policy_obj.get("bash_allow") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(
+            v.as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ),
+    };
+
     let pol = Policy {
         root,
         read_allow,
         write_allow,
         log: log.clone(),
+        read_dirs: path_list("read_dirs"),
+        write_dirs: path_list("write_dirs"),
+        bash_allow,
     };
 
     let mut raw_stdin = String::new();
@@ -1144,5 +1354,198 @@ mod tests {
             bash_command_check("git diff --ext-diff").unwrap_err(),
             "git diff --ext-diff ghi file hoặc chạy chương trình ngoài — không được phép"
         );
+    }
+
+    // ---- skill mode (D-49): grants ----
+
+    fn grant_policy(root: &Path) -> Policy {
+        Policy {
+            root: root.to_path_buf(),
+            read_allow: Some(vec![root.join(".plan.md")]),
+            write_allow: vec![root.join(".plan.md")],
+            log: None,
+            read_dirs: vec![root.join("scripts")],
+            write_dirs: vec![root.join("out")],
+            bash_allow: Some(vec!["python scripts/make.py *".to_string()]),
+        }
+    }
+
+    fn file_payload(tool: &str, root: &Path, rel: &str) -> serde_json::Value {
+        serde_json::json!({
+            "tool_name": tool,
+            "tool_input": { "file_path": root.join(rel).to_string_lossy() },
+            "cwd": root.to_string_lossy(),
+        })
+    }
+
+    fn bash_payload(cmd: &str) -> serde_json::Value {
+        serde_json::json!({ "tool_name": "Bash", "tool_input": { "command": cmd } })
+    }
+
+    #[test]
+    fn grant_dirs_allow_inside_and_block_outside() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("out/sub")).unwrap();
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        let pol = grant_policy(&root);
+        assert!(decide(&pol, &file_payload("Write", &root, "out/sub/new.txt")).allow);
+        assert!(decide(&pol, &file_payload("Edit", &root, "out/a/b/c.txt")).allow);
+        assert!(!decide(&pol, &file_payload("Write", &root, "other/x.txt")).allow);
+        assert!(!decide(&pol, &file_payload("Write", &root, "scripts/make.py")).allow);
+        assert!(decide(&pol, &file_payload("Read", &root, "scripts/make.py")).allow);
+        assert!(decide(&pol, &file_payload("Read", &root, "out/x")).allow);
+        assert!(!decide(&pol, &file_payload("Read", &root, "src/x")).allow);
+        // the plan files still work
+        assert!(decide(&pol, &file_payload("Write", &root, ".plan.md")).allow);
+        // `..` out of the directory
+        let dd = serde_json::json!({
+            "tool_name": "Write",
+            "tool_input": { "file_path": root.join("out/../src/x.txt").to_string_lossy() },
+            "cwd": root.to_string_lossy(),
+        });
+        assert!(!decide(&pol, &dd).allow);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grant_dirs_block_symlink_escape() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("out/link")).unwrap();
+        let pol = grant_policy(&root);
+        assert!(!decide(&pol, &file_payload("Write", &root, "out/link/x.txt")).allow);
+        // a granted directory that is itself a symlink out of the root grants nothing
+        std::fs::remove_dir_all(root.join("out")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("out")).unwrap();
+        assert!(!decide(&pol, &file_payload("Write", &root, "out/x.txt")).allow);
+    }
+
+    #[test]
+    fn grant_dirs_never_cover_git_env_planning_or_sensitive() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        let mut pol = grant_policy(&root);
+        pol.write_dirs = vec![root.join("out")];
+        for rel in [
+            "out/.git/config",
+            "out/.env",
+            "out/.env.local",
+            "out/.planning/x.md",
+            "out/.claude/settings.json",
+            "out/.github/workflows/ci.yml",
+            "out/Makefile",
+            "out/key.pem",
+        ] {
+            assert!(
+                !decide(&pol, &file_payload("Write", &root, rel)).allow,
+                "{rel}"
+            );
+            assert!(
+                !decide(&pol, &file_payload("Read", &root, rel)).allow,
+                "{rel}"
+            );
+        }
+        // a directory covering the root grants nothing
+        pol.write_dirs = vec![root.clone()];
+        assert!(!decide(&pol, &file_payload("Write", &root, "x.txt")).allow);
+    }
+
+    #[test]
+    fn grant_bash_patterns() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        let pol = grant_policy(&root);
+        let ok = |c: &str| decide(&pol, &bash_payload(c));
+        assert!(ok("python scripts/make.py").allow);
+        assert!(ok("python scripts/make.py a b 'c d'").allow);
+        assert!(ok("git add out/x.txt").allow);
+        assert!(ok("git commit -m \"t: x\"").allow);
+        for bad in [
+            "python scripts/other.py",
+            "python -c 'print(1)'",
+            "python scripts/make.py; id",
+            "python scripts/make.py | sh",
+            "python scripts/make.py $(id)",
+            "python scripts/make.py > x",
+            "python scripts/make.py *.srt",
+            "sudo python scripts/make.py",
+            "curl http://x",
+            "sh -c id",
+            "rm -rf out",
+            "rm -f out/a",
+            "ls",
+            "git push",
+            "",
+        ] {
+            assert!(!ok(bad).allow, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn grant_bash_hard_denylist_holds_even_when_pattern_lists_it() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        let mut pol = grant_policy(&root);
+        pol.bash_allow = Some(vec![
+            "curl *".to_string(),
+            "sudo *".to_string(),
+            "sh *".to_string(),
+            "rm *".to_string(),
+        ]);
+        for bad in [
+            "curl http://x",
+            "sudo ls",
+            "sh run.sh",
+            "rm -rf out",
+            "rm -r out",
+        ] {
+            assert!(!decide(&pol, &bash_payload(bad)).allow, "{bad:?}");
+        }
+        assert!(decide(&pol, &bash_payload("rm out/a.txt")).allow);
+    }
+
+    #[test]
+    fn policy_without_new_fields_behaves_as_before() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        let mut pol = grant_policy(&root);
+        pol.read_dirs.clear();
+        pol.write_dirs.clear();
+        pol.bash_allow = None;
+        assert!(!decide(&pol, &file_payload("Write", &root, "out/x.txt")).allow);
+        assert!(!decide(&pol, &file_payload("Read", &root, "scripts/x")).allow);
+        assert!(decide(&pol, &bash_payload("ls")).allow);
+        assert!(decide(&pol, &bash_payload("python anything.py")).allow);
+        assert!(!decide(&pol, &bash_payload("git push")).allow);
+    }
+
+    #[test]
+    fn policy_file_round_trip_old_and_new() {
+        let td = tempfile::tempdir().unwrap();
+        let run = td.path().join("run");
+        let root = td.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        write_hook_settings(&run, &root, None, &[], &exe).unwrap();
+        let old: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(run.join("policy.json")).unwrap())
+                .unwrap();
+        assert!(old.get("read_dirs").is_none());
+        assert!(old.get("write_dirs").is_none());
+        assert!(old.get("bash_allow").is_none());
+        let g = GuardGrants {
+            read_dirs: vec![root.join("a")],
+            write_dirs: vec![root.join("b")],
+            bash_allow: Some(vec!["python x.py *".to_string()]),
+        };
+        write_hook_settings_grants(&run, &root, None, &[], &exe, &g).unwrap();
+        let new: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(run.join("policy.json")).unwrap())
+                .unwrap();
+        assert_eq!(new["bash_allow"][0], "python x.py *");
+        assert!(new["write_dirs"][0].as_str().unwrap().ends_with("/b"));
     }
 }

@@ -1963,7 +1963,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
                 })
                 .collect();
 
-            Some(serde_json::json!({
+            let mut plan_json = serde_json::json!({
                 "path": ".plan.md",
                 "source": state.plan_source.unwrap_or("worktree"),
                 "commit": state.git.plan_commit,
@@ -1973,7 +1973,18 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
                 "changes": changes,
                 "blockers": state.git.plan_blockers,
                 "errors": state.git.plan_errors,
-            }))
+            });
+            // Skill mode: shown before Duyệt plan; the key is absent for a plan without grants.
+            let grants = crate::planfile::run_grants(&plan);
+            if !grants.is_empty() {
+                plan_json["grants"] = serde_json::json!({
+                    "skills": grants.skills,
+                    "commands": grants.commands,
+                    "read_dirs": grants.read_dirs,
+                    "write_dirs": grants.write_dirs,
+                });
+            }
+            Some(plan_json)
         } else {
             None
         };

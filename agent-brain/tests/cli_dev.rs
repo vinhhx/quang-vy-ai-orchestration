@@ -603,3 +603,421 @@ fn run_dev_ignores_request_with_note() {
     let user_input = argv[p_idx + 1].as_str().unwrap();
     assert!(!user_input.contains("làm thêm việc khác"));
 }
+
+// ---- skill mode (D-49): the Dev gets what the approved plan declares ----
+
+const GRANTS_SECTIONS: &str = "## Skill sử dụng\n- `fake-idea` (.agents/skills/fake-idea/SKILL.md)\n## Lệnh được chạy\n- `python scripts/create.py *`\n## Thư mục được đọc\n- `data/**`\n## Thư mục được ghi\n- `out/**`\n";
+
+fn setup_grants_task(sb: &Sandbox, extra_sections: Option<&str>) -> (PathBuf, String, String) {
+    let repo = sb.make_repo(
+        "web-ban-hang",
+        &[
+            ("src/app.py", "def app():\n    return 1\n"),
+            ("scripts/create.py", "print('x')\n"),
+            (
+                ".agents/skills/fake-idea/SKILL.md",
+                "---\nname: fake-idea\ndescription: giả\n---\n",
+            ),
+        ],
+        None,
+        None,
+    );
+    let mut entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    entry["name_vi"] = serde_json::json!("Web bán hàng");
+    entry["aliases"] = serde_json::json!(["shop"]);
+    sb.write_map(serde_json::json!([entry]), &[]);
+    let mut p_text = plan_text(
+        "Kế hoạch",
+        &[("src/app.py", "app()", "trả về 2", "yêu cầu")],
+        "python3 -m unittest",
+        "",
+    );
+    p_text.push_str(extra_sections.unwrap_or(GRANTS_SECTIONS));
+    let scenario = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "write", "path": ".plan.md", "content": p_text, "keep_meta": true}
+        ]
+    });
+    let out = sb.run(&["run", "lead", "web-ban-hang", "sửa app"], Some(scenario));
+    assert_eq!(out.code, 0, "lead failed: {}\n{}", out.stderr, out.stdout);
+    let plan_commit = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    (repo, "sua-app".to_string(), plan_commit)
+}
+
+fn last_argv(sb: &Sandbox) -> Vec<String> {
+    sb.records().last().unwrap()["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap_or("").to_string())
+        .collect()
+}
+
+#[test]
+fn dev_with_grants_gets_rules_and_may_write_under_approved_dir() {
+    let sb = Sandbox::new();
+    let (repo, _task, plan_commit) = setup_grants_task(&sb, None);
+    let scenario = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "read", "path": ".agents/skills/fake-idea/SKILL.md"},
+            {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+            {"op": "write", "path": "out/video/a.txt", "content": "ok\n"},
+            {"op": "write", "path": "out/.env", "content": "SECRET=1\n"}
+        ]
+    });
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(scenario));
+    // the guard blocked the `.env` write; the other files are not violations
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+    let argv = last_argv(&sb);
+    let repo_s = repo.to_string_lossy();
+    for rule in [
+        "Bash(python scripts/create.py *)".to_string(),
+        "Edit(./out/**)".to_string(),
+        "Write(./out/**)".to_string(),
+        "Read(./out/**)".to_string(),
+        "Read(./data/**)".to_string(),
+        "Read(./.agents/skills/fake-idea/SKILL.md)".to_string(),
+        format!("Edit(/{repo_s}/out/**)"),
+        format!("Read(/{repo_s}/data/**)"),
+        "Bash(git add *)".to_string(),
+    ] {
+        assert!(argv.contains(&rule), "missing {rule}");
+    }
+    assert!(!argv.contains(&"Edit(./data/**)".to_string()));
+    let diff = sb.git(
+        &repo,
+        &["diff", "--name-only", &format!("{plan_commit}..HEAD")],
+    );
+    let mut names: Vec<&str> = diff.lines().collect();
+    names.sort();
+    assert_eq!(names, vec!["out/video/a.txt", "src/app.py"]);
+    assert!(!repo.join("out/.env").exists());
+    let rec = sb.records().pop().unwrap();
+    assert!(rec["blocked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| b["path"].as_str().unwrap_or("").ends_with("out/.env")));
+    assert!(argv
+        .iter()
+        .any(|a| a.contains("Plan có khai báo Lệnh được chạy")));
+}
+
+#[test]
+fn dev_with_grants_guard_blocks_outside_dirs() {
+    let sb = Sandbox::new();
+    let (repo, _task, _pc) = setup_grants_task(&sb, None);
+    let scenario = serde_json::json!({
+        "ops": [
+            {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+            {"op": "write", "path": "other/x.txt", "content": "no\n"},
+            {"op": "write", "path": "scripts/create.py", "content": "evil\n"},
+            {"op": "read", "path": "src/other.py"}
+        ]
+    });
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(scenario));
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+    let rec = sb.records().pop().unwrap();
+    let blocked: Vec<String> = rec["blocked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["path"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        blocked.iter().any(|p| p.ends_with("other/x.txt")),
+        "{blocked:?}"
+    );
+    assert!(
+        blocked.iter().any(|p| p.ends_with("scripts/create.py")),
+        "{blocked:?}"
+    );
+    assert!(!repo.join("other/x.txt").exists());
+}
+
+#[test]
+fn dev_with_grants_file_outside_dirs_and_plan_is_protocol_violation() {
+    let sb = Sandbox::new();
+    let (repo, _task, plan_commit) = setup_grants_task(&sb, None);
+    let scenario = serde_json::json!({
+        "ignore_hooks": true,
+        "ops": [
+            {"op": "write", "path": "out/ok.txt", "content": "ok\n"},
+            {"op": "write", "path": "other/x.txt", "content": "no\n"}
+        ]
+    });
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(scenario));
+    assert_eq!(out.code, 3, "stdout: {}", out.stdout);
+    assert!(out.stdout.contains("other/x.txt"));
+    assert!(!out.stdout.contains("  out/ok.txt"));
+    assert_eq!(sb.git(&repo, &["rev-parse", "HEAD"]).trim(), plan_commit);
+}
+
+#[test]
+fn dev_with_grants_sensitive_and_planning_files_are_violations_even_in_approved_dir() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _pc) = setup_grants_task(&sb, None);
+    let scenario = serde_json::json!({
+        "ignore_hooks": true,
+        "ops": [
+            {"op": "write", "path": "out/.env", "content": "S=1\n"},
+            {"op": "write", "path": "out/.planning/x.md", "content": "x\n"},
+            {"op": "write", "path": "out/fine.txt", "content": "ok\n"}
+        ]
+    });
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(scenario));
+    assert_eq!(out.code, 3, "stdout: {}", out.stdout);
+    assert!(out.stdout.contains("out/.env"));
+    assert!(out.stdout.contains("out/.planning/x.md"));
+    assert!(!out.stdout.contains("  out/fine.txt"));
+}
+
+#[test]
+fn plan_widened_after_approval_does_not_widen_the_grants() {
+    let sb = Sandbox::new();
+    let (repo, task, plan_commit) = setup_grants_task(&sb, None);
+    // the user approved plan_commit
+    let conn = sb.db();
+    conn.execute(
+        "UPDATE tasks SET approved_at = 1, approved_commit = ?1",
+        rusqlite::params![plan_commit],
+    )
+    .unwrap();
+    drop(conn);
+    // a later commit declares more
+    let text = std::fs::read_to_string(repo.join(".plan.md")).unwrap();
+    let widened = text
+        .replace("- `out/**`", "- `out/**`\n- `extra/**`")
+        .replace(
+            "- `python scripts/create.py *`",
+            "- `python scripts/create.py *`\n- `python scripts/more.py *`",
+        );
+    assert_ne!(text, widened);
+    std::fs::write(repo.join(".plan.md"), widened).unwrap();
+    sb.git(&repo, &["add", ".plan.md"]);
+    sb.git(&repo, &["commit", "-m", &format!("{task}: plan")]);
+
+    let scenario = serde_json::json!({ "ops": [
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"}
+    ]});
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(scenario));
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+    let argv = last_argv(&sb);
+    assert!(argv.contains(&"Bash(python scripts/create.py *)".to_string()));
+    assert!(!argv.contains(&"Bash(python scripts/more.py *)".to_string()));
+    assert!(!argv.contains(&"Edit(./extra/**)".to_string()));
+    assert!(argv.contains(&"Edit(./out/**)".to_string()));
+}
+
+#[test]
+fn dev_without_grant_sections_is_unchanged() {
+    let sb = Sandbox::new();
+    // a project that has skills but a plan that declares nothing
+    let (_repo, _task, _pc) = setup_grants_task(&sb, Some(""));
+    let scenario = serde_json::json!({ "ops": [
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"}
+    ]});
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(scenario));
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+    let argv = last_argv(&sb);
+    assert!(!argv.iter().any(|a| a.starts_with("Bash(python")));
+    assert!(!argv.iter().any(|a| a.contains("out/**")));
+    assert!(!argv.iter().any(|a| a.contains("SKILL.md")));
+    assert!(!argv
+        .iter()
+        .any(|a| a.contains("Plan có khai báo Lệnh được chạy")));
+    // the policy file keeps the old shape
+    let settings_idx = argv.iter().position(|x| x == "--settings").unwrap();
+    let settings = PathBuf::from(&argv[settings_idx + 1]);
+    let policy: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(settings.parent().unwrap().join("policy.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(policy.get("bash_allow").is_none());
+    assert!(policy.get("write_dirs").is_none());
+}
+
+#[test]
+fn dev_with_grants_policy_file_carries_dirs_and_commands() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _pc) = setup_grants_task(&sb, None);
+    let scenario = serde_json::json!({ "ops": [
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"}
+    ]});
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(scenario));
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+    let argv = last_argv(&sb);
+    let settings_idx = argv.iter().position(|x| x == "--settings").unwrap();
+    let settings = PathBuf::from(&argv[settings_idx + 1]);
+    let policy: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(settings.parent().unwrap().join("policy.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(policy["bash_allow"][0], "python scripts/create.py *");
+    assert!(policy["write_dirs"][0].as_str().unwrap().ends_with("/out"));
+    assert!(policy["read_dirs"][0].as_str().unwrap().ends_with("/data"));
+    let read_allow = policy["read_allow"].as_array().unwrap();
+    assert!(read_allow.iter().any(|p| p
+        .as_str()
+        .unwrap()
+        .ends_with(".agents/skills/fake-idea/SKILL.md")));
+}
+
+#[test]
+fn dev_dry_run_with_grants_shows_rules() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _pc) = setup_grants_task(&sb, None);
+    let out = sb.run(&["run", "dev", "web-ban-hang", "--dry-run"], None);
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+    assert!(
+        out.stdout.contains("Bash(python scripts/create.py *)"),
+        "{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn dev_with_invalid_grants_in_approved_plan_is_refused() {
+    let sb = Sandbox::new();
+    let (repo, task, plan_commit) = setup_grants_task(&sb, None);
+    let conn = sb.db();
+    conn.execute(
+        "UPDATE tasks SET approved_at = 1, approved_commit = ?1",
+        rusqlite::params![plan_commit],
+    )
+    .unwrap();
+    drop(conn);
+    // a bad grant committed afterwards: the working plan is refused by validation too
+    let text = std::fs::read_to_string(repo.join(".plan.md")).unwrap();
+    std::fs::write(
+        repo.join(".plan.md"),
+        text.replace("python scripts/create.py *", "sudo ls"),
+    )
+    .unwrap();
+    sb.git(&repo, &["add", ".plan.md"]);
+    sb.git(&repo, &["commit", "-m", &format!("{task}: plan")]);
+    let out = sb.run(&["run", "dev", "web-ban-hang"], None);
+    assert_ne!(out.code, 0);
+    assert!(format!("{}{}", out.stdout, out.stderr).contains("bị từ chối"));
+}
+
+#[test]
+fn agy_dev_ignores_grants_and_says_so() {
+    let sb = Sandbox::new();
+    let fake_agy = common::repo_root()
+        .join("tests")
+        .join("fakes")
+        .join("fake_agy.py")
+        .canonicalize()
+        .unwrap();
+    sb.write_config(
+        serde_json::json!({"engines": {"agy": {"command": fake_agy.to_str().unwrap()}}}),
+    );
+    sb.write_teams(
+        serde_json::json!({"doi-agy": {"description": "Dev bằng agy", "roles": {"dev": "agy"}}}),
+    );
+    let repo = sb.make_repo(
+        "web",
+        &[("src/app.py", "def app():\n    return 1\n")],
+        None,
+        None,
+    );
+    let mut entry = sb.project_entry(&repo, "web", "work");
+    entry.as_object_mut().unwrap().remove("workflow");
+    sb.write_map(serde_json::json!([entry]), &[]);
+    let mut p_text = plan_text(
+        "Kế hoạch",
+        &[("src/app.py", "app()", "trả về 2", "yêu cầu")],
+        "python3 -m unittest",
+        "",
+    );
+    p_text.push_str(GRANTS_SECTIONS);
+    let lead = serde_json::json!({"ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "write", "path": ".plan.md", "content": p_text, "keep_meta": true}
+    ]});
+    let out = sb.run(
+        &[
+            "run",
+            "lead",
+            "--team",
+            "doi-agy",
+            "--name",
+            "sua-app",
+            "--",
+            "web",
+            "sửa app",
+        ],
+        Some(lead),
+    );
+    assert_eq!(out.code, 0, "lead: {}\n{}", out.stderr, out.stdout);
+
+    let scenario_path = sb.root.join("fake_agy_scenario.json");
+    let record_path = sb.root.join("fake_agy_record.jsonl");
+    let usage = serde_json::json!({"input_tokens": 1, "output_tokens": 1, "total_tokens": 2});
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string(&serde_json::json!({
+            "ops": [
+                {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+                {"op": "write", "path": "out/x.txt", "content": "no\n"}
+            ],
+            "lines": [
+                {"event": "init", "conversation_id": "c1", "init": {"cwd": "/x", "tools": [], "permission_mode": "accept-edits"}},
+                {"event": "result", "result": {"conversation_id": "c1", "status": "SUCCESS", "response": "ok", "num_turns": 1, "usage": usage}}
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let out = sb.run_env(
+        &["run", "dev", "web"],
+        None,
+        &[
+            ("FAKE_AGY_SCENARIO", scenario_path.to_str().unwrap()),
+            ("FAKE_AGY_RECORD", record_path.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        out.stdout
+            .contains("Quyền chạy lệnh của plan chỉ áp dụng cho engine claude."),
+        "{}",
+        out.stdout
+    );
+    // run as before: a file under the declared dir is outside the plan for agy
+    assert_eq!(
+        out.code, 3,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+    assert!(out.stdout.contains("out/x.txt"));
+    let rec = std::fs::read_to_string(&record_path).unwrap();
+    assert!(!rec.contains("Bash("), "{rec}");
+    assert!(!rec.contains("create.py"), "{rec}");
+}

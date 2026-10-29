@@ -2750,3 +2750,64 @@ fn task_with_one_runnable_project_still_offers_it() {
     assert!(!text_of(&screen).contains("srt"), "{screen}");
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+// ---------------------------------------------------------------------------
+// Skill mode (D-49): the gate message and the approval confirmation show the grants
+// ---------------------------------------------------------------------------
+
+fn lead_grants_entry() -> Value {
+    let mut text = protocol::plan_text(
+        "Kế hoạch",
+        &[("src/app.py", "app()", "trả về 2", "demo")],
+        "python3 -m unittest",
+        "",
+    );
+    text.push_str(
+        "## Skill sử dụng\n- `fake-idea` (.agents/skills/fake-idea/SKILL.md)\n## Lệnh được chạy\n- `python scripts/create.py *`\n## Thư mục được ghi\n- `out/**`\n",
+    );
+    json!({"ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "write", "path": ".plan.md", "content": text, "keep_meta": true}
+    ]})
+}
+
+#[test]
+fn gate_and_confirm_list_commands_and_write_dirs() {
+    let sc = by_role(json!({
+        "lead": [lead_grants_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 2)],
+    }));
+    let (_sb, tg, mut srv, gate) = telegram_gate(true, sc);
+    let text = text_of(&gate);
+    assert!(
+        text.contains("Lệnh sẽ chạy: python scripts/create.py *"),
+        "{gate}"
+    );
+    assert!(text.contains("Ghi vào: out/**"), "{gate}");
+
+    let m = message_id_of(&gate);
+    press(&tg, PAIRED_CHAT, PAIRED_CHAT, &gate, "Duyệt plan");
+    let ask = wait_edit(&tg, &srv, m, |r| text_of(r).starts_with(CONFIRM_PREFIX));
+    let ask_text = text_of(&ask);
+    assert!(
+        ask_text.contains("Lệnh sẽ chạy: python scripts/create.py *"),
+        "{ask}"
+    );
+    assert!(ask_text.contains("Ghi vào: out/**"), "{ask}");
+    assert!(
+        ask_text.contains("Dev sẽ chạy các lệnh trên trên máy của bạn."),
+        "{ask}"
+    );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn gate_without_grants_shows_no_grant_lines() {
+    let (_sb, tg, mut srv, gate) = telegram_gate(true, gate_scenario());
+    assert!(!text_of(&gate).contains("Lệnh sẽ chạy"), "{gate}");
+    let m = message_id_of(&gate);
+    press(&tg, PAIRED_CHAT, PAIRED_CHAT, &gate, "Duyệt plan");
+    let ask = wait_edit(&tg, &srv, m, |r| text_of(r).starts_with(CONFIRM_PREFIX));
+    assert!(!text_of(&ask).contains("Dev sẽ chạy các lệnh"), "{ask}");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}

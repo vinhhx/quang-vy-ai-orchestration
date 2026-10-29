@@ -988,10 +988,17 @@ fn on_kill(ctx: &Arc<BotCtx>, press: &Press, cb: &Callback) {
 }
 
 /// Text of the approval confirmation of a Telegram-created task's plan (D-48).
-pub fn approve_confirm_text(task_id: i64, title: &str) -> String {
-    format!(
+pub fn approve_confirm_text(task_id: i64, title: &str, grants: &crate::planfile::Grants) -> String {
+    let mut text = format!(
         "Duyệt plan task {task_id}?\n{title}\nPlan ở file đính kèm bên trên. Bấm Xác nhận để cho phép chạy Dev."
-    )
+    );
+    let lines = render::grant_lines(grants, render::CONFIRM_GRANT_LINES);
+    if !lines.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(&lines.join("\n"));
+        text.push_str("\nDev sẽ chạy các lệnh trên trên máy của bạn.");
+    }
+    text
 }
 
 /// `Duyệt plan` of a task created from Telegram, in two presses (D-48). The first press only
@@ -1043,7 +1050,14 @@ fn on_approve(ctx: &Arc<BotCtx>, press: &Press, cb: &Callback) {
         edit(
             ctx,
             press.message_id,
-            &approve_confirm_text(task_id, &render::title_line(&s)),
+            &approve_confirm_text(
+                task_id,
+                &render::title_line(&s),
+                &s.plan_text
+                    .as_deref()
+                    .map(|t| crate::planfile::run_grants(&crate::planfile::parse_plan(t)))
+                    .unwrap_or_default(),
+            ),
             keyboard,
         );
         answer(

@@ -1394,6 +1394,27 @@
         return (this.task && this.task.plan && this.task.plan.changes) ? this.task.plan.changes : [];
       },
 
+      // Skill mode: what the plan lets the Dev run and write (absent for a plan without grants).
+      get planGrants() {
+        return (this.task && this.task.plan && this.task.plan.grants) ? this.task.plan.grants : null;
+      },
+
+      get grantCommands() {
+        return (this.planGrants && this.planGrants.commands) ? this.planGrants.commands : [];
+      },
+
+      get grantReadDirs() {
+        return (this.planGrants && this.planGrants.read_dirs) ? this.planGrants.read_dirs : [];
+      },
+
+      get grantWriteDirs() {
+        return (this.planGrants && this.planGrants.write_dirs) ? this.planGrants.write_dirs : [];
+      },
+
+      get hasGrants() {
+        return this.grantCommands.length > 0 || this.grantReadDirs.length > 0 || this.grantWriteDirs.length > 0;
+      },
+
       get hasChanges() {
         return this.changes.length > 0;
       },
