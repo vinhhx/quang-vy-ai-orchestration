@@ -30,8 +30,30 @@ pub fn map_etag(path: &Path) -> String {
     format!("{:016x}-{}", hash, bytes.len())
 }
 
+fn telegram_ids(map: &serde_json::Value) -> Vec<String> {
+    map.get("telegram_projects")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn telegram_count(map: &serde_json::Value) -> usize {
+    let ids = telegram_ids(map);
+    crate::projects::projects_of(map)
+        .iter()
+        .filter(|p| ids.iter().any(|i| i == &p.id))
+        .count()
+}
+
 fn project_json(p: &crate::projects::Project, map: &serde_json::Value) -> serde_json::Value {
+    let on_telegram = telegram_ids(map).iter().any(|i| i == &p.id);
     serde_json::json!({
+        "telegram": on_telegram,
+        "telegram_offerable": p.kind != "media" && !p.missing,
         "id": p.id,
         "name_vi": p.name_vi,
         "aliases": p.aliases,
@@ -42,6 +64,116 @@ fn project_json(p: &crate::projects::Project, map: &serde_json::Value) -> serde_
         "missing": p.missing,
         "workflow": crate::projects::workflow_of(map, &p.id),
     })
+}
+
+fn projects_body(map: &serde_json::Value, etag: String) -> serde_json::Value {
+    let scan_roots = map
+        .get("scan_roots")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let raw_projects = map
+        .get("projects")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let duplicates: Vec<serde_json::Value> = crate::projects::find_duplicates(&raw_projects)
+        .into_iter()
+        .map(|(key, ids)| serde_json::json!({ "key": key, "ids": ids }))
+        .collect();
+    let projects_json: Vec<serde_json::Value> = crate::projects::projects_of(map)
+        .into_iter()
+        .map(|p| project_json(&p, map))
+        .collect();
+    serde_json::json!({
+        "etag": etag,
+        "scan_roots": scan_roots,
+        "projects": projects_json,
+        "duplicates": duplicates,
+        "telegram_count": telegram_count(map),
+        "telegram_max": crate::telegram::intake::MAX_OFFERS,
+    })
+}
+
+fn conflict_response(st: &AppState, current_etag: String) -> crate::error::BrainResult<Response> {
+    let map = crate::projects::load_map(&st.map_path)?;
+    let mut body = projects_body(&map, current_etag);
+    body["error"] = serde_json::json!(
+        "projects_map.json vừa thay đổi ở nơi khác — đã tải lại danh sách, hãy sửa lại"
+    );
+    Ok((
+        StatusCode::CONFLICT,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/json; charset=utf-8",
+        )],
+        Json(body),
+    )
+        .into_response())
+}
+
+/// Saves the map, syncs SQLite and builds the shared success body.
+fn save_and_respond(
+    st: &AppState,
+    data: &serde_json::Value,
+    status: StatusCode,
+    extra: Option<(&str, serde_json::Value)>,
+) -> crate::error::BrainResult<Response> {
+    crate::projects::save_map(&st.map_path, data)?;
+    if let Ok(conn) = crate::db::open(&st.db_path) {
+        crate::db::sync_projects(&conn, &crate::projects::projects_of(data))?;
+    }
+    let new_etag = map_etag(&st.map_path);
+    let mut body = projects_body(data, new_etag);
+    let raw_projects = data
+        .get("projects")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let warnings: Vec<String> = crate::projects::find_duplicates(&raw_projects)
+        .iter()
+        .map(|(key, ids)| format!("CẢNH BÁO: tên/alias trùng \"{key}\": {}", ids.join(", ")))
+        .collect();
+    body["warnings"] = serde_json::json!(warnings);
+    if let Some((k, v)) = extra {
+        body[k] = v;
+    }
+    Ok((status, Json(body)).into_response())
+}
+
+const MAX_SCAN_ROOTS: usize = 20;
+const MAX_PATH_CHARS: usize = 500;
+const MAX_DIR_ENTRIES: usize = 300;
+
+/// Absolute or `~/` path, no control chars, no `..`. Returns the expanded path.
+fn parse_path(raw: &str) -> Result<std::path::PathBuf, String> {
+    if raw.chars().count() > MAX_PATH_CHARS {
+        return Err(format!("Đường dẫn quá dài (tối đa {MAX_PATH_CHARS} ký tự)"));
+    }
+    if raw.chars().any(|c| c.is_control()) {
+        return Err("Đường dẫn chứa ký tự điều khiển".to_string());
+    }
+    if !(raw.starts_with('/') || raw.starts_with("~/") || raw == "~") {
+        return Err(format!(
+            "Đường dẫn phải tuyệt đối hoặc bắt đầu bằng ~/: {raw}"
+        ));
+    }
+    let expanded = crate::config::expand_tilde(raw, &crate::config::home_dir());
+    if expanded
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!("Đường dẫn không được chứa '..': {raw}"));
+    }
+    Ok(expanded)
+}
+
+fn parse_dir(raw: &str) -> Result<std::path::PathBuf, String> {
+    let p = parse_path(raw)?;
+    if !p.is_dir() {
+        return Err(format!("Thư mục không tồn tại: {raw}"));
+    }
+    Ok(p)
 }
 
 #[derive(serde::Deserialize)]
@@ -63,16 +195,48 @@ pub struct UpdateAliasesBody {
     pub etag: String,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateTelegramBody {
+    pub enabled: bool,
+    pub etag: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateScanRootsBody {
+    pub roots: Vec<String>,
+    pub etag: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddProjectBody {
+    pub path: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub etag: String,
+}
+
+#[derive(serde::Deserialize)]
+struct FsDirsQuery {
+    path: Option<String>,
+    hidden: Option<String>,
+}
+
 #[derive(serde::Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ScanBody {}
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/api/projects", get(list_projects))
+        .route("/api/projects", get(list_projects).post(add_project_api))
+        .route("/api/fs/dirs", get(fs_dirs))
+        .route("/api/projects/scan-roots", put(update_scan_roots))
         .route("/api/projects/suggest", get(suggest_projects))
         .route("/api/projects/scan", post(scan_projects))
         .route("/api/projects/{id}", put(update_aliases))
+        .route("/api/projects/{id}/telegram", put(update_telegram))
         .route("/api/projects/{id}/status", get(project_status))
 }
 
@@ -91,45 +255,14 @@ async fn list_projects(
         let map = crate::projects::load_map(&st.map_path)?;
         let etag = map_etag(&st.map_path);
 
-        let scan_roots = map
-            .get("scan_roots")
-            .and_then(|r| r.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        let raw_projects = map
-            .get("projects")
-            .and_then(|p| p.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        let duplicates_raw = crate::projects::find_duplicates(&raw_projects);
-        let duplicates: Vec<serde_json::Value> = duplicates_raw
-            .into_iter()
-            .map(|(key, ids)| {
-                serde_json::json!({
-                    "key": key,
-                    "ids": ids,
-                })
-            })
-            .collect();
-
         let mut projects = crate::projects::projects_of(&map);
+        let mut body = projects_body(&map, etag);
         if let Some(prof) = profile_opt {
             projects.retain(|p| p.profile == prof);
+            let filtered: Vec<serde_json::Value> =
+                projects.iter().map(|p| project_json(p, &map)).collect();
+            body["projects"] = serde_json::json!(filtered);
         }
-
-        let projects_json: Vec<serde_json::Value> = projects
-            .into_iter()
-            .map(|p| project_json(&p, &map))
-            .collect();
-
-        let body = serde_json::json!({
-            "etag": etag,
-            "scan_roots": scan_roots,
-            "projects": projects_json,
-            "duplicates": duplicates,
-        });
 
         Ok(Json(body).into_response())
     })
@@ -197,45 +330,7 @@ async fn update_aliases(
 
         let current_etag = map_etag(&st.map_path);
         if body.etag != current_etag {
-            let map = crate::projects::load_map(&st.map_path)?;
-            let scan_roots = map
-                .get("scan_roots")
-                .and_then(|r| r.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let raw_projects = map
-                .get("projects")
-                .and_then(|p| p.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let duplicates_raw = crate::projects::find_duplicates(&raw_projects);
-            let duplicates: Vec<serde_json::Value> = duplicates_raw
-                .into_iter()
-                .map(|(key, ids)| serde_json::json!({ "key": key, "ids": ids }))
-                .collect();
-            let projects = crate::projects::projects_of(&map);
-            let projects_json: Vec<serde_json::Value> = projects
-                .into_iter()
-                .map(|p| project_json(&p, &map))
-                .collect();
-
-            let conflict_body = serde_json::json!({
-                "error": "projects_map.json vừa thay đổi ở nơi khác — đã tải lại danh sách, hãy sửa lại",
-                "etag": current_etag,
-                "scan_roots": scan_roots,
-                "projects": projects_json,
-                "duplicates": duplicates,
-            });
-
-            return Ok((
-                StatusCode::CONFLICT,
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/json; charset=utf-8",
-                )],
-                Json(conflict_body),
-            )
-                .into_response());
+            return conflict_response(&st, current_etag);
         }
 
         let mut data = crate::projects::load_map(&st.map_path)?;
@@ -289,50 +384,282 @@ async fn update_aliases(
                 .collect(),
         );
 
-        crate::projects::save_map(&st.map_path, &data)?;
+        save_and_respond(&st, &data, StatusCode::OK, None)
+    })
+    .await;
 
-        if let Ok(conn) = crate::db::open(&st.db_path) {
-            crate::db::sync_projects(&conn, &crate::projects::projects_of(&data))?;
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+async fn update_telegram(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<UpdateTelegramBody>,
+) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if body.etag != current_etag {
+            return conflict_response(&st, current_etag);
         }
 
-        let new_etag = map_etag(&st.map_path);
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        let project = match crate::projects::projects_of(&data)
+            .into_iter()
+            .find(|p| p.id == id)
+        {
+            Some(p) => p,
+            None => {
+                return Ok(json_error(
+                    StatusCode::NOT_FOUND,
+                    &format!("Không tìm thấy dự án {id}"),
+                ))
+            }
+        };
 
-        let raw_projects = data
-            .get("projects")
-            .and_then(|p| p.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let duplicates_raw = crate::projects::find_duplicates(&raw_projects);
-        let mut warnings = Vec::new();
-        for (key, ids) in &duplicates_raw {
-            let ids_str = ids.join(", ");
-            warnings.push(format!("CẢNH BÁO: tên/alias trùng \"{key}\": {ids_str}"));
+        let already = telegram_ids(&data).iter().any(|i| i == &id);
+        if body.enabled {
+            if project.kind == "media" {
+                return Ok(json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "Dự án loại media không giao việc qua Telegram được.",
+                ));
+            }
+            if project.missing {
+                return Ok(json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "Thư mục dự án không còn.",
+                ));
+            }
+            if !already {
+                if telegram_count(&data) >= crate::telegram::intake::MAX_OFFERS {
+                    return Ok(json_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        &format!(
+                            "Tối đa {} dự án cho Telegram.",
+                            crate::telegram::intake::MAX_OFFERS
+                        ),
+                    ));
+                }
+                match data
+                    .get_mut("telegram_projects")
+                    .and_then(|v| v.as_array_mut())
+                {
+                    Some(arr) => arr.push(serde_json::Value::String(id.clone())),
+                    None => data["telegram_projects"] = serde_json::json!([id.clone()]),
+                }
+            }
+        } else if let Some(arr) = data
+            .get_mut("telegram_projects")
+            .and_then(|v| v.as_array_mut())
+        {
+            arr.retain(|v| v.as_str() != Some(id.as_str()));
         }
-        let duplicates: Vec<serde_json::Value> = duplicates_raw
-            .into_iter()
-            .map(|(key, ids)| serde_json::json!({ "key": key, "ids": ids }))
+
+        save_and_respond(&st, &data, StatusCode::OK, None)
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+async fn update_scan_roots(
+    State(st): State<Arc<AppState>>,
+    Json(body): Json<UpdateScanRootsBody>,
+) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if body.etag != current_etag {
+            return conflict_response(&st, current_etag);
+        }
+
+        let trimmed: Vec<&str> = body
+            .roots
+            .iter()
+            .map(|r| r.trim())
+            .filter(|r| !r.is_empty())
             .collect();
+        if trimmed.len() > MAX_SCAN_ROOTS {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &format!("Tối đa {MAX_SCAN_ROOTS} thư mục gốc."),
+            ));
+        }
 
-        let scan_roots = data
-            .get("scan_roots")
-            .and_then(|r| r.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let projects = crate::projects::projects_of(&data);
-        let projects_json: Vec<serde_json::Value> = projects
+        let mut kept: Vec<serde_json::Value> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for raw in trimmed {
+            let dir = match parse_dir(raw) {
+                Ok(d) => d,
+                Err(e) => return Ok(json_error(StatusCode::UNPROCESSABLE_ENTITY, &e)),
+            };
+            let canon = std::fs::canonicalize(&dir).unwrap_or(dir);
+            if seen.insert(canon) {
+                kept.push(serde_json::Value::String(raw.to_string()));
+            }
+        }
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        data["scan_roots"] = serde_json::Value::Array(kept);
+        save_and_respond(&st, &data, StatusCode::OK, None)
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+async fn add_project_api(
+    State(st): State<Arc<AppState>>,
+    Json(body): Json<AddProjectBody>,
+) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if body.etag != current_etag {
+            return conflict_response(&st, current_etag);
+        }
+
+        if !matches!(body.kind.as_str(), "code" | "media" | "idea") {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Loại dự án không hợp lệ — chọn code, idea hoặc media.",
+            ));
+        }
+        let dir = match parse_dir(body.path.trim()) {
+            Ok(d) => d,
+            Err(e) => return Ok(json_error(StatusCode::UNPROCESSABLE_ENTITY, &e)),
+        };
+        if body.kind == "code" && !crate::gitops::is_repo_root(&dir) {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Thư mục không phải repo git — chọn loại idea hoặc chạy git init.",
+            ));
+        }
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        let (entry, is_new) = crate::projects::add_project(&mut data, &dir, Some(&body.kind))?;
+        let entry_id = entry
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let project_val = crate::projects::projects_of(&data)
+            .iter()
+            .find(|p| p.id == entry_id)
+            .map(|p| project_json(p, &data))
+            .unwrap_or(serde_json::Value::Null);
+        let status = if is_new {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        };
+        save_and_respond(&st, &data, status, Some(("project", project_val)))
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+async fn fs_dirs(Query(query): Query<FsDirsQuery>) -> Response {
+    let res = blocking(move || {
+        let show_hidden = query.hidden.as_deref() == Some("1");
+        let raw = query
+            .path
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| crate::config::home_dir().to_string_lossy().to_string());
+        let dir = match parse_path(&raw) {
+            Ok(d) => d,
+            Err(e) => return Ok(json_error(StatusCode::UNPROCESSABLE_ENTITY, &e)),
+        };
+        let canon = match std::fs::canonicalize(&dir) {
+            Ok(c) if c.is_dir() => c,
+            _ => {
+                return Ok(json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    &format!("Thư mục không tồn tại: {raw}"),
+                ))
+            }
+        };
+        let rd = match std::fs::read_dir(&canon) {
+            Ok(r) => r,
+            Err(_) => {
+                return Ok(json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    &format!("Không đọc được thư mục: {raw}"),
+                ))
+            }
+        };
+
+        let mut dirs: Vec<(String, bool, bool)> = Vec::new();
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !show_hidden && name.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let is_link = meta.file_type().is_symlink();
+            let is_dir = if is_link {
+                std::fs::metadata(&path)
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false)
+            } else {
+                meta.is_dir()
+            };
+            if !is_dir {
+                continue;
+            }
+            let git = !is_link && path.join(".git").exists();
+            dirs.push((name, git, is_link));
+        }
+        dirs.sort_by(|a, b| a.0.cmp(&b.0));
+        let truncated = dirs.len() > MAX_DIR_ENTRIES;
+        dirs.truncate(MAX_DIR_ENTRIES);
+
+        let items: Vec<serde_json::Value> = dirs
             .into_iter()
-            .map(|p| project_json(&p, &data))
+            .map(|(name, git, link)| {
+                let mut v = serde_json::json!({ "name": name, "git": git });
+                if link {
+                    v["link"] = serde_json::json!(true);
+                }
+                v
+            })
             .collect();
+        let parent = canon
+            .parent()
+            .map(|p| serde_json::json!(p.to_string_lossy()))
+            .unwrap_or(serde_json::Value::Null);
 
-        let body = serde_json::json!({
-            "etag": new_etag,
-            "scan_roots": scan_roots,
-            "projects": projects_json,
-            "duplicates": duplicates,
-            "warnings": warnings,
-        });
-
-        Ok(Json(body).into_response())
+        Ok(Json(serde_json::json!({
+            "path": canon.to_string_lossy(),
+            "parent": parent,
+            "dirs": items,
+            "truncated": truncated,
+        }))
+        .into_response())
     })
     .await;
 

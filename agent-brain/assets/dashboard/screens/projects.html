@@ -5,6 +5,7 @@
     <button type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="scanning" @click="rescan" x-text="rescanLabel">Quét lại</button>
   </div>
   <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Danh sách lấy từ projects_map.json</p>
+  <p class="text-sm font-semibold leading-normal text-slate-900 dark:text-slate-100" x-text="telegramCountText()"></p>
 
   <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="stale">Không cập nhật được — đang thử lại...</p>
   <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isLoading">Đang tải...</p>
@@ -71,6 +72,13 @@
             <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="saving" @click="save" x-text="saveLabel">Lưu alias</button>
             <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="cancelEdit">Hủy sửa alias</button>
           </div>
+        </div>
+        <div class="space-y-2">
+          <label class="inline-flex min-h-12 items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100">
+            <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="p.telegram" :disabled="telegramDisabled(p)" :aria-label="telegramLabel(p)" @change="toggleTelegram(p)">
+            <span>Giao việc qua Telegram</span>
+          </label>
+          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="telegramLocked(p)">Dự án media hoặc mất thư mục không giao qua Telegram được.</p>
         </div>
         <div class="space-y-2">
           <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="p.missing" :title="statusTitle(p)" @click="showStatus(p)">Trạng thái git</button>

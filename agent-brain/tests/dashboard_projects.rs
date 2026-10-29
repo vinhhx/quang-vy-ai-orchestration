@@ -487,3 +487,164 @@ fn dash12_rescan_without_roots_shows_cli_error() {
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
 }
+
+// ---- Telegram toggle per project ----
+
+fn patch_map(sb: &Sandbox, f: impl FnOnce(&mut serde_json::Value)) {
+    let mut m = sb.read_map();
+    f(&mut m);
+    std::fs::write(sb.map_path(), serde_json::to_string_pretty(&m).unwrap()).expect("write map");
+}
+
+fn tg_etag(srv: &common::Serve) -> String {
+    srv.get("/api/projects").json()["etag"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn tg_put(srv: &common::Serve, id: &str, enabled: bool, etag: &str) -> common::HttpResp {
+    srv.put_json(
+        &format!("/api/projects/{id}/telegram"),
+        &serde_json::json!({"enabled": enabled, "etag": etag}),
+    )
+}
+
+#[test]
+fn telegram_toggle_flow() {
+    let sb = Sandbox::new();
+    let repo_a = sb.make_repo("tg-a", &[], None, None);
+    let repo_b = sb.make_repo("tg-b", &[], None, None);
+    let mut ea = sb.project_entry(&repo_a, "tg-a", "work");
+    ea["aliases"] = serde_json::json!(["alpha"]);
+    let eb = sb.project_entry(&repo_b, "tg-b", "work");
+    let mut em = sb.project_entry(&repo_a, "tg-media", "work");
+    em["type"] = serde_json::json!("media");
+    let mut ex = sb.project_entry(&repo_a, "tg-gone", "work");
+    ex["missing"] = serde_json::json!(true);
+    sb.write_map(serde_json::json!([ea, eb, em, ex]), &["/some/root"]);
+    patch_map(&sb, |m| {
+        m["telegram_projects"] = serde_json::json!([7, "other", {"x": 1}]);
+        m["extra_key"] = serde_json::json!({"keep": true});
+    });
+
+    let mut srv = sb.serve(&[]);
+
+    // (a) list exposes the new fields
+    let j = srv.get("/api/projects").json();
+    assert_eq!(j["telegram_max"], 30);
+    assert_eq!(j["telegram_count"], 0);
+    for p in j["projects"].as_array().unwrap() {
+        assert!(p["telegram"].is_boolean());
+        assert!(p["telegram_offerable"].is_boolean());
+    }
+    let by_id = |j: &serde_json::Value, id: &str| {
+        j["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by_id(&j, "tg-a")["telegram_offerable"], true);
+    assert_eq!(by_id(&j, "tg-media")["telegram_offerable"], false);
+    assert_eq!(by_id(&j, "tg-gone")["telegram_offerable"], false);
+
+    // (b) enable appends at the end, keeps other keys, new etag
+    let etag0 = tg_etag(&srv);
+    let before = sb.read_map();
+    let r = tg_put(&srv, "tg-a", true, &etag0);
+    assert_eq!(r.status, 200);
+    let rj = r.json();
+    assert_ne!(rj["etag"].as_str().unwrap(), etag0);
+    assert_eq!(by_id(&rj, "tg-a")["telegram"], true);
+    assert_eq!(rj["telegram_count"], 1);
+    let after = sb.read_map();
+    assert_eq!(
+        after["telegram_projects"],
+        serde_json::json!([7, "other", {"x": 1}, "tg-a"])
+    );
+    assert_eq!(after["projects"], before["projects"]);
+    assert_eq!(after["scan_roots"], before["scan_roots"]);
+    assert_eq!(after["extra_key"], before["extra_key"]);
+    assert_eq!(
+        after["projects"][0]["aliases"],
+        serde_json::json!(["alpha"])
+    );
+
+    // (c) enabling twice does not duplicate
+    let r = tg_put(&srv, "tg-a", true, rj["etag"].as_str().unwrap());
+    assert_eq!(r.status, 200);
+    assert_eq!(
+        sb.read_map()["telegram_projects"],
+        serde_json::json!([7, "other", {"x": 1}, "tg-a"])
+    );
+
+    // (d) disable removes only this id, keeps order and non-strings
+    let etag = tg_etag(&srv);
+    assert_eq!(tg_put(&srv, "tg-b", true, &etag).status, 200);
+    let etag = tg_etag(&srv);
+    assert_eq!(tg_put(&srv, "tg-a", false, &etag).status, 200);
+    assert_eq!(
+        sb.read_map()["telegram_projects"],
+        serde_json::json!([7, "other", {"x": 1}, "tg-b"])
+    );
+    let etag = tg_etag(&srv);
+    assert_eq!(tg_put(&srv, "tg-a", false, &etag).status, 200);
+    assert_eq!(
+        sb.read_map()["telegram_projects"],
+        serde_json::json!([7, "other", {"x": 1}, "tg-b"])
+    );
+
+    // (e) stale etag -> 409 with fresh list, file unchanged
+    let file_before = std::fs::read_to_string(sb.map_path()).unwrap();
+    let r = tg_put(&srv, "tg-a", true, &etag0);
+    assert_eq!(r.status, 409);
+    assert!(r.json()["projects"].is_array());
+    assert_eq!(std::fs::read_to_string(sb.map_path()).unwrap(), file_before);
+
+    // (f) media and missing -> 422, file unchanged
+    let etag = tg_etag(&srv);
+    let r = tg_put(&srv, "tg-media", true, &etag);
+    assert_eq!(r.status, 422);
+    assert!(r.json()["error"].as_str().unwrap().contains("media"));
+    let r = tg_put(&srv, "tg-gone", true, &etag);
+    assert_eq!(r.status, 422);
+    assert_eq!(std::fs::read_to_string(sb.map_path()).unwrap(), file_before);
+
+    // (h) unknown id -> 404
+    assert_eq!(tg_put(&srv, "nope", true, &etag).status, 404);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn telegram_toggle_limit_30() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("lim", &[], None, None);
+    let entries: Vec<serde_json::Value> = (0..31)
+        .map(|i| sb.project_entry(&repo, &format!("lim-{i}"), "work"))
+        .collect();
+    sb.write_map(serde_json::json!(entries), &[]);
+
+    let mut srv = sb.serve(&[]);
+    for i in 0..30 {
+        let etag = tg_etag(&srv);
+        assert_eq!(tg_put(&srv, &format!("lim-{i}"), true, &etag).status, 200);
+    }
+    let etag = tg_etag(&srv);
+    let r = tg_put(&srv, "lim-30", true, &etag);
+    assert_eq!(r.status, 422);
+    assert!(r.json()["error"].as_str().unwrap().contains("30"));
+    assert_eq!(
+        sb.read_map()["telegram_projects"].as_array().unwrap().len(),
+        30
+    );
+    // re-enabling one already on is still fine at the limit
+    assert_eq!(tg_put(&srv, "lim-0", true, &etag).status, 200);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}

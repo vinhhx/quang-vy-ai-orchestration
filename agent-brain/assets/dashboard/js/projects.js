@@ -9,6 +9,9 @@
       editingId: '',
       aliasText: '',
       saving: false,
+      telegramSaving: false,
+      telegramCount: 0,
+      telegramMax: 30,
       scanning: false,
       scanOut: null,
       statusFor: '',
@@ -51,6 +54,8 @@
             self.etag = res.data.etag || '';
             self.projects = res.data.projects || [];
             self.duplicates = res.data.duplicates || [];
+            self.telegramCount = res.data.telegram_count || 0;
+            self.telegramMax = res.data.telegram_max || 30;
             self.loaded = true;
             self.stale = false;
             self.loadError = '';
@@ -173,6 +178,46 @@
             self.error = window.AB.errorText(res);
           }
         });
+      },
+
+      toggleTelegram: function (p) {
+        var self = this;
+        if (this.telegramSaving || !p.telegram_offerable) return Promise.resolve();
+        this.telegramSaving = true;
+        this.message = '';
+        this.error = '';
+        var enable = !p.telegram;
+        return window.AB.api('PUT', '/api/projects/' + encodeURIComponent(p.id) + '/telegram', { enabled: enable, etag: this.etag }).then(function (res) {
+          self.telegramSaving = false;
+          if (res.ok && res.status === 200 && res.data) {
+            self.etag = res.data.etag || self.etag;
+            self.projects = res.data.projects || self.projects;
+            self.telegramCount = res.data.telegram_count || 0;
+            self.telegramMax = res.data.telegram_max || self.telegramMax;
+            self.message = enable ? 'Đã bật giao việc qua Telegram' : 'Đã tắt giao việc qua Telegram';
+          } else if (res.status === 409) {
+            self.error = (res.data && res.data.error) ? res.data.error : 'projects_map.json vừa thay đổi ở nơi khác — đã tải lại danh sách, hãy sửa lại';
+            return self.load();
+          } else {
+            self.error = window.AB.errorText(res);
+          }
+        });
+      },
+
+      telegramLabel: function (p) {
+        return p.telegram ? 'Đang bật — bấm để tắt' : 'Đang tắt — bấm để bật';
+      },
+
+      telegramDisabled: function (p) {
+        return !p.telegram_offerable || this.telegramSaving;
+      },
+
+      telegramLocked: function (p) {
+        return !p.telegram_offerable;
+      },
+
+      telegramCountText: function () {
+        return 'Telegram: ' + this.telegramCount + '/' + this.telegramMax + ' dự án';
       },
 
       rescan: function () {
