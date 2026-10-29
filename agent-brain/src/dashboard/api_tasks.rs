@@ -1041,6 +1041,9 @@ pub struct TaskState {
     pub rev: String,
     /// `tasks.origin` (05.4): `Some("telegram")` khi task do Telegram giao.
     pub origin: Option<String>,
+    /// Task do Telegram giao và dự án còn trong `telegram_projects` (đọc file lúc dựng; fail closed).
+    /// Luôn `false` khi task không do Telegram giao.
+    pub project_telegram_ok: bool,
     /// `tasks.team_json` nguyên văn (`None` = task tạo trước Phase 6); là giá trị cũ của CAS.
     pub team_json: Option<String>,
     /// `team_json` đã đọc được (`None` = task cũ hoặc dữ liệu hỏng).
@@ -1313,6 +1316,8 @@ pub fn load_task_state(
         team_json.as_deref(),
     );
     let origin = crate::db::task_origin(conn, task.id)?;
+    let project_telegram_ok = origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
+        && crate::telegram::intake::project_in_allowlist(&st.map_path, &project.id);
 
     Ok(Ok(TaskState {
         task,
@@ -1332,6 +1337,7 @@ pub fn load_task_state(
         view,
         rev,
         origin,
+        project_telegram_ok,
         team_json,
         team,
         teams,
@@ -2550,11 +2556,12 @@ pub enum ActionSource {
     Telegram,
 }
 
-/// Lý do từ chối duyệt plan của task do Telegram giao khi việc duyệt đến từ Telegram.
-pub const TELEGRAM_APPROVE_REFUSED: &str = "Task giao từ Telegram — chỉ duyệt plan trên dashboard";
+/// Lý do từ chối duyệt plan của task do Telegram giao khi dự án không còn trong `telegram_projects`.
+pub const TELEGRAM_APPROVE_REFUSED: &str =
+    "Dự án không còn trong danh sách Telegram — duyệt plan trên dashboard.";
 
 /// Như `run_control`, nhưng biết nguồn hành động: duyệt plan của task do Telegram giao
-/// bị từ chối khi đến từ Telegram (05.4 INTAKE-07); dashboard và CLI vẫn duyệt được.
+/// chỉ được từ Telegram khi dự án còn trong `telegram_projects` (D-48, kiểm lại lúc bấm); dashboard và CLI vẫn duyệt được.
 pub fn run_control_as(
     st: &AppState,
     task_id: i64,
@@ -2603,6 +2610,7 @@ pub fn run_control_as(
         "approve" => {
             if source == ActionSource::Telegram
                 && state.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
+                && !state.project_telegram_ok
             {
                 return Ok(ControlOutcome::Refused {
                     reason: TELEGRAM_APPROVE_REFUSED.to_string(),

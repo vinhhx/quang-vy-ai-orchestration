@@ -16,8 +16,9 @@ pub const TELEGRAM_MAX: usize = 4096;
 /// Longest suffix `with_suffix` keeps whole; a longer one is clipped.
 const SUFFIX_MAX: usize = 1000;
 pub const MAX_FILES: usize = 15;
-/// Gate line of a task created from Telegram: its plan is approved on the dashboard (05.4 INTAKE-07).
-pub const TELEGRAM_ORIGIN_LINE: &str = "Task giao từ Telegram — duyệt plan trên dashboard.";
+/// Gate line of a task created from Telegram: read the plan file before approving (D-48).
+pub const TELEGRAM_ORIGIN_LINE: &str =
+    "Task giao từ Telegram — xem file plan trước khi duyệt; plan có thể chứa nội dung từ tin nhắn bạn gửi hoặc chuyển tiếp.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Button {
@@ -78,11 +79,22 @@ pub fn is_telegram_origin(s: &TaskState) -> bool {
     s.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
 }
 
-/// `Duyệt plan` is offered only when the task allows it and it was not created
-/// from Telegram. Hiding is not the guard (the shared approve action refuses a
-/// Telegram approval too); it just avoids a button that can only be refused.
+/// `Duyệt plan` is offered when the task allows it and, for a task created from
+/// Telegram, its project is still in `telegram_projects` (`project_telegram_ok`, read
+/// when the state was loaded). Hiding is not the guard: the shared approve action
+/// re-checks the list at press time and fails closed.
 fn approve_offered(s: &TaskState) -> bool {
-    has_control(s, "approve") && !is_telegram_origin(s)
+    has_control(s, "approve") && (!is_telegram_origin(s) || s.project_telegram_ok)
+}
+
+/// The `Duyệt plan` button: two-step for a task created from Telegram.
+fn approve_button(s: &TaskState) -> Vec<Button> {
+    let op = if is_telegram_origin(s) {
+        Op::ApproveAsk
+    } else {
+        Op::Approve
+    };
+    button("Duyệt plan", op, s, None)
 }
 
 fn has_action(s: &TaskState, id: &str) -> bool {
@@ -375,7 +387,7 @@ pub fn buttons_for(ev: &Event, s: &TaskState) -> Vec<Vec<Button>> {
     match ev.kind {
         EventKind::Gate => {
             if approve_offered(s) {
-                rows.push(button("Duyệt plan", Op::Approve, s, None));
+                rows.push(approve_button(s));
             }
             if has_control(s, "return_lead") {
                 rows.push(button("Trả về Lead", Op::ReturnLead, s, None));
@@ -394,7 +406,7 @@ pub fn buttons_for(ev: &Event, s: &TaskState) -> Vec<Vec<Button>> {
         }
         EventKind::RunFailed => {
             if approve_offered(s) {
-                rows.push(button("Duyệt plan", Op::Approve, s, None));
+                rows.push(approve_button(s));
             }
             if return_lead {
                 rows.push(button("Trả về Lead", Op::ReturnLead, s, None));

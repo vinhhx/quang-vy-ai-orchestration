@@ -452,12 +452,14 @@ fn last_lead_prompt(sb: &Sandbox) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 05.4-03: plans of Telegram-created tasks are approved on the dashboard only
+// Plan 05.4-03 revised by D-48: plans of Telegram-created tasks are approved on Telegram
+// (two-step confirm) while the project is in `telegram_projects`; the dashboard still works
 // ---------------------------------------------------------------------------
 
-const ORIGIN_LINE: &str = "Task giao từ Telegram — duyệt plan trên dashboard.";
-const REFUSED: &str = "Task giao từ Telegram — chỉ duyệt plan trên dashboard";
+const ORIGIN_LINE: &str = "Task giao từ Telegram — xem file plan trước khi duyệt; plan có thể chứa nội dung từ tin nhắn bạn gửi hoặc chuyển tiếp.";
+const REFUSED: &str = "Dự án không còn trong danh sách Telegram — duyệt plan trên dashboard.";
 const PROJECT_LINE: &str = "Dự án: web-ban-hang · profile work · nhánh task/sua-app";
+const CONFIRM_PREFIX: &str = "Duyệt plan task 1?";
 
 /// `auto --start --origin telegram` (what the bot does): Lead, plan review, gate.
 fn auto_start_telegram_to_gate(sb: &Sandbox, sc: Value) {
@@ -479,20 +481,45 @@ fn auto_start_telegram_to_gate(sb: &Sandbox, sc: Value) {
     assert_eq!(task_auto_state(sb, 1).as_deref(), Some("gate"));
 }
 
-#[test]
-fn gate_without_approve_button() {
+fn approved_at(sb: &Sandbox, task_id: i64) -> Option<i64> {
+    sb.db()
+        .query_row(
+            "SELECT approved_at FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// A Telegram-origin task at the gate, its project listed (or not) in `telegram_projects`.
+fn telegram_gate(allowed: bool, sc: Value) -> (Sandbox, FakeTelegram, Serve, Value) {
     let sb = Sandbox::new();
     let tg = FakeTelegram::start(&sb);
     write_config(&sb, PAIRED_CHAT, 0o600);
     setup_auto_project(&sb, "work");
-
-    let mut srv = tg.serve(&sb, &[]);
+    if allowed {
+        allow_projects(&sb, &["web-ban-hang"]);
+    }
+    let srv = tg.serve(&sb, &[]);
     wait_polling(&tg, &srv);
-
-    auto_start_telegram_to_gate(&sb, gate_scenario());
+    auto_start_telegram_to_gate(&sb, sc);
     let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    (sb, tg, srv, gate)
+}
 
-    assert_eq!(labels(&gate), vec!["Trả về Lead".to_string()], "{gate}");
+#[test]
+fn gate_approve_button_follows_the_allowlist() {
+    // Listed project: the button is there, with the new origin line.
+    let (sb, _tg, mut srv, gate) = telegram_gate(true, gate_scenario());
+    assert_eq!(
+        labels(&gate),
+        vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()],
+        "{gate}"
+    );
+    assert!(
+        button_data(&gate, "Duyệt plan").starts_with("p:1:"),
+        "{gate}"
+    );
     let lines: Vec<&str> = text_of(&gate).lines().collect();
     let project = lines
         .iter()
@@ -501,50 +528,101 @@ fn gate_without_approve_button() {
     assert_eq!(lines.get(project + 1).copied(), Some(ORIGIN_LINE), "{gate}");
     assert_eq!(approved_commit(&sb, 1), None);
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+
+    // Project not listed (fail closed): no button.
+    let (sb, _tg, mut srv, gate) = telegram_gate(false, gate_scenario());
+    assert_eq!(labels(&gate), vec!["Trả về Lead".to_string()], "{gate}");
+    assert_eq!(approved_commit(&sb, 1), None);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
 
 #[test]
-fn forged_approve_refused() {
-    let sb = Sandbox::new();
-    let tg = FakeTelegram::start(&sb);
-    write_config(&sb, PAIRED_CHAT, 0o600);
-    setup_auto_project(&sb, "work");
+fn approve_asks_then_confirm_approves() {
+    let (sb, tg, mut srv, gate) = telegram_gate(true, full_flow_scenario());
+    let m = message_id_of(&gate);
 
-    let mut srv = tg.serve(&sb, &[]);
-    wait_polling(&tg, &srv);
-
-    auto_start_telegram_to_gate(&sb, full_flow_scenario());
-    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
-    assert!(
-        !labels(&gate).iter().any(|l| l == "Duyệt plan"),
-        "Telegram-origin gate must not offer Duyệt plan: {gate}"
+    // First press: confirmation screen, nothing approved.
+    press(&tg, PAIRED_CHAT, PAIRED_CHAT, &gate, "Duyệt plan");
+    let ask = wait_edit(&tg, &srv, m, |r| text_of(r).starts_with(CONFIRM_PREFIX));
+    assert!(text_of(&ask).contains("Bấm Xác nhận"), "{ask}");
+    assert_eq!(
+        labels(&ask),
+        vec!["Xác nhận duyệt".to_string(), "Huỷ".to_string()]
     );
+    assert_eq!(approved_at(&sb, 1), None);
+    assert_eq!(approved_commit(&sb, 1), None);
 
-    // A crafted `a:{task}:{rev}` with the CORRECT rev, taken from the Trả về Lead button.
-    let ret = button_data(&gate, "Trả về Lead");
-    let rev = ret
+    // Second press approves; autopilot continues.
+    let cb = press_on(&tg, m, &ask, "Xác nhận duyệt");
+    wait_answer(&tg, &srv, &cb);
+    let done = wait_edit(&tg, &srv, m, |r| {
+        text_of(r).contains("✓ Đã duyệt plan") && text_of(r).contains("— từ Telegram lúc")
+    });
+    assert!(empty_keyboard(&done), "{done}");
+    assert!(
+        text_of(&done).starts_with("Chờ duyệt plan · task 1"),
+        "{done}"
+    );
+    assert!(approved_at(&sb, 1).is_some());
+    assert!(approved_commit(&sb, 1).is_some());
+    let job = wait_for_job(&srv, 1);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    assert!(
+        stdout_of(&srv).contains("Telegram: Duyệt plan task 1 — Yêu cầu xác nhận duyệt"),
+        "{}",
+        stdout_of(&srv)
+    );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn approve_cancel_restores_the_gate() {
+    let (sb, tg, mut srv, gate) = telegram_gate(true, gate_scenario());
+    let m = message_id_of(&gate);
+    press(&tg, PAIRED_CHAT, PAIRED_CHAT, &gate, "Duyệt plan");
+    let ask = wait_edit(&tg, &srv, m, |r| text_of(r).starts_with(CONFIRM_PREFIX));
+    press_on(&tg, m, &ask, "Huỷ");
+    let back = wait_edit(&tg, &srv, m, |r| {
+        text_of(r).starts_with("Chờ duyệt plan · task 1")
+    });
+    assert_eq!(
+        labels(&back),
+        vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()],
+        "{back}"
+    );
+    assert!(button_data(&back, "Duyệt plan").starts_with("p:1:"));
+    assert_eq!(approved_at(&sb, 1), None);
+    assert_eq!(approved_commit(&sb, 1), None);
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn approve_confirm_refused_when_project_leaves_the_allowlist() {
+    let (sb, tg, mut srv, gate) = telegram_gate(true, full_flow_scenario());
+    let m = message_id_of(&gate);
+    press(&tg, PAIRED_CHAT, PAIRED_CHAT, &gate, "Duyệt plan");
+    let ask = wait_edit(&tg, &srv, m, |r| text_of(r).starts_with(CONFIRM_PREFIX));
+
+    // The project leaves the list between the two presses.
+    allow_projects(&sb, &[]);
+    let cb = press_on(&tg, m, &ask, "Xác nhận duyệt");
+    let ans = wait_answer(&tg, &srv, &cb);
+    assert_eq!(ans["json"]["text"], json!(REFUSED), "{ans}");
+    assert_eq!(ans["json"]["show_alert"], json!(true), "{ans}");
+    assert_eq!(approved_at(&sb, 1), None);
+    assert_eq!(approved_commit(&sb, 1), None);
+    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+
+    // A forged one-press `a:` is refused for the same reason (fail closed at press time).
+    let rev = button_data(&gate, "Trả về Lead")
         .strip_prefix("r:1:")
         .expect("r:1:{rev} data")
         .to_string();
-    let forged = tg.callback_update(
-        PAIRED_CHAT,
-        PAIRED_CHAT,
-        message_id_of(&gate),
-        text_of(&gate),
-        &format!("a:1:{rev}"),
-    );
-    let cb_id = forged["callback_query"]["id"].as_str().unwrap().to_string();
-    tg.push_update(forged);
-
-    let ans = wait_answer(&tg, &srv, &cb_id);
+    let cb = press_data(&tg, m, text_of(&gate), &format!("a:1:{rev}"));
+    let ans = wait_answer(&tg, &srv, &cb);
     assert_eq!(ans["json"]["text"], json!(REFUSED), "{ans}");
-    assert_eq!(ans["json"]["show_alert"], json!(true), "{ans}");
-    assert_eq!(
-        approved_commit(&sb, 1),
-        None,
-        "forged approve must not approve"
-    );
-    assert_eq!(task_auto_state(&sb, 1).as_deref(), Some("gate"));
+    assert_eq!(approved_commit(&sb, 1), None);
 
     // The dashboard still approves the same task and autopilot continues.
     let resp = srv.post_json("/api/tasks/1/approve", &json!({}));
@@ -554,6 +632,68 @@ fn forged_approve_refused() {
         .unwrap_or_else(|| panic!("no job_id in {}", resp.text()));
     assert!(approved_commit(&sb, 1).is_some());
     let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn approve_old_button_is_stale_and_strangers_are_ignored() {
+    let (sb, tg, mut srv, gate) = telegram_gate(true, full_flow_scenario());
+    let m = message_id_of(&gate);
+
+    // A press from another chat is ignored: no answer, nothing asked.
+    let data = button_data(&gate, "Duyệt plan");
+    let stranger = tg.callback_update(STRANGER_CHAT, STRANGER_CHAT, m, text_of(&gate), &data);
+    let stranger_id = stranger["callback_query"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    tg.push_update(stranger);
+
+    // The dashboard approves: the gate message's rev is now stale.
+    let resp = srv.post_json("/api/tasks/1/approve", &json!({}));
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().expect("job_id");
+    let dash_commit = approved_commit(&sb, 1).expect("dashboard approval");
+    let cb = press(&tg, PAIRED_CHAT, PAIRED_CHAT, &gate, "Duyệt plan");
+    let ans = wait_answer(&tg, &srv, &cb);
+    assert!(
+        ans["json"]["text"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("Task đã đổi trạng thái"),
+        "{ans}"
+    );
+    assert!(answers_for(&tg, &stranger_id).is_empty());
+    assert!(edits_of(&tg, m)
+        .iter()
+        .all(|r| !text_of(r).starts_with(CONFIRM_PREFIX)));
+    assert_eq!(approved_commit(&sb, 1), Some(dash_commit));
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], json!(0), "{job}");
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn non_telegram_task_still_approves_in_one_press() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+    auto_start_to_gate(&sb, full_flow_scenario());
+    let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    assert!(
+        button_data(&gate, "Duyệt plan").starts_with("a:1:"),
+        "{gate}"
+    );
+    let m = message_id_of(&gate);
+    press(&tg, PAIRED_CHAT, PAIRED_CHAT, &gate, "Duyệt plan");
+    let done = wait_edit(&tg, &srv, m, |r| text_of(r).contains("✓ Đã duyệt plan"));
+    assert!(empty_keyboard(&done), "{done}");
+    assert!(approved_commit(&sb, 1).is_some());
+    let job = wait_for_job(&srv, 1);
     assert_eq!(job["exit_code"], json!(0), "{job}");
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
@@ -710,7 +850,9 @@ fn task_command_full_flow() {
         "{confirm}"
     );
     assert!(
-        text_of(&confirm).contains("Plan của task giao từ Telegram chỉ duyệt trên dashboard."),
+        text_of(&confirm).contains(
+            "Plan sẽ gửi lại để bạn duyệt: trên Telegram (bấm hai lần) hoặc trên dashboard."
+        ),
         "{confirm}"
     );
     assert_eq!(
@@ -741,7 +883,11 @@ fn task_command_full_flow() {
     );
 
     let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
-    assert_eq!(labels(&gate), vec!["Trả về Lead".to_string()], "{gate}");
+    assert_eq!(
+        labels(&gate),
+        vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()],
+        "{gate}"
+    );
 
     // The request text is never printed on the terminal.
     for line in telegram_lines(&srv) {
@@ -2451,9 +2597,13 @@ fn untrusted_block_survives_return_lead() {
     create_from_confirm(&tg, &srv, mid, &confirm);
     assert_eq!(job_role(&srv, 1), "auto");
 
-    // The gate message: no approve button, the one-line title, dashboard only.
+    // The gate message: a two-step approve button (D-48), the one-line title.
     let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
-    assert_eq!(labels(&gate), vec!["Trả về Lead".to_string()], "{gate}");
+    assert_eq!(
+        labels(&gate),
+        vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()],
+        "{gate}"
+    );
     let lines: Vec<&str> = text_of(&gate).lines().collect();
     assert!(
         lines

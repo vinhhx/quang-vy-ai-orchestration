@@ -23,7 +23,7 @@ use super::{sleep_or_stop, BotCtx, Channel};
 use crate::dashboard::api_runs::{kill_run, KillOutcome};
 use crate::dashboard::api_tasks::{
     load_task_state, normalize_note, quota_rerun, run_control_as, run_task_action, ActionSource,
-    ControlOutcome, TaskState,
+    ControlOutcome, TaskState, TELEGRAM_APPROVE_REFUSED,
 };
 use crate::error::BrainResult;
 use serde_json::{json, Value};
@@ -493,6 +493,7 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
     let press = press_of(ctx, id, message_id, msg);
     match cb.op {
         Op::Approve => act(ctx, &press, &cb, "Duyệt plan", "approve"),
+        Op::ApproveAsk | Op::ApproveConfirm | Op::ApproveCancel => on_approve(ctx, &press, &cb),
         Op::MoreRound => act(ctx, &press, &cb, "Chạy thêm 1 vòng", "auto_more_round"),
         Op::End => act(ctx, &press, &cb, "Dừng hẳn", "auto_end"),
         Op::ReturnLead | Op::NoNote | Op::CancelNote => on_return_lead(ctx, state, &press, &cb),
@@ -982,6 +983,124 @@ fn on_kill(ctx: &Arc<BotCtx>, press: &Press, cb: &Callback) {
             reinsert(ctx, removed);
             edit(ctx, press.message_id, &base, keyboard);
             audit(label, task_id, INTERNAL_TEXT);
+        }
+    }
+}
+
+/// Text of the approval confirmation of a Telegram-created task's plan (D-48).
+pub fn approve_confirm_text(task_id: i64, title: &str) -> String {
+    format!(
+        "Duyệt plan task {task_id}?\n{title}\nPlan ở file đính kèm bên trên. Bấm Xác nhận để cho phép chạy Dev."
+    )
+}
+
+/// `Duyệt plan` of a task created from Telegram, in two presses (D-48). The first press only
+/// asks; `ApproveConfirm` approves through `run_control_as`, which re-checks `rev`, that the
+/// project is still in `telegram_projects` (fail closed) and `claim::approve_check`.
+fn on_approve(ctx: &Arc<BotCtx>, press: &Press, cb: &Callback) {
+    let label = "Duyệt plan";
+    let task_id = cb.task_id;
+    let s = match load_fresh(ctx, task_id) {
+        Loaded::State(s) => s,
+        Loaded::Gone => {
+            untrack(ctx, press.message_id);
+            stale(ctx, press, label, task_id);
+            return;
+        }
+        Loaded::Error => {
+            answer(ctx, &press.id, INTERNAL_TEXT, true);
+            return;
+        }
+    };
+    if cb.op == Op::ApproveCancel {
+        restore_original(ctx, press, task_id);
+        answer(ctx, &press.id, "Đã huỷ — chưa duyệt", false);
+        audit(label, task_id, "Đã huỷ duyệt");
+        return;
+    }
+    if cb.rev != s.rev {
+        untrack(ctx, press.message_id);
+        stale(ctx, press, label, task_id);
+        return;
+    }
+    let from_telegram = render::is_telegram_origin(&s);
+    if from_telegram && !s.project_telegram_ok {
+        answer(ctx, &press.id, TELEGRAM_APPROVE_REFUSED, true);
+        restore_original(ctx, press, task_id);
+        audit(label, task_id, TELEGRAM_APPROVE_REFUSED);
+        return;
+    }
+    if cb.op == Op::ApproveAsk {
+        if !has_control(&s, "approve") {
+            answer(ctx, &press.id, NOT_APPLICABLE, true);
+            return;
+        }
+        untrack(ctx, press.message_id);
+        let keyboard = render::keyboard_json(&[
+            button_row("Xác nhận duyệt", Op::ApproveConfirm, cb),
+            button_row("Huỷ", Op::ApproveCancel, cb),
+        ]);
+        edit(
+            ctx,
+            press.message_id,
+            &approve_confirm_text(task_id, &render::title_line(&s)),
+            keyboard,
+        );
+        answer(
+            ctx,
+            &press.id,
+            &format!("Xác nhận duyệt task {task_id}?"),
+            false,
+        );
+        audit(label, task_id, "Yêu cầu xác nhận duyệt");
+        return;
+    }
+    // Op::ApproveConfirm: the second press. The result goes under the original message text.
+    let base = detect::current_event(&s)
+        .map(|ev| render::message_for(&ev, &s).text)
+        .unwrap_or_else(|| press.text.clone());
+    let shown = Press {
+        id: press.id.clone(),
+        message_id: press.message_id,
+        text: base,
+    };
+    audit(label, task_id, "Đã xác nhận duyệt");
+    act(ctx, &shown, cb, label, "approve");
+}
+
+/// Puts the task's current message (text and buttons) back on the pressed message, and under
+/// the detector's watch; or says the task has moved on when no event holds any more.
+fn restore_original(ctx: &Arc<BotCtx>, press: &Press, task_id: i64) {
+    let current = match load_fresh(ctx, task_id) {
+        Loaded::State(s) => detect::current_event(&s).map(|ev| {
+            let r = render::message_for(&ev, &s);
+            (ev, r)
+        }),
+        _ => None,
+    };
+    match current {
+        Some((ev, r)) => {
+            let kb = render::keyboard_json(&r.keyboard);
+            {
+                let mut reg = ctx.registry.lock().unwrap_or_else(|e| e.into_inner());
+                reg.remove_by_message(press.message_id);
+                if reg.get(task_id).is_none() {
+                    reg.insert(Tracked {
+                        task_id,
+                        key: ev.key.clone(),
+                        kind: ev.kind,
+                        message_id: press.message_id,
+                        text: r.text.clone(),
+                        keyboard: kb.clone(),
+                    });
+                }
+            }
+            edit(ctx, press.message_id, &r.text, kb);
+        }
+        None => {
+            untrack(ctx, press.message_id);
+            let sentence = format!("Task đã đổi trạng thái: {}", state_now(ctx, task_id));
+            edit(ctx, press.message_id, &sentence, render::no_keyboard());
         }
     }
 }

@@ -455,7 +455,7 @@ fn quota_two_tap_rerun() {
 // Task 2: stale list or rev, cancel, later, Telegram-origin rule, strangers
 // ---------------------------------------------------------------------------
 
-const REFUSED: &str = "Task giao từ Telegram — chỉ duyệt plan trên dashboard";
+const REFUSED: &str = "Dự án không còn trong danh sách Telegram — duyệt plan trên dashboard.";
 const TEAMS_CHANGED: &str = "Danh sách đội hình đã đổi — chọn lại.";
 
 fn approved_commit(sb: &Sandbox, task_id: i64) -> Option<String> {

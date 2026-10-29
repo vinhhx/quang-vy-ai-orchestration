@@ -11,6 +11,10 @@ const REV_LEN: usize = 16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     Approve,
+    /// Two-step approval of a Telegram-created task's plan: ask, confirm, cancel.
+    ApproveAsk,
+    ApproveConfirm,
+    ApproveCancel,
     ReturnLead,
     MoreRound,
     End,
@@ -25,8 +29,11 @@ pub enum Op {
     RetryLater,
 }
 
-pub const ALL_OPS: [Op; 11] = [
+pub const ALL_OPS: [Op; 14] = [
     Op::Approve,
+    Op::ApproveAsk,
+    Op::ApproveConfirm,
+    Op::ApproveCancel,
     Op::ReturnLead,
     Op::MoreRound,
     Op::End,
@@ -43,6 +50,9 @@ impl Op {
     pub fn code(self) -> char {
         match self {
             Op::Approve => 'a',
+            Op::ApproveAsk => 'p',
+            Op::ApproveConfirm => 'y',
+            Op::ApproveCancel => 'q',
             Op::ReturnLead => 'r',
             Op::MoreRound => 'm',
             Op::End => 'e',
@@ -619,7 +629,7 @@ mod tests {
         );
         assert_eq!(decode(&format!("v:3:1:{REV}")), None);
         // Every 05.3 code still decodes.
-        for c in ["a", "r", "m", "e", "n", "c"] {
+        for c in ["a", "p", "y", "q", "r", "m", "e", "n", "c"] {
             assert!(decode(&format!("{c}:1:{REV}")).is_some(), "{c}");
         }
         for c in ["k", "K", "x"] {
@@ -635,7 +645,7 @@ mod tests {
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), n, "a callback code is used twice");
-        assert_eq!(ALL_OPS.len(), 11);
+        assert_eq!(ALL_OPS.len(), 14);
         for op in ALL_OPS {
             assert_eq!(Op::from_code(op.code()), Some(op));
         }

@@ -48,7 +48,8 @@ pub const CHOOSE_PROJECT: &str = "Chọn dự án cho task:";
 pub const CHOOSE_WORKFLOW: &str = "Chọn quy trình";
 pub const CHOOSE_TEAM: &str = "Chọn đội hình cho task:";
 pub const CONFIRM_TITLE: &str = "Xác nhận giao việc";
-pub const CONFIRM_FOOTER: &str = "Plan của task giao từ Telegram chỉ duyệt trên dashboard.";
+pub const CONFIRM_FOOTER: &str =
+    "Plan sẽ gửi lại để bạn duyệt: trên Telegram (bấm hai lần) hoặc trên dashboard.";
 pub const ACCEPTED: &str = "Đã nhận — đang lập plan";
 pub const CANCELLED: &str = "Đã huỷ — không tạo task.";
 pub const REPLACED: &str = "Đã huỷ — có yêu cầu mới.";
@@ -287,7 +288,7 @@ pub fn is_forwarded(msg: &Value) -> bool {
 }
 
 /// The ids of `telegram_projects` (string entries, in order, without repeats).
-fn allowlist_ids(map: &Value) -> Vec<String> {
+pub(crate) fn allowlist_ids(map: &Value) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     if let Some(arr) = map.get("telegram_projects").and_then(Value::as_array) {
         for id in arr.iter().filter_map(Value::as_str) {
@@ -297,6 +298,15 @@ fn allowlist_ids(map: &Value) -> Vec<String> {
         }
     }
     out
+}
+
+/// True when `project_id` is listed in `telegram_projects` of the map at `map_path`, read now.
+/// Fails closed: an unreadable map or an empty list answers false.
+pub(crate) fn project_in_allowlist(map_path: &std::path::Path, project_id: &str) -> bool {
+    match load_map(map_path) {
+        Ok(map) => allowlist_ids(&map).iter().any(|id| id == project_id),
+        Err(_) => false,
+    }
 }
 
 /// Ids of `telegram_projects` that are not in the map's `projects`.
