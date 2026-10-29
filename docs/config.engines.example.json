@@ -32,10 +32,10 @@
     {
       "id": "claude-max",
       "kind": "anthropic",
-      "label": "Claude Max cá nhân — chỉ dự án personal",
-      "_note": "Đội hình dùng engine này trên dự án work bị từ chối (ranh giới work/personal, SPK-10, D-36). QA luôn là claude có sẵn, không dùng engine này (D-39).",
+      "label": "Claude Max (hieutranvan@vccorp.vn)",
+      "_note": "Gắn tài khoản theo engine, chạy trên mọi profile. QA luôn là claude có sẵn (D-39).",
       "command": "claude",
-      "pin_profile": "personal",
+      "claude_config_dir": "~/.claude-max",
       "models": {
         "lead": "opus",
         "dev": "opus"
