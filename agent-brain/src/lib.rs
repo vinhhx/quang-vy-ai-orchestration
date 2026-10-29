@@ -23,6 +23,7 @@ pub mod roles;
 pub mod routing;
 pub mod runner;
 pub mod secrets;
+pub mod skills;
 pub mod staff;
 pub mod stats;
 pub mod stream;

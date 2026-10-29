@@ -515,6 +515,360 @@ pub fn validate_plan(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String>
         }
     }
 
+    // 5. optional run grants (skill mode): absent sections add no error
+    errors.extend(validate_grants(&run_grants(plan), root));
+
+    errors
+}
+
+/// What an approved plan lets the Dev do beyond its files (skill mode, D-49). Every list is empty
+/// for a plan without the four optional sections, and then nothing changes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Grants {
+    /// `## Skill sử dụng` — informational (name and path as written).
+    pub skills: Vec<String>,
+    /// `## Lệnh được chạy` — command patterns, as written between the backticks.
+    pub commands: Vec<String>,
+    /// `## Thư mục được đọc` — directory globs.
+    pub read_dirs: Vec<String>,
+    /// `## Thư mục được ghi` — directory globs.
+    pub write_dirs: Vec<String>,
+}
+
+impl Grants {
+    /// True when the plan declares nothing that changes the Dev's rights.
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty() && self.read_dirs.is_empty() && self.write_dirs.is_empty()
+    }
+}
+
+pub const GRANT_SECTION_SKILLS: &str = "Skill sử dụng";
+pub const GRANT_SECTION_COMMANDS: &str = "Lệnh được chạy";
+pub const GRANT_SECTION_READ: &str = "Thư mục được đọc";
+pub const GRANT_SECTION_WRITE: &str = "Thư mục được ghi";
+/// At most this many entries per grant section.
+pub const MAX_GRANT_ITEMS: usize = 20;
+
+fn grant_section<'a>(plan: &'a Plan, name: &str) -> &'a str {
+    plan.sections
+        .iter()
+        .find(|(k, _)| k.starts_with(name))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("")
+}
+
+/// The backticked value of each bullet line (`- ` or `* `); HTML comments are dropped and a
+/// bullet without a backticked value grants nothing. For skills the text after the value is kept.
+fn grant_items(body: &str, keep_rest: bool) -> Vec<String> {
+    static COMMENT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = COMMENT_RE.get_or_init(|| regex::Regex::new(r"(?s)<!--.*?-->").unwrap());
+    let body = re.replace_all(body, "");
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) else {
+            continue;
+        };
+        let rest = rest.trim();
+        let Some(open) = rest.find('`') else {
+            continue;
+        };
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('`') else {
+            continue;
+        };
+        let value: String = after[..close].trim().nfc().collect();
+        if value.is_empty() {
+            continue;
+        }
+        if keep_rest {
+            let tail = after[close + 1..].trim();
+            if tail.is_empty() {
+                out.push(value);
+            } else {
+                out.push(format!("{value} {tail}"));
+            }
+        } else {
+            out.push(value);
+        }
+    }
+    out
+}
+
+/// Reads the four optional grant sections of a plan.
+pub fn run_grants(plan: &Plan) -> Grants {
+    Grants {
+        skills: grant_items(grant_section(plan, GRANT_SECTION_SKILLS), true),
+        commands: grant_items(grant_section(plan, GRANT_SECTION_COMMANDS), false),
+        read_dirs: grant_items(grant_section(plan, GRANT_SECTION_READ), false),
+        write_dirs: grant_items(grant_section(plan, GRANT_SECTION_WRITE), false),
+    }
+}
+
+/// Characters a granted command may never hold (shell constructs).
+const GRANT_COMMAND_FORBIDDEN_CHARS: &[char] =
+    &[';', '|', '&', '$', '(', ')', '<', '>', '`', '{', '}'];
+
+/// Programs a granted command may never start with, whatever the plan says.
+const FORBIDDEN_PROGRAMS: &[&str] = &[
+    "sudo",
+    "su",
+    "doas",
+    "ssh",
+    "scp",
+    "sftp",
+    "nc",
+    "ncat",
+    "curl",
+    "wget",
+    "ftp",
+    "telnet",
+    "dd",
+    "mkfs",
+    "mount",
+    "umount",
+    "chmod",
+    "chown",
+    "eval",
+    "exec",
+    "env",
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "fish",
+    "xargs",
+    "find",
+    "nohup",
+    "setsid",
+    "docker",
+    "kubectl",
+    "systemctl",
+    "crontab",
+    "kill",
+    "pkill",
+    "killall",
+    "rsync",
+];
+
+/// Interpreters: a granted pattern must name a script (not `-c …` and not a bare `*`).
+const INTERPRETER_PROGRAMS: &[&str] = &[
+    "python", "python3", "node", "perl", "ruby", "php", "deno", "bun", "npx", "npm", "pip", "pip3",
+    "lua", "awk", "sed",
+];
+
+fn program_basename(program: &str) -> String {
+    let base = program.rsplit('/').next().unwrap_or(program);
+    base.to_lowercase()
+}
+
+/// Why `program args…` is never allowed (shared by the plan check and the guard hook); `None`
+/// when the program is not on the hard denylist. `args` are the words after the program.
+pub fn is_forbidden_program(program: &str, args: &[&str]) -> Option<String> {
+    let base = program_basename(program);
+    if FORBIDDEN_PROGRAMS.contains(&base.as_str()) {
+        return Some(format!("chương trình {base} bị cấm"));
+    }
+    if base == "rm" {
+        let risky = args.iter().any(|a| {
+            *a == "--recursive"
+                || *a == "--force"
+                || (a.starts_with('-')
+                    && !a.starts_with("--")
+                    && a[1..].chars().any(|c| c == 'r' || c == 'R' || c == 'f'))
+        });
+        if risky {
+            return Some("rm kèm -r/-R/-f bị cấm".to_string());
+        }
+    }
+    None
+}
+
+/// Why a granted command pattern is refused, `None` when it is acceptable. The pattern is one
+/// command; `*` may only be the whole last word.
+pub fn grant_command_error(pattern: &str) -> Option<String> {
+    let p = pattern.trim();
+    if p.is_empty() {
+        return Some("lệnh trống".to_string());
+    }
+    if p.contains('\n') || p.contains('\r') || p.chars().any(|c| c.is_control() && c != '\t') {
+        return Some("lệnh có xuống dòng hoặc ký tự điều khiển".to_string());
+    }
+    if let Some(c) = p
+        .chars()
+        .find(|c| GRANT_COMMAND_FORBIDDEN_CHARS.contains(c))
+    {
+        return Some(format!("lệnh có ký tự cấm ({c})"));
+    }
+    let words: Vec<&str> = p.split_whitespace().collect();
+    for (i, w) in words.iter().enumerate() {
+        if w.contains('*') && !(*w == "*" && i + 1 == words.len() && i > 0) {
+            return Some("`*` chỉ được là từ cuối cùng của lệnh".to_string());
+        }
+        if w.contains('?') || w.contains('[') || w.contains(']') || w.contains('\\') {
+            return Some("lệnh có ký tự đại diện hoặc dấu \\".to_string());
+        }
+        if w.contains("..") && w.split('/').any(|c| c == "..") {
+            return Some("lệnh có `..`".to_string());
+        }
+        if w.starts_with('/') || w.starts_with('~') || w.contains("=/") || w.contains("=~") {
+            return Some("lệnh có đường dẫn tuyệt đối hoặc bắt đầu bằng ~".to_string());
+        }
+    }
+    let program = words[0];
+    if program.starts_with('-') || program.contains('=') {
+        return Some("từ đầu tiên phải là tên chương trình".to_string());
+    }
+    let args: Vec<&str> = words[1..].to_vec();
+    if let Some(reason) = is_forbidden_program(program, &args) {
+        return Some(reason);
+    }
+    let base = program_basename(program);
+    if base == "git" {
+        let no_star = words
+            .iter()
+            .filter(|w| **w != "*")
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if let Err(reason) = crate::guard::bash_command_check(&no_star) {
+            return Some(reason);
+        }
+        if !words.get(1).is_some_and(|w| !w.starts_with('-')) {
+            return Some("git cần lệnh con rõ ràng".to_string());
+        }
+    }
+    let interp = INTERPRETER_PROGRAMS.contains(&base.as_str())
+        || base.starts_with("python")
+        || base.starts_with("node");
+    if interp {
+        match words.get(1) {
+            None => return Some("trình thông dịch phải kèm đường dẫn script".to_string()),
+            Some(w) if *w == "*" || w.starts_with('-') => {
+                return Some(
+                    "trình thông dịch phải kèm đường dẫn script, không `-c`/`*`".to_string(),
+                )
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The directory a grant glob stands for: the glob without a trailing `/**`, `**` or `/`. Only
+/// a trailing `/**` may hold `*`.
+pub fn grant_dir_base(pattern: &str) -> String {
+    let p = pattern.trim();
+    let p = p.strip_suffix("**").unwrap_or(p);
+    let p = p.trim_end_matches('/');
+    normalize_plan_path(p)
+}
+
+/// Why a directory grant is refused, `None` when acceptable. Applies to read and write dirs.
+pub fn grant_dir_error(pattern: &str, root: Option<&std::path::Path>) -> Option<String> {
+    let p = pattern.trim();
+    if p.is_empty() {
+        return Some("thư mục trống".to_string());
+    }
+    if p.chars().any(|c| c.is_control()) {
+        return Some("thư mục có ký tự điều khiển".to_string());
+    }
+    if p.starts_with('/') {
+        return Some("đường dẫn tuyệt đối".to_string());
+    }
+    if p.starts_with('~') {
+        return Some("đường dẫn bắt đầu bằng ~".to_string());
+    }
+    if p.split('/').any(|c| c == "..") {
+        return Some("đường dẫn có `..`".to_string());
+    }
+    let stem = p.strip_suffix("**").unwrap_or(p);
+    if stem.contains(['*', '?', '[', ']', '\\']) {
+        return Some("chỉ cho phép `**` ở cuối (dạng `thư-mục/**`)".to_string());
+    }
+    if p.ends_with("**") && !(stem.is_empty() || stem.ends_with('/')) {
+        return Some("`**` phải đứng sau dấu `/`".to_string());
+    }
+    let base = grant_dir_base(p);
+    if base.is_empty() || base == "." {
+        return Some("không được cấp cả gốc dự án".to_string());
+    }
+    let lower = base.to_lowercase();
+    for c in lower.split('/') {
+        if c == ".git" || c == ".planning" || c == ".claude" || c.starts_with(".env") {
+            return Some(format!("thư mục nhạy cảm ({c})"));
+        }
+    }
+    if crate::report::sensitive_path(&base) || crate::report::sensitive_path(&format!("{base}/x")) {
+        return Some("đường dẫn nhạy cảm".to_string());
+    }
+    if let Some(r) = root {
+        let root_resolved = realpath_nonstrict(r);
+        let target = realpath_nonstrict(&r.join(&base));
+        if target.strip_prefix(&root_resolved).is_err() {
+            return Some("thư mục nằm ngoài dự án".to_string());
+        }
+    }
+    None
+}
+
+/// Vietnamese errors for the grant sections of a plan (empty when it has none or all are fine).
+pub fn validate_grants(g: &Grants, root: Option<&std::path::Path>) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (name, list) in [
+        (GRANT_SECTION_COMMANDS, &g.commands),
+        (GRANT_SECTION_READ, &g.read_dirs),
+        (GRANT_SECTION_WRITE, &g.write_dirs),
+    ] {
+        if list.len() > MAX_GRANT_ITEMS {
+            errors.push(format!(
+                "Mục \"{name}\" có {} dòng — tối đa {MAX_GRANT_ITEMS}",
+                list.len()
+            ));
+        }
+    }
+    for c in &g.commands {
+        if let Some(e) = grant_command_error(c) {
+            errors.push(format!("Lệnh được chạy `{c}` bị từ chối: {e}"));
+        }
+    }
+    for d in &g.read_dirs {
+        if let Some(e) = grant_dir_error(d, root) {
+            errors.push(format!("Thư mục được đọc `{d}` bị từ chối: {e}"));
+        }
+    }
+    for d in &g.write_dirs {
+        if let Some(e) = grant_dir_error(d, root) {
+            errors.push(format!("Thư mục được ghi `{d}` bị từ chối: {e}"));
+        }
+    }
+    // a command may not run a file the Dev can write itself
+    let write_bases: Vec<String> = g
+        .write_dirs
+        .iter()
+        .filter(|d| grant_dir_error(d, None).is_none())
+        .map(|d| grant_dir_base(d))
+        .collect();
+    for c in &g.commands {
+        if grant_command_error(c).is_some() {
+            continue;
+        }
+        for w in c.split_whitespace() {
+            if w == "*" || w.starts_with('-') {
+                continue;
+            }
+            let n = normalize_plan_path(w);
+            if write_bases
+                .iter()
+                .any(|b| n == *b || n.starts_with(&format!("{b}/")))
+            {
+                errors.push(format!(
+                    "Lệnh được chạy `{c}` chạy file nằm trong thư mục được ghi — Dev có thể sửa file đó trước khi chạy"
+                ));
+                break;
+            }
+        }
+    }
     errors
 }
 
@@ -684,5 +1038,242 @@ mod tests {
         let cells = split_table_row(row).expect("row should parse");
         assert_eq!(cells.len(), 5);
         assert_eq!(cells[1], "src/a|b.py");
+    }
+
+    // ---- skill mode (D-49): grants ----
+
+    const PLAN_BASE: &str = "# Plan: t\n<!-- brain-meta: {\"task\":\"t\"} -->\n## Mục tiêu\nx\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | a.txt | - | x | y |\n## Không được đụng tới\n-\n## Cách kiểm tra\n-\n## Vướng mắc\n";
+
+    fn plan_with(extra: &str) -> Plan {
+        parse_plan(&format!("{PLAN_BASE}{extra}"))
+    }
+
+    #[test]
+    fn grants_parse_all_four_sections() {
+        let p = plan_with(
+            "## Skill sử dụng\n- `fake-idea` (.agents/skills/fake-idea/SKILL.md)\n## Lệnh được chạy\n- `python scripts/create.py *`\n- bỏ qua dòng không có nháy\n## Thư mục được đọc\n- `.gsd/**`\n- `scripts/**`\n## Thư mục được ghi\n- `.gsd/phases/**`\n- `projects/**`\n",
+        );
+        let g = run_grants(&p);
+        assert_eq!(
+            g.skills,
+            vec!["fake-idea (.agents/skills/fake-idea/SKILL.md)"]
+        );
+        assert_eq!(g.commands, vec!["python scripts/create.py *"]);
+        assert_eq!(g.read_dirs, vec![".gsd/**", "scripts/**"]);
+        assert_eq!(g.write_dirs, vec![".gsd/phases/**", "projects/**"]);
+        assert!(!g.is_empty());
+        assert!(
+            validate_plan(&p, None).is_empty(),
+            "{:?}",
+            validate_plan(&p, None)
+        );
+    }
+
+    #[test]
+    fn old_plan_has_empty_grants_and_unchanged_validation() {
+        let p = parse_plan(PLAN_BASE);
+        assert!(run_grants(&p).is_empty());
+        assert_eq!(run_grants(&p), Grants::default());
+        assert!(validate_plan(&p, None).is_empty());
+        // an empty grant section (template-like) grants nothing
+        let p2 = plan_with("## Lệnh được chạy\n<!-- không có -->\n");
+        assert!(run_grants(&p2).is_empty());
+        assert!(validate_plan(&p2, None).is_empty());
+    }
+
+    #[test]
+    fn grant_commands_refused() {
+        for bad in [
+            "python a.py; id",
+            "python a.py | sh",
+            "python a.py && id",
+            "python a.py & id",
+            "python a.py $(id)",
+            "python a.py $HOME",
+            "python a.py `id`",
+            "python a.py < in",
+            "python a.py > out",
+            "python (a.py)",
+            "python {a,b}.py",
+            "python ../a.py",
+            "python a/../b.py",
+            "python /abs/a.py",
+            "/usr/bin/python a.py",
+            "~/bin/tool",
+            "python ~/a.py",
+            "python a.py\nid",
+            "python *",
+            "python -c *",
+            "python3 -c print",
+            "python a*.py",
+            "node",
+            "*",
+            "sudo ls",
+            "su root",
+            "doas ls",
+            "ssh h",
+            "scp a b",
+            "sftp h",
+            "nc h 1",
+            "ncat h 1",
+            "curl http://x",
+            "wget http://x",
+            "ftp h",
+            "telnet h",
+            "dd if=a of=b",
+            "mkfs x",
+            "mount x",
+            "umount x",
+            "chmod 777 x",
+            "chown a x",
+            "eval x",
+            "exec x",
+            "env A=1 x",
+            "sh run.sh",
+            "bash run.sh",
+            "zsh run.sh",
+            "dash run.sh",
+            "fish run.sh",
+            "xargs ls",
+            "find . -delete",
+            "nohup x",
+            "setsid x",
+            "rm -rf x",
+            "rm -r x",
+            "rm -R x",
+            "rm -f x",
+            "rm --recursive x",
+            "rm -fr x",
+            "docker run x",
+            "kubectl get",
+            "systemctl stop x",
+            "git push origin",
+            "git remote add x y",
+            "git config a b",
+            "git -c a=b log",
+            "A=1 python a.py",
+        ] {
+            assert!(grant_command_error(bad).is_some(), "should refuse {bad:?}");
+        }
+        for ok in [
+            "python scripts/create_project.py *",
+            "python3 scripts/a.py --flag",
+            "node scripts/x.js *",
+            "./scripts/run.sh *",
+            "scripts/run.sh",
+            "rm out/a.txt",
+            "git status",
+            "git add *",
+            "make-thing --name x *",
+        ] {
+            assert_eq!(grant_command_error(ok), None, "should accept {ok:?}");
+        }
+    }
+
+    #[test]
+    fn grant_dirs_refused_and_accepted() {
+        let td = tempfile::tempdir().unwrap();
+        for bad in [
+            "../x",
+            "a/../b",
+            "/etc",
+            "~/x",
+            "~",
+            ".git",
+            ".git/**",
+            "a/.git/hooks",
+            ".planning/**",
+            ".claude/**",
+            ".claude/skills/**",
+            ".env",
+            ".env.local/**",
+            "a/.env",
+            ".github/**",
+            "key.pem",
+            "**",
+            "/**",
+            ".",
+            "./",
+            "",
+            "a/*/b",
+            "a/**/b",
+            "a*",
+            "src/**x",
+            ".vscode/**",
+        ] {
+            assert!(
+                grant_dir_error(bad, Some(td.path())).is_some(),
+                "should refuse {bad:?}"
+            );
+        }
+        for ok in [
+            ".gsd/**",
+            "scripts/**",
+            "projects",
+            "projects/",
+            "a/b/c/**",
+            "out/./x/**",
+        ] {
+            assert_eq!(
+                grant_dir_error(ok, Some(td.path())),
+                None,
+                "should accept {ok:?}"
+            );
+        }
+        assert_eq!(grant_dir_base(".gsd/phases/**"), ".gsd/phases");
+        assert_eq!(grant_dir_base("projects/"), "projects");
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path(), td.path().join("lnk")).unwrap();
+            assert!(grant_dir_error("lnk/**", Some(td.path())).is_some());
+        }
+    }
+
+    #[test]
+    fn validate_plan_reports_vietnamese_grant_errors_and_limits() {
+        let p = plan_with(
+            "## Lệnh được chạy\n- `sudo ls`\n- `python a.py; id`\n## Thư mục được ghi\n- `.git/**`\n- `../x/**`\n## Thư mục được đọc\n- `/etc/**`\n",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(errs
+            .iter()
+            .any(|e| e.contains("Lệnh được chạy `sudo ls` bị từ chối")));
+        assert!(errs.iter().any(|e| e.contains("ký tự cấm")));
+        assert!(errs
+            .iter()
+            .any(|e| e.contains("Thư mục được ghi `.git/**`")));
+        assert!(errs
+            .iter()
+            .any(|e| e.contains("Thư mục được ghi `../x/**`")));
+        assert!(errs
+            .iter()
+            .any(|e| e.contains("Thư mục được đọc `/etc/**`")));
+
+        let many: String = (0..21).map(|i| format!("- `d{i}/**`\n")).collect();
+        let p2 = plan_with(&format!("## Thư mục được ghi\n{many}"));
+        let errs2 = validate_plan(&p2, None);
+        assert!(errs2.iter().any(|e| e.contains("tối đa 20")), "{errs2:?}");
+        let many_c: String = (0..21).map(|i| format!("- `tool{i} *`\n")).collect();
+        let p3 = plan_with(&format!("## Lệnh được chạy\n{many_c}"));
+        assert!(validate_plan(&p3, None)
+            .iter()
+            .any(|e| e.contains("tối đa 20")));
+    }
+
+    #[test]
+    fn command_may_not_run_a_file_in_a_write_dir() {
+        let p = plan_with(
+            "## Lệnh được chạy\n- `python out/run.py *`\n## Thư mục được ghi\n- `out/**`\n",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(
+            errs.iter().any(|e| e.contains("thư mục được ghi")),
+            "{errs:?}"
+        );
+        let p2 = plan_with(
+            "## Lệnh được chạy\n- `python scripts/run.py *`\n## Thư mục được ghi\n- `out/**`\n",
+        );
+        assert!(validate_plan(&p2, None).is_empty());
     }
 }

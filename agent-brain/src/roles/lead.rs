@@ -269,6 +269,13 @@ pub fn cmd_lead(
         }
     }
 
+    // Skill mode (D-49): skills are found on every run, no per-project configuration.
+    let skill_block = crate::skills::prompt_block(&crate::skills::discover(&proj_path));
+    if !skill_block.is_empty() {
+        user_input.push_str("\n\n");
+        user_input.push_str(&skill_block);
+    }
+
     let abs_plan_rules = crate::roles::abs_rules(&proj_path, &[".plan.md"], &["Write", "Edit"]);
     let mut allowed = LEAD_ALLOWED_TOOLS
         .iter()
