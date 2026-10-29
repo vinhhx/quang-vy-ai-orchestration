@@ -91,6 +91,7 @@ Requirements in this phase: ENG-01 … ENG-07, plus new requirement IDs for the 
 - **D-44:** The Settings Engine section's UI-SPEC copy changes: the list comes from the configured engines, and `chưa kiểm` means "no E-09 evidence". The UI plan's first task writes a short UI-SPEC delta, and a checkpoint asks the user to approve the copy before any UI code changes. A dsh container that is not running reuses `thiếu lệnh` with a reason line, so no new readiness word is added.
 - **D-45 (revises D-36, user 2026-10-29):** An engine may carry `claude_config_dir` (e.g. `~/.claude-max`): it selects the Claude account through the config directory and is not locked to a profile. D-36 now applies only to engines with `pin_profile` (or an explicit `allowed_profiles`). Reason: the user builds teams by purpose and splits quota by account; quota already follows `runs.engine`.
 - **D-46 (revises D-06 and D-39, user 2026-10-29):** Any role, QA included, may use any configured engine; the user picks the engine per role per job. Only the technical limit stays: `người` and `dsh` are for `dev` only.
+- **D-47 (user 2026-10-29):** Project type `idea` needs no `.git` in its folder; agent-brain keeps a hidden shadow git repo (GIT_DIR outside the folder) so every role and workflow runs unchanged. Multiple paths per project is deferred to a second plan.
 
 ### Claude's Discretion
 - Behaviour when a task's team no longer exists in `teams.json` (the user left this to the planner).
