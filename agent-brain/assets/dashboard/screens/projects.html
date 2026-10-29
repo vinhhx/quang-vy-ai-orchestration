@@ -35,6 +35,76 @@
 
   <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal leading-normal whitespace-pre-wrap break-words" x-show="error" x-text="error"></div>
 
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+    <h2 class="text-xl font-semibold leading-[1.2]">Thư mục gốc quét</h2>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Bấm Quét lại để tìm repo git trong các thư mục này. Tối đa 20 thư mục.</p>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="!hasRoots()">Chưa có thư mục gốc nào.</p>
+    <ul class="space-y-2">
+      <template x-for="(r, i) in roots" :key="r">
+        <li class="flex flex-wrap items-center gap-2">
+          <span class="font-mono text-sm break-all" x-text="r"></span>
+          <button type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="removeRoot(i)" :aria-label="'Xóa ' + r">Xóa</button>
+        </li>
+      </template>
+    </ul>
+    <div class="space-y-2">
+      <label for="ab-root-input" class="text-sm font-semibold leading-normal">Thêm thư mục gốc</label>
+      <input type="text" id="ab-root-input" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" placeholder="/home/ban/code hoặc ~/code" x-model="rootInput" @keydown.enter.prevent="addRoot()">
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="addRoot()">Thêm</button>
+      <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="savingRoots" @click="saveRoots()" x-text="saveRootsLabel">Lưu thư mục gốc</button>
+    </div>
+  </div>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+    <h2 class="text-xl font-semibold leading-[1.2]">Thêm dự án</h2>
+    <div class="space-y-2">
+      <label for="ab-add-path" class="text-sm font-semibold leading-normal">Đường dẫn dự án</label>
+      <input type="text" id="ab-add-path" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" placeholder="/home/ban/du-an hoặc ~/du-an" x-model="addPath">
+      <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="browseLoading" @click="openBrowse()">Chọn thư mục…</button>
+    </div>
+
+    <div class="rounded-xl p-4 ring-1 ring-slate-200 dark:ring-slate-700 space-y-2" x-show="browseOpen">
+      <div class="flex flex-wrap items-center gap-2">
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="browseUpDisabled" @click="browseUp()">Lên</button>
+        <span class="font-mono text-sm break-all" x-text="browsePath"></span>
+      </div>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="browseLoading">Đang tải...</p>
+      <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal leading-normal whitespace-pre-wrap break-words" x-show="browseError" x-text="browseError"></div>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="browseTruncated">Chỉ hiện 300 thư mục đầu tiên.</p>
+      <ul class="space-y-2">
+        <template x-for="d in browseDirs" :key="d.name">
+          <li class="flex flex-wrap items-center gap-2">
+            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 break-all" @click="browseInto(d)" x-text="d.name"></button>
+            <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-show="d.git">git</span>
+            <button type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="pick(d)" :aria-label="'Chọn ' + d.name">Chọn</button>
+          </li>
+        </template>
+      </ul>
+      <div class="flex flex-wrap gap-2">
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="pickHere()">Chọn thư mục này</button>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="closeBrowse()">Đóng</button>
+      </div>
+    </div>
+
+    <div class="space-y-2">
+      <label for="ab-add-type" class="text-sm font-semibold leading-normal">Loại dự án</label>
+      <select id="ab-add-type" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="addType">
+        <option value="code">code</option>
+        <option value="idea">idea</option>
+        <option value="media">media</option>
+      </select>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="typeHint()"></p>
+      <ul class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 space-y-1">
+        <li>code: repo git, cần có thư mục .git.</li>
+        <li>idea: thư mục ý tưởng, không cần git.</li>
+        <li>media: thư mục tư liệu, không cần git, không giao việc qua Telegram.</li>
+      </ul>
+    </div>
+    <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="adding" @click="addProject()" x-text="addLabel">Thêm dự án</button>
+  </div>
+
   <div class="space-y-2" x-show="scanOut">
     <p class="text-sm font-semibold leading-normal" x-text="scanTitle"></p>
     <div class="rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all whitespace-pre-wrap text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-text="scanText"></div>

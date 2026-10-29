@@ -648,3 +648,220 @@ fn telegram_toggle_limit_30() {
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
 }
+
+// ---- Scan roots editor, add project, folder picker ----
+
+fn roots_put(srv: &common::Serve, roots: &[&str], etag: &str) -> common::HttpResp {
+    srv.put_json(
+        "/api/projects/scan-roots",
+        &serde_json::json!({"roots": roots, "etag": etag}),
+    )
+}
+
+fn add_post(srv: &common::Serve, path: &str, kind: &str, etag: &str) -> common::HttpResp {
+    srv.post_json(
+        "/api/projects",
+        &serde_json::json!({"path": path, "type": kind, "etag": etag}),
+    )
+}
+
+#[test]
+fn scan_roots_editor() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo("sr-a", &[], None, None);
+    let entry = sb.project_entry(&repo, "sr-a", "work");
+    sb.write_map(serde_json::json!([entry]), &["/old/root"]);
+    patch_map(&sb, |m| {
+        m["telegram_projects"] = serde_json::json!(["sr-a"]);
+    });
+    let dir1 = sb.root.join("roots-1");
+    let dir2 = sb.root.join("roots-2");
+    std::fs::create_dir_all(&dir1).unwrap();
+    std::fs::create_dir_all(&dir2).unwrap();
+    let d1 = dir1.to_str().unwrap().to_string();
+    let d1_dup = format!("{}/", d1);
+    let d2 = dir2.to_str().unwrap().to_string();
+
+    let mut srv = sb.serve(&[]);
+    let etag = tg_etag(&srv);
+    let before = sb.read_map();
+
+    // valid: saved as typed (trimmed), duplicates by canonical path removed, other keys kept
+    let padded = format!("  {d1}  ");
+    let r = roots_put(&srv, &[&padded, &d1_dup, "", &d2], &etag);
+    assert_eq!(r.status, 200, "{}", r.text());
+    let rj = r.json();
+    assert_eq!(rj["scan_roots"], serde_json::json!([d1, d2]));
+    let after = sb.read_map();
+    assert_eq!(after["scan_roots"], serde_json::json!([d1, d2]));
+    assert_eq!(after["projects"], before["projects"]);
+    assert_eq!(after["telegram_projects"], before["telegram_projects"]);
+
+    // route is not swallowed by /api/projects/{id}: the 404 message of that route never shows
+    assert_ne!(r.status, 404);
+
+    let file_before = std::fs::read_to_string(sb.map_path()).unwrap();
+    let etag = tg_etag(&srv);
+    let r = roots_put(&srv, &["/tmp/../etc"], &etag);
+    assert_eq!(r.status, 422);
+    let r = roots_put(&srv, &[sb.root.join("nope-dir").to_str().unwrap()], &etag);
+    assert_eq!(r.status, 422);
+    assert!(r.json()["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("Thư mục không tồn tại"));
+    let r = roots_put(&srv, &["relative/dir"], &etag);
+    assert_eq!(r.status, 422);
+    let many: Vec<&str> = (0..21).map(|_| d1.as_str()).collect();
+    let r = roots_put(&srv, &many, &etag);
+    assert_eq!(r.status, 422);
+    let r = roots_put(&srv, &[&d1], "stale-etag");
+    assert_eq!(r.status, 409);
+    assert_eq!(std::fs::read_to_string(sb.map_path()).unwrap(), file_before);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn add_project_by_path() {
+    let sb = Sandbox::new();
+    sb.write_map(serde_json::json!([]), &[]);
+    let repo = sb.make_repo("ap-git", &[], None, None);
+    let plain = sb.root.join("ap-plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let plain_s = plain.to_str().unwrap().to_string();
+    let repo_s = repo.to_str().unwrap().to_string();
+
+    let mut srv = sb.serve(&[]);
+
+    let etag = tg_etag(&srv);
+    let r = add_post(&srv, &repo_s, "code", &etag);
+    assert_eq!(r.status, 201, "{}", r.text());
+    let rj = r.json();
+    assert_eq!(rj["project"]["type"], "code");
+    assert!(rj["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["id"] == rj["project"]["id"]));
+    assert_eq!(sb.read_map()["projects"].as_array().unwrap().len(), 1);
+
+    // same path again -> 200, no duplicate
+    let etag = tg_etag(&srv);
+    let r = add_post(&srv, &repo_s, "code", &etag);
+    assert_eq!(r.status, 200);
+    assert_eq!(sb.read_map()["projects"].as_array().unwrap().len(), 1);
+
+    // code without git -> 422
+    let etag = tg_etag(&srv);
+    let r = add_post(&srv, &plain_s, "code", &etag);
+    assert_eq!(r.status, 422);
+    assert!(r.json()["error"].as_str().unwrap().contains("git"));
+    assert_eq!(sb.read_map()["projects"].as_array().unwrap().len(), 1);
+
+    // unknown type -> 422
+    let r = add_post(&srv, &plain_s, "weird", &etag);
+    assert_eq!(r.status, 422);
+
+    // idea without git -> 201, no .git, no shadow
+    let r = add_post(&srv, &plain_s, "idea", &etag);
+    assert_eq!(r.status, 201, "{}", r.text());
+    assert_eq!(r.json()["project"]["type"], "idea");
+    assert!(!plain.join(".git").exists());
+    assert_eq!(std::fs::read_dir(&plain).unwrap().count(), 0);
+    assert!(!sb.xdg_data.join("agent-brain").join("shadow").exists());
+
+    // media without git -> 201
+    let media = sb.root.join("ap-media");
+    std::fs::create_dir_all(&media).unwrap();
+    let etag = tg_etag(&srv);
+    let r = add_post(&srv, media.to_str().unwrap(), "media", &etag);
+    assert_eq!(r.status, 201);
+
+    // stale etag -> 409; relative/.. -> 422
+    assert_eq!(add_post(&srv, &plain_s, "idea", "old").status, 409);
+    let etag = tg_etag(&srv);
+    assert_eq!(add_post(&srv, "rel/path", "idea", &etag).status, 422);
+    assert_eq!(add_post(&srv, "/tmp/../tmp", "idea", &etag).status, 422);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn fs_dirs_lists_directories_only() {
+    let sb = Sandbox::new();
+    sb.write_map(serde_json::json!([]), &[]);
+    let base = sb.root.join("fsdirs");
+    std::fs::create_dir_all(base.join("zeta")).unwrap();
+    std::fs::create_dir_all(base.join("alpha/.git")).unwrap();
+    std::fs::create_dir_all(base.join(".hidden")).unwrap();
+    std::fs::write(base.join("secret.txt"), "x").unwrap();
+    let base_s = base.to_str().unwrap().to_string();
+
+    let mut srv = sb.serve(&[]);
+
+    let r = srv.get(&format!("/api/fs/dirs?path={base_s}"));
+    assert_eq!(r.status, 200, "{}", r.text());
+    let j = r.json();
+    assert_eq!(j["truncated"], false);
+    assert!(j["parent"].is_string());
+    let names: Vec<&str> = j["dirs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["alpha", "zeta"]);
+    assert_eq!(j["dirs"][0]["git"], true);
+    assert_eq!(j["dirs"][1]["git"], false);
+    assert!(!j.to_string().contains("secret.txt"));
+
+    let j = srv
+        .get(&format!("/api/fs/dirs?path={base_s}&hidden=1"))
+        .json();
+    let names: Vec<&str> = j["dirs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec![".hidden", "alpha", "zeta"]);
+
+    // no path -> HOME
+    let r = srv.get("/api/fs/dirs");
+    assert_eq!(r.status, 200);
+
+    // truncation at 300
+    let many = sb.root.join("many");
+    for i in 0..305 {
+        std::fs::create_dir_all(many.join(format!("d{i:03}"))).unwrap();
+    }
+    let j = srv
+        .get(&format!("/api/fs/dirs?path={}", many.to_str().unwrap()))
+        .json();
+    assert_eq!(j["dirs"].as_array().unwrap().len(), 300);
+    assert_eq!(j["truncated"], true);
+
+    // bad paths
+    assert_eq!(srv.get("/api/fs/dirs?path=relative").status, 422);
+    assert_eq!(srv.get("/api/fs/dirs?path=/tmp/../etc").status, 422);
+    assert_eq!(
+        srv.get(&format!("/api/fs/dirs?path={base_s}/missing"))
+            .status,
+        422
+    );
+    assert_eq!(
+        srv.get(&format!("/api/fs/dirs?path={base_s}/secret.txt"))
+            .status,
+        422
+    );
+
+    // no token -> refused like other routes
+    let r = srv.request("GET", &format!("/api/fs/dirs?path={base_s}"), &[], b"");
+    assert!(r.status == 401 || r.status == 403, "got {}", r.status);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}

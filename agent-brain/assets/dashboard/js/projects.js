@@ -10,6 +10,20 @@
       aliasText: '',
       saving: false,
       telegramSaving: false,
+      roots: [],
+      rootInput: '',
+      rootsDirty: false,
+      savingRoots: false,
+      addPath: '',
+      addType: 'code',
+      adding: false,
+      browseOpen: false,
+      browsePath: '',
+      browseParent: null,
+      browseDirs: [],
+      browseTruncated: false,
+      browseError: '',
+      browseLoading: false,
       telegramCount: 0,
       telegramMax: 30,
       scanning: false,
@@ -56,6 +70,7 @@
             self.duplicates = res.data.duplicates || [];
             self.telegramCount = res.data.telegram_count || 0;
             self.telegramMax = res.data.telegram_max || 30;
+            if (!self.rootsDirty) self.roots = (res.data.scan_roots || []).slice();
             self.loaded = true;
             self.stale = false;
             self.loadError = '';
@@ -202,6 +217,133 @@
             self.error = window.AB.errorText(res);
           }
         });
+      },
+
+      // 409 from a write: show the API message and reload the list.
+      conflictOrError: function (res) {
+        if (res.status === 409) {
+          this.error = (res.data && res.data.error) ? res.data.error : 'projects_map.json vừa thay đổi ở nơi khác — đã tải lại danh sách, hãy sửa lại';
+          this.rootsDirty = false;
+          return this.load();
+        }
+        this.error = window.AB.errorText(res);
+        return Promise.resolve();
+      },
+
+      addRoot: function () {
+        var v = (this.rootInput || '').trim();
+        if (!v) return;
+        if (this.roots.indexOf(v) === -1) this.roots.push(v);
+        this.rootInput = '';
+        this.rootsDirty = true;
+      },
+
+      removeRoot: function (i) {
+        this.roots.splice(i, 1);
+        this.rootsDirty = true;
+      },
+
+      saveRoots: function () {
+        var self = this;
+        if (this.savingRoots) return Promise.resolve();
+        this.addRoot();
+        this.savingRoots = true;
+        this.message = '';
+        this.error = '';
+        return window.AB.api('PUT', '/api/projects/scan-roots', { roots: this.roots, etag: this.etag }).then(function (res) {
+          self.savingRoots = false;
+          if (res.ok && res.status === 200 && res.data) {
+            self.rootsDirty = false;
+            self.etag = res.data.etag || self.etag;
+            self.roots = (res.data.scan_roots || []).slice();
+            self.message = 'Đã lưu thư mục gốc quét';
+          } else {
+            return self.conflictOrError(res);
+          }
+        });
+      },
+
+      browse: function (path) {
+        var self = this;
+        this.browseOpen = true;
+        this.browseLoading = true;
+        this.browseError = '';
+        var url = '/api/fs/dirs' + (path ? '?path=' + encodeURIComponent(path) : '');
+        return window.AB.api('GET', url).then(function (res) {
+          self.browseLoading = false;
+          if (res.ok && res.data) {
+            self.browsePath = res.data.path || '';
+            self.browseParent = res.data.parent || null;
+            self.browseDirs = res.data.dirs || [];
+            self.browseTruncated = Boolean(res.data.truncated);
+          } else {
+            self.browseError = window.AB.errorText(res);
+          }
+        });
+      },
+
+      openBrowse: function () {
+        var start = (this.addPath || '').trim();
+        return this.browse(start && (start.charAt(0) === '/' || start.indexOf('~/') === 0) ? start : '');
+      },
+
+      browseUp: function () {
+        if (this.browseParent) return this.browse(this.browseParent);
+        return Promise.resolve();
+      },
+
+      browseInto: function (d) {
+        var base = this.browsePath === '/' ? '' : this.browsePath;
+        return this.browse(base + '/' + d.name);
+      },
+
+      // Choose a child directory: fills the path and suggests idea when it has no .git.
+      pick: function (d) {
+        var base = this.browsePath === '/' ? '' : this.browsePath;
+        this.addPath = base + '/' + d.name;
+        this.addType = d.git ? 'code' : 'idea';
+        this.browseOpen = false;
+      },
+
+      // Choose the folder being browsed (git status unknown: keep the chosen type).
+      pickHere: function () {
+        this.addPath = this.browsePath;
+        this.browseOpen = false;
+      },
+
+      closeBrowse: function () {
+        this.browseOpen = false;
+      },
+
+      addProject: function () {
+        var self = this;
+        if (this.adding) return Promise.resolve();
+        this.adding = true;
+        this.message = '';
+        this.error = '';
+        return window.AB.api('POST', '/api/projects', { path: (this.addPath || '').trim(), type: this.addType, etag: this.etag }).then(function (res) {
+          self.adding = false;
+          if (res.ok && (res.status === 201 || res.status === 200) && res.data) {
+            self.etag = res.data.etag || self.etag;
+            self.projects = res.data.projects || self.projects;
+            self.telegramCount = res.data.telegram_count || 0;
+            self.message = res.status === 201 ? 'Đã thêm dự án' : 'Dự án này đã có trong danh sách';
+            self.addPath = '';
+            self.addType = 'code';
+            return self.load();
+          }
+          return self.conflictOrError(res);
+        });
+      },
+
+      typeHint: function () {
+        if (this.addType === 'idea') return 'idea: thư mục ý tưởng, không cần git.';
+        if (this.addType === 'media') return 'media: thư mục tư liệu, không cần git, không giao việc qua Telegram.';
+        return 'code: repo git, cần có thư mục .git.';
+      },
+
+      hasRoots: function () {
+        return this.roots.length > 0;
       },
 
       telegramLabel: function (p) {
@@ -419,6 +561,18 @@
 
       get reloadLabel() {
         return this.reloadingWorkflows ? 'Đang đọc...' : 'Đọc lại';
+      },
+
+      get saveRootsLabel() {
+        return this.savingRoots ? 'Đang lưu...' : 'Lưu thư mục gốc';
+      },
+
+      get addLabel() {
+        return this.adding ? 'Đang thêm...' : 'Thêm dự án';
+      },
+
+      get browseUpDisabled() {
+        return !this.browseParent || this.browseLoading;
       },
 
       get saveLabel() {
