@@ -64,6 +64,22 @@ pub fn posix_normpath(path: &str) -> String {
     }
 }
 
+/// Expands a leading `~` against `HOME` of `env` (falling back to the real home directory) and
+/// normalises the result; any other path is returned unchanged.
+pub fn expand_home(dir: &str, env: &BTreeMap<String, String>) -> String {
+    if let Some(rest) = dir.strip_prefix('~') {
+        let home = env
+            .get("HOME")
+            .cloned()
+            .unwrap_or_else(|| crate::config::home_dir().to_string_lossy().to_string());
+        let remainder = rest.trim_start_matches(['/', '\\']);
+        let joined = format!("{}/{}", home.trim_end_matches(['/', '\\']), remainder);
+        posix_normpath(&joined)
+    } else {
+        dir.to_string()
+    }
+}
+
 pub fn build_env(
     profile: &str,
     profiles: &BTreeMap<String, ProfileCfg>,
@@ -83,17 +99,7 @@ pub fn build_env(
             env.remove("CLAUDE_CONFIG_DIR");
         }
         Some(dir_str) => {
-            let dir_val = if dir_str.starts_with('~') {
-                let home = env
-                    .get("HOME")
-                    .cloned()
-                    .unwrap_or_else(|| crate::config::home_dir().to_string_lossy().to_string());
-                let remainder = dir_str[1..].trim_start_matches(['/', '\\']);
-                let joined = format!("{}/{}", home.trim_end_matches(['/', '\\']), remainder);
-                posix_normpath(&joined)
-            } else {
-                dir_str.clone()
-            };
+            let dir_val = expand_home(dir_str, &env);
             env.insert("CLAUDE_CONFIG_DIR".to_string(), dir_val);
         }
     }

@@ -105,6 +105,9 @@ pub struct AnthropicDef {
     pub models: BTreeMap<String, String>,
     /// Native entries only: the profile this entry is tied to (implies `allowed_profiles`).
     pub pin_profile: Option<String>,
+    /// Native entries only: the Claude config directory (account) this entry always runs on,
+    /// whatever the project's profile; unlike `pin_profile` it does not lock the profile.
+    pub claude_config_dir: Option<String>,
     /// Compatibility knobs of an endpoint: `disable_experimental_betas`, `disable_adaptive_thinking`.
     pub compat: Vec<String>,
     /// Free text recording the E-09 evidence for the endpoint (D-40).
@@ -184,6 +187,7 @@ impl EngineDef {
     }
 
     /// `[pin_profile]` for a pinned entry, else `allowed_profiles`; `None` = no restriction.
+    /// An entry with `claude_config_dir` but no `pin_profile`/`allowed_profiles` is unrestricted (D-45).
     pub fn effective_allowed_profiles(&self) -> Option<Vec<String>> {
         if let Some(p) = self.anthropic().and_then(|a| a.pin_profile.as_ref()) {
             return Some(vec![p.clone()]);
@@ -214,6 +218,7 @@ impl EnginesCfg {
                         key_env: Some(DEFAULT_DEEPSEEK_KEY_ENV.to_string()),
                         models: default_deepseek_models(),
                         pin_profile: None,
+                        claude_config_dir: None,
                         compat: Vec::new(),
                         verified: None,
                     }),
@@ -485,12 +490,13 @@ fn parse_engines_object(
 }
 
 const COMMON_ENGINE_KEYS: [&str; 5] = ["id", "kind", "label", "allowed_profiles", "pricing"];
-const ANTHROPIC_ENGINE_KEYS: [&str; 7] = [
+const ANTHROPIC_ENGINE_KEYS: [&str; 8] = [
     "command",
     "base_url",
     "key_env",
     "models",
     "pin_profile",
+    "claude_config_dir",
     "compat",
     "verified",
 ];
@@ -749,6 +755,36 @@ fn parse_anthropic_entry(
         }
     };
 
+    let claude_config_dir = match obj.get("claude_config_dir").filter(|d| !d.is_null()) {
+        None => None,
+        Some(d) => {
+            let bad = || {
+                err(".claude_config_dir không hợp lệ (đường dẫn tuyệt đối hoặc bắt đầu bằng ~/, không có ..)"
+                    .to_string())
+            };
+            let s = d.as_str().ok_or_else(bad)?;
+            if s.is_empty()
+                || s.chars().count() > 200
+                || !(s.starts_with("~/") || s.starts_with('/'))
+                || s.contains("..")
+                || s.chars().any(|c| c.is_control())
+            {
+                return Err(bad());
+            }
+            if base_url.is_some() {
+                return Err(err(
+                    ".claude_config_dir chỉ dùng cho engine không có base_url".to_string(),
+                ));
+            }
+            if pin_profile.is_some() {
+                return Err(err(
+                    ".claude_config_dir không dùng cùng pin_profile".to_string()
+                ));
+            }
+            Some(s.to_string())
+        }
+    };
+
     let mut compat = Vec::new();
     if let Some(c) = obj.get("compat").filter(|c| !c.is_null()) {
         let bad = || {
@@ -786,6 +822,7 @@ fn parse_anthropic_entry(
         key_env,
         models,
         pin_profile,
+        claude_config_dir,
         compat,
         verified,
     })
@@ -2136,10 +2173,12 @@ mod tests {
         assert!(cfg.engines.get("claude").is_none());
         let max = cfg.engines.get("claude-max").unwrap();
         assert!(max.is_native());
+        // D-45: the account comes from `claude_config_dir`; no profile lock.
         assert_eq!(
-            max.effective_allowed_profiles(),
-            Some(vec!["personal".to_string()])
+            max.anthropic().unwrap().claude_config_dir.as_deref(),
+            Some("~/.claude-max")
         );
+        assert_eq!(max.effective_allowed_profiles(), None);
         let dsh = cfg.engines.get("dsh").unwrap();
         assert_eq!(dsh.allowed_profiles, Some(vec!["personal".to_string()]));
         assert_eq!(dsh.dsh().unwrap().container, "dsh-deepseek-harness");
@@ -2156,5 +2195,71 @@ mod tests {
 
     fn engines_array(example: &serde_json::Value) -> Vec<&serde_json::Value> {
         example["engines"].as_array().unwrap().iter().collect()
+    }
+
+    #[test]
+    fn claude_config_dir_rules() {
+        use serde_json::json;
+        let native = |extra: serde_json::Value| {
+            let mut e = json!({"id": "a", "kind": "anthropic"});
+            for (k, v) in extra.as_object().unwrap() {
+                e[k] = v.clone();
+            }
+            e
+        };
+        let cfg = config_from_value(&base_with(json!({"engines": [
+            {"id": "claude-max", "kind": "anthropic", "claude_config_dir": "~/.claude-max",
+             "models": {"lead": "opus"}},
+        ]})))
+        .unwrap();
+        let a = cfg.engines.get("claude-max").unwrap().anthropic().unwrap();
+        assert_eq!(a.claude_config_dir.as_deref(), Some("~/.claude-max"));
+        assert_eq!(
+            cfg.engines
+                .get("claude-max")
+                .unwrap()
+                .effective_allowed_profiles(),
+            None
+        );
+
+        let ok = config_from_value(&base_with(json!({"engines": [
+            native(json!({"claude_config_dir": "/opt/claude-b", "allowed_profiles": ["personal"]}))
+        ]})))
+        .unwrap();
+        assert_eq!(
+            ok.engines.get("a").unwrap().effective_allowed_profiles(),
+            Some(vec!["personal".to_string()])
+        );
+
+        let bad = "Cấu hình engines.a.claude_config_dir không hợp lệ (đường dẫn tuyệt đối hoặc bắt đầu bằng ~/, không có ..)";
+        let long = format!("/{}", "a".repeat(200));
+        for v in [
+            json!("~/../x"),
+            json!("/a/../b"),
+            json!("rel/dir"),
+            json!(""),
+            json!(long),
+            json!("/a\nb"),
+            json!(7),
+        ] {
+            assert_eq!(
+                entry_err(native(json!({"claude_config_dir": v.clone()}))),
+                bad,
+                "{v}"
+            );
+        }
+        assert_eq!(
+            entry_err(
+                json!({"id": "a", "kind": "anthropic", "base_url": "https://x.invalid",
+                "key_env": "A_KEY", "models": {"dev": "m"}, "claude_config_dir": "~/.c"})
+            ),
+            "Cấu hình engines.a.claude_config_dir chỉ dùng cho engine không có base_url"
+        );
+        assert_eq!(
+            entry_err(native(
+                json!({"claude_config_dir": "~/.c", "pin_profile": "personal"})
+            )),
+            "Cấu hình engines.a.claude_config_dir không dùng cùng pin_profile"
+        );
     }
 }

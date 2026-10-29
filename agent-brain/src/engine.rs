@@ -344,6 +344,21 @@ fn entry_status(
                     );
                 }
             }
+            if st.readiness == Readiness::SanSang.key() {
+                if let Some(dir) = &a.claude_config_dir {
+                    let expanded = crate::profile::expand_home(dir, env);
+                    if !std::path::Path::new(&expanded)
+                        .join(".claude.json")
+                        .is_file()
+                    {
+                        set_readiness(
+                            &mut st,
+                            Readiness::ThieuLenh,
+                            Some(format!("Thư mục config {dir} chưa có hoặc chưa đăng nhập Claude (thiếu .claude.json) — chạy: CLAUDE_CONFIG_DIR={dir} claude rồi /login.")),
+                        );
+                    }
+                }
+            }
             st
         }
         EngineSpec::Agy(a) => {
@@ -612,6 +627,11 @@ fn anthropic_plan(
     }
 
     let mut env = base_env;
+    // The engine's own account wins over the profile's `claude_config_dir` (D-45).
+    if let Some(dir) = &a.claude_config_dir {
+        let expanded = crate::profile::expand_home(dir, &env);
+        env.insert("CLAUDE_CONFIG_DIR".to_string(), expanded);
+    }
     // A native entry (no `base_url`) runs on the project's profile with nothing injected.
     let native = a.base_url.is_none();
     let key = match (&a.base_url, a.key_env.as_deref()) {
@@ -1822,5 +1842,91 @@ mod tests {
         let prompt_dev = &p_dev.argv[2];
         assert!(!prompt_dev.contains("chế độ chỉ đọc"));
         assert!(!prompt_dev.contains("Bạn không chạy được lệnh shell"));
+    }
+
+    #[test]
+    fn claude_config_dir_overrides_profile_account() {
+        let cfg = test_cfg(serde_json::json!({"engines": [
+            {"id": "claude-max", "kind": "anthropic", "claude_config_dir": "~/.claude-max"},
+            {"id": "plain", "kind": "anthropic"},
+            {"id": "only-p", "kind": "anthropic", "claude_config_dir": "~/.claude-max",
+             "allowed_profiles": ["personal"]},
+        ]}));
+        let argv = claude_argv_of("sonnet");
+        let mut env = env_of(&["PATH"]);
+        env.insert("HOME".to_string(), "/home/u".to_string());
+        env.insert(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            "/home/u/.claude".to_string(),
+        );
+        let p = run_plan(
+            &cfg,
+            &named("claude-max"),
+            "dev",
+            &argv,
+            "sonnet",
+            env.clone(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(p.env["CLAUDE_CONFIG_DIR"], "/home/u/.claude-max");
+        assert!(p.native);
+        let p = run_plan(
+            &cfg,
+            &named("plain"),
+            "dev",
+            &argv,
+            "sonnet",
+            env,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(p.env["CLAUDE_CONFIG_DIR"], "/home/u/.claude");
+
+        // Not locked to a profile unless the user writes allowed_profiles.
+        let def = |id: &str| cfg.engines.get(id).unwrap();
+        assert_eq!(profile_refusal(def("claude-max"), "p", "work", "dev"), None);
+        assert_eq!(
+            profile_refusal(def("claude-max"), "p", "personal", "dev"),
+            None
+        );
+        assert!(profile_refusal(def("only-p"), "p", "work", "dev").is_some());
+        assert_eq!(profile_refusal(def("only-p"), "p", "personal", "dev"), None);
+    }
+
+    #[test]
+    fn readiness_claude_config_dir_needs_login() {
+        let bin = tempfile::tempdir().unwrap();
+        make_exec(bin.path(), "claude");
+        let home = tempfile::tempdir().unwrap();
+        let mut env = BTreeMap::new();
+        env.insert("PATH".to_string(), bin.path().to_str().unwrap().to_string());
+        env.insert(
+            "HOME".to_string(),
+            home.path().to_str().unwrap().to_string(),
+        );
+        let cfg = test_cfg(serde_json::json!({"engines": [
+            {"id": "claude-max", "kind": "anthropic", "claude_config_dir": "~/.claude-max"},
+        ]}));
+
+        // Directory missing.
+        let r = readiness_with(&cfg, &env, 0, &no_probe);
+        assert_eq!(r[1].readiness, "thieu_lenh");
+        assert_eq!(
+            r[1].reason.as_deref(),
+            Some("Thư mục config ~/.claude-max chưa có hoặc chưa đăng nhập Claude (thiếu .claude.json) — chạy: CLAUDE_CONFIG_DIR=~/.claude-max claude rồi /login.")
+        );
+        // Directory present, no .claude.json.
+        let dir = home.path().join(".claude-max");
+        std::fs::create_dir(&dir).unwrap();
+        assert_eq!(
+            readiness_with(&cfg, &env, 0, &no_probe)[1].readiness,
+            "thieu_lenh"
+        );
+        // Logged in (only existence is checked, never the content).
+        std::fs::write(dir.join(".claude.json"), "{}").unwrap();
+        let r = readiness_with(&cfg, &env, 0, &no_probe);
+        assert_eq!(r[1].readiness, "san_sang");
+        assert_eq!(r[1].reason, None);
     }
 }
