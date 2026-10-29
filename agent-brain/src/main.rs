@@ -190,8 +190,8 @@ enum ProjectsCommands {
     Add {
         /// Đường dẫn thư mục dự án
         path: String,
-        /// Loại dự án (code|media)
-        #[arg(long = "type", value_name = "code|media")]
+        /// Loại dự án (code|media|idea)
+        #[arg(long = "type", value_name = "code|media|idea")]
         r#type: Option<String>,
     },
 }

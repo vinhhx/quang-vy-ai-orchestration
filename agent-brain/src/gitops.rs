@@ -1,6 +1,6 @@
 use crate::error::{BrainError, BrainResult};
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Every git process agent-brain spawns. `GIT_OPTIONAL_LOCKS=0` keeps
 /// background reads (`git status` from the dashboard and the Telegram bot)
@@ -12,7 +12,146 @@ fn git_cmd(root: &Path) -> std::process::Command {
     cmd.current_dir(root);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    if !root.join(".git").exists() {
+        let shadow = shadow_dir(root);
+        if shadow.is_dir() {
+            cmd.env("GIT_DIR", shadow);
+            cmd.env("GIT_WORK_TREE", root);
+        }
+    }
     cmd
+}
+
+/// 64-bit FNV-1a, written by hand so the hash stays stable across Rust versions.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Hidden git dir of an `idea` project: `<data_dir>/shadow/<16 hex>.git`.
+pub fn shadow_dir(root: &Path) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    let canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let hash = fnv1a64(canon.as_os_str().as_bytes());
+    crate::config::data_dir()
+        .join("shadow")
+        .join(format!("{hash:016x}.git"))
+}
+
+/// Serializes unit tests that point `XDG_DATA_HOME` at a temp dir.
+#[cfg(test)]
+pub static SHADOW_TEST_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+const SHADOW_MAX_FILES: u64 = 20_000;
+const SHADOW_MAX_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Returns true when the folder is within the shadow size limits.
+fn within_shadow_limits(root: &Path) -> bool {
+    let mut files: u64 = 0;
+    let mut bytes: u64 = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                let name = entry.file_name();
+                if name == ".git" || name == "node_modules" || name == "target" {
+                    continue;
+                }
+                stack.push(entry.path());
+            } else {
+                files += 1;
+                bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                if files > SHADOW_MAX_FILES || bytes > SHADOW_MAX_BYTES {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Creates the hidden shadow repo of an `idea` project folder (no-op when the
+/// folder has a real `.git` or the shadow already exists).
+pub fn ensure_shadow(root: &Path) -> BrainResult<()> {
+    if root.join(".git").exists() {
+        return Ok(());
+    }
+    let shadow = shadow_dir(root);
+    if shadow.exists() {
+        return Ok(());
+    }
+    if !within_shadow_limits(root) {
+        return Err(BrainError::error(format!(
+            "Thư mục ý tưởng '{}' quá lớn để theo dõi (>20000 file hoặc >500 MiB) — tách phần tài liệu nhỏ ra hoặc dùng git thật (git init).",
+            root.display()
+        )));
+    }
+    let result = create_shadow(root, &shadow);
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&shadow);
+    }
+    result
+}
+
+fn create_shadow(root: &Path, shadow: &Path) -> BrainResult<()> {
+    let shadow_s = shadow.to_string_lossy().to_string();
+    let run_plain = |args: &[&str]| -> BrainResult<()> {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .map_err(|e| BrainError::error(format!("Lỗi chạy git: {e}")))?;
+        if !out.status.success() {
+            return Err(BrainError::error(format!(
+                "Không tạo được repo ẩn: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(())
+    };
+    if let Some(parent) = shadow.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| BrainError::error(format!("Không tạo được thư mục shadow: {e}")))?;
+    }
+    let gd = format!("--git-dir={shadow_s}");
+    run_plain(&[&gd, "init", "-q", "-b", "main"])?;
+    run_plain(&[&gd, "config", "user.name", "agent-brain"])?;
+    run_plain(&[&gd, "config", "user.email", "agent-brain@localhost"])?;
+    let info = shadow.join("info");
+    std::fs::create_dir_all(&info)
+        .map_err(|e| BrainError::error(format!("Không tạo được info/exclude: {e}")))?;
+    std::fs::write(
+        info.join("exclude"),
+        ".env\n.env.*\n*.pem\n*.key\nid_rsa*\nnode_modules/\ntarget/\n",
+    )
+    .map_err(|e| BrainError::error(format!("Không ghi được info/exclude: {e}")))?;
+    git(root, &["add", "-A"])?;
+    git(
+        root,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "agent-brain: snapshot ban dau",
+        ],
+    )?;
+    Ok(())
 }
 
 pub fn git(root: &Path, args: &[&str]) -> BrainResult<String> {
@@ -521,5 +660,127 @@ mod tests {
             lock.exists(),
             "status must not touch another process's index.lock"
         );
+    }
+    // ---- shadow repo (idea projects) ----
+
+    use super::SHADOW_TEST_ENV as SHADOW_ENV;
+
+    struct ShadowEnv {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _data: tempfile::TempDir,
+        old: Option<std::ffi::OsString>,
+    }
+
+    impl ShadowEnv {
+        fn new() -> ShadowEnv {
+            let lock = SHADOW_ENV.lock().unwrap_or_else(|e| e.into_inner());
+            let data = tempfile::tempdir().unwrap();
+            let old = std::env::var_os("XDG_DATA_HOME");
+            std::env::set_var("XDG_DATA_HOME", data.path());
+            ShadowEnv {
+                _lock: lock,
+                _data: data,
+                old,
+            }
+        }
+    }
+
+    impl Drop for ShadowEnv {
+        fn drop(&mut self) {
+            match &self.old {
+                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn shadow_basic_flow() {
+        let _env = ShadowEnv::new();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("idea.md"), "# y tuong\n").unwrap();
+
+        ensure_shadow(&root).unwrap();
+        assert!(!root.join(".git").exists());
+        assert!(shadow_dir(&root).is_dir());
+        assert!(is_repo_root(&root));
+        let base = head_sha(&root).unwrap();
+        assert_eq!(base.trim().len(), 40);
+        assert_eq!(current_branch(&root).as_deref(), Some("main"));
+
+        // (b) commit a new file, diff_names between the two SHAs
+        std::fs::write(root.join("plan.md"), "plan\n").unwrap();
+        let sha = commit_paths(&root, &["plan.md"], "x: plan").unwrap();
+        let names = diff_names(&root, &base, &sha).unwrap();
+        assert_eq!(names.into_iter().collect::<Vec<_>>(), vec!["plan.md"]);
+
+        // (c) task branch
+        create_branch(&root, "task/x").unwrap();
+        assert_eq!(current_branch(&root).as_deref(), Some("task/x"));
+        git(&root, &["checkout", "main"]).unwrap();
+        assert_eq!(current_branch(&root).as_deref(), Some("main"));
+        assert!(!root.join(".git").exists());
+
+        // (d) second call is a no-op
+        ensure_shadow(&root).unwrap();
+        let count = git(&root, &["rev-list", "--count", "--all"]).unwrap();
+        assert_eq!(count.trim(), "2");
+        let roots = git(&root, &["rev-list", "--max-parents=0", "HEAD"]).unwrap();
+        assert_eq!(roots.lines().count(), 1);
+    }
+
+    #[test]
+    fn shadow_skipped_for_real_git() {
+        let _env = ShadowEnv::new();
+        let dir = repo();
+        let root = dir.path().canonicalize().unwrap();
+        ensure_shadow(&root).unwrap();
+        assert!(!shadow_dir(&root).exists());
+        assert!(root.join(".git").is_dir());
+        assert!(is_repo_root(&root));
+    }
+
+    #[test]
+    fn shadow_too_large_leaves_nothing() {
+        let _env = ShadowEnv::new();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for i in 0..=SHADOW_MAX_FILES {
+            std::fs::write(root.join(format!("f{i}")), "").unwrap();
+        }
+        let err = ensure_shadow(&root).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("quá lớn để theo dõi (>20000 file hoặc >500 MiB)"),
+            "{err}"
+        );
+        assert!(!shadow_dir(&root).exists());
+    }
+
+    #[test]
+    fn shadow_excludes_secrets() {
+        let _env = ShadowEnv::new();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for f in [".env", ".env.local", "a.pem", "b.key", "id_rsa", "ok.md"] {
+            std::fs::write(root.join(f), "secret\n").unwrap();
+        }
+        ensure_shadow(&root).unwrap();
+        let files = git(&root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap();
+        assert_eq!(files.trim(), "ok.md");
+    }
+
+    #[test]
+    fn shadow_dir_differs_per_path() {
+        let _env = ShadowEnv::new();
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let ra = a.path().join("docs");
+        let rb = b.path().join("docs");
+        std::fs::create_dir_all(&ra).unwrap();
+        std::fs::create_dir_all(&rb).unwrap();
+        assert_ne!(shadow_dir(&ra), shadow_dir(&rb));
+        assert_eq!(shadow_dir(&ra), shadow_dir(&ra));
     }
 }

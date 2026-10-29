@@ -227,6 +227,9 @@ pub fn require_runnable(project: &Project, cfg: &Config) -> BrainResult<PathBuf>
             proj_path.display()
         )));
     }
+    if project.kind == "idea" {
+        crate::gitops::ensure_shadow(&proj_path)?;
+    }
     if !crate::gitops::is_repo_root(&proj_path) {
         return Err(BrainError::error(format!(
             "Thư mục dự án '{}' không phải repo git: {}",
@@ -603,6 +606,11 @@ pub fn add_project(
     }
 
     let actual_kind = match kind {
+        Some(k) if !matches!(k, "code" | "media" | "idea") => {
+            return Err(BrainError::error(format!(
+                "Loại dự án '{k}' không hợp lệ — chọn một trong: code, media, idea"
+            )));
+        }
         Some(k) => k,
         None => {
             if abs_path.join(".git").exists() {
@@ -835,5 +843,64 @@ mod tests {
         assert_eq!(team_of(&map, "d"), None);
         assert_eq!(team_of(&map, "unknown"), None);
         assert_eq!(team_of(&serde_json::json!({}), "web"), None);
+    }
+    fn proj(kind: &str, path: &Path) -> Project {
+        Project {
+            id: "p".into(),
+            path: path.to_string_lossy().to_string(),
+            name_vi: "p".into(),
+            aliases: vec![],
+            kind: kind.into(),
+            repo: None,
+            profile: "work".into(),
+            missing: false,
+        }
+    }
+
+    #[test]
+    fn require_runnable_idea_vs_code_vs_media() {
+        let data = tempfile::tempdir().unwrap();
+        let _g = crate::gitops::SHADOW_TEST_ENV
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var_os("XDG_DATA_HOME");
+        std::env::set_var("XDG_DATA_HOME", data.path());
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+
+        let code = require_runnable(&proj("code", dir.path()), &cfg);
+        let media = require_runnable(&proj("media", dir.path()), &cfg);
+        let idea = require_runnable(&proj("idea", dir.path()), &cfg);
+        let has_git = dir.path().join(".git").exists();
+
+        match old {
+            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+        assert!(code
+            .unwrap_err()
+            .to_string()
+            .contains("không phải repo git"));
+        assert!(media
+            .unwrap_err()
+            .to_string()
+            .contains("không phải repo git"));
+        assert!(idea.is_ok(), "{:?}", idea.err());
+        assert!(!has_git);
+    }
+
+    #[test]
+    fn add_project_rejects_unknown_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut data = serde_json::json!({"projects": []});
+        let err = add_project(&mut data, dir.path(), Some("foo")).unwrap_err();
+        assert!(err.to_string().contains("code, media, idea"));
+        let (e, created) = add_project(&mut data, dir.path(), Some("idea")).unwrap();
+        assert!(created);
+        assert_eq!(e["type"], "idea");
+        assert!(e["repo"].is_null());
     }
 }

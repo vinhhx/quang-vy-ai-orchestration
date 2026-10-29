@@ -393,3 +393,71 @@ fn personal_profile_refuses_concurrent_run() {
     let _ = decoy.0.kill();
     let _ = decoy.0.wait();
 }
+
+#[test]
+fn idea_project_lead_runs_on_shadow_git() {
+    let sb = Sandbox::new();
+    let dir = sb.repos.join("y-tuong");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/app.py"), "def app():\n    return 1\n").unwrap();
+
+    let mut entry = sb.project_entry(&dir, "y-tuong", "work");
+    entry["type"] = serde_json::json!("idea");
+    entry["name_vi"] = serde_json::json!("Ý tưởng");
+    sb.write_map(serde_json::json!([entry]), &[]);
+
+    let scenario = lead_scenario(&[("src/app.py", "1-5", "thêm nút đăng xuất", "yêu cầu")]);
+    let out = sb.run(
+        &["run", "lead", "y-tuong", "thêm nút đăng xuất"],
+        Some(scenario),
+    );
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+
+    // the folder never gets a .git; the shadow repo lives under XDG_DATA_HOME
+    assert!(!dir.join(".git").exists());
+    let shadows: Vec<_> = std::fs::read_dir(sb.xdg_data.join("agent-brain").join("shadow"))
+        .expect("shadow dir")
+        .flatten()
+        .collect();
+    assert_eq!(shadows.len(), 1);
+    let gd = shadows[0].path();
+
+    let git_shadow = |args: &[&str]| -> String {
+        let out = std::process::Command::new("git")
+            .arg(format!("--git-dir={}", gd.display()))
+            .arg(format!("--work-tree={}", dir.display()))
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", &sb.git_config)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    assert_eq!(
+        git_shadow(&["log", "-1", "--format=%s"]).trim(),
+        "them-nut-dang-xuat: plan"
+    );
+    assert_eq!(
+        git_shadow(&["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]).trim(),
+        ".plan.md"
+    );
+
+    let base: String = sb
+        .db()
+        .query_row(
+            "SELECT base_commit FROM tasks ORDER BY rowid DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(base.len(), 40, "base_commit: {base}");
+}
