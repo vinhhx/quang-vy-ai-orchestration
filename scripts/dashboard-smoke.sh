@@ -1581,7 +1581,7 @@ if screen == 'assign':
 
 if screen == 'projects':
     for needle in ('Quy trình', 'Lấy từ workflows.json và 2 quy trình có sẵn.', 'mac-dinh', 'nhanh',
-                   'Quy trình mặc định: mac-dinh', 'Profile và quy trình mặc định chỉ đổi trong projects_map.json'):
+                   'Quy trình mặc định: mac-dinh', 'Quy trình mặc định chỉ đổi trong projects_map.json'):
         if needle not in full_text:
             fail(f"Màn hình Dự án không chứa '{needle}'")
     if 'Profile chỉ đổi trong projects_map.json' in full_text:
