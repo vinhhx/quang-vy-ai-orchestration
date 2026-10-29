@@ -18,6 +18,10 @@ pub struct Policy {
     pub read_dirs: Vec<PathBuf>,
     /// Directories (absolute) the approved plan lets the Dev write.
     pub write_dirs: Vec<PathBuf>,
+    /// Single files (absolute) the approved plan lets the Dev read; missing in an old policy.
+    pub read_files: Vec<PathBuf>,
+    /// Single files (absolute) the approved plan lets the Dev write.
+    pub write_files: Vec<PathBuf>,
     /// Command patterns the approved plan lets the Dev run; `None` = no extra rule (old policy).
     pub bash_allow: Option<Vec<String>>,
 }
@@ -27,6 +31,8 @@ pub struct Policy {
 pub struct GuardGrants {
     pub read_dirs: Vec<PathBuf>,
     pub write_dirs: Vec<PathBuf>,
+    pub read_files: Vec<PathBuf>,
+    pub write_files: Vec<PathBuf>,
     pub bash_allow: Option<Vec<String>>,
 }
 
@@ -197,7 +203,12 @@ pub fn decide(policy: &Policy, payload: &serde_json::Value) -> Decision {
                 path: raw_path_str,
                 reason: "in write allowlist".to_string(),
             }
-        } else if under_grant_dirs(&policy.root, &policy.write_dirs, &resolved) {
+        } else if under_grant_any(
+            &policy.root,
+            &policy.write_dirs,
+            &policy.write_files,
+            &resolved,
+        ) {
             Decision {
                 allow: true,
                 tool: tool_name.to_string(),
@@ -235,9 +246,17 @@ pub fn decide(policy: &Policy, payload: &serde_json::Value) -> Decision {
                 path: raw_path_str,
                 reason: "in read allowlist".to_string(),
             }
-        } else if under_grant_dirs(&policy.root, &policy.read_dirs, &resolved)
-            || under_grant_dirs(&policy.root, &policy.write_dirs, &resolved)
-        {
+        } else if under_grant_any(
+            &policy.root,
+            &policy.read_dirs,
+            &policy.read_files,
+            &resolved,
+        ) || under_grant_any(
+            &policy.root,
+            &policy.write_dirs,
+            &policy.write_files,
+            &resolved,
+        ) {
             Decision {
                 allow: true,
                 tool: tool_name.to_string(),
@@ -286,6 +305,31 @@ fn under_grant_dirs(root: &Path, dirs: &[PathBuf], resolved: &Path) -> bool {
             && resolved.starts_with(&d_real)
             && resolved != d_real
     })
+}
+
+/// True when `resolved` is exactly one of the granted single files: it must lie inside the root
+/// (not be the root), not be a hard-denied path, and be that very path, never a sibling, a
+/// parent or a directory.
+fn is_grant_file(root: &Path, files: &[PathBuf], resolved: &Path) -> bool {
+    if files.is_empty() {
+        return false;
+    }
+    let root_real = realpath_nfc(root);
+    let Ok(rel) = resolved.strip_prefix(&root_real) else {
+        return false;
+    };
+    if rel.as_os_str().is_empty() || grant_denied_rel(&rel.to_string_lossy()) || resolved.is_dir() {
+        return false;
+    }
+    files.iter().any(|f| {
+        let f_real = realpath_nfc(f);
+        f_real != root_real && f_real.starts_with(&root_real) && f_real == resolved
+    })
+}
+
+/// A directory grant or a single-file grant covers `resolved`.
+fn under_grant_any(root: &Path, dirs: &[PathBuf], files: &[PathBuf], resolved: &Path) -> bool {
+    under_grant_dirs(root, dirs, resolved) || is_grant_file(root, files, resolved)
 }
 
 /// Maximum number of characters of a Bash command kept in a decision / log line.
@@ -386,7 +430,12 @@ fn bash_grant_check(command: &str, allow: &[String], policy: &Policy) -> Result<
                 continue;
             }
             let resolved = realpath_nfc(&policy.root.join(w));
-            if under_grant_dirs(&policy.root, &policy.write_dirs, &resolved) {
+            if under_grant_any(
+                &policy.root,
+                &policy.write_dirs,
+                &policy.write_files,
+                &resolved,
+            ) {
                 return Err("lệnh chạy file trong thư mục được ghi — không được phép".to_string());
             }
         }
@@ -879,9 +928,23 @@ fn write_hook_settings_with_matcher(
         "log": log_path.to_string_lossy(),
     });
     // new fields only when a plan grants something: a run without grants writes the old policy
+    if !grants.read_files.is_empty() {
+        policy_data["read_files"] = serde_json::json!(grants
+            .read_files
+            .iter()
+            .map(|p| realpath_nfc(p).to_string_lossy().to_string())
+            .collect::<Vec<_>>());
+    }
     if !grants.read_dirs.is_empty() {
         policy_data["read_dirs"] = serde_json::json!(grants
             .read_dirs
+            .iter()
+            .map(|p| realpath_nfc(p).to_string_lossy().to_string())
+            .collect::<Vec<_>>());
+    }
+    if !grants.write_files.is_empty() {
+        policy_data["write_files"] = serde_json::json!(grants
+            .write_files
             .iter()
             .map(|p| realpath_nfc(p).to_string_lossy().to_string())
             .collect::<Vec<_>>());
@@ -1060,6 +1123,8 @@ pub fn cmd_guard(policy: Option<&Path>) -> i32 {
         log: log.clone(),
         read_dirs: path_list("read_dirs"),
         write_dirs: path_list("write_dirs"),
+        read_files: path_list("read_files"),
+        write_files: path_list("write_files"),
         bash_allow,
     };
 
@@ -1377,6 +1442,8 @@ mod tests {
             log: None,
             read_dirs: vec![root.join("scripts")],
             write_dirs: vec![root.join("out")],
+            read_files: vec![],
+            write_files: vec![],
             bash_allow: Some(vec!["python scripts/make.py *".to_string()]),
         }
     }
@@ -1570,6 +1637,7 @@ mod tests {
             read_dirs: vec![root.join("a")],
             write_dirs: vec![root.join("b")],
             bash_allow: Some(vec!["python x.py *".to_string()]),
+            ..GuardGrants::default()
         };
         write_hook_settings_grants(&run, &root, None, &[], &exe, &g).unwrap();
         let new: serde_json::Value =
@@ -1577,5 +1645,113 @@ mod tests {
                 .unwrap();
         assert_eq!(new["bash_allow"][0], "python x.py *");
         assert!(new["write_dirs"][0].as_str().unwrap().ends_with("/b"));
+    }
+
+    // ---- single-file grants ----
+
+    fn file_grant_policy(root: &Path) -> Policy {
+        let mut pol = grant_policy(root);
+        pol.read_dirs.clear();
+        pol.write_dirs.clear();
+        pol.read_files = vec![root.join("scripts/create.py"), root.join(".env")];
+        pol.write_files = vec![root.join("out/result.txt")];
+        pol
+    }
+
+    #[test]
+    fn grant_read_file_allows_only_that_file() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::write(root.join("scripts/create.py"), "x").unwrap();
+        std::fs::write(root.join("scripts/other.py"), "x").unwrap();
+        let pol = file_grant_policy(&root);
+        assert!(decide(&pol, &file_payload("Read", &root, "scripts/create.py")).allow);
+        assert!(!decide(&pol, &file_payload("Read", &root, "scripts/other.py")).allow);
+        assert!(!decide(&pol, &file_payload("Read", &root, "scripts")).allow);
+        assert!(!decide(&pol, &file_payload("Read", &root, "other.py")).allow);
+        assert!(!decide(&pol, &file_payload("Write", &root, "scripts/create.py")).allow);
+    }
+
+    #[test]
+    fn grant_write_file_allows_only_that_file() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        let pol = file_grant_policy(&root);
+        assert!(decide(&pol, &file_payload("Write", &root, "out/result.txt")).allow);
+        assert!(decide(&pol, &file_payload("Read", &root, "out/result.txt")).allow);
+        assert!(!decide(&pol, &file_payload("Write", &root, "out/sibling.txt")).allow);
+        assert!(!decide(&pol, &file_payload("Write", &root, "out")).allow);
+        assert!(!decide(&pol, &file_payload("Write", &root, "result.txt")).allow);
+    }
+
+    #[test]
+    fn grant_file_entries_never_cover_sensitive_paths() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join(".planning")).unwrap();
+        let mut pol = file_grant_policy(&root);
+        pol.read_files.extend([
+            root.join(".git/config"),
+            root.join(".planning/STATE.md"),
+            root.join("keys/id_rsa"),
+            root.clone(),
+        ]);
+        pol.write_files
+            .extend([root.join(".env.local"), root.join(".git/x")]);
+        for rel in [".env", ".git/config", ".planning/STATE.md", "keys/id_rsa"] {
+            assert!(
+                !decide(&pol, &file_payload("Read", &root, rel)).allow,
+                "{rel}"
+            );
+        }
+        for rel in [".env.local", ".git/x"] {
+            assert!(
+                !decide(&pol, &file_payload("Write", &root, rel)).allow,
+                "{rel}"
+            );
+        }
+        assert!(!decide(&pol, &file_payload("Read", &root, "")).allow);
+    }
+
+    #[test]
+    fn grant_file_symlink_escape_blocked() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("f.txt"), "x").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path().join("f.txt"), root.join("link.txt"))
+                .unwrap();
+            let mut pol = grant_policy(&root);
+            pol.read_files = vec![root.join("link.txt")];
+            assert!(!decide(&pol, &file_payload("Read", &root, "link.txt")).allow);
+        }
+    }
+
+    #[test]
+    fn policy_file_round_trip_with_file_grants() {
+        let td = tempfile::tempdir().unwrap();
+        let run = td.path().join("run");
+        let root = td.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let g = GuardGrants {
+            read_files: vec![root.join("a.md")],
+            write_files: vec![root.join("b.md")],
+            ..GuardGrants::default()
+        };
+        write_hook_settings_grants(&run, &root, None, &[], &exe, &g).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(run.join("policy.json")).unwrap())
+                .unwrap();
+        assert!(v["read_files"][0].as_str().unwrap().ends_with("/a.md"));
+        assert!(v["write_files"][0].as_str().unwrap().ends_with("/b.md"));
+        assert!(v.get("read_dirs").is_none());
     }
 }

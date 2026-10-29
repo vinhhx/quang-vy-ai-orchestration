@@ -1021,3 +1021,44 @@ fn agy_dev_ignores_grants_and_says_so() {
     assert!(!rec.contains("Bash("), "{rec}");
     assert!(!rec.contains("create.py"), "{rec}");
 }
+
+#[test]
+fn dev_file_entry_grant_reads_that_file_only() {
+    let sb = Sandbox::new();
+    let sections = "\n## Skill sử dụng\n- `fake-idea` (.agents/skills/fake-idea/SKILL.md)\n\n## Lệnh được chạy\n- `python3 scripts/create.py *`\n\n## Thư mục được đọc\n- `scripts/create.py`\n- `data/**`\n\n## Thư mục được ghi\n- `out/**`\n";
+    let (_repo, _task, _pc) = setup_grants_task(&sb, Some(sections));
+    let scenario = serde_json::json!({ "ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "read", "path": "scripts/create.py"},
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"}
+    ]});
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(scenario));
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+    let argv = last_argv(&sb);
+    assert!(argv.contains(&"Read(./scripts/create.py)".to_string()));
+    assert!(!argv.contains(&"Read(./scripts/create.py/**)".to_string()));
+    assert!(argv.contains(&"Read(./data/**)".to_string()));
+    let settings_idx = argv.iter().position(|x| x == "--settings").unwrap();
+    let settings = PathBuf::from(&argv[settings_idx + 1]);
+    let run_dir = settings.parent().unwrap();
+    let policy: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("policy.json")).unwrap())
+            .unwrap();
+    assert!(policy["read_files"][0]
+        .as_str()
+        .unwrap()
+        .ends_with("/scripts/create.py"));
+    assert!(policy["read_dirs"][0].as_str().unwrap().ends_with("/data"));
+    assert!(policy.get("write_files").is_none());
+    // the guard let the Dev read the granted file
+    let log = std::fs::read_to_string(run_dir.join("guard.jsonl")).unwrap_or_default();
+    assert!(
+        !log.lines()
+            .any(|l| l.contains("scripts/create.py") && l.contains("\"allow\":false")),
+        "{log}"
+    );
+}
