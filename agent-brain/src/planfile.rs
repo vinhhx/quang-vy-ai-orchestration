@@ -657,6 +657,26 @@ const INTERPRETER_PROGRAMS: &[&str] = &[
     "lua", "awk", "sed",
 ];
 
+/// True when the (lowercase) program basename is an interpreter that runs a script.
+fn is_interpreter_base(base: &str) -> bool {
+    INTERPRETER_PROGRAMS.contains(&base) || base.starts_with("python") || base.starts_with("node")
+}
+
+/// The words of a command that are EXECUTED: the program, and for an interpreter the first word
+/// after it that does not start with `-` (the script). Other words are data.
+pub fn executed_words<'a>(words: &[&'a str]) -> Vec<&'a str> {
+    let Some(first) = words.first() else {
+        return Vec::new();
+    };
+    let mut out = vec![*first];
+    if is_interpreter_base(&program_basename(first)) {
+        if let Some(script) = words[1..].iter().find(|w| !w.starts_with('-')) {
+            out.push(*script);
+        }
+    }
+    out
+}
+
 fn program_basename(program: &str) -> String {
     let base = program.rsplit('/').next().unwrap_or(program);
     base.to_lowercase()
@@ -703,7 +723,10 @@ pub fn grant_command_error(pattern: &str) -> Option<String> {
     let words: Vec<&str> = p.split_whitespace().collect();
     for (i, w) in words.iter().enumerate() {
         if w.contains('*') && !(*w == "*" && i + 1 == words.len() && i > 0) {
-            return Some("`*` chỉ được là từ cuối cùng của lệnh".to_string());
+            return Some(
+                "`*` chỉ được đứng riêng làm từ cuối cùng (ví dụ `python scripts/x.py *`); không viết `*.srt` hay `file*` — hãy liệt kê đúng tên file hoặc dùng `*` đứng riêng"
+                    .to_string(),
+            );
         }
         if w.contains('?') || w.contains('[') || w.contains(']') || w.contains('\\') {
             return Some("lệnh có ký tự đại diện hoặc dấu \\".to_string());
@@ -738,10 +761,7 @@ pub fn grant_command_error(pattern: &str) -> Option<String> {
             return Some("git cần lệnh con rõ ràng".to_string());
         }
     }
-    let interp = INTERPRETER_PROGRAMS.contains(&base.as_str())
-        || base.starts_with("python")
-        || base.starts_with("node");
-    if interp {
+    if is_interpreter_base(&base) {
         match words.get(1) {
             None => return Some("trình thông dịch phải kèm đường dẫn script".to_string()),
             Some(w) if *w == "*" || w.starts_with('-') => {
@@ -853,7 +873,8 @@ pub fn validate_grants(g: &Grants, root: Option<&std::path::Path>) -> Vec<String
         if grant_command_error(c).is_some() {
             continue;
         }
-        for w in c.split_whitespace() {
+        let words: Vec<&str> = c.split_whitespace().collect();
+        for w in executed_words(&words) {
             if w == "*" || w.starts_with('-') {
                 continue;
             }
@@ -1275,5 +1296,51 @@ mod tests {
             "## Lệnh được chạy\n- `python scripts/run.py *`\n## Thư mục được ghi\n- `out/**`\n",
         );
         assert!(validate_plan(&p2, None).is_empty());
+    }
+
+    fn cmd_errs(cmd: &str, write: &str) -> Vec<String> {
+        let p = plan_with(&format!(
+            "## Lệnh được chạy\n- `{cmd}`\n## Thư mục được ghi\n- `{write}`\n"
+        ));
+        validate_plan(&p, None)
+    }
+
+    #[test]
+    fn only_the_executed_file_may_not_live_in_a_write_dir() {
+        // (a) data argument inside the write dir is fine
+        assert!(cmd_errs(
+            "python scripts/parse_srt.py projects/x/input/a.srt",
+            "projects/x/**"
+        )
+        .is_empty());
+        // (e) data argument after a flag
+        assert!(cmd_errs(
+            "python scripts/a.py --out projects/x/o.txt",
+            "projects/x/**"
+        )
+        .is_empty());
+        // (b) the script itself in the write dir
+        let b = cmd_errs("python projects/x/run.py", "projects/x/**");
+        assert!(b.iter().any(|e| e.contains("thư mục được ghi")), "{b:?}");
+        // (c) the program itself in the write dir
+        let c = cmd_errs("projects/x/tool arg", "projects/x/**");
+        assert!(c.iter().any(|e| e.contains("thư mục được ghi")), "{c:?}");
+        // (d) -m / -c stay refused
+        assert!(!cmd_errs("python -m mod", "projects/x/**").is_empty());
+        assert!(!cmd_errs("python -c x", "projects/x/**").is_empty());
+        // (f) glued star gets the new message
+        let f = cmd_errs("python scripts/a.py subtitles.srt*", "projects/x/**");
+        assert!(f.iter().any(|e| e.contains("đứng riêng")), "{f:?}");
+        let f2 = cmd_errs("python scripts/a.py *.srt", "projects/x/**");
+        assert!(f2.iter().any(|e| e.contains("đứng riêng")), "{f2:?}");
+    }
+
+    #[test]
+    fn srt_like_plan_validates() {
+        let p = plan_with(
+            "## Skill sử dụng\n- `fake-idea` (.agents/skills/fake-idea/SKILL.md)\n## Lệnh được chạy\n- `python scripts/create_project.py ganh-nang-tren-vai`\n- `python scripts/parse_srt.py projects/ganh-nang-tren-vai/input/subtitles.srt`\n## Thư mục được đọc\n- `scripts/**`\n## Thư mục được ghi\n- `.gsd/phases/ganh-nang-tren-vai/**`\n- `projects/ganh-nang-tren-vai/**`\n",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(errs.is_empty(), "{errs:?}");
     }
 }

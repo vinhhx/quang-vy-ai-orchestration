@@ -311,7 +311,7 @@ fn decide_bash(
     };
     let shown: String = command.chars().take(BASH_LOG_MAX_CHARS).collect();
     let checked = bash_command_check(command).and_then(|()| match &policy.bash_allow {
-        Some(allow) => bash_grant_check(command, allow),
+        Some(allow) => bash_grant_check(command, allow, policy),
         None => Ok(()),
     });
     match checked {
@@ -353,7 +353,7 @@ fn command_matches(pattern: &str, words: &[ShellWord]) -> bool {
 /// Skill mode (D-49): with an approved command list, a non-git command must be one plain command
 /// that matches an approved pattern and does not start with a denied program. Runs after
 /// `bash_command_check`, so the git policy and the one-command rule already held.
-fn bash_grant_check(command: &str, allow: &[String]) -> Result<(), String> {
+fn bash_grant_check(command: &str, allow: &[String], policy: &Policy) -> Result<(), String> {
     let words = shell_words(command)?;
     let Some(first) = words.first() else {
         return Err("lệnh Bash trống".to_string());
@@ -379,6 +379,17 @@ fn bash_grant_check(command: &str, allow: &[String]) -> Result<(), String> {
         return Err(format!("{reason} — không được phép"));
     }
     if allow.iter().any(|p| command_matches(p, &words)) {
+        // the program and the script an interpreter runs may not live where the Dev can write
+        let all: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
+        for w in crate::planfile::executed_words(&all) {
+            if w == "*" {
+                continue;
+            }
+            let resolved = realpath_nfc(&policy.root.join(w));
+            if under_grant_dirs(&policy.root, &policy.write_dirs, &resolved) {
+                return Err("lệnh chạy file trong thư mục được ghi — không được phép".to_string());
+            }
+        }
         Ok(())
     } else {
         Err("lệnh không nằm trong danh sách Lệnh được chạy của plan đã duyệt".to_string())
@@ -1482,6 +1493,25 @@ mod tests {
         ] {
             assert!(!ok(bad).allow, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn grant_bash_blocks_running_a_file_in_a_write_dir() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        let mut pol = grant_policy(&root);
+        pol.bash_allow = Some(vec![
+            "python scripts/make.py *".to_string(),
+            "python out/run.py *".to_string(),
+            "out/tool *".to_string(),
+        ]);
+        // script outside the write dir, data argument inside it: allowed
+        assert!(decide(&pol, &bash_payload("python scripts/make.py out/a.srt")).allow);
+        // script or program inside the write dir: blocked
+        let d = decide(&pol, &bash_payload("python out/run.py"));
+        assert!(!d.allow && d.reason.contains("thư mục được ghi"), "{d:?}");
+        let d = decide(&pol, &bash_payload("out/tool x"));
+        assert!(!d.allow && d.reason.contains("thư mục được ghi"), "{d:?}");
     }
 
     #[test]
