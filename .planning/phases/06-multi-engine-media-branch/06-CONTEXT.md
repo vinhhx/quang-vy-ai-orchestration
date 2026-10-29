@@ -93,6 +93,7 @@ Requirements in this phase: ENG-01 … ENG-07, plus new requirement IDs for the 
 - **D-46 (revises D-06 and D-39, user 2026-10-29):** Any role, QA included, may use any configured engine; the user picks the engine per role per job. Only the technical limit stays: `người` and `dsh` are for `dev` only.
 - **D-47 (user 2026-10-29):** Project type `idea` needs no `.git` in its folder; agent-brain keeps a hidden shadow git repo (GIT_DIR outside the folder) so every role and workflow runs unchanged. Multiple paths per project is deferred to a second plan.
 - **D-48 (revises 05.4 INTAKE-07, user 2026-10-29):** The plan of a task created from Telegram (forwarded messages included) may be approved on Telegram when its project is still in `telegram_projects`, through a two-step confirm; the dashboard still works. Residual risk: forwarded content in the plan is only as safe as the user's reading of the plan file.
+- **D-49 (user 2026-10-29):** Skill mode: skills are auto-discovered each run (no per-project config); the Lead may declare commands and read/write dirs in the plan; the Dev gets exactly what the approved plan declares (claude engines only), enforced by the guard hook with a hard denylist. Residual risk: the approver must read the declared commands.
 
 ### Claude's Discretion
 - Behaviour when a task's team no longer exists in `teams.json` (the user left this to the planner).
