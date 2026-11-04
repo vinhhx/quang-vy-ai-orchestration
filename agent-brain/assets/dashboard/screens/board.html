@@ -164,4 +164,44 @@
       <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="clearSelection">Đóng</button>
     </aside>
   </div>
+
+  <section data-board-tasks class="space-y-4">
+    <div class="flex flex-wrap items-center gap-4">
+      <h2 class="text-xl font-semibold leading-[1.2]">Công việc đã giao</h2>
+    </div>
+
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isTasksLoading">Đang tải...</p>
+
+    <div data-tasks-error class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" x-show="hasTasksError">
+      <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100 break-words" x-text="tasksError"></p>
+      <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="reloadTasks">Tải lại</button>
+    </div>
+
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="isBoardTasksEmpty">Chưa có công việc nào được giao cho dự án này.</p>
+
+    <div data-tasks-groups class="grid gap-6 md:grid-cols-2" x-show="hasBoardTasks">
+      <template x-for="g in taskGroups" :key="g.key">
+        <div class="min-w-0 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4" :data-task-group="g.key">
+          <div class="flex items-center gap-2">
+            <h3 class="text-xl font-semibold leading-[1.2]" x-text="g.title"></h3>
+            <span class="inline-flex items-center rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="taskGroupCount(g)"></span>
+          </div>
+          <ul class="space-y-3">
+            <template x-for="t in g.items" :key="t.id">
+              <li :data-task-id="t.id">
+                <a :href="taskHref(t)" class="block space-y-2 rounded-xl p-4 ring-1 ring-slate-200 hover:bg-slate-50 dark:ring-slate-700 dark:hover:bg-slate-700/50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+                  <p class="font-semibold leading-normal line-clamp-2 break-words" x-text="t.title"></p>
+                  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 truncate" x-text="t.project_name"></p>
+                  <div class="flex flex-wrap items-center gap-2" x-show="t.current_step || t.banner">
+                    <span class="inline-flex items-center rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-show="t.current_step" x-text="t.current_step"></span>
+                    <span class="text-sm font-semibold leading-normal text-slate-700 dark:text-slate-300" x-show="t.banner" x-text="t.banner"></span>
+                  </div>
+                </a>
+              </li>
+            </template>
+          </ul>
+        </div>
+      </template>
+    </div>
+  </section>
 </section>

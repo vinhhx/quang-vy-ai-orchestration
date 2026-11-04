@@ -169,6 +169,9 @@
     return {
       loaded: false,
       loadError: '',
+      tasks: [],
+      tasksLoaded: false,
+      tasksError: '',
       reloading: false,
       projectRetried: false,
       reqSeq: 0,
@@ -206,13 +209,39 @@
       init: function () {
         var self = this;
         this.load();
+        this.loadTasks();
         var profileHandler = function () {
           self.load();
+          self.loadTasks();
         };
         window.addEventListener('ab:profile', profileHandler);
         window.AB.onLeave(function () {
           window.removeEventListener('ab:profile', profileHandler);
         });
+      },
+
+      loadTasks: function () {
+        var self = this;
+        var url = '/api/tasks?limit=100';
+        var q = window.AB.profileQuery();
+        if (q) {
+          url += '&' + q;
+        }
+        return window.AB.api('GET', url).then(function (res) {
+          if (res && res.ok && res.data) {
+            self.tasks = res.data.tasks || [];
+            self.tasksLoaded = true;
+            self.tasksError = '';
+          } else {
+            self.tasksLoaded = true;
+            self.tasksError = window.AB.errorText(res);
+          }
+        });
+      },
+
+      reloadTasks: function () {
+        this.tasksError = '';
+        return this.loadTasks();
       },
 
       buildUrl: function () {
@@ -437,6 +466,7 @@
         var self = this;
         if (this.reloading) return Promise.resolve();
         this.reloading = true;
+        this.loadTasks();
         return this.load().then(function () {
           self.reloading = false;
         });
@@ -452,6 +482,7 @@
         writeStore('ab.board.project', this.projectSel);
         this.epicSel = '';
         this.milestoneSel = '';
+        this.loadTasks();
         return this.load();
       },
 
@@ -703,6 +734,83 @@
 
       get legendTotal() {
         return 'Tổng ' + (this.counts.total || 0) + ' · ' + (this.counts.waves || 0) + ' wave';
+      },
+
+      get boardTasks() {
+        var curId = this.projectSel || (this.project && this.project.id) || '';
+        if (!curId) return [];
+        return (this.tasks || []).filter(function (t) {
+          return t.project === curId;
+        });
+      },
+
+      get taskGroups() {
+        var tasks = this.boardTasks;
+        var groupDefs = [
+          { key: 'running', title: 'Đang xử lý' },
+          { key: 'waiting', title: 'Chờ bạn' },
+          { key: 'attention', title: 'Cần xử lý' },
+          { key: 'done', title: 'Đã xong' },
+        ];
+        var byKey = {
+          running: [],
+          waiting: [],
+          attention: [],
+          done: [],
+        };
+        var other = [];
+        for (var i = 0; i < tasks.length; i++) {
+          var t = tasks[i];
+          if (Object.prototype.hasOwnProperty.call(byKey, t.group)) {
+            byKey[t.group].push(t);
+          } else {
+            other.push(t);
+          }
+        }
+        var out = [];
+        for (var j = 0; j < groupDefs.length; j++) {
+          var def = groupDefs[j];
+          var list = byKey[def.key];
+          if (list.length > 0) {
+            out.push({
+              key: def.key,
+              title: def.title,
+              items: list,
+            });
+          }
+        }
+        if (other.length > 0) {
+          out.push({
+            key: 'other',
+            title: 'Khác',
+            items: other,
+          });
+        }
+        return out;
+      },
+
+      get isTasksLoading() {
+        return !this.tasksLoaded && !this.tasksError;
+      },
+
+      get hasTasksError() {
+        return Boolean(this.tasksError);
+      },
+
+      get hasBoardTasks() {
+        return !this.tasksError && this.boardTasks.length > 0;
+      },
+
+      get isBoardTasksEmpty() {
+        return this.tasksLoaded && !this.tasksError && this.boardTasks.length === 0;
+      },
+
+      taskHref: function (t) {
+        return '#/task/' + t.id;
+      },
+
+      taskGroupCount: function (g) {
+        return String(g.items.length);
       },
     };
   });
