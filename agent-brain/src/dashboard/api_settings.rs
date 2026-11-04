@@ -30,6 +30,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/workflows/save", post(save_workflow))
         .route("/api/workflows/delete", post(delete_workflow))
         .route("/api/engines", get(get_engines))
+        .route("/api/engines/models", post(save_engine_models))
 }
 
 // ---- shared response shapes ----
@@ -907,21 +908,225 @@ fn workflows_response(st: &AppState) -> Response {
     }
 }
 
-// ---- engines (read-only, D-08) ----
+// ---- engines ----
 
-/// Local readiness of the four engines. No route writes an engine command, endpoint or
+const ENGINES_HEADING: &str = "Không lưu được cấu hình engine";
+const ENGINES_CONFLICT: &str = "config.json vừa bị sửa ở nơi khác";
+
+fn live_cfg(st: &AppState) -> crate::config::Config {
+    let path = crate::config::config_path();
+    if path.is_file() {
+        crate::config::load_config().unwrap_or_else(|_| st.cfg.clone())
+    } else {
+        st.cfg.clone()
+    }
+}
+
+fn engines_payload(st: &AppState) -> BrainResult<Value> {
+    let cfg = live_cfg(st);
+    let staff = crate::staff::load();
+    let engines =
+        crate::engine::readiness(&cfg, &crate::profile::current_env(), staff.staff.len());
+    Ok(json!({ "engines": engines }))
+}
+
+/// Local readiness of the engines. No route writes an engine command, endpoint or
 /// key name, and the response carries the key variable's NAME only, never its value.
 async fn get_engines(State(st): State<Arc<AppState>>) -> Response {
-    let res = blocking(move || {
-        let staff = crate::staff::load();
-        let engines =
-            crate::engine::readiness(&st.cfg, &crate::profile::current_env(), staff.staff.len());
-        Ok(json!({ "engines": engines }))
-    })
-    .await;
+    let res = blocking(move || engines_payload(&st)).await;
     match res {
         Ok(v) => json_response(StatusCode::OK, v),
         Err(e) => internal_read(&e.message),
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EngineModelsSaveBody {
+    id: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    models: std::collections::BTreeMap<String, String>,
+}
+
+async fn save_engine_models(
+    State(st): State<Arc<AppState>>,
+    Json(body): Json<EngineModelsSaveBody>,
+) -> Response {
+    match tokio::task::spawn_blocking(move || save_engine_models_blocking(&st, body)).await {
+        Ok(r) => r,
+        Err(e) => internal_save(&format!("Lỗi tác vụ blocking: {e}")),
+    }
+}
+
+fn build_role_models_map(
+    models: &std::collections::BTreeMap<String, String>,
+) -> Result<serde_json::Map<String, Value>, Vec<FieldError>> {
+    for role in models.keys() {
+        if !crate::teams::ROLES.contains(&role.as_str()) {
+            return Err(vec![ui_field(field_err(
+                role,
+                format!("Vai trò '{role}' không hợp lệ."),
+            ))]);
+        }
+    }
+    let mut m_map = serde_json::Map::new();
+    for role in crate::teams::ROLES {
+        if let Some(v) = models.get(role).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            m_map.insert(role.to_string(), json!(v));
+        }
+    }
+    Ok(m_map)
+}
+
+fn save_engine_models_blocking(st: &AppState, body: EngineModelsSaveBody) -> Response {
+    let path = crate::config::config_path();
+    let (_, version) = match settings_store::read_doc(&path) {
+        Ok(v) => v,
+        Err(e) => return internal_save(&e.message),
+    };
+
+    let write_res = settings_store::write_object(&path, &version, |root| {
+        if root.is_empty() {
+            if let Ok(Value::Object(def_map)) =
+                serde_json::from_str::<Value>(crate::config::DEFAULT_CONFIG_JSON)
+            {
+                *root = def_map;
+            }
+        }
+        let id = body.id.trim();
+        let m_map = build_role_models_map(&body.models)?;
+
+        if id == crate::engine::ENGINE_CLAUDE {
+            for req in ["lead", "dev", "qa"] {
+                if !m_map.contains_key(req) {
+                    return Err(vec![ui_field(field_err(
+                        req,
+                        format!("Nhập model cho vai trò {req}."),
+                    ))]);
+                }
+            }
+            root.insert("models".to_string(), Value::Object(m_map));
+        } else {
+            match root.get_mut("engines") {
+                Some(Value::Array(arr)) => {
+                    let Some(entry_val) = arr.iter_mut().find(|e| {
+                        e.as_object()
+                            .and_then(|o| o.get("id"))
+                            .and_then(Value::as_str)
+                            == Some(id)
+                    }) else {
+                        return Err(vec![field_err(
+                            "id",
+                            format!("Không tìm thấy engine '{id}' trong config.json."),
+                        )]);
+                    };
+                    let Some(obj) = entry_val.as_object_mut() else {
+                        return Err(vec![field_err("id", "Mục engine không hợp lệ.")]);
+                    };
+                    let kind = obj
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    if kind != "agy" && kind != "anthropic" {
+                        return Err(vec![field_err(
+                            "id",
+                            format!("Engine '{id}' không hỗ trợ chỉnh sửa model."),
+                        )]);
+                    }
+                    if let Some(lbl) = &body.label {
+                        let t = lbl.trim();
+                        if t.is_empty() {
+                            obj.remove("label");
+                        } else {
+                            obj.insert("label".to_string(), json!(t));
+                        }
+                    }
+                    if kind == "agy" {
+                        if let Some(m) = &body.model {
+                            let t = m.trim();
+                            if t.is_empty() {
+                                obj.remove("model");
+                            } else {
+                                obj.insert("model".to_string(), json!(t));
+                            }
+                        }
+                    }
+                    let has_base_url = obj.get("base_url").filter(|u| !u.is_null()).is_some();
+                    if kind == "anthropic" && has_base_url && !m_map.contains_key("dev") {
+                        return Err(vec![field_err(
+                            "dev",
+                            "Engine có base_url bắt buộc phải chọn model cho vai trò dev.",
+                        )]);
+                    }
+                    if m_map.is_empty() {
+                        obj.remove("models");
+                    } else {
+                        obj.insert("models".to_string(), Value::Object(m_map));
+                    }
+                }
+                _ => {
+                    if id != "agy" && id != "deepseek" {
+                        return Err(vec![field_err(
+                            "id",
+                            format!("Không tìm thấy engine '{id}' trong config.json."),
+                        )]);
+                    }
+                    if !matches!(root.get("engines"), Some(Value::Object(_))) {
+                        root.insert("engines".to_string(), json!({}));
+                    }
+                    let engines_obj = root
+                        .get_mut("engines")
+                        .and_then(Value::as_object_mut)
+                        .unwrap();
+                    if !matches!(engines_obj.get(id), Some(Value::Object(_))) {
+                        engines_obj.insert(id.to_string(), json!({}));
+                    }
+                    let obj = engines_obj
+                        .get_mut(id)
+                        .and_then(Value::as_object_mut)
+                        .unwrap();
+                    if id == "agy" {
+                        if let Some(m) = &body.model {
+                            let t = m.trim();
+                            if t.is_empty() {
+                                obj.remove("model");
+                            } else {
+                                obj.insert("model".to_string(), json!(t));
+                            }
+                        }
+                    }
+                    if id == "deepseek" && !m_map.contains_key("dev") {
+                        return Err(vec![field_err(
+                            "dev",
+                            "Engine deepseek bắt buộc phải chọn model cho vai trò dev.",
+                        )]);
+                    }
+                    if m_map.is_empty() {
+                        obj.remove("models");
+                    } else {
+                        obj.insert("models".to_string(), Value::Object(m_map));
+                    }
+                }
+            }
+        }
+
+        if let Err(e) = crate::config::config_from_value(&Value::Object(root.clone())) {
+            return Err(vec![field_err("models", e.message)]);
+        }
+        Ok(())
+    });
+
+    if let Err(err) = write_res {
+        return write_error_response(err, ENGINES_CONFLICT, ENGINES_HEADING);
+    }
+    match engines_payload(st) {
+        Ok(v) => json_response(StatusCode::OK, with_ok(v)),
+        Err(e) => internal_save(&e.message),
     }
 }
 

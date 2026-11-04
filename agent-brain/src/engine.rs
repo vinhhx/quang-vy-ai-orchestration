@@ -130,6 +130,10 @@ pub struct EngineStatus {
     pub allowed_profiles: Option<Vec<String>>,
     /// The container name of a `dsh` entry.
     pub container: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
 }
 
 fn is_executable_file(p: &Path) -> bool {
@@ -198,6 +202,8 @@ fn command_status(
         pin_profile: None,
         allowed_profiles: None,
         container: None,
+        models: None,
+        default_model: None,
     }
 }
 
@@ -272,13 +278,15 @@ pub fn readiness_with(
 ) -> Vec<EngineStatus> {
     let path_var = env.get("PATH").map(String::as_str);
 
-    let mut out = vec![command_status(
+    let mut claude = command_status(
         ENGINE_CLAUDE,
         ENGINE_CLAUDE,
         &cfg.claude_bin,
         path_var,
         DESC_CLAUDE,
-    )];
+    );
+    claude.models = Some(cfg.models.clone());
+    let mut out = vec![claude];
 
     for def in &cfg.engines.list {
         out.push(entry_status(def, env, path_var, probe));
@@ -324,6 +332,9 @@ fn entry_status(
             if !models.is_empty() {
                 st.model = Some(models.join(", "));
             }
+            if !a.models.is_empty() {
+                st.models = Some(a.models.clone());
+            }
             // thiếu lệnh and thiếu key both win over chưa kiểm (D-40).
             if st.readiness == Readiness::SanSang.key() && a.base_url.is_some() {
                 let key_unset = a
@@ -363,7 +374,24 @@ fn entry_status(
         }
         EngineSpec::Agy(a) => {
             let mut st = command_status(&def.id, kind, &a.command, path_var, DESC_AGY);
-            st.model = a.model.clone();
+            st.default_model = a.model.clone();
+            if !a.models.is_empty() {
+                let mut models: Vec<&str> = Vec::new();
+                if let Some(m) = a.model.as_deref() {
+                    models.push(m);
+                }
+                for role in crate::teams::ROLES {
+                    if let Some(m) = a.models.get(role) {
+                        if !models.contains(&m.as_str()) {
+                            models.push(m);
+                        }
+                    }
+                }
+                st.model = Some(models.join(", "));
+                st.models = Some(a.models.clone());
+            } else {
+                st.model = a.model.clone();
+            }
             st
         }
         EngineSpec::Dsh(d) => {
@@ -760,7 +788,12 @@ fn agy_plan(
         "--print-timeout".to_string(),
         format!("{secs}s"),
     ];
-    if let Some(m) = &acfg.model {
+    let resolved_model = acfg
+        .models
+        .get(role)
+        .or(acfg.model.as_ref())
+        .cloned();
+    if let Some(m) = &resolved_model {
         argv.push("--model".to_string());
         argv.push(m.clone());
     }
@@ -785,7 +818,7 @@ fn agy_plan(
         display: id.to_string(),
         argv,
         env,
-        model_label: acfg.model.clone().unwrap_or_else(|| "mặc định".to_string()),
+        model_label: resolved_model.unwrap_or_else(|| "mặc định".to_string()),
         stream: StreamFormat::Agy,
         stdout_file: true,
         redact: Vec::new(),
@@ -1928,5 +1961,60 @@ mod tests {
         let r = readiness_with(&cfg, &env, 0, &no_probe);
         assert_eq!(r[1].readiness, "san_sang");
         assert_eq!(r[1].reason, None);
+    }
+
+    #[test]
+    fn agy_role_models_override_default_model() {
+        let cfg = test_cfg(serde_json::json!({
+            "engines": [
+                {
+                    "id": "agy",
+                    "kind": "agy",
+                    "command": "agy-bin",
+                    "model": "gemini-3.8-flash-high",
+                    "models": {
+                        "lead": "gemini-4-argon-high",
+                        "dev": "gemini-3.8-flash-high"
+                    }
+                }
+            ]
+        }));
+        let resolved = ResolvedEngine {
+            engine: Engine::Named("agy".to_string()),
+            team: None,
+            wait: None,
+        };
+        let claude = vec![
+            "claude".to_string(),
+            "-p".to_string(),
+            "yêu cầu".to_string(),
+            "--append-system-prompt".to_string(),
+            "luật".to_string(),
+        ];
+        let p_lead = run_plan(
+            &cfg,
+            &resolved,
+            "lead",
+            &claude,
+            "opus",
+            BTreeMap::new(),
+            Duration::from_secs(600),
+        )
+        .unwrap();
+        assert_eq!(p_lead.model_label, "gemini-4-argon-high");
+        assert!(p_lead.argv.windows(2).any(|w| w == ["--model", "gemini-4-argon-high"]));
+
+        let p_qa = run_plan(
+            &cfg,
+            &resolved,
+            "qa",
+            &claude,
+            "sonnet",
+            BTreeMap::new(),
+            Duration::from_secs(600),
+        )
+        .unwrap();
+        assert_eq!(p_qa.model_label, "gemini-3.8-flash-high");
+        assert!(p_qa.argv.windows(2).any(|w| w == ["--model", "gemini-3.8-flash-high"]));
     }
 }

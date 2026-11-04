@@ -243,6 +243,19 @@
       sTried: false,
       sTouched: {},
 
+      // Engine model editor.
+      eEditing: '',
+      eKind: '',
+      eHasKeyEnv: false,
+      eLabel: '',
+      eDefaultModel: '',
+      eLead: '',
+      eDev: '',
+      eQa: '',
+      ePlanReview: '',
+      eCodeReview: '',
+      eRefusal: [],
+
       // Delete dialogs (one open at most).
       delKind: '',
       delName: '',
@@ -366,6 +379,7 @@
         if (this.reloading) return Promise.resolve();
         this.reloading = true;
         this.statusText = '';
+        this.loadEngines();
         return this.load().then(function () {
           self.reloading = false;
         });
@@ -1549,10 +1563,207 @@
         });
       },
 
-      // ---- engines (read-only, D-08) ----
+      // ---- engines ----
+
+      get engineEditorOpen() {
+        return this.eEditing !== '';
+      },
+
+      get engineActionsLocked() {
+        return this.writeLocked || this.engineEditorOpen;
+      },
+
+      get engineLockLine() {
+        if (!this.engineEditorOpen) return '';
+        return 'Đang sửa cấu hình model cho engine ' + this.eEditing + ' — lưu hoặc hủy trước khi sửa mục khác.';
+      },
+
+      get engineEditorTitle() {
+        return 'Cấu hình model cho engine ' + this.eEditing;
+      },
+
+      get engineHasLabelField() {
+        return this.eKind === 'agy' || this.eKind === 'anthropic';
+      },
+
+      get engineHasDefaultModel() {
+        return this.eKind === 'agy';
+      },
+
+      get engineRoleHelp() {
+        if (this.eKind === 'agy') {
+          return 'Chọn model riêng cho từng vai trò (lead, dev, qa, review plan, review code). Nếu chọn "Theo model mặc định chung", vai trò đó sẽ dùng model mặc định ở trên.';
+        }
+        if (this.eKind === 'claude') {
+          return 'Chọn model mặc định cho từng vai trò khi chạy bằng engine claude.';
+        }
+        return 'Chọn model riêng cho từng vai trò của engine này.';
+      },
+
+      get engineSaveText() {
+        return this.saving ? 'Đang lưu...' : 'Lưu cấu hình engine';
+      },
+
+      get hasEngineRefusal() {
+        return (this.eRefusal || []).length > 0;
+      },
+
+      get engineRefusalLines() {
+        return cap10(this.eRefusal);
+      },
+
+      get engineDefaultModelOptions() {
+        var base = [
+          { value: '', label: '— Mặc định của agy CLI —' },
+          { value: 'gemini-3.8-flash-high', label: 'gemini-3.8-flash-high — Gemini 3.8 Flash (High)' },
+          { value: 'gemini-3.8-flash-medium', label: 'gemini-3.8-flash-medium — Gemini 3.8 Flash (Medium)' },
+          { value: 'gemini-3.8-flash-low', label: 'gemini-3.8-flash-low — Gemini 3.8 Flash (Low)' },
+          { value: 'gemini-4-argon-high', label: 'gemini-4-argon-high — Gemini 4 Argon (High)' },
+          { value: 'gemini-4-argon-medium', label: 'gemini-4-argon-medium — Gemini 4 Argon (Medium)' },
+          { value: 'gemini-4-argon-low', label: 'gemini-4-argon-low — Gemini 4 Argon (Low)' },
+          { value: 'claude-opus-5-5-high', label: 'claude-opus-5-5-high — Claude Opus 5.5 (High)' },
+          { value: 'claude-opus-5-5-medium', label: 'claude-opus-5-5-medium — Claude Opus 5.5 (Medium)' },
+          { value: 'claude-opus-5-5-low', label: 'claude-opus-5-5-low — Claude Opus 5.5 (Low)' },
+          { value: 'claude-sonnet-5-5-high', label: 'claude-sonnet-5-5-high — Claude Sonnet 5.5 (High)' },
+          { value: 'claude-sonnet-5-5-medium', label: 'claude-sonnet-5-5-medium — Claude Sonnet 5.5 (Medium)' },
+          { value: 'claude-sonnet-5-5-low', label: 'claude-sonnet-5-5-low — Claude Sonnet 5.5 (Low)' },
+          { value: 'gpt-oss-120b-medium', label: 'gpt-oss-120b-medium — GPT-OSS 120B (Medium)' },
+        ];
+        var cur = String(this.eDefaultModel || '');
+        var found = false;
+        for (var i = 0; i < base.length; i++) {
+          if (base[i].value === cur) found = true;
+        }
+        if (cur && !found) {
+          base.push({ value: cur, label: cur });
+        }
+        return base;
+      },
+
+      engineDefaultSelected: function (val) {
+        return String(this.eDefaultModel || '') === String(val || '');
+      },
+
+      engineRoleValue: function (role) {
+        if (role === 'lead') return this.eLead;
+        if (role === 'dev') return this.eDev;
+        if (role === 'qa') return this.eQa;
+        if (role === 'plan_review') return this.ePlanReview;
+        return this.eCodeReview;
+      },
+
+      engineRoleSelected: function (role, val) {
+        return String(this.engineRoleValue(role) || '') === String(val || '');
+      },
+
+      engineRoleModelOptions: function (role) {
+        var opts = [];
+        if (this.eKind === 'agy') {
+          var fallbackLabel = this.eDefaultModel
+            ? ('— Theo model mặc định chung (' + this.eDefaultModel + ') —')
+            : '— Theo model mặc định chung —';
+          opts.push({ value: '', label: fallbackLabel });
+          var agyList = this.engineDefaultModelOptions;
+          for (var i = 1; i < agyList.length; i++) {
+            opts.push(agyList[i]);
+          }
+        } else {
+          var allowEmpty = !(this.eKind === 'claude' || (this.eKind === 'anthropic' && this.eHasKeyEnv && role === 'dev'));
+          if (allowEmpty) {
+            opts.push({ value: '', label: '— Theo mặc định của vai trò —' });
+          }
+          var claudeList = [
+            { value: 'opus', label: 'opus — Claude Opus' },
+            { value: 'sonnet', label: 'sonnet — Claude Sonnet' },
+            { value: 'haiku', label: 'haiku — Claude Haiku' },
+            { value: 'deepseek-chat', label: 'deepseek-chat — DeepSeek Chat' },
+            { value: 'deepseek-reasoner', label: 'deepseek-reasoner — DeepSeek Reasoner' },
+          ];
+          for (var j = 0; j < claudeList.length; j++) {
+            opts.push(claudeList[j]);
+          }
+        }
+        var cur = String(this.engineRoleValue(role) || '');
+        var seen = false;
+        for (var k = 0; k < opts.length; k++) {
+          if (opts[k].value === cur) seen = true;
+        }
+        if (cur && !seen) {
+          opts.push({ value: cur, label: cur });
+        }
+        return opts;
+      },
+
+      editEngine: function (name) {
+        if (this.engineActionsLocked) return;
+        var st = this.engineStatus(name);
+        if (!st) return;
+        var kind = st.kind || (name === 'claude' ? 'claude' : '');
+        if (kind !== 'agy' && kind !== 'anthropic' && kind !== 'claude') return;
+        this.statusText = '';
+        this.eRefusal = [];
+        this.eEditing = name;
+        this.eKind = kind;
+        this.eHasKeyEnv = Boolean(st.key_env);
+        this.eLabel = st.label ? String(st.label) : '';
+        this.eDefaultModel = st.default_model ? String(st.default_model) : (kind === 'agy' && st.model && !st.models ? String(st.model) : '');
+        var m = st.models || {};
+        this.eLead = m['lead'] || '';
+        this.eDev = m['dev'] || '';
+        this.eQa = m['qa'] || '';
+        this.ePlanReview = m['plan-review'] || '';
+        this.eCodeReview = m['code-review'] || '';
+        window.AB.focusLater(kind === 'agy' ? 'ab-set-engine-default-model' : 'ab-set-engine-lead');
+      },
+
+      cancelEngine: function () {
+        var edited = this.eEditing;
+        this.eEditing = '';
+        this.eKind = '';
+        this.eRefusal = [];
+        if (edited) {
+          window.AB.focusLater('ab-set-engine-edit-' + edited);
+        }
+      },
+
+      saveEngine: function () {
+        var self = this;
+        if (this.writeLocked || !this.eEditing) return Promise.resolve();
+        var edited = this.eEditing;
+        this.statusText = '';
+        this.eRefusal = [];
+        this.saving = true;
+        var body = {
+          id: edited,
+          label: this.eLabel,
+          model: this.eDefaultModel,
+          models: {
+            'lead': this.eLead,
+            'dev': this.eDev,
+            'qa': this.eQa,
+            'plan-review': this.ePlanReview,
+            'code-review': this.eCodeReview,
+          },
+        };
+        return window.AB.api('POST', '/api/engines/models', body).then(function (res) {
+          self.saving = false;
+          var data = res ? res.data : null;
+          if (res && res.ok && res.status === 200 && data && Array.isArray(data.engines)) {
+            self.engines = data.engines;
+            self.enginesFailed = false;
+            self.eEditing = '';
+            self.eKind = '';
+            self.statusText = 'Đã lưu cấu hình model cho engine ' + edited + '.';
+            window.AB.focusLater('ab-set-engine-edit-' + edited);
+            return;
+          }
+          self.eRefusal = errorLines(data, res);
+          window.AB.focusLater('ab-set-engine-refusal');
+        });
+      },
 
       // Rows come from a whitelist of fields of GET /api/engines, in API order: id, kind, label,
-      // readiness, reason, command, key variable NAME, model, pin / allowed profiles, evidence,
+      // readiness, reason, command, key variable NAME, model, models, default_model, pin / allowed profiles, evidence,
       // container, usage and the staff count. Nothing else of the payload is read (D-03).
       get engineRows() {
         var self = this;
@@ -1570,7 +1781,25 @@
           } else {
             if (e.command) details.push({ label: 'Lệnh: ', value: String(e.command), cls: 'font-mono' });
             if (e.key_env) details.push({ label: 'Biến key: ', value: String(e.key_env), cls: 'font-mono' });
-            if (e.model && kind !== 'dsh') details.push({ label: 'Model: ', value: String(e.model), cls: 'font-mono' });
+            if (kind === 'agy') {
+              var defModel = e.default_model ? String(e.default_model) : (e.model && !e.models ? String(e.model) : '');
+              details.push({ label: 'Model mặc định: ', value: defModel || 'mặc định (theo agy CLI)', cls: 'font-mono' });
+            } else if (e.model && kind !== 'dsh') {
+              details.push({ label: 'Model: ', value: String(e.model), cls: 'font-mono' });
+            }
+            if (e.models && typeof e.models === 'object') {
+              var roleOrder = ['lead', 'dev', 'qa', 'plan-review', 'code-review'];
+              var roleParts = [];
+              for (var rIdx = 0; rIdx < roleOrder.length; rIdx++) {
+                var rKey = roleOrder[rIdx];
+                if (e.models[rKey]) {
+                  roleParts.push(rKey + ': ' + e.models[rKey]);
+                }
+              }
+              if (roleParts.length > 0) {
+                details.push({ label: 'Theo vai trò: ', value: roleParts.join(' · '), cls: 'font-mono' });
+              }
+            }
             if (e.pin_profile) details.push({ label: 'Profile cố định: ', value: String(e.pin_profile), cls: 'font-mono' });
             var allowed = Array.isArray(e.allowed_profiles) ? e.allowed_profiles : [];
             var onlyPin = allowed.length === 1 && String(allowed[0]) === String(e.pin_profile || '');
@@ -1589,6 +1818,7 @@
           var reason = '';
           if (key !== 'san_sang' && e.reason) reason = String(e.reason);
           var label = e.label ? String(e.label) : '';
+          var canEdit = kind === 'agy' || kind === 'anthropic' || kind === 'claude';
           return {
             name: name,
             kind: kind,
@@ -1601,6 +1831,10 @@
             details: details,
             reason: reason,
             hasReason: reason !== '',
+            canEdit: canEdit,
+            visible: !(self.eEditing === name),
+            editId: 'ab-set-engine-edit-' + name,
+            editLabel: 'Sửa model engine ' + name,
           };
         });
       },

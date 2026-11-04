@@ -119,6 +119,7 @@ pub struct AgyDef {
     pub command: String,
     pub print_timeout_margin_secs: u64,
     pub model: Option<String>,
+    pub models: BTreeMap<String, String>,
     pub dev_permission: String,
 }
 
@@ -232,6 +233,7 @@ impl EnginesCfg {
                         command: DEFAULT_AGY_COMMAND.to_string(),
                         print_timeout_margin_secs: DEFAULT_AGY_PRINT_TIMEOUT_MARGIN_SECS,
                         model: None,
+                        models: BTreeMap::new(),
                         dev_permission: DEFAULT_AGY_DEV_PERMISSION.to_string(),
                     }),
                 },
@@ -385,6 +387,25 @@ fn apply_agy_fields(
             }
         }
     }
+    if let Some(m) = obj.get("models").filter(|m| !m.is_null()) {
+        let m = m.as_object().ok_or_else(|| {
+            BrainError::error(format!(
+                "Cấu hình {label}.models không hợp lệ (phải là JSON object)"
+            ))
+        })?;
+        for (role, val) in m {
+            match val.as_str().map(str::trim) {
+                Some(s) if crate::teams::ROLES.contains(&role.as_str()) && !s.is_empty() => {
+                    agy.models.insert(role.clone(), s.to_string());
+                }
+                _ => {
+                    return Err(BrainError::error(format!(
+                        "Cấu hình {label}.models.{role} không hợp lệ"
+                    )))
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -500,10 +521,11 @@ const ANTHROPIC_ENGINE_KEYS: [&str; 8] = [
     "compat",
     "verified",
 ];
-const AGY_ENGINE_KEYS: [&str; 4] = [
+const AGY_ENGINE_KEYS: [&str; 5] = [
     "command",
     "print_timeout_margin_secs",
     "model",
+    "models",
     "dev_permission",
 ];
 const DSH_ENGINE_KEYS: [&str; 3] = ["docker", "container", "dsh_profile"];
@@ -644,6 +666,7 @@ fn parse_engine_entry(
                 command: DEFAULT_AGY_COMMAND.to_string(),
                 print_timeout_margin_secs: DEFAULT_AGY_PRINT_TIMEOUT_MARGIN_SECS,
                 model: None,
+                models: BTreeMap::new(),
                 dev_permission: DEFAULT_AGY_DEV_PERMISSION.to_string(),
             };
             apply_agy_fields(obj, &label, &mut agy)?;
@@ -942,6 +965,15 @@ pub fn data_dir() -> PathBuf {
         Ok(v) if !v.is_empty() => PathBuf::from(v).join("agent-brain"),
         _ => home_dir().join(".local").join("share").join("agent-brain"),
     }
+}
+
+pub fn config_path() -> PathBuf {
+    if let Ok(cfg_env) = std::env::var("AGENT_BRAIN_CONFIG") {
+        if !cfg_env.is_empty() {
+            return expand_tilde(&cfg_env, &home_dir());
+        }
+    }
+    config_dir().join("config.json")
 }
 
 pub fn map_path() -> PathBuf {

@@ -1215,3 +1215,44 @@ fn settings_routes_gated() {
 
     stop(srv);
 }
+
+#[test]
+fn engines_models_save_and_get() {
+    let sb = Sandbox::new();
+    sb.write_config(json!({
+        "engines": [
+            {"id": "agy", "kind": "agy", "command": "agy", "model": "gemini-3.8-flash-high"}
+        ]
+    }));
+    let srv = sb.serve(&[]);
+
+    let r = srv.post_json(
+        "/api/engines/models",
+        &json!({
+            "id": "agy",
+            "label": "Antigravity Flash/Argon",
+            "model": "gemini-3.8-flash-high",
+            "models": {
+                "lead": "gemini-4-argon-high",
+                "dev": "gemini-3.8-flash-high",
+                "qa": ""
+            }
+        }),
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    let j = r.json();
+    let agy = find(&j, "engines", "name", "agy");
+    assert_eq!(agy["label"], "Antigravity Flash/Argon");
+    assert_eq!(agy["default_model"], "gemini-3.8-flash-high");
+    assert_eq!(agy["models"]["lead"], "gemini-4-argon-high");
+    assert_eq!(agy["models"]["dev"], "gemini-3.8-flash-high");
+
+    // Passing command/base_url/key_env is rejected by deny_unknown_fields.
+    let bad = srv.post_json(
+        "/api/engines/models",
+        &json!({"id": "agy", "command": "rm"}),
+    );
+    assert!(bad.status == 400 || bad.status == 422, "{}", bad.status);
+
+    stop(srv);
+}

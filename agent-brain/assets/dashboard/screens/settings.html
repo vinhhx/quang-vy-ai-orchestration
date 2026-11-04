@@ -347,12 +347,84 @@
       <h2 class="text-xl font-semibold leading-[1.2]">Engine</h2>
       <button id="ab-set-engines-check" type="button" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="enginesChecking" @click="checkEngines" x-text="checkLabel">Kiểm tra lại</button>
     </div>
-    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Engine khai báo trong config.json (mục engines), cùng claude (theo profile của dự án) và người. Lệnh, endpoint và tên biến key chỉ sửa trong file; dashboard chỉ xem.</p>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Engine khai báo trong config.json (mục engines), cùng claude (theo profile của dự án) và người. Bạn có thể chỉnh sửa model mặc định và model cho từng vai trò ngay bên dưới; lệnh, endpoint và tên biến key chỉ sửa trong file.</p>
     <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Chỉ xem biến môi trường và lệnh có trên máy; không gọi model, không tốn token.</p>
     <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="enginesFailed">Không kiểm tra được. Bấm Kiểm tra lại để thử lại.</p>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="engineEditorOpen" x-text="engineLockLine"></p>
+    <form data-engine-editor novalidate class="space-y-4 rounded-xl bg-indigo-50 p-4 ring-2 ring-indigo-600 dark:bg-indigo-900/20 dark:ring-indigo-400 max-w-3xl" x-show="engineEditorOpen" @submit.prevent="saveEngine" aria-labelledby="ab-set-engine-editor-title">
+      <h3 id="ab-set-engine-editor-title" class="text-base font-semibold leading-normal break-words" x-text="engineEditorTitle"></h3>
+      <div class="space-y-2" x-show="engineHasLabelField">
+        <label for="ab-set-engine-label" class="text-sm font-semibold leading-normal">Tên hiển thị (không bắt buộc)</label>
+        <input id="ab-set-engine-label" type="text" maxlength="120" autocomplete="off" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 ring-1 ring-slate-500 dark:ring-slate-400 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="eLabel">
+      </div>
+      <div class="space-y-2" x-show="engineHasDefaultModel">
+        <label for="ab-set-engine-default-model" class="text-sm font-semibold leading-normal">Model mặc định chung (khi vai trò không chọn riêng)</label>
+        <select id="ab-set-engine-default-model" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:ring-slate-400 dark:bg-slate-900 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 font-mono" x-model="eDefaultModel">
+          <template x-for="o in engineDefaultModelOptions" :key="o.value">
+            <option :value="o.value" :selected="engineDefaultSelected(o.value)" x-text="o.label"></option>
+          </template>
+        </select>
+      </div>
+      <fieldset class="space-y-4">
+        <legend class="text-sm font-semibold leading-normal">Model cho từng vai trò</legend>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="engineRoleHelp"></p>
+        <div class="grid gap-4 md:grid-cols-2">
+          <div class="space-y-2">
+            <label for="ab-set-engine-lead" class="text-sm font-semibold leading-normal">Lead — lập plan</label>
+            <select id="ab-set-engine-lead" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:ring-slate-400 dark:bg-slate-900 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 font-mono" x-model="eLead">
+              <template x-for="o in engineRoleModelOptions('lead')" :key="o.value">
+                <option :value="o.value" :selected="engineRoleSelected('lead', o.value)" x-text="o.label"></option>
+              </template>
+            </select>
+          </div>
+          <div class="space-y-2">
+            <label for="ab-set-engine-dev" class="text-sm font-semibold leading-normal">Dev — viết code</label>
+            <select id="ab-set-engine-dev" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:ring-slate-400 dark:bg-slate-900 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 font-mono" x-model="eDev">
+              <template x-for="o in engineRoleModelOptions('dev')" :key="o.value">
+                <option :value="o.value" :selected="engineRoleSelected('dev', o.value)" x-text="o.label"></option>
+              </template>
+            </select>
+          </div>
+          <div class="space-y-2">
+            <label for="ab-set-engine-qa" class="text-sm font-semibold leading-normal">QA — kiểm thử</label>
+            <select id="ab-set-engine-qa" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:ring-slate-400 dark:bg-slate-900 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 font-mono" x-model="eQa">
+              <template x-for="o in engineRoleModelOptions('qa')" :key="o.value">
+                <option :value="o.value" :selected="engineRoleSelected('qa', o.value)" x-text="o.label"></option>
+              </template>
+            </select>
+          </div>
+          <div class="space-y-2">
+            <label for="ab-set-engine-plan-review" class="text-sm font-semibold leading-normal">Review plan</label>
+            <select id="ab-set-engine-plan-review" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:ring-slate-400 dark:bg-slate-900 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 font-mono" x-model="ePlanReview">
+              <template x-for="o in engineRoleModelOptions('plan_review')" :key="o.value">
+                <option :value="o.value" :selected="engineRoleSelected('plan_review', o.value)" x-text="o.label"></option>
+              </template>
+            </select>
+          </div>
+          <div class="space-y-2">
+            <label for="ab-set-engine-code-review" class="text-sm font-semibold leading-normal">Review code</label>
+            <select id="ab-set-engine-code-review" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:ring-slate-400 dark:bg-slate-900 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 font-mono" x-model="eCodeReview">
+              <template x-for="o in engineRoleModelOptions('code_review')" :key="o.value">
+                <option :value="o.value" :selected="engineRoleSelected('code_review', o.value)" x-text="o.label"></option>
+              </template>
+            </select>
+          </div>
+        </div>
+      </fieldset>
+      <div id="ab-set-engine-refusal" role="alert" tabindex="-1" class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasEngineRefusal">
+        <p class="font-semibold leading-normal">Không lưu được cấu hình engine</p>
+        <template x-for="(line, i) in engineRefusalLines" :key="i">
+          <p class="text-sm font-normal leading-normal break-words" x-text="line"></p>
+        </template>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button type="submit" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="writeLocked" x-text="engineSaveText"></button>
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="writeLocked" @click="cancelEngine">Hủy sửa</button>
+      </div>
+    </form>
     <ul class="space-y-4">
       <template x-for="row in engineRows" :key="row.name">
-        <li :data-engine-row="row.name" class="space-y-2 rounded-xl p-4 ring-1 ring-slate-200 dark:ring-slate-700">
+        <li :data-engine-row="row.name" x-show="row.visible" class="space-y-2 rounded-xl p-4 ring-1 ring-slate-200 dark:ring-slate-700">
           <div class="flex flex-wrap items-center gap-2">
             <span class="font-mono text-base font-semibold leading-normal break-all" x-text="row.name"></span>
             <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="row.chip"></span>
@@ -364,6 +436,9 @@
             <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words"><span x-text="d.label"></span><span :class="d.cls" x-text="d.value"></span></p>
           </template>
           <p class="text-sm font-normal leading-normal text-amber-800 dark:text-amber-300 break-words" x-show="row.hasReason" x-text="row.reason"></p>
+          <div class="flex flex-wrap gap-2" x-show="row.canEdit">
+            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :id="row.editId" :aria-label="row.editLabel" :disabled="engineActionsLocked" @click="editEngine(row.name)">Sửa model</button>
+          </div>
         </li>
       </template>
     </ul>
