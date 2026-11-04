@@ -57,9 +57,14 @@ ALTER TABLE tasks ADD COLUMN auto_stop_kind TEXT;
 ALTER TABLE tasks ADD COLUMN auto_json TEXT;"#,
     "ALTER TABLE tasks ADD COLUMN origin TEXT;",
     "ALTER TABLE tasks ADD COLUMN team_json TEXT;",
+    r#"CREATE TABLE intake (id INTEGER PRIMARY KEY, source TEXT NOT NULL CHECK (source IN ('ui','telegram')), project_id INTEGER REFERENCES projects(id), request TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','normal','low')), status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','triaging','proposed','cancelled','failed')), error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE INDEX intake_status ON intake(status);
+CREATE TABLE proposals (id INTEGER PRIMARY KEY, intake_id INTEGER NOT NULL REFERENCES intake(id) ON DELETE CASCADE, project_id INTEGER NOT NULL REFERENCES projects(id), title TEXT NOT NULL, request TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','normal','low')), team TEXT NOT NULL, workflow TEXT NOT NULL, reason TEXT, status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','started','failed')), task_id INTEGER REFERENCES tasks(id), error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE INDEX proposals_status ON proposals(status);
+CREATE TABLE quota_stops (task_id INTEGER PRIMARY KEY REFERENCES tasks(id), stopped_at INTEGER NOT NULL, engine TEXT NOT NULL, notified INTEGER NOT NULL DEFAULT 0);"#,
 ];
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -919,6 +924,300 @@ pub fn auto_driver_rows(conn: &Connection) -> BrainResult<Vec<DriverRow>> {
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IntakeRow {
+    pub id: i64,
+    pub source: String,
+    pub project_id: Option<i64>,
+    pub request: String,
+    pub priority: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+const INTAKE_COLUMNS: &str =
+    "id, source, project_id, request, priority, status, error, created_at, updated_at";
+
+fn row_to_intake(r: &rusqlite::Row) -> rusqlite::Result<IntakeRow> {
+    Ok(IntakeRow {
+        id: r.get(0)?,
+        source: r.get(1)?,
+        project_id: r.get(2)?,
+        request: r.get(3)?,
+        priority: r.get(4)?,
+        status: r.get(5)?,
+        error: r.get(6)?,
+        created_at: r.get(7)?,
+        updated_at: r.get(8)?,
+    })
+}
+
+pub fn insert_intake(
+    conn: &Connection,
+    source: &str,
+    project_id: Option<i64>,
+    request: &str,
+    priority: &str,
+) -> BrainResult<i64> {
+    let now = now_ms();
+    let priority_val = if priority.is_empty() {
+        "normal"
+    } else {
+        priority
+    };
+    conn.execute(
+        "INSERT INTO intake (source, project_id, request, priority, status, error, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 'queued', NULL, ?5, ?5)",
+        params![source, project_id, request, priority_val, now],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn get_intake(conn: &Connection, id: i64) -> BrainResult<Option<IntakeRow>> {
+    let sql = format!("SELECT {INTAKE_COLUMNS} FROM intake WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params![id])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(row_to_intake(r)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn list_intake(conn: &Connection, status: Option<&str>) -> BrainResult<Vec<IntakeRow>> {
+    match status {
+        Some(s) => {
+            let sql = format!(
+                "SELECT {INTAKE_COLUMNS} FROM intake WHERE status = ?1 ORDER BY created_at ASC, id ASC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map(params![s], row_to_intake)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        }
+        None => {
+            let sql = format!(
+                "SELECT {INTAKE_COLUMNS} FROM intake ORDER BY created_at ASC, id ASC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map([], row_to_intake)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        }
+    }
+}
+
+pub fn set_intake_status(conn: &Connection, id: i64, status: &str) -> BrainResult<bool> {
+    set_intake_status_error(conn, id, status, None)
+}
+
+pub fn set_intake_status_error(
+    conn: &Connection,
+    id: i64,
+    status: &str,
+    error: Option<&str>,
+) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE intake SET status = ?1, error = ?2, updated_at = ?3 WHERE id = ?4",
+        params![status, error, now, id],
+    )?;
+    Ok(changes > 0)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProposalRow {
+    pub id: i64,
+    pub intake_id: i64,
+    pub project_id: i64,
+    pub title: String,
+    pub request: String,
+    pub priority: String,
+    pub team: String,
+    pub workflow: String,
+    pub reason: Option<String>,
+    pub status: String,
+    pub task_id: Option<i64>,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+const PROPOSAL_COLUMNS: &str =
+    "id, intake_id, project_id, title, request, priority, team, workflow, reason, status, task_id, error, created_at, updated_at";
+
+fn row_to_proposal(r: &rusqlite::Row) -> rusqlite::Result<ProposalRow> {
+    Ok(ProposalRow {
+        id: r.get(0)?,
+        intake_id: r.get(1)?,
+        project_id: r.get(2)?,
+        title: r.get(3)?,
+        request: r.get(4)?,
+        priority: r.get(5)?,
+        team: r.get(6)?,
+        workflow: r.get(7)?,
+        reason: r.get(8)?,
+        status: r.get(9)?,
+        task_id: r.get(10)?,
+        error: r.get(11)?,
+        created_at: r.get(12)?,
+        updated_at: r.get(13)?,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct NewProposal<'a> {
+    pub intake_id: i64,
+    pub project_id: i64,
+    pub title: &'a str,
+    pub request: &'a str,
+    pub priority: &'a str,
+    pub team: &'a str,
+    pub workflow: &'a str,
+    pub reason: Option<&'a str>,
+}
+
+pub fn insert_proposal(conn: &Connection, p: &NewProposal<'_>) -> BrainResult<i64> {
+    let now = now_ms();
+    let priority_val = if p.priority.is_empty() {
+        "normal"
+    } else {
+        p.priority
+    };
+    conn.execute(
+        "INSERT INTO proposals (intake_id, project_id, title, request, priority, team, workflow, reason, status, task_id, error, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', NULL, NULL, ?9, ?9)",
+        params![
+            p.intake_id,
+            p.project_id,
+            p.title,
+            p.request,
+            priority_val,
+            p.team,
+            p.workflow,
+            p.reason,
+            now,
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn get_proposal(conn: &Connection, id: i64) -> BrainResult<Option<ProposalRow>> {
+    let sql = format!("SELECT {PROPOSAL_COLUMNS} FROM proposals WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params![id])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(row_to_proposal(r)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn list_proposals(conn: &Connection, status: Option<&str>) -> BrainResult<Vec<ProposalRow>> {
+    match status {
+        Some(s) => {
+            let sql = format!(
+                "SELECT {PROPOSAL_COLUMNS} FROM proposals WHERE status = ?1 ORDER BY created_at ASC, id ASC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map(params![s], row_to_proposal)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        }
+        None => {
+            let sql = format!(
+                "SELECT {PROPOSAL_COLUMNS} FROM proposals ORDER BY created_at ASC, id ASC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map([], row_to_proposal)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        }
+    }
+}
+
+pub fn set_proposal_status(conn: &Connection, id: i64, status: &str) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE proposals SET status = ?1, updated_at = ?2 WHERE id = ?3",
+        params![status, now, id],
+    )?;
+    Ok(changes > 0)
+}
+
+pub fn set_proposal_status_reason(
+    conn: &Connection,
+    id: i64,
+    status: &str,
+    reason: Option<&str>,
+) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = if let Some(r) = reason {
+        conn.execute(
+            "UPDATE proposals SET status = ?1, reason = ?2, updated_at = ?3 WHERE id = ?4",
+            params![status, r, now, id],
+        )?
+    } else {
+        conn.execute(
+            "UPDATE proposals SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![status, now, id],
+        )?
+    };
+    Ok(changes > 0)
+}
+
+pub fn set_proposal_priority(conn: &Connection, id: i64, priority: &str) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE proposals SET priority = ?1, updated_at = ?2 WHERE id = ?3",
+        params![priority, now, id],
+    )?;
+    Ok(changes > 0)
+}
+
+pub fn next_approved_proposal(conn: &Connection) -> BrainResult<Option<ProposalRow>> {
+    let sql = format!(
+        "SELECT {PROPOSAL_COLUMNS} FROM proposals
+         WHERE status = 'approved'
+         ORDER BY
+             CASE priority
+                 WHEN 'urgent' THEN 1
+                 WHEN 'normal' THEN 2
+                 WHEN 'low' THEN 3
+                 ELSE 4
+             END ASC,
+             created_at ASC,
+             id ASC
+         LIMIT 1"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query([])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(row_to_proposal(r)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn count_active_tasks(conn: &Connection) -> BrainResult<u32> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM (
+            SELECT task_id AS id FROM runs WHERE status = 'running' AND task_id IS NOT NULL
+            UNION
+            SELECT id FROM tasks WHERE auto_state = 'running'
+         )",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(count as u32)
 }
 
 #[cfg(test)]

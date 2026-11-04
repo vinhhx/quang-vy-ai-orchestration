@@ -27,6 +27,25 @@ impl Default for AutopilotDefaults {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OrchestratorConfig {
+    pub enabled: bool,
+    pub max_parallel: u32,
+    pub auto_resume_quota: bool,
+    pub resume_after_minutes: u32,
+}
+
+impl Default for OrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_parallel: 3,
+            auto_resume_quota: false,
+            resume_after_minutes: 60,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Price {
     pub input: f64,
@@ -904,6 +923,7 @@ pub struct Config {
     pub inspect_max_diff_bytes: usize,
     pub dashboard_port: u16,
     pub autopilot: AutopilotDefaults,
+    pub orchestrator: OrchestratorConfig,
     pub pricing: BTreeMap<String, Price>,
     /// Tasks the Telegram bot may create per local day; 0 turns `/task` off.
     pub telegram_max_tasks_per_day: u32,
@@ -1192,6 +1212,54 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         }
     }
 
+    let mut orchestrator = OrchestratorConfig::default();
+    if let Some(orch_val) = obj.get("orchestrator") {
+        if let Some(orch_obj) = orch_val.as_object() {
+            if let Some(en) = orch_obj.get("enabled") {
+                match en.as_bool() {
+                    Some(b) => orchestrator.enabled = b,
+                    None => {
+                        return Err(BrainError::error(
+                            "Cấu hình orchestrator.enabled phải là boolean",
+                        ))
+                    }
+                }
+            }
+            if let Some(mp) = orch_obj.get("max_parallel") {
+                match mp.as_u64() {
+                    Some(n) if (1..=10).contains(&n) => orchestrator.max_parallel = n as u32,
+                    _ => {
+                        return Err(BrainError::error(
+                            "Cấu hình orchestrator.max_parallel phải là số nguyên từ 1 đến 10",
+                        ))
+                    }
+                }
+            }
+            if let Some(arq) = orch_obj.get("auto_resume_quota") {
+                match arq.as_bool() {
+                    Some(b) => orchestrator.auto_resume_quota = b,
+                    None => {
+                        return Err(BrainError::error(
+                            "Cấu hình orchestrator.auto_resume_quota phải là boolean",
+                        ))
+                    }
+                }
+            }
+            if let Some(ram) = orch_obj.get("resume_after_minutes") {
+                match ram.as_u64() {
+                    Some(n) if (1..=1440).contains(&n) => {
+                        orchestrator.resume_after_minutes = n as u32
+                    }
+                    _ => {
+                        return Err(BrainError::error(
+                            "Cấu hình orchestrator.resume_after_minutes phải là số nguyên từ 1 đến 1440",
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
     let telegram_max_tasks_per_day = match obj.get("telegram_max_tasks_per_day") {
         None => DEFAULT_TELEGRAM_MAX_TASKS_PER_DAY,
         Some(val) => match val.as_u64() {
@@ -1245,6 +1313,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         inspect_max_diff_bytes,
         dashboard_port,
         autopilot,
+        orchestrator,
         pricing,
         telegram_max_tasks_per_day,
         engines,

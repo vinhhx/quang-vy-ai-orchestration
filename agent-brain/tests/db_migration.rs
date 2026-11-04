@@ -948,8 +948,8 @@ fn v3_db_gains_team_json() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 4);
-    assert_eq!(agent_brain::db::SCHEMA_VERSION, 4);
+    assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
+    assert_eq!(agent_brain::db::SCHEMA_VERSION, 5);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 
     let n: i64 = conn
@@ -974,7 +974,7 @@ fn v2_db_jumps_to_v4() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 4);
+    assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
     let cols = task_columns(&conn);
     assert!(cols.contains(&"origin".to_string()));
     assert!(cols.contains(&"team_json".to_string()));
@@ -1001,9 +1001,86 @@ fn fresh_db_has_team_json_at_current_version() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 4);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
+    assert_eq!(user_ver, 5);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
+}
+
+fn build_v4(path: &Path) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    for sql in &agent_brain::db::MIGRATIONS[..4] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 4).unwrap();
+    conn.execute(
+        "INSERT INTO projects (id, slug, path, name_vi, aliases_json, type, profile, repo, missing)
+         VALUES (1, 'proj-1', '/path/1', 'Dự án 1', '[]', 'code', 'work', NULL, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, origin, team_json)
+         VALUES (1, 1, 'task-1', 'Task 1', 'task/1', 'main', 'base1', 'open', 1000, 1000, 'telegram', '{\"name\":\"default\"}')",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn v4_db_upgrades_to_v5_keeping_data() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v4(&db_path);
+
+    let conn = agent_brain::db::open(&db_path).expect("open v4 DB upgrades to v5");
+
+    let user_ver: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(user_ver, 5);
+    assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
+
+    // Verify existing data preserved
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(
+        agent_brain::db::task_origin(&conn, 1).unwrap().as_deref(),
+        Some("telegram")
+    );
+
+    // Verify new tables exist
+    let intake_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='intake'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap();
+    assert!(intake_exists);
+
+    let proposals_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='proposals'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap();
+    assert!(proposals_exists);
+
+    let quota_stops_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='quota_stops'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap();
+    assert!(quota_stops_exists);
 }
 
 #[test]
