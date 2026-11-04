@@ -14,6 +14,10 @@ Quy tắc kế hoạch:
 - Để trống mục "Vướng mắc" (Dev sẽ ghi vào đây nếu gặp khó khăn trong quá trình thực thi).
 - Tuyệt đối KHÔNG sửa code và KHÔNG chạy test.
 - Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`; không dùng ký tự đại diện (*, ?) ngoài ngoặc và không gọi git qua lệnh bọc như env, find, xargs hay sh -c.
+- Khi dự án dùng kỹ năng (skills), trong .plan.md:
+  + "Thư mục được ghi" CHỈ dành cho thư mục đầu ra lưu kết quả/sản phẩm (ví dụ: `projects/ten-phase/**`, `.gsd/phases/ten-phase/**`, `dist/**`).
+  + Các file trong bảng "Thay đổi" đã được cấp quyền ghi tự động; KHÔNG đưa thư mục chứa code/script (như `scripts/**`, `src/**`) vào "Thư mục được ghi".
+  + Tuyệt đối KHÔNG đưa thư mục chứa script được chạy (như `scripts/**`) vào "Thư mục được ghi" vì sẽ vi phạm an toàn Write-then-Execute.
 
 Ví dụ dòng trong bảng Thay đổi:
 - Tốt:

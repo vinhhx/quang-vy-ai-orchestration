@@ -252,6 +252,10 @@ pub fn prompt_block_with(skills: &[Skill], have: &[String], missing: &[String]) 
 - Nếu một skill phù hợp với yêu cầu, hãy đọc SKILL.md của nó rồi ghi vào .plan.md các mục tùy chọn sau (mỗi mục là danh sách gạch đầu dòng, một mục một dòng, giá trị đặt trong dấu nháy ngược):\n\
   ## Skill sử dụng\n  - `tên-skill` (đường/dẫn/SKILL.md)\n  ## Lệnh được chạy\n  - `PROG scripts/ten_script.py *`\n  ## Thư mục được đọc\n  - `thư-mục/**` hoặc `đường/dẫn/file.md` (một file)\n  ## Thư mục được ghi\n  - `thư-mục-đầu-ra/**`\n\
 - Chỉ liệt kê lệnh và thư mục thật sự cần. Lệnh là một lệnh đơn (không dùng `; | & $ ( ) < > ` { }`, không `..`, không đường dẫn tuyệt đối hay bắt đầu bằng ~), `*` chỉ đứng ở cuối. Không khai trình bao (sh, bash), curl, wget, sudo, ssh, rm -rf hay trình thông dịch kèm -c; không khai .git, .planning, .claude, .env* hay file bí mật. Mỗi mục tối đa 20 dòng.\n\
+- QUY TẮC THƯ MỤC ĐƯỢC GHI (Bảo mật Write-then-Execute):\n\
+  + `## Thư mục được ghi` CHỈ dành cho thư mục đầu ra chứa sản phẩm chạy (ví dụ `projects/<tên>/**`, `.gsd/phases/<tên>/**`, `dist/**`, `out/**`).\n\
+  + Các file trong bảng \"Thay đổi\" đã được hệ thống tự động cấp quyền ghi cho Dev, TUYỆT ĐỐI KHÔNG đưa thư mục chứa chúng vào `## Thư mục được ghi`.\n\
+  + TUYỆT ĐỐI KHÔNG đưa thư mục chứa script được chạy (ví dụ `scripts/**`) vào `## Thư mục được ghi`. Nếu lệnh chạy file trong thư mục được ghi, hệ thống sẽ TỪ CHỐI plan ngay lập tức vì vi phạm an toàn Write-then-Execute. Thư mục `scripts/**` chỉ đưa vào `## Thư mục được đọc` (nếu cần đọc) hoặc không khai gì (nếu chỉ chạy).\n\
 - Dev chỉ chạy đúng các lệnh đó và chỉ ghi vào các thư mục đó; người dùng đọc phần này ở bước duyệt plan, nên hãy giữ chúng ngắn và đúng.\n\
 - Nếu không skill nào phù hợp, không thêm các mục này.\n",
     );
@@ -375,6 +379,8 @@ mod tests {
         assert!(block.contains("DỮ LIỆU"));
         assert!(block.contains("## Lệnh được chạy"));
         assert!(block.contains("## Thư mục được ghi"));
+        assert!(block.contains("Write-then-Execute"));
+        assert!(block.contains("TUYỆT ĐỐI KHÔNG đưa thư mục chứa script được chạy"));
     }
 
     fn fake_path(progs: &[&str]) -> tempfile::TempDir {
