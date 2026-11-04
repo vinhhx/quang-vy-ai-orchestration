@@ -1183,7 +1183,7 @@ pub fn set_proposal_priority(conn: &Connection, id: i64, priority: &str) -> Brai
     Ok(changes > 0)
 }
 
-pub fn next_approved_proposal(conn: &Connection) -> BrainResult<Option<ProposalRow>> {
+pub fn list_approved_proposals(conn: &Connection) -> BrainResult<Vec<ProposalRow>> {
     let sql = format!(
         "SELECT {PROPOSAL_COLUMNS} FROM proposals
          WHERE status = 'approved'
@@ -1195,16 +1195,17 @@ pub fn next_approved_proposal(conn: &Connection) -> BrainResult<Option<ProposalR
                  ELSE 4
              END ASC,
              created_at ASC,
-             id ASC
-         LIMIT 1"
+             id ASC"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query([])?;
-    if let Some(r) = rows.next()? {
-        Ok(Some(row_to_proposal(r)?))
-    } else {
-        Ok(None)
-    }
+    let rows = stmt
+        .query_map([], |r| row_to_proposal(r))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn next_approved_proposal(conn: &Connection) -> BrainResult<Option<ProposalRow>> {
+    Ok(list_approved_proposals(conn)?.into_iter().next())
 }
 
 pub fn count_active_tasks(conn: &Connection) -> BrainResult<u32> {

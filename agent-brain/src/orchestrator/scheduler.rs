@@ -51,10 +51,12 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
 
     // (a): Bắt đầu các proposal approved theo thứ tự ưu tiên
     let mut active = active_task_count(st, &conn)?;
-    while active < max_parallel {
-        let Some(prop) = crate::db::next_approved_proposal(&conn)? else {
+    let approved_props = crate::db::list_approved_proposals(&conn)?;
+
+    for prop in approved_props {
+        if active >= max_parallel {
             break;
-        };
+        }
 
         let project_slug: String = match conn.query_row(
             "SELECT slug FROM projects WHERE id = ?1",
@@ -97,8 +99,16 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
                     .ok();
                 crate::db::set_proposal_started(&conn, prop.id, task_id)?;
             }
-            StartOutcome::PreflightRefused { reason, .. } => {
+            StartOutcome::PreflightRefused { reason, kind } => {
+                if kind == "busy" {
+                    // Dự án đang bận (có job chạy): tạm thời, giữ approved và thử proposal tiếp theo
+                    continue;
+                }
                 crate::db::set_proposal_failed(&conn, prop.id, &reason)?;
+            }
+            StartOutcome::Busy(_) => {
+                // Tạm thời bận, giữ approved và thử proposal tiếp theo
+                continue;
             }
             StartOutcome::Invalid(reason) => {
                 crate::db::set_proposal_failed(&conn, prop.id, &reason)?;
@@ -110,7 +120,7 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
                     .unwrap_or("Dự án bị từ chối");
                 crate::db::set_proposal_failed(&conn, prop.id, err_str)?;
             }
-            StartOutcome::Busy(_) | StartOutcome::Unavailable => {
+            StartOutcome::Unavailable => {
                 break;
             }
             StartOutcome::Ready(_) => {
@@ -137,7 +147,10 @@ fn handle_quota_stops(st: &AppState, conn: &rusqlite::Connection) -> BrainResult
              SELECT id FROM runs WHERE task_id = t.id ORDER BY started_at DESC, id DESC LIMIT 1
          )
          WHERE (t.auto_stop_kind = 'het_quota' OR r.outcome = 'quota')
-           AND (t.auto_state IS NULL OR t.auto_state != 'running')",
+           AND (t.auto_state IS NULL OR t.auto_state != 'running')
+           AND EXISTS (
+               SELECT 1 FROM proposals pr WHERE pr.task_id = t.id AND pr.status = 'started'
+           )",
     )?;
 
     struct QuotaCandidate {
@@ -189,6 +202,19 @@ fn handle_quota_stops(st: &AppState, conn: &rusqlite::Connection) -> BrainResult
 
         for qs in quota_stops {
             if now >= qs.stopped_at + resume_after_ms {
+                // Giới hạn auto_resume chỉ cho task có trong proposals (proposals.task_id = tasks.id và proposals.status = started)
+                let has_started_proposal: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM proposals WHERE task_id = ?1 AND status = 'started')",
+                        rusqlite::params![qs.task_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(false);
+                if !has_started_proposal {
+                    let _ = crate::db::delete_quota_stop(conn, qs.task_id);
+                    continue;
+                }
+
                 // Kiểm tra xem task có đang chạy job không
                 let already_running = st
                     .jobs

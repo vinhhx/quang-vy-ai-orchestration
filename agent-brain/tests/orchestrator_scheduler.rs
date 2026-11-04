@@ -357,6 +357,24 @@ fn test_scheduler_quota_stop_does_not_block_slot_and_records_quota_stops() {
     // Task hết quota KHÔNG được tính vào count_active_tasks
     assert_eq!(count_active_tasks(&conn).unwrap(), 0, "quota stopped task must not count as active");
 
+    // Tạo proposal đã started gắn với task 1
+    let intake_1 = insert_intake(&conn, "ui", None, "Intake 1", "normal").expect("insert intake 1");
+    let prop_1 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id: intake_1,
+            project_id: pid1,
+            title: "Task 1",
+            request: "Do task 1",
+            priority: "normal",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("prop 1");
+    agent_brain::db::set_proposal_started(&conn, prop_1, Some(t1)).expect("start prop 1");
+
     // Tạo proposal approved cho dự án p2
     let intake_id = insert_intake(&conn, "ui", None, "Intake 2", "normal").expect("insert intake");
     let p2 = insert_proposal(
@@ -442,6 +460,24 @@ fn test_scheduler_auto_resume_quota_once() {
         rusqlite::params![t1, pid1, stopped_at - 1000, stopped_at],
     )
     .expect("insert quota run");
+
+    // Tạo proposal đã started cho task t1
+    let intake_1 = insert_intake(&conn, "ui", None, "Intake resume", "normal").expect("insert intake");
+    let prop_resume = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id: intake_1,
+            project_id: pid1,
+            title: "Task Resume",
+            request: "Do task resume",
+            priority: "normal",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("prop resume");
+    agent_brain::db::set_proposal_started(&conn, prop_resume, Some(t1)).expect("start prop resume");
 
     let st = app_state(&sb, fake_job);
 
@@ -558,4 +594,165 @@ fn test_scheduler_preflight_refusal_marks_failed() {
     assert_eq!(prop1.status, "failed");
     assert!(prop1.error.is_some());
     assert!(st.jobs.list().is_empty());
+}
+
+/// Test bổ sung (a): Task quota không có proposal không bị ghi quota_stops và không auto_resume.
+#[test]
+fn test_scheduler_quota_stop_without_proposal_ignored() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repos = setup_projects(&sb, &["p1"]);
+    let fake_job = setup_fake_job(&sb);
+
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true,
+            "max_parallel": 2,
+            "auto_resume_quota": true,
+            "resume_after_minutes": 1
+        }
+    }));
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
+    let projects = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+
+    let pid1 = agent_brain::db::project_row_id(&conn, "p1").expect("pid");
+    let t_legacy = agent_brain::db::upsert_task(
+        &conn,
+        pid1,
+        "legacy-quota-task",
+        "Legacy Quota Task",
+        "legacy-quota-task",
+        Some("task/legacy-quota-task"),
+        None,
+    )
+    .expect("upsert task");
+
+    let now = agent_brain::db::now_ms();
+    let stopped_at = now - (5 * 60 * 1000); // 5 phút trước (> resume_after_minutes = 1)
+
+    conn.execute(
+        "UPDATE tasks SET auto_state = 'stopped', auto_stop_at = ?1, auto_stop_kind = 'het_quota' WHERE id = ?2",
+        rusqlite::params![stopped_at, t_legacy],
+    )
+    .expect("update task quota stop");
+
+    conn.execute(
+        "INSERT INTO runs (task_id, project_id, role, engine, profile, status, outcome, started_at, ended_at)
+         VALUES (?1, ?2, 'dev', 'claude', 'default', 'succeeded', 'quota', ?3, ?4)",
+        rusqlite::params![t_legacy, pid1, stopped_at - 1000, stopped_at],
+    )
+    .expect("insert quota run");
+
+    // Task này KHÔNG có dòng nào trong proposals
+    let st = app_state(&sb, fake_job);
+    schedule_tick(&st).expect("tick");
+
+    // Bảng quota_stops phải rỗng vì task không thuộc proposal nào
+    let q_stops = list_quota_stops(&conn).expect("list quota stops");
+    assert_eq!(q_stops.len(), 0, "task without started proposal must not be recorded in quota_stops");
+
+    // Không có job nào được start để auto_resume
+    let jobs = st.jobs.list();
+    assert_eq!(jobs.len(), 0, "task without started proposal must not be auto-resumed");
+}
+
+/// Test bổ sung (b): Hai proposal approved cùng dự án, cái thứ hai gặp busy vẫn approved,
+/// và một proposal dự án khác phía sau vẫn được bắt đầu.
+#[test]
+fn test_scheduler_busy_project_skips_and_starts_next_project_proposal() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repos = setup_projects(&sb, &["p1", "p2"]);
+    let fake_job = setup_fake_job(&sb);
+
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true,
+            "max_parallel": 2
+        }
+    }));
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
+    let projects = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+
+    let pid1 = agent_brain::db::project_row_id(&conn, "p1").expect("pid p1");
+    let pid2 = agent_brain::db::project_row_id(&conn, "p2").expect("pid p2");
+
+    let intake_id = insert_intake(&conn, "ui", None, "Intake batch", "normal").expect("insert intake");
+
+    // Tạo 3 proposals:
+    // p1_prop1: project p1, urgent
+    // p1_prop2: project p1, normal (cùng dự án p1)
+    // p2_prop: project p2, low (dự án p2 khác)
+    let p1_prop1 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid1,
+            title: "Task P1 A",
+            request: "Do task P1 A",
+            priority: "urgent",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("p1_prop1");
+    set_proposal_status(&conn, p1_prop1, "approved").expect("approve p1_prop1");
+
+    let p1_prop2 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid1,
+            title: "Task P1 B",
+            request: "Do task P1 B",
+            priority: "normal",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("p1_prop2");
+    set_proposal_status(&conn, p1_prop2, "approved").expect("approve p1_prop2");
+
+    let p2_prop = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid2,
+            title: "Task P2 C",
+            request: "Do task P2 C",
+            priority: "low",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("p2_prop");
+    set_proposal_status(&conn, p2_prop, "approved").expect("approve p2_prop");
+
+    let st = app_state(&sb, fake_job);
+    schedule_tick(&st).expect("schedule_tick");
+
+    // Kết quả:
+    // 1. p1_prop1 được bắt đầu -> status = "started"
+    let prop1 = get_proposal(&conn, p1_prop1).unwrap().unwrap();
+    assert_eq!(prop1.status, "started", "p1_prop1 should start");
+
+    // 2. p1_prop2 cùng dự án p1, gặp preflight busy -> VẪN GIỮ status = "approved" (không phải "failed")
+    let prop2 = get_proposal(&conn, p1_prop2).unwrap().unwrap();
+    assert_eq!(prop2.status, "approved", "p1_prop2 on busy project must stay approved");
+
+    // 3. p2_prop (dự án p2) phía sau vẫn được bắt đầu vì còn slot -> status = "started"
+    let prop3 = get_proposal(&conn, p2_prop).unwrap().unwrap();
+    assert_eq!(prop3.status, "started", "p2_prop on free project should start");
+
+    // Dọn dẹp jobs
+    st.jobs.kill_all_now();
 }
