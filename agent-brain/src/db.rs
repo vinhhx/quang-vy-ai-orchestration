@@ -1220,6 +1220,84 @@ pub fn count_active_tasks(conn: &Connection) -> BrainResult<u32> {
     Ok(count as u32)
 }
 
+pub fn set_proposal_started(conn: &Connection, id: i64, task_id: Option<i64>) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE proposals SET status = 'started', task_id = ?1, updated_at = ?2 WHERE id = ?3",
+        params![task_id, now, id],
+    )?;
+    Ok(changes > 0)
+}
+
+pub fn set_proposal_failed(conn: &Connection, id: i64, error: &str) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE proposals SET status = 'failed', error = ?1, updated_at = ?2 WHERE id = ?3",
+        params![error, now, id],
+    )?;
+    Ok(changes > 0)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QuotaStopRow {
+    pub task_id: i64,
+    pub stopped_at: i64,
+    pub engine: String,
+    pub notified: i64,
+}
+
+pub fn insert_quota_stop(
+    conn: &Connection,
+    task_id: i64,
+    stopped_at: i64,
+    engine: &str,
+) -> BrainResult<bool> {
+    let changes = conn.execute(
+        "INSERT OR IGNORE INTO quota_stops (task_id, stopped_at, engine, notified) VALUES (?1, ?2, ?3, 0)",
+        params![task_id, stopped_at, engine],
+    )?;
+    Ok(changes > 0)
+}
+
+pub fn get_quota_stop(conn: &Connection, task_id: i64) -> BrainResult<Option<QuotaStopRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT task_id, stopped_at, engine, notified FROM quota_stops WHERE task_id = ?1",
+    )?;
+    let mut rows = stmt.query([task_id])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(QuotaStopRow {
+            task_id: r.get(0)?,
+            stopped_at: r.get(1)?,
+            engine: r.get(2)?,
+            notified: r.get(3)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn delete_quota_stop(conn: &Connection, task_id: i64) -> BrainResult<bool> {
+    let changes = conn.execute("DELETE FROM quota_stops WHERE task_id = ?1", params![task_id])?;
+    Ok(changes > 0)
+}
+
+pub fn list_quota_stops(conn: &Connection) -> BrainResult<Vec<QuotaStopRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT task_id, stopped_at, engine, notified FROM quota_stops ORDER BY stopped_at ASC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(QuotaStopRow {
+                task_id: r.get(0)?,
+                stopped_at: r.get(1)?,
+                engine: r.get(2)?,
+                notified: r.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

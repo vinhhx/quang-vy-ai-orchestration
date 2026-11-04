@@ -1,3 +1,4 @@
+pub mod scheduler;
 pub mod triage;
 
 use crate::dashboard::AppState;
@@ -120,17 +121,23 @@ pub fn spawn_loop(st: Arc<AppState>) -> tokio::task::JoinHandle<()> {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
                     let st_clone = st.clone();
                     let res = tokio::task::spawn_blocking(move || {
-                        tick(&st_clone)
+                        let t_res = tick(&st_clone);
+                        let s_res = scheduler::schedule_tick(&st_clone);
+                        (t_res, s_res)
                     }).await;
 
                     match res {
-                        Ok(Err(e)) => {
-                            crate::term::emit(&format!("Orchestrator triage error: {}", e.message));
+                        Ok((t_res, s_res)) => {
+                            if let Err(e) = t_res {
+                                crate::term::emit(&format!("Orchestrator triage error: {}", e.message));
+                            }
+                            if let Err(e) = s_res {
+                                crate::term::emit(&format!("Orchestrator scheduler error: {}", e.message));
+                            }
                         }
                         Err(join_err) => {
                             crate::term::emit(&format!("Orchestrator thread error: {join_err}"));
                         }
-                        Ok(Ok(())) => {}
                     }
                 }
             }
