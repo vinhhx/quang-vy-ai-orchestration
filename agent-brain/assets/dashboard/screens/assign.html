@@ -133,6 +133,11 @@
       <div class="rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all whitespace-pre-wrap text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-text="jobOutputText"></div>
     </div>
 
+    <div class="rounded-xl bg-emerald-50 p-4 ring-1 ring-emerald-300 text-emerald-900 dark:bg-emerald-900/20 dark:ring-emerald-700 dark:text-emerald-200 space-y-2" x-show="intakeSuccess">
+      <p class="font-semibold leading-normal" x-text="'Đã chuyển yêu cầu vào hàng chờ #' + intakeId"></p>
+      <p class="text-sm font-normal leading-normal">Agent điều phối sẽ phân tích và tạo đề xuất để bạn duyệt.</p>
+    </div>
+
     <div class="space-y-2">
       <button type="button" aria-describedby="ab-start-reason" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="startDisabled" @click="submit" x-text="startLabel"></button>
       <p id="ab-start-reason" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="startDisabled" x-text="disabledReason"></p>

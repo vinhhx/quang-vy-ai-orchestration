@@ -667,6 +667,26 @@ fn find_slug(ctx: &BotCtx, f: &Intake, project_id: &str) -> Result<(String, Star
             Ok(StartOutcome::Ready(info)) => return Ok((info.slug.clone(), info)),
             Ok(StartOutcome::PreflightRefused { kind, .. })
                 if kind == "branch_exists" || kind == "exists" => {}
+            Ok(StartOutcome::PreflightRefused { .. }) if ctx.st.cfg.orchestrator.enabled => {
+                let map = crate::projects::load_map(&ctx.st.map_path).map_err(|e| e.message)?;
+                let (projects, _) = allowed_projects(&map, &ctx.st.cfg)?;
+                let proj = projects
+                    .into_iter()
+                    .find(|p| p.id == project_id)
+                    .ok_or_else(|| "Dự án không tồn tại".to_string())?;
+                let info = StartInfo {
+                    project: proj,
+                    slug: candidate.clone(),
+                    branch: format!("task/{candidate}"),
+                    workflow: f.workflow_name().unwrap_or("mac-dinh").to_string(),
+                    auto: false,
+                    warning: None,
+                    replan: false,
+                    team: f.team_name().unwrap_or("mac-dinh").to_string(),
+                    team_note: None,
+                };
+                return Ok((candidate.clone(), info));
+            }
             Ok(other) => return Err(refusal_of(other).0),
             Err(e) => return Err(e.message),
         }
@@ -1220,6 +1240,35 @@ fn confirm(ctx: &Arc<BotCtx>, state: &PollState, f: &mut Intake, cq_id: &str, mi
         Ok(r) => r,
         Err(reason) => return refuse(ctx, cq_id, mid, &reason, "yêu cầu"),
     };
+
+    if ctx.st.cfg.orchestrator.enabled {
+        let conn = match crate::db::open(&ctx.st.db_path) {
+            Ok(c) => c,
+            Err(e) => return refuse(ctx, cq_id, mid, &e.message, "nội bộ"),
+        };
+        let project_id_db = crate::db::project_row_id(&conn, &project_id).ok();
+        return match crate::db::insert_intake(
+            &conn,
+            "telegram",
+            project_id_db,
+            &request,
+            "normal",
+        ) {
+            Ok(id) => {
+                bot::edit(
+                    ctx,
+                    mid,
+                    &format!("Đã vào hàng chờ #{id}"),
+                    render::no_keyboard(),
+                );
+                bot::answer(ctx, cq_id, "Đã vào hàng chờ", false);
+                audit(&format!("đã đưa vào hàng chờ #{id}: dự án {project_id}"));
+                Next::Advanced
+            }
+            Err(e) => refuse(ctx, cq_id, mid, &e.message, "nội bộ"),
+        };
+    }
+
     let mut req = StartRequest {
         project: &project_id,
         request: &request,

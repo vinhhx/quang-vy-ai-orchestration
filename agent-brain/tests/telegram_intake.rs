@@ -896,6 +896,56 @@ fn task_command_full_flow() {
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
 
+#[test]
+fn task_command_routes_to_intake_when_orchestrator_enabled() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true
+        }
+    }));
+    setup_project(&sb, "work");
+    allow_projects(&sb, &["web-ban-hang"]);
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    send_text(&tg, "/task sửa app");
+    let screen = wait_message(&tg, &srv, "Chọn dự án cho task:");
+    let mid = message_id_of(&screen);
+
+    press_on(&tg, mid, &screen, "Web bán hàng · work");
+    let wf_screen = wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).starts_with("Chọn quy trình · dự án web-ban-hang")
+    });
+
+    press_on(&tg, mid, &wf_screen, "Mặc định (nhanh)");
+    tap_default_team(&tg, &srv, mid);
+    let confirm = wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).starts_with("Xác nhận giao việc")
+    });
+
+    // Bấm Tạo task
+    press_on(&tg, mid, &confirm, "Tạo task");
+    let done = wait_edit(&tg, &srv, mid, |r| {
+        text_of(r).starts_with("Đã vào hàng chờ #1")
+    });
+    assert!(empty_keyboard(&done), "{done}");
+
+    // Kiểm tra: 0 task trong bảng tasks
+    assert_eq!(task_count(&sb), 0, "No task should be created directly");
+
+    // Kiểm tra: 1 intake trong bảng intake
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let intake = agent_brain::db::get_intake(&conn, 1).unwrap().expect("intake 1");
+    assert_eq!(intake.source, "telegram");
+    assert_eq!(intake.status, "queued");
+    assert!(intake.request.contains("sửa app"));
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
 // ---------------------------------------------------------------------------
 // Phase 6 plan 14 Task 3: the team step of `/task` (TEAM-03)
 // ---------------------------------------------------------------------------

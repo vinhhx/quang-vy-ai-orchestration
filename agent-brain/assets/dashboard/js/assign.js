@@ -30,6 +30,9 @@
       candidates: [],
       output: [],
       jobFailed: false,
+      orchestratorEnabled: false,
+      intakeId: null,
+      intakeSuccess: false,
       profile: window.AB.profile(),
       loaded: false,
       workflows: [],
@@ -64,6 +67,7 @@
         this.loaded = true;
         this.loadWorkflows();
         this.loadTeams();
+        this.loadOrchestratorStatus();
 
         var profileHandler = function (e) {
           self.profile = (e.detail && e.detail.profile) ? e.detail.profile : window.AB.profile();
@@ -78,6 +82,18 @@
           if (self._requestTimer) clearTimeout(self._requestTimer);
           if (self._queryTimer) clearTimeout(self._queryTimer);
           if (self._searchTimer) clearTimeout(self._searchTimer);
+        });
+      },
+
+      // Read-only: GET /api/orchestrator/status (orchestrator feature toggle).
+      loadOrchestratorStatus: function () {
+        var self = this;
+        return window.AB.api('GET', '/api/orchestrator/status').then(function (res) {
+          if (res && res.ok && res.data) {
+            self.orchestratorEnabled = !!res.data.enabled;
+          }
+        }).catch(function () {
+          self.orchestratorEnabled = false;
         });
       },
 
@@ -557,6 +573,29 @@
       submit: async function () {
         if (this.startDisabled) return;
         this.submitting = true;
+
+        if (this.orchestratorEnabled) {
+          const body = {
+            request: this.request.trim(),
+            project: this.selected ? this.selected.id : null,
+            priority: 'normal',
+          };
+          const res = await window.AB.api('POST', '/api/intake', body);
+          if (res.status === 201 && res.data) {
+            this.accepted = true;
+            this.intakeSuccess = true;
+            this.intakeId = res.data.id;
+            this.warning = '';
+            this.error = '';
+            this.candidates = [];
+            this.submitting = false;
+          } else {
+            this.error = window.AB.errorText(res);
+            this.submitting = false;
+          }
+          return;
+        }
+
         const res = await window.AB.api('POST', '/api/tasks', this.postBody);
         if (res.status === 202 && res.data) {
           this.accepted = true;
@@ -827,7 +866,12 @@
       },
 
       get startLabel() {
-        if (this.accepted) return 'Đã giao việc — đang mở task...';
+        if (this.accepted) {
+          if (this.orchestratorEnabled) {
+            return 'Đã vào hàng chờ #' + (this.intakeId || '');
+          }
+          return 'Đã giao việc — đang mở task...';
+        }
         if (this.submitting) return 'Đang giao...';
         return 'Giao việc';
       },

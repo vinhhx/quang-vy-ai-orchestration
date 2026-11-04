@@ -440,3 +440,47 @@ fn next_approved_proposal_ordering_and_count_active_tasks() {
     agent_brain::db::set_auto_state(&conn, task_id_2, Some("running")).unwrap();
     assert_eq!(agent_brain::db::count_active_tasks(&conn).unwrap(), 2);
 }
+
+#[test]
+fn create_task_endpoint_routes_to_intake_when_orchestrator_enabled() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true
+        }
+    }));
+
+    let srv = sb.serve(&[]);
+
+    // POST /api/tasks khi orchestrator.enabled = true
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({
+            "project": "web-ban-hang",
+            "request": "Yêu cầu qua giao diện"
+        }),
+    );
+    assert_eq!(resp.status, 201, "body: {}", resp.text());
+    let body = resp.json();
+    assert_eq!(body["status"], "queued");
+    let intake_id = body["intake_id"].as_i64().expect("intake_id");
+    assert_eq!(intake_id, 1);
+
+    // Không có task nào được tạo trong bảng tasks
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let task_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(task_count, 0, "No task should be created directly");
+
+    // Dòng intake được tạo trong bảng intake
+    let intake = agent_brain::db::get_intake(&conn, intake_id)
+        .unwrap()
+        .expect("intake exists");
+    assert_eq!(intake.source, "ui");
+    assert_eq!(intake.status, "queued");
+    assert_eq!(intake.request, "Yêu cầu qua giao diện");
+    assert!(intake.project_id.is_some());
+}

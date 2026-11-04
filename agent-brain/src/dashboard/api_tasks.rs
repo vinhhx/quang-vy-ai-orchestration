@@ -825,6 +825,51 @@ fn start_response(outcome: StartOutcome) -> Response {
 }
 
 async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>) -> Response {
+    if st.cfg.orchestrator.enabled {
+        let req_text = body.request.trim().to_string();
+        if req_text.is_empty() {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({ "error": "Yêu cầu không được để trống" }),
+            );
+        }
+        if req_text.chars().count() > MAX_REQUEST_CHARS {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({
+                    "error": format!("Yêu cầu quá dài (tối đa {MAX_REQUEST_CHARS} ký tự)")
+                }),
+            );
+        }
+
+        let res = blocking(move || {
+            let conn = crate::db::open(&st.db_path)?;
+            let project_id = crate::db::project_row_id(&conn, &body.project).ok();
+            let intake_id = crate::db::insert_intake(
+                &conn,
+                "ui",
+                project_id,
+                &req_text,
+                "normal",
+            )?;
+            Ok::<_, crate::error::BrainError>(intake_id)
+        })
+        .await;
+
+        return match res {
+            Ok(intake_id) => json_response(
+                StatusCode::CREATED,
+                serde_json::json!({
+                    "id": intake_id,
+                    "intake_id": intake_id,
+                    "status": "queued",
+                    "message": format!("Đã chuyển vào hàng chờ #{intake_id}")
+                }),
+            ),
+            Err(e) => internal_error("giao việc", &e),
+        };
+    }
+
     let res = blocking(move || {
         start_new_task(
             &st,
