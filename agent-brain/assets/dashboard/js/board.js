@@ -495,6 +495,9 @@
       },
 
       projectLabel: function (p) {
+        if (p.has_board === false) {
+          return (p.name_vi || p.id) + ' · chưa có bảng GSD';
+        }
         return p.name_vi || p.id;
       },
 
@@ -704,7 +707,7 @@
         var seen = false;
         for (var i = 0; i < this.projects.length; i++) {
           var p = this.projects[i];
-          if (p.has_board || p.id === curId) out.push(p);
+          out.push(p);
           if (p.id === curId) seen = true;
         }
         if (curId && !seen) {
