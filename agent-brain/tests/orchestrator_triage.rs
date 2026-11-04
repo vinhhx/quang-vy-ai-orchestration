@@ -13,6 +13,13 @@ use agent_brain::orchestrator::triage::{validate, ProposalDraft};
 
 static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+struct EnvVarGuard(&'static str);
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        std::env::remove_var(self.0);
+    }
+}
+
 fn app_state(sb: &Sandbox) -> Arc<AppState> {
     let text = std::fs::read_to_string(&sb.config_path).expect("read config");
     let value: serde_json::Value = serde_json::from_str(&text).expect("parse config");
@@ -563,3 +570,75 @@ fn test_validate_rules() {
     d.request = "a".repeat(20_001);
     assert!(validate(&d, &projects, &teams, &workflows, &st.cfg.engines).is_err());
 }
+
+#[test]
+fn test_triage_engine_runs_with_disallowed_tools() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true
+        }
+    }));
+    std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
+    std::env::set_var("FAKE_CLAUDE_RECORD", &sb.record_file);
+    let _rec_guard = EnvVarGuard("FAKE_CLAUDE_RECORD");
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let _intake_id = agent_brain::db::insert_intake(
+        &conn,
+        "ui",
+        None,
+        "Thêm trang liên hệ",
+        "normal",
+    )
+    .expect("insert intake");
+
+    sb.write_scenario(json!({
+        "events": [
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": json!({
+                    "tasks": [
+                        {
+                            "project": "web-ban-hang",
+                            "title": "Trang lien he",
+                            "request": "Tao trang lien he",
+                            "priority": "normal",
+                            "team": "mac-dinh",
+                            "workflow": "mac-dinh",
+                            "reason": "hop le"
+                        }
+                    ]
+                }).to_string()
+            }
+        ]
+    }));
+
+    let st = app_state(&sb);
+    agent_brain::orchestrator::tick(&st).expect("tick");
+
+    let records = sb.records();
+    assert_eq!(records.len(), 1, "expected 1 engine invocation");
+    let argv = records[0]["argv"].as_array().expect("argv array");
+    let argv_strs: Vec<&str> = argv.iter().filter_map(|v| v.as_str()).collect();
+
+    let disallowed_idx = argv_strs
+        .iter()
+        .position(|&arg| arg == "--disallowedTools")
+        .expect("argv must contain --disallowedTools");
+
+    assert!(argv_strs.contains(&"Read"), "disallowed tools must contain Read");
+    assert!(argv_strs.contains(&"Bash"), "disallowed tools must contain Bash");
+    assert!(argv_strs.contains(&"WebFetch"), "disallowed tools must contain WebFetch");
+
+    let read_idx = argv_strs.iter().position(|&arg| arg == "Read").unwrap();
+    let bash_idx = argv_strs.iter().position(|&arg| arg == "Bash").unwrap();
+    let webfetch_idx = argv_strs.iter().position(|&arg| arg == "WebFetch").unwrap();
+    assert!(read_idx > disallowed_idx);
+    assert!(bash_idx > disallowed_idx);
+    assert!(webfetch_idx > disallowed_idx);
+}
+

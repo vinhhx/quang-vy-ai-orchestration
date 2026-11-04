@@ -289,7 +289,22 @@ r#"Phân tích yêu cầu sau và trả về JSON đề xuất công việc:
         role: crate::roles::Role::Lead,
         user_input,
         allowed_tools: Vec::new(),
-        disallowed_tools: Vec::new(),
+        disallowed_tools: vec![
+            "Bash".to_string(),
+            "Read".to_string(),
+            "Write".to_string(),
+            "Edit".to_string(),
+            "MultiEdit".to_string(),
+            "Glob".to_string(),
+            "Grep".to_string(),
+            "LS".to_string(),
+            "WebFetch".to_string(),
+            "WebSearch".to_string(),
+            "NotebookEdit".to_string(),
+            "NotebookRead".to_string(),
+            "Task".to_string(),
+            "TodoWrite".to_string(),
+        ],
         extra_args: Vec::new(),
     };
     let argv = crate::roles::build_command_with_prompt(&spec, &st.cfg, &system_prompt)?;
