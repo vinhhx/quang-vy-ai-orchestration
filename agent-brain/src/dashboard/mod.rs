@@ -243,6 +243,7 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
         "Mở URL trên trong trình duyệt. Nhấn Ctrl+C để dừng dashboard (các run do dashboard khởi chạy cũng dừng theo).",
     );
     let bot = crate::telegram::start(state.clone());
+    let _orchestrator = crate::orchestrator::spawn_loop(state.clone());
 
     let signal_fut = async {
         tokio::select! {
