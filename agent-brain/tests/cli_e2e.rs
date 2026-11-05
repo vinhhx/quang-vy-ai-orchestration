@@ -130,19 +130,13 @@ fn p2_01_run_lead_prints_steps_and_records_run() {
     assert!(argv_strs.contains(&"--strict-mcp-config"));
 
     let abs_plan_str = repo.join(".plan.md").to_str().unwrap().to_string();
-    let expected_allowed = [
-        "Read",
-        "Grep",
-        "Glob",
-        "Write(./.plan.md)",
-        "Edit(./.plan.md)",
-        "Bash(git log *)",
-        "Bash(git show *)",
-        "Bash(git diff *)",
-        "Bash(git status *)",
-        &format!("Write(/{})", abs_plan_str),
-        &format!("Edit(/{})", abs_plan_str),
-    ];
+    let mut expected_allowed: Vec<String> = agent_brain::roles::lead::LEAD_ALLOWED_TOOLS
+        .iter()
+        .map(|&s| s.to_string())
+        .collect();
+    expected_allowed.push(format!("Write(/{})", abs_plan_str));
+    expected_allowed.push(format!("Edit(/{})", abs_plan_str));
+    let expected_allowed_refs: Vec<&str> = expected_allowed.iter().map(|s| s.as_str()).collect();
     let allowed_idx = argv_strs
         .iter()
         .position(|&x| x == "--allowedTools")
@@ -153,7 +147,7 @@ fn p2_01_run_lead_prints_steps_and_records_run() {
         .expect("--disallowedTools");
 
     let actual_allowed = &argv_strs[allowed_idx + 1..disallowed_idx];
-    assert_eq!(actual_allowed, &expected_allowed);
+    assert_eq!(actual_allowed, &expected_allowed_refs[..]);
 
     let actual_disallowed = &argv_strs[disallowed_idx + 1..];
     assert_eq!(

@@ -101,11 +101,19 @@ fn invalid_plan_records_violation() {
         "stderr: {}",
         out.stderr
     );
+    assert!(
+        out.stderr.contains("Lead đã tự sửa 1 lần"),
+        "stderr: {}",
+        out.stderr
+    );
 
     let leads = lead_runs(&sb);
-    assert_eq!(leads.len(), 1, "lead runs: {leads:?}");
+    assert_eq!(leads.len(), 2, "lead runs: {leads:?}");
     assert_eq!(leads[0].1, "succeeded");
-    assert_eq!(leads[0].4.as_deref(), Some("protocol_violation"));
+    assert_eq!(leads[0].4.as_deref(), Some("plan_invalid"));
+    assert_eq!(leads[1].1, "succeeded");
+    assert_eq!(leads[1].4.as_deref(), Some("protocol_violation"));
+    assert_eq!(leads[0].3, leads[1].3, "same round");
 }
 
 #[test]
@@ -135,12 +143,13 @@ fn autopilot_invalid_plan_stops_once() {
     );
 
     let leads = lead_runs(&sb);
-    assert_eq!(leads.len(), 1, "lead runs: {leads:?}");
-    assert_eq!(leads[0].4.as_deref(), Some("protocol_violation"));
+    assert_eq!(leads.len(), 2, "lead runs: {leads:?}");
+    assert_eq!(leads[0].4.as_deref(), Some("plan_invalid"));
+    assert_eq!(leads[1].4.as_deref(), Some("protocol_violation"));
 
     let stop = auto_json(&sb, 1)["stop"].clone();
     assert_eq!(stop["reason"], "vi_pham_giao_thuc", "stop: {stop}");
-    assert_eq!(stop["run_id"], leads[0].0, "stop: {stop}");
+    assert_eq!(stop["run_id"], leads[1].0, "stop: {stop}");
 }
 
 #[test]

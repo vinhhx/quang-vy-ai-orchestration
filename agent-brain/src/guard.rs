@@ -734,24 +734,19 @@ fn check_branch(args: &[ShellWord]) -> Result<(), String> {
             ) {
                 has_list_flag = true;
             }
-            if inline_val.is_none()
-                && matches!(
-                    name,
-                    "sort"
-                        | "format"
-                        | "merged"
-                        | "no-merged"
-                        | "contains"
-                        | "no-contains"
-                        | "points-at"
-                        | "abbrev"
-                        | "column"
-                        | "color"
-                )
-            {
-                if let Some(next) = args.get(j) {
-                    if !next.text.starts_with('-') {
+            if inline_val.is_none() {
+                if name == "sort" || name == "format" {
+                    if j < args.len() {
                         j += 1;
+                    }
+                } else if matches!(
+                    name,
+                    "merged" | "no-merged" | "contains" | "no-contains" | "points-at"
+                ) {
+                    if let Some(next) = args.get(j) {
+                        if !next.text.starts_with('-') {
+                            j += 1;
+                        }
                     }
                 }
             }
@@ -825,23 +820,19 @@ fn check_tag(args: &[ShellWord]) -> Result<(), String> {
             ) {
                 has_list_flag = true;
             }
-            if inline_val.is_none()
-                && matches!(
-                    name,
-                    "sort"
-                        | "format"
-                        | "contains"
-                        | "no-contains"
-                        | "merged"
-                        | "no-merged"
-                        | "points-at"
-                        | "column"
-                        | "color"
-                )
-            {
-                if let Some(next) = args.get(j) {
-                    if !next.text.starts_with('-') {
+            if inline_val.is_none() {
+                if name == "sort" || name == "format" {
+                    if j < args.len() {
                         j += 1;
+                    }
+                } else if matches!(
+                    name,
+                    "contains" | "no-contains" | "merged" | "no-merged" | "points-at"
+                ) {
+                    if let Some(next) = args.get(j) {
+                        if !next.text.starts_with('-') {
+                            j += 1;
+                        }
                     }
                 }
             }
