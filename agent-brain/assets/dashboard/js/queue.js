@@ -62,6 +62,28 @@
         };
         window.addEventListener('ab:profile', profileHandler);
 
+        var queueChangedHandler = function () {
+          self.loadAll();
+        };
+        window.addEventListener('ab:queue-changed', queueChangedHandler);
+
+        var keyHandler = function (e) {
+          if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+          if (window.AB && window.AB.screenModal && window.AB.screenModal.isOpen()) return;
+          var tag = (e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '');
+          if (tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable)) {
+            return;
+          }
+          if (e.key === 'n' || e.key === 'N') {
+            e.preventDefault();
+            self.openAssignModal();
+          } else if (e.key === 'o' || e.key === 'O') {
+            e.preventDefault();
+            self.openOverviewModal();
+          }
+        };
+        window.addEventListener('keydown', keyHandler);
+
         // Preload office-rooms and initialize 3D office
         // office-rooms.js sets window.ABOfficeRooms; that global is not reactive, so flip a
         // component field once it is there to make the room tree and labels re-render.
@@ -74,11 +96,29 @@
 
         window.AB.onLeave(function () {
           window.removeEventListener('ab:profile', profileHandler);
+          window.removeEventListener('ab:queue-changed', queueChangedHandler);
+          window.removeEventListener('keydown', keyHandler);
           if (self.officeInstance) {
             self.officeInstance.dispose();
             self.officeInstance = null;
           }
         });
+      },
+
+      get loadedAttr() {
+        return (this.boardLoaded && this.tasksLoaded) ? 'yes' : 'no';
+      },
+
+      openAssignModal: function () {
+        if (window.AB && window.AB.screenModal) {
+          window.AB.screenModal.open('assign');
+        }
+      },
+
+      openOverviewModal: function () {
+        if (window.AB && window.AB.screenModal) {
+          window.AB.screenModal.open('overview');
+        }
       },
 
       hasActiveForm: function () {

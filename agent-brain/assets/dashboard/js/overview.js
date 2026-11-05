@@ -59,6 +59,14 @@
         this.load();
       },
 
+      openAssign: function () {
+        if (window.AB && window.AB.screenModal) {
+          window.AB.screenModal.open('assign');
+        } else {
+          window.location.hash = '#/assign';
+        }
+      },
+
       get loadedAttr() {
         return this.loaded ? 'yes' : 'no';
       },

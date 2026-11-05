@@ -3,7 +3,7 @@
     <h1 class="text-2xl font-semibold leading-[1.2]">Tổng quan</h1>
     <span role="status" :class="filterClass" x-show="filterChip" x-text="filterChip"></span>
     <span class="min-w-0 truncate text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" :title="busyText" x-show="busyText" x-text="busyText"></span>
-    <a href="#/assign" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">Giao việc</a>
+    <button type="button" @click="openAssign" class="ml-auto inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">Giao việc</button>
   </div>
 
   <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="stale">Không cập nhật được — đang thử lại...</p>
@@ -19,7 +19,7 @@
     <div class="space-y-4 py-12 text-center">
       <h2 class="text-xl font-semibold leading-[1.2]">Chưa có task nào</h2>
       <p class="text-base font-normal leading-normal text-slate-600 dark:text-slate-400">Giao việc đầu tiên: chọn một dự án và mô tả việc bằng tiếng Việt. Lead sẽ lập plan để bạn duyệt trước khi Dev chạy.</p>
-      <a href="#/assign" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">Giao việc</a>
+      <button type="button" @click="openAssign" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">Giao việc</button>
     </div>
   </div>
 

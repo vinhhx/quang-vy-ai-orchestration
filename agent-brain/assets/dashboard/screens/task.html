@@ -12,14 +12,14 @@
     <div class="space-y-4 py-12 text-center">
       <h2 class="text-xl font-semibold leading-[1.2]" x-text="notFoundTitle"></h2>
       <p class="text-base font-normal leading-normal text-slate-600 dark:text-slate-400">Kiểm tra lại số task ở Tổng quan.</p>
-      <a href="#/" class="text-indigo-700 underline hover:text-indigo-900 dark:text-indigo-300 dark:hover:text-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">← Tổng quan</a>
+      <a href="#/queue" class="text-indigo-700 underline hover:text-indigo-900 dark:text-indigo-300 dark:hover:text-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">← Điều phối</a>
     </div>
   </div>
 
   <div class="space-y-6" x-show="hasTask">
     <!-- Header card -->
     <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
-      <a href="#/" class="text-indigo-700 underline hover:text-indigo-900 dark:text-indigo-300 dark:hover:text-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">← Tổng quan</a>
+      <a href="#/queue" class="text-indigo-700 underline hover:text-indigo-900 dark:text-indigo-300 dark:hover:text-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">← Điều phối</a>
       <h1 class="text-2xl font-semibold leading-normal line-clamp-3 break-words" :title="title" x-text="title"></h1>
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="projectLine"></span>

@@ -123,9 +123,10 @@
   };
 
   window.AB = {
-    route: { name: 'overview', params: {} },
+    route: { name: 'queue', params: {} },
     _timers: [],
     _leaveHooks: [],
+    _modalScope: null,
 
     profile: function () {
       try {
@@ -188,11 +189,17 @@
     every: function (ms, fn) {
       var id = setInterval(fn, ms);
       window.AB._timers.push(id);
+      if (window.AB._modalScope) {
+        window.AB._modalScope.timers.push(id);
+      }
       return id;
     },
 
     onLeave: function (fn) {
       window.AB._leaveHooks.push(fn);
+      if (window.AB._modalScope) {
+        window.AB._modalScope.leaveHooks.push(fn);
+      }
     },
 
     onReady: function (name, factory) {
@@ -459,30 +466,239 @@
     },
   };
 
-  var router = (function () {
-    var loadedScripts = {};
-    var screenTitles = {
-      overview: 'Tổng quan',
-      assign: 'Giao việc',
-      queue: 'Điều phối',
-      task: 'Chi tiết task',
-      stats: 'Thống kê',
-      projects: 'Dự án',
-      settings: 'Cài đặt',
-      board: 'Bảng công việc',
-      telegram: 'Telegram',
-    };
+  var screenTitles = {
+    overview: 'Tổng quan',
+    assign: 'Giao việc',
+    queue: 'Điều phối',
+    task: 'Chi tiết task',
+    stats: 'Thống kê',
+    projects: 'Dự án',
+    settings: 'Cài đặt',
+    board: 'Bảng công việc',
+    telegram: 'Telegram',
+  };
 
+  var loadedScripts = {};
+  function loadScript(name) {
+    if (loadedScripts[name]) {
+      return Promise.resolve();
+    }
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = '/js/' + name + '.js';
+      s.onload = function () {
+        loadedScripts[name] = true;
+        resolve();
+      };
+      s.onerror = function (err) {
+        reject(err);
+      };
+      document.head.appendChild(s);
+    });
+  }
+  window.AB.loadScript = loadScript;
+
+  var screenModal = (function () {
+    var currentName = null;
+    var previousActiveEl = null;
+    var keydownHandler = null;
+
+    function getElements() {
+      if (typeof document === 'undefined') {
+        return { modal: null, panel: null, title: null, body: null, closeBtn: null };
+      }
+      var modal = document.getElementById('ab-screen-modal');
+      var panel = document.getElementById('ab-modal-panel');
+      var title = document.getElementById('ab-modal-title');
+      var body = document.getElementById('ab-modal-body');
+      var closeBtn = document.getElementById('ab-modal-close');
+      return { modal: modal, panel: panel, title: title, body: body, closeBtn: closeBtn };
+    }
+
+    function isOpen() {
+      return Boolean(currentName);
+    }
+
+    function close(silent) {
+      if (!currentName) return;
+      var els = getElements();
+
+      // Dọn dẹp phạm vi timer và leaveHook của popup
+      if (window.AB._modalScope) {
+        var scope = window.AB._modalScope;
+        window.AB._modalScope = null;
+        scope.timers.forEach(function (t) {
+          clearInterval(t);
+          var idx = window.AB._timers.indexOf(t);
+          if (idx !== -1) window.AB._timers.splice(idx, 1);
+        });
+        scope.leaveHooks.forEach(function (h) {
+          try { h(); } catch (e) { console.error(e); }
+          var idx = window.AB._leaveHooks.indexOf(h);
+          if (idx !== -1) window.AB._leaveHooks.splice(idx, 1);
+        });
+      }
+
+      currentName = null;
+
+      if (keydownHandler && typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+        document.removeEventListener('keydown', keydownHandler);
+        keydownHandler = null;
+      }
+
+      if (els.modal) {
+        els.modal.classList.add('hidden');
+        els.modal.classList.remove('flex');
+      }
+      if (els.body) {
+        els.body.innerHTML = '';
+      }
+
+      window.AB.lockScroll(false);
+
+      if (!silent) {
+        if (typeof window !== 'undefined' && window.location && window.location.hash) {
+          var h = window.location.hash;
+          if (h.indexOf('#/queue') === 0 && h !== '#/queue') {
+            if (window.history && window.history.replaceState) {
+              window.history.replaceState(null, '', '#/queue');
+            }
+          }
+        }
+      }
+
+      if (previousActiveEl && typeof previousActiveEl.focus === 'function') {
+        try { previousActiveEl.focus(); } catch (e) {}
+      }
+      previousActiveEl = null;
+
+      if (typeof window !== 'undefined' && window.dispatchEvent) {
+        window.dispatchEvent(new CustomEvent('ab:modal-closed'));
+      }
+    }
+
+    function open(name) {
+      if (name !== 'overview' && name !== 'assign') {
+        return Promise.reject(new Error('Unsupported modal screen: ' + name));
+      }
+
+      if (currentName) {
+        close(true);
+      }
+
+      var els = getElements();
+      previousActiveEl = (typeof document !== 'undefined' && document.activeElement) ? document.activeElement : null;
+      currentName = name;
+
+      window.AB._modalScope = {
+        name: name,
+        timers: [],
+        leaveHooks: [],
+      };
+
+      if (els.title) {
+        els.title.textContent = screenTitles[name] || name;
+      }
+      if (els.modal) {
+        els.modal.classList.remove('hidden');
+        els.modal.classList.add('flex');
+      }
+      window.AB.lockScroll(true);
+
+      if (els.closeBtn && !els.closeBtn._hasModalListener) {
+        els.closeBtn._hasModalListener = true;
+        els.closeBtn.addEventListener('click', function () {
+          close();
+        });
+      }
+
+      keydownHandler = function (e) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          close();
+          return;
+        }
+        if (e.key === 'Tab' && els.panel) {
+          var focusables = els.panel.querySelectorAll(
+            'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          );
+          if (focusables.length === 0) return;
+          var first = focusables[0];
+          var last = focusables[focusables.length - 1];
+          if (e.shiftKey) {
+            if (document.activeElement === first || document.activeElement === els.panel) {
+              e.preventDefault();
+              last.focus();
+            }
+          } else {
+            if (document.activeElement === last) {
+              e.preventDefault();
+              first.focus();
+            }
+          }
+        }
+      };
+      if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+        document.addEventListener('keydown', keydownHandler);
+      }
+
+      return loadScript(name)
+        .then(function () {
+          return fetch('/screens/' + name + '.html', { credentials: 'same-origin' });
+        })
+        .then(function (res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.text();
+        })
+        .then(function (html) {
+          if (els.body) {
+            els.body.innerHTML = html;
+            if (window.Alpine && window.Alpine.initTree) {
+              window.Alpine.initTree(els.body);
+            }
+            setTimeout(function () {
+              var initialFocus = els.body.querySelector('input:not([type="hidden"]), textarea, button:not([disabled])') || els.closeBtn;
+              if (initialFocus && typeof initialFocus.focus === 'function') {
+                initialFocus.focus();
+              }
+            }, 30);
+          }
+          if (typeof window !== 'undefined' && window.dispatchEvent) {
+            window.dispatchEvent(new CustomEvent('ab:modal-opened', { detail: { name: name } }));
+          }
+        })
+        .catch(function (err) {
+          console.error(err);
+          if (els.body) {
+            els.body.textContent = 'Lỗi tải màn hình ' + name;
+          }
+        });
+    }
+
+    return {
+      open: open,
+      close: close,
+      isOpen: isOpen,
+    };
+  })();
+  window.AB.screenModal = screenModal;
+
+  var router = (function () {
     function parseHash(hash) {
       var h = hash !== undefined ? hash : window.location.hash;
       if (!h || h === '#' || h === '#/') {
+        return { name: 'queue', params: {} };
+      }
+      if (h === '#/overview') {
         return { name: 'overview', params: {} };
       }
       if (h === '#/assign') {
         return { name: 'assign', params: {} };
       }
-      if (h === '#/queue') {
-        return { name: 'queue', params: {} };
+      var queueMatch = h.match(/^#\/queue(?:\?open=(assign|overview)|\/(assign|overview))?$/);
+      if (queueMatch) {
+        var modalName = queueMatch[1] || queueMatch[2] || null;
+        return { name: 'queue', params: modalName ? { open: modalName } : {} };
       }
       if (h === '#/stats') {
         return { name: 'stats', params: {} };
@@ -503,28 +719,14 @@
       if (m) {
         return { name: 'task', params: { id: m[1] } };
       }
-      return { name: 'overview', params: {} };
-    }
-
-    function loadScript(name) {
-      if (loadedScripts[name]) {
-        return Promise.resolve();
-      }
-      return new Promise(function (resolve, reject) {
-        var s = document.createElement('script');
-        s.src = '/js/' + name + '.js';
-        s.onload = function () {
-          loadedScripts[name] = true;
-          resolve();
-        };
-        s.onerror = function (err) {
-          reject(err);
-        };
-        document.head.appendChild(s);
-      });
+      return { name: 'queue', params: {} };
     }
 
     function navigate(isHashChange) {
+      if (window.AB.screenModal && window.AB.screenModal.isOpen()) {
+        window.AB.screenModal.close(true);
+      }
+
       var parsed = parseHash();
       window.AB.route = parsed;
       var name = parsed.name;
@@ -561,6 +763,9 @@
           var titlePrefix = screenTitles[name] || name;
           document.title = titlePrefix + ' · agent-brain';
           window.dispatchEvent(new CustomEvent('ab:route', { detail: { name: name } }));
+          if (parsed.params && parsed.params.open) {
+            window.AB.screenModal.open(parsed.params.open);
+          }
           if (isHashChange && screenEl) {
             screenEl.focus();
           }
@@ -593,6 +798,7 @@
       parseHash: parseHash,
     };
   })();
+  window.AB.parseHash = router.parseHash;
 
   document.addEventListener('alpine:init', function () {
     Alpine.data('shell', function () {

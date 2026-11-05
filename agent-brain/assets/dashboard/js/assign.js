@@ -589,6 +589,11 @@
             this.error = '';
             this.candidates = [];
             this.submitting = false;
+
+            window.dispatchEvent(new CustomEvent('ab:queue-changed'));
+            if (window.AB && window.AB.screenModal && window.AB.screenModal.isOpen()) {
+              window.AB.screenModal.close();
+            }
           } else {
             this.error = window.AB.errorText(res);
             this.submitting = false;

@@ -42,6 +42,7 @@ function makeContext() {
     Intl,
     document: {
       addEventListener() {},
+      removeEventListener() {},
       getElementById() {
         return null;
       },
@@ -4766,6 +4767,74 @@ const sections = [
       check('telegram: the only button is the retry button', (html.match(/<button\b/g) || []).length === 1 && html.indexOf('@click="reload"') >= 0);
       check('telegram: nav link with navClass and navCurrent', index.indexOf('href="#/telegram"') >= 0 && index.indexOf("navClass('telegram')") >= 0 && index.indexOf("navCurrent('telegram')") >= 0 && />Telegram<\/a>/.test(index));
       check('telegram: app.js has the route and the title', appJs.indexOf("'#/telegram'") >= 0 && appJs.indexOf("telegram: 'Telegram'") >= 0);
+    },
+  },
+  {
+    name: 'modal-and-routing',
+    async run(ctx) {
+      const AB = ctx.AB;
+
+      // 1. parseHash routing tests
+      check('parseHash: empty hash returns queue', AB.parseHash('').name === 'queue');
+      check('parseHash: #/ returns queue', AB.parseHash('#/').name === 'queue');
+      check('parseHash: # returns queue', AB.parseHash('#').name === 'queue');
+      check('parseHash: unknown hash returns queue', AB.parseHash('#/unknown-hash').name === 'queue');
+      check('parseHash: #/overview returns overview', AB.parseHash('#/overview').name === 'overview');
+      check('parseHash: #/assign returns assign', AB.parseHash('#/assign').name === 'assign');
+      check('parseHash: #/queue returns queue', AB.parseHash('#/queue').name === 'queue' && !AB.parseHash('#/queue').params.open);
+      check('parseHash: #/queue?open=assign returns queue with open: assign', AB.parseHash('#/queue?open=assign').name === 'queue' && AB.parseHash('#/queue?open=assign').params.open === 'assign');
+      check('parseHash: #/queue?open=overview returns queue with open: overview', AB.parseHash('#/queue?open=overview').name === 'queue' && AB.parseHash('#/queue?open=overview').params.open === 'overview');
+      check('parseHash: #/queue/assign returns queue with open: assign', AB.parseHash('#/queue/assign').name === 'queue' && AB.parseHash('#/queue/assign').params.open === 'assign');
+      check('parseHash: #/queue/overview returns queue with open: overview', AB.parseHash('#/queue/overview').name === 'queue' && AB.parseHash('#/queue/overview').params.open === 'overview');
+
+      // 2. screenModal & timer scope isolation
+      check('modal: screenModal API exists', Boolean(AB.screenModal && typeof AB.screenModal.open === 'function' && typeof AB.screenModal.close === 'function' && typeof AB.screenModal.isOpen === 'function'));
+      check('modal: starts closed', AB.screenModal.isOpen() === false);
+
+      // Register base screen timer (representing queue screen timer)
+      const screenTimer = AB.every(1000, () => {});
+      check('modal: screen timer registered', AB._timers.includes(screenTimer));
+
+      // Open modal for overview
+      AB.screenModal.open('overview');
+      check('modal: isOpen is true after open', AB.screenModal.isOpen() === true);
+      check('modal: modalScope exists', Boolean(AB._modalScope && AB._modalScope.name === 'overview'));
+
+      // Register modal timer & leave hook (representing overview component init)
+      let modalLeaveCalled = false;
+      AB.onLeave(() => { modalLeaveCalled = true; });
+      const modalTimer = AB.every(4000, () => {});
+      check('modal: modal timer registered in AB._timers', AB._timers.includes(modalTimer));
+      check('modal: modal timer recorded in _modalScope', AB._modalScope.timers.includes(modalTimer));
+      check('modal: leave hook recorded in _modalScope', AB._modalScope.leaveHooks.length === 1);
+
+      // Close modal
+      AB.screenModal.close();
+      check('modal: isOpen is false after close', AB.screenModal.isOpen() === false);
+      check('modal: modalScope is cleaned up', AB._modalScope === null);
+      check('modal: leave hook was invoked on close', modalLeaveCalled === true);
+      check('modal: modal timer was removed from AB._timers', !AB._timers.includes(modalTimer));
+      check('modal: screen timer remains active in AB._timers', AB._timers.includes(screenTimer));
+
+      // Clean up the screen timer
+      ctx.clearInterval(screenTimer);
+      const sIdx = AB._timers.indexOf(screenTimer);
+      if (sIdx !== -1) AB._timers.splice(sIdx, 1);
+
+      // 3. Markup checks for index.html, task.html, overview.html
+      const indexHtml = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/index.html'), 'utf8');
+      check('menu: no overview link in nav', !/<nav[^>]*>[\s\S]*?href="#\/"[\s\S]*?<\/nav>/.test(indexHtml));
+      check('menu: no assign link in nav', !/<nav[^>]*>[\s\S]*?href="#\/assign"[\s\S]*?<\/nav>/.test(indexHtml));
+      check('menu: queue link is first in nav', /<nav[^>]*>\s*<a href="#\/queue"/.test(indexHtml));
+      check('markup: modal container present in index.html', indexHtml.includes('id="ab-screen-modal"') && indexHtml.includes('id="ab-modal-panel"') && indexHtml.includes('id="ab-modal-close"'));
+
+      const taskHtml = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/screens/task.html'), 'utf8');
+      check('task.html: no "← Tổng quan" link', !taskHtml.includes('← Tổng quan'));
+      check('task.html: back link is "← Điều phối" to #/queue', taskHtml.includes('href="#/queue"') && taskHtml.includes('← Điều phối'));
+
+      const overviewHtml = fs.readFileSync(path.join(repoRoot, 'agent-brain/assets/dashboard/screens/overview.html'), 'utf8');
+      check('overview.html: no href="#/assign" links', !overviewHtml.includes('href="#/assign"'));
+      check('overview.html: uses openAssign button', overviewHtml.includes('@click="openAssign"'));
     },
   },
 ];

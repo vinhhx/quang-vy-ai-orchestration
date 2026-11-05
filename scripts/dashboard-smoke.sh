@@ -737,8 +737,9 @@ for s in "${SCREENS[@]}"; do
   # data-screen of the rendered screen (task-stop is the task screen of task 2)
   SCREEN_NAME="$s"
   case "$s" in
-    overview) HASH="#/" ;;
+    overview) HASH="#/overview" ;;
     assign) HASH="#/assign" ;;
+    queue) HASH="#/queue" ;;
     task) HASH="#/task/1" ;;
     task-stop) HASH="#/task/2"; SCREEN_NAME="task" ;;
     task-quota) HASH="#/task/3"; SCREEN_NAME="task" ;;
