@@ -115,6 +115,11 @@ export function createOffice(container, callbacks) {
 
   // Tùy chọn chuyển động người dùng (reduced-motion)
   let reducedMotion = false;
+  // Render-loop state. Declared before anything can call requestDirty() (applyThemeColors runs
+  // during setup), otherwise the `let` bindings are still in their temporal dead zone.
+  let isDirty = true;
+  let rafId = null;
+  let isDisposed = false;
   try {
     reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   } catch (e) {}
@@ -152,7 +157,8 @@ export function createOffice(container, callbacks) {
   // Góc camera Isometric
   let orbitAngle = 0;
   let pitchAngle = 0.95; // ~54.4 độ
-  let cameraDistance = 64;
+  const DEFAULT_DISTANCE = 84; // fits all eight rooms in the default view
+  let cameraDistance = DEFAULT_DISTANCE;
 
   function updateCameraTransform() {
     const y = cameraTarget.y + cameraDistance * Math.cos(pitchAngle);
@@ -502,10 +508,6 @@ export function createOffice(container, callbacks) {
   }
 
   // 5. Quản lý Dirty Rendering & Animation Loop
-  let isDirty = true;
-  let rafId = null;
-  let isDisposed = false;
-
   function requestDirty() {
     isDirty = true;
     if (!rafId && !isDisposed && !document.hidden) {
@@ -800,7 +802,7 @@ export function createOffice(container, callbacks) {
   function onWheel(e) {
     e.preventDefault();
     cameraDistance += e.deltaY * 0.05;
-    cameraDistance = Math.max(22, Math.min(95, cameraDistance));
+    cameraDistance = Math.max(22, Math.min(120, cameraDistance));
     updateCameraTransform();
     requestDirty();
   }
@@ -895,10 +897,10 @@ export function createOffice(container, callbacks) {
       cameraDistance = Math.max(22, cameraDistance - 4);
       handled = true;
     } else if (e.key === '-' || e.key === '_') {
-      cameraDistance = Math.min(95, cameraDistance + 4);
+      cameraDistance = Math.min(120, cameraDistance + 4);
       handled = true;
     } else if (e.key === '0') {
-      focusPoint(defaultTarget, 64, 400);
+      focusPoint(defaultTarget, DEFAULT_DISTANCE, 400);
       orbitAngle = 0;
       pitchAngle = 0.95;
       handled = true;

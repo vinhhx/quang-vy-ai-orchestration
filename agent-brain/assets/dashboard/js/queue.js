@@ -3,6 +3,7 @@
   window.AB.onReady('queue', function () {
     return {
       board: null,
+      roomsReady: false,
       boardLoaded: false,
       boardError: '',
 
@@ -62,9 +63,11 @@
         window.addEventListener('ab:profile', profileHandler);
 
         // Preload office-rooms and initialize 3D office
-        if (typeof import === 'function' || true) {
-          import('/js/office-rooms.js').catch(function () {});
-        }
+        // office-rooms.js sets window.ABOfficeRooms; that global is not reactive, so flip a
+        // component field once it is there to make the room tree and labels re-render.
+        import('/js/office-rooms.js').then(function () {
+          self.roomsReady = true;
+        }).catch(function () {});
         setTimeout(function () {
           self.initOffice();
         }, 80);
@@ -568,7 +571,7 @@
 
       get officeRoomList() {
         var helper = window.ABOfficeRooms;
-        if (!helper) return [];
+        if (!this.roomsReady || !helper) return [];
         var rooms = helper.ROOMS || [];
         var board = this.board || {};
         var tasks = this.tasks || [];
@@ -659,7 +662,7 @@
       get selectedItemRoomName() {
         if (!this.selectedItem) return '';
         var helper = window.ABOfficeRooms;
-        if (!helper) return '';
+        if (!this.roomsReady || !helper) return '';
         var placed;
         if (this.selectedItemType === 'proposal') {
           placed = helper.placeProposal(this.selectedItem);
