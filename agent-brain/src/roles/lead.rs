@@ -262,6 +262,7 @@ pub fn cmd_lead(
         }
         _ => false,
     };
+    let mut git_block = String::new();
     if is_agy_lead {
         let status_res = crate::gitops::git(&proj_path, &["status", "--short"]);
         let log_res = crate::gitops::git(
@@ -277,6 +278,7 @@ pub fn cmd_lead(
             user_input.push_str("\n\n");
             user_input.push_str(&block);
         }
+        git_block = block;
     }
 
     // Skill mode (D-49): skills are found on every run, no per-project configuration.
@@ -480,144 +482,182 @@ pub fn cmd_lead(
 
     // W-1: Lead's Bash git calls go through the guard's git policy; its file
     // writes stay with the allow rules and the post-run backstop.
-    let run_dir = crate::roles::new_run_dir(&ctx.cfg, &proj.id, &task_slug, "lead")?;
-    let exe = std::env::current_exe()?;
-    let settings = crate::guard::write_bash_hook_settings(&run_dir, &proj_path, &exe)?;
-    let spec = crate::roles::RoleSpec {
-        role: crate::roles::Role::Lead,
-        user_input,
-        allowed_tools: allowed,
-        disallowed_tools: disallowed,
-        extra_args: vec![
-            "--settings".to_string(),
-            settings.to_string_lossy().to_string(),
-        ],
-    };
-
-    // INTAKE-06: chosen from the durable origin on every Lead run, so re-plans keep the rules.
     let origin = crate::db::task_origin(&ctx.conn, task_id)?;
-    let argv = if wants_untrusted_prompt(origin.as_deref(), request) {
-        crate::term::emit("Lead: yêu cầu có tin chuyển tiếp — dùng quy tắc dữ liệu không tin cậy");
-        crate::roles::build_command_with_prompt(
-            &spec,
-            &ctx.cfg,
-            &crate::roles::lead_untrusted_prompt(),
-        )?
-    } else {
-        crate::roles::build_command(&spec, &ctx.cfg)?
-    };
-    let model = ctx.cfg.model_for("lead")?;
-    let timeout = ctx.cfg.timeout_for("lead");
-
-    let plan = crate::roles::RunPlan {
-        role: "lead".to_string(),
-        model,
-        argv,
-        task_id: Some(task_id),
-        task_slug: task_slug.clone(),
-        base_commit,
-        plan_files: None,
-        verbose: opts.verbose,
-        timeout,
-        run_dir: Some(run_dir),
-    };
-
     let round = match opts.round {
         Some(r) => r,
         None => manual_round(&ctx.conn, task_id)?,
     };
-    let stage = crate::roles::RunStage {
-        stage: Some("plan".to_string()),
-        round: Some(round),
-        metrics: note.map(|n| serde_json::json!({ "note": n })),
-    };
-    let role_run = crate::roles::execute_role_staged(ctx, &proj, &proj_path, plan, stage)?;
+    let model = ctx.cfg.model_for("lead")?;
+    let timeout = ctx.cfg.timeout_for("lead");
+    let exe = std::env::current_exe()?;
 
-    match role_run.outcome.status {
-        crate::runner::RunStatus::TimedOut => {
-            return Err(BrainError::error(format!(
-                "Lead chạy quá thời gian (timeout) trên task '{task_slug}'"
-            )));
+    let mut current_input = user_input;
+    let mut current_initial_plan = initial_plan_text;
+
+    for attempt in 1..=2 {
+        let run_dir = crate::roles::new_run_dir(&ctx.cfg, &proj.id, &task_slug, "lead")?;
+        let settings = crate::guard::write_bash_hook_settings(&run_dir, &proj_path, &exe)?;
+        let spec = crate::roles::RoleSpec {
+            role: crate::roles::Role::Lead,
+            user_input: current_input.clone(),
+            allowed_tools: allowed.clone(),
+            disallowed_tools: disallowed.clone(),
+            extra_args: vec![
+                "--settings".to_string(),
+                settings.to_string_lossy().to_string(),
+            ],
+        };
+
+        let argv = if wants_untrusted_prompt(origin.as_deref(), request) {
+            crate::term::emit("Lead: yêu cầu có tin chuyển tiếp — dùng quy tắc dữ liệu không tin cậy");
+            crate::roles::build_command_with_prompt(
+                &spec,
+                &ctx.cfg,
+                &crate::roles::lead_untrusted_prompt(),
+            )?
+        } else {
+            crate::roles::build_command(&spec, &ctx.cfg)?
+        };
+
+        let plan = crate::roles::RunPlan {
+            role: "lead".to_string(),
+            model: model.clone(),
+            argv,
+            task_id: Some(task_id),
+            task_slug: task_slug.clone(),
+            base_commit: base_commit.clone(),
+            plan_files: None,
+            verbose: opts.verbose,
+            timeout,
+            run_dir: Some(run_dir),
+        };
+
+        let stage = crate::roles::RunStage {
+            stage: Some("plan".to_string()),
+            round: Some(round),
+            metrics: note.map(|n| serde_json::json!({ "note": n })),
+        };
+        let role_run = crate::roles::execute_role_staged(ctx, &proj, &proj_path, plan, stage)?;
+
+        match role_run.outcome.status {
+            crate::runner::RunStatus::TimedOut => {
+                return Err(BrainError::error(format!(
+                    "Lead chạy quá thời gian (timeout) trên task '{task_slug}'"
+                )));
+            }
+            crate::runner::RunStatus::Killed => {
+                return Err(BrainError::new(
+                    format!("Đã dừng run {} (trạng thái killed)", role_run.run_id),
+                    crate::error::EXIT_INTERRUPTED,
+                ));
+            }
+            crate::runner::RunStatus::Failed => {
+                let code = role_run.outcome.exit_code.unwrap_or(1);
+                return Err(BrainError::error(format!(
+                    "Lead thất bại với mã lỗi {code} trên task '{task_slug}'"
+                )));
+            }
+            _ => {}
         }
-        crate::runner::RunStatus::Killed => {
-            return Err(BrainError::new(
-                format!("Đã dừng run {} (trạng thái killed)", role_run.run_id),
-                crate::error::EXIT_INTERRUPTED,
+
+        let engine_kind = crate::db::get_run(&ctx.conn, role_run.run_id)?
+            .and_then(|r| ctx.cfg.engines.kind_of(&r.engine));
+        let is_agy_run = engine_kind == Some(crate::config::EngineKind::Agy);
+        let agy_empty_or_failed = role_run
+            .summary
+            .agy_response
+            .as_deref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true)
+            || role_run.summary.agy_status.as_deref() != Some("SUCCESS");
+
+        let current_plan_text = std::fs::read_to_string(&plan_path).unwrap_or_default();
+        let plan_unchanged =
+            current_plan_text == current_initial_plan || current_plan_text == skeleton;
+
+        if is_agy_run && agy_empty_or_failed && plan_unchanged {
+            crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "agy:empty")?;
+            crate::term::emit_out(LEAD_AGY_EMPTY_MESSAGE);
+            return Err(BrainError::error(LEAD_AGY_EMPTY_MESSAGE));
+        }
+
+        let mut extra = crate::gitops::changed_paths(&proj_path)?;
+        extra.remove(".plan.md");
+        if !extra.is_empty() {
+            crate::term::emit_out("Lead đã sửa file ngoài .plan.md — vi phạm giao thức (ROLE-01):");
+            let mut sorted_extra: Vec<String> = extra.into_iter().collect();
+            sorted_extra.sort();
+            for p in &sorted_extra {
+                crate::term::emit_out(&format!("  {p}"));
+            }
+            crate::term::emit_out(
+                "Gợi ý: agent-brain không tự revert thay đổi; bạn hãy kiểm tra và xử lý bằng tay.",
+            );
+            crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
+            return Ok(crate::error::EXIT_PROTOCOL);
+        }
+
+        if !plan_path.is_file() {
+            crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
+            return Err(BrainError::error(
+                "Lead hoàn thành nhưng không tìm thấy file .plan.md",
             ));
         }
-        crate::runner::RunStatus::Failed => {
-            let code = role_run.outcome.exit_code.unwrap_or(1);
-            return Err(BrainError::error(format!(
-                "Lead thất bại với mã lỗi {code} trên task '{task_slug}'"
-            )));
+
+        let mut text = std::fs::read_to_string(&plan_path)?;
+        let curr_meta = crate::planfile::read_meta(&text);
+        if curr_meta.as_ref() != Some(&meta) {
+            text = crate::planfile::set_meta(&text, &meta);
+            std::fs::write(&plan_path, &text)?;
         }
-        _ => {}
-    }
 
-    let engine_kind = crate::db::get_run(&ctx.conn, role_run.run_id)?
-        .and_then(|r| ctx.cfg.engines.kind_of(&r.engine));
-    let is_agy_run = engine_kind == Some(crate::config::EngineKind::Agy);
-    let agy_empty_or_failed = role_run
-        .summary
-        .agy_response
-        .as_deref()
-        .map(|s| s.trim().is_empty())
-        .unwrap_or(true)
-        || role_run.summary.agy_status.as_deref() != Some("SUCCESS");
-
-    let current_plan_text = std::fs::read_to_string(&plan_path).unwrap_or_default();
-    let plan_unchanged = current_plan_text == initial_plan_text || current_plan_text == skeleton;
-
-    if is_agy_run && agy_empty_or_failed && plan_unchanged {
-        crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "agy:empty")?;
-        crate::term::emit_out(LEAD_AGY_EMPTY_MESSAGE);
-        return Err(BrainError::error(LEAD_AGY_EMPTY_MESSAGE));
-    }
-
-    let mut extra = crate::gitops::changed_paths(&proj_path)?;
-    extra.remove(".plan.md");
-    if !extra.is_empty() {
-        crate::term::emit_out("Lead đã sửa file ngoài .plan.md — vi phạm giao thức (ROLE-01):");
-        let mut sorted_extra: Vec<String> = extra.into_iter().collect();
-        sorted_extra.sort();
-        for p in &sorted_extra {
-            crate::term::emit_out(&format!("  {p}"));
+        let plan = crate::planfile::parse_plan(&text);
+        let errors = crate::planfile::validate_plan(&plan, Some(&proj_path));
+        if !errors.is_empty() {
+            if attempt == 1 {
+                crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "plan_invalid")?;
+                crate::term::emit_out("Plan không hợp lệ — Lead tự sửa lại (lần 2/2):");
+                for e in &errors {
+                    crate::term::emit_out(&format!("  - {e}"));
+                }
+                let err_lines = errors
+                    .iter()
+                    .map(|e| format!("  - {e}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let mut retry_input = format!(
+                    "Yêu cầu: {request}\nTask: {task_slug}\nFile .plan.md ở gốc dự án là bản plan hiện tại; sửa trực tiếp trên bản này, giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo).\nLần chạy trước viết .plan.md không hợp lệ. Lỗi:\n{err_lines}\nChỉ sửa .plan.md để hết các lỗi trên: bỏ hoặc thay lệnh không được phép bằng lệnh hợp lệ, giữ nguyên phần còn lại của plan."
+                );
+                if let Some(n) = note {
+                    retry_input.push_str(&format!("\nGhi chú của người dùng: {n}"));
+                }
+                if is_agy_lead && !git_block.is_empty() {
+                    retry_input.push_str("\n\n");
+                    retry_input.push_str(&git_block);
+                }
+                if !skill_block.is_empty() {
+                    retry_input.push_str("\n\n");
+                    retry_input.push_str(&skill_block);
+                }
+                current_input = retry_input;
+                current_initial_plan = std::fs::read_to_string(&plan_path).unwrap_or_default();
+                continue;
+            } else {
+                let err_lines = errors
+                    .iter()
+                    .map(|e| format!("  - {e}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let err_msg = format!(
+                    "Lead đã tự sửa 1 lần nhưng plan vẫn không hợp lệ. Kế hoạch trong .plan.md không hợp lệ:\n{err_lines}\nSửa tay .plan.md rồi: git -C {} commit -m \"{task_slug}: plan\" -- .plan.md",
+                    proj_path.display()
+                );
+                crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
+                return Err(BrainError::error(err_msg));
+            }
         }
-        crate::term::emit_out(
-            "Gợi ý: agent-brain không tự revert thay đổi; bạn hãy kiểm tra và xử lý bằng tay.",
-        );
-        crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
-        return Ok(crate::error::EXIT_PROTOCOL);
-    }
 
-    if !plan_path.is_file() {
-        crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
-        return Err(BrainError::error(
-            "Lead hoàn thành nhưng không tìm thấy file .plan.md",
-        ));
-    }
-
-    let mut text = std::fs::read_to_string(&plan_path)?;
-    let curr_meta = crate::planfile::read_meta(&text);
-    if curr_meta.as_ref() != Some(&meta) {
-        text = crate::planfile::set_meta(&text, &meta);
-        std::fs::write(&plan_path, &text)?;
-    }
-
-    let plan = crate::planfile::parse_plan(&text);
-    let errors = crate::planfile::validate_plan(&plan, Some(&proj_path));
-    if !errors.is_empty() {
-        let err_lines = errors
-            .iter()
-            .map(|e| format!("  - {e}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let err_msg = format!(
-            "Kế hoạch trong .plan.md không hợp lệ:\n{err_lines}\nSửa tay .plan.md rồi: git -C {} commit -m \"{task_slug}: plan\" -- .plan.md",
-            proj_path.display()
-        );
-        crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
-        return Err(BrainError::error(err_msg));
+        break;
     }
 
     let changed = crate::gitops::changed_paths(&proj_path)?;

@@ -103,6 +103,7 @@ pub fn step_state(run: Option<&RunRow>) -> (&'static str, &'static str) {
         Some("dev:blocked") => return ("vuong_mac", "Vướng mắc"),
         Some("qa:fix") => return ("can_sua", "Cần sửa"),
         Some("protocol_violation") => return ("vi_pham", "Vi phạm giao thức"),
+        Some("plan_invalid") => return ("sua_lai", "Plan sai, Lead sửa lại"),
         Some("review:approve") => return ("duyet", "duyệt"),
         Some("review:revise") => return ("sua_lai", "sửa lại"),
         Some("review:pass") => return ("dat", "đạt"),

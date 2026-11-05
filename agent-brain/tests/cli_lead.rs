@@ -682,3 +682,134 @@ fn lead_replan_without_blocker_resets_to_skeleton() {
         "expected skeleton prompt: {text}"
     );
 }
+
+fn get_lead_outcomes(sb: &Sandbox) -> Vec<(i64, Option<String>)> {
+    let conn = sb.db();
+    let mut stmt = conn
+        .prepare("SELECT id, outcome FROM runs WHERE role = 'lead' ORDER BY id")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+
+#[test]
+fn lead_retries_once_when_plan_fails_validation_and_succeeds() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+
+    let p1 = format!(
+        "{}\n## Lệnh được chạy\n- `git push *`\n",
+        plan_text("Sửa app", &[("src/app.py", "1", "sửa", "lý do")], "test", "")
+    );
+    let p2 = format!(
+        "{}\n## Lệnh được chạy\n- `git log *`\n",
+        plan_text("Sửa app", &[("src/app.py", "1", "sửa", "lý do")], "test", "")
+    );
+
+    let sc1 = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "write", "path": ".plan.md", "content": p1, "keep_meta": true}
+        ]
+    });
+    let sc2 = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "write", "path": ".plan.md", "content": p2, "keep_meta": true}
+        ]
+    });
+    let scenario = serde_json::json!({
+        "by_role": {
+            "lead": [sc1, sc2]
+        }
+    });
+
+    let out = sb.run(&["run", "lead", "web bán hàng", "sửa app"], Some(scenario));
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+
+    let runs = get_lead_outcomes(&sb);
+    assert_eq!(runs.len(), 2, "lead runs: {runs:?}");
+    assert_eq!(runs[0].1.as_deref(), Some("plan_invalid"));
+    assert_eq!(runs[1].1, None);
+
+    let recs = sb.records();
+    assert_eq!(recs.len(), 2);
+    let prompt2 = argv_text(&recs[1]);
+    assert!(
+        prompt2.contains("Lần chạy trước viết .plan.md không hợp lệ"),
+        "prompt2 missing retry notice: {prompt2}"
+    );
+
+    let head_msg = sb.git(&repo, &["log", "-1", "--format=%s"]);
+    assert_eq!(head_msg.trim(), "sua-app: plan");
+}
+
+#[test]
+fn lead_retries_once_when_plan_fails_validation_and_exhausts() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    let p1 = format!(
+        "{}\n## Lệnh được chạy\n- `git push *`\n",
+        plan_text("Sửa app", &[("src/app.py", "1", "sửa", "lý do")], "test", "")
+    );
+
+    let sc1 = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "write", "path": ".plan.md", "content": p1, "keep_meta": true}
+        ]
+    });
+    let scenario = serde_json::json!({
+        "by_role": {
+            "lead": [sc1.clone(), sc1]
+        }
+    });
+
+    let out = sb.run(&["run", "lead", "web bán hàng", "sửa app"], Some(scenario));
+    assert_ne!(out.code, 0);
+    assert!(
+        out.stderr.contains("Lead đã tự sửa 1 lần"),
+        "stderr missing retry notice: {}",
+        out.stderr
+    );
+
+    let runs = get_lead_outcomes(&sb);
+    assert_eq!(runs.len(), 2, "lead runs: {runs:?}");
+    assert_eq!(runs[0].1.as_deref(), Some("plan_invalid"));
+    assert_eq!(runs[1].1.as_deref(), Some("protocol_violation"));
+
+    assert_eq!(sb.records().len(), 2, "expected no third run");
+}
+
+#[test]
+fn lead_extra_file_does_not_retry() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    let p_text = plan_text(
+        "Sửa app",
+        &[("src/app.py", "1", "sửa", "lý do")],
+        "python3 -m unittest",
+        "",
+    );
+    let scenario = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "write", "path": ".plan.md", "content": p_text, "keep_meta": true},
+            {"op": "write", "path": "src/other.py", "content": "# extra file\n"}
+        ]
+    });
+
+    let out = sb.run(&["run", "lead", "web bán hàng", "sửa app"], Some(scenario));
+    assert_eq!(out.code, 3);
+    let runs = get_lead_outcomes(&sb);
+    assert_eq!(runs.len(), 1, "expected exactly 1 run: {runs:?}");
+    assert_eq!(runs[0].1.as_deref(), Some("protocol_violation"));
+}
