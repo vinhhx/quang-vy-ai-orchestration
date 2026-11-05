@@ -484,3 +484,322 @@ fn create_task_endpoint_routes_to_intake_when_orchestrator_enabled() {
     assert_eq!(intake.request, "Yêu cầu qua giao diện");
     assert!(intake.project_id.is_some());
 }
+
+#[test]
+fn orchestrator_board_and_status() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": false,
+            "max_parallel": 3,
+            "auto_resume_quota": true,
+            "resume_after_minutes": 30
+        }
+    }));
+
+    let srv = sb.serve(&[]);
+
+    // 8. Khi enabled=false: board vẫn trả 200 với status.enabled=false
+    let resp = srv.get("/api/orchestrator/board");
+    assert_eq!(resp.status, 200);
+    let body = resp.json();
+    assert_eq!(body["status"]["enabled"], false);
+    assert_eq!(body["status"]["max_parallel"], 3);
+    assert_eq!(body["status"]["auto_resume_quota"], true);
+    assert_eq!(body["status"]["resume_after_minutes"], 30);
+
+    // 1. Kiểm tra các khoá
+    assert!(body["status"].is_object());
+    assert!(body["intake"].is_array());
+    assert!(body["proposals"].is_array());
+    assert!(body["quota_stops"].is_array());
+    assert!(body["recent"].is_array());
+    assert!(body["teams"].is_array());
+    assert!(body["workflows"].is_array());
+
+    // Thêm dữ liệu vào DB
+    let conn = sb.db();
+    let proj_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
+
+    let intake_1 = agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "Việc 1", "low").unwrap();
+    let intake_2 = agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "Việc 2", "urgent").unwrap();
+    let intake_failed = agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "Việc lỗi", "normal").unwrap();
+    agent_brain::db::set_intake_status_error(&conn, intake_failed, "failed", Some("Lỗi kết nối")).unwrap();
+
+    let p_low = agent_brain::db::insert_proposal(
+        &conn,
+        &agent_brain::db::NewProposal {
+            intake_id: intake_1,
+            project_id: proj_id,
+            title: "Đề xuất Low",
+            request: "req",
+            priority: "low",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    ).unwrap();
+
+    let p_normal = agent_brain::db::insert_proposal(
+        &conn,
+        &agent_brain::db::NewProposal {
+            intake_id: intake_1,
+            project_id: proj_id,
+            title: "Đề xuất Normal",
+            request: "req",
+            priority: "normal",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    ).unwrap();
+
+    let p_urgent = agent_brain::db::insert_proposal(
+        &conn,
+        &agent_brain::db::NewProposal {
+            intake_id: intake_2,
+            project_id: proj_id,
+            title: "Đề xuất Urgent",
+            request: "req",
+            priority: "urgent",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    ).unwrap();
+
+    let p_rejected = agent_brain::db::insert_proposal(
+        &conn,
+        &agent_brain::db::NewProposal {
+            intake_id: intake_1,
+            project_id: proj_id,
+            title: "Đề xuất Bị Từ Chối",
+            request: "req",
+            priority: "normal",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    ).unwrap();
+    agent_brain::db::set_proposal_status_reason(&conn, p_rejected, "rejected", Some("Không phù hợp")).unwrap();
+
+    let p_started = agent_brain::db::insert_proposal(
+        &conn,
+        &agent_brain::db::NewProposal {
+            intake_id: intake_2,
+            project_id: proj_id,
+            title: "Đề xuất Đã Chạy",
+            request: "req",
+            priority: "normal",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    ).unwrap();
+    let task_id = agent_brain::db::upsert_task(&conn, proj_id, "t-started", "Task started", "task/started", Some("main"), None).unwrap();
+    agent_brain::db::set_proposal_started(&conn, p_started, Some(task_id)).unwrap();
+
+    // Thêm quota stop cho task_id
+    agent_brain::db::insert_quota_stop(&conn, task_id, 1730000000, "claude").unwrap();
+    drop(conn);
+
+    let resp = srv.get("/api/orchestrator/board");
+    assert_eq!(resp.status, 200);
+    let body = resp.json();
+
+    // 2. Đề xuất rejected/started không nằm trong proposals
+    let props = body["proposals"].as_array().expect("proposals array");
+    assert_eq!(props.len(), 3);
+    let prop_ids: Vec<i64> = props.iter().map(|p| p["id"].as_i64().unwrap()).collect();
+    assert!(!prop_ids.contains(&p_rejected));
+    assert!(!prop_ids.contains(&p_started));
+
+    // 1. Thứ tự proposals: urgent > normal > low và có project/project_name
+    assert_eq!(props[0]["id"], p_urgent);
+    assert_eq!(props[0]["priority"], "urgent");
+    assert_eq!(props[0]["project"], "web-ban-hang");
+    assert_eq!(props[0]["project_name"], "Web bán hàng");
+
+    assert_eq!(props[1]["id"], p_normal);
+    assert_eq!(props[1]["priority"], "normal");
+
+    assert_eq!(props[2]["id"], p_low);
+    assert_eq!(props[2]["priority"], "low");
+
+    // quota_stops: resume_at = stopped_at + 30 * 60 = 1730001800
+    let qs = body["quota_stops"].as_array().expect("quota_stops array");
+    assert_eq!(qs.len(), 1);
+    assert_eq!(qs[0]["task_id"], task_id);
+    assert_eq!(qs[0]["stopped_at"], 1730000000);
+    assert_eq!(qs[0]["engine"], "claude");
+    assert_eq!(qs[0]["resume_at"], 1730001800);
+
+    // recent: chứa p_rejected và intake_failed
+    let recent = body["recent"].as_array().expect("recent array");
+    assert!(recent.iter().any(|r| r["kind"] == "proposal" && r["id"] == p_rejected));
+    assert!(recent.iter().any(|r| r["kind"] == "intake" && r["id"] == intake_failed));
+}
+
+#[test]
+fn approve_proposal_with_edits_validation_and_idempotence() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    let srv = sb.serve(&[]);
+
+    let conn = sb.db();
+    let proj_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
+    let intake_id = agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "yêu cầu", "normal").unwrap();
+    let prop_id = agent_brain::db::insert_proposal(
+        &conn,
+        &agent_brain::db::NewProposal {
+            intake_id,
+            project_id: proj_id,
+            title: "Gốc",
+            request: "Dựng tính năng",
+            priority: "normal",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    ).unwrap();
+    drop(conn);
+
+    // 4. Approve với team không tồn tại: trả 422, đề xuất vẫn pending, team trong DB không đổi
+    let resp = srv.post_json(
+        &format!("/api/proposals/{prop_id}/approve"),
+        &json!({ "team": "khong-ton-tai" }),
+    );
+    assert_eq!(resp.status, 422, "response: {}", resp.text());
+    let conn = sb.db();
+    let prop = agent_brain::db::get_proposal(&conn, prop_id).unwrap().unwrap();
+    assert_eq!(prop.status, "pending");
+    assert_eq!(prop.team, "mac-dinh");
+    drop(conn);
+
+    // 5. Approve với team/workflow/priority hợp lệ: trả 200, DB có giá trị mới và status='approved'
+    let resp = srv.post_json(
+        &format!("/api/proposals/{prop_id}/approve"),
+        &json!({
+            "title": "Tiêu đề đã sửa",
+            "priority": "urgent",
+            "team": "mac-dinh",
+            "workflow": "nhanh"
+        }),
+    );
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.json()["status"], "approved");
+
+    let conn = sb.db();
+    let prop = agent_brain::db::get_proposal(&conn, prop_id).unwrap().unwrap();
+    assert_eq!(prop.status, "approved");
+    assert_eq!(prop.title, "Tiêu đề đã sửa");
+    assert_eq!(prop.priority, "urgent");
+    assert_eq!(prop.workflow, "nhanh");
+    drop(conn);
+
+    // 6. Approve hai lần: lần hai trả 409
+    let resp = srv.post_json(
+        &format!("/api/proposals/{prop_id}/approve"),
+        &json!({ "priority": "low" }),
+    );
+    assert_eq!(resp.status, 409);
+
+    // 3. Approve không có body: thành công như cũ
+    let conn = sb.db();
+    let prop_id_2 = agent_brain::db::insert_proposal(
+        &conn,
+        &agent_brain::db::NewProposal {
+            intake_id,
+            project_id: proj_id,
+            title: "Đề xuất không body",
+            request: "Dựng tiếp",
+            priority: "normal",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    ).unwrap();
+    drop(conn);
+
+    let origin = format!("http://127.0.0.1:{}", srv.port);
+    let resp = srv.request(
+        "POST",
+        &format!("/api/proposals/{prop_id_2}/approve"),
+        &[
+            ("Cookie", &srv.cookie),
+            ("Origin", &origin),
+            ("Content-Type", "application/json"),
+        ],
+        b"",
+    );
+    assert_eq!(resp.status, 200, "resp: {}", resp.text());
+    let conn = sb.db();
+    let prop2 = agent_brain::db::get_proposal(&conn, prop_id_2).unwrap().unwrap();
+    assert_eq!(prop2.status, "approved");
+    drop(conn);
+
+    // Approve cũng thành công khi body là "{}"
+    let conn = sb.db();
+    let prop_id_3 = agent_brain::db::insert_proposal(
+        &conn,
+        &agent_brain::db::NewProposal {
+            intake_id,
+            project_id: proj_id,
+            title: "Đề xuất body rỗng json",
+            request: "Dựng tiếp",
+            priority: "normal",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    ).unwrap();
+    drop(conn);
+
+    let resp = srv.post_json(
+        &format!("/api/proposals/{prop_id_3}/approve"),
+        &json!({}),
+    );
+    assert_eq!(resp.status, 200);
+    let conn = sb.db();
+    let prop3 = agent_brain::db::get_proposal(&conn, prop_id_3).unwrap().unwrap();
+    assert_eq!(prop3.status, "approved");
+    drop(conn);
+}
+
+#[test]
+fn safe_cancel_intake() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    let srv = sb.serve(&[]);
+
+    let conn = sb.db();
+    let proj_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
+
+    let intake_queued = agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "Việc chờ", "normal").unwrap();
+    let intake_proposed = agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "Việc đã propose", "normal").unwrap();
+    agent_brain::db::set_intake_status(&conn, intake_proposed, "proposed").unwrap();
+    drop(conn);
+
+    // 7. Cancel intake đang proposed: trả 409
+    let resp = srv.post_json(&format!("/api/intake/{intake_proposed}/cancel"), &json!({}));
+    assert_eq!(resp.status, 409);
+    assert!(resp.text().contains("Chỉ huỷ được việc đang chờ hoặc bị lỗi"));
+    let conn = sb.db();
+    let it_prop = agent_brain::db::get_intake(&conn, intake_proposed).unwrap().unwrap();
+    assert_eq!(it_prop.status, "proposed");
+
+    // Cancel intake queued: trả 200
+    let resp = srv.post_json(&format!("/api/intake/{intake_queued}/cancel"), &json!({}));
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.json()["status"], "cancelled");
+
+    let it_queued = agent_brain::db::get_intake(&conn, intake_queued).unwrap().unwrap();
+    assert_eq!(it_queued.status, "cancelled");
+
+    // Huỷ lần 2 khi đã cancelled: trả 409
+    drop(conn);
+    let resp = srv.post_json(&format!("/api/intake/{intake_queued}/cancel"), &json!({}));
+    assert_eq!(resp.status, 409);
+}

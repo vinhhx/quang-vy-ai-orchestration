@@ -11,7 +11,7 @@ use crate::error::BrainResult;
 
 /// Tính số task đang chạy trong hệ thống: bao gồm các task có run hoặc auto_state đang 'running' trong CSDL,
 /// và các job đang chạy trong JobManager (không tính trùng).
-fn active_task_count(st: &AppState, conn: &rusqlite::Connection) -> BrainResult<u32> {
+pub(crate) fn active_task_count(st: &AppState, conn: &rusqlite::Connection) -> BrainResult<u32> {
     let mut active_task_ids = std::collections::HashSet::new();
     let mut stmt = conn.prepare(
         "SELECT task_id FROM runs WHERE status = 'running' AND task_id IS NOT NULL

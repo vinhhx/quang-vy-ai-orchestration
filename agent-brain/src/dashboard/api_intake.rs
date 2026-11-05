@@ -19,6 +19,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/proposals/{id}/approve", post(post_proposal_approve))
         .route("/api/proposals/{id}/reject", post(post_proposal_reject))
         .route("/api/orchestrator/status", get(get_orchestrator_status))
+        .route("/api/orchestrator/board", get(get_orchestrator_board))
 }
 
 fn json_response<T: Serialize>(status: StatusCode, data: T) -> Response {
@@ -188,23 +189,38 @@ async fn cancel_intake(
         let intake = match crate::db::get_intake(&conn, id)? {
             Some(row) => row,
             None => {
-                return Ok(None);
+                return Ok(Err((
+                    StatusCode::NOT_FOUND,
+                    format!("Không tìm thấy intake #{id}"),
+                )));
             }
         };
-        crate::db::set_intake_status(&conn, id, "cancelled")?;
-        Ok(Some(intake))
+
+        if intake.status != "queued" && intake.status != "failed" {
+            return Ok(Err((
+                StatusCode::CONFLICT,
+                "Chỉ huỷ được việc đang chờ hoặc bị lỗi".to_string(),
+            )));
+        }
+
+        let cancelled = crate::db::cancel_intake_if_cancellable(&conn, id)?;
+        if !cancelled {
+            return Ok(Err((
+                StatusCode::CONFLICT,
+                "Chỉ huỷ được việc đang chờ hoặc bị lỗi".to_string(),
+            )));
+        }
+
+        Ok(Ok(intake))
     })
     .await;
 
     match res {
-        Ok(Some(_)) => json_response(
+        Ok(Ok(_)) => json_response(
             StatusCode::OK,
             serde_json::json!({ "id": id, "status": "cancelled" }),
         ),
-        Ok(None) => json_error(
-            StatusCode::NOT_FOUND,
-            &format!("Không tìm thấy intake #{id}"),
-        ),
+        Ok(Err((code, msg))) => json_error(code, &msg),
         Err(e) => internal_error("hủy intake", &e),
     }
 }
@@ -283,22 +299,111 @@ async fn post_proposal_priority(
     }
 }
 
+#[derive(Deserialize, Default)]
+pub struct ApproveProposalBody {
+    pub team: Option<String>,
+    pub workflow: Option<String>,
+    pub priority: Option<String>,
+    pub title: Option<String>,
+}
+
 async fn post_proposal_approve(
     State(st): State<Arc<AppState>>,
     AxumPath(id): AxumPath<i64>,
+    bytes: axum::body::Bytes,
 ) -> Response {
+    let b: ApproveProposalBody = if bytes.is_empty() {
+        ApproveProposalBody::default()
+    } else {
+        match serde_json::from_slice(&bytes) {
+            Ok(b) => b,
+            Err(e) => {
+                return json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    &format!("Dữ liệu gửi lên không đúng định dạng JSON: {e}"),
+                );
+            }
+        }
+    };
+
     let res = blocking(move || {
         let conn = crate::db::open(&st.db_path)?;
         let prop = match crate::db::get_proposal(&conn, id)? {
             Some(p) => p,
-            None => return Ok(Err(StatusCode::NOT_FOUND)),
+            None => {
+                return Ok(Err((
+                    StatusCode::NOT_FOUND,
+                    format!("Không tìm thấy đề xuất #{id}"),
+                )));
+            }
         };
 
         if prop.status != "pending" {
-            return Ok(Err(StatusCode::CONFLICT));
+            return Ok(Err((
+                StatusCode::CONFLICT,
+                "Chỉ có thể duyệt đề xuất đang ở trạng thái pending".to_string(),
+            )));
         }
 
-        crate::db::set_proposal_status(&conn, id, "approved")?;
+        let team = b.team.unwrap_or(prop.team);
+        let workflow = b.workflow.unwrap_or(prop.workflow);
+        let priority = b.priority.unwrap_or(prop.priority);
+        let title = b.title.unwrap_or(prop.title);
+
+        let project_slug: String = match conn.query_row(
+            "SELECT slug FROM projects WHERE id = ?1",
+            rusqlite::params![prop.project_id],
+            |r| r.get(0),
+        ) {
+            Ok(s) => s,
+            Err(_) => {
+                return Ok(Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("Không tìm thấy dự án với ID {}", prop.project_id),
+                )));
+            }
+        };
+
+        let draft = crate::orchestrator::triage::ProposalDraft {
+            project: project_slug,
+            title: title.clone(),
+            request: prop.request.clone(),
+            priority: priority.clone(),
+            team: team.clone(),
+            workflow: workflow.clone(),
+            reason: prop.reason.clone(),
+        };
+
+        let map = crate::projects::load_map(&st.map_path)?;
+        let projects = crate::projects::projects_of(&map);
+        let (teams_loaded, _) = crate::teams::load();
+        let workflows_loaded = crate::workflows::load(&st.cfg);
+
+        if let Err(err_msg) = crate::orchestrator::triage::validate(
+            &draft,
+            &projects,
+            &teams_loaded,
+            &workflows_loaded,
+            &st.cfg.engines,
+        ) {
+            return Ok(Err((StatusCode::UNPROCESSABLE_ENTITY, err_msg)));
+        }
+
+        let updated = crate::db::approve_proposal_with(
+            &conn,
+            id,
+            &team,
+            &workflow,
+            &priority,
+            &title,
+        )?;
+        if !updated {
+            return Ok(Err((
+                StatusCode::CONFLICT,
+                "Chỉ có thể duyệt đề xuất đang ở trạng thái pending".to_string(),
+            )));
+        }
+
         Ok(Ok(()))
     })
     .await;
@@ -308,15 +413,7 @@ async fn post_proposal_approve(
             StatusCode::OK,
             serde_json::json!({ "id": id, "status": "approved" }),
         ),
-        Ok(Err(StatusCode::NOT_FOUND)) => json_error(
-            StatusCode::NOT_FOUND,
-            &format!("Không tìm thấy đề xuất #{id}"),
-        ),
-        Ok(Err(StatusCode::CONFLICT)) => json_error(
-            StatusCode::CONFLICT,
-            "Chỉ có thể duyệt đề xuất đang ở trạng thái pending",
-        ),
-        Ok(Err(_)) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "Lỗi không xác định"),
+        Ok(Err((code, msg))) => json_error(code, &msg),
         Err(e) => internal_error("duyệt đề xuất", &e),
     }
 }
@@ -376,4 +473,127 @@ async fn get_orchestrator_status(State(st): State<Arc<AppState>>) -> Response {
             "resume_after_minutes": st.cfg.orchestrator.resume_after_minutes,
         }),
     )
+}
+
+async fn get_orchestrator_board(State(st): State<Arc<AppState>>) -> Response {
+    let st_clone = st.clone();
+    let res = blocking(move || {
+        let conn = crate::db::open(&st_clone.db_path)?;
+        let active =
+            crate::orchestrator::scheduler::active_task_count(&st_clone, &conn).unwrap_or(0);
+        let status = serde_json::json!({
+            "enabled": st_clone.cfg.orchestrator.enabled,
+            "max_parallel": st_clone.cfg.orchestrator.max_parallel,
+            "active": active,
+            "auto_resume_quota": st_clone.cfg.orchestrator.auto_resume_quota,
+            "resume_after_minutes": st_clone.cfg.orchestrator.resume_after_minutes,
+        });
+
+        let proj_map = crate::db::list_project_display_map(&conn)?;
+
+        let raw_intake = crate::db::list_orchestrator_board_intake(&conn)?;
+        let intake_list: Vec<serde_json::Value> = raw_intake
+            .into_iter()
+            .map(|it| {
+                let (slug, name) = it
+                    .project_id
+                    .and_then(|pid| proj_map.get(&pid).cloned())
+                    .map(|(s, n)| (Some(s), Some(n)))
+                    .unwrap_or((None, None));
+                serde_json::json!({
+                    "id": it.id,
+                    "source": it.source,
+                    "project_id": it.project_id,
+                    "project": slug,
+                    "project_name": name,
+                    "request": it.request,
+                    "priority": it.priority,
+                    "status": it.status,
+                    "error": it.error,
+                    "created_at": it.created_at,
+                    "updated_at": it.updated_at,
+                })
+            })
+            .collect();
+
+        let raw_proposals = crate::db::list_orchestrator_board_proposals(&conn)?;
+        let proposal_list: Vec<serde_json::Value> = raw_proposals
+            .into_iter()
+            .map(|p| {
+                let (slug, name) = proj_map
+                    .get(&p.project_id)
+                    .cloned()
+                    .unwrap_or_else(|| (p.project_id.to_string(), p.project_id.to_string()));
+                serde_json::json!({
+                    "id": p.id,
+                    "intake_id": p.intake_id,
+                    "project_id": p.project_id,
+                    "project": slug,
+                    "project_name": name,
+                    "title": p.title,
+                    "request": p.request,
+                    "priority": p.priority,
+                    "team": p.team,
+                    "workflow": p.workflow,
+                    "reason": p.reason,
+                    "status": p.status,
+                    "task_id": p.task_id,
+                    "error": p.error,
+                    "created_at": p.created_at,
+                    "updated_at": p.updated_at,
+                })
+            })
+            .collect();
+
+        let raw_quota_stops = crate::db::list_orchestrator_board_quota_stops(&conn)?;
+        let auto_resume = st_clone.cfg.orchestrator.auto_resume_quota;
+        let resume_mins = st_clone.cfg.orchestrator.resume_after_minutes as i64;
+        let quota_list: Vec<serde_json::Value> = raw_quota_stops
+            .into_iter()
+            .map(|qs| {
+                let resume_at = if auto_resume {
+                    if qs.stopped_at < 10_000_000_000 {
+                        Some(qs.stopped_at + resume_mins * 60)
+                    } else {
+                        Some(qs.stopped_at + resume_mins * 60 * 1000)
+                    }
+                } else {
+                    None
+                };
+                serde_json::json!({
+                    "task_id": qs.task_id,
+                    "stopped_at": qs.stopped_at,
+                    "engine": qs.engine,
+                    "resume_at": resume_at,
+                })
+            })
+            .collect();
+
+        let recent_items = crate::db::list_orchestrator_board_recent(&conn, &proj_map)?;
+
+        let (teams_loaded, _) = crate::teams::load();
+        let team_names: Vec<String> = teams_loaded.teams.into_iter().map(|t| t.name).collect();
+        let workflows_loaded = crate::workflows::load(&st_clone.cfg);
+        let workflow_names: Vec<String> = workflows_loaded
+            .workflows
+            .into_iter()
+            .map(|w| w.name)
+            .collect();
+
+        Ok::<_, crate::error::BrainError>(serde_json::json!({
+            "status": status,
+            "intake": intake_list,
+            "proposals": proposal_list,
+            "quota_stops": quota_list,
+            "recent": recent_items,
+            "teams": team_names,
+            "workflows": workflow_names,
+        }))
+    })
+    .await;
+
+    match res {
+        Ok(data) => json_response(StatusCode::OK, data),
+        Err(e) => internal_error("lấy dữ liệu bảng điều phối", &e),
+    }
 }

@@ -1299,6 +1299,215 @@ pub fn list_quota_stops(conn: &Connection) -> BrainResult<Vec<QuotaStopRow>> {
     Ok(rows)
 }
 
+pub fn cancel_intake_if_cancellable(conn: &Connection, id: i64) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE intake SET status = 'cancelled', updated_at = ?1 WHERE id = ?2 AND status IN ('queued', 'failed')",
+        params![now, id],
+    )?;
+    Ok(changes > 0)
+}
+
+pub fn approve_proposal_with(
+    conn: &Connection,
+    id: i64,
+    team: &str,
+    workflow: &str,
+    priority: &str,
+    title: &str,
+) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE proposals SET team = ?1, workflow = ?2, priority = ?3, title = ?4, status = 'approved', updated_at = ?5 WHERE id = ?6 AND status = 'pending'",
+        params![team, workflow, priority, title, now, id],
+    )?;
+    Ok(changes > 0)
+}
+
+pub fn list_project_display_map(
+    conn: &Connection,
+) -> BrainResult<std::collections::HashMap<i64, (String, String)>> {
+    let mut stmt = conn.prepare("SELECT id, slug, name_vi FROM projects")?;
+    let rows = stmt.query_map([], |r| {
+        let id: i64 = r.get(0)?;
+        let slug: String = r.get(1)?;
+        let name_vi: String = r.get(2)?;
+        let name = if name_vi.trim().is_empty() {
+            slug.clone()
+        } else {
+            name_vi
+        };
+        Ok((id, (slug, name)))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (id, pair) = row?;
+        map.insert(id, pair);
+    }
+    Ok(map)
+}
+
+pub fn list_orchestrator_board_intake(conn: &Connection) -> BrainResult<Vec<IntakeRow>> {
+    let now = now_ms();
+    let cutoff_ms = now - 24 * 3600 * 1000;
+    let cutoff_sec = (now / 1000) - 24 * 3600;
+
+    let sql = format!(
+        "SELECT {INTAKE_COLUMNS} FROM intake
+         WHERE status IN ('queued', 'triaging')
+            OR (status = 'failed' AND (updated_at >= ?1 OR created_at >= ?1 OR (updated_at >= ?2 AND updated_at < 10000000000)))
+         ORDER BY
+             CASE WHEN status = 'failed' THEN 2 ELSE 1 END ASC,
+             CASE priority
+                 WHEN 'urgent' THEN 1
+                 WHEN 'normal' THEN 2
+                 WHEN 'low' THEN 3
+                 ELSE 4
+             END ASC,
+             created_at ASC,
+             id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params![cutoff_ms, cutoff_sec], row_to_intake)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn list_orchestrator_board_proposals(conn: &Connection) -> BrainResult<Vec<ProposalRow>> {
+    let sql = format!(
+        "SELECT {PROPOSAL_COLUMNS} FROM proposals
+         WHERE status IN ('pending', 'approved')
+         ORDER BY
+             CASE priority
+                 WHEN 'urgent' THEN 1
+                 WHEN 'normal' THEN 2
+                 WHEN 'low' THEN 3
+                 ELSE 4
+             END ASC,
+             created_at ASC,
+             id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map([], row_to_proposal)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn list_orchestrator_board_quota_stops(conn: &Connection) -> BrainResult<Vec<QuotaStopRow>> {
+    let sql = "SELECT qs.task_id, qs.stopped_at, qs.engine, qs.notified
+         FROM quota_stops qs
+         WHERE EXISTS (
+             SELECT 1 FROM proposals pr
+             WHERE pr.task_id = qs.task_id AND pr.status = 'started'
+         )
+         ORDER BY qs.stopped_at ASC";
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(QuotaStopRow {
+                task_id: r.get(0)?,
+                stopped_at: r.get(1)?,
+                engine: r.get(2)?,
+                notified: r.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn list_orchestrator_board_recent(
+    conn: &Connection,
+    proj_map: &std::collections::HashMap<i64, (String, String)>,
+) -> BrainResult<Vec<serde_json::Value>> {
+    let now = now_ms();
+    let cutoff_ms = now - 24 * 3600 * 1000;
+    let cutoff_sec = (now / 1000) - 24 * 3600;
+
+    let mut recent = Vec::new();
+
+    let prop_sql = format!(
+        "SELECT {PROPOSAL_COLUMNS} FROM proposals
+         WHERE status IN ('rejected', 'failed')
+           AND (updated_at >= ?1 OR created_at >= ?1 OR (updated_at >= ?2 AND updated_at < 10000000000))
+         ORDER BY updated_at DESC, id DESC
+         LIMIT 20"
+    );
+    let mut stmt = conn.prepare(&prop_sql)?;
+    let prop_rows = stmt.query_map(params![cutoff_ms, cutoff_sec], row_to_proposal)?;
+    for r in prop_rows {
+        let p = r?;
+        let (slug, name) = proj_map
+            .get(&p.project_id)
+            .cloned()
+            .unwrap_or_else(|| (p.project_id.to_string(), p.project_id.to_string()));
+        recent.push((
+            p.updated_at,
+            serde_json::json!({
+                "kind": "proposal",
+                "id": p.id,
+                "intake_id": p.intake_id,
+                "project_id": p.project_id,
+                "project": slug,
+                "project_name": name,
+                "title": p.title,
+                "request": p.request,
+                "priority": p.priority,
+                "team": p.team,
+                "workflow": p.workflow,
+                "reason": p.reason,
+                "status": p.status,
+                "task_id": p.task_id,
+                "error": p.error,
+                "created_at": p.created_at,
+                "updated_at": p.updated_at,
+            }),
+        ));
+    }
+
+    let intake_sql = format!(
+        "SELECT {INTAKE_COLUMNS} FROM intake
+         WHERE status IN ('failed', 'cancelled')
+           AND (updated_at >= ?1 OR created_at >= ?1 OR (updated_at >= ?2 AND updated_at < 10000000000))
+         ORDER BY updated_at DESC, id DESC
+         LIMIT 20"
+    );
+    let mut stmt = conn.prepare(&intake_sql)?;
+    let intake_rows = stmt.query_map(params![cutoff_ms, cutoff_sec], row_to_intake)?;
+    for r in intake_rows {
+        let it = r?;
+        let (slug, name) = it
+            .project_id
+            .and_then(|pid| proj_map.get(&pid).cloned())
+            .map(|(s, n)| (Some(s), Some(n)))
+            .unwrap_or((None, None));
+        recent.push((
+            it.updated_at,
+            serde_json::json!({
+                "kind": "intake",
+                "id": it.id,
+                "source": it.source,
+                "project_id": it.project_id,
+                "project": slug,
+                "project_name": name,
+                "title": it.request,
+                "request": it.request,
+                "priority": it.priority,
+                "status": it.status,
+                "error": it.error,
+                "created_at": it.created_at,
+                "updated_at": it.updated_at,
+            }),
+        ));
+    }
+
+    recent.sort_by(|a, b| b.0.cmp(&a.0));
+    recent.truncate(20);
+
+    Ok(recent.into_iter().map(|(_, v)| v).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
