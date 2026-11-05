@@ -1131,7 +1131,14 @@ const sections = [
       };
       ctx.setInterval = function () { intervalCalls++; return savedInterval.apply(null, arguments); };
       ctx.AB.every = function () { everyCalls++; return savedEvery.apply(ctx.AB, arguments); };
+      // The board also loads the assigned-task list (GET /api/tasks) for its "Công việc đã giao"
+      // section. Those calls are tracked apart so the board-call counts below stay exact.
+      const taskCalls = [];
       ctx.AB.api = function (method, url) {
+        if (url.indexOf('/api/tasks') === 0) {
+          taskCalls.push(method + ' ' + url);
+          return Promise.resolve({ ok: true, status: 200, data: { tasks: [] } });
+        }
         calls.push(method + ' ' + url);
         const res = answer(url);
         if (gate) {
@@ -1141,7 +1148,7 @@ const sections = [
         }
         return Promise.resolve(res);
       };
-      const reset = () => { calls.length = 0; };
+      const reset = () => { calls.length = 0; taskCalls.length = 0; };
       const urls = () => calls.map((c) => c.replace(/^GET /, ''));
 
       try {
@@ -1154,6 +1161,7 @@ const sections = [
           c.init();
           check('board: init makes exactly one call', calls.length === 1 && calls[0].startsWith('GET /api/board'), JSON.stringify(calls));
           await settle();
+          check('board: init loads the assigned tasks once', taskCalls.length === 1 && taskCalls[0] === 'GET /api/tasks?limit=100', JSON.stringify(taskCalls));
           check('board: loaded after the answer', c.loaded === true && c.loadedAttr === 'yes' && c.isLoading === false);
           check('board: epicSel takes the server epic', c.epicSel === '02', `got "${c.epicSel}"`);
           check('board: projectSel takes the server project', c.projectSel === 'web-ban-hang', `got "${c.projectSel}"`);
@@ -1177,6 +1185,7 @@ const sections = [
           c.init();
           await settle();
           check('board: profile=work in the url', calls.length === 1 && calls[0].includes('profile=work'), JSON.stringify(calls));
+          check('board: profile=work in the task list url', taskCalls.length === 1 && taskCalls[0].includes('profile=work'), JSON.stringify(taskCalls));
           store.delete('ab.profile');
         });
 
@@ -1307,11 +1316,12 @@ const sections = [
           c.milestones = ['v1.0', 'v1.1'];
           check('board: two milestones', c.showMilestones === true);
           await c.load();
-          check('board: boardProjects lists projects with a board', same(c.boardProjects.map((p) => p.id), ['web-ban-hang', 'khac']), JSON.stringify(c.boardProjects.map((p) => p.id)));
+          check('board: boardProjects lists every project, with or without a board', same(c.boardProjects.map((p) => p.id), ['web-ban-hang', 'khac', 'khong-co']), JSON.stringify(c.boardProjects.map((p) => p.id)));
           check('board: hasProjects', c.hasProjects === true);
           c.project = { id: 'khong-co', name_vi: 'Không có bảng', profile: 'work', type: 'code' };
           check('board: boardProjects keeps the current project', same(c.boardProjects.map((p) => p.id), ['web-ban-hang', 'khac', 'khong-co']), JSON.stringify(c.boardProjects.map((p) => p.id)));
           check('board: projectLabel', c.projectLabel({ id: 'a', name_vi: 'Tên' }) === 'Tên' && c.projectLabel({ id: 'a' }) === 'a');
+          check('board: projectLabel marks a project without a GSD board', c.projectLabel(PROJECTS[2]) === 'Không có bảng · chưa có bảng GSD' && c.projectLabel(PROJECTS[0]) === 'Web bán hàng', c.projectLabel(PROJECTS[2]));
           check('board: epicLabel', c.epicLabel(EPICS[1]) === '02 · Xuất báo cáo (0/3)', c.epicLabel(EPICS[1]));
           c.projectSel = 'khac';
           c.epicSel = 'all';
@@ -4429,7 +4439,7 @@ const sections = [
         c = await fresh();
         calls.length = 0;
         await c.reload();
-        check('settings: Đọc lại re-reads teams, workflows and staff but not engines', calls.map((x) => x.url).sort().join(',') === '/api/staff,/api/teams,/api/workflows', calls.map((x) => x.url).join(','));
+        check('settings: Đọc lại re-reads teams, workflows, staff and engines', calls.map((x) => x.url).sort().join(',') === '/api/engines,/api/staff,/api/teams,/api/workflows', calls.map((x) => x.url).join(','));
         check('settings: reload label idle', c.reloadLabel === 'Đọc lại');
         let release;
         const gate = new Promise((r) => { release = r; });
@@ -4470,7 +4480,8 @@ const sections = [
         check('settings: readiness keys and words', rows.map((r) => r.key + ':' + r.word).join(',') === 'san_sang:sẵn sàng,thieu_key:thiếu key,thieu_lenh:thiếu lệnh,san_sang:sẵn sàng', rows.map((r) => r.key).join(','));
         const detailOf = (r) => r.details.map((d) => d.label + d.value);
         check('settings: deepseek detail lines', JSON.stringify(detailOf(rows[1])) === JSON.stringify(['Lệnh: claude', 'Biến key: DEEPSEEK_API_KEY', 'Model: deepseek-chat']), JSON.stringify(detailOf(rows[1])));
-        check('settings: claude and agy show only the command', JSON.stringify(detailOf(rows[0])) === JSON.stringify(['Lệnh: claude']) && JSON.stringify(detailOf(rows[2])) === JSON.stringify(['Lệnh: agy']));
+        check('settings: claude shows only the command', JSON.stringify(detailOf(rows[0])) === JSON.stringify(['Lệnh: claude']), JSON.stringify(detailOf(rows[0])));
+        check('settings: agy shows the command and its default model', JSON.stringify(detailOf(rows[2])) === JSON.stringify(['Lệnh: agy', 'Model mặc định: mặc định (theo agy CLI)']), JSON.stringify(detailOf(rows[2])));
         check('settings: người shows the staff count', JSON.stringify(detailOf(rows[3])) === JSON.stringify(['1 nhân sự']), JSON.stringify(detailOf(rows[3])));
         check('settings: server reason for a not-ready engine only', rows[1].reason === 'Chưa đặt biến môi trường DEEPSEEK_API_KEY.' && rows[2].reason === 'Không tìm thấy lệnh agy trên máy.' && rows[0].reason === '' && rows[0].hasReason === false);
         check('settings: exact engine descriptions', rows[0].description === 'Dùng profile của dự án (work hoặc personal), không có tài khoản riêng.' && rows[1].description === 'claude chạy trên máy với một endpoint định dạng Anthropic.' && rows[2].description === 'Antigravity chạy không giao diện (headless).' && rows[3].description === 'Nhân sự làm trên máy của họ và đẩy nhánh task lên remote.');
