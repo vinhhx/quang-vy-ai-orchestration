@@ -833,8 +833,8 @@ pub fn clear_auto_stop(conn: &Connection, task_id: i64) -> BrainResult<()> {
     Ok(())
 }
 
-/// Người dùng tự chạy một bước khi autopilot đang dừng (không có driver):
-/// tắt autopilot của task (`ended`), xoá cờ dừng, giữ auto_json làm lịch sử.
+/// Task qua QA bằng một run tay khi autopilot đang dừng (không có driver):
+/// tắt autopilot (`ended`), xoá cờ dừng, giữ auto_json làm lịch sử.
 /// Một câu lệnh có điều kiện; trả true khi đã ghi.
 pub fn end_stopped_autopilot(conn: &Connection, task_id: i64) -> BrainResult<bool> {
     let changed = conn.execute(

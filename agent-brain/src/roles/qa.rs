@@ -282,6 +282,11 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "qa:pass")?;
         if let Some(tid) = task_id {
             crate::db::set_task_status(&ctx.conn, tid, "qa_pass")?;
+            if crate::db::end_stopped_autopilot(&ctx.conn, tid)? {
+                crate::term::emit(&format!(
+                    "Autopilot của task {tid} đang dừng — task đã qua QA nên tắt autopilot"
+                ));
+            }
         }
     }
 
