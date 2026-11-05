@@ -748,14 +748,17 @@ pub fn grant_command_error(pattern: &str) -> Option<String> {
     }
     let base = program_basename(program);
     if base == "git" {
-        let no_star = words
-            .iter()
-            .filter(|w| **w != "*")
-            .copied()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if let Err(reason) = crate::guard::bash_command_check(&no_star) {
-            return Some(reason);
+        let has_star = words.last() == Some(&"*");
+        if has_star {
+            let non_star_words: Vec<&str> = words[..words.len() - 1].to_vec();
+            if let Err(reason) = crate::guard::git_grant_check(&non_star_words) {
+                return Some(reason);
+            }
+        } else {
+            let cmd_str = words.join(" ");
+            if let Err(reason) = crate::guard::bash_command_check(&cmd_str) {
+                return Some(reason);
+            }
         }
         if !words.get(1).is_some_and(|w| !w.starts_with('-')) {
             return Some("git cần lệnh con rõ ràng".to_string());
@@ -1232,6 +1235,39 @@ mod tests {
         }
         assert!(grant_command_error("git push *").is_some());
         assert!(grant_command_error("git fetch origin main:main").is_some());
+    }
+
+    #[test]
+    fn test_git_dev_grants_commands() {
+        for ok in [
+            "git push origin *",
+            "git pull *",
+            "git pull --no-rebase --no-ff origin *",
+            "git merge *",
+            "git merge --no-ff *",
+            "git checkout *",
+            "git switch *",
+            "git commit *",
+        ] {
+            assert_eq!(grant_command_error(ok), None, "expected `{ok}` to be accepted");
+        }
+
+        for bad in [
+            "git push --force *",
+            "git push origin main",
+            "git push origin :x",
+            "git reset *",
+            "git rebase *",
+            "git checkout -- *",
+            "git checkout -f *",
+            "git branch -d *",
+            "git stash *",
+        ] {
+            assert!(
+                grant_command_error(bad).is_some(),
+                "expected `{bad}` to be refused"
+            );
+        }
     }
 
     #[test]

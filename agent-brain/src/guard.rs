@@ -354,7 +354,7 @@ fn decide_bash(
         }
     };
     let shown: String = command.chars().take(BASH_LOG_MAX_CHARS).collect();
-    let checked = bash_command_check(command).and_then(|()| match &policy.bash_allow {
+    let checked = bash_command_check_with(command, Some(&policy.root)).and_then(|()| match &policy.bash_allow {
         Some(allow) => bash_grant_check(command, allow, policy),
         None => Ok(()),
     });
@@ -448,6 +448,11 @@ fn bash_grant_check(command: &str, allow: &[String], policy: &Policy) -> Result<
 /// Checks one Bash command line against the guard's git policy (W-1).
 /// `Err` carries the Vietnamese reason shown to the model.
 pub fn bash_command_check(command: &str) -> Result<(), String> {
+    bash_command_check_with(command, None)
+}
+
+/// Checks one Bash command line with optional repository root for current branch & ref verification.
+pub fn bash_command_check_with(command: &str, root: Option<&Path>) -> Result<(), String> {
     let words = shell_words(command)?;
     let Some(first) = words.first() else {
         return Ok(());
@@ -481,7 +486,25 @@ pub fn bash_command_check(command: &str) -> Result<(), String> {
             w.text
         ));
     }
-    git_policy_check(&words[1..])
+    git_policy_check_with(&words[1..], root, false)
+}
+
+/// Grant template check (planfile::grant_command_error mode B): ignores required arguments like
+/// push refspecs, merge/pull flags, checkout positional count, or commit message.
+pub fn git_grant_check(words: &[&str]) -> Result<(), String> {
+    if words.is_empty() {
+        return Err("lệnh git trống".to_string());
+    }
+    let mut words_slice = words;
+    if words_slice.first() == Some(&"git") {
+        words_slice = &words_slice[1..];
+    }
+    if words_slice.last() == Some(&"*") {
+        words_slice = &words_slice[..words_slice.len() - 1];
+    }
+    let joined = words_slice.join(" ");
+    let parsed = shell_words(&joined)?;
+    git_policy_check_with(&parsed, None, true)
 }
 
 /// The only git global option allowed before the subcommand, besides `-P`.
@@ -490,6 +513,9 @@ const GIT_GLOBAL_LONG_ALLOWED: &str = "no-pager";
 /// Git subcommands permitted by the guard hook: read-only inspection, network fetch,
 /// and working-tree / index modifications when granted.
 pub const GIT_WRITE_SUBCOMMANDS: &[&str] = &["add", "commit"];
+
+/// Git subcommands permitted only when declared in the approved plan's grants (Dev only).
+pub const GIT_DEV_GRANT_SUBCOMMANDS: &[&str] = &["push", "pull", "merge", "checkout", "switch"];
 
 pub const GIT_READ_SUBCOMMANDS: &[&str] = &[
     "diff",
@@ -626,6 +652,42 @@ fn plain_fixup_value(value: Option<&str>) -> bool {
     value.is_some_and(|v| !v.is_empty() && !v.contains(':'))
 }
 
+pub const PROTECTED_BRANCHES: &[&str] = &["main", "master"];
+
+pub fn is_protected_branch(name: &str) -> bool {
+    PROTECTED_BRANCHES
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(name))
+}
+
+fn is_valid_git_ref_or_remote_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let valid_chars = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '/' || c == '-');
+    let bad_start = name.starts_with(['-', '/', '.']);
+    let bad_contains = name.contains("..") || name.contains(':') || name.contains('+') || name.contains("@{");
+    valid_chars && !bad_start && !bad_contains
+}
+
+fn current_git_branch(root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["symbolic-ref", "--short", "-q", "HEAD"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() {
+            return Some(branch);
+        }
+    }
+    None
+}
+
 const GIT_FETCH_LONG_ALLOWED: &[&str] = &[
     "all", "prune", "prune-tags", "tags", "no-tags", "quiet", "verbose", "dry-run",
 ];
@@ -663,12 +725,7 @@ fn check_fetch(args: &[ShellWord]) -> Result<(), String> {
         if w.is_empty() {
             continue;
         }
-        let valid_chars = w
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '/' || c == '-');
-        let bad_start = w.starts_with(['-', '/', '.']);
-        let bad_contains = w.contains("..") || w.contains(':') || w.contains('+');
-        if !valid_chars || bad_start || bad_contains {
+        if !is_valid_git_ref_or_remote_name(w) {
             return Err(git_fetch_err(&format!("đối số `{w}` không hợp lệ")));
         }
     }
@@ -923,8 +980,526 @@ fn check_remote(args: &[ShellWord]) -> Result<(), String> {
     ))
 }
 
+const GIT_PUSH_LONG_ALLOWED: &[&str] = &[
+    "set-upstream",
+    "dry-run",
+    "quiet",
+    "verbose",
+    "porcelain",
+    "atomic",
+];
+
+fn check_push(args: &[ShellWord], is_grant_mode: bool) -> Result<(), String> {
+    let mut positionals = Vec::new();
+    for word in args {
+        let w = word.text.as_str();
+        if w == "--" {
+            return Err("git push không nhận `--`".to_string());
+        }
+        if let Some(long) = w.strip_prefix("--") {
+            let mut parts = long.splitn(2, '=');
+            let name = parts.next().unwrap_or("");
+            let inline_val = parts.next();
+            if !GIT_PUSH_LONG_ALLOWED.contains(&name) {
+                return Err(format!("tùy chọn của git push `{w}` không được phép"));
+            }
+            if inline_val.is_some() {
+                return Err(format!("tùy chọn của git push `{w}` không nhận giá trị"));
+            }
+            continue;
+        }
+        if let Some(cluster) = w.strip_prefix('-') {
+            if cluster.is_empty() {
+                continue;
+            }
+            for ch in cluster.chars() {
+                if !matches!(ch, 'u' | 'n' | 'q' | 'v') {
+                    return Err(format!("tùy chọn ngắn của git push `-{ch}` không được phép"));
+                }
+            }
+            continue;
+        }
+        positionals.push(w);
+    }
+
+    if positionals.is_empty() {
+        if is_grant_mode {
+            return Err("git push cần tên remote (ví dụ git push origin <nhánh>)".to_string());
+        }
+        return Err("git push cần remote và refspec (ví dụ git push origin <nhánh>)".to_string());
+    }
+
+    let remote = positionals[0];
+    if !is_valid_git_ref_or_remote_name(remote) {
+        return Err(format!("remote của git push `{remote}` không hợp lệ"));
+    }
+
+    let refspecs = &positionals[1..];
+    if refspecs.is_empty() {
+        if is_grant_mode {
+            return Ok(());
+        }
+        return Err("git push cần ít nhất một refspec (ví dụ git push origin <nhánh>)".to_string());
+    }
+
+    for refspec in refspecs {
+        if refspec.starts_with('+') {
+            return Err(format!(
+                "refspec của git push `{refspec}` không được bắt đầu bằng `+` (cấm force push)"
+            ));
+        }
+        let (src, dst) = if let Some(idx) = refspec.find(':') {
+            let src = &refspec[..idx];
+            let dst = &refspec[idx + 1..];
+            if src.is_empty() {
+                return Err("không được xoá nhánh từ xa (refspec có src rỗng)".to_string());
+            }
+            if dst.is_empty() || dst.contains(':') {
+                return Err(format!("refspec của git push `{refspec}` không hợp lệ"));
+            }
+            (src, dst)
+        } else {
+            (*refspec, *refspec)
+        };
+
+        if !refspec.contains(':') && src == "HEAD" {
+            return Err("ghi rõ tên nhánh đích, ví dụ git push origin HEAD:<nhánh>".to_string());
+        }
+
+        for part in [src, dst] {
+            if part.starts_with("refs/") && !part.starts_with("refs/heads/") {
+                return Err(format!(
+                    "refspec `{part}` không được phép — chỉ cho phép push lên refs/heads/"
+                ));
+            }
+        }
+
+        if !is_valid_git_ref_or_remote_name(src) {
+            return Err(format!("nhánh nguồn `{src}` không hợp lệ"));
+        }
+        if !is_valid_git_ref_or_remote_name(dst) {
+            return Err(format!("nhánh đích `{dst}` không hợp lệ"));
+        }
+
+        let stripped_dst = dst.strip_prefix("refs/heads/").unwrap_or(dst);
+        if is_protected_branch(stripped_dst) {
+            return Err(format!(
+                "không được push lên nhánh {stripped_dst} (main/master được bảo vệ)"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+const GIT_PULL_LONG_ALLOWED: &[&str] = &[
+    "no-rebase",
+    "no-ff",
+    "no-edit",
+    "quiet",
+    "verbose",
+    "prune",
+    "all",
+    "no-tags",
+    "stat",
+    "no-stat",
+];
+
+fn check_pull(
+    args: &[ShellWord],
+    root: Option<&Path>,
+    is_grant_mode: bool,
+) -> Result<(), String> {
+    let mut has_no_rebase = false;
+    let mut has_no_ff = false;
+    let mut positionals = Vec::new();
+
+    for word in args {
+        let w = word.text.as_str();
+        if w == "--" {
+            return Err("git pull không nhận `--`".to_string());
+        }
+        if let Some(long) = w.strip_prefix("--") {
+            let mut parts = long.splitn(2, '=');
+            let name = parts.next().unwrap_or("");
+            let inline_val = parts.next();
+            if !GIT_PULL_LONG_ALLOWED.contains(&name) {
+                return Err(format!("tùy chọn của git pull `{w}` không được phép"));
+            }
+            if inline_val.is_some() {
+                return Err(format!("tùy chọn của git pull `{w}` không nhận giá trị"));
+            }
+            if name == "no-rebase" {
+                has_no_rebase = true;
+            } else if name == "no-ff" {
+                has_no_ff = true;
+            }
+            continue;
+        }
+        if let Some(cluster) = w.strip_prefix('-') {
+            if cluster.is_empty() {
+                continue;
+            }
+            for ch in cluster.chars() {
+                if !matches!(ch, 'q' | 'v' | 'p') {
+                    return Err(format!("tùy chọn ngắn của git pull `-{ch}` không được phép"));
+                }
+            }
+            continue;
+        }
+        if !is_valid_git_ref_or_remote_name(w) {
+            return Err(format!("đối số của git pull `{w}` không hợp lệ"));
+        }
+        positionals.push(w);
+    }
+
+    if !is_grant_mode && (!has_no_rebase || !has_no_ff) {
+        return Err(
+            "git pull phải có --no-rebase --no-ff (ví dụ git pull --no-rebase --no-ff origin <nhánh>)"
+                .to_string(),
+        );
+    }
+
+    if let Some(root) = root {
+        if let Some(branch) = current_git_branch(root) {
+            if is_protected_branch(&branch) {
+                return Err(format!(
+                    "không merge/pull khi đang ở nhánh {branch} (main/master được bảo vệ)"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+const GIT_MERGE_LONG_ALLOWED: &[&str] = &[
+    "no-ff",
+    "no-edit",
+    "no-commit",
+    "squash",
+    "stat",
+    "no-stat",
+    "quiet",
+    "verbose",
+    "abort",
+    "allow-unrelated-histories",
+    "log",
+    "no-log",
+    "message",
+];
+
+fn check_merge(
+    args: &[ShellWord],
+    root: Option<&Path>,
+    is_grant_mode: bool,
+) -> Result<(), String> {
+    let mut has_no_ff = false;
+    let mut has_squash = false;
+    let mut has_abort = false;
+    let mut positionals = Vec::new();
+    let mut j = 0;
+
+    while j < args.len() {
+        let w = args[j].text.as_str();
+        j += 1;
+        if w == "--" {
+            return Err("git merge không nhận `--`".to_string());
+        }
+        if let Some(long) = w.strip_prefix("--") {
+            let mut parts = long.splitn(2, '=');
+            let name = parts.next().unwrap_or("");
+            let inline_val = parts.next();
+            if !GIT_MERGE_LONG_ALLOWED.contains(&name) {
+                return Err(format!("tùy chọn của git merge `{w}` không được phép"));
+            }
+            if name == "abort" {
+                has_abort = true;
+            } else if name == "no-ff" {
+                has_no_ff = true;
+            } else if name == "squash" {
+                has_squash = true;
+            } else if name == "message" && inline_val.is_none() && j < args.len() {
+                j += 1;
+            }
+            continue;
+        }
+        if let Some(cluster) = w.strip_prefix('-') {
+            if cluster.is_empty() {
+                continue;
+            }
+            for (k, ch) in cluster.char_indices() {
+                if ch == 'm' {
+                    if k + ch.len_utf8() == cluster.len() && j < args.len() {
+                        j += 1;
+                    }
+                    break;
+                }
+                if !matches!(ch, 'q' | 'v' | 'n') {
+                    return Err(format!("tùy chọn ngắn của git merge `-{ch}` không được phép"));
+                }
+            }
+            continue;
+        }
+        if !is_valid_git_ref_or_remote_name(w) {
+            return Err(format!("tên nhánh/ref của git merge `{w}` không hợp lệ"));
+        }
+        positionals.push(w);
+    }
+
+    if has_abort {
+        if !positionals.is_empty() {
+            return Err("git merge --abort không nhận đối số".to_string());
+        }
+        return Ok(());
+    }
+
+    if !is_grant_mode {
+        if !has_no_ff && !has_squash {
+            return Err(
+                "git merge phải có --no-ff hoặc --squash (ví dụ git merge --no-ff <nhánh>)"
+                    .to_string(),
+            );
+        }
+        if positionals.is_empty() {
+            return Err("git merge cần tên nhánh hoặc ref để merge (ví dụ git merge --no-ff origin/main)".to_string());
+        }
+    }
+
+    if let Some(root) = root {
+        if let Some(branch) = current_git_branch(root) {
+            if is_protected_branch(&branch) {
+                return Err(format!(
+                    "không merge/pull khi đang ở nhánh {branch} (main/master được bảo vệ)"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+const GIT_CHECKOUT_LONG_ALLOWED: &[&str] = &["quiet", "detach", "track", "no-track"];
+
+fn check_checkout(
+    args: &[ShellWord],
+    root: Option<&Path>,
+    is_grant_mode: bool,
+) -> Result<(), String> {
+    let mut new_branch: Option<String> = None;
+    let mut has_track = false;
+    let mut positionals = Vec::new();
+    let mut j = 0;
+
+    while j < args.len() {
+        let w = args[j].text.as_str();
+        j += 1;
+        if w == "--" {
+            return Err("git checkout không được dùng `--` (chỉ dùng để chuyển/tạo nhánh, không đụng tới file)".to_string());
+        }
+        if let Some(long) = w.strip_prefix("--") {
+            let mut parts = long.splitn(2, '=');
+            let name = parts.next().unwrap_or("");
+            let inline_val = parts.next();
+            if !GIT_CHECKOUT_LONG_ALLOWED.contains(&name) {
+                return Err(format!("tùy chọn của git checkout `{w}` không được phép"));
+            }
+            if inline_val.is_some() {
+                return Err(format!("tùy chọn của git checkout `{w}` không nhận giá trị"));
+            }
+            if name == "track" {
+                has_track = true;
+            }
+            continue;
+        }
+        if let Some(cluster) = w.strip_prefix('-') {
+            if cluster.is_empty() {
+                continue;
+            }
+            for (k, ch) in cluster.char_indices() {
+                if ch == 'b' {
+                    let rest_cluster = &cluster[k + ch.len_utf8()..];
+                    let b_val = if !rest_cluster.is_empty() {
+                        rest_cluster.to_string()
+                    } else if j < args.len() {
+                        let val = args[j].text.clone();
+                        j += 1;
+                        val
+                    } else {
+                        return Err("tùy chọn -b của git checkout cần tên nhánh mới".to_string());
+                    };
+                    new_branch = Some(b_val);
+                    break;
+                }
+                if ch == 't' {
+                    has_track = true;
+                } else if ch == 'q' {
+                    // ok
+                } else {
+                    return Err(format!("tùy chọn ngắn của git checkout `-{ch}` không được phép"));
+                }
+            }
+            continue;
+        }
+        positionals.push(w);
+    }
+
+    if has_track && new_branch.is_none() {
+        return Err("tùy chọn --track/-t chỉ được dùng đi kèm -b".to_string());
+    }
+
+    if let Some(nb) = &new_branch {
+        if !is_valid_git_ref_or_remote_name(nb) {
+            return Err(format!("tên nhánh mới `{nb}` không hợp lệ"));
+        }
+        if is_protected_branch(nb) {
+            return Err(format!("không được tạo nhánh {nb} (main/master được bảo vệ)"));
+        }
+        if !is_grant_mode && positionals.len() > 1 {
+            return Err("git checkout -b chỉ nhận tối đa 1 ref nguồn".to_string());
+        }
+    } else if !is_grant_mode && positionals.len() != 1 {
+        return Err("git checkout cần đúng 1 tên nhánh/ref (hoặc dùng -b để tạo nhánh)".to_string());
+    }
+
+    for r in &positionals {
+        if !is_valid_git_ref_or_remote_name(r) {
+            return Err(format!("đối số `{r}` của git checkout không hợp lệ"));
+        }
+        if let Some(root) = root {
+            if root.join(r).exists() {
+                return Err(format!(
+                    "checkout {r} trùng tên file — không được dùng checkout để khôi phục file"
+                ));
+            }
+            let verify_status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")])
+                .output();
+            let is_ref = verify_status.map(|o| o.status.success()).unwrap_or(false);
+            if !is_ref {
+                return Err(format!(
+                    "checkout chỉ dùng để chuyển nhánh — {r} không phải nhánh/commit"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+const GIT_SWITCH_LONG_ALLOWED: &[&str] = &["create", "detach", "track", "no-track", "quiet"];
+
+fn check_switch(
+    args: &[ShellWord],
+    _root: Option<&Path>,
+    is_grant_mode: bool,
+) -> Result<(), String> {
+    let mut new_branch: Option<String> = None;
+    let mut has_track = false;
+    let mut positionals = Vec::new();
+    let mut j = 0;
+
+    while j < args.len() {
+        let w = args[j].text.as_str();
+        j += 1;
+        if w == "--" {
+            return Err("git switch không nhận `--`".to_string());
+        }
+        if let Some(long) = w.strip_prefix("--") {
+            let mut parts = long.splitn(2, '=');
+            let name = parts.next().unwrap_or("");
+            let inline_val = parts.next();
+            if !GIT_SWITCH_LONG_ALLOWED.contains(&name) {
+                return Err(format!("tùy chọn của git switch `{w}` không được phép"));
+            }
+            if name == "create" {
+                let c_val = if let Some(val) = inline_val {
+                    val.to_string()
+                } else if j < args.len() {
+                    let val = args[j].text.clone();
+                    j += 1;
+                    val
+                } else {
+                    return Err("tùy chọn --create của git switch cần tên nhánh mới".to_string());
+                };
+                new_branch = Some(c_val);
+            } else {
+                if inline_val.is_some() {
+                    return Err(format!("tùy chọn của git switch `{w}` không nhận giá trị"));
+                }
+                if name == "track" {
+                    has_track = true;
+                }
+            }
+            continue;
+        }
+        if let Some(cluster) = w.strip_prefix('-') {
+            if cluster.is_empty() {
+                continue;
+            }
+            for (k, ch) in cluster.char_indices() {
+                if ch == 'c' {
+                    let rest_cluster = &cluster[k + ch.len_utf8()..];
+                    let c_val = if !rest_cluster.is_empty() {
+                        rest_cluster.to_string()
+                    } else if j < args.len() {
+                        let val = args[j].text.clone();
+                        j += 1;
+                        val
+                    } else {
+                        return Err("tùy chọn -c của git switch cần tên nhánh mới".to_string());
+                    };
+                    new_branch = Some(c_val);
+                    break;
+                }
+                if ch == 't' {
+                    has_track = true;
+                } else if ch == 'q' {
+                    // ok
+                } else {
+                    return Err(format!("tùy chọn ngắn của git switch `-{ch}` không được phép"));
+                }
+            }
+            continue;
+        }
+        positionals.push(w);
+    }
+
+    if has_track && new_branch.is_none() {
+        return Err("tùy chọn --track/-t chỉ được dùng đi kèm -c/--create".to_string());
+    }
+
+    if let Some(nb) = &new_branch {
+        if !is_valid_git_ref_or_remote_name(nb) {
+            return Err(format!("tên nhánh mới `{nb}` không hợp lệ"));
+        }
+        if is_protected_branch(nb) {
+            return Err(format!("không được tạo nhánh {nb} (main/master được bảo vệ)"));
+        }
+        if !is_grant_mode && positionals.len() > 1 {
+            return Err("git switch -c chỉ nhận tối đa 1 ref nguồn".to_string());
+        }
+    } else if !is_grant_mode && positionals.len() != 1 {
+        return Err("git switch cần đúng 1 tên nhánh (hoặc dùng -c để tạo nhánh)".to_string());
+    }
+
+    for r in &positionals {
+        if !is_valid_git_ref_or_remote_name(r) {
+            return Err(format!("đối số `{r}` của git switch không hợp lệ"));
+        }
+    }
+
+    Ok(())
+}
+
 /// The git option policy (W-1) on the words after `git`.
-fn git_policy_check(args: &[ShellWord]) -> Result<(), String> {
+fn git_policy_check_with(
+    args: &[ShellWord],
+    root: Option<&Path>,
+    is_grant_mode: bool,
+) -> Result<(), String> {
     let mut i = 0;
     while i < args.len() && args[i].text.starts_with('-') {
         let opt = args[i].text.as_str();
@@ -937,15 +1512,31 @@ fn git_policy_check(args: &[ShellWord]) -> Result<(), String> {
     let sub = args.get(i).map(|w| w.text.as_str()).unwrap_or("");
     let is_allowed = GIT_READ_SUBCOMMANDS.contains(&sub)
         || GIT_WRITE_SUBCOMMANDS.contains(&sub)
-        || sub == "fetch";
+        || sub == "fetch"
+        || GIT_DEV_GRANT_SUBCOMMANDS.contains(&sub);
     if !is_allowed {
         return Err(format!(
-            "git {sub} không được phép — chỉ dùng lệnh git chỉ đọc (log, show, diff, status, branch, rev-list, merge-base…), git fetch, hoặc add/commit khi vai được ghi"
+            "git {sub} không được phép — chỉ dùng lệnh git chỉ đọc, git fetch, add/commit, hoặc push/pull/merge/checkout/switch khi plan khai; reset, rebase, restore, clean, stash, xoá nhánh/tag luôn bị cấm"
         ));
     }
 
     let rest = &args[i + 1..];
 
+    if sub == "push" {
+        return check_push(rest, is_grant_mode);
+    }
+    if sub == "pull" {
+        return check_pull(rest, root, is_grant_mode);
+    }
+    if sub == "merge" {
+        return check_merge(rest, root, is_grant_mode);
+    }
+    if sub == "checkout" {
+        return check_checkout(rest, root, is_grant_mode);
+    }
+    if sub == "switch" {
+        return check_switch(rest, root, is_grant_mode);
+    }
     if sub == "fetch" {
         return check_fetch(rest);
     }
@@ -1084,7 +1675,7 @@ fn git_policy_check(args: &[ShellWord]) -> Result<(), String> {
             _ => {}
         }
     }
-    if sub == "commit" && !has_message {
+    if sub == "commit" && !has_message && !is_grant_mode {
         return Err(GIT_COMMIT_NO_MESSAGE_ERR.to_string());
     }
     Ok(())
@@ -1843,8 +2434,12 @@ mod tests {
         );
 
         assert_eq!(
+            bash_command_check("git reset").unwrap_err(),
+            "git reset không được phép — chỉ dùng lệnh git chỉ đọc, git fetch, add/commit, hoặc push/pull/merge/checkout/switch khi plan khai; reset, rebase, restore, clean, stash, xoá nhánh/tag luôn bị cấm"
+        );
+        assert_eq!(
             bash_command_check("git push").unwrap_err(),
-            "git push không được phép — chỉ dùng lệnh git chỉ đọc (log, show, diff, status, branch, rev-list, merge-base…), git fetch, hoặc add/commit khi vai được ghi"
+            "git push cần remote và refspec (ví dụ git push origin <nhánh>)"
         );
         assert_eq!(
             bash_command_check("git -c a=b log").unwrap_err(),

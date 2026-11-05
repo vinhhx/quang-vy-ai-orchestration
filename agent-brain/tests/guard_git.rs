@@ -545,8 +545,8 @@ fn read_only_git_and_guarded_fetch_policy() {
         "git push",
         "git pull",
         "git reset --hard",
-        "git checkout main",
-        "git switch x",
+        "git checkout -f main",
+        "git switch -C x",
         "git stash",
         "git clean -fd",
         "git merge x",
@@ -578,4 +578,119 @@ fn role_allowed_tools_permissions() {
     assert!(!agent_brain::roles::qa::QA_ALLOWED_TOOLS.contains(&"Bash(git fetch *)"));
     assert!(agent_brain::roles::review::REVIEW_ALLOWED_BASE.contains(&"Bash(git branch *)"));
     assert!(!agent_brain::roles::review::REVIEW_ALLOWED_BASE.contains(&"Bash(git fetch *)"));
+}
+
+#[test]
+fn dev_git_grants_policy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let run_git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-b", "main"]);
+    run_git(&["config", "user.name", "Test"]);
+    run_git(&["config", "user.email", "test@example.com"]);
+    std::fs::write(root.join("app.php"), "<?php echo 'hi';\n").unwrap();
+    run_git(&["add", "app.php"]);
+    run_git(&["commit", "-m", "initial"]);
+    run_git(&["checkout", "-b", "feature/x"]);
+
+    let allowed = [
+        "git push origin feature/x",
+        "git push -u origin feature/x",
+        "git push origin HEAD:feature/x",
+        "git push origin feature/x:feature/x",
+        "git push --dry-run origin feature/x",
+        "git pull --no-rebase --no-ff origin feature/x",
+        "git merge --no-ff origin/main",
+        "git merge --no-ff -m \"merge main\" main",
+        "git merge --squash main",
+        "git merge --abort",
+        "git checkout main",
+        "git checkout -b feature/y",
+        "git checkout -b feature/y main",
+        "git switch main",
+        "git switch -c feature/z",
+    ];
+
+    for cmd in allowed {
+        assert!(
+            agent_brain::guard::bash_command_check_with(cmd, Some(root)).is_ok(),
+            "should allow: {cmd}, got: {:?}",
+            agent_brain::guard::bash_command_check_with(cmd, Some(root))
+        );
+    }
+
+    let refused = [
+        "git push",
+        "git push origin",
+        "git push origin main",
+        "git push origin HEAD:main",
+        "git push origin x:refs/heads/master",
+        "git push origin MAIN",
+        "git push origin HEAD",
+        "git push origin :feature/x",
+        "git push origin +feature/x",
+        "git push -f origin feature/x",
+        "git push --force-with-lease origin feature/x",
+        "git push --delete origin feature/x",
+        "git push --tags origin",
+        "git push --mirror origin",
+        "git push https://evil.example/r feature/x",
+        "git pull",
+        "git pull --rebase origin x",
+        "git pull --no-rebase origin x",
+        "git pull --no-rebase --no-ff origin main:main",
+        "git merge main",
+        "git merge -e --no-ff main",
+        "git merge --no-ff -s ours main",
+        "git merge --continue",
+        "git checkout -- app.php",
+        "git checkout app.php",
+        "git checkout .",
+        "git checkout -f main",
+        "git checkout -B main",
+        "git checkout --orphan x",
+        "git checkout main -- app.php",
+        "git checkout khong-ton-tai",
+        "git checkout -b main",
+        "git switch -C x",
+        "git switch --discard-changes main",
+        "git switch -c master",
+        "git reset --hard",
+        "git reset HEAD~1",
+        "git rebase main",
+        "git restore app.php",
+        "git clean -fd",
+        "git stash",
+        "git revert HEAD",
+        "git cherry-pick x",
+        "git branch -D x",
+        "git tag -d v1",
+    ];
+
+    for cmd in refused {
+        assert!(
+            agent_brain::guard::bash_command_check_with(cmd, Some(root)).is_err(),
+            "should refuse: {cmd}"
+        );
+    }
+
+    // Khi đang ở main:
+    run_git(&["checkout", "main"]);
+    for cmd in [
+        "git merge --no-ff feature/x",
+        "git pull --no-rebase --no-ff origin feature/x",
+    ] {
+        assert!(
+            agent_brain::guard::bash_command_check_with(cmd, Some(root)).is_err(),
+            "should refuse on main: {cmd}"
+        );
+    }
 }

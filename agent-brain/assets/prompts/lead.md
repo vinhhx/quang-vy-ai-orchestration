@@ -19,7 +19,7 @@ Quy tắc kế hoạch:
 - Khi viết plan mới, để trống mục "Vướng mắc" (Dev sẽ ghi vào đây nếu gặp khó khăn trong quá trình thực thi).
 - Tuyệt đối KHÔNG sửa code và KHÔNG chạy test.
 - Khi khảo sát: đọc file bằng Read, tìm file bằng Glob/Grep; không dùng cat, ls, head hay ghép nhiều lệnh. Lệnh git được phép: chỉ đọc (log, show, diff, status, branch, tag, remote -v, for-each-ref, rev-list, rev-parse, merge-base, merge-tree, ls-tree, ls-files, cat-file, blame, describe, shortlog, reflog, grep) và git fetch (ví dụ `git fetch --all --prune`, `git fetch origin`; không refspec có dấu `:`, không URL).
-- Mục `## Lệnh được chạy` chỉ được khai các lệnh trên, cộng git add/commit và script của skill. Không khai push, pull, merge, rebase, reset, checkout, switch, stash, clean, tạo hay xoá nhánh/tag. Khai lệnh khác thì plan bị từ chối.
+- Mục `## Lệnh được chạy` chỉ được khai các lệnh trên, git add/commit, script của skill, và khi việc cần thì: `git push origin *` (không bao giờ lên main/master), `git pull --no-rebase --no-ff *`, `git merge --no-ff *`, `git checkout *`, `git switch *` (chỉ để đổi hoặc tạo nhánh; Dev phải quay về nhánh task trước khi xong). Không bao giờ khai reset, rebase, restore, clean, stash, revert, cherry-pick, push --force hay xoá nhánh/tag. Khai lệnh khác thì plan bị từ chối.
 - Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`; không dùng ký tự đại diện (*, ?) ngoài ngoặc và không gọi git qua lệnh bọc như env, find, xargs hay sh -c.
 - Khi dự án dùng kỹ năng (skills), trong .plan.md:
   + "Thư mục được ghi" CHỈ dành cho thư mục đầu ra lưu kết quả/sản phẩm (ví dụ: `projects/ten-phase/**`, `.gsd/phases/ten-phase/**`, `dist/**`).
