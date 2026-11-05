@@ -464,6 +464,7 @@
     var screenTitles = {
       overview: 'Tổng quan',
       assign: 'Giao việc',
+      queue: 'Điều phối',
       task: 'Chi tiết task',
       stats: 'Thống kê',
       projects: 'Dự án',
@@ -479,6 +480,9 @@
       }
       if (h === '#/assign') {
         return { name: 'assign', params: {} };
+      }
+      if (h === '#/queue') {
+        return { name: 'queue', params: {} };
       }
       if (h === '#/stats') {
         return { name: 'stats', params: {} };

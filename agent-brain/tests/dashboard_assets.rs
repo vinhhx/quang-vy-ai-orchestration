@@ -151,7 +151,7 @@ fn asset_references_resolve() {
     let assets_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/dashboard");
 
     for name in &[
-        "overview", "assign", "task", "stats", "projects", "board", "settings",
+        "overview", "assign", "queue", "task", "stats", "projects", "board", "settings",
     ] {
         let js_path = format!("/js/{name}.js");
         let html_path = format!("/screens/{name}.html");
