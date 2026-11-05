@@ -532,6 +532,13 @@ pub fn execute_role_staged(
             let run_id =
                 crate::db::insert_run_with_engine(&self.ctx.conn, &new_run, &self.db_engine)?;
             self.run_id = Some(run_id);
+            if let Some(tid) = self.plan.task_id {
+                if crate::db::end_stopped_autopilot(&self.ctx.conn, tid)? {
+                    crate::term::emit(&format!(
+                        "Autopilot của task {tid} đang dừng — chạy tay nên tắt autopilot (bật lại bằng Bật autopilot)"
+                    ));
+                }
+            }
             if self.stage.stage.is_some() || self.stage.round.is_some() {
                 crate::db::set_run_stage_round(
                     &self.ctx.conn,

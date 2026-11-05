@@ -833,6 +833,18 @@ pub fn clear_auto_stop(conn: &Connection, task_id: i64) -> BrainResult<()> {
     Ok(())
 }
 
+/// Người dùng tự chạy một bước khi autopilot đang dừng (không có driver):
+/// tắt autopilot của task (`ended`), xoá cờ dừng, giữ auto_json làm lịch sử.
+/// Một câu lệnh có điều kiện; trả true khi đã ghi.
+pub fn end_stopped_autopilot(conn: &Connection, task_id: i64) -> BrainResult<bool> {
+    let changed = conn.execute(
+        "UPDATE tasks SET auto_state = 'ended', auto_stop_at = NULL, auto_stop_kind = NULL, updated_at = ?1 \
+         WHERE id = ?2 AND auto_state = 'stopped' AND auto_pid IS NULL",
+        params![now_ms(), task_id],
+    )?;
+    Ok(changed == 1)
+}
+
 pub fn set_run_stage_round(
     conn: &Connection,
     run_id: i64,
@@ -1567,5 +1579,62 @@ mod tests {
         assert!(!mark_lost_if_running(&conn, run_id).expect("mark lost"));
         let run = get_run(&conn, run_id).expect("get run").expect("run row");
         assert_eq!(run.status, "killed");
+    }
+
+    #[test]
+    fn test_end_stopped_autopilot() {
+        let (_dir, conn, project_id) = fresh_db();
+        let task_id = upsert_task(&conn, project_id, "t", "T", "t", Some("main"), None)
+            .expect("upsert task");
+
+        // 1. auto_state = 'stopped', auto_pid = NULL, có auto_stop_at, auto_json
+        let initial_json = "{\"stop\":{\"reason\":\"vuong_mac\"}}";
+        conn.execute(
+            "UPDATE tasks SET auto_state = 'stopped', auto_pid = NULL, auto_stop_at = 12345, auto_stop_kind = 'vuong_mac', auto_json = ?1 WHERE id = ?2",
+            params![initial_json, task_id],
+        ).expect("setup stopped task");
+
+        assert!(end_stopped_autopilot(&conn, task_id).expect("end_stopped_autopilot"));
+        let auto = task_auto(&conn, task_id).expect("task_auto").expect("row");
+        assert_eq!(auto.auto_state.as_deref(), Some("ended"));
+        assert_eq!(auto.auto_stop_at, None);
+        assert_eq!(auto.auto_stop_kind, None);
+        assert_eq!(auto.auto_json.as_deref(), Some(initial_json));
+
+        // 2. auto_state = 'running', auto_pid = Some(1): trả false, không đổi gì
+        conn.execute(
+            "UPDATE tasks SET auto_state = 'running', auto_pid = 1, auto_stop_at = 9999, auto_stop_kind = 'soft' WHERE id = ?1",
+            params![task_id],
+        ).expect("setup running task");
+        assert!(!end_stopped_autopilot(&conn, task_id).expect("end_stopped_autopilot running"));
+        let auto = task_auto(&conn, task_id).expect("task_auto").expect("row");
+        assert_eq!(auto.auto_state.as_deref(), Some("running"));
+        assert_eq!(auto.auto_pid, Some(1));
+        assert_eq!(auto.auto_stop_at, Some(9999));
+
+        // 3. auto_state = 'stopped', auto_pid = Some(1): trả false
+        conn.execute(
+            "UPDATE tasks SET auto_state = 'stopped', auto_pid = 1 WHERE id = ?1",
+            params![task_id],
+        ).expect("setup stopped with pid");
+        assert!(!end_stopped_autopilot(&conn, task_id).expect("end_stopped_autopilot stopped with pid"));
+        let auto = task_auto(&conn, task_id).expect("task_auto").expect("row");
+        assert_eq!(auto.auto_state.as_deref(), Some("stopped"));
+        assert_eq!(auto.auto_pid, Some(1));
+
+        // 4. auto_state = 'gate' hoặc NULL: trả false
+        conn.execute(
+            "UPDATE tasks SET auto_state = 'gate', auto_pid = NULL WHERE id = ?1",
+            params![task_id],
+        ).expect("setup gate task");
+        assert!(!end_stopped_autopilot(&conn, task_id).expect("end_stopped_autopilot gate"));
+        let auto = task_auto(&conn, task_id).expect("task_auto").expect("row");
+        assert_eq!(auto.auto_state.as_deref(), Some("gate"));
+
+        conn.execute(
+            "UPDATE tasks SET auto_state = NULL, auto_pid = NULL WHERE id = ?1",
+            params![task_id],
+        ).expect("setup null auto_state");
+        assert!(!end_stopped_autopilot(&conn, task_id).expect("end_stopped_autopilot null"));
     }
 }
