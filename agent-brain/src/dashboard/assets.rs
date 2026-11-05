@@ -26,6 +26,16 @@ pub static ASSETS: &[Asset] = &[
         body: include_bytes!("../../assets/dashboard/vendor/alpine.csp.min.js"),
     },
     Asset {
+        path: "/vendor/three.core.js",
+        mime: "text/javascript; charset=utf-8",
+        body: include_bytes!("../../assets/dashboard/vendor/three.core.js"),
+    },
+    Asset {
+        path: "/vendor/three.module.js",
+        mime: "text/javascript; charset=utf-8",
+        body: include_bytes!("../../assets/dashboard/vendor/three.module.js"),
+    },
+    Asset {
         path: "/js/theme.js",
         mime: "text/javascript; charset=utf-8",
         body: include_bytes!("../../assets/dashboard/js/theme.js"),
