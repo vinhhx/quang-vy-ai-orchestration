@@ -13,6 +13,7 @@ pub const QA_MAX: usize = 8000;
 pub const COMMITS_MAX: usize = 50;
 pub const DIFF_FILES_MAX: usize = 100;
 pub const PLAN_FILES_MAX: usize = 50;
+pub const MAX_REPORT_FILE_SIZE: usize = 1024 * 1024;
 const CUT_MARK: &str = "… (đã cắt)";
 
 /// `git diff --numstat` reduced to totals and a per-file list.
@@ -301,6 +302,129 @@ pub fn document(s: &TaskState) -> (String, String) {
     (file_name(&s.task.slug), build(&input))
 }
 
+/// Collects task report files to be sent over Telegram upon QA pass:
+/// `(display filename, file bytes)`.
+pub fn report_documents(s: &TaskState) -> Vec<(String, Vec<u8>)> {
+    let plan = s.plan_text.as_deref().map(planfile::parse_plan);
+    let has_report_sec = plan
+        .as_ref()
+        .map(|p| p.sections.keys().any(|k| k.starts_with(planfile::REPORT_SECTION)))
+        .unwrap_or(false);
+
+    let candidates: Vec<String> = if has_report_sec {
+        plan.as_ref().map(planfile::report_files).unwrap_or_default()
+    } else {
+        let base = s
+            .task
+            .base_commit
+            .as_deref()
+            .filter(|b| gitops::is_hex_sha(b));
+        match base {
+            Some(b) => {
+                let range = format!("{b}..{}", s.task.branch);
+                let diff_out = gitops::git(&s.root, &["diff", "--name-only", "--diff-filter=A", &range])
+                    .unwrap_or_default();
+                let p_files = plan.as_ref().map(planfile::plan_files).unwrap_or_default();
+                const IGNORED: &[&str] = &[
+                    ".plan.md",
+                    ".qa-report.md",
+                    ".plan-review.md",
+                    ".code-review.md",
+                    ".handover.md",
+                ];
+                let mut list = Vec::new();
+                for line in diff_out.lines() {
+                    let raw = line.trim();
+                    if raw.is_empty() {
+                        continue;
+                    }
+                    let norm = planfile::normalize_plan_path(raw);
+                    let lower = norm.to_lowercase();
+                    if !lower.ends_with(".md") {
+                        continue;
+                    }
+                    let base_name = norm.rsplit('/').next().unwrap_or(&norm);
+                    if IGNORED.contains(&norm.as_str()) || IGNORED.contains(&base_name) {
+                        continue;
+                    }
+                    if p_files.contains(&norm) && !list.contains(&norm) {
+                        list.push(norm);
+                    }
+                }
+                list
+            }
+            None => Vec::new(),
+        }
+    };
+
+    // 2. Safety filter
+    let mut filtered = Vec::new();
+    for path in candidates {
+        if report::sensitive_path(&path) {
+            continue;
+        }
+        let lower = path.to_lowercase();
+        if !(lower.ends_with(".md") || lower.ends_with(".txt") || lower.ends_with(".csv")) {
+            continue;
+        }
+        if !filtered.contains(&path) {
+            filtered.push(path);
+        }
+        if filtered.len() == 5 {
+            break;
+        }
+    }
+
+    // 3. Read content from git branch
+    let mut kept = Vec::new();
+    for path in filtered {
+        let bytes = match gitops::show_file_bytes(&s.root, &s.task.branch, &path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if bytes.len() > MAX_REPORT_FILE_SIZE {
+            crate::term::emit(&format!("Telegram: bỏ file báo cáo {path} — lớn hơn 1 MiB"));
+            continue;
+        }
+        kept.push((path, bytes));
+    }
+
+    // 4. Display filename
+    let mut name_counts = std::collections::HashMap::new();
+    for (path, _) in &kept {
+        let base = Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(path.as_str());
+        *name_counts.entry(base.to_string()).or_insert(0usize) += 1;
+    }
+
+    let mut results = Vec::new();
+    for (path, bytes) in kept {
+        let base = Path::new(&path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(path.as_str())
+            .to_string();
+        let display_name = if name_counts.get(&base).copied().unwrap_or(0) > 1 {
+            let parent = Path::new(&path)
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            if !parent.is_empty() {
+                format!("{parent}-{base}")
+            } else {
+                base
+            }
+        } else {
+            base
+        };
+        results.push((display_name, bytes));
+    }
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,5 +553,179 @@ mod tests {
         assert_eq!(file_name("sua-app"), "sua-app.summary.md");
         assert_eq!(file_name("Sua App"), "summary.md");
         assert_eq!(file_name(""), "summary.md");
+    }
+
+    fn test_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir.path())
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        dir
+    }
+
+    fn test_commit(root: &Path, files: &[(&str, &[u8])], msg: &str) -> String {
+        for (rel, content) in files {
+            let p = root.join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&p, content).unwrap();
+        }
+        let status = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                msg,
+            ])
+            .current_dir(root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        gitops::head_sha(root).unwrap()
+    }
+
+    fn test_task_state(root: &Path, branch: &str, base: Option<&str>, plan: Option<&str>) -> TaskState {
+        let task = crate::db::TaskRow {
+            id: 1,
+            project_id: 1,
+            slug: "test-task".to_string(),
+            title: "test task".to_string(),
+            branch: branch.to_string(),
+            base_branch: Some("main".to_string()),
+            base_commit: base.map(|s| s.to_string()),
+            status: "planned".to_string(),
+            created_at: 0,
+            updated_at: 0,
+        };
+        let project = crate::projects::Project {
+            id: "test-proj".to_string(),
+            path: root.to_string_lossy().to_string(),
+            name_vi: "Dự án test".to_string(),
+            aliases: Vec::new(),
+            kind: "code".to_string(),
+            profile: "default".to_string(),
+            repo: None,
+            missing: false,
+        };
+        let (teams, staff) = crate::teams::load();
+        TaskState {
+            task,
+            project,
+            root: root.to_path_buf(),
+            git: crate::dashboard::taskstate::GitFacts {
+                current_branch: Some(branch.to_string()),
+                ..Default::default()
+            },
+            plan_text: plan.map(|s| s.to_string()),
+            plan_source: Some("branch"),
+            plan_dirty: false,
+            busy: None,
+            auto: crate::db::TaskAuto::default(),
+            aj: crate::autopilot::decide::AutoJson::default(),
+            workflow: None,
+            driver_alive: false,
+            runs: Vec::new(),
+            gate: None,
+            view: crate::dashboard::taskstate::TaskView {
+                steps: Vec::new(),
+                banner: None,
+                group: String::new(),
+                current_step: String::new(),
+                actions: Vec::new(),
+                controls: Vec::new(),
+                auto: crate::dashboard::taskstate::AutoView {
+                    state: String::new(),
+                    legacy: false,
+                    workflow_auto: false,
+                    stop_reason: None,
+                    stop_word: None,
+                    stop_detail: None,
+                    stopped_in: None,
+                    stop_requested: false,
+                },
+            },
+            rev: "rev1".to_string(),
+            origin: None,
+            project_telegram_ok: false,
+            team_json: None,
+            team: None,
+            teams,
+            staff,
+        }
+    }
+
+    #[test]
+    fn test_report_documents_cases() {
+        let repo = test_repo();
+        let root = repo.path();
+        let base_sha = test_commit(root, &[("README.md", b"# initial\n")], "initial commit");
+
+        // Create branch task/test
+        gitops::create_branch(root, "task/test").unwrap();
+        // Switch to branch task/test
+        let status = std::process::Command::new("git")
+            .args(["checkout", "task/test"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        // Case 1: Plan có `## Gửi báo cáo` với `reports/a.md`, đã commit trên nhánh task:
+        // trả 1 phần tử ("a.md", nội dung).
+        test_commit(root, &[("reports/a.md", b"report a content")], "add report a");
+        let plan_case1 = "# Plan: t\n## Mục tiêu\nx\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | reports/a.md | - | x | y |\n## Không được đụng tới\n-\n## Cách kiểm tra\n-\n## Vướng mắc\n## Gửi báo cáo\n- `reports/a.md`\n";
+        let s1 = test_task_state(root, "task/test", Some(&base_sha), Some(plan_case1));
+        let docs1 = report_documents(&s1);
+        assert_eq!(docs1.len(), 1);
+        assert_eq!(docs1[0].0, "a.md");
+        assert_eq!(docs1[0].1, b"report a content");
+
+        // Case 4: Worktree có nội dung khác chưa commit: vẫn trả nội dung ở nhánh (đọc từ git).
+        std::fs::write(root.join("reports/a.md"), b"modified in worktree").unwrap();
+        let docs4 = report_documents(&s1);
+        assert_eq!(docs4.len(), 1);
+        assert_eq!(docs4[0].1, b"report a content");
+        // Revert worktree file
+        std::fs::write(root.join("reports/a.md"), b"report a content").unwrap();
+
+        // Case 2: Không có mục; nhánh task thêm mới `reports/b.md` (có trong Thay đổi), sửa `README.md` và thêm `src/x.php`: chỉ trả `b.md`.
+        test_commit(root, &[
+            ("reports/b.md", b"report b content"),
+            ("README.md", b"# updated readme\n"),
+            ("src/x.php", b"<?php echo 1;"),
+        ], "add files");
+        let plan_case2 = "# Plan: t\n## Mục tiêu\nx\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | reports/b.md | - | x | y |\n| 2 | README.md | - | x | y |\n| 3 | src/x.php | - | x | y |\n## Không được đụng tới\n-\n## Cách kiểm tra\n-\n## Vướng mắc\n";
+        let s2 = test_task_state(root, "task/test", Some(&base_sha), Some(plan_case2));
+        let docs2 = report_documents(&s2);
+        assert_eq!(docs2.len(), 1);
+        assert_eq!(docs2[0].0, "b.md");
+        assert_eq!(docs2[0].1, b"report b content");
+
+        // Case 3: File lớn hơn 1 MiB: bị bỏ qua.
+        let big_bytes = vec![b'x'; MAX_REPORT_FILE_SIZE + 10];
+        test_commit(root, &[("reports/big.md", &big_bytes)], "add big report");
+        let plan_case3 = "# Plan: t\n## Mục tiêu\nx\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | reports/big.md | - | x | y |\n## Không được đụng tới\n-\n## Cách kiểm tra\n-\n## Vướng mắc\n## Gửi báo cáo\n- `reports/big.md`\n";
+        let s3 = test_task_state(root, "task/test", Some(&base_sha), Some(plan_case3));
+        let docs3 = report_documents(&s3);
+        assert!(docs3.is_empty(), "big file must be skipped: {docs3:?}");
     }
 }

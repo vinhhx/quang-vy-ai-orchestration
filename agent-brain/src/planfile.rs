@@ -106,6 +106,7 @@ pub const QA_SECTIONS: [&str; 4] = [
     "Kết luận",
 ];
 pub const QA_VERDICTS: [&str; 2] = ["Đạt", "Cần sửa"];
+pub const REPORT_SECTION: &str = "Gửi báo cáo";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
@@ -518,6 +519,56 @@ pub fn validate_plan(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String>
     // 5. optional run grants (skill mode): absent sections add no error
     errors.extend(validate_grants(&run_grants(plan), root));
 
+    // 6. optional report section
+    if plan.sections.keys().any(|k| k.starts_with(REPORT_SECTION)) {
+        let raw_items = grant_items(grant_section(plan, REPORT_SECTION), false);
+        let r_files = report_files(plan);
+        if raw_items.len() > 5 || r_files.len() > 5 {
+            let count = raw_items.len().max(r_files.len());
+            errors.push(format!(
+                "Mục \"{REPORT_SECTION}\" có {count} file — tối đa 5"
+            ));
+        }
+        let p_files = plan_files(plan);
+        let mut seen_raw = std::collections::HashSet::new();
+        for raw in &raw_items {
+            if !seen_raw.insert(raw) {
+                continue;
+            }
+            if raw.starts_with('/') {
+                errors.push(format!(
+                    "File báo cáo `{raw}` phải là đường dẫn tương đối (không bắt đầu bằng /)"
+                ));
+            } else if raw == "~" || raw.starts_with("~/") {
+                errors.push(format!(
+                    "File báo cáo `{raw}` không được bắt đầu bằng ~"
+                ));
+            }
+            if raw.contains("..") {
+                errors.push(format!(
+                    "File báo cáo `{raw}` không được chứa .."
+                ));
+            }
+            let lower = raw.to_lowercase();
+            if !(lower.ends_with(".md") || lower.ends_with(".txt") || lower.ends_with(".csv")) {
+                errors.push(format!(
+                    "File báo cáo `{raw}` phải có đuôi .md, .txt hoặc .csv"
+                ));
+            }
+            if crate::report::sensitive_path(raw) {
+                errors.push(format!(
+                    "File báo cáo `{raw}` nằm trong danh sách file nhạy cảm"
+                ));
+            }
+            let norm = normalize_plan_path(raw);
+            if !p_files.contains(&norm) {
+                errors.push(format!(
+                    "File báo cáo `{raw}` không có trong bảng Thay đổi"
+                ));
+            }
+        }
+    }
+
     errors
 }
 
@@ -603,6 +654,20 @@ pub fn run_grants(plan: &Plan) -> Grants {
         read_dirs: grant_items(grant_section(plan, GRANT_SECTION_READ), false),
         write_dirs: grant_items(grant_section(plan, GRANT_SECTION_WRITE), false),
     }
+}
+
+/// Reads the optional report files section of a plan (`## Gửi báo cáo`).
+pub fn report_files(plan: &Plan) -> Vec<String> {
+    let raw = grant_items(grant_section(plan, REPORT_SECTION), false);
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for item in raw {
+        let norm = normalize_plan_path(&item);
+        if !norm.is_empty() && seen.insert(norm.clone()) {
+            out.push(norm);
+        }
+    }
+    out
 }
 
 /// Characters a granted command may never hold (shell constructs).
@@ -1440,5 +1505,49 @@ mod tests {
         // 4. Mục nằm cuối file
         let at_end = "# Plan: t\n## Mục tiêu\nx\n## Vướng mắc\nThiếu quyền git log *\n";
         assert_eq!(blocker_text(at_end), Some("Thiếu quyền git log *".to_string()));
+    }
+
+    #[test]
+    fn test_report_files_parsing() {
+        let p = plan_with(
+            "## Gửi báo cáo\n- `reports/a.md` (chú thích sau backtick)\n- `reports/b.txt`\n- `reports/a.md`\n",
+        );
+        let files = report_files(&p);
+        assert_eq!(files, vec!["reports/a.md", "reports/b.txt"]);
+    }
+
+    #[test]
+    fn test_report_files_validation() {
+        // 1. Lỗi khi file không có trong bảng Thay đổi
+        let p1 = plan_with("## Gửi báo cáo\n- `not_in_changes.md`\n");
+        let errs1 = validate_plan(&p1, None);
+        assert!(errs1.iter().any(|e| e.contains("không có trong bảng Thay đổi")), "{errs1:?}");
+
+        // 2. Lỗi khi đuôi .php
+        let p2 = plan_with("## Gửi báo cáo\n- `a.txt`\n- `script.php`\n");
+        let errs2 = validate_plan(&p2, None);
+        assert!(errs2.iter().any(|e| e.contains("phải có đuôi .md, .txt hoặc .csv")), "{errs2:?}");
+
+        // 3. Lỗi khi có ..
+        let p3 = plan_with("## Gửi báo cáo\n- `../a.txt`\n");
+        let errs3 = validate_plan(&p3, None);
+        assert!(errs3.iter().any(|e| e.contains("không được chứa ..")), "{errs3:?}");
+
+        // 4. Lỗi khi quá 5 file
+        let many = (1..=6).map(|i| format!("- `f{i}.md`\n")).collect::<String>();
+        let p4 = plan_with(&format!("## Gửi báo cáo\n{many}"));
+        let errs4 = validate_plan(&p4, None);
+        assert!(errs4.iter().any(|e| e.contains("tối đa 5")), "{errs4:?}");
+
+        // 5. Lỗi khi là .env.md hoặc đường dẫn mà sensitive_path bắt
+        let p5 = plan_with("## Gửi báo cáo\n- `.env.md`\n");
+        let errs5 = validate_plan(&p5, None);
+        assert!(errs5.iter().any(|e| e.contains("nhạy cảm")), "{errs5:?}");
+
+        // 6. Hợp lệ với .gsd/reports/x.md có trong bảng Thay đổi
+        let plan_text = "# Plan: t\n<!-- brain-meta: {\"task\":\"t\"} -->\n## Mục tiêu\nx\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | .gsd/reports/x.md | - | x | y |\n## Không được đụng tới\n-\n## Cách kiểm tra\n-\n## Vướng mắc\n## Gửi báo cáo\n- `.gsd/reports/x.md`\n";
+        let p6 = parse_plan(plan_text);
+        let errs6 = validate_plan(&p6, None);
+        assert!(errs6.is_empty(), "{errs6:?}");
     }
 }

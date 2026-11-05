@@ -527,6 +527,93 @@ fn qa_pass_sends_summary_file_before_text() {
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
 
+fn lead_plan_with_report_entry() -> Value {
+    let rows = &[
+        ("src/app.py", "app()", "trả về 2", "demo"),
+        ("reports/ket-qua.md", "-", "báo cáo", "kết quả"),
+    ];
+    let mut p_text = protocol::plan_text("Kế hoạch", rows, "python3 -m unittest", "");
+    p_text.push_str("\n## Gửi báo cáo\n- `reports/ket-qua.md`\n");
+    json!({"ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "read", "path": "src/app.py"},
+        {"op": "write", "path": ".plan.md", "content": p_text, "keep_meta": true}
+    ]})
+}
+
+fn dev_impl_with_report_entry() -> Value {
+    json!({"ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "read", "path": "src/app.py"},
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+        {"op": "write", "path": "reports/ket-qua.md", "content": "# Báo cáo\nĐã sửa app thành công.\n"},
+        {"op": "git", "args": ["add", "src/app.py", "reports/ket-qua.md"]},
+        {"op": "git", "args": ["commit", "-m", "sua-app: sửa app và thêm báo cáo"]}
+    ]})
+}
+
+fn full_flow_with_report_scenario() -> Value {
+    by_role(json!({
+        "lead": [lead_plan_with_report_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 1)],
+        "dev": [dev_impl_with_report_entry()],
+        "code-review": [code_review_entry("pass", 0)],
+        "qa": [qa_entry("Đạt")],
+    }))
+}
+
+#[test]
+fn qa_pass_sends_summary_and_report_file_before_text() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    setup_auto_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    auto_start_to_gate(&sb, full_flow_with_report_scenario());
+    wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    let res = sb.run(&["approve", "1"], Some(full_flow_with_report_scenario()));
+    assert_ok(&res, "approve 1");
+    let msg = wait_message(&tg, &srv, "QA đạt");
+
+    let docs = tg.calls("sendDocument");
+    // Gate sends 1 plan document, QA pass sends 2 documents (summary + report)
+    let qa_docs: Vec<&Value> = docs
+        .iter()
+        .filter(|d| d["form"]["document"]["filename"] != json!("sua-app.plan.md"))
+        .collect();
+    assert_eq!(qa_docs.len(), 2, "must have 2 QA sendDocument calls: {docs:#?}");
+
+    // 1. Tóm tắt trước
+    assert_eq!(qa_docs[0]["form"]["document"]["filename"], json!("sua-app.summary.md"));
+    let caption0 = qa_docs[0]["form"]["caption"].as_str().expect("caption summary");
+    assert!(caption0.starts_with("Tóm tắt task 1:"), "{caption0}");
+
+    // 2. Báo cáo sau
+    assert_eq!(qa_docs[1]["form"]["document"]["filename"], json!("ket-qua.md"));
+    let caption1 = qa_docs[1]["form"]["caption"].as_str().expect("caption report");
+    assert!(caption1.starts_with("Báo cáo task 1:"), "{caption1}");
+    let report_content = qa_docs[1]["form"]["document"]["content"].as_str().expect("report content");
+    assert!(report_content.contains("Đã sửa app thành công."));
+
+    // 3. Sau đó có 1 sendMessage (msg đã nhận là QA đạt)
+    let send_messages = tg.calls("sendMessage");
+    assert!(send_messages.len() >= 2, "{send_messages:#?}");
+    let doc_mid = qa_docs[0]["response"]["result"]["message_id"]
+        .as_i64()
+        .expect("summary document message_id");
+    assert_eq!(
+        msg["json"]["reply_parameters"]["message_id"].as_i64(),
+        Some(doc_mid),
+        "{msg}"
+    );
+
+    assert_plain_and_paired(&tg);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
 #[test]
 fn run_failed_notifies() {
     let sb = Sandbox::new();

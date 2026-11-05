@@ -270,6 +270,8 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
     let mut db_failures: u32 = 0;
     let mut doc_done = false;
     let mut doc_message: Option<i64> = None;
+    let mut report_docs: Option<Vec<(String, Vec<u8>)>> = None;
+    let mut report_idx: usize = 0;
 
     loop {
         if ctx.stop.load(Ordering::SeqCst) {
@@ -347,12 +349,66 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
                         }
                         None => {
                             crate::term::emit(&format!(
-                                "Telegram: không gửi được file plan cho task {task_id} — {}",
+                                "Telegram: không gửi được file {label} cho task {task_id} — {}",
                                 e.text()
                             ));
                             doc_done = true;
                             failures = 0;
                             continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        if ev.kind == EventKind::QaPass && doc_done {
+            if report_docs.is_none() {
+                report_docs = Some(super::summary::report_documents(&s));
+            }
+            if let Some(docs) = &report_docs {
+                if report_idx < docs.len() {
+                    let (filename, bytes) = &docs[report_idx];
+                    let caption = render::clip(
+                        &format!("Báo cáo task {task_id}: {filename}"),
+                        CAPTION_MAX,
+                    );
+                    let body = Body::Upload {
+                        fields: vec![
+                            ("chat_id".to_string(), chat_id.to_string()),
+                            ("caption".to_string(), caption),
+                        ],
+                        file_field: "document".to_string(),
+                        filename: filename.clone(),
+                        content: String::from_utf8_lossy(bytes).into_owned(),
+                    };
+                    match ctx.tx.call("sendDocument", &body, DOCUMENT_MAX_SECS) {
+                        Ok(_v) => {
+                            report_idx += 1;
+                            failures = 0;
+                            // Re-check the task before next doc or text attempt (D-05).
+                            continue;
+                        }
+                        Err(CallError::Stopped) => return Step::Stopped,
+                        Err(e) => {
+                            failures = failures.saturating_add(1);
+                            match e.retry_delay_ms(failures, base_ms) {
+                                Some(ms) => {
+                                    ctx.health.failed(Channel::Send, &e.text());
+                                    if sleep_or_stop(&ctx.stop, ms) {
+                                        return Step::Stopped;
+                                    }
+                                    continue;
+                                }
+                                None => {
+                                    crate::term::emit(&format!(
+                                        "Telegram: không gửi được file báo cáo {filename} cho task {task_id} — {}",
+                                        e.text()
+                                    ));
+                                    report_idx += 1;
+                                    failures = 0;
+                                    continue;
+                                }
+                            }
                         }
                     }
                 }

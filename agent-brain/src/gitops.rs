@@ -181,6 +181,38 @@ pub fn git(root: &Path, args: &[&str]) -> BrainResult<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+pub fn git_bytes(root: &Path, args: &[&str]) -> BrainResult<Vec<u8>> {
+    let mut cmd = git_cmd(root);
+    cmd.args(args);
+
+    let output = cmd
+        .output()
+        .map_err(|e| BrainError::error(format!("Lỗi chạy git: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let msg = if !stderr.is_empty() {
+            stderr
+        } else {
+            let code_str = output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string());
+            format!(
+                "Lệnh git thất bại (exit {code_str}): git {}",
+                args.join(" ")
+            )
+        };
+        return Err(BrainError::error(msg));
+    }
+    Ok(output.stdout)
+}
+
+pub fn show_file_bytes(root: &Path, rev: &str, path: &str) -> BrainResult<Vec<u8>> {
+    let spec = format!("{rev}:{path}");
+    git_bytes(root, &["show", &spec])
+}
+
 pub fn is_repo_root(path: &Path) -> bool {
     let p = match std::fs::canonicalize(path) {
         Ok(p) => p,
