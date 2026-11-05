@@ -406,7 +406,7 @@ pub fn find_commit_by_subject(root: &Path, subject: &str) -> BrainResult<Option<
 
 pub fn commit_subjects(root: &Path, a: &str, b: &str) -> BrainResult<Vec<(String, String)>> {
     let range = format!("{a}..{b}");
-    let out = git(root, &["log", "--reverse", "--format=%H %s", &range])?;
+    let out = git(root, &["log", "--reverse", "--first-parent", "--format=%H %s", &range])?;
     let mut res = Vec::new();
     for line in out.lines() {
         let trimmed = line.trim();
@@ -419,6 +419,60 @@ pub fn commit_subjects(root: &Path, a: &str, b: &str) -> BrainResult<Vec<(String
         res.push((sha.to_string(), subj.to_string()));
     }
     Ok(res)
+}
+
+/// Computes the set of files modified by Dev on the task branch across regular commits and merge
+/// conflict resolutions / manual edits, excluding files brought in from merged branches without conflict.
+pub fn dev_changed_names(root: &Path, base: &str) -> BrainResult<BTreeSet<String>> {
+    let range = format!("{base}..HEAD");
+    let mut changed = BTreeSet::new();
+
+    // 1. Files in regular commits of the task branch (first-parent, no-merges)
+    let log_out = git(
+        root,
+        &[
+            "log",
+            "--first-parent",
+            "--no-merges",
+            "--format=",
+            "--name-only",
+            &range,
+        ],
+    )?;
+    for line in log_out.lines() {
+        let p = line.trim();
+        if !p.is_empty() {
+            changed.insert(p.to_string());
+        }
+    }
+
+    // 2. Files in merge commits on first-parent that differ from all parents
+    let merges_out = git(root, &["rev-list", "--first-parent", "--merges", &range])?;
+    for merge_sha in merges_out.lines() {
+        let sha = merge_sha.trim();
+        if sha.is_empty() {
+            continue;
+        }
+        let diff_out = git(
+            root,
+            &[
+                "diff-tree",
+                "-r",
+                "--cc",
+                "--name-only",
+                "--no-commit-id",
+                sha,
+            ],
+        )?;
+        for line in diff_out.lines() {
+            let p = line.trim();
+            if !p.is_empty() {
+                changed.insert(p.to_string());
+            }
+        }
+    }
+
+    Ok(changed)
 }
 
 #[cfg(test)]
@@ -782,5 +836,110 @@ mod tests {
         std::fs::create_dir_all(&rb).unwrap();
         assert_ne!(shadow_dir(&ra), shadow_dir(&rb));
         assert_eq!(shadow_dir(&ra), shadow_dir(&ra));
+    }
+
+    #[test]
+    fn test_dev_changed_names() {
+        let r = repo();
+        let root = r.path();
+
+        // Base commit on main
+        let base_sha = commit(root, &[("init.txt", "v1")], "init");
+
+        // 1. Chỉ có commit thường: bằng diff_names
+        commit(root, &[("a.txt", "a1")], "commit a");
+        let diff1 = diff_names(root, &base_sha, "HEAD").unwrap();
+        let dev1 = dev_changed_names(root, &base_sha).unwrap();
+        assert_eq!(dev1, diff1);
+        assert_eq!(dev1, ["a.txt".to_string()].into_iter().collect());
+
+        // 2. Nhánh task có commit sửa a.txt, rồi merge --no-ff một nhánh khác sửa b.txt, không xung đột: kết quả chỉ có a.txt
+        let r2 = repo();
+        let root2 = r2.path();
+        let base2 = commit(root2, &[("init.txt", "v1")], "init");
+
+        let run_cmd = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root2)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        run_cmd(&["checkout", "-b", "other"]);
+        commit(root2, &[("b.txt", "b1")], "other commit b");
+
+        run_cmd(&["checkout", "-b", "task", &base2]);
+        commit(root2, &[("a.txt", "a1")], "task commit a");
+
+        let merge_status = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "merge",
+                "--no-ff",
+                "-m",
+                "merge other",
+                "other",
+            ])
+            .current_dir(root2)
+            .status()
+            .unwrap();
+        assert!(merge_status.success());
+
+        let dev2 = dev_changed_names(root2, &base2).unwrap();
+        assert_eq!(dev2, ["a.txt".to_string()].into_iter().collect());
+
+        // 3. Merge có xung đột trên c.txt, giải tay rồi commit: kết quả có c.txt
+        let r3 = repo();
+        let root3 = r3.path();
+        let base3 = commit(root3, &[("c.txt", "base")], "init");
+
+        let run_cmd3 = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root3)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        run_cmd3(&["checkout", "-b", "other3"]);
+        commit(root3, &[("c.txt", "other branch modification")], "other c");
+
+        run_cmd3(&["checkout", "-b", "task3", &base3]);
+        commit(root3, &[("c.txt", "task branch modification")], "task c");
+
+        // Try merge other3 (will conflict)
+        let _ = std::process::Command::new("git")
+            .args(["merge", "--no-ff", "other3"])
+            .current_dir(root3)
+            .status();
+
+        // Resolve manually
+        std::fs::write(root3.join("c.txt"), "resolved content").unwrap();
+        run_cmd3(&["add", "c.txt"]);
+        let commit_res = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "resolved conflict",
+            ])
+            .current_dir(root3)
+            .status()
+            .unwrap();
+        assert!(commit_res.success());
+
+        let dev3 = dev_changed_names(root3, &base3).unwrap();
+        assert!(dev3.contains("c.txt"));
     }
 }

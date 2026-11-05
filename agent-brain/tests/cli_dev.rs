@@ -1122,3 +1122,82 @@ fn dev_with_git_show_grant_without_skills() {
         rec["blocked"]
     );
 }
+
+#[test]
+fn dev_ending_on_wrong_branch_is_protocol_violation() {
+    let sb = Sandbox::new();
+    let sections = "\n## Lệnh được chạy\n- `git checkout *`\n";
+    let (_repo, _task, _pc) = setup_grants_task(&sb, Some(sections));
+    let dev_scenario = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+            {"op": "git", "args": ["checkout", "-b", "feature/other"]}
+        ]
+    });
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(dev_scenario));
+    assert_ne!(out.code, 0);
+    assert!(out.stdout.contains("Dev kết thúc ở nhánh"));
+    assert!(out.stdout.contains("không phải nhánh task"));
+
+    let conn = sb.db();
+    let outcome: String = conn
+        .query_row(
+            "SELECT outcome FROM runs WHERE role = 'dev' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(outcome, "protocol_violation");
+}
+
+#[test]
+fn dev_merge_branch_with_files_outside_plan_is_not_violation() {
+    let sb = Sandbox::new();
+    let sections = "\n## Lệnh được chạy\n- `git merge *`\n";
+    let (repo, task, plan_commit) = setup_grants_task(&sb, Some(sections));
+
+    // Configure git user so merge commits succeed
+    sb.git(&repo, &["config", "user.name", "Test"]);
+    sb.git(&repo, &["config", "user.email", "test@example.com"]);
+    sb.git(&repo, &["config", "commit.gpgsign", "false"]);
+
+    // Create another branch with an outside file
+    sb.git(&repo, &["checkout", "-b", "other-branch", &plan_commit]);
+    std::fs::write(repo.join("outside.txt"), "external\n").unwrap();
+    sb.git(&repo, &["add", "outside.txt"]);
+    sb.git(&repo, &["commit", "-m", "other: add outside.txt"]);
+
+    // Checkout task branch back
+    let task_branch = format!("task/{task}");
+    sb.git(&repo, &["checkout", &task_branch]);
+
+    let dev_scenario = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "read", "path": "src/app.py"},
+            {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+            {"op": "git", "args": ["add", "src/app.py"]},
+            {"op": "git", "args": ["commit", "-m", format!("{task}: sửa app")]},
+            {"op": "git", "args": ["merge", "--no-ff", "-m", format!("{task}: merge other"), "other-branch"]}
+        ]
+    });
+
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(dev_scenario));
+    assert_eq!(
+        out.code, 0,
+        "dev failed: stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+
+    let conn = sb.db();
+    let outcome: Option<String> = conn
+        .query_row(
+            "SELECT outcome FROM runs WHERE role = 'dev' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(outcome.as_deref(), Some("protocol_violation"));
+    assert!(!out.stdout.contains("vi phạm giao thức"));
+}
