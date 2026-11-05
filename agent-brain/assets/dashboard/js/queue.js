@@ -28,10 +28,19 @@
       actionBusy: {},
       cardErrors: {},
 
+      // 3D Office state
+      showOffice: true,
+      hasWebGL: true,
+      officeInstance: null,
+      selectedItem: null,
+      selectedItemType: null,
+      selectedTaskId: null,
+
       nowSec: Math.floor(Date.now() / 1000),
 
       init: function () {
         var self = this;
+        this.loadSavedSettings();
         this.loadAll();
         this.loadProjects();
 
@@ -51,8 +60,21 @@
           self.loadTasks();
         };
         window.addEventListener('ab:profile', profileHandler);
+
+        // Preload office-rooms and initialize 3D office
+        if (typeof import === 'function' || true) {
+          import('/js/office-rooms.js').catch(function () {});
+        }
+        setTimeout(function () {
+          self.initOffice();
+        }, 80);
+
         window.AB.onLeave(function () {
           window.removeEventListener('ab:profile', profileHandler);
+          if (self.officeInstance) {
+            self.officeInstance.dispose();
+            self.officeInstance = null;
+          }
         });
       },
 
@@ -68,7 +90,9 @@
 
       loadAll: function () {
         var self = this;
-        return Promise.all([this.loadBoard(), this.loadTasks()]);
+        return Promise.all([this.loadBoard(), this.loadTasks()]).then(function () {
+          self.updateOffice();
+        });
       },
 
       loadBoard: function () {
@@ -401,6 +425,270 @@
 
       get availableWorkflows() {
         return (this.board && this.board.workflows) || ['mac-dinh', 'nhanh'];
+      },
+
+      // 3D Office methods
+      loadSavedSettings: function () {
+        try {
+          var val = localStorage.getItem('ab.queue.showOffice');
+          this.showOffice = (val !== 'false');
+        } catch (e) {
+          this.showOffice = true;
+        }
+      },
+
+      toggleOffice: function () {
+        var self = this;
+        this.showOffice = !this.showOffice;
+        try {
+          localStorage.setItem('ab.queue.showOffice', this.showOffice ? 'true' : 'false');
+        } catch (e) {}
+
+        if (this.showOffice) {
+          setTimeout(function () {
+            self.initOffice();
+          }, 50);
+        } else {
+          if (this.officeInstance) {
+            this.officeInstance.dispose();
+            this.officeInstance = null;
+          }
+        }
+      },
+
+      initOffice: function () {
+        var self = this;
+        if (!this.showOffice) return;
+
+        var container = document.getElementById('office3d-canvas-container');
+        if (!container) return;
+
+        var testCanvas = document.createElement('canvas');
+        var gl = testCanvas.getContext('webgl2') || testCanvas.getContext('webgl');
+        if (!gl) {
+          self.hasWebGL = false;
+          return;
+        }
+        self.hasWebGL = true;
+
+        if (self.officeInstance) {
+          self.updateOffice();
+          return;
+        }
+
+        import('/js/office3d.js')
+          .then(function (mod) {
+            if (!self.showOffice) return;
+            var c = document.getElementById('office3d-canvas-container');
+            if (!c) return;
+
+            self.officeInstance = mod.createOffice(c, {
+              onSelect: function (item, type) {
+                self.selectedItem = item;
+                self.selectedItemType = type;
+                self.selectedTaskId = item ? item.id : null;
+              },
+            });
+            self.updateOffice();
+          })
+          .catch(function (err) {
+            console.warn('Không thể khởi tạo văn phòng 3D:', err);
+          });
+      },
+
+      updateOffice: function () {
+        if (this.officeInstance && this.showOffice) {
+          this.officeInstance.update({
+            board: this.board,
+            tasks: this.tasks,
+            projects: this.projects,
+          });
+        }
+      },
+
+      focusOfficeTask: function (id) {
+        this.focusTask(id);
+      },
+
+      focusTask: function (id) {
+        this.selectedTaskId = id;
+        if (this.officeInstance) {
+          this.officeInstance.focusTask(id);
+        }
+      },
+
+      focusRoom: function (roomId) {
+        if (this.officeInstance) {
+          this.officeInstance.focusTask(roomId);
+        }
+      },
+
+      resetOfficeCamera: function () {
+        if (this.officeInstance) {
+          this.officeInstance.focusTask(0);
+        }
+        this.closeDetailCard();
+      },
+
+      closeDetailCard: function () {
+        this.selectedItem = null;
+        this.selectedItemType = null;
+        this.selectedTaskId = null;
+        if (this.officeInstance && this.officeInstance.selectCharacter) {
+          this.officeInstance.selectCharacter(null);
+        }
+      },
+
+      openEditFromDetail: function (p) {
+        this.openEdit(p.id, p);
+      },
+
+      openRejectFromDetail: function (p) {
+        this.openReject(p.id);
+      },
+
+      get totalOfficeCount() {
+        var count = 0;
+        var rList = this.officeRoomList;
+        for (var i = 0; i < rList.length; i++) {
+          count += rList[i].items.length;
+        }
+        return count;
+      },
+
+      get officeRoomList() {
+        var helper = window.ABOfficeRooms;
+        if (!helper) return [];
+        var rooms = helper.ROOMS || [];
+        var board = this.board || {};
+        var tasks = this.tasks || [];
+        var projects = this.projects || [];
+
+        var roomItemsMap = {};
+        for (var i = 0; i < rooms.length; i++) {
+          roomItemsMap[rooms[i].id] = [];
+        }
+
+        for (var t = 0; t < tasks.length; t++) {
+          var task = tasks[t];
+          var placed = helper.placeTask(task, board, projects);
+          var rid = placed.room || 'dieu_phoi';
+          if (roomItemsMap[rid]) {
+            roomItemsMap[rid].push({
+              id: task.id,
+              type: 'task',
+              title: task.title,
+              project: task.project_name || task.project,
+              step: task.current_step,
+              item: task,
+            });
+          }
+        }
+
+        if (board.proposals && Array.isArray(board.proposals)) {
+          for (var p = 0; p < board.proposals.length; p++) {
+            var prop = board.proposals[p];
+            if (prop.status === 'rejected') continue;
+            var placedProp = helper.placeProposal(prop);
+            var prid = placedProp.room;
+            if (roomItemsMap[prid]) {
+              roomItemsMap[prid].push({
+                id: prop.id,
+                type: 'proposal',
+                title: prop.title,
+                project: prop.project_name || prop.project,
+                item: prop,
+              });
+            }
+          }
+        }
+
+        if (board.intake && Array.isArray(board.intake)) {
+          for (var k = 0; k < board.intake.length; k++) {
+            var it = board.intake[k];
+            if (it.status === 'cancelled' || it.status === 'converted') continue;
+            var placedIt = helper.placeIntake(it);
+            var itid = placedIt.room;
+            if (roomItemsMap[itid]) {
+              roomItemsMap[itid].push({
+                id: it.id,
+                type: 'intake',
+                title: it.request || 'Intake #' + it.id,
+                project: it.project_name || it.project,
+                item: it,
+              });
+            }
+          }
+        }
+
+        return rooms.map(function (r) {
+          return {
+            id: r.id,
+            name: r.name,
+            color: r.color,
+            items: roomItemsMap[r.id] || [],
+          };
+        });
+      },
+
+      get selectedItemTitle() {
+        if (!this.selectedItem) return '';
+        return this.selectedItem.title || this.selectedItem.request || this.selectedItem.slug || 'Chi tiết';
+      },
+
+      get selectedItemProject() {
+        if (!this.selectedItem) return '—';
+        return this.selectedItem.project_name || this.selectedItem.project || 'Chung';
+      },
+
+      get selectedItemStep() {
+        if (!this.selectedItem) return '';
+        return this.selectedItem.current_step || '';
+      },
+
+      get selectedItemRoomName() {
+        if (!this.selectedItem) return '';
+        var helper = window.ABOfficeRooms;
+        if (!helper) return '';
+        var placed;
+        if (this.selectedItemType === 'proposal') {
+          placed = helper.placeProposal(this.selectedItem);
+        } else if (this.selectedItemType === 'intake') {
+          placed = helper.placeIntake(this.selectedItem);
+        } else {
+          placed = helper.placeTask(this.selectedItem, this.board, this.projects);
+        }
+        var room = helper.ROOMS_BY_ID && helper.ROOMS_BY_ID[placed.room];
+        return room ? room.name : '';
+      },
+
+      get selectedItemReason() {
+        if (!this.selectedItem) return '';
+        return this.selectedItem.quota_detail || this.selectedItem.stop_reason || '';
+      },
+
+      get selectedItemBadgeClass() {
+        if (!this.selectedItem) return '';
+        if (this.selectedItemType === 'proposal') {
+          return this.selectedItem.priority === 'urgent'
+            ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200'
+            : 'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-200';
+        }
+        if (this.selectedItemType === 'intake') {
+          return 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200';
+        }
+        return 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200';
+      },
+
+      get selectedItemBadgeText() {
+        if (!this.selectedItem) return '';
+        if (this.selectedItemType === 'proposal') {
+          return 'Đề xuất' + (this.selectedItem.priority === 'urgent' ? ' · Gấp' : '');
+        }
+        if (this.selectedItemType === 'intake') {
+          return 'Hàng chờ';
+        }
+        return 'Task #' + this.selectedItem.id;
       },
 
       // Column 1: Hàng chờ

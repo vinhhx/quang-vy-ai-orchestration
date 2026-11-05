@@ -1003,6 +1003,7 @@ async fn list_tasks(
                 "status": task.status,
                 "banner": view.banner,
                 "group": view.group,
+                "workflow": workflow.as_ref().map(|w| w.name.as_str()),
                 "current_step": view.current_step,
                 "steps": view.steps,
                 "auto_state": view.auto.state,

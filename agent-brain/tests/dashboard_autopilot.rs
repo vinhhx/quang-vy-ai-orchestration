@@ -636,6 +636,34 @@ fn list_tasks_auto_fields() {
     );
     assert_eq!(item["banner"], "Chờ bạn · hết vòng");
     assert_eq!(item["group"], "waiting");
+    assert!(item.get("workflow").is_some());
+    assert_eq!(item["workflow"], "nhanh");
+
+    let wf = agent_brain::workflows::Workflow {
+        name: "generate-video".to_string(),
+        stages: vec!["plan".to_string()],
+        loops: vec![],
+        max_rounds: 3,
+        budget_minutes: 60,
+        budget_usd: 0.0,
+        auto: true,
+        source: "test".to_string(),
+    };
+    sb.db()
+        .execute(
+            "UPDATE tasks SET workflow_json = ?1 WHERE id = 1",
+            [wf.to_snapshot()],
+        )
+        .unwrap();
+    let list2 = srv.get("/api/tasks").json();
+    let item2 = list2["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == 1)
+        .unwrap()
+        .clone();
+    assert_eq!(item2["workflow"], "generate-video");
 }
 
 // ---------------------------------------------------------------------------
