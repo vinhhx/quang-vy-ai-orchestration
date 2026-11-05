@@ -904,6 +904,20 @@ pub fn plan_files(plan: &Plan) -> Vec<String> {
     result
 }
 
+pub fn blocker_text(plan_text: &str) -> Option<String> {
+    static COMMENT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = COMMENT_RE.get_or_init(|| regex::Regex::new(r"(?s)<!--.*?-->").unwrap());
+    let plan = parse_plan(plan_text);
+    let body = plan.sections.get("Vướng mắc")?;
+    let no_comments = re.replace_all(body, "");
+    let trimmed = no_comments.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 pub fn has_blockers(plan: &Plan) -> bool {
     static COMMENT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = COMMENT_RE.get_or_init(|| regex::Regex::new(r"(?s)<!--.*?-->").unwrap());
@@ -1342,5 +1356,24 @@ mod tests {
         );
         let errs = validate_plan(&p, None);
         assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    #[test]
+    fn test_blocker_text_cases() {
+        // 1. Mục rỗng (chỉ có khoảng trắng hoặc comment)
+        let empty_plan = "# Plan: t\n## Vướng mắc\n<!-- comment -->\n  \n";
+        assert_eq!(blocker_text(empty_plan), None);
+
+        // 2. Có nội dung
+        let with_content = "# Plan: t\n## Vướng mắc\nCần đọc thêm git show.\n## Cách kiểm tra\n-";
+        assert_eq!(blocker_text(with_content), Some("Cần đọc thêm git show.".to_string()));
+
+        // 3. Không có mục Vướng mắc
+        let no_section = "# Plan: t\n## Mục tiêu\nx\n## Thay đổi\n";
+        assert_eq!(blocker_text(no_section), None);
+
+        // 4. Mục nằm cuối file
+        let at_end = "# Plan: t\n## Mục tiêu\nx\n## Vướng mắc\nThiếu quyền git log *\n";
+        assert_eq!(blocker_text(at_end), Some("Thiếu quyền git log *".to_string()));
     }
 }

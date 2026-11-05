@@ -205,7 +205,16 @@ pub fn cmd_lead(
     }
 
     let plan_path = proj_path.join(".plan.md");
-    let keep_plan = is_replan && (opts.review || note.is_some()) && plan_path.is_file();
+    let existing_blocker = if is_replan && plan_path.is_file() {
+        std::fs::read_to_string(&plan_path)
+            .ok()
+            .and_then(|t| crate::planfile::blocker_text(&t))
+    } else {
+        None
+    };
+    let has_blockers = existing_blocker.is_some();
+    let keep_plan =
+        is_replan && (opts.review || note.is_some() || has_blockers) && plan_path.is_file();
 
     let mut user_input = if keep_plan {
         let mut s = format!(
@@ -214,6 +223,9 @@ pub fn cmd_lead(
         );
         if opts.review {
             s.push_str("\nBáo cáo review plan: .plan-review.md (verdict revise). Sửa .plan.md để xử lý mọi mục chặn trong báo cáo.");
+        }
+        if has_blockers {
+            s.push_str("\nPlan có mục Vướng mắc do Dev ghi ở lần chạy trước: giải quyết từng điểm trong plan (bổ sung thông tin, file hoặc khai Thư mục được đọc / Lệnh được chạy), rồi xoá nội dung mục Vướng mắc, chỉ giữ tiêu đề.");
         }
         if let Some(n) = note {
             s.push_str(&format!("\nGhi chú của người dùng: {n}"));

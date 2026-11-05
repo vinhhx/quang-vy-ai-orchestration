@@ -526,9 +526,18 @@ fn lead_has_no_skill_block_without_skills() {
         "stderr: {}\nstdout: {}",
         out.stderr, out.stdout
     );
-    let text = argv_text(sb.records().last().unwrap());
+    let records = sb.records();
+    let rec = records.last().unwrap();
+    let text = argv_text(rec);
     assert!(!text.contains("Skill có sẵn trong dự án"));
-    assert!(!text.contains("Lệnh được chạy"));
+    let p_idx = rec["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|x| x == "-p")
+        .unwrap();
+    let p_msg = rec["argv"][p_idx + 1].as_str().unwrap();
+    assert!(!p_msg.contains("Lệnh được chạy"));
 }
 
 #[test]
@@ -564,4 +573,112 @@ fn lead_plan_with_forbidden_grants_is_rejected_by_validation() {
     // nothing committed as a plan
     let subject = sb.git(&repo, &["log", "-1", "--format=%s"]);
     assert_eq!(subject.trim(), "init");
+}
+
+#[test]
+fn lead_replan_with_blocker_keeps_existing_plan_and_prompts_lead() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+
+    // 1. First lead run creates task branch and initial plan
+    let sc1 = lead_scenario(&[("src/app.py", "1", "sửa lần 1", "lý do 1")]);
+    let out1 = sb.run(&["run", "lead", "web bán hàng", "thêm nút"], Some(sc1));
+    assert_eq!(
+        out1.code, 0,
+        "out1 stderr: {}\nstdout: {}",
+        out1.stderr, out1.stdout
+    );
+
+    // 2. Dev encountered a blocker and recorded it in .plan.md
+    let plan_path = repo.join(".plan.md");
+    let plan1 = std::fs::read_to_string(&plan_path).unwrap();
+    let blocker_msg = "Cần đọc thêm git show qua commit d60fe0bea";
+    let plan_with_blocker = if plan1.contains("<!-- Dev ghi vướng mắc vào đây nếu gặp khó khăn trong quá trình thực thi -->") {
+        plan1.replace(
+            "<!-- Dev ghi vướng mắc vào đây nếu gặp khó khăn trong quá trình thực thi -->",
+            blocker_msg,
+        )
+    } else {
+        plan1.replace("## Vướng mắc", &format!("## Vướng mắc\n{blocker_msg}"))
+    };
+    std::fs::write(&plan_path, &plan_with_blocker).unwrap();
+
+    // 3. Second lead run on the same branch without --note or --review (replan)
+    let sc2 = serde_json::json!({
+        "ops": [
+            {
+                "op": "write",
+                "path": ".plan.md",
+                "content": "\n<!-- lead replanned -->\n",
+                "append": true
+            }
+        ]
+    });
+    let out2 = sb.run(&["run", "lead", "web bán hàng", "thêm nút"], Some(sc2));
+    assert_eq!(
+        out2.code, 0,
+        "out2 stderr: {}\nstdout: {}",
+        out2.stderr, out2.stdout
+    );
+
+    // Engine was prompted with the blocker instruction and keep_plan prompt
+    let text = argv_text(sb.records().last().unwrap());
+    assert!(
+        text.contains("Plan có mục Vướng mắc do Dev ghi ở lần chạy trước: giải quyết từng điểm trong plan (bổ sung thông tin, file hoặc khai Thư mục được đọc / Lệnh được chạy), rồi xoá nội dung mục Vướng mắc, chỉ giữ tiêu đề."),
+        "missing blocker instruction in prompt: {text}"
+    );
+    assert!(
+        text.contains("File .plan.md ở gốc dự án là bản plan hiện tại; sửa trực tiếp trên bản này"),
+        "expected keep_plan prompt: {text}"
+    );
+
+    // .plan.md at engine start retained existing plan content (not overwritten with skeleton)
+    let final_plan = std::fs::read_to_string(&plan_path).unwrap();
+    assert!(
+        final_plan.contains(blocker_msg),
+        "blocker was wiped before engine started: {final_plan}"
+    );
+    assert!(
+        final_plan.contains("sửa lần 1"),
+        "original plan content was wiped before engine started: {final_plan}"
+    );
+}
+
+#[test]
+fn lead_replan_without_blocker_resets_to_skeleton() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+
+    // 1. First lead run
+    let sc1 = lead_scenario(&[("src/app.py", "1", "sửa lần 1", "lý do 1")]);
+    let out1 = sb.run(&["run", "lead", "web bán hàng", "thêm nút"], Some(sc1));
+    assert_eq!(
+        out1.code, 0,
+        "out1 stderr: {}\nstdout: {}",
+        out1.stderr, out1.stdout
+    );
+
+    let plan_path = repo.join(".plan.md");
+    let plan1 = std::fs::read_to_string(&plan_path).unwrap();
+    assert_eq!(agent_brain::planfile::blocker_text(&plan1), None);
+
+    // 2. Second lead run on the same branch without --note, --review, or blockers
+    let sc2 = lead_scenario(&[("src/app.py", "2", "sửa lần 2", "lý do 2")]);
+    let out2 = sb.run(&["run", "lead", "web bán hàng", "thêm nút"], Some(sc2));
+    assert_eq!(
+        out2.code, 0,
+        "out2 stderr: {}\nstdout: {}",
+        out2.stderr, out2.stdout
+    );
+
+    // Engine prompt does NOT have blocker instruction, and instructs to use skeleton
+    let text = argv_text(sb.records().last().unwrap());
+    assert!(
+        !text.contains("Plan có mục Vướng mắc do Dev ghi ở lần chạy trước"),
+        "prompt should not contain blocker instruction: {text}"
+    );
+    assert!(
+        text.contains("File .plan.md ở gốc dự án đã có sẵn khung (skeleton)"),
+        "expected skeleton prompt: {text}"
+    );
 }

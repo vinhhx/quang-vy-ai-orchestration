@@ -1062,3 +1062,63 @@ fn dev_file_entry_grant_reads_that_file_only() {
         "{log}"
     );
 }
+
+#[test]
+fn dev_with_git_show_grant_without_skills() {
+    let sb = Sandbox::new();
+    let repo = sb.make_repo(
+        "web-ban-hang",
+        &[("src/app.py", "def app():\n    return 1\n")],
+        None,
+        None,
+    );
+    let mut entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    entry["name_vi"] = serde_json::json!("Web bán hàng");
+    entry["aliases"] = serde_json::json!(["shop"]);
+    sb.write_map(serde_json::json!([entry]), &[]);
+    let mut p_text = plan_text(
+        "Kế hoạch",
+        &[("src/app.py", "app()", "trả về 2", "yêu cầu")],
+        "python3 -m unittest",
+        "",
+    );
+    p_text.push_str("## Lệnh được chạy\n- `git show *`\n");
+    let scenario = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "write", "path": ".plan.md", "content": p_text, "keep_meta": true}
+        ]
+    });
+    let out = sb.run(&["run", "lead", "web-ban-hang", "sửa app"], Some(scenario));
+    assert_eq!(out.code, 0, "lead failed: {}\n{}", out.stderr, out.stdout);
+
+    let dev_scenario = serde_json::json!({ "ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "git", "args": ["show", "HEAD:src/app.py"]},
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"}
+    ]});
+    let out_dev = sb.run(&["run", "dev", "web-ban-hang"], Some(dev_scenario));
+    assert_eq!(
+        out_dev.code, 0,
+        "dev failed: {}\n{}",
+        out_dev.stderr, out_dev.stdout
+    );
+    let argv = last_argv(&sb);
+    assert!(argv
+        .iter()
+        .any(|a| a.contains("Ngoại lệ cho quy tắc chỉ đọc file trong bảng Thay đổi: được đọc các file trong Thư mục được đọc và nội dung lấy qua các lệnh đã khai (ví dụ git show), chỉ để làm đúng việc trong plan.")));
+    assert!(argv.contains(&"Bash(git show *)".to_string()));
+    let settings_idx = argv.iter().position(|x| x == "--settings").unwrap();
+    let settings = PathBuf::from(&argv[settings_idx + 1]);
+    let run_dir = settings.parent().unwrap();
+    let policy: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("policy.json")).unwrap())
+            .unwrap();
+    assert_eq!(policy["bash_allow"][0], "git show *");
+    let rec = sb.records().pop().unwrap();
+    assert!(
+        rec["blocked"].as_array().unwrap().is_empty(),
+        "unexpected blocked calls: {:?}",
+        rec["blocked"]
+    );
+}
