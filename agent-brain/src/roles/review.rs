@@ -5,15 +5,8 @@ use crate::roles::RunOpts;
 use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
-pub const REVIEW_ALLOWED_BASE: [&str; 7] = [
-    "Read",
-    "Grep",
-    "Glob",
-    "Bash(git diff *)",
-    "Bash(git log *)",
-    "Bash(git show *)",
-    "Bash(git status *)",
-];
+pub const REVIEW_ALLOWED_BASE: &[&str] =
+    crate::with_git_read_only_tools!("Read", "Grep", "Glob");
 
 pub const REVIEW_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
 

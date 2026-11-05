@@ -1,17 +1,15 @@
 use crate::app::Ctx;
 use crate::error::{BrainError, BrainResult};
 
-pub const LEAD_ALLOWED_TOOLS: [&str; 9] = [
+pub const LEAD_ALLOWED_TOOLS: &[&str] = crate::with_git_read_only_tools!(
     "Read",
     "Grep",
     "Glob",
     "Write(./.plan.md)",
     "Edit(./.plan.md)",
-    "Bash(git log *)",
-    "Bash(git show *)",
-    "Bash(git diff *)",
-    "Bash(git status *)",
-];
+    "Bash(git fetch *)",
+    "Bash(git fetch)",
+);
 
 pub const LEAD_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
 pub const MAX_NOTE_CHARS: usize = 500;

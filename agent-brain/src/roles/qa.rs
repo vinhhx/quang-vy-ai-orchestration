@@ -1,17 +1,13 @@
 use crate::app::Ctx;
 use crate::error::{BrainError, BrainResult};
 
-pub const QA_ALLOWED_TOOLS: [&str; 9] = [
+pub const QA_ALLOWED_TOOLS: &[&str] = crate::with_git_read_only_tools!(
     "Read",
     "Grep",
     "Glob",
     "Write(./.qa-report.md)",
     "Edit(./.qa-report.md)",
-    "Bash(git diff *)",
-    "Bash(git log *)",
-    "Bash(git show *)",
-    "Bash(git status *)",
-];
+);
 
 pub const QA_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
 

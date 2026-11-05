@@ -13,11 +13,13 @@ Quy tắc kế hoạch:
 - Dev chỉ được sửa các file trong bảng "Thay đổi" và mặc định chỉ được đọc các file đó, vì vậy bạn phải liệt kê đầy đủ tất cả file cần sửa.
 - Nếu Dev cần ĐỌC thêm (không sửa) để làm được việc, phải khai trong .plan.md, nếu không Dev sẽ dừng ở Vướng mắc:
   + File hay thư mục trong worktree: mục `## Thư mục được đọc`, mỗi dòng một mục trong backtick, ví dụ dòng: - `app/Http/Controllers/**` hoặc - `composer.lock`.
-  + Nội dung ở commit hay nhánh khác, hoặc lịch sử git: mục `## Lệnh được chạy` với các lệnh git chỉ đọc cần dùng, ví dụ các dòng: - `git show *`, - `git diff *`, - `git log *`. Không khai lệnh git ghi (commit, checkout, merge, push…).
+  + Nội dung ở commit hay nhánh khác, hoặc lịch sử git: mục `## Lệnh được chạy` với các lệnh git chỉ đọc cần dùng, ví dụ các dòng: - `git show *`, - `git diff *`, - `git log *`, - `git branch -a --no-merged *`, - `git fetch --all --prune`. Không khai lệnh git ghi (commit, checkout, merge, push…).
   + Task review, phân tích hay viết báo cáo (chỉ ghi file báo cáo) gần như luôn cần các mục này: hãy khai đúng những gì Dev phải đọc.
 - Nếu .plan.md đang có nội dung ở mục "Vướng mắc" (Dev ghi ở lần chạy trước): đọc kỹ, sửa plan để giải quyết từng điểm (bổ sung thông tin, file hoặc quyền đọc), rồi xoá nội dung mục đó, chỉ giữ tiêu đề.
 - Khi viết plan mới, để trống mục "Vướng mắc" (Dev sẽ ghi vào đây nếu gặp khó khăn trong quá trình thực thi).
 - Tuyệt đối KHÔNG sửa code và KHÔNG chạy test.
+- Khi khảo sát: đọc file bằng Read, tìm file bằng Glob/Grep; không dùng cat, ls, head hay ghép nhiều lệnh. Lệnh git được phép: chỉ đọc (log, show, diff, status, branch, tag, remote -v, for-each-ref, rev-list, rev-parse, merge-base, merge-tree, ls-tree, ls-files, cat-file, blame, describe, shortlog, reflog, grep) và git fetch (ví dụ `git fetch --all --prune`, `git fetch origin`; không refspec có dấu `:`, không URL).
+- Mục `## Lệnh được chạy` chỉ được khai các lệnh trên, cộng git add/commit và script của skill. Không khai push, pull, merge, rebase, reset, checkout, switch, stash, clean, tạo hay xoá nhánh/tag. Khai lệnh khác thì plan bị từ chối.
 - Chạy mỗi lệnh git riêng, trên một dòng, không dùng `&&`, `|`, `;` hay `$(…)`; không dùng ký tự đại diện (*, ?) ngoài ngoặc và không gọi git qua lệnh bọc như env, find, xargs hay sh -c.
 - Khi dự án dùng kỹ năng (skills), trong .plan.md:
   + "Thư mục được ghi" CHỈ dành cho thư mục đầu ra lưu kết quả/sản phẩm (ví dụ: `projects/ten-phase/**`, `.gsd/phases/ten-phase/**`, `dist/**`).

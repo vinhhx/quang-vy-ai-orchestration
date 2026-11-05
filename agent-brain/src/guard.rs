@@ -487,12 +487,96 @@ pub fn bash_command_check(command: &str) -> Result<(), String> {
 /// The only git global option allowed before the subcommand, besides `-P`.
 const GIT_GLOBAL_LONG_ALLOWED: &str = "no-pager";
 
-/// The union of the git subcommands in the roles' allowedTools.
-const GIT_SUBCOMMANDS: [&str; 6] = ["diff", "log", "show", "status", "add", "commit"];
+/// Git subcommands permitted by the guard hook: read-only inspection, network fetch,
+/// and working-tree / index modifications when granted.
+pub const GIT_WRITE_SUBCOMMANDS: &[&str] = &["add", "commit"];
 
-/// Long options of diff / log / show that write a file, run an external
-/// program or read files outside the repository.
+pub const GIT_READ_SUBCOMMANDS: &[&str] = &[
+    "diff",
+    "log",
+    "show",
+    "status",
+    "branch",
+    "tag",
+    "remote",
+    "for-each-ref",
+    "show-ref",
+    "rev-list",
+    "rev-parse",
+    "merge-base",
+    "merge-tree",
+    "ls-tree",
+    "ls-files",
+    "cat-file",
+    "blame",
+    "describe",
+    "shortlog",
+    "name-rev",
+    "reflog",
+    "grep",
+    "whatchanged",
+    "range-diff",
+    "cherry",
+];
+
+#[macro_export]
+macro_rules! with_git_read_only_tools {
+    ($($extra:expr),* $(,)?) => {
+        &[
+            $($extra,)*
+            "Bash(git diff *)",
+            "Bash(git log *)",
+            "Bash(git show *)",
+            "Bash(git status *)",
+            "Bash(git branch *)",
+            "Bash(git branch)",
+            "Bash(git tag *)",
+            "Bash(git tag)",
+            "Bash(git remote *)",
+            "Bash(git remote)",
+            "Bash(git for-each-ref *)",
+            "Bash(git show-ref *)",
+            "Bash(git rev-list *)",
+            "Bash(git rev-parse *)",
+            "Bash(git merge-base *)",
+            "Bash(git merge-tree *)",
+            "Bash(git ls-tree *)",
+            "Bash(git ls-files *)",
+            "Bash(git cat-file *)",
+            "Bash(git blame *)",
+            "Bash(git describe *)",
+            "Bash(git shortlog *)",
+            "Bash(git name-rev *)",
+            "Bash(git reflog *)",
+            "Bash(git reflog)",
+            "Bash(git grep *)",
+            "Bash(git whatchanged *)",
+            "Bash(git range-diff *)",
+            "Bash(git cherry *)",
+        ]
+    };
+}
+
+pub const GIT_READ_ONLY_TOOLS: &[&str] = with_git_read_only_tools!();
+
+/// Long options of diff / show / whatchanged / range-diff that write a file,
+/// run an external program or read files outside the repository.
 const GIT_DIFF_FORBIDDEN: &[&str] = &["output", "ext-diff", "textconv", "no-index"];
+/// Long options for log / rev-list / shortlog, forbidding stdin hang in addition.
+const GIT_LOG_LIKE_FORBIDDEN: &[&str] = &["output", "ext-diff", "textconv", "no-index", "stdin"];
+/// Long options for grep, forbidding pager and reading pattern from file.
+const GIT_GREP_FORBIDDEN: &[&str] = &[
+    "output",
+    "ext-diff",
+    "textconv",
+    "no-index",
+    "open-files-in-pager",
+    "file",
+];
+/// Long options for blame, forbidding contents override.
+const GIT_BLAME_FORBIDDEN: &[&str] = &["output", "ext-diff", "textconv", "no-index", "contents"];
+/// Long options for cat-file, forbidding filters.
+const GIT_CAT_FILE_FORBIDDEN: &[&str] = &["output", "ext-diff", "textconv", "no-index", "filters"];
 /// Long options of commit that read the message from a file, open an
 /// editor or an interactive prompt (a run would hang until its timeout), or
 /// rewrite an existing commit (`--amend`, e.g. the approved plan commit).
@@ -542,6 +626,312 @@ fn plain_fixup_value(value: Option<&str>) -> bool {
     value.is_some_and(|v| !v.is_empty() && !v.contains(':'))
 }
 
+const GIT_FETCH_LONG_ALLOWED: &[&str] = &[
+    "all", "prune", "prune-tags", "tags", "no-tags", "quiet", "verbose", "dry-run",
+];
+
+fn git_fetch_err(detail: &str) -> String {
+    format!("git fetch chỉ được cập nhật nhánh theo dõi từ remote đã cấu hình (ví dụ: git fetch --all --prune, git fetch origin) — {detail}")
+}
+
+fn check_fetch(args: &[ShellWord]) -> Result<(), String> {
+    for word in args {
+        let w = word.text.as_str();
+        if w == "--" {
+            continue;
+        }
+        if let Some(long) = w.strip_prefix("--") {
+            let mut parts = long.splitn(2, '=');
+            let name = parts.next().unwrap_or("");
+            if !GIT_FETCH_LONG_ALLOWED.contains(&name) {
+                return Err(git_fetch_err(&format!("tùy chọn `{w}` không được phép")));
+            }
+            continue;
+        }
+        if let Some(cluster) = w.strip_prefix('-') {
+            if cluster.is_empty() {
+                continue;
+            }
+            for ch in cluster.chars() {
+                if !matches!(ch, 'p' | 'P' | 'q' | 'v' | 't') {
+                    return Err(git_fetch_err(&format!("tùy chọn `-{ch}` không được phép")));
+                }
+            }
+            continue;
+        }
+        // Positional argument
+        if w.is_empty() {
+            continue;
+        }
+        let valid_chars = w
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '/' || c == '-');
+        let bad_start = w.starts_with(['-', '/', '.']);
+        let bad_contains = w.contains("..") || w.contains(':') || w.contains('+');
+        if !valid_chars || bad_start || bad_contains {
+            return Err(git_fetch_err(&format!("đối số `{w}` không hợp lệ")));
+        }
+    }
+    Ok(())
+}
+
+const GIT_BRANCH_LONG_ALLOWED: &[&str] = &[
+    "all",
+    "remotes",
+    "verbose",
+    "list",
+    "merged",
+    "no-merged",
+    "contains",
+    "no-contains",
+    "points-at",
+    "sort",
+    "format",
+    "color",
+    "no-color",
+    "column",
+    "no-column",
+    "show-current",
+    "ignore-case",
+    "abbrev",
+    "no-abbrev",
+    "quiet",
+];
+
+fn check_branch(args: &[ShellWord]) -> Result<(), String> {
+    let mut has_list_flag = false;
+    let mut positional_count = 0;
+    let mut j = 0;
+    while j < args.len() {
+        let w = args[j].text.as_str();
+        j += 1;
+        if w == "--" {
+            while j < args.len() {
+                positional_count += 1;
+                j += 1;
+            }
+            break;
+        }
+        if let Some(long) = w.strip_prefix("--") {
+            let mut parts = long.splitn(2, '=');
+            let name = parts.next().unwrap_or("");
+            let inline_val = parts.next();
+            if !GIT_BRANCH_LONG_ALLOWED.contains(&name) {
+                return Err(format!(
+                    "tùy chọn của git branch `{w}` không được phép — chỉ cho phép liệt kê nhánh"
+                ));
+            }
+            if matches!(
+                name,
+                "list"
+                    | "all"
+                    | "remotes"
+                    | "merged"
+                    | "no-merged"
+                    | "contains"
+                    | "no-contains"
+                    | "points-at"
+            ) {
+                has_list_flag = true;
+            }
+            if inline_val.is_none()
+                && matches!(
+                    name,
+                    "sort"
+                        | "format"
+                        | "merged"
+                        | "no-merged"
+                        | "contains"
+                        | "no-contains"
+                        | "points-at"
+                        | "abbrev"
+                        | "column"
+                        | "color"
+                )
+            {
+                if let Some(next) = args.get(j) {
+                    if !next.text.starts_with('-') {
+                        j += 1;
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some(cluster) = w.strip_prefix('-') {
+            if cluster.is_empty() {
+                continue;
+            }
+            for ch in cluster.chars() {
+                if !matches!(ch, 'a' | 'r' | 'v' | 'l' | 'i' | 'q') {
+                    return Err(format!(
+                        "tùy chọn ngắn của git branch `-{ch}` không được phép — chỉ cho phép liệt kê nhánh"
+                    ));
+                }
+                if matches!(ch, 'a' | 'r' | 'l') {
+                    has_list_flag = true;
+                }
+            }
+            continue;
+        }
+        positional_count += 1;
+    }
+    if positional_count > 0 && !has_list_flag {
+        return Err("git branch cần một trong các tùy chọn liệt kê (--list, -l, -a, -r, --merged…) khi có đối số — không tạo hoặc đổi tên nhánh".to_string());
+    }
+    Ok(())
+}
+
+const GIT_TAG_LONG_ALLOWED: &[&str] = &[
+    "list",
+    "sort",
+    "format",
+    "contains",
+    "no-contains",
+    "merged",
+    "no-merged",
+    "points-at",
+    "column",
+    "no-column",
+    "color",
+    "ignore-case",
+];
+
+fn check_tag(args: &[ShellWord]) -> Result<(), String> {
+    let mut has_list_flag = false;
+    let mut positional_count = 0;
+    let mut j = 0;
+    while j < args.len() {
+        let w = args[j].text.as_str();
+        j += 1;
+        if w == "--" {
+            while j < args.len() {
+                positional_count += 1;
+                j += 1;
+            }
+            break;
+        }
+        if let Some(long) = w.strip_prefix("--") {
+            let mut parts = long.splitn(2, '=');
+            let name = parts.next().unwrap_or("");
+            let inline_val = parts.next();
+            if !GIT_TAG_LONG_ALLOWED.contains(&name) {
+                return Err(format!(
+                    "tùy chọn của git tag `{w}` không được phép — chỉ cho phép liệt kê tag"
+                ));
+            }
+            if matches!(
+                name,
+                "list" | "contains" | "no-contains" | "merged" | "no-merged" | "points-at"
+            ) {
+                has_list_flag = true;
+            }
+            if inline_val.is_none()
+                && matches!(
+                    name,
+                    "sort"
+                        | "format"
+                        | "contains"
+                        | "no-contains"
+                        | "merged"
+                        | "no-merged"
+                        | "points-at"
+                        | "column"
+                        | "color"
+                )
+            {
+                if let Some(next) = args.get(j) {
+                    if !next.text.starts_with('-') {
+                        j += 1;
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some(cluster) = w.strip_prefix('-') {
+            if cluster.is_empty() {
+                continue;
+            }
+            for ch in cluster.chars() {
+                if !matches!(ch, 'l' | 'n' | 'i' | '0'..='9') {
+                    return Err(format!(
+                        "tùy chọn ngắn của git tag `-{ch}` không được phép — chỉ cho phép liệt kê tag"
+                    ));
+                }
+                if ch == 'l' {
+                    has_list_flag = true;
+                }
+            }
+            continue;
+        }
+        positional_count += 1;
+    }
+    if positional_count > 0 && !has_list_flag {
+        return Err("git tag cần `-l`/`--list` hoặc tùy chọn liệt kê khi có đối số — không tạo hoặc xoá tag".to_string());
+    }
+    Ok(())
+}
+
+fn check_remote(args: &[ShellWord]) -> Result<(), String> {
+    if args.is_empty() {
+        return Ok(());
+    }
+    let first = &args[0].text;
+    if first == "-v" || first == "--verbose" {
+        for w in &args[1..] {
+            if w.text != "-v" && w.text != "--verbose" {
+                return Err(format!(
+                    "git remote {} không được phép — chỉ cho phép `git remote`, `git remote -v`, `git remote get-url <tên>`",
+                    w.text
+                ));
+            }
+        }
+        return Ok(());
+    }
+    if let Some(cluster) = first.strip_prefix('-') {
+        if !cluster.is_empty() && cluster.chars().all(|c| c == 'v') {
+            for w in &args[1..] {
+                if w.text != "-v" && w.text != "--verbose" {
+                    return Err(format!(
+                        "git remote {} không được phép — chỉ cho phép `git remote`, `git remote -v`, `git remote get-url <tên>`",
+                        w.text
+                    ));
+                }
+            }
+            return Ok(());
+        }
+    }
+    if first == "get-url" {
+        let rest = &args[1..];
+        let mut name: Option<&str> = None;
+        for w in rest {
+            if w.text == "--push" || w.text == "--all" {
+                continue;
+            }
+            if w.text.starts_with('-') {
+                return Err(format!(
+                    "tùy chọn của git remote get-url `{}` không được phép",
+                    w.text
+                ));
+            }
+            if name.is_none() {
+                name = Some(&w.text);
+            } else {
+                return Err(format!(
+                    "git remote get-url chỉ nhận một tên remote — `{}` không được phép",
+                    w.text
+                ));
+            }
+        }
+        if name.is_none() {
+            return Err("git remote get-url cần tên remote (ví dụ origin)".to_string());
+        }
+        return Ok(());
+    }
+    Err(format!(
+        "git remote {first} không được phép — chỉ cho phép `git remote`, `git remote -v`, `git remote get-url <tên>`"
+    ))
+}
+
 /// The git option policy (W-1) on the words after `git`.
 fn git_policy_check(args: &[ShellWord]) -> Result<(), String> {
     let mut i = 0;
@@ -554,13 +944,46 @@ fn git_policy_check(args: &[ShellWord]) -> Result<(), String> {
         i += 1;
     }
     let sub = args.get(i).map(|w| w.text.as_str()).unwrap_or("");
-    if !GIT_SUBCOMMANDS.contains(&sub) {
+    let is_allowed = GIT_READ_SUBCOMMANDS.contains(&sub)
+        || GIT_WRITE_SUBCOMMANDS.contains(&sub)
+        || sub == "fetch";
+    if !is_allowed {
         return Err(format!(
-            "git {sub} không nằm trong danh sách được phép (diff, log, show, status, add, commit)"
+            "git {sub} không được phép — chỉ dùng lệnh git chỉ đọc (log, show, diff, status, branch, rev-list, merge-base…), git fetch, hoặc add/commit khi vai được ghi"
         ));
     }
+
+    let rest = &args[i + 1..];
+
+    if sub == "fetch" {
+        return check_fetch(rest);
+    }
+    if sub == "branch" {
+        return check_branch(rest);
+    }
+    if sub == "tag" {
+        return check_tag(rest);
+    }
+    if sub == "remote" {
+        return check_remote(rest);
+    }
+    if sub == "reflog" {
+        if let Some(first_pos) = rest.iter().find(|w| !w.text.starts_with('-') && w.text != "--") {
+            if first_pos.text != "show" {
+                return Err(format!(
+                    "git reflog {} không được phép — chỉ cho phép `git reflog` hoặc `git reflog show`",
+                    first_pos.text
+                ));
+            }
+        }
+    }
+
     let forbidden_long: &[&str] = match sub {
-        "diff" | "log" | "show" => GIT_DIFF_FORBIDDEN,
+        "diff" | "show" | "whatchanged" | "range-diff" => GIT_DIFF_FORBIDDEN,
+        "log" | "rev-list" | "shortlog" => GIT_LOG_LIKE_FORBIDDEN,
+        "grep" => GIT_GREP_FORBIDDEN,
+        "blame" => GIT_BLAME_FORBIDDEN,
+        "cat-file" => GIT_CAT_FILE_FORBIDDEN,
         "commit" => GIT_COMMIT_FORBIDDEN,
         "add" => GIT_ADD_FORBIDDEN,
         _ => &[],
@@ -615,6 +1038,16 @@ fn git_policy_check(args: &[ShellWord]) -> Result<(), String> {
             continue;
         }
         match sub {
+            "grep" => {
+                if cluster.contains(['O', 'f']) {
+                    return Err(git_forbidden_err(sub, word));
+                }
+            }
+            "blame" => {
+                if cluster.contains('S') {
+                    return Err(git_forbidden_err(sub, word));
+                }
+            }
             "commit" => {
                 for (k, ch) in cluster.char_indices() {
                     match ch {
@@ -1420,7 +1853,7 @@ mod tests {
 
         assert_eq!(
             bash_command_check("git push").unwrap_err(),
-            "git push không nằm trong danh sách được phép (diff, log, show, status, add, commit)"
+            "git push không được phép — chỉ dùng lệnh git chỉ đọc (log, show, diff, status, branch, rev-list, merge-base…), git fetch, hoặc add/commit khi vai được ghi"
         );
         assert_eq!(
             bash_command_check("git -c a=b log").unwrap_err(),

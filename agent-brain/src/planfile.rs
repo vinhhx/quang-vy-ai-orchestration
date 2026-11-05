@@ -1206,6 +1206,35 @@ mod tests {
     }
 
     #[test]
+    fn test_task_6_grants_commands_accepted() {
+        let task_6_cmds = [
+            "git fetch --all --prune",
+            "git for-each-ref *",
+            "git branch -a --merged *",
+            "git branch -a --no-merged *",
+            "git rev-list *",
+            "git merge-base *",
+            "git merge-tree *",
+            "git log *",
+            "git show *",
+            "git diff *",
+            "git ls-tree *",
+            "git status *",
+            "git remote -v",
+            ".claude/skills/fix-bugs/scripts/notify.sh *",
+        ];
+        for cmd in task_6_cmds {
+            assert_eq!(
+                grant_command_error(cmd),
+                None,
+                "expected `{cmd}` to be accepted"
+            );
+        }
+        assert!(grant_command_error("git push *").is_some());
+        assert!(grant_command_error("git fetch origin main:main").is_some());
+    }
+
+    #[test]
     fn grant_dirs_refused_and_accepted() {
         let td = tempfile::tempdir().unwrap();
         for bad in [

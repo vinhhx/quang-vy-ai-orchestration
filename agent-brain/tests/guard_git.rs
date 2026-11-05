@@ -468,3 +468,101 @@ fn bash_hook_blocks_only_bash() {
         .collect();
     assert_eq!(decisions, vec!["block", "allow"]);
 }
+
+#[test]
+fn read_only_git_and_guarded_fetch_policy() {
+    let allowed = [
+        "git branch",
+        "git branch -a",
+        "git branch -a -vv",
+        "git branch -r --merged origin/main",
+        "git branch -a --no-merged 'origin/main'",
+        "git branch --show-current",
+        "git remote",
+        "git remote -v",
+        "git remote get-url origin",
+        "git for-each-ref --sort=-committerdate refs/remotes",
+        "git rev-list --count main..origin/main",
+        "git merge-base main origin/dev",
+        "git merge-tree --write-tree main origin/dev",
+        "git ls-tree -r HEAD",
+        "git ls-files",
+        "git blame app/a.php",
+        "git describe --tags",
+        "git shortlog -sn",
+        "git cat-file -p HEAD",
+        "git tag",
+        "git tag -l 'v1*'",
+        "git reflog",
+        "git grep foo",
+        "git rev-parse HEAD",
+        "git fetch",
+        "git fetch --all --prune",
+        "git fetch origin",
+        "git fetch origin feature/x",
+        "git fetch -p origin",
+    ];
+    let refused = [
+        "git branch foo",
+        "git branch -d foo",
+        "git branch -D foo",
+        "git branch -m a b",
+        "git branch --delete foo",
+        "git branch -f main HEAD",
+        "git branch --set-upstream-to=origin/x",
+        "git tag v1",
+        "git tag -d v1",
+        "git remote add x https://e",
+        "git remote set-url origin x",
+        "git remote remove origin",
+        "git reflog expire --all",
+        "git reflog delete HEAD@{1}",
+        "git fetch origin main:main",
+        "git fetch origin +refs/heads/x",
+        "git fetch https://evil.example/x",
+        "git fetch ext::sh",
+        "git fetch ../other",
+        "git fetch --upload-pack=x origin",
+        "git fetch -u origin",
+        "git fetch --force origin",
+        "git grep -O foo",
+        "git grep --open-files-in-pager foo",
+        "git blame --contents x a.php",
+        "git cat-file --filters HEAD:a",
+        "git push",
+        "git pull",
+        "git reset --hard",
+        "git checkout main",
+        "git switch x",
+        "git stash",
+        "git clean -fd",
+        "git merge x",
+        "git rebase x",
+        "git config user.name x",
+    ];
+
+    for cmd in allowed {
+        assert!(
+            agent_brain::guard::bash_command_check(cmd).is_ok(),
+            "should allow: {cmd}, got: {:?}",
+            agent_brain::guard::bash_command_check(cmd)
+        );
+    }
+
+    for cmd in refused {
+        assert!(
+            agent_brain::guard::bash_command_check(cmd).is_err(),
+            "should refuse: {cmd}"
+        );
+    }
+}
+
+#[test]
+fn role_allowed_tools_permissions() {
+    assert!(agent_brain::roles::lead::LEAD_ALLOWED_TOOLS.contains(&"Bash(git branch *)"));
+    assert!(agent_brain::roles::lead::LEAD_ALLOWED_TOOLS.contains(&"Bash(git fetch *)"));
+    assert!(agent_brain::roles::qa::QA_ALLOWED_TOOLS.contains(&"Bash(git branch *)"));
+    assert!(!agent_brain::roles::qa::QA_ALLOWED_TOOLS.contains(&"Bash(git fetch *)"));
+    assert!(agent_brain::roles::review::REVIEW_ALLOWED_BASE.contains(&"Bash(git branch *)"));
+    assert!(!agent_brain::roles::review::REVIEW_ALLOWED_BASE.contains(&"Bash(git fetch *)"));
+}
