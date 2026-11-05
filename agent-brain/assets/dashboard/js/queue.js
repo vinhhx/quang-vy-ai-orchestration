@@ -372,6 +372,16 @@
         return 'Tự chạy lại sau ' + m + ' phút ' + (s < 10 ? '0' : '') + s + ' giây';
       },
 
+      // Style bindings return objects: Alpine applies them with style.setProperty, which the
+      // dashboard CSP (style-src 'self') allows; a string would go through setAttribute('style').
+      roomDotStyle: function (r) {
+        return { backgroundColor: r.color };
+      },
+
+      progressStyle: function (task) {
+        return { width: this.stepProgress(task).pct + '%' };
+      },
+
       stepProgress: function (task) {
         var steps = task.steps || [];
         if (steps.length === 0) return { done: 0, total: 0, pct: 0, text: '0/0 bước' };
