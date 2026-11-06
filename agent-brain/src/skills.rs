@@ -51,7 +51,7 @@ fn unquote(v: &str) -> &str {
 }
 
 /// `(name, description)` from a leading `---` front matter; missing keys are `None`.
-fn front_matter(text: &str) -> (Option<String>, Option<String>) {
+pub fn front_matter(text: &str) -> (Option<String>, Option<String>) {
     let mut lines = text.lines();
     if lines.next().map(str::trim) != Some("---") {
         return (None, None);
@@ -96,7 +96,7 @@ fn front_matter(text: &str) -> (Option<String>, Option<String>) {
 }
 
 /// First non-empty line that is not front matter, a heading marker or a comment.
-fn first_line(text: &str) -> String {
+pub fn first_line(text: &str) -> String {
     let mut in_fm = false;
     for (i, line) in text.lines().enumerate() {
         let t = line.trim();

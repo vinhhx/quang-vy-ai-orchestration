@@ -416,7 +416,7 @@ pub fn execute_role_staged(
     ctx: &mut Ctx,
     project: &Project,
     root: &Path,
-    plan: RunPlan,
+    mut plan: RunPlan,
     stage: RunStage,
 ) -> BrainResult<RoleRun> {
     let running = crate::db::running_runs(&ctx.conn)?;
@@ -464,6 +464,15 @@ pub fn execute_role_staged(
     // is inserted and before anything is spawned.
     let resolved =
         crate::engine::resolve_for_run_with(&ctx.conn, plan.task_id, &plan.role, Some(&ctx.cfg))?;
+
+    let (dept_extra, dept_warns) = crate::departments::prompt_append_for_member(
+        &plan.role,
+        resolved.member.as_ref().map(|p| &p.member),
+    );
+    for w in &dept_warns {
+        crate::term::emit(w);
+    }
+    crate::engine::append_to_system_prompt(&mut plan.argv, &dept_extra);
     // ENG-10 / D-36 / D-42 backstop: an engine tied to a profile never runs on a project of
     // another one (SPK-10), whatever team the task row names — a hand-edited team included.
     if let crate::engine::Engine::Named(id) = &resolved.engine {

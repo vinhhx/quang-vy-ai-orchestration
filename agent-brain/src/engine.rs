@@ -947,6 +947,24 @@ pub fn claude_argv_parts(argv: &[String]) -> Option<(String, String)> {
     Some((after("-p")?, after("--append-system-prompt")?))
 }
 
+/// Nối thêm nội dung vào giá trị của `--append-system-prompt` trong argv.
+pub fn append_to_system_prompt(argv: &mut [String], extra: &str) {
+    let trimmed = extra.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if let Some(pos) = argv.iter().position(|a| a == "--append-system-prompt") {
+        if let Some(val) = argv.get_mut(pos + 1) {
+            if !val.ends_with('\n') {
+                val.push('\n');
+            }
+            val.push('\n');
+            val.push_str(trimmed);
+            val.push('\n');
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

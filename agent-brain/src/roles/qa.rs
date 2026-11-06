@@ -278,11 +278,17 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
             workflow,
             team,
         };
+        let mut user_input = format!(
+            "Task: {task}\nĐầu vào: .plan.md và kết quả lệnh: {diff_cmd}\nGhi .qa-report.md theo khung có sẵn; mục Kết luận ghi đúng một dòng: Đạt hoặc Cần sửa.\nỞ đầu .qa-report.md (trước dòng \"# QA:\") thêm front matter: dòng ---, specs: <số kiểm tra đã chạy>, failing: <số kiểm tra lỗi>, not_automatable: <số mục không kiểm tự động được>, dòng ---. Bỏ dòng nào bạn không biết."
+        );
+        let skill_block = crate::skills::prompt_block(&crate::skills::discover(&proj_path));
+        if !skill_block.is_empty() {
+            user_input.push_str("\n\n");
+            user_input.push_str(&skill_block);
+        }
         let spec_dry = crate::roles::RoleSpec {
             role: crate::roles::Role::Qa,
-            user_input: format!(
-                "Task: {task}\nĐầu vào: .plan.md và kết quả lệnh: {diff_cmd}\nGhi .qa-report.md theo khung có sẵn; mục Kết luận ghi đúng một dòng: Đạt hoặc Cần sửa.\nỞ đầu .qa-report.md (trước dòng \"# QA:\") thêm front matter: dòng ---, specs: <số kiểm tra đã chạy>, failing: <số kiểm tra lỗi>, not_automatable: <số mục không kiểm tự động được>, dòng ---. Bỏ dòng nào bạn không biết."
-            ),
+            user_input,
             allowed_tools: allowed,
             disallowed_tools: disallowed,
             extra_args: vec![
@@ -333,9 +339,14 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         crate::roles::review::ReportRestore::arm(&proj_path, ".qa-report.md", tracked);
     std::fs::write(&qa_path, crate::planfile::render_qa_skeleton(req, &qa_meta))?;
 
-    let user_input = format!(
+    let mut user_input = format!(
         "Task: {task}\nĐầu vào: .plan.md và kết quả lệnh: {diff_cmd}\nGhi .qa-report.md theo khung có sẵn; mục Kết luận ghi đúng một dòng: Đạt hoặc Cần sửa.\nỞ đầu .qa-report.md (trước dòng \"# QA:\") thêm front matter: dòng ---, specs: <số kiểm tra đã chạy>, failing: <số kiểm tra lỗi>, not_automatable: <số mục không kiểm tự động được>, dòng ---. Bỏ dòng nào bạn không biết."
     );
+    let skill_block = crate::skills::prompt_block(&crate::skills::discover(&proj_path));
+    if !skill_block.is_empty() {
+        user_input.push_str("\n\n");
+        user_input.push_str(&skill_block);
+    }
 
     let spec = crate::roles::RoleSpec {
         role: crate::roles::Role::Qa,

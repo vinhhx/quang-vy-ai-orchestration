@@ -16,6 +16,9 @@ pub const MAX_FILE_BYTES: u64 = 262_144;
 pub const MAX_NAME_CHARS: usize = 64;
 pub const MAX_MODEL_CHARS: usize = 64;
 pub const MAX_NOTES_CHARS: usize = 500;
+pub const MAX_RULES_CHARS: usize = 1000;
+pub const MAX_DEPT_SKILL_FILE_BYTES: u64 = 64 * 1024;
+pub const MAX_DEPT_SKILL_TOTAL_BYTES: usize = 24 * 1024;
 
 pub const DEPARTMENTS: &[(&str, &str)] = &[
     ("phan-tich", "Phòng phân tích"),
@@ -102,6 +105,7 @@ pub struct Member {
     pub model: Option<String>,
     pub levels: Vec<Level>,
     pub notes: Option<String>,
+    pub rules: Option<String>,
 }
 
 impl serde::Serialize for Member {
@@ -110,7 +114,7 @@ impl serde::Serialize for Member {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("Member", 7)?;
+        let mut s = serializer.serialize_struct("Member", 8)?;
         s.serialize_field("id", &self.id)?;
         s.serialize_field("department", &self.department)?;
         s.serialize_field("display_name", &self.display_name)?;
@@ -118,6 +122,7 @@ impl serde::Serialize for Member {
         s.serialize_field("model", &self.model)?;
         s.serialize_field("levels", &self.levels)?;
         s.serialize_field("notes", &self.notes)?;
+        s.serialize_field("rules", &self.rules)?;
         s.end()
     }
 }
@@ -349,6 +354,31 @@ pub fn validate_entry(
         None => None,
     };
 
+    // rules
+    let rules = match obj.get("rules") {
+        Some(v) => match v.as_str() {
+            Some(n) => {
+                let trimmed = n.trim();
+                if trimmed.is_empty() {
+                    None
+                } else if trimmed.chars().count() > MAX_RULES_CHARS {
+                    errors.push(field_error(
+                        "rules",
+                        format!("Rules riêng quá dài (tối đa {MAX_RULES_CHARS} ký tự)"),
+                    ));
+                    Some(trimmed.to_string())
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            None => {
+                errors.push(field_error("rules", "Trường rules phải là chuỗi"));
+                None
+            }
+        },
+        None => None,
+    };
+
     if errors.is_empty() {
         Ok(Member {
             id: member_id.to_string(),
@@ -358,6 +388,7 @@ pub fn validate_entry(
             model,
             levels: parsed_levels,
             notes,
+            rules,
         })
     } else {
         Err(errors)
@@ -808,4 +839,158 @@ pub fn cmd_pick(ctx: &crate::app::Ctx, task_id: i64, role: &str) -> BrainResult<
     }
 
     Ok(0)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeptSkill {
+    pub name: String,
+    pub description: String,
+    pub body: String,
+    pub path: PathBuf,
+}
+
+pub fn dept_skills_dir(dept: &str) -> PathBuf {
+    if let Ok(dir) = std::env::var("AGENT_BRAIN_CONFIG_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir).join("departments").join(dept).join("skills");
+        }
+    }
+    crate::config::config_dir().join("departments").join(dept).join("skills")
+}
+
+pub fn dept_skills(dept: &str) -> Vec<DeptSkill> {
+    let dir = dept_skills_dir(dept);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+
+    let mut list = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let skill_file = entry.path().join("SKILL.md");
+        let Ok(meta) = std::fs::symlink_metadata(&skill_file) else {
+            continue;
+        };
+        if !meta.file_type().is_file() || meta.len() > MAX_DEPT_SKILL_FILE_BYTES {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&skill_file) else {
+            continue;
+        };
+        let (fm_name, fm_desc) = crate::skills::front_matter(&text);
+        let folder_name = entry.file_name().to_string_lossy().to_string();
+        let name = fm_name.filter(|n| !n.trim().is_empty()).unwrap_or(folder_name);
+        let description = fm_desc.unwrap_or_else(|| crate::skills::first_line(&text));
+
+        list.push(DeptSkill {
+            name,
+            description,
+            body: text,
+            path: skill_file,
+        });
+    }
+
+    list.sort_by(|a, b| a.name.cmp(&b.name));
+    list
+}
+
+pub fn format_dept_skills(dept: &str) -> (String, Vec<String>) {
+    let skills = dept_skills(dept);
+    if skills.is_empty() {
+        return (String::new(), Vec::new());
+    }
+
+    let dept_name = dept_name_of(dept).unwrap_or(dept);
+    let mut out = format!("## Skill của phòng {dept_name} (playbook dùng chung — bổ sung, không mở rộng quyền)\n");
+    let mut warnings = Vec::new();
+    let mut current_bytes = out.len();
+    let mut budget_exceeded = false;
+
+    for skill in &skills {
+        let block = format!("### Skill: {}\n{}\n", skill.name, skill.body.trim());
+        if !budget_exceeded && current_bytes + block.len() <= MAX_DEPT_SKILL_TOTAL_BYTES {
+            out.push_str(&block);
+            current_bytes += block.len();
+        } else {
+            if !budget_exceeded {
+                budget_exceeded = true;
+            }
+            let summary = if skill.description.is_empty() {
+                format!("- {}\n", skill.name)
+            } else {
+                format!("- {}: {}\n", skill.name, skill.description)
+            };
+            out.push_str(&summary);
+            warnings.push(format!(
+                "Skill '{}' của phòng {} vượt quá giới hạn 24 KiB nên chỉ đưa tên và mô tả",
+                skill.name, dept_name
+            ));
+        }
+    }
+
+    (out, warnings)
+}
+
+pub fn prompt_append_for(role: &str, member_id: Option<&str>) -> (String, Vec<String>) {
+    let Some(dept_id) = dept_of_role(role) else {
+        return (String::new(), Vec::new());
+    };
+
+    let (mut out, warnings) = format_dept_skills(dept_id);
+
+    if let Some(m_id) = member_id {
+        let loaded = load();
+        if let Some(m) = loaded.get(m_id) {
+            if let Some(ref rules) = m.rules {
+                let trimmed = rules.trim();
+                if !trimmed.is_empty() {
+                    if !out.is_empty() && !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(&format!(
+                        "## Rules riêng của thành viên {}\n{}\n",
+                        m.display_name, trimmed
+                    ));
+                }
+            }
+        }
+    }
+
+    (out, warnings)
+}
+
+pub fn prompt_append_for_member(role: &str, member: Option<&Member>) -> (String, Vec<String>) {
+    let Some(dept_id) = dept_of_role(role) else {
+        return (String::new(), Vec::new());
+    };
+
+    let (mut out, warnings) = format_dept_skills(dept_id);
+
+    if let Some(m) = member {
+        if let Some(ref rules) = m.rules {
+            let trimmed = rules.trim();
+            if !trimmed.is_empty() {
+                if !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&format!(
+                    "## Rules riêng của thành viên {}\n{}\n",
+                    m.display_name, trimmed
+                ));
+            }
+        }
+    }
+
+    (out, warnings)
 }

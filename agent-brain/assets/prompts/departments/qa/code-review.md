@@ -1,0 +1,2 @@
+- Ưu tiên kiểm tra lỗi logic đúng sai và rủi ro bảo mật hơn là phong cách định dạng mã nguồn.
+- Mỗi phát hiện vấn đề phải kèm theo vị trí file:dòng cụ thể và gợi ý cách sửa đổi phù hợp.

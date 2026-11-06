@@ -629,3 +629,349 @@ fn resolve_for_run_with_broken_config_has_no_member() {
 
     std::env::remove_var("AGENT_BRAIN_CONFIG");
 }
+
+#[test]
+fn prompts_departments_layer_and_builtins() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_file = tmp.path().join("config.json");
+    std::fs::write(&cfg_file, agent_brain::config::DEFAULT_CONFIG_JSON).unwrap();
+    std::env::set_var("AGENT_BRAIN_CONFIG", &cfg_file);
+
+    // 1. Vai -> phòng tương ứng
+    assert_eq!(dept_of_role("dev"), Some("thi-cong"));
+    assert_eq!(dept_of_role("qa"), Some("qa"));
+
+    // 2. Builtin file được đọc khi chưa có file người dùng
+    let note_dev = agent_brain::prompts::read_note("departments", "thi-cong", "dev").unwrap();
+    assert!(note_dev.is_some());
+    assert!(note_dev.unwrap().contains("Chỉ sửa đổi các file đã được liệt kê trong plan"));
+
+    // 3. File người dùng thắng file có sẵn
+    let user_note_dir = tmp.path().join("prompts").join("departments").join("thi-cong");
+    std::fs::create_dir_all(&user_note_dir).unwrap();
+    std::fs::write(user_note_dir.join("dev.md"), "- Luật riêng từ người dùng cho dev\n").unwrap();
+
+    let note_user = agent_brain::prompts::read_note("departments", "thi-cong", "dev").unwrap();
+    assert_eq!(note_user.as_deref(), Some("- Luật riêng từ người dùng cho dev\n"));
+
+    // 4. Tên phòng lạ -> lỗi API
+    let err_dept = agent_brain::prompts::read_note("departments", "phong-la", "dev").unwrap_err();
+    assert!(err_dept.contains("Phòng ban 'phong-la' không tồn tại"));
+
+    // 5. Vai sai phòng -> lỗi API
+    let err_role = agent_brain::prompts::read_note("departments", "thi-cong", "qa").unwrap_err();
+    assert!(err_role.contains("Vai 'qa' không thuộc phòng 'thi-cong'"));
+
+    // 6. Vai lead của dự án không có ghi chú vẫn có block "Phòng: Phòng kế hoạch" từ file có sẵn
+    let base_lead = agent_brain::prompts::base_prompt_for("lead").unwrap();
+    let layers = agent_brain::prompts::PromptLayers::default();
+    let (composed, _, count) = agent_brain::prompts::compose_detailed(base_lead, "lead", &layers);
+    assert_eq!(count, 1);
+    assert!(composed.contains("### Phòng: Phòng kế hoạch"));
+    assert!(composed.contains("Bản kế hoạch phải liệt kê chính xác các file cần sửa"));
+
+    std::env::remove_var("AGENT_BRAIN_CONFIG");
+}
+
+#[test]
+fn dept_skills_discovery_and_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("AGENT_BRAIN_CONFIG_DIR", tmp.path());
+
+    let skills_dir = tmp.path().join("departments").join("thi-cong").join("skills");
+    std::fs::create_dir_all(&skills_dir).unwrap();
+
+    // 1. Skill hợp lệ với frontmatter
+    let s1 = skills_dir.join("clean-code");
+    std::fs::create_dir_all(&s1).unwrap();
+    std::fs::write(
+        s1.join("SKILL.md"),
+        "---\nname: Clean Code\ndescription: Playbook clean code\n---\nNội dung chi tiết clean code",
+    )
+    .unwrap();
+
+    // 2. Skill > 64 KiB -> bị bỏ qua
+    let s_big = skills_dir.join("too-big");
+    std::fs::create_dir_all(&s_big).unwrap();
+    std::fs::write(s_big.join("SKILL.md"), vec![b'x'; 65 * 1024]).unwrap();
+
+    // 3. Symlink -> bị bỏ qua
+    let outside_file = tmp.path().join("outside.md");
+    std::fs::write(&outside_file, "outside").unwrap();
+    let s_sym = skills_dir.join("sym-skill");
+    std::fs::create_dir_all(&s_sym).unwrap();
+    std::os::unix::fs::symlink(&outside_file, s_sym.join("SKILL.md")).unwrap();
+
+    let skills = agent_brain::departments::dept_skills("thi-cong");
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].name, "Clean Code");
+    assert_eq!(skills[0].description, "Playbook clean code");
+
+    // 4. Giới hạn 24 KiB: skill còn lại chỉ đưa tên và mô tả, kèm cảnh báo
+    let kh_skills_dir = tmp.path().join("departments").join("ke-hoach").join("skills");
+    std::fs::create_dir_all(&kh_skills_dir).unwrap();
+
+    let kh_s1 = kh_skills_dir.join("skill-1");
+    std::fs::create_dir_all(&kh_s1).unwrap();
+    let body_20k = "A".repeat(20 * 1024);
+    std::fs::write(
+        kh_s1.join("SKILL.md"),
+        format!("---\nname: Skill 1\ndescription: Mô tả 1\n---\n{body_20k}"),
+    )
+    .unwrap();
+
+    let kh_s2 = kh_skills_dir.join("skill-2");
+    std::fs::create_dir_all(&kh_s2).unwrap();
+    let body_10k = "B".repeat(10 * 1024);
+    std::fs::write(
+        kh_s2.join("SKILL.md"),
+        format!("---\nname: Skill 2\ndescription: Mô tả 2\n---\n{body_10k}"),
+    )
+    .unwrap();
+
+    let (formatted, warnings) = agent_brain::departments::format_dept_skills("ke-hoach");
+    assert!(formatted.contains("## Skill của phòng Phòng kế hoạch (playbook dùng chung — bổ sung, không mở rộng quyền)"));
+    assert!(formatted.contains("### Skill: Skill 1"));
+    assert!(formatted.contains("- Skill 2: Mô tả 2"));
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("vượt quá giới hạn 24 KiB"));
+
+    std::env::remove_var("AGENT_BRAIN_CONFIG_DIR");
+}
+
+#[test]
+fn member_rules_validation() {
+    let cfg = test_cfg_with_agy();
+
+    // 1. Rules > 1000 ký tự -> lỗi
+    let long_rules = "a".repeat(1001);
+    let dept_json_bad = json!({
+        "thi-cong": {
+            "members": {
+                "tc-long": {
+                    "display_name": "Thi công Long",
+                    "engine": "claude",
+                    "model": "claude-sonnet-5-5",
+                    "levels": ["vua"],
+                    "rules": long_rules
+                }
+            }
+        }
+    })
+    .to_string();
+
+    let loaded_bad = load_from(&dept_json_bad, &cfg);
+    assert!(!loaded_bad.errors.is_empty());
+    assert!(loaded_bad.errors[0].contains("Rules riêng quá dài (tối đa 1000 ký tự)"));
+
+    // 2. Rules hợp lệ <= 1000 ký tự -> nạp thành công
+    let dept_json_good = json!({
+        "thi-cong": {
+            "members": {
+                "tc-good": {
+                    "display_name": "Thi công Good",
+                    "engine": "claude",
+                    "model": "claude-sonnet-5-5",
+                    "levels": ["vua"],
+                    "rules": "Không refactor ngoài phạm vi"
+                }
+            }
+        }
+    })
+    .to_string();
+
+    let loaded_good = load_from(&dept_json_good, &cfg);
+    assert!(loaded_good.errors.is_empty());
+    let m = loaded_good.get("tc-good").unwrap();
+    assert_eq!(m.rules.as_deref(), Some("Không refactor ngoài phạm vi"));
+}
+
+#[test]
+fn execute_seam_phong_ban_and_mac_dinh() {
+    let (_tmp, conn) = test_db();
+    let cfg = test_cfg_with_agy();
+
+    let tmp_cfg = tempfile::tempdir().unwrap();
+    let dept_file = tmp_cfg.path().join("departments.json");
+    let dept_json = json!({
+        "thi-cong": {
+            "members": {
+                "tc-claude": {
+                    "display_name": "Thi công Claude",
+                    "engine": "claude",
+                    "model": "claude-opus-5-5",
+                    "levels": ["kho"],
+                    "rules": "Claude: tuân thủ nghiêm ngặt plan"
+                },
+                "tc-agy": {
+                    "display_name": "Thi công Agy",
+                    "engine": "agy",
+                    "model": "gemini-3.8-flash-high",
+                    "levels": ["de"],
+                    "rules": "Agy: không sửa dependency"
+                }
+            }
+        }
+    })
+    .to_string();
+    std::fs::write(&dept_file, dept_json).unwrap();
+
+    let skills_dir = tmp_cfg.path().join("departments").join("thi-cong").join("skills").join("checklist");
+    std::fs::create_dir_all(&skills_dir).unwrap();
+    std::fs::write(
+        skills_dir.join("SKILL.md"),
+        "---\nname: Checklist\ndescription: Kiểm tra kỹ\n---\nNội dung playbook thi công",
+    )
+    .unwrap();
+
+    std::env::set_var("AGENT_BRAIN_CONFIG_DIR", tmp_cfg.path());
+
+    // 1. Task phong-ban mức kho -> tc-claude (có rules và skill)
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level, team_json)
+         VALUES (21, 1, 'task-21', 'Task 21', 'task/21', 'main', 'base1', 'open', 1000, 1000, 'kho', '{\"name\":\"phong-ban\"}')",
+        [],
+    )
+    .unwrap();
+
+    let resolved_claude = resolve_for_run_with(&conn, Some(21), "dev", Some(&cfg)).unwrap();
+    assert_eq!(resolved_claude.engine, Engine::Claude);
+
+    let (extra_claude, _) = agent_brain::departments::prompt_append_for_member(
+        "dev",
+        resolved_claude.member.as_ref().map(|p| &p.member),
+    );
+    let mut argv_claude = vec![
+        "claude".to_string(),
+        "-p".to_string(),
+        "hello".to_string(),
+        "--append-system-prompt".to_string(),
+        "sys base".to_string(),
+    ];
+    agent_brain::engine::append_to_system_prompt(&mut argv_claude, &extra_claude);
+
+    let plan_claude = plan_for(
+        &cfg,
+        &resolved_claude,
+        "dev",
+        &argv_claude,
+        "claude-sonnet-5-5",
+        std::collections::BTreeMap::new(),
+        std::time::Duration::from_secs(60),
+        std::path::Path::new("/tmp"),
+    )
+    .unwrap();
+
+    assert!(plan_claude.argv.iter().any(|arg| arg.contains("## Skill của phòng Phòng thi công")));
+    assert!(plan_claude.argv.iter().any(|arg| arg.contains("Nội dung playbook thi công")));
+    assert!(plan_claude.argv.iter().any(|arg| arg.contains("## Rules riêng của thành viên Thi công Claude")));
+    assert!(plan_claude.argv.iter().any(|arg| arg.contains("Claude: tuân thủ nghiêm ngặt plan")));
+
+    // 2. Task phong-ban mức de -> tc-agy (có rules và skill)
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level, team_json)
+         VALUES (22, 1, 'task-22', 'Task 22', 'task/22', 'main', 'base1', 'open', 1000, 1000, 'de', '{\"name\":\"phong-ban\"}')",
+        [],
+    )
+    .unwrap();
+
+    let resolved_agy = resolve_for_run_with(&conn, Some(22), "dev", Some(&cfg)).unwrap();
+    assert_eq!(resolved_agy.engine, Engine::Named("agy".to_string()));
+
+    let (extra_agy, _) = agent_brain::departments::prompt_append_for_member(
+        "dev",
+        resolved_agy.member.as_ref().map(|p| &p.member),
+    );
+    let mut argv_agy = vec![
+        "claude".to_string(),
+        "-p".to_string(),
+        "hello".to_string(),
+        "--append-system-prompt".to_string(),
+        "sys base".to_string(),
+    ];
+    agent_brain::engine::append_to_system_prompt(&mut argv_agy, &extra_agy);
+
+    let plan_agy = plan_for(
+        &cfg,
+        &resolved_agy,
+        "dev",
+        &argv_agy,
+        "claude-sonnet-5-5",
+        std::collections::BTreeMap::new(),
+        std::time::Duration::from_secs(60),
+        std::path::Path::new("/tmp"),
+    )
+    .unwrap();
+
+    let agy_prompt_pos = plan_agy.argv.iter().position(|a| a == "-p").unwrap();
+    let agy_prompt = &plan_agy.argv[agy_prompt_pos + 1];
+    assert!(agy_prompt.contains("## Skill của phòng Phòng thi công"));
+    assert!(agy_prompt.contains("Nội dung playbook thi công"));
+    assert!(agy_prompt.contains("## Rules riêng của thành viên Thi công Agy"));
+    assert!(agy_prompt.contains("Agy: không sửa dependency"));
+
+    // 3. Task mac-dinh: có skill của phòng nhưng KHÔNG có rules thành viên
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level, team_json)
+         VALUES (23, 1, 'task-23', 'Task 23', 'task/23', 'main', 'base1', 'open', 1000, 1000, 'kho', '{\"name\":\"mac-dinh\"}')",
+        [],
+    )
+    .unwrap();
+
+    let resolved_mac_dinh = resolve_for_run_with(&conn, Some(23), "dev", Some(&cfg)).unwrap();
+    assert!(resolved_mac_dinh.member.is_none());
+
+    let (extra_mac_dinh, _) = agent_brain::departments::prompt_append_for_member(
+        "dev",
+        resolved_mac_dinh.member.as_ref().map(|p| &p.member),
+    );
+    let mut argv_mac_dinh = vec![
+        "claude".to_string(),
+        "-p".to_string(),
+        "hello".to_string(),
+        "--append-system-prompt".to_string(),
+        "sys base".to_string(),
+    ];
+    agent_brain::engine::append_to_system_prompt(&mut argv_mac_dinh, &extra_mac_dinh);
+
+    let plan_mac_dinh = plan_for(
+        &cfg,
+        &resolved_mac_dinh,
+        "dev",
+        &argv_mac_dinh,
+        "claude-sonnet-5-5",
+        std::collections::BTreeMap::new(),
+        std::time::Duration::from_secs(60),
+        std::path::Path::new("/tmp"),
+    )
+    .unwrap();
+
+    assert!(plan_mac_dinh.argv.iter().any(|arg| arg.contains("## Skill của phòng Phòng thi công")));
+    assert!(!plan_mac_dinh.argv.iter().any(|arg| arg.contains("## Rules riêng của thành viên")));
+
+    std::env::remove_var("AGENT_BRAIN_CONFIG_DIR");
+}
+
+#[test]
+fn project_skills_in_qa_and_analyst() {
+    let tmp = tempfile::tempdir().unwrap();
+    let skill_dir = tmp.path().join(".claude").join("skills").join("my-tool");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: My Tool\ndescription: Công cụ kiểm tra tự động\n---\nScript hướng dẫn",
+    )
+    .unwrap();
+
+    // 1. Analyst prompt
+    let analyst_input = agent_brain::roles::analyst::build_analyst_user_input(tmp.path(), "cần phân tích gì", None);
+    assert!(analyst_input.contains("## Skill có sẵn trong dự án"));
+    assert!(analyst_input.contains("My Tool"));
+    assert!(analyst_input.contains("Công cụ kiểm tra tự động"));
+
+    // 2. QA prompt
+    let skills = agent_brain::skills::discover(tmp.path());
+    let qa_skill_block = agent_brain::skills::prompt_block(&skills);
+    assert!(qa_skill_block.contains("## Skill có sẵn trong dự án"));
+    assert!(qa_skill_block.contains("My Tool"));
+}

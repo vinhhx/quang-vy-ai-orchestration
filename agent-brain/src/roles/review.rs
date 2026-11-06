@@ -202,7 +202,7 @@ pub fn cmd_review(
         String::new()
     };
 
-    let user_input = match kind {
+    let mut user_input = match kind {
         ReviewKind::Plan => format!(
             "Task: {task}\nĐầu vào: .plan.md (commit {plan_commit})\n{prev_line}Ghi {file} theo khung có sẵn: điền front matter verdict / blocking / advisory / files ở đầu file; verdict là revise khi và chỉ khi có ít nhất một mục chặn."
         ),
@@ -210,6 +210,11 @@ pub fn cmd_review(
             "Task: {task}\nĐầu vào: .plan.md và kết quả lệnh: {diff_cmd}\n{prev_line}Ghi {file} theo khung có sẵn: điền front matter verdict / blocking / advisory / files ở đầu file; verdict là revise khi và chỉ khi có ít nhất một mục chặn."
         ),
     };
+    let skill_block = crate::skills::prompt_block(&crate::skills::discover(&proj_path));
+    if !skill_block.is_empty() {
+        user_input.push_str("\n\n");
+        user_input.push_str(&skill_block);
+    }
 
     let role_enum = match kind {
         ReviewKind::Plan => crate::roles::Role::PlanReview,

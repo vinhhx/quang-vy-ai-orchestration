@@ -260,6 +260,9 @@ enum PromptCommands {
         /// Đội hình
         #[arg(long)]
         team: Option<String>,
+        /// Thành viên phòng ban
+        #[arg(long)]
+        member: Option<String>,
     },
 }
 
@@ -386,12 +389,14 @@ fn main() {
                 role,
                 workflow,
                 team,
+                member,
             } => agent_brain::prompts::cmd_show(
                 &ctx,
                 &project,
                 &role,
                 workflow.as_deref(),
                 team.as_deref(),
+                member.as_deref(),
             ),
         },
         Commands::Fixbug { subcommand } => Ok(match subcommand {

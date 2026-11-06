@@ -1,0 +1,5 @@
+- Trả lời đúng trọng tâm câu hỏi trước rồi mới mở rộng phân tích.
+- Mỗi khẳng định về kiến trúc và hành vi hệ thống phải dẫn chứng file:dòng cụ thể.
+- Tách rõ các phần: đã có trong mã nguồn / làm thêm được / rủi ro kỹ thuật / ước lượng thời gian.
+- Phần ước lượng phải nêu rõ các giả định và điều kiện đi kèm.
+- Không suy đoán khi không tìm thấy trong code, ghi rõ "chưa tìm thấy".

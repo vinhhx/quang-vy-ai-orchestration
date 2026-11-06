@@ -27,7 +27,9 @@ fn test_a_no_notes_byte_for_byte_all_roles() {
         let base = agent_brain::prompts::base_prompt_for(role).unwrap();
         let (composed, warnings) = compose(base, role, &layers);
         assert_eq!(warnings.len(), 0);
-        assert_eq!(composed, base, "Failed for role {role}");
+        assert!(composed.starts_with(base), "Failed for role {role}");
+        assert!(composed.contains("## Ghi chú nghiệp vụ"), "Failed for role {role}");
+        assert!(composed.contains("### Phòng: "), "Failed for role {role}");
     }
 }
 
@@ -73,21 +75,24 @@ fn test_b_four_layers_two_stacks_ordering_and_empty_dropped() {
     let (composed, warnings, count) = compose_detailed(base, "lead", &layers);
 
     assert_eq!(warnings.len(), 0);
-    assert_eq!(count, 4); // stack-a, project, workflow, team; stack-b dropped
+    assert_eq!(count, 5); // stack-a, project, workflow, team, and department; stack-b dropped
     assert!(composed.contains("### Stack: stack-a\nStack A notes"));
     assert!(!composed.contains("stack-b"));
     assert!(composed.contains("### Dự án: demo-proj\nProject demo notes"));
     assert!(composed.contains("### Workflow: fast-track\nWorkflow fast-track notes"));
     assert!(composed.contains("### Đội hình: core-team\nTeam core notes"));
+    assert!(composed.contains("### Phòng: Phòng kế hoạch"));
 
     // Check order
     let pos_stack = composed.find("### Stack: stack-a").unwrap();
     let pos_proj = composed.find("### Dự án: demo-proj").unwrap();
     let pos_wf = composed.find("### Workflow: fast-track").unwrap();
     let pos_team = composed.find("### Đội hình: core-team").unwrap();
+    let pos_dept = composed.find("### Phòng: Phòng kế hoạch").unwrap();
     assert!(pos_stack < pos_proj);
     assert!(pos_proj < pos_wf);
     assert!(pos_wf < pos_team);
+    assert!(pos_team < pos_dept);
 }
 
 #[test]
@@ -116,8 +121,9 @@ fn test_c_builtin_stack_template_and_empty_user_file_override() {
                 ..Default::default()
             };
             let (comp, _, count) = compose_detailed("base", "dev", &layers);
-            assert_eq!(count, 0);
-            assert_eq!(comp, "base");
+            assert_eq!(count, 1);
+            assert!(comp.contains("### Phòng: Phòng thi công"));
+            assert!(!comp.contains("python"));
         },
     );
 }
@@ -159,8 +165,8 @@ fn test_d_file_size_invalid_name_symlink_outside() {
         ..Default::default()
     };
     let (comp, warnings, count) = compose_detailed("base", "dev", &layers);
-    assert_eq!(count, 0);
-    assert_eq!(comp, "base");
+    assert_eq!(count, 1);
+    assert!(comp.contains("### Phòng: Phòng thi công"));
     assert_eq!(warnings.len(), 2);
 }
 
@@ -266,15 +272,15 @@ fn test_g_prompt_show_cli() {
     };
 
     // Valid role and project
-    let res = agent_brain::prompts::cmd_show(&ctx, "my-app", "lead", None, None);
+    let res = agent_brain::prompts::cmd_show(&ctx, "my-app", "lead", None, None, None);
     assert_eq!(res.unwrap(), 0);
 
     // Invalid role -> error
-    let res_err_role = agent_brain::prompts::cmd_show(&ctx, "my-app", "invalid-role", None, None);
+    let res_err_role = agent_brain::prompts::cmd_show(&ctx, "my-app", "invalid-role", None, None, None);
     assert!(res_err_role.is_err());
 
     // Invalid project -> routing error
-    let res_err_proj = agent_brain::prompts::cmd_show(&ctx, "unknown-proj", "lead", None, None);
+    let res_err_proj = agent_brain::prompts::cmd_show(&ctx, "unknown-proj", "lead", None, None, None);
     assert!(res_err_proj.is_err());
     assert_eq!(res_err_proj.unwrap_err().code, agent_brain::error::EXIT_ROUTING);
 }

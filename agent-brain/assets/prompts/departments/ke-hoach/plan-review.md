@@ -1,0 +1,3 @@
+- Rà soát các bước thực hiện còn thiếu sót trong quy trình.
+- Phát hiện các file nằm ngoài phạm vi yêu cầu hoặc bị sửa đổi không cần thiết.
+- Chỉ ra các tiêu chí nghiệm thu mơ hồ hoặc không thể kiểm chứng tự động.

@@ -1,0 +1,2 @@
+- Kiểm tra từng dẫn chứng file:dòng xem có thật trong mã nguồn và đúng ngữ cảnh hay không.
+- Đánh dấu rõ những nhận định suy diễn thiếu bằng chứng mã nguồn để bổ sung hoặc lược bỏ.

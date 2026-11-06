@@ -1,0 +1,4 @@
+- Chỉ sửa đổi các file đã được liệt kê trong plan, không mở rộng phạm vi.
+- Mỗi bước thực hiện thành một commit riêng biệt theo đúng quy ước commit của dự án.
+- Không tự ý thêm, bớt hoặc nâng cấp thư viện phụ thuộc nếu plan không yêu cầu.
+- Chạy đầy đủ các lệnh kiểm tra trong plan trước khi báo cáo hoàn thành.

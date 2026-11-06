@@ -1,0 +1,3 @@
+- Chạy lại toàn bộ các lệnh kiểm tra được nêu trong plan.
+- Thử nghiệm các ca biên (edge cases) và tình huống dữ liệu bất thường.
+- Báo cáo lỗi theo đúng cấu trúc chuẩn: bước tái hiện / kết quả thực tế / mong đợi / file:dòng liên quan.

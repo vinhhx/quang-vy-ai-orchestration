@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 pub const PROMPT_NOTE_MAX_BYTES: usize = 8192;
-pub const LAYERS: [&str; 4] = ["stacks", "projects", "workflows", "teams"];
+pub const LAYERS: [&str; 5] = ["stacks", "projects", "workflows", "teams", "departments"];
 pub const VALID_ROLES: [&str; 7] = [
     "lead",
     "dev",
@@ -94,6 +94,51 @@ pub const BUILTIN_STACK_NOTES: &[(&str, &str, &str)] = &[
     ),
 ];
 
+pub const BUILTIN_DEPARTMENT_NOTES: &[(&str, &str, &str)] = &[
+    (
+        "phan-tich",
+        "analyst",
+        include_str!("../assets/prompts/departments/phan-tich/analyst.md"),
+    ),
+    (
+        "phan-tich",
+        "analysis-review",
+        include_str!("../assets/prompts/departments/phan-tich/analysis-review.md"),
+    ),
+    (
+        "ke-hoach",
+        "lead",
+        include_str!("../assets/prompts/departments/ke-hoach/lead.md"),
+    ),
+    (
+        "ke-hoach",
+        "plan-review",
+        include_str!("../assets/prompts/departments/ke-hoach/plan-review.md"),
+    ),
+    (
+        "thi-cong",
+        "dev",
+        include_str!("../assets/prompts/departments/thi-cong/dev.md"),
+    ),
+    (
+        "qa",
+        "qa",
+        include_str!("../assets/prompts/departments/qa/qa.md"),
+    ),
+    (
+        "qa",
+        "code-review",
+        include_str!("../assets/prompts/departments/qa/code-review.md"),
+    ),
+];
+
+pub fn builtin_department_note(dept: &str, role: &str) -> Option<&'static str> {
+    BUILTIN_DEPARTMENT_NOTES
+        .iter()
+        .find(|(d, r, _)| *d == dept && *r == role)
+        .map(|(_, _, content)| *content)
+}
+
 pub fn builtin_stacks() -> Vec<&'static str> {
     let mut list = Vec::new();
     for (s, _, _) in BUILTIN_STACK_NOTES {
@@ -132,6 +177,13 @@ pub fn list_layer_names(layer: &str) -> Vec<String> {
         for s in builtin_stacks() {
             if !names.iter().any(|existing| existing == s) {
                 names.push(s.to_string());
+            }
+        }
+    }
+    if layer == "departments" {
+        for (dept_id, _) in crate::departments::DEPARTMENTS {
+            if !names.iter().any(|existing| existing == dept_id) {
+                names.push(dept_id.to_string());
             }
         }
     }
@@ -185,6 +237,14 @@ pub fn read_note(layer: &str, name: &str, role: &str) -> Result<Option<String>, 
     if !valid_role(role) {
         return Err(format!("Vai '{role}' không hợp lệ"));
     }
+    if layer == "departments" {
+        if crate::departments::dept_name_of(name).is_none() {
+            return Err(format!("Phòng ban '{name}' không tồn tại"));
+        }
+        if crate::departments::dept_of_role(role) != Some(name) {
+            return Err(format!("Vai '{role}' không thuộc phòng '{name}'"));
+        }
+    }
 
     let root = notes_dir();
     let file_path = root.join(layer).join(name).join(format!("{role}.md"));
@@ -193,6 +253,11 @@ pub fn read_note(layer: &str, name: &str, role: &str) -> Result<Option<String>, 
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if layer == "stacks" {
                 if let Some(builtin) = builtin_stack_note(name, role) {
+                    return Ok(Some(builtin.to_string()));
+                }
+            }
+            if layer == "departments" {
+                if let Some(builtin) = builtin_department_note(name, role) {
                     return Ok(Some(builtin.to_string()));
                 }
             }
@@ -335,6 +400,21 @@ where
         }
     }
 
+    // 5. Department (tự động từ vai)
+    if let Some(dept_id) = crate::departments::dept_of_role(role) {
+        let display_name = crate::departments::dept_name_of(dept_id).unwrap_or(dept_id);
+        match read_fn("departments", dept_id, role) {
+            Ok(Some(content)) => {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    blocks.push(("Phòng", display_name.to_string(), trimmed.to_string()));
+                }
+            }
+            Ok(None) => {}
+            Err(warn) => warnings.push(warn),
+        }
+    }
+
     let count = blocks.len();
     if blocks.is_empty() {
         return (base.to_string(), warnings, 0);
@@ -400,7 +480,8 @@ pub fn dry_run_summary(layers: &PromptLayers, role: &str) -> String {
     let proj = layers.project.as_deref().unwrap_or("-");
     let wf = layers.workflow.as_deref().unwrap_or("-");
     let team = layers.team.as_deref().unwrap_or("-");
-    format!("Ghi chú nghiệp vụ: stack=[{stacks}] dự án={proj} workflow={wf} team={team} ({count} khối)")
+    let dept = crate::departments::dept_of_role(role).unwrap_or("-");
+    format!("Ghi chú nghiệp vụ: stack=[{stacks}] dự án={proj} workflow={wf} team={team} phòng={dept} ({count} khối)")
 }
 
 pub fn cmd_show(
@@ -409,6 +490,7 @@ pub fn cmd_show(
     role: &str,
     workflow: Option<&str>,
     team: Option<&str>,
+    member: Option<&str>,
 ) -> crate::error::BrainResult<i32> {
     let proj = crate::projects::select_project(project, &ctx.map)?;
     let base = match base_prompt_for(role) {
@@ -416,9 +498,21 @@ pub fn cmd_show(
         Err(e) => return Err(crate::error::BrainError::error(e)),
     };
     let layers = layers_for(&proj, workflow, team);
-    let (composed, warnings) = compose(base, role, &layers);
+    let (mut composed, warnings) = compose(base, role, &layers);
     for w in &warnings {
         crate::term::emit(w);
+    }
+    let (extra, dept_warns) = crate::departments::prompt_append_for(role, member);
+    for w in &dept_warns {
+        crate::term::emit(w);
+    }
+    if !extra.trim().is_empty() {
+        if !composed.ends_with('\n') {
+            composed.push('\n');
+        }
+        composed.push('\n');
+        composed.push_str(extra.trim());
+        composed.push('\n');
     }
     print!("{composed}");
     if !composed.ends_with('\n') {

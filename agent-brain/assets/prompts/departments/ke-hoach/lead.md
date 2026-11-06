@@ -1,0 +1,3 @@
+- Bản kế hoạch phải liệt kê chính xác các file cần sửa, từng bước thực hiện, tiêu chí nghiệm thu rõ ràng và lệnh kiểm tra cụ thể.
+- Bám sát thư mục tri thức của dự án (.gsd, .planning, .agent-brain).
+- Với công việc mức dễ (de), viết plan ngắn gọn, tập trung vào thay đổi cốt lõi.
