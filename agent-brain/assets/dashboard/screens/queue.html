@@ -33,14 +33,14 @@
     <!-- Khối văn phòng chính -->
     <div x-show="showOffice && hasWebGL" class="space-y-3">
       <!-- Phòng ban trải ngang: tên ở trên, số lượng ở dưới -->
-      <div class="grid grid-cols-4 gap-2 sm:grid-cols-8" role="group" aria-label="Phòng ban">
+      <div class="grid grid-cols-4 gap-1.5 sm:grid-cols-8" role="group" aria-label="Phòng ban">
         <template x-for="r in officeRoomList" :key="r.id">
           <button
             type="button"
             @click="focusRoom(r.id)"
             :aria-pressed="roomPressed(r)"
             :title="roomTitle(r)"
-            class="flex min-w-0 flex-col items-start gap-0.5 rounded-xl px-3 py-1.5 text-left ring-1 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+            class="flex min-w-0 flex-col items-start gap-0.5 rounded-xl px-2.5 py-1.5 text-left ring-1 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
             :class="roomButtonClass(r)"
           >
             <span class="flex w-full min-w-0 items-center gap-1.5 text-xs font-semibold">
@@ -200,15 +200,179 @@
       x-text="'Lỗi nạp danh sách task: ' + tasksError"
     ></div>
 
-    <!-- Năm cột điều phối -->
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4 items-start">
-      <!-- Cột 1: Hàng chờ -->
-      <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
-        <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
-          <h2 class="text-base font-semibold">Hàng chờ</h2>
-          <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="intakeItems.length"></span>
+    <!-- Ô giao nhanh (chỉ hiện khi enabled) -->
+    <div
+      x-show="isOrchestratorEnabled"
+      class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-lg font-semibold leading-normal">Giao việc nhanh vào hàng chờ</h2>
+        <button
+          type="button"
+          @click="openAssignModal"
+          class="text-xs font-semibold text-indigo-600 hover:text-indigo-500 hover:underline dark:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+        >Mở form đầy đủ (chọn đội hình, quy trình…)</button>
+      </div>
+      <div class="space-y-2">
+        <label for="ab-quick-request" class="text-sm font-semibold leading-normal">Yêu cầu</label>
+        <textarea
+          id="ab-quick-request"
+          rows="3"
+          maxlength="20000"
+          placeholder="Mô tả công việc cần giao..."
+          class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-300 placeholder:text-slate-400 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 dark:placeholder:text-slate-500 resize-y focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+          x-model="quickRequest"
+        ></textarea>
+      </div>
+
+      <div class="flex flex-wrap items-end gap-4">
+        <div class="min-w-64 flex-1 space-y-1">
+          <label for="ab-quick-project" class="text-sm font-semibold leading-normal">Dự án (tuỳ chọn)</label>
+          <select
+            id="ab-quick-project"
+            class="w-full min-h-10 rounded-xl bg-white px-3 py-1.5 text-sm text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+            x-model="quickProject"
+          >
+            <option value="">Để agent tự chọn</option>
+            <template x-for="p in projects" :key="p.id">
+              <option :value="p.id" x-text="(p.name_vi || p.id) + ' (' + p.id + ')'"></option>
+            </template>
+          </select>
         </div>
 
+        <div class="space-y-1">
+          <span class="block text-sm font-semibold leading-normal">Mức ưu tiên</span>
+          <div class="inline-flex rounded-xl p-1 bg-slate-100 dark:bg-slate-900 ring-1 ring-slate-200 dark:ring-slate-700 gap-1" role="group" aria-label="Mức ưu tiên">
+            <button
+              type="button"
+              @click="setQuickPriority('urgent')"
+              :aria-pressed="quickPriority === 'urgent' ? 'true' : 'false'"
+              class="rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+              :class="quickPriority === 'urgent' ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'"
+            >Gấp</button>
+            <button
+              type="button"
+              @click="setQuickPriority('normal')"
+              :aria-pressed="quickPriority === 'normal' ? 'true' : 'false'"
+              class="rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+              :class="quickPriority === 'normal' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'"
+            >Thường</button>
+            <button
+              type="button"
+              @click="setQuickPriority('low')"
+              :aria-pressed="quickPriority === 'low' ? 'true' : 'false'"
+              class="rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+              :class="quickPriority === 'low' ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'"
+            >Thấp</button>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          @click="submitQuickIntake"
+          :disabled="quickSending || !quickRequest.trim()"
+          class="inline-flex min-h-10 items-center justify-center rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+        >
+          <span x-show="!quickSending">Đưa vào hàng chờ</span>
+          <span x-show="quickSending">Đang gửi...</span>
+        </button>
+      </div>
+
+      <div
+        role="alert"
+        x-show="quickError"
+        class="rounded-xl bg-rose-50 p-3 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal"
+        x-text="quickError"
+      ></div>
+    </div>
+
+    <!-- Phần Gần đây (thu gọn mặc định) -->
+    <details class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <summary class="cursor-pointer text-base font-semibold text-slate-900 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+        Gần đây
+      </summary>
+
+      <div class="pt-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Đề xuất & intake gần đây -->
+        <div class="space-y-3">
+          <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300">Đề xuất và yêu cầu gần đây</h3>
+          <div x-show="recentItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-2">
+            Không có dữ liệu 24 giờ qua
+          </div>
+          <div class="space-y-2">
+            <template x-for="r in recentItems" :key="r.kind + '-' + r.id">
+              <div class="rounded-xl border border-slate-200 p-3 text-xs dark:border-slate-700 space-y-1">
+                <div class="flex items-center justify-between gap-1">
+                  <span class="font-semibold text-slate-800 dark:text-slate-200" x-text="r.kind === 'proposal' ? 'Đề xuất #' + r.id : 'Intake #' + r.id"></span>
+                  <span
+                    class="rounded-full px-2 py-0.5 text-xs font-semibold"
+                    :class="r.status === 'rejected' ? 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300' : 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200'"
+                    x-text="r.status === 'rejected' ? 'Bị từ chối' : (r.status === 'cancelled' ? 'Đã huỷ' : 'Thất bại')"
+                  ></span>
+                </div>
+                <div class="font-medium text-slate-900 dark:text-slate-100" x-text="r.title || r.request"></div>
+                <div class="text-slate-500 dark:text-slate-400 flex items-center justify-between">
+                  <span x-text="r.project_name || r.project || '—'"></span>
+                  <span x-text="fmtTime(r.updated_at)"></span>
+                </div>
+                <div x-show="r.reason || r.error" class="text-slate-600 dark:text-slate-400 italic" x-text="r.reason ? 'Lý do: ' + r.reason : 'Lỗi: ' + r.error"></div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- 10 task đã xong mới nhất -->
+        <div class="space-y-3">
+          <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300">10 việc đã xong mới nhất</h3>
+          <div x-show="doneTasks.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-2">
+            Chưa có việc nào xong
+          </div>
+          <div class="space-y-2">
+            <template x-for="dt in doneTasks" :key="'done-' + dt.id">
+              <div class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-3 text-xs dark:border-slate-700">
+                <div class="space-y-0.5 min-w-0 flex-1">
+                  <div class="font-medium text-slate-900 dark:text-slate-100 truncate" x-text="dt.title"></div>
+                  <div class="text-slate-500 dark:text-slate-400 flex items-center gap-2">
+                    <span x-text="dt.project_name || dt.project"></span>
+                    <span>·</span>
+                    <span x-text="fmtTime(dt.updated_at)"></span>
+                  </div>
+                </div>
+                <a
+                  :href="'#/task/' + dt.id"
+                  class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                >Mở →</a>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </details>
+  </div>
+  </div>
+
+  <!-- Sidebar phải: năm nhóm việc dạng accordion, mỗi lúc mở một nhóm -->
+  <aside data-queue-side aria-label="Nhóm việc" class="order-2 flex max-h-[80vh] flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 lg:order-none lg:sticky lg:top-0 lg:h-full lg:max-h-none lg:w-80 lg:shrink-0 2xl:w-96 lg:rounded-none lg:shadow-none lg:ring-0 lg:border-l lg:border-slate-200 dark:lg:border-slate-700">
+    <!-- Nhóm: Hàng chờ -->
+    <div data-side-group="intake" class="flex flex-col border-b border-slate-200 last:border-b-0 dark:border-slate-700" :class="sideGroupClass('intake')">
+      <h2 class="text-base font-semibold">
+        <button
+          type="button"
+          id="ab-side-h-intake"
+          aria-controls="ab-side-p-intake"
+          :aria-expanded="sideExpanded('intake')"
+          @click="setSide('intake')"
+          class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-base font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 focus-visible:-outline-offset-2"
+          :class="sideHeaderClass('intake')"
+        >
+          <span class="flex items-center gap-2">
+            <svg class="h-4 w-4 shrink-0 transition-transform" :class="sideChevronClass('intake')" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+            <span>Hàng chờ</span>
+          </span>
+          <span class="rounded-full px-2.5 py-0.5 text-sm font-bold tabular-nums" :class="countBadgeClass('intake')" x-text="countIntake"></span>
+        </button>
+      </h2>
+      <div id="ab-side-p-intake" role="region" aria-labelledby="ab-side-h-intake" x-show="sideOpen('intake')" class="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-100/70 p-3 space-y-3 dark:bg-slate-900/40">
         <div x-show="intakeItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
           Trống
         </div>
@@ -280,14 +444,27 @@
           </template>
         </div>
       </div>
-
-      <!-- Cột 2: Cần bạn duyệt -->
-      <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
-        <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
-          <h2 class="text-base font-semibold">Cần bạn duyệt</h2>
-          <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="approvalItems.length"></span>
-        </div>
-
+    </div>
+    <!-- Nhóm: Cần duyệt -->
+    <div data-side-group="approval" class="flex flex-col border-b border-slate-200 last:border-b-0 dark:border-slate-700" :class="sideGroupClass('approval')">
+      <h2 class="text-base font-semibold">
+        <button
+          type="button"
+          id="ab-side-h-approval"
+          aria-controls="ab-side-p-approval"
+          :aria-expanded="sideExpanded('approval')"
+          @click="setSide('approval')"
+          class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-base font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 focus-visible:-outline-offset-2"
+          :class="sideHeaderClass('approval')"
+        >
+          <span class="flex items-center gap-2">
+            <svg class="h-4 w-4 shrink-0 transition-transform" :class="sideChevronClass('approval')" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+            <span>Cần duyệt</span>
+          </span>
+          <span class="rounded-full px-2.5 py-0.5 text-sm font-bold tabular-nums" :class="countBadgeClass('approval')" x-text="countApproval"></span>
+        </button>
+      </h2>
+      <div id="ab-side-p-approval" role="region" aria-labelledby="ab-side-h-approval" x-show="sideOpen('approval')" class="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-100/70 p-3 space-y-3 dark:bg-slate-900/40">
         <div x-show="approvalItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
           Trống
         </div>
@@ -530,14 +707,27 @@
           </template>
         </div>
       </div>
-
-      <!-- Cột 3: Chờ slot -->
-      <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
-        <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
-          <h2 class="text-base font-semibold">Chờ slot</h2>
-          <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="waitingSlotItems.length"></span>
-        </div>
-
+    </div>
+    <!-- Nhóm: Chờ slot -->
+    <div data-side-group="slot" class="flex flex-col border-b border-slate-200 last:border-b-0 dark:border-slate-700" :class="sideGroupClass('slot')">
+      <h2 class="text-base font-semibold">
+        <button
+          type="button"
+          id="ab-side-h-slot"
+          aria-controls="ab-side-p-slot"
+          :aria-expanded="sideExpanded('slot')"
+          @click="setSide('slot')"
+          class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-base font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 focus-visible:-outline-offset-2"
+          :class="sideHeaderClass('slot')"
+        >
+          <span class="flex items-center gap-2">
+            <svg class="h-4 w-4 shrink-0 transition-transform" :class="sideChevronClass('slot')" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+            <span>Chờ slot</span>
+          </span>
+          <span class="rounded-full px-2.5 py-0.5 text-sm font-bold tabular-nums" :class="countBadgeClass('slot')" x-text="countSlot"></span>
+        </button>
+      </h2>
+      <div id="ab-side-p-slot" role="region" aria-labelledby="ab-side-h-slot" x-show="sideOpen('slot')" class="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-100/70 p-3 space-y-3 dark:bg-slate-900/40">
         <div x-show="waitingSlotItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
           Trống
         </div>
@@ -596,14 +786,27 @@
           </template>
         </div>
       </div>
-
-      <!-- Cột 4: Đang chạy -->
-      <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
-        <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
-          <h2 class="text-base font-semibold">Đang chạy</h2>
-          <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="runningTasks.length"></span>
-        </div>
-
+    </div>
+    <!-- Nhóm: Đang chạy -->
+    <div data-side-group="running" class="flex flex-col border-b border-slate-200 last:border-b-0 dark:border-slate-700" :class="sideGroupClass('running')">
+      <h2 class="text-base font-semibold">
+        <button
+          type="button"
+          id="ab-side-h-running"
+          aria-controls="ab-side-p-running"
+          :aria-expanded="sideExpanded('running')"
+          @click="setSide('running')"
+          class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-base font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 focus-visible:-outline-offset-2"
+          :class="sideHeaderClass('running')"
+        >
+          <span class="flex items-center gap-2">
+            <svg class="h-4 w-4 shrink-0 transition-transform" :class="sideChevronClass('running')" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+            <span>Đang chạy</span>
+          </span>
+          <span class="rounded-full px-2.5 py-0.5 text-sm font-bold tabular-nums" :class="countBadgeClass('running')" x-text="countRunning"></span>
+        </button>
+      </h2>
+      <div id="ab-side-p-running" role="region" aria-labelledby="ab-side-h-running" x-show="sideOpen('running')" class="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-100/70 p-3 space-y-3 dark:bg-slate-900/40">
         <div x-show="runningTasks.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
           Trống
         </div>
@@ -645,14 +848,27 @@
           </template>
         </div>
       </div>
-
-      <!-- Cột 5: Dừng -->
-      <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
-        <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
-          <h2 class="text-base font-semibold">Dừng</h2>
-          <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="stoppedTasks.length"></span>
-        </div>
-
+    </div>
+    <!-- Nhóm: Dừng -->
+    <div data-side-group="stopped" class="flex flex-col border-b border-slate-200 last:border-b-0 dark:border-slate-700" :class="sideGroupClass('stopped')">
+      <h2 class="text-base font-semibold">
+        <button
+          type="button"
+          id="ab-side-h-stopped"
+          aria-controls="ab-side-p-stopped"
+          :aria-expanded="sideExpanded('stopped')"
+          @click="setSide('stopped')"
+          class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-base font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 focus-visible:-outline-offset-2"
+          :class="sideHeaderClass('stopped')"
+        >
+          <span class="flex items-center gap-2">
+            <svg class="h-4 w-4 shrink-0 transition-transform" :class="sideChevronClass('stopped')" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+            <span>Dừng</span>
+          </span>
+          <span class="rounded-full px-2.5 py-0.5 text-sm font-bold tabular-nums" :class="countBadgeClass('stopped')" x-text="countStopped"></span>
+        </button>
+      </h2>
+      <div id="ab-side-p-stopped" role="region" aria-labelledby="ab-side-h-stopped" x-show="sideOpen('stopped')" class="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-100/70 p-3 space-y-3 dark:bg-slate-900/40">
         <div x-show="stoppedTasks.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
           Trống
         </div>
@@ -702,156 +918,5 @@
         </div>
       </div>
     </div>
-
-    <!-- Ô giao nhanh (chỉ hiện khi enabled) -->
-    <div
-      x-show="isOrchestratorEnabled"
-      class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4"
-    >
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <h2 class="text-lg font-semibold leading-normal">Giao việc nhanh vào hàng chờ</h2>
-        <button
-          type="button"
-          @click="openAssignModal"
-          class="text-xs font-semibold text-indigo-600 hover:text-indigo-500 hover:underline dark:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-        >Mở form đầy đủ (chọn đội hình, quy trình…)</button>
-      </div>
-      <div class="space-y-2">
-        <label for="ab-quick-request" class="text-sm font-semibold leading-normal">Yêu cầu</label>
-        <textarea
-          id="ab-quick-request"
-          rows="3"
-          maxlength="20000"
-          placeholder="Mô tả công việc cần giao..."
-          class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-300 placeholder:text-slate-400 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 dark:placeholder:text-slate-500 resize-y focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-          x-model="quickRequest"
-        ></textarea>
-      </div>
-
-      <div class="flex flex-wrap items-end gap-4">
-        <div class="min-w-64 flex-1 space-y-1">
-          <label for="ab-quick-project" class="text-sm font-semibold leading-normal">Dự án (tuỳ chọn)</label>
-          <select
-            id="ab-quick-project"
-            class="w-full min-h-10 rounded-xl bg-white px-3 py-1.5 text-sm text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-            x-model="quickProject"
-          >
-            <option value="">Để agent tự chọn</option>
-            <template x-for="p in projects" :key="p.id">
-              <option :value="p.id" x-text="(p.name_vi || p.id) + ' (' + p.id + ')'"></option>
-            </template>
-          </select>
-        </div>
-
-        <div class="space-y-1">
-          <span class="block text-sm font-semibold leading-normal">Mức ưu tiên</span>
-          <div class="inline-flex rounded-xl p-1 bg-slate-100 dark:bg-slate-900 ring-1 ring-slate-200 dark:ring-slate-700 gap-1" role="group" aria-label="Mức ưu tiên">
-            <button
-              type="button"
-              @click="setQuickPriority('urgent')"
-              :aria-pressed="quickPriority === 'urgent' ? 'true' : 'false'"
-              class="rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-              :class="quickPriority === 'urgent' ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'"
-            >Gấp</button>
-            <button
-              type="button"
-              @click="setQuickPriority('normal')"
-              :aria-pressed="quickPriority === 'normal' ? 'true' : 'false'"
-              class="rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-              :class="quickPriority === 'normal' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'"
-            >Thường</button>
-            <button
-              type="button"
-              @click="setQuickPriority('low')"
-              :aria-pressed="quickPriority === 'low' ? 'true' : 'false'"
-              class="rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-              :class="quickPriority === 'low' ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'"
-            >Thấp</button>
-          </div>
-        </div>
-
-        <button
-          type="button"
-          @click="submitQuickIntake"
-          :disabled="quickSending || !quickRequest.trim()"
-          class="inline-flex min-h-10 items-center justify-center rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-        >
-          <span x-show="!quickSending">Đưa vào hàng chờ</span>
-          <span x-show="quickSending">Đang gửi...</span>
-        </button>
-      </div>
-
-      <div
-        role="alert"
-        x-show="quickError"
-        class="rounded-xl bg-rose-50 p-3 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal"
-        x-text="quickError"
-      ></div>
-    </div>
-
-    <!-- Phần Gần đây (thu gọn mặc định) -->
-    <details class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
-      <summary class="cursor-pointer text-base font-semibold text-slate-900 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
-        Gần đây
-      </summary>
-
-      <div class="pt-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <!-- Đề xuất & intake gần đây -->
-        <div class="space-y-3">
-          <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300">Đề xuất và yêu cầu gần đây</h3>
-          <div x-show="recentItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-2">
-            Không có dữ liệu 24 giờ qua
-          </div>
-          <div class="space-y-2">
-            <template x-for="r in recentItems" :key="r.kind + '-' + r.id">
-              <div class="rounded-xl border border-slate-200 p-3 text-xs dark:border-slate-700 space-y-1">
-                <div class="flex items-center justify-between gap-1">
-                  <span class="font-semibold text-slate-800 dark:text-slate-200" x-text="r.kind === 'proposal' ? 'Đề xuất #' + r.id : 'Intake #' + r.id"></span>
-                  <span
-                    class="rounded-full px-2 py-0.5 text-xs font-semibold"
-                    :class="r.status === 'rejected' ? 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300' : 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200'"
-                    x-text="r.status === 'rejected' ? 'Bị từ chối' : (r.status === 'cancelled' ? 'Đã huỷ' : 'Thất bại')"
-                  ></span>
-                </div>
-                <div class="font-medium text-slate-900 dark:text-slate-100" x-text="r.title || r.request"></div>
-                <div class="text-slate-500 dark:text-slate-400 flex items-center justify-between">
-                  <span x-text="r.project_name || r.project || '—'"></span>
-                  <span x-text="fmtTime(r.updated_at)"></span>
-                </div>
-                <div x-show="r.reason || r.error" class="text-slate-600 dark:text-slate-400 italic" x-text="r.reason ? 'Lý do: ' + r.reason : 'Lỗi: ' + r.error"></div>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <!-- 10 task đã xong mới nhất -->
-        <div class="space-y-3">
-          <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300">10 việc đã xong mới nhất</h3>
-          <div x-show="doneTasks.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-2">
-            Chưa có việc nào xong
-          </div>
-          <div class="space-y-2">
-            <template x-for="dt in doneTasks" :key="'done-' + dt.id">
-              <div class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-3 text-xs dark:border-slate-700">
-                <div class="space-y-0.5 min-w-0 flex-1">
-                  <div class="font-medium text-slate-900 dark:text-slate-100 truncate" x-text="dt.title"></div>
-                  <div class="text-slate-500 dark:text-slate-400 flex items-center gap-2">
-                    <span x-text="dt.project_name || dt.project"></span>
-                    <span>·</span>
-                    <span x-text="fmtTime(dt.updated_at)"></span>
-                  </div>
-                </div>
-                <a
-                  :href="'#/task/' + dt.id"
-                  class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                >Mở →</a>
-              </div>
-            </template>
-          </div>
-        </div>
-      </div>
-    </details>
-  </div>
-  </div>
-
+  </aside>
 </section>

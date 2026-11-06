@@ -1,5 +1,7 @@
 // js/queue.js — Màn hình Điều phối (Orchestrator Console)
 (function () {
+  var SIDE_GROUPS = ['intake', 'approval', 'slot', 'running', 'stopped'];
+
   window.AB.onReady('queue', function () {
     return {
       board: null,
@@ -38,6 +40,10 @@
       selectedTaskId: null,
       // Room picked in the horizontal room row (UI only, highlights its button)
       selectedRoomId: '',
+
+      // Right sidebar accordion: the one open group ('' = all collapsed).
+      // Remembered per viewer in localStorage 'ab.queue.side'.
+      sideGroup: 'intake',
 
       nowSec: Math.floor(Date.now() / 1000),
 
@@ -506,6 +512,90 @@
         } catch (e) {
           this.showOffice = true;
         }
+        try {
+          var side = localStorage.getItem('ab.queue.side');
+          if (side === 'none') {
+            this.sideGroup = '';
+          } else if (SIDE_GROUPS.indexOf(side) !== -1) {
+            this.sideGroup = side;
+          }
+        } catch (e) {}
+      },
+
+      // ---- Right sidebar accordion (UI only) ----
+      setSide: function (g) {
+        if (SIDE_GROUPS.indexOf(g) === -1) return;
+        this.sideGroup = (this.sideGroup === g) ? '' : g;
+        try {
+          localStorage.setItem('ab.queue.side', this.sideGroup || 'none');
+        } catch (e) {}
+      },
+
+      sideOpen: function (g) {
+        return this.sideGroup === g;
+      },
+
+      sideExpanded: function (g) {
+        return this.sideGroup === g ? 'true' : 'false';
+      },
+
+      sideGroupClass: function (g) {
+        return this.sideGroup === g ? 'min-h-0 flex-1' : 'shrink-0';
+      },
+
+      sideHeaderClass: function (g) {
+        if (this.sideGroup === g) {
+          return 'bg-indigo-50 text-indigo-900 dark:bg-indigo-950/40 dark:text-indigo-100';
+        }
+        return 'text-slate-900 hover:bg-slate-50 dark:text-slate-100 dark:hover:bg-slate-700/60';
+      },
+
+      sideChevronClass: function (g) {
+        return this.sideGroup === g ? 'rotate-90' : '';
+      },
+
+      sideCount: function (g) {
+        if (g === 'intake') return this.countIntake;
+        if (g === 'approval') return this.countApproval;
+        if (g === 'slot') return this.countSlot;
+        if (g === 'running') return this.countRunning;
+        if (g === 'stopped') return this.countStopped;
+        return 0;
+      },
+
+      // Accents: Dừng rose and Cần duyệt amber when non-zero, Đang chạy indigo when non-zero.
+      countBadgeClass: function (g) {
+        var n = this.sideCount(g);
+        if (n > 0 && g === 'stopped') {
+          return 'bg-rose-600 text-white dark:bg-rose-500';
+        }
+        if (n > 0 && g === 'approval') {
+          return 'bg-amber-400 text-amber-950 dark:bg-amber-400 dark:text-amber-950';
+        }
+        if (n > 0 && g === 'running') {
+          return 'bg-indigo-600 text-white dark:bg-indigo-500';
+        }
+        return 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300';
+      },
+
+      get countIntake() {
+        return this.intakeItems.length;
+      },
+
+      get countApproval() {
+        return this.approvalItems.length;
+      },
+
+      get countSlot() {
+        return this.waitingSlotItems.length;
+      },
+
+      get countRunning() {
+        return this.runningTasks.length;
+      },
+
+      get countStopped() {
+        return this.stoppedTasks.length;
       },
 
       toggleOffice: function () {
