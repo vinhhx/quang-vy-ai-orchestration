@@ -473,6 +473,7 @@
     task: 'Chi tiết task',
     stats: 'Thống kê',
     projects: 'Dự án',
+    departments: 'Phòng ban',
     settings: 'Cài đặt',
     board: 'Bảng công việc',
     telegram: 'Telegram',
@@ -705,6 +706,9 @@
       }
       if (h === '#/projects') {
         return { name: 'projects', params: {} };
+      }
+      if (h === '#/departments') {
+        return { name: 'departments', params: {} };
       }
       if (h === '#/board') {
         return { name: 'board', params: {} };

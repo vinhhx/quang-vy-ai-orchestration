@@ -96,6 +96,16 @@ pub static ASSETS: &[Asset] = &[
         body: include_bytes!("../../assets/dashboard/screens/projects.html"),
     },
     Asset {
+        path: "/js/departments.js",
+        mime: "text/javascript; charset=utf-8",
+        body: include_bytes!("../../assets/dashboard/js/departments.js"),
+    },
+    Asset {
+        path: "/screens/departments.html",
+        mime: "text/html; charset=utf-8",
+        body: include_bytes!("../../assets/dashboard/screens/departments.html"),
+    },
+    Asset {
         path: "/js/board.js",
         mime: "text/javascript; charset=utf-8",
         body: include_bytes!("../../assets/dashboard/js/board.js"),

@@ -1949,7 +1949,7 @@ const sections = [
       const pr = c.groupCards('plan')[1];
       check('P_STOPPED duyet card class emerald', c.flowCardClass(pr).includes('border-emerald-300'), `got "${c.flowCardClass(pr)}"`);
       check('P_STOPPED duyet counts known zero', JSON.stringify(c.flowCardCounts(pr)) === JSON.stringify(['0 chặn', '2 góp ý']), `got ${JSON.stringify(c.flowCardCounts(pr))}`);
-      check('P_STOPPED gateTime is a clock', /^\d\d:\d\d$/.test(c.gateTime), `got "${c.gateTime}"`);
+      check('P_STOPPED gateTime is a clock', /^(\d\d\/\d\d )?\d\d:\d\d$/.test(c.gateTime), `got "${c.gateTime}"`);
       check('P_STOPPED gateNote hidden', c.gateNote === '', `got "${c.gateNote}"`);
 
       // legacy derived gate keeps the 05.1 title

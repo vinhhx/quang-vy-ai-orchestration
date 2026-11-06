@@ -1,4 +1,5 @@
 pub mod api_board;
+pub mod api_departments;
 pub mod api_fixbug;
 pub mod api_intake;
 pub mod api_projects;
@@ -96,6 +97,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .merge(api_workflows::routes())
         .merge(api_settings::routes())
         .merge(api_board::routes())
+        .merge(api_departments::routes())
         .merge(api_telegram::routes())
         .merge(api_intake::routes())
         .merge(api_prompts::routes())

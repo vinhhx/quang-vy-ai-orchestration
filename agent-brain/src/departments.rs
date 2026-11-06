@@ -42,6 +42,16 @@ pub fn dept_of_role(role: &str) -> Option<&'static str> {
     }
 }
 
+pub fn dept_roles(dept_id: &str) -> &'static [&'static str] {
+    match dept_id {
+        "phan-tich" => &["analyst", "analysis-review"],
+        "ke-hoach" => &["lead", "plan-review"],
+        "thi-cong" => &["dev"],
+        "qa" => &["qa", "code-review"],
+        _ => &[],
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
