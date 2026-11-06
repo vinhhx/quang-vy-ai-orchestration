@@ -689,46 +689,66 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
     }
 
     let conn = crate::db::open(&st.db_path)?;
-    let pf = lead_preflight(&conn, &st.jobs, &project, &proj_root, &slug)?;
-    if !pf.can_start {
-        return Ok(StartOutcome::PreflightRefused {
-            reason: pf.reason.unwrap_or_default(),
-            kind: pf.kind.unwrap_or_default(),
-        });
-    }
+    let is_analysis = workflow.kind == "analysis";
+    let (branch, warning, replan) = if is_analysis {
+        let branch = format!("analysis/{slug}");
+        if req.origin == Origin::Telegram {
+            let has_task = match crate::db::project_row_id(&conn, &project.id) {
+                Ok(pid) => crate::db::find_task_by_branch(&conn, pid, &branch)?.is_some(),
+                Err(_) => false,
+            };
+            if has_task {
+                return Ok(StartOutcome::PreflightRefused {
+                    reason: format!("Đã có task cho nhánh {branch} — dùng tên khác"),
+                    kind: "exists".to_string(),
+                });
+            }
+        }
+        (branch, None, false)
+    } else {
+        let pf = lead_preflight(&conn, &st.jobs, &project, &proj_root, &slug)?;
+        if !pf.can_start {
+            return Ok(StartOutcome::PreflightRefused {
+                reason: pf.reason.unwrap_or_default(),
+                kind: pf.kind.unwrap_or_default(),
+            });
+        }
 
-    let branch = format!("task/{slug}");
-    // OD-8: a Telegram request may neither re-plan a checked-out task branch nor
-    // reuse a branch that already has a task row; the dashboard keeps both.
-    if req.origin == Origin::Telegram {
-        if pf.replan {
-            return Ok(StartOutcome::PreflightRefused {
-                reason: format!(
-                    "Nhánh {branch} đang được checkout — task giao từ Telegram không lập lại plan của task có sẵn"
-                ),
-                kind: "exists".to_string(),
-            });
+        let branch = format!("task/{slug}");
+        // OD-8: a Telegram request may neither re-plan a checked-out task branch nor
+        // reuse a branch that already has a task row; the dashboard keeps both.
+        if req.origin == Origin::Telegram {
+            if pf.replan {
+                return Ok(StartOutcome::PreflightRefused {
+                    reason: format!(
+                        "Nhánh {branch} đang được checkout — task giao từ Telegram không lập lại plan của task có sẵn"
+                    ),
+                    kind: "exists".to_string(),
+                });
+            }
+            // An Err here means the project has no row yet, so it has no task either.
+            let has_task = match crate::db::project_row_id(&conn, &project.id) {
+                Ok(pid) => crate::db::find_task_by_branch(&conn, pid, &branch)?.is_some(),
+                Err(_) => false,
+            };
+            if has_task {
+                return Ok(StartOutcome::PreflightRefused {
+                    reason: format!("Đã có task cho nhánh {branch} — dùng tên khác"),
+                    kind: "exists".to_string(),
+                });
+            }
         }
-        // An Err here means the project has no row yet, so it has no task either.
-        let has_task = match crate::db::project_row_id(&conn, &project.id) {
-            Ok(pid) => crate::db::find_task_by_branch(&conn, pid, &branch)?.is_some(),
-            Err(_) => false,
-        };
-        if has_task {
-            return Ok(StartOutcome::PreflightRefused {
-                reason: format!("Đã có task cho nhánh {branch} — dùng tên khác"),
-                kind: "exists".to_string(),
-            });
-        }
-    }
+        (branch, pf.warning, pf.replan)
+    };
+
     let info = StartInfo {
         project,
         slug,
         branch,
         workflow: workflow.name.clone(),
         auto: workflow.auto,
-        warning: pf.warning,
-        replan: pf.replan,
+        warning,
+        replan,
         team: team.team.name.clone(),
         team_note: team.note.clone(),
     };
@@ -736,15 +756,37 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
         return Ok(StartOutcome::Ready(info));
     }
 
-    let (role, args) = new_task_args_team(
-        workflow.auto,
-        &info.slug,
-        &workflow.name,
-        Some(&info.team),
-        &info.project.id,
-        trimmed_req,
-        req.origin,
-    );
+    let (role, args) = if is_analysis {
+        let role = "analyst";
+        let mut args = vec![
+            "run".to_string(),
+            "analyst".to_string(),
+            "--name".to_string(),
+            info.slug.clone(),
+            "--workflow".to_string(),
+            workflow.name.clone(),
+            "--team".to_string(),
+            info.team.clone(),
+        ];
+        if req.origin == Origin::Telegram {
+            args.push("--origin".to_string());
+            args.push("telegram".to_string());
+        }
+        args.push("--".to_string());
+        args.push(info.project.id.clone());
+        args.push(trimmed_req.to_string());
+        (role, args)
+    } else {
+        new_task_args_team(
+            workflow.auto,
+            &info.slug,
+            &workflow.name,
+            Some(&info.team),
+            &info.project.id,
+            trimmed_req,
+            req.origin,
+        )
+    };
     let spec = crate::dashboard::jobs::JobSpec {
         role: role.to_string(),
         project: info.project.id.clone(),

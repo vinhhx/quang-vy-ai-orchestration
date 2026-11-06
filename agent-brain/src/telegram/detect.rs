@@ -42,6 +42,7 @@ pub enum EventKind {
     RunFailed,
     /// The latest step stopped on a quota or rate limit (Phase 6, D-17): the user picks a team.
     Quota,
+    Answered,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +107,17 @@ pub fn current_event(s: &TaskState) -> Option<Event> {
             .map(|r| r.id)
             .unwrap_or(0);
         return ev(EventKind::QaPass, format!("qa:{qa}"));
+    }
+
+    if s.task.status == "answered" {
+        let last_id = s
+            .runs
+            .iter()
+            .filter(|r| r.role == "analyst" || r.role == "analysis-review")
+            .max_by_key(|r| (r.started_at, r.id))
+            .map(|r| r.id)
+            .unwrap_or(0);
+        return ev(EventKind::Answered, format!("answer:{last_id}"));
     }
 
     let latest = s.runs.iter().max_by_key(|r| (r.started_at, r.id));
@@ -272,7 +284,7 @@ impl Detector {
         let mut out = Vec::new();
         for (task_id, sig) in rows {
             let changed = self.sigs.get(&task_id) != Some(&sig);
-            if !changed && !(full && status_of(&sig) != "qa_pass") {
+            if !changed && !(full && status_of(&sig) != "qa_pass" && status_of(&sig) != "answered") {
                 continue;
             }
             match self.eval(st, conn, task_id) {

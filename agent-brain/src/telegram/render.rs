@@ -408,8 +408,48 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
             }
             lines.push(summary_line(s, now_ms));
         }
+        EventKind::Answered => {
+            let ans_path = crate::answers::path(&s.project.id, id, &s.task.slug);
+            if let Ok(Some(content)) = crate::answers::read(&s.project.id, id, &s.task.slug) {
+                let excerpt = extract_summary_excerpt(&content, 1500);
+                lines.push(excerpt);
+            } else {
+                lines.push(format!("Đã phân tích · task {id}"));
+                lines.push(title_line(s));
+                lines.push(project_line(s));
+                lines.push(format!(
+                    "File câu trả lời dự kiến tại: {}",
+                    ans_path.display()
+                ));
+            }
+        }
     }
     clip(&lines.join("\n"), MAX_TEXT)
+}
+
+pub fn extract_summary_excerpt(text: &str, max_chars: usize) -> String {
+    let mut collecting = false;
+    let mut collected = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("## Tóm tắt") {
+            collecting = true;
+            collected.push(line);
+            continue;
+        }
+        if collecting {
+            if trimmed.starts_with("## ") {
+                break;
+            }
+            collected.push(line);
+        }
+    }
+    let res = if !collected.is_empty() {
+        collected.join("\n")
+    } else {
+        text.to_string()
+    };
+    clip(res.trim(), max_chars)
 }
 
 fn button(label: &str, op: Op, s: &TaskState, run_id: Option<i64>) -> Vec<Button> {
@@ -456,7 +496,7 @@ pub fn buttons_for(ev: &Event, s: &TaskState) -> Vec<Vec<Button>> {
                 rows.push(button("Trả về Lead", Op::ReturnLead, s, None));
             }
         }
-        EventKind::QaPass => {}
+        EventKind::QaPass | EventKind::Answered => {}
         EventKind::Quota => {
             let names = team_names(s);
             let ver = callback::team_list_ver(&names);

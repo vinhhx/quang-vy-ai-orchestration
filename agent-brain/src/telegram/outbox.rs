@@ -230,6 +230,7 @@ fn kind_word(kind: EventKind) -> &'static str {
         EventKind::QaPass => "QA đạt",
         EventKind::RunFailed => "run lỗi",
         EventKind::Quota => "hết quota",
+        EventKind::Answered => "đã phân tích",
     }
 }
 
@@ -428,6 +429,57 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
                         }
                     }
                 }
+            }
+        }
+
+        if ev.kind == EventKind::Answered && !doc_done {
+            let path = crate::answers::path(&s.project.id, task_id, &s.task.slug);
+            if path.is_file() {
+                let caption = render::clip(
+                    &format!("Phân tích task {task_id} — {}", s.project.id),
+                    CAPTION_MAX,
+                );
+                let body = Body::UploadFile {
+                    fields: vec![
+                        ("chat_id".to_string(), chat_id.to_string()),
+                        ("caption".to_string(), caption),
+                    ],
+                    file_field: "document".to_string(),
+                    path,
+                    filename: format!("{task_id}-{}.md", s.task.slug),
+                };
+                match ctx.tx.call("sendDocument", &body, DOCUMENT_MAX_SECS) {
+                    Ok(v) => {
+                        doc_message = v.get("message_id").and_then(|m| m.as_i64());
+                        doc_done = true;
+                        failures = 0;
+                        continue;
+                    }
+                    Err(CallError::Stopped) => return Step::Stopped,
+                    Err(e) => {
+                        failures = failures.saturating_add(1);
+                        match e.retry_delay_ms(failures, base_ms) {
+                            Some(ms) => {
+                                ctx.health.failed(Channel::Send, &e.text());
+                                if sleep_or_stop(&ctx.stop, ms) {
+                                    return Step::Stopped;
+                                }
+                                continue;
+                            }
+                            None => {
+                                crate::term::emit(&format!(
+                                    "Telegram: không gửi được file phân tích cho task {task_id} — {}",
+                                    e.text()
+                                ));
+                                doc_done = true;
+                                failures = 0;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            } else {
+                doc_done = true;
             }
         }
 

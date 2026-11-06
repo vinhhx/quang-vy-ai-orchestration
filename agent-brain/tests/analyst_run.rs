@@ -4,12 +4,16 @@ mod common;
 #[allow(dead_code)]
 #[path = "support/protocol.rs"]
 mod protocol;
+#[allow(dead_code)]
+#[path = "support/telegram.rs"]
+mod tg;
 
-use common::Sandbox;
+use common::{Sandbox, Serve};
 use serde_json::json;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn fake_agy() -> PathBuf {
     common::repo_root()
@@ -450,5 +454,256 @@ fn test_analyst_engine_and_model_from_lead_g() {
         res.stdout.contains("Model: model-lead-custom"),
         "Model của analyst phải kế thừa từ vai lead: {}",
         res.stdout
+    );
+}
+
+fn app_state(sb: &Sandbox) -> Arc<agent_brain::dashboard::AppState> {
+    let text = std::fs::read_to_string(&sb.config_path).expect("read config");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("parse config");
+    let cfg = agent_brain::config::config_from_value(&value).expect("config_from_value");
+    Arc::new(agent_brain::dashboard::AppState {
+        orch: std::sync::RwLock::new(cfg.orchestrator.clone()),
+        cfg,
+        port: 0,
+        token: "0".repeat(64),
+        map_path: sb.map_path(),
+        db_path: sb.db_path.clone(),
+        exe: common::bin(),
+        hints: tokio::sync::broadcast::channel(16).0,
+        shutdown: tokio::sync::watch::channel(false).1,
+        jobs: agent_brain::dashboard::jobs::JobManager::new(common::bin()),
+    })
+}
+
+fn wait_connected(srv: &Serve) {
+    assert!(
+        common::wait_until(std::time::Duration::from_secs(10), || srv
+            .stdout
+            .lock()
+            .unwrap()
+            .contains("Telegram: đã kết nối")),
+        "no connected line"
+    );
+}
+
+#[test]
+fn test_start_new_task_analysis_dirty_repo_h() {
+    let sb = Sandbox::new();
+    let repo = init_project(&sb, "dirty-proj");
+
+    // Dirty the repo
+    std::fs::write(repo.join("dirty_file.txt"), "unstaged dirty content").unwrap();
+    let status = sb.git(&repo, &["status", "--porcelain"]);
+    assert!(!status.trim().is_empty(), "Repo phải bẩn");
+
+    let st = app_state(&sb);
+
+    // If we tried starting a code workflow on dirty repo, it would be refused by preflight:
+    let code_req = agent_brain::dashboard::api_tasks::StartRequest {
+        project: "dirty-proj",
+        request: "Sửa code",
+        name: Some("test-code"),
+        workflow: Some("mac-dinh"),
+        team: None,
+        origin: agent_brain::dashboard::api_tasks::Origin::Dashboard,
+        dry_run: false,
+    };
+    let code_res = agent_brain::dashboard::api_tasks::start_new_task(&st, &code_req).unwrap();
+    assert!(
+        matches!(
+            code_res,
+            agent_brain::dashboard::api_tasks::StartOutcome::PreflightRefused { .. }
+        ),
+        "Workflow code phải bị preflight từ chối khi repo bẩn"
+    );
+
+    // But with an analysis workflow (phan-tich), preflight is skipped and task starts!
+    let analysis_req = agent_brain::dashboard::api_tasks::StartRequest {
+        project: "dirty-proj",
+        request: "Phân tích hệ thống",
+        name: Some("test-analysis"),
+        workflow: Some("phan-tich"),
+        team: None,
+        origin: agent_brain::dashboard::api_tasks::Origin::Dashboard,
+        dry_run: false,
+    };
+    let res = agent_brain::dashboard::api_tasks::start_new_task(&st, &analysis_req).unwrap();
+    match res {
+        agent_brain::dashboard::api_tasks::StartOutcome::Started { job_id, info } => {
+            assert!(job_id > 0);
+            assert_eq!(info.slug, "test-analysis");
+            assert_eq!(info.branch, "analysis/test-analysis");
+            assert_eq!(info.workflow, "phan-tich");
+        }
+        other => panic!("Mong muốn StartOutcome::Started nhưng nhận được {:?}", other),
+    }
+}
+
+#[test]
+fn test_triage_analysis_workflow_validation_i() {
+    let sb = Sandbox::new();
+    let repo = init_project(&sb, "my-proj");
+    let proj = sb.project_entry(&repo, "my-proj", "work");
+    let projects = vec![agent_brain::projects::Project::from_value(&proj).unwrap()];
+
+    let (teams_loaded, _) = agent_brain::teams::load();
+    let text = std::fs::read_to_string(&sb.config_path).expect("read config");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("parse config");
+    let cfg = agent_brain::config::config_from_value(&value).expect("config_from_value");
+    let workflows_loaded = agent_brain::workflows::load(&cfg);
+    let engines_cfg = agent_brain::config::EnginesCfg::defaults("claude");
+
+    let draft = agent_brain::orchestrator::triage::ProposalDraft {
+        project: "my-proj".to_string(),
+        title: "Khảo sát tính năng".to_string(),
+        request: "Hệ thống đã có chức năng X chưa?".to_string(),
+        priority: "normal".to_string(),
+        team: "mac-dinh".to_string(),
+        workflow: "phan-tich".to_string(),
+        reason: Some("Yêu cầu khảo sát".to_string()),
+    };
+
+    let res = agent_brain::orchestrator::triage::validate(
+        &draft,
+        &projects,
+        &teams_loaded,
+        &workflows_loaded,
+        &engines_cfg,
+    );
+    assert!(res.is_ok(), "Workflow phan-tich phải validate thành công: {:?}", res);
+
+    let draft_review = agent_brain::orchestrator::triage::ProposalDraft {
+        project: "my-proj".to_string(),
+        title: "Khảo sát có review".to_string(),
+        request: "Hệ thống đã có chức năng Y chưa?".to_string(),
+        priority: "normal".to_string(),
+        team: "mac-dinh".to_string(),
+        workflow: "phan-tich-review".to_string(),
+        reason: Some("Cần review kỹ".to_string()),
+    };
+
+    let res_review = agent_brain::orchestrator::triage::validate(
+        &draft_review,
+        &projects,
+        &teams_loaded,
+        &workflows_loaded,
+        &engines_cfg,
+    );
+    assert!(
+        res_review.is_ok(),
+        "Workflow phan-tich-review phải validate thành công: {:?}",
+        res_review
+    );
+}
+
+#[test]
+fn test_telegram_answered_notification_j() {
+    let sb = Sandbox::new();
+    let tg = tg::FakeTelegram::start(&sb);
+    tg::write_config(&sb, tg::PAIRED_CHAT, 0o600);
+    let _repo = init_project(&sb, "my-proj");
+
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let map = agent_brain::projects::load_map(&sb.map_path()).unwrap();
+    agent_brain::db::sync_projects(&conn, &agent_brain::projects::projects_of(&map)).unwrap();
+    let pid = agent_brain::db::project_row_id(&conn, "my-proj").unwrap();
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "task-ans",
+        "Câu hỏi phân tích",
+        "analysis/task-ans",
+        Some("main"),
+        None,
+    )
+    .unwrap();
+
+    let run_id = agent_brain::db::insert_run(
+        &conn,
+        &agent_brain::db::NewRun {
+            task_id: Some(task_id),
+            project_id: pid,
+            role: "analyst".to_string(),
+            profile: "work".to_string(),
+            model: Some("opus".to_string()),
+            pid: 1000,
+            pgid: 1000,
+            pid_start: 1,
+            base_commit: None,
+            run_dir: None,
+        },
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE runs SET status = 'succeeded', outcome = 'ok' WHERE id = ?1",
+        [run_id],
+    )
+    .unwrap();
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    // Save answer file directly in the sandbox's xdg_data
+    let ans_text = valid_analyst_text();
+    let ans_dir = sb.xdg_data.join("agent-brain").join("answers").join("my-proj");
+    std::fs::create_dir_all(&ans_dir).unwrap();
+    std::fs::write(ans_dir.join(format!("{task_id}-task-ans.md")), &ans_text).unwrap();
+
+    // Set task status to answered while serve is running
+    conn.execute(
+        "UPDATE tasks SET status = 'answered', updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![agent_brain::db::now_ms(), task_id],
+    )
+    .unwrap();
+
+    // Wait until sendMessage is delivered
+    let ok = common::wait_until(std::time::Duration::from_secs(15), || {
+        !tg.calls("sendMessage").is_empty()
+    });
+    assert!(ok, "Telegram phải nhận được sendMessage cho task answered");
+
+    // 1. sendDocument must be sent with .md file
+    let docs = tg.calls("sendDocument");
+    assert_eq!(docs.len(), 1, "Phải gửi đúng 1 document: {docs:#?}");
+    let doc = &docs[0];
+    assert_eq!(
+        doc["form"]["document"]["filename"],
+        serde_json::json!("1-task-ans.md")
+    );
+    let caption = doc["form"]["caption"].as_str().unwrap();
+    assert!(caption.contains("Phân tích task 1 — my-proj"));
+
+    // 2. sendMessage must reply to the document and contain ## Tóm tắt content
+    let msgs = tg.calls("sendMessage");
+    assert_eq!(msgs.len(), 1, "Phải gửi đúng 1 sendMessage: {msgs:#?}");
+    let msg = &msgs[0];
+    let text = msg["json"]["text"].as_str().unwrap();
+    assert!(text.contains("Đã kiểm tra mã nguồn hệ thống trong dự án"));
+
+    let doc_mid = doc["response"]["result"]["message_id"]
+        .as_i64()
+        .expect("doc message id");
+    assert_eq!(
+        msg["json"]["reply_parameters"]["message_id"].as_i64(),
+        Some(doc_mid),
+        "Tin nhắn phải reply vào document"
+    );
+
+    // 3. Subsequent tick must not resend
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(
+        tg.calls("sendDocument").len(),
+        1,
+        "Không được gửi lại document lần hai"
+    );
+    assert_eq!(
+        tg.calls("sendMessage").len(),
+        1,
+        "Không được gửi lại tin nhắn lần hai"
+    );
+
+    assert_eq!(
+        srv.stop(libc::SIGINT, std::time::Duration::from_secs(10)),
+        Some(0)
     );
 }
