@@ -4,7 +4,7 @@
 
 use crate::dashboard::api_tasks::TaskState;
 use crate::{gitops, planfile, report};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Longest objective copied from the plan, in characters.
 pub const OBJECTIVE_MAX: usize = 3000;
@@ -14,6 +14,10 @@ pub const COMMITS_MAX: usize = 50;
 pub const DIFF_FILES_MAX: usize = 100;
 pub const PLAN_FILES_MAX: usize = 50;
 pub const MAX_REPORT_FILE_SIZE: usize = 1024 * 1024;
+/// Largest file a bot may upload through the Bot API (50 MB).
+pub const TELEGRAM_UPLOAD_MAX_BYTES: u64 = 50 * 1024 * 1024;
+/// Extensions sent with `sendVideo`.
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "webm"];
 const CUT_MARK: &str = "… (đã cắt)";
 
 /// `git diff --numstat` reduced to totals and a per-file list.
@@ -425,6 +429,82 @@ pub fn report_documents(s: &TaskState) -> Vec<(String, Vec<u8>)> {
     results
 }
 
+/// How a product file goes to Telegram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductKind {
+    /// `sendVideo` (`.mp4`, `.mov`, `.webm`).
+    Video,
+    /// `sendDocument`.
+    Document,
+    /// Larger than `TELEGRAM_UPLOAD_MAX_BYTES`: only a text with its path is sent.
+    TooLarge,
+}
+
+/// One `## Sản phẩm` file ready to send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductSend {
+    /// Absolute path, resolved through symlinks (inside the project root).
+    pub path: PathBuf,
+    /// Display name: the base name of the plan entry.
+    pub filename: String,
+    pub size: u64,
+    pub kind: ProductKind,
+}
+
+/// The `## Sản phẩm` files of a passed task, read from the working tree at `s.root`, with the
+/// same checks as the QA product check (exists, regular file, more than 0 bytes, inside the
+/// canonical project root after symlinks) plus the hard denylist of paths. Missing files are
+/// skipped (the QA check already stopped such a task).
+pub fn product_files_for_send(s: &TaskState) -> Vec<ProductSend> {
+    let mut commits: Vec<&str> = Vec::new();
+    if let Some(a) = s.auto.approved_commit.as_deref() {
+        commits.push(a);
+    }
+    let files = crate::roles::qa::task_product_files(&s.root, &commits, s.plan_text.as_deref());
+    let root_real = s.root.canonicalize().ok();
+    let mut out = Vec::new();
+    for rel in files.iter().take(planfile::MAX_PRODUCT_FILES) {
+        if crate::guard::grant_denied_rel(rel) {
+            continue;
+        }
+        let Ok(found) = crate::roles::qa::check_product(&s.root, rel) else {
+            continue;
+        };
+        let resolved_rel = root_real
+            .as_ref()
+            .and_then(|r| found.path.strip_prefix(r).ok())
+            .map(|p| p.to_string_lossy().to_string());
+        match resolved_rel {
+            Some(r) if !crate::guard::grant_denied_rel(&r) => {}
+            _ => continue,
+        }
+        let filename = Path::new(rel)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(rel.as_str())
+            .to_string();
+        let ext = Path::new(rel)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let kind = if found.size > TELEGRAM_UPLOAD_MAX_BYTES {
+            ProductKind::TooLarge
+        } else if VIDEO_EXTENSIONS.contains(&ext.as_str()) {
+            ProductKind::Video
+        } else {
+            ProductKind::Document
+        };
+        out.push(ProductSend {
+            path: found.path,
+            filename,
+            size: found.size,
+            kind,
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,5 +807,56 @@ mod tests {
         let s3 = test_task_state(root, "task/test", Some(&base_sha), Some(plan_case3));
         let docs3 = report_documents(&s3);
         assert!(docs3.is_empty(), "big file must be skipped: {docs3:?}");
+    }
+
+    #[test]
+    fn product_files_for_send_kinds_and_checks() {
+        let repo = test_repo();
+        let root = repo.path();
+        test_commit(root, &[(".gitignore", b"out/\n")], "initial commit");
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        std::fs::write(root.join("out/v.MP4"), b"video").unwrap();
+        std::fs::write(root.join("out/r.pdf"), b"%PDF").unwrap();
+        std::fs::write(root.join("out/empty.webm"), b"").unwrap();
+        let big = std::fs::File::create(root.join("out/big.mov")).unwrap();
+        big.set_len(TELEGRAM_UPLOAD_MAX_BYTES + 1).unwrap();
+        drop(big);
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("x.mp4"), b"x").unwrap();
+        std::os::unix::fs::symlink(other.path().join("x.mp4"), root.join("out/away.mp4")).unwrap();
+        let plan = "# Plan: t\n## Mục tiêu\nx\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n| 1 | a.txt | - | x | y |\n## Không được đụng tới\n-\n## Cách kiểm tra\n-\n## Vướng mắc\n## Thư mục được ghi\n- `out/**`\n## Sản phẩm\n- `out/v.MP4`\n- `out/missing.mp4`\n- `out/r.pdf`\n- `out/big.mov`\n- `out/empty.webm`\n- `out/away.mp4`\n";
+        let s = test_task_state(root, "main", None, Some(plan));
+        let got = product_files_for_send(&s);
+        let names: Vec<(&str, ProductKind, u64)> = got
+            .iter()
+            .map(|p| (p.filename.as_str(), p.kind, p.size))
+            .collect();
+        // at most 5 entries are looked at: `out/away.mp4` is the 6th
+        assert_eq!(
+            names,
+            vec![
+                ("v.MP4", ProductKind::Video, 5),
+                ("r.pdf", ProductKind::Document, 4),
+                (
+                    "big.mov",
+                    ProductKind::TooLarge,
+                    TELEGRAM_UPLOAD_MAX_BYTES + 1
+                ),
+            ]
+        );
+        let root_real = root.canonicalize().unwrap();
+        assert!(got
+            .iter()
+            .all(|p| p.path.is_absolute() && p.path.starts_with(&root_real)));
+
+        // a symlink out of the root is never sent
+        let plan2 = plan.replace("- `out/v.MP4`\n- `out/missing.mp4`\n", "");
+        let s2 = test_task_state(root, "main", None, Some(&plan2));
+        assert!(product_files_for_send(&s2)
+            .iter()
+            .all(|p| p.filename != "away.mp4"));
+        // no product section: nothing
+        let s3 = test_task_state(root, "main", None, Some("# Plan: t\n## Mục tiêu\nx\n"));
+        assert!(product_files_for_send(&s3).is_empty());
     }
 }

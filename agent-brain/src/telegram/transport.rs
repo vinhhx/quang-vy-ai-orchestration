@@ -101,6 +101,14 @@ pub enum Body {
         filename: String,
         content: String,
     },
+    /// Uploads a file from disk as is (binary allowed). `path` travels only inside the `-K`
+    /// config, never on argv; it must be absolute, valid UTF-8 and free of control characters.
+    UploadFile {
+        fields: Vec<(String, String)>,
+        file_field: String,
+        path: PathBuf,
+        filename: String,
+    },
 }
 
 /// Characters that would break curl's `-F` mini-syntax (`;` `,` `"` `\` and
@@ -115,6 +123,35 @@ fn safe_form_word(s: &str) -> String {
             }
         })
         .collect()
+}
+
+/// A file name for curl's `-F name=@"<file>"` syntax: inside the double quotes `\\` and `"`
+/// are escaped with a backslash, so `;` and `,` stay part of the name.
+fn form_quoted_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len() + 2);
+    out.push('"');
+    for c in path.chars() {
+        if c == '\\' || c == '"' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
+/// Why `path` can not be uploaded by `Body::UploadFile`, `None` when it can.
+pub fn upload_path_error(path: &Path) -> Option<&'static str> {
+    let Some(text) = path.to_str() else {
+        return Some("đường dẫn file không phải UTF-8");
+    };
+    if !path.is_absolute() {
+        return Some("đường dẫn file không tuyệt đối");
+    }
+    if text.chars().any(|c| c.is_control()) {
+        return Some("đường dẫn file có ký tự điều khiển");
+    }
+    None
 }
 
 pub fn build_config(url: &str, body: &Body) -> String {
@@ -144,6 +181,26 @@ pub fn build_config(url: &str, body: &Body) -> String {
                 quote_cfg(&format!(
                     "{}=@upload.md;filename={};type=text/markdown",
                     safe_form_word(file_field),
+                    safe_form_word(filename)
+                ))
+            ));
+        }
+        Body::UploadFile {
+            fields,
+            file_field,
+            path,
+            filename,
+        } => {
+            lines.push(format!("header = {}", quote_cfg("Expect:")));
+            for (k, v) in fields {
+                lines.push(format!("form-string = {}", quote_cfg(&format!("{k}={v}"))));
+            }
+            lines.push(format!(
+                "form = {}",
+                quote_cfg(&format!(
+                    "{}=@{};filename={}",
+                    safe_form_word(file_field),
+                    form_quoted_path(&path.to_string_lossy()),
                     safe_form_word(filename)
                 ))
             ));
@@ -318,6 +375,13 @@ impl Transport {
         if self.stop.load(Ordering::SeqCst) {
             return Err(CallError::Stopped);
         }
+        if let Body::UploadFile { path, .. } = body {
+            if let Some(reason) = upload_path_error(path) {
+                return Err(CallError::Spawn(format!(
+                    "không gửi được file qua Telegram: {reason}"
+                )));
+            }
+        }
         let url = format!("{}/bot{}/{}", self.base, self.token, method);
         let cfg = build_config(&url, body);
 
@@ -330,7 +394,7 @@ impl Transport {
                     )))
                 }
             },
-            Body::Json(_) => None,
+            Body::Json(_) | Body::UploadFile { .. } => None,
         };
 
         let res = self.run_curl(&cfg, workdir.as_deref(), max_secs);
@@ -574,6 +638,63 @@ mod tests {
             up.contains(r#"form = "document=@upload.md;filename=x.plan.md;type=text/markdown""#),
             "{up}"
         );
+    }
+
+    #[test]
+    fn upload_file_config_carries_the_escaped_path_never_argv() {
+        let url = format!("{DEFAULT_API}/bot{TOKEN}/sendVideo");
+        let path = PathBuf::from("/tmp/dự án/a \"b\" c\\d;e,f.mp4");
+        let body = Body::UploadFile {
+            fields: vec![
+                ("chat_id".to_string(), "5".to_string()),
+                ("supports_streaming".to_string(), "true".to_string()),
+            ],
+            file_field: "video".to_string(),
+            path: path.clone(),
+            filename: "x;type=text/html,\"y\".mp4".to_string(),
+        };
+        let cfg = build_config(&url, &body);
+        assert!(
+            cfg.contains(r#"form-string = "supports_streaming=true""#),
+            "{cfg}"
+        );
+        // the path is quoted for curl's -F syntax, then escaped again for the config file
+        let expected = r#"form = "video=@\"/tmp/dự án/a \\\"b\\\" c\\\\d;e,f.mp4\";filename=x_type_text/html__y_.mp4""#;
+        assert!(cfg.contains(expected), "{cfg}\nexpected: {expected}");
+        // one form line, no newline smuggled
+        assert_eq!(cfg.lines().filter(|l| l.starts_with("form = ")).count(), 1);
+        let argv = curl_argv(600, DEFAULT_API);
+        let path_text = path.to_string_lossy();
+        assert!(
+            argv.iter().all(|a| !a.contains(path_text.as_ref())),
+            "{argv:?}"
+        );
+        assert!(argv.iter().all(|a| !a.contains("dự án")), "{argv:?}");
+
+        assert_eq!(upload_path_error(&path), None);
+        assert!(upload_path_error(Path::new("rel/a.mp4")).is_some());
+        assert!(upload_path_error(Path::new("/tmp/a\nb.mp4")).is_some());
+    }
+
+    #[test]
+    fn upload_file_with_a_bad_path_is_refused_before_curl() {
+        let t = Transport::new(
+            TOKEN.into(),
+            "http://127.0.0.1:9".into(),
+            "/nonexistent/curl-never-run".into(),
+            PathBuf::from("/nonexistent"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let body = Body::UploadFile {
+            fields: Vec::new(),
+            file_field: "document".to_string(),
+            path: PathBuf::from("relative.pdf"),
+            filename: "relative.pdf".to_string(),
+        };
+        match t.call("sendDocument", &body, 5) {
+            Err(CallError::Spawn(m)) => assert!(m.contains("không tuyệt đối"), "{m}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

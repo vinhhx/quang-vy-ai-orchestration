@@ -840,3 +840,169 @@ fn unreadable_task_at_start_does_not_resend_old_event() {
     );
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+// ---------------------------------------------------------------------------
+// `## Sản phẩm`: product files sent after the summary and the reports
+// ---------------------------------------------------------------------------
+
+fn lead_plan_with_products_entry() -> Value {
+    let rows = &[
+        ("src/app.py", "app()", "trả về 2", "demo"),
+        ("reports/ket-qua.md", "-", "báo cáo", "kết quả"),
+    ];
+    let mut p_text = protocol::plan_text("Kế hoạch", rows, "python3 -m unittest", "");
+    p_text.push_str(
+        "\n## Gửi báo cáo\n- `reports/ket-qua.md`\n## Thư mục được ghi\n- `out/**`\n## Sản phẩm\n- `out/v.mp4`\n- `out/r.pdf`\n- `out/big.mp4`\n",
+    );
+    json!({"ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "read", "path": "src/app.py"},
+        {"op": "write", "path": ".plan.md", "content": p_text, "keep_meta": true}
+    ]})
+}
+
+fn full_flow_with_products_scenario() -> Value {
+    by_role(json!({
+        "lead": [lead_plan_with_products_entry()],
+        "plan-review": [plan_review_entry("approve", 0, 1)],
+        "dev": [dev_impl_with_report_entry()],
+        "code-review": [code_review_entry("pass", 0)],
+        "qa": [qa_entry("Đạt")],
+    }))
+}
+
+#[test]
+fn qa_pass_sends_products_after_summary_and_report() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    let repo = sb.make_repo(
+        "web-ban-hang",
+        &[
+            ("src/app.py", "def app():\n    return 1\n"),
+            (".gitignore", "out/\n"),
+        ],
+        None,
+        None,
+    );
+    let mut entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    entry.as_object_mut().unwrap().remove("workflow");
+    sb.write_map(json!([entry]), &[]);
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    auto_start_to_gate(&sb, full_flow_with_products_scenario());
+    wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+
+    // the products, made outside git (gitignored) before the run goes on
+    std::fs::create_dir_all(repo.join("out")).unwrap();
+    std::fs::write(repo.join("out/v.mp4"), "fake video bytes").unwrap();
+    std::fs::write(repo.join("out/r.pdf"), "%PDF fake").unwrap();
+    let big = std::fs::File::create(repo.join("out/big.mp4")).unwrap();
+    big.set_len(60 * 1024 * 1024).unwrap();
+    drop(big);
+
+    let res = sb.run(&["approve", "1"], Some(full_flow_with_products_scenario()));
+    assert_ok(&res, "approve 1");
+    let msg = wait_message(&tg, &srv, "QA đạt");
+
+    // every request from the summary file on, in order
+    let records = tg.records();
+    let start = records
+        .iter()
+        .position(|r| r["form"]["document"]["filename"] == json!("sua-app.summary.md"))
+        .unwrap_or_else(|| panic!("no summary file: {records:#?}"));
+    let order: Vec<(String, String)> = records[start..]
+        .iter()
+        .map(|r| {
+            let method = r["method"].as_str().unwrap_or("").to_string();
+            let what = match method.as_str() {
+                "sendDocument" => r["form"]["document"]["filename"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                "sendVideo" => r["form"]["video"]["filename"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                _ => text_of(r).lines().next().unwrap_or("").to_string(),
+            };
+            (method, what)
+        })
+        .filter(|(m, _)| m.starts_with("send"))
+        .collect();
+    let methods: Vec<&str> = order.iter().map(|(m, _)| m.as_str()).collect();
+    assert_eq!(
+        methods,
+        vec![
+            "sendDocument",
+            "sendDocument",
+            "sendVideo",
+            "sendDocument",
+            "sendMessage",
+            "sendMessage"
+        ],
+        "{order:#?}"
+    );
+    assert_eq!(order[1].1, "ket-qua.md", "{order:#?}");
+    assert_eq!(order[2].1, "v.mp4", "{order:#?}");
+    assert_eq!(order[3].1, "r.pdf", "{order:#?}");
+    assert!(
+        order[4].1.starts_with("Sản phẩm task 1: big.mp4"),
+        "{order:#?}"
+    );
+    assert!(order[5].1.starts_with("QA đạt"), "{order:#?}");
+
+    // the video: streaming, paired chat, caption, real bytes
+    let videos = tg.calls("sendVideo");
+    assert_eq!(videos.len(), 1, "{videos:#?}");
+    let v = &videos[0];
+    assert_eq!(v["form"]["supports_streaming"], json!("true"), "{v}");
+    assert_eq!(v["form"]["chat_id"], json!(PAIRED_CHAT.to_string()), "{v}");
+    assert_eq!(v["form"]["caption"], json!("Sản phẩm task 1: v.mp4"), "{v}");
+    assert_eq!(
+        v["form"]["video"]["content"],
+        json!("fake video bytes"),
+        "{v}"
+    );
+    assert_eq!(v["status"], json!(200), "{v}");
+
+    // the pdf goes as a document with its own bytes
+    let pdf = tg
+        .calls("sendDocument")
+        .into_iter()
+        .find(|d| d["form"]["document"]["filename"] == json!("r.pdf"))
+        .expect("r.pdf sent");
+    assert_eq!(pdf["form"]["document"]["content"], json!("%PDF fake"));
+    assert_eq!(pdf["form"]["caption"], json!("Sản phẩm task 1: r.pdf"));
+
+    // the big file is never uploaded: a text with its size and absolute path
+    let big_msg = messages_starting(&tg, "Sản phẩm task 1: big.mp4");
+    assert_eq!(big_msg.len(), 1);
+    let big_text = text_of(&big_msg[0]);
+    let big_path = repo.join("out/big.mp4").canonicalize().unwrap();
+    assert!(big_text.contains("(60.0 MB)"), "{big_text}");
+    assert!(big_text.contains("lớn hơn 50 MB"), "{big_text}");
+    assert!(
+        big_text.contains(&format!("File ở: {}", big_path.display())),
+        "{big_text}"
+    );
+    assert!(tg
+        .records()
+        .iter()
+        .all(|r| r["form"]["video"]["filename"] != json!("big.mp4")
+            && r["form"]["document"]["filename"] != json!("big.mp4")));
+
+    // the text still replies to the summary file
+    let doc_mid = records[start]["response"]["result"]["message_id"]
+        .as_i64()
+        .expect("summary message_id");
+    assert_eq!(
+        msg["json"]["reply_parameters"]["message_id"].as_i64(),
+        Some(doc_mid),
+        "{msg}"
+    );
+    assert_plain_and_paired(&tg);
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}

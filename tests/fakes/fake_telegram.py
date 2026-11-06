@@ -234,6 +234,18 @@ def result_for(method: str, params: dict):
                 "document": {"file_name": fname},
             },
         }
+    if method == "sendVideo":
+        vid = params.get("video")
+        fname = vid.get("filename") if isinstance(vid, dict) else None
+        return 200, {
+            "ok": True,
+            "result": {
+                "message_id": next_message_id(),
+                "date": int(time.time()),
+                "chat": chat_of(params),
+                "video": {"file_name": fname},
+            },
+        }
     if method == "editMessageText":
         return 200, {
             "ok": True,

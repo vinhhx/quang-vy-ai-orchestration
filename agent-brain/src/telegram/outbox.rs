@@ -22,6 +22,8 @@ const MESSAGE_MAX_SECS: u64 = 30;
 const CAPTION_MAX: usize = 1000;
 const DB_READ_ATTEMPTS: u32 = 3;
 const EDIT_MAX_SECS: u64 = 20;
+/// Longest single upload of a product file (`## Sản phẩm`), up to 50 MB.
+const PRODUCT_UPLOAD_MAX_SECS: u64 = 600;
 
 /// Most items the outbox holds (D-05): while Telegram is down events keep coming.
 pub const QUEUE_CAP: usize = 200;
@@ -242,6 +244,63 @@ fn ensure_conn<'a>(ctx: &BotCtx, slot: &'a mut Option<Connection>) -> Option<&'a
     slot.as_ref()
 }
 
+/// Method, body and time limit that send one product file: `sendVideo` (streaming) for a
+/// video, `sendDocument` for any other file, a text with the size and the absolute path when the
+/// file is over the Bot API upload limit.
+pub fn product_request(
+    chat_id: i64,
+    task_id: i64,
+    item: &super::summary::ProductSend,
+) -> (&'static str, Body, u64) {
+    use super::summary::ProductKind;
+    let caption = render::clip(
+        &format!("Sản phẩm task {task_id}: {}", item.filename),
+        CAPTION_MAX,
+    );
+    match item.kind {
+        ProductKind::Video => (
+            "sendVideo",
+            Body::UploadFile {
+                fields: vec![
+                    ("chat_id".to_string(), chat_id.to_string()),
+                    ("caption".to_string(), caption),
+                    ("supports_streaming".to_string(), "true".to_string()),
+                ],
+                file_field: "video".to_string(),
+                path: item.path.clone(),
+                filename: item.filename.clone(),
+            },
+            PRODUCT_UPLOAD_MAX_SECS,
+        ),
+        ProductKind::Document => (
+            "sendDocument",
+            Body::UploadFile {
+                fields: vec![
+                    ("chat_id".to_string(), chat_id.to_string()),
+                    ("caption".to_string(), caption),
+                ],
+                file_field: "document".to_string(),
+                path: item.path.clone(),
+                filename: item.filename.clone(),
+            },
+            PRODUCT_UPLOAD_MAX_SECS,
+        ),
+        ProductKind::TooLarge => {
+            let mb = item.size as f64 / (1024.0 * 1024.0);
+            let text = format!(
+                "Sản phẩm task {task_id}: {} ({mb:.1} MB) lớn hơn 50 MB nên không gửi được qua Telegram. File ở: {}",
+                item.filename,
+                item.path.display()
+            );
+            (
+                "sendMessage",
+                Body::Json(serde_json::json!({ "chat_id": chat_id, "text": text })),
+                MESSAGE_MAX_SECS,
+            )
+        }
+    }
+}
+
 enum Step {
     /// Item finished (delivered or dropped).
     Done,
@@ -272,6 +331,8 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
     let mut doc_message: Option<i64> = None;
     let mut report_docs: Option<Vec<(String, Vec<u8>)>> = None;
     let mut report_idx: usize = 0;
+    let mut products: Option<Vec<super::summary::ProductSend>> = None;
+    let mut product_idx: usize = 0;
 
     loop {
         if ctx.stop.load(Ordering::SeqCst) {
@@ -405,6 +466,50 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
                                         e.text()
                                     ));
                                     report_idx += 1;
+                                    failures = 0;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // QA pass: the product files (`## Sản phẩm`) after the summary and the reports.
+        if ev.kind == EventKind::QaPass && doc_done {
+            if products.is_none() {
+                products = Some(super::summary::product_files_for_send(&s));
+            }
+            if let Some(list) = &products {
+                if product_idx < list.len() {
+                    let item = &list[product_idx];
+                    let (method, body, max_secs) = product_request(chat_id, task_id, item);
+                    match ctx.tx.call(method, &body, max_secs) {
+                        Ok(_v) => {
+                            product_idx += 1;
+                            failures = 0;
+                            // Re-check the task before the next file or the text (D-05).
+                            continue;
+                        }
+                        Err(CallError::Stopped) => return Step::Stopped,
+                        Err(e) => {
+                            failures = failures.saturating_add(1);
+                            match e.retry_delay_ms(failures, base_ms) {
+                                Some(ms) => {
+                                    ctx.health.failed(Channel::Send, &e.text());
+                                    if sleep_or_stop(&ctx.stop, ms) {
+                                        return Step::Stopped;
+                                    }
+                                    continue;
+                                }
+                                None => {
+                                    crate::term::emit(&format!(
+                                        "Telegram: không gửi được sản phẩm {} cho task {task_id} — {}",
+                                        item.filename,
+                                        e.text()
+                                    ));
+                                    product_idx += 1;
                                     failures = 0;
                                     continue;
                                 }
@@ -734,5 +839,48 @@ mod tests {
         assert_eq!(r.remove_by_message(12).map(|t| t.task_id), Some(2));
         assert_eq!(r.take(1).map(|t| t.message_id), Some(11));
         assert!(r.task_ids().is_empty());
+    }
+
+    #[test]
+    fn product_request_by_kind() {
+        use super::super::summary::{ProductKind, ProductSend};
+        let item = |kind, size| ProductSend {
+            path: std::path::PathBuf::from("/p/out/v.mp4"),
+            filename: "v.mp4".to_string(),
+            size,
+            kind,
+        };
+        let (m, body, secs) = product_request(5, 7, &item(ProductKind::Video, 10));
+        assert_eq!((m, secs), ("sendVideo", PRODUCT_UPLOAD_MAX_SECS));
+        match body {
+            Body::UploadFile {
+                fields, file_field, ..
+            } => {
+                assert_eq!(file_field, "video");
+                assert!(fields.contains(&("supports_streaming".to_string(), "true".to_string())));
+                assert!(
+                    fields.contains(&("caption".to_string(), "Sản phẩm task 7: v.mp4".to_string()))
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        let (m, body, _) = product_request(5, 7, &item(ProductKind::Document, 10));
+        assert_eq!(m, "sendDocument");
+        assert!(
+            matches!(body, Body::UploadFile { ref file_field, .. } if file_field == "document")
+        );
+        let (m, body, secs) =
+            product_request(5, 7, &item(ProductKind::TooLarge, 60 * 1024 * 1024 + 1));
+        assert_eq!((m, secs), ("sendMessage", MESSAGE_MAX_SECS));
+        match body {
+            Body::Json(v) => {
+                assert_eq!(v["chat_id"], serde_json::json!(5));
+                assert_eq!(
+                    v["text"],
+                    serde_json::json!("Sản phẩm task 7: v.mp4 (60.0 MB) lớn hơn 50 MB nên không gửi được qua Telegram. File ở: /p/out/v.mp4")
+                );
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }
