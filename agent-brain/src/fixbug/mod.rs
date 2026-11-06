@@ -3,6 +3,7 @@
 pub mod config;
 pub mod envfile;
 pub mod gsheet;
+pub mod pull;
 pub mod trello;
 
 use crate::error::{BrainError, EXIT_ERROR};

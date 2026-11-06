@@ -955,7 +955,7 @@ fn v3_db_gains_team_json() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
-    assert_eq!(agent_brain::db::SCHEMA_VERSION, 5);
+    assert_eq!(agent_brain::db::SCHEMA_VERSION, 6);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 
     let n: i64 = conn
@@ -1008,7 +1008,7 @@ fn fresh_db_has_team_json_at_current_version() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
-    assert_eq!(user_ver, 5);
+    assert_eq!(user_ver, 6);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 }
 
@@ -1044,7 +1044,7 @@ fn v4_db_upgrades_to_v5_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 5);
+    assert_eq!(user_ver, 6);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Verify existing data preserved
@@ -1087,6 +1087,102 @@ fn v4_db_upgrades_to_v5_keeping_data() {
         .map(|c| c > 0)
         .unwrap();
     assert!(quota_stops_exists);
+}
+
+fn build_v5(path: &Path) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    for sql in &agent_brain::db::MIGRATIONS[..5] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 5).unwrap();
+    conn.execute(
+        "INSERT INTO projects (id, slug, path, name_vi, aliases_json, type, profile, repo, missing)
+         VALUES (1, 'proj-1', '/path/1', 'Dự án 1', '[]', 'code', 'work', NULL, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO intake (id, source, project_id, request, priority, status, created_at, updated_at)
+         VALUES (1, 'ui', 1, 'yêu cầu từ UI', 'normal', 'queued', 1000, 1000),
+                (2, 'telegram', 1, 'yêu cầu từ Telegram', 'urgent', 'queued', 1001, 1001)",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn v5_db_upgrades_to_v6_keeping_data() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v5(&db_path);
+
+    let conn = agent_brain::db::open(&db_path).expect("open v5 DB upgrades to v6");
+
+    let user_ver: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(user_ver, 6);
+    assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
+
+    // Dữ liệu cũ trong intake phải được giữ nguyên
+    let intake_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM intake", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(intake_count, 2);
+
+    let item1 = agent_brain::db::get_intake(&conn, 1).unwrap().unwrap();
+    assert_eq!(item1.source, "ui");
+    assert_eq!(item1.request, "yêu cầu từ UI");
+
+    let item2 = agent_brain::db::get_intake(&conn, 2).unwrap().unwrap();
+    assert_eq!(item2.source, "telegram");
+    assert_eq!(item2.priority, "urgent");
+
+    // Thêm nguồn mới: trello và sheet thành công
+    let id_trello = agent_brain::db::insert_intake(&conn, "trello", Some(1), "trello bug", "normal").unwrap();
+    assert!(id_trello > 0);
+    let id_sheet = agent_brain::db::insert_intake(&conn, "sheet", Some(1), "sheet bug", "low").unwrap();
+    assert!(id_sheet > 0);
+
+    // CHECK constraint chặn nguồn không hợp lệ
+    let bad_source = agent_brain::db::insert_intake(&conn, "invalid_source", Some(1), "bad bug", "normal");
+    assert!(bad_source.is_err(), "Kỳ vọng CHECK constraint chặn nguồn không hợp lệ");
+
+    // Bảng fixbug_refs hoạt động bình thường
+    let ref_id = agent_brain::db::insert_fixbug_ref(
+        &conn,
+        1,
+        "trello",
+        "card_ext_1",
+        "T-100",
+        "Tiêu đề bug",
+        Some("https://trello.com/c/1"),
+        Some(id_trello),
+    )
+    .unwrap();
+    assert!(ref_id > 0);
+
+    let ref_row = agent_brain::db::fixbug_ref_by_key(&conn, 1, "T-100").unwrap().unwrap();
+    assert_eq!(ref_row.ext_id, "card_ext_1");
+    assert_eq!(ref_row.state, "pulled");
+
+    assert!(agent_brain::db::fixbug_ref_exists(&conn, 1, "trello", "card_ext_1").unwrap());
+    assert!(!agent_brain::db::fixbug_ref_exists(&conn, 1, "trello", "card_nonexistent").unwrap());
+
+    agent_brain::db::set_fixbug_ref_state(&conn, ref_id, "deployed", Some("Đã deploy lên staging")).unwrap();
+    let updated_ref = agent_brain::db::fixbug_ref_by_key(&conn, 1, "T-100").unwrap().unwrap();
+    assert_eq!(updated_ref.state, "deployed");
+    assert_eq!(updated_ref.note.as_deref(), Some("Đã deploy lên staging"));
+
+    let list = agent_brain::db::list_fixbug_refs(&conn, 1).unwrap();
+    assert_eq!(list.len(), 1);
+
+    // Kiểm tra khóa ngoại
+    let bad_fk: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(bad_fk, 0);
 }
 
 #[test]

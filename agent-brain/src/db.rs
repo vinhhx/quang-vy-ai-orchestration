@@ -62,9 +62,40 @@ CREATE INDEX intake_status ON intake(status);
 CREATE TABLE proposals (id INTEGER PRIMARY KEY, intake_id INTEGER NOT NULL REFERENCES intake(id) ON DELETE CASCADE, project_id INTEGER NOT NULL REFERENCES projects(id), title TEXT NOT NULL, request TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','normal','low')), team TEXT NOT NULL, workflow TEXT NOT NULL, reason TEXT, status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','started','failed')), task_id INTEGER REFERENCES tasks(id), error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE INDEX proposals_status ON proposals(status);
 CREATE TABLE quota_stops (task_id INTEGER PRIMARY KEY REFERENCES tasks(id), stopped_at INTEGER NOT NULL, engine TEXT NOT NULL, notified INTEGER NOT NULL DEFAULT 0);"#,
+    r#"CREATE TABLE intake_new (
+  id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL CHECK (source IN ('ui','telegram','trello','sheet')),
+  project_id INTEGER REFERENCES projects(id),
+  request TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','normal','low')),
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','triaging','proposed','cancelled','failed')),
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+INSERT INTO intake_new (id, source, project_id, request, priority, status, error, created_at, updated_at)
+  SELECT id, source, project_id, request, priority, status, error, created_at, updated_at FROM intake;
+DROP TABLE intake;
+ALTER TABLE intake_new RENAME TO intake;
+CREATE INDEX intake_status ON intake(status);
+CREATE TABLE fixbug_refs (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  kind TEXT NOT NULL CHECK (kind IN ('trello','sheet')),
+  ext_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  url TEXT,
+  intake_id INTEGER REFERENCES intake(id),
+  state TEXT NOT NULL DEFAULT 'pulled' CHECK (state IN ('pulled','deployed','rejected')),
+  note TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (project_id, kind, ext_id)
+);"#,
 ];
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -1529,6 +1560,119 @@ pub fn list_orchestrator_board_recent(
     recent.truncate(20);
 
     Ok(recent.into_iter().map(|(_, v)| v).collect())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FixbugRefRow {
+    pub id: i64,
+    pub project_id: i64,
+    pub kind: String,
+    pub ext_id: String,
+    pub key: String,
+    pub title: String,
+    pub url: Option<String>,
+    pub intake_id: Option<i64>,
+    pub state: String,
+    pub note: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+const FIXBUG_REF_COLUMNS: &str =
+    "id, project_id, kind, ext_id, key, title, url, intake_id, state, note, created_at, updated_at";
+
+fn row_to_fixbug_ref(r: &rusqlite::Row) -> rusqlite::Result<FixbugRefRow> {
+    Ok(FixbugRefRow {
+        id: r.get(0)?,
+        project_id: r.get(1)?,
+        kind: r.get(2)?,
+        ext_id: r.get(3)?,
+        key: r.get(4)?,
+        title: r.get(5)?,
+        url: r.get(6)?,
+        intake_id: r.get(7)?,
+        state: r.get(8)?,
+        note: r.get(9)?,
+        created_at: r.get(10)?,
+        updated_at: r.get(11)?,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn insert_fixbug_ref(
+    conn: &Connection,
+    project_id: i64,
+    kind: &str,
+    ext_id: &str,
+    key: &str,
+    title: &str,
+    url: Option<&str>,
+    intake_id: Option<i64>,
+) -> BrainResult<i64> {
+    let now = now_ms();
+    conn.execute(
+        "INSERT INTO fixbug_refs (project_id, kind, ext_id, key, title, url, intake_id, state, note, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pulled', NULL, ?8, ?8)",
+        params![project_id, kind, ext_id, key, title, url, intake_id, now],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn fixbug_ref_by_key(
+    conn: &Connection,
+    project_id: i64,
+    key: &str,
+) -> BrainResult<Option<FixbugRefRow>> {
+    let sql = format!("SELECT {FIXBUG_REF_COLUMNS} FROM fixbug_refs WHERE project_id = ?1 AND key = ?2");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params![project_id, key])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(row_to_fixbug_ref(r)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn fixbug_ref_exists(
+    conn: &Connection,
+    project_id: i64,
+    kind: &str,
+    ext_id: &str,
+) -> BrainResult<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM fixbug_refs WHERE project_id = ?1 AND kind = ?2 AND ext_id = ?3",
+        params![project_id, kind, ext_id],
+        |r| r.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+pub fn set_fixbug_ref_state(
+    conn: &Connection,
+    id: i64,
+    state: &str,
+    note: Option<&str>,
+) -> BrainResult<()> {
+    let now = now_ms();
+    conn.execute(
+        "UPDATE fixbug_refs SET state = ?1, note = ?2, updated_at = ?3 WHERE id = ?4",
+        params![state, note, now, id],
+    )?;
+    Ok(())
+}
+
+pub fn list_fixbug_refs(
+    conn: &Connection,
+    project_id: i64,
+) -> BrainResult<Vec<FixbugRefRow>> {
+    let sql = format!(
+        "SELECT {FIXBUG_REF_COLUMNS} FROM fixbug_refs WHERE project_id = ?1 ORDER BY id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params![project_id], row_to_fixbug_ref)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 #[cfg(test)]
