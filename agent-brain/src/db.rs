@@ -1320,6 +1320,17 @@ pub fn cancel_intake_if_cancellable(conn: &Connection, id: i64) -> BrainResult<b
     Ok(changes > 0)
 }
 
+/// `failed` → `queued` with the error cleared (the next orchestrator tick triages it again).
+/// False when the intake is missing or not `failed`.
+pub fn retry_intake_if_failed(conn: &Connection, id: i64) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE intake SET status = 'queued', error = NULL, updated_at = ?1 WHERE id = ?2 AND status = 'failed'",
+        params![now, id],
+    )?;
+    Ok(changes > 0)
+}
+
 pub fn approve_proposal_with(
     conn: &Connection,
     id: i64,

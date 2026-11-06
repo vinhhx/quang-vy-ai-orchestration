@@ -14,6 +14,7 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/intake", get(list_intake).post(create_intake))
         .route("/api/intake/{id}/cancel", post(cancel_intake))
+        .route("/api/intake/{id}/retry", post(retry_intake))
         .route("/api/proposals", get(list_proposals))
         .route("/api/proposals/{id}/priority", post(post_proposal_priority))
         .route("/api/proposals/{id}/approve", post(post_proposal_approve))
@@ -222,6 +223,38 @@ async fn cancel_intake(
         ),
         Ok(Err((code, msg))) => json_error(code, &msg),
         Err(e) => internal_error("hủy intake", &e),
+    }
+}
+
+const RETRY_ONLY_FAILED: &str = "Chỉ thử lại được việc bị lỗi";
+
+/// `failed` → `queued`, error cleared: the queue triages it again on its next tick.
+async fn retry_intake(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<i64>,
+) -> Response {
+    let res = blocking(move || {
+        let conn = crate::db::open(&st.db_path)?;
+        if crate::db::get_intake(&conn, id)?.is_none() {
+            return Ok(Err((
+                StatusCode::NOT_FOUND,
+                format!("Không tìm thấy intake #{id}"),
+            )));
+        }
+        if !crate::db::retry_intake_if_failed(&conn, id)? {
+            return Ok(Err((StatusCode::CONFLICT, RETRY_ONLY_FAILED.to_string())));
+        }
+        Ok(Ok(()))
+    })
+    .await;
+
+    match res {
+        Ok(Ok(())) => json_response(
+            StatusCode::OK,
+            serde_json::json!({ "id": id, "status": "queued" }),
+        ),
+        Ok(Err((code, msg))) => json_error(code, &msg),
+        Err(e) => internal_error("thử lại intake", &e),
     }
 }
 

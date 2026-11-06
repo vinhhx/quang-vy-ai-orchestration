@@ -42,13 +42,22 @@ pub enum Outgoing {
         message_id: i64,
         keyboard: serde_json::Value,
     },
+    /// A new plain message with no buttons (e.g. a failed queue intake, plan triage-engine).
+    Message { text: String },
 }
 
-/// Bot API method and JSON body for an `Edit` / `Keyboard` item, always on
+/// Bot API method and JSON body for an `Edit` / `Keyboard` / `Message` item, always on
 /// `chat_id` (the paired chat); `None` for a `Notify` item.
 pub fn edit_request(chat_id: i64, item: &Outgoing) -> Option<(&'static str, serde_json::Value)> {
     match item {
         Outgoing::Notify(_) => None,
+        Outgoing::Message { text } => Some((
+            "sendMessage",
+            serde_json::json!({
+                "chat_id": chat_id,
+                "text": text,
+            }),
+        )),
         Outgoing::Edit {
             message_id,
             text,
@@ -584,7 +593,7 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
     }
 }
 
-/// Sends one `Edit` / `Keyboard` item with the same retry, drop and Health
+/// Sends one `Edit` / `Keyboard` / `Message` item with the same retry, drop and Health
 /// rules as a notification. The item carries its final content, so it is not
 /// re-checked against the task state.
 fn edit(ctx: &BotCtx, item: &Outgoing) -> Step {
@@ -622,10 +631,12 @@ fn edit(ctx: &BotCtx, item: &Outgoing) -> Step {
                         }
                     }
                     None => {
-                        crate::term::emit(&format!(
-                            "Telegram: bỏ sửa tin {message_id} — {}",
-                            e.text()
-                        ));
+                        let what = if method == "sendMessage" {
+                            "Telegram: bỏ tin hàng chờ".to_string()
+                        } else {
+                            format!("Telegram: bỏ sửa tin {message_id}")
+                        };
+                        crate::term::emit(&format!("{what} — {}", e.text()));
                         if matches!(e, CallError::Api { .. }) {
                             ctx.health.ok(Channel::Send);
                         }
@@ -649,7 +660,9 @@ fn run(ctx: Arc<BotCtx>) {
         };
         let step = match &item {
             Outgoing::Notify(ev) => notify(&ctx, &mut conn, ev),
-            Outgoing::Edit { .. } | Outgoing::Keyboard { .. } => edit(&ctx, &item),
+            Outgoing::Edit { .. } | Outgoing::Keyboard { .. } | Outgoing::Message { .. } => {
+                edit(&ctx, &item)
+            }
         };
         if let Step::Stopped = step {
             return;
@@ -802,6 +815,16 @@ mod tests {
             ))
         );
         assert_eq!(edit_request(5555, &Outgoing::Notify(ev(1))), None);
+        let message = Outgoing::Message {
+            text: "Hàng chờ #1 lỗi: x".to_string(),
+        };
+        assert_eq!(
+            edit_request(5555, &message),
+            Some((
+                "sendMessage",
+                serde_json::json!({"chat_id": 5555, "text": "Hàng chờ #1 lỗi: x"})
+            ))
+        );
     }
 
     #[test]

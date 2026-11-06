@@ -305,6 +305,70 @@ impl Detector {
     }
 }
 
+/// Longest Telegram text of a failed-intake message (the Bot API limit is 4096).
+const INTAKE_TEXT_MAX: usize = 3500;
+
+/// `Hàng chờ #<id> lỗi: <lý do>` for a queue intake that failed.
+pub fn intake_failed_text(id: i64, error: Option<&str>) -> String {
+    let reason = error
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .unwrap_or("không rõ lý do");
+    let text = format!("Hàng chờ #{id} lỗi: {reason}");
+    if text.chars().count() <= INTAKE_TEXT_MAX {
+        text
+    } else {
+        let mut out: String = text.chars().take(INTAKE_TEXT_MAX - 1).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// Queue intakes from Telegram that went `failed` (plan triage-engine, goal 4): one message per
+/// failure, with the reason. A failure is `(id, updated_at)`, so a retried intake that fails
+/// again is reported again. The set is seeded at start-up so a serve restart never resends.
+#[derive(Debug, Default)]
+pub struct IntakeFailures {
+    seen: HashSet<(i64, i64)>,
+}
+
+fn failed_telegram_intakes(conn: &Connection) -> BrainResult<Vec<(i64, Option<String>, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, error, updated_at FROM intake WHERE source = 'telegram' AND status = 'failed' ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+impl IntakeFailures {
+    pub fn seed(conn: &Connection) -> BrainResult<IntakeFailures> {
+        let seen = failed_telegram_intakes(conn)?
+            .into_iter()
+            .map(|(id, _, at)| (id, at))
+            .collect();
+        Ok(IntakeFailures { seen })
+    }
+
+    /// Messages for failures not reported yet; forgets intakes that are no longer failed.
+    pub fn scan(&mut self, conn: &Connection) -> BrainResult<Vec<Outgoing>> {
+        let rows = failed_telegram_intakes(conn)?;
+        let mut out = Vec::new();
+        let mut now_seen = HashSet::new();
+        for (id, error, at) in rows {
+            if !self.seen.contains(&(id, at)) {
+                out.push(Outgoing::Message {
+                    text: intake_failed_text(id, error.as_deref()),
+                });
+            }
+            now_seen.insert((id, at));
+        }
+        self.seen = now_seen;
+        Ok(out)
+    }
+}
+
 fn open_db(ctx: &BotCtx) -> Option<Connection> {
     let mut reported = false;
     loop {
@@ -337,9 +401,16 @@ fn run(ctx: Arc<BotCtx>) {
 
     let mut det = Detector::new();
     let mut last_err: Option<String> = None;
+    let mut fails;
     loop {
-        match det.seed(&ctx.st, &conn) {
-            Ok(()) => break,
+        match det
+            .seed(&ctx.st, &conn)
+            .and_then(|()| IntakeFailures::seed(&conn))
+        {
+            Ok(f) => {
+                fails = f;
+                break;
+            }
             Err(e) => {
                 if last_err.as_deref() != Some(e.message.as_str()) {
                     crate::term::emit(&format!("Telegram: lỗi đọc CSDL: {}", e.message));
@@ -373,19 +444,31 @@ fn run(ctx: Arc<BotCtx>) {
         if full {
             last_full = Instant::now();
         }
-        match det.scan(&ctx.st, &conn, full, &ctx.registry) {
-            Ok(items) => {
-                last_err = None;
-                for item in items {
-                    ctx.outbox.push(item);
+        // Each scan pushes what it found on its own; a failed intake scan leaves `fails` as it
+        // was, so the intake is reported on a later scan.
+        let results = [
+            det.scan(&ctx.st, &conn, full, &ctx.registry),
+            fails.scan(&conn),
+        ];
+        let mut failed = false;
+        for res in results {
+            match res {
+                Ok(items) => {
+                    for item in items {
+                        ctx.outbox.push(item);
+                    }
+                }
+                Err(e) => {
+                    failed = true;
+                    if last_err.as_deref() != Some(e.message.as_str()) {
+                        crate::term::emit(&format!("Telegram: lỗi đọc CSDL: {}", e.message));
+                        last_err = Some(e.message.clone());
+                    }
                 }
             }
-            Err(e) => {
-                if last_err.as_deref() != Some(e.message.as_str()) {
-                    crate::term::emit(&format!("Telegram: lỗi đọc CSDL: {}", e.message));
-                    last_err = Some(e.message.clone());
-                }
-            }
+        }
+        if !failed {
+            last_err = None;
         }
     }
 }
@@ -396,4 +479,60 @@ pub fn spawn(ctx: Arc<BotCtx>) -> JoinHandle<()> {
         .name("ab-tg-detect".to_string())
         .spawn(move || run(ctx))
         .expect("spawn ab-tg-detect thread")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(items: &[Outgoing]) -> Vec<String> {
+        items
+            .iter()
+            .map(|i| match i {
+                Outgoing::Message { text } => text.clone(),
+                other => panic!("unexpected item {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn failed_telegram_intake_is_reported_once_per_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::open(&dir.path().join("brain.db")).unwrap();
+        let old = crate::db::insert_intake(&conn, "telegram", None, "cũ", "normal").unwrap();
+        crate::db::set_intake_status_error(&conn, old, "failed", Some("trước khi serve chạy"))
+            .unwrap();
+        let mut fails = IntakeFailures::seed(&conn).unwrap();
+        assert!(fails.scan(&conn).unwrap().is_empty(), "seeded failures are not resent");
+
+        let tg = crate::db::insert_intake(&conn, "telegram", None, "việc", "normal").unwrap();
+        let ui = crate::db::insert_intake(&conn, "ui", None, "việc ui", "normal").unwrap();
+        crate::db::set_intake_status_error(&conn, ui, "failed", Some("x")).unwrap();
+        crate::db::set_intake_status_error(&conn, tg, "failed", Some("Triage (claude) lỗi: hết hạn"))
+            .unwrap();
+        assert_eq!(
+            texts(&fails.scan(&conn).unwrap()),
+            vec![format!("Hàng chờ #{tg} lỗi: Triage (claude) lỗi: hết hạn")]
+        );
+        assert!(fails.scan(&conn).unwrap().is_empty());
+
+        // Retried, then failed again: a new message.
+        assert!(crate::db::retry_intake_if_failed(&conn, tg).unwrap());
+        assert!(fails.scan(&conn).unwrap().is_empty());
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        crate::db::set_intake_status_error(&conn, tg, "failed", Some("lần 2")).unwrap();
+        assert_eq!(
+            texts(&fails.scan(&conn).unwrap()),
+            vec![format!("Hàng chờ #{tg} lỗi: lần 2")]
+        );
+    }
+
+    #[test]
+    fn intake_failed_text_without_reason_and_cut() {
+        assert_eq!(intake_failed_text(4, None), "Hàng chờ #4 lỗi: không rõ lý do");
+        assert_eq!(intake_failed_text(4, Some("  ")), "Hàng chờ #4 lỗi: không rõ lý do");
+        let long = intake_failed_text(4, Some(&"y".repeat(5000)));
+        assert_eq!(long.chars().count(), INTAKE_TEXT_MAX);
+        assert!(long.ends_with('…'));
+    }
 }

@@ -804,3 +804,54 @@ fn safe_cancel_intake() {
     let resp = srv.post_json(&format!("/api/intake/{intake_queued}/cancel"), &json!({}));
     assert_eq!(resp.status, 409);
 }
+
+/// (e) plan triage-engine: Thử lại puts a failed intake back in the queue with no error; any
+/// other status is a conflict.
+#[test]
+fn retry_failed_intake() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    let srv = sb.serve(&[]);
+
+    let conn = sb.db();
+    let failed = agent_brain::db::insert_intake(&conn, "ui", None, "Việc lỗi", "normal").unwrap();
+    agent_brain::db::set_intake_status_error(
+        &conn,
+        failed,
+        "failed",
+        Some("Triage (claude) lỗi: Failed to authenticate"),
+    )
+    .unwrap();
+    let queued = agent_brain::db::insert_intake(&conn, "ui", None, "Việc chờ", "normal").unwrap();
+    let proposed = agent_brain::db::insert_intake(&conn, "ui", None, "Việc đề xuất", "normal").unwrap();
+    agent_brain::db::set_intake_status(&conn, proposed, "proposed").unwrap();
+    drop(conn);
+
+    let resp = srv.post_json(&format!("/api/intake/{failed}/retry"), &json!({}));
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_eq!(resp.json(), json!({"id": failed, "status": "queued"}));
+    let conn = sb.db();
+    let row = agent_brain::db::get_intake(&conn, failed).unwrap().unwrap();
+    assert_eq!(row.status, "queued");
+    assert!(row.error.is_none());
+    drop(conn);
+
+    // Already queued again, queued from the start, proposed: 409, unchanged.
+    for id in [failed, queued, proposed] {
+        let resp = srv.post_json(&format!("/api/intake/{id}/retry"), &json!({}));
+        assert_eq!(resp.status, 409, "{id}: {}", resp.text());
+        assert!(resp.text().contains("Chỉ thử lại được việc bị lỗi"), "{}", resp.text());
+    }
+    let conn = sb.db();
+    assert_eq!(
+        agent_brain::db::get_intake(&conn, proposed).unwrap().unwrap().status,
+        "proposed"
+    );
+    drop(conn);
+
+    let resp = srv.post_json("/api/intake/999/retry", &json!({}));
+    assert_eq!(resp.status, 404);
+    // Same auth gate as every API route.
+    let resp = srv.request("POST", &format!("/api/intake/{failed}/retry"), &[], b"{}");
+    assert_eq!(resp.status, 401);
+}

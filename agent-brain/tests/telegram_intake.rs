@@ -946,6 +946,79 @@ fn task_command_routes_to_intake_when_orchestrator_enabled() {
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
 
+/// (f) plan triage-engine: a queue intake from Telegram whose triage fails is reported to the
+/// paired chat with the reason; a dashboard intake that fails is not.
+#[test]
+fn failed_telegram_intake_is_reported_with_reason() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    sb.write_config(json!({"orchestrator": {"enabled": true}}));
+    setup_project(&sb, "work");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/triage/claude_auth_failed.jsonl");
+    let lines: Vec<String> = std::fs::read_to_string(fixture)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    sb.write_scenario(json!({"raw_lines": lines, "exit_code": 1}));
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let ui = agent_brain::db::insert_intake(&conn, "ui", None, "việc dashboard", "normal").unwrap();
+    let id = agent_brain::db::insert_intake(&conn, "telegram", None, "sửa app", "normal").unwrap();
+    drop(conn);
+
+    let msg = match tg.wait_call("sendMessage", Duration::from_secs(40), |r| {
+        text_of(r).starts_with(&format!("Hàng chờ #{id} lỗi:"))
+    }) {
+        Some(r) => r,
+        None => panic!(
+            "no failed-intake message; records:\n{:#?}\nstderr:\n{}",
+            tg.records(),
+            stderr_of(&srv)
+        ),
+    };
+    let text = text_of(&msg);
+    assert!(
+        text.starts_with(&format!(
+            "Hàng chờ #{id} lỗi: Triage (claude) lỗi: Failed to authenticate"
+        )),
+        "{text}"
+    );
+    assert!(text.contains("claude auth login"), "{text}");
+    assert_eq!(msg["json"]["chat_id"], PAIRED_CHAT);
+
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    assert_eq!(
+        agent_brain::db::get_intake(&conn, ui).unwrap().unwrap().status,
+        "failed"
+    );
+    drop(conn);
+    // Give the detector a scan after the dashboard intake failed: still no message for it.
+    std::thread::sleep(Duration::from_secs(2));
+    let about_ui = format!("Hàng chờ #{ui} lỗi:");
+    assert!(
+        !tg.calls("sendMessage")
+            .iter()
+            .any(|r| text_of(r).starts_with(&about_ui)),
+        "dashboard intake reported on Telegram"
+    );
+    // Exactly one message for the Telegram intake.
+    let about_tg = format!("Hàng chờ #{id} lỗi:");
+    assert_eq!(
+        tg.calls("sendMessage")
+            .iter()
+            .filter(|r| text_of(r).starts_with(&about_tg))
+            .count(),
+        1
+    );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
 // ---------------------------------------------------------------------------
 // Phase 6 plan 14 Task 3: the team step of `/task` (TEAM-03)
 // ---------------------------------------------------------------------------
