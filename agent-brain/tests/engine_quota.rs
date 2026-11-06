@@ -708,7 +708,8 @@ fn no_quota_dirty_still_refused() {
     );
     assert!(out.stderr.contains("  src/app.py"));
 
-    // A previous Dev run that failed for another reason is not a quota stop either.
+    // A previous Dev run that failed for another reason is not a quota stop: its partial diff is
+    // continued as a failed run's leftover, without the quota text.
     let sb = Sandbox::new();
     let repo = setup_lead_task(&sb);
     let failing = json!({
@@ -729,16 +730,25 @@ fn no_quota_dirty_still_refused() {
     assert_eq!(first.code, 1, "stderr: {}", first.stderr);
     let id = last_run_id(&sb, "dev");
     assert_ne!(run_row(&sb, id).1.as_deref(), Some("quota"));
-    let second = sb.run(&["run", "dev", "web-ban-hang"], Some(ok_entry(vec![])));
-    assert_eq!(second.code, 1, "stderr: {}", second.stderr);
-    assert!(
-        second
-            .stderr
-            .contains("Working tree có thay đổi chưa commit"),
-        "stderr: {}",
-        second.stderr
+    assert_eq!(run_row(&sb, id).0, "failed");
+    let second = sb.run(
+        &["run", "dev", "web-ban-hang"],
+        Some(ok_entry(vec![write_op(
+            "src/app.py",
+            "def app():\n    return 2\n",
+        )])),
     );
-    assert!(sb
-        .git(&repo, &["status", "--porcelain"])
-        .contains("src/app.py"));
+    assert_eq!(
+        second.code, 0,
+        "stderr: {}\nstdout: {}",
+        second.stderr, second.stdout
+    );
+    let recs = sb.records();
+    let input = input_of(recs.last().unwrap());
+    assert!(!input.contains(CONTINUE_TEXT), "input: {input}");
+    assert!(
+        input.contains("Lần chạy Dev trước bị dừng giữa chừng (failed)."),
+        "input: {input}"
+    );
+    assert!(sb.git(&repo, &["status", "--porcelain"]).trim().is_empty());
 }

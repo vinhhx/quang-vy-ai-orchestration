@@ -22,24 +22,47 @@ pub const DSH_EMPTY_MESSAGE: &str = "dsh không sửa file nào trong lượt n�
 /// Context file a previous engine may leave for the next one (Phase 4); read-only for Dev.
 const HANDOVER_FILE: &str = ".handover.md";
 
-/// ENG-03 / D-18: true when the latest Dev run of the task on the current branch ended with
-/// outcome `quota`. Read-only — never creates a task row. The old session is never resumed.
-fn quota_continuation(
+/// Why `run dev` may continue on a dirty working tree: how the latest Dev run of the task ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ContinuationReason {
+    /// ENG-03 / D-18: the latest Dev run stopped on quota (outcome `quota`).
+    Quota,
+    /// The latest Dev run ended `failed`, `timed_out`, `killed` or `lost` mid-way; carries that
+    /// status.
+    PreviousRunFailed(String),
+}
+
+/// Run statuses after which the partial diff of the last Dev run is work to continue.
+const CONTINUABLE_STATUSES: [&str; 4] = ["failed", "timed_out", "killed", "lost"];
+
+/// ENG-03 / D-18: `Some` when the latest Dev run of the task on the current branch stopped on
+/// quota, or ended failed / timed out / killed / lost, so the partial diff it left is the work to
+/// continue. `None` otherwise — also after a succeeded run, when a dirty tree is not Dev's
+/// leftover. Read-only — never creates a task row. The old session is never resumed.
+fn continuation_reason(
     conn: &rusqlite::Connection,
     project_slug: &str,
     root: &Path,
-) -> BrainResult<bool> {
+) -> BrainResult<Option<ContinuationReason>> {
     let Some(branch) = crate::gitops::current_branch(root) else {
-        return Ok(false);
+        return Ok(None);
     };
     let Ok(project_row) = crate::db::project_row_id(conn, project_slug) else {
-        return Ok(false);
+        return Ok(None);
     };
     let Some(task) = crate::db::find_task_by_branch(conn, project_row, &branch)? else {
-        return Ok(false);
+        return Ok(None);
     };
-    let latest = crate::db::latest_run_for_task_role(conn, task.id, "dev")?;
-    Ok(latest.and_then(|r| r.outcome).as_deref() == Some(crate::quota::OUTCOME_QUOTA))
+    let Some(latest) = crate::db::latest_run_for_task_role(conn, task.id, "dev")? else {
+        return Ok(None);
+    };
+    if latest.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA) {
+        return Ok(Some(ContinuationReason::Quota));
+    }
+    if CONTINUABLE_STATUSES.contains(&latest.status.as_str()) {
+        return Ok(Some(ContinuationReason::PreviousRunFailed(latest.status)));
+    }
+    Ok(None)
 }
 
 pub fn dev_allowed_tools(files: &[String], root: Option<&Path>) -> Vec<String> {
@@ -272,9 +295,12 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     // Con của autopilot chỉ chạy trên nhánh của đúng task autopilot (CR-01).
     crate::roles::autopilot_task_guard(&ctx.conn, &proj.id, &proj_path)?;
 
-    // ENG-03 / D-18: the latest Dev run of this task stopped on quota, so the partial diff it left
-    // is the work to continue, not something to refuse. Read-only: no task row is created.
-    let continuation = quota_continuation(&ctx.conn, &proj.id, &proj_path)?;
+    // ENG-03 / D-18: the latest Dev run of this task stopped on quota, or failed / timed out /
+    // was killed or lost mid-way, so the partial diff it left is the work to continue, not
+    // something to refuse. Read-only: no task row is created.
+    let continuation_reason = continuation_reason(&ctx.conn, &proj.id, &proj_path)?;
+    let continuation = continuation_reason.is_some();
+    let quota_continuation = continuation_reason == Some(ContinuationReason::Quota);
     let plan = crate::planfile::parse_plan(&text);
 
     // Skill mode (D-49): the rights the approved plan declares; a fix run gets them only when
@@ -315,7 +341,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
                 .collect::<Vec<_>>()
                 .join("\n");
             return Err(BrainError::error(format!(
-                "Working tree có thay đổi chưa commit — hãy commit thay đổi tay với message '{task}: plan':\n{list}"
+                "Working tree có thay đổi chưa commit ngoài phạm vi plan — commit hoặc bỏ các file này rồi chạy lại:\n{list}"
             )));
         }
     }
@@ -522,8 +548,15 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     }
 
     // `.handover.md` (Phase 4) is included only when the file exists.
-    let handover_exists = continuation && proj_path.join(HANDOVER_FILE).is_file();
-    if continuation {
+    let handover_exists = quota_continuation && proj_path.join(HANDOVER_FILE).is_file();
+    if let Some(ContinuationReason::PreviousRunFailed(status)) = &continuation_reason {
+        user_input.push_str(&format!(
+            "\n\nLần chạy Dev trước bị dừng giữa chừng ({status}). Các thay đổi chưa commit trong phạm vi plan là của lần đó: kiểm tra, giữ phần đúng, làm tiếp phần còn thiếu; không làm lại từ đầu nếu không cần."
+        ));
+        allowed.push("Bash(git diff *)".to_string());
+        allowed.push("Bash(git status *)".to_string());
+    }
+    if quota_continuation {
         let handover = if handover_exists {
             ", đọc .handover.md"
         } else {

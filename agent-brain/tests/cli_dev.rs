@@ -1417,3 +1417,187 @@ fn fix_run_without_product_commands_keeps_no_grants() {
     assert!(!argv.iter().any(|a| a.contains("out/**")));
     assert!(!user_input_of(&argv).contains("Sau khi sửa xong các file"));
 }
+
+// ---- continue after a failed / timed-out / killed / lost Dev run ----
+
+const FAILED_CONTINUE_PREFIX: &str = "Lần chạy Dev trước bị dừng giữa chừng";
+const FAILED_CONTINUE_REST: &str = "Các thay đổi chưa commit trong phạm vi plan là của lần đó: kiểm tra, giữ phần đúng, làm tiếp phần còn thiếu; không làm lại từ đầu nếu không cần.";
+const OUT_OF_SCOPE_REFUSAL: &str = "Working tree có thay đổi chưa commit ngoài phạm vi plan — commit hoặc bỏ các file này rồi chạy lại:";
+
+/// Grants task whose first Dev run writes a plan file and a file under the approved write dir,
+/// then ends with an error (exit 1, no commit). The run row is then set to `status`. Returns
+/// the repo; its working tree is left dirty with both files.
+fn failed_dev_leaves_dirty_tree(sb: &Sandbox, status: &str) -> PathBuf {
+    let (repo, _task, plan_commit) = setup_grants_task(sb, None);
+    let failing = serde_json::json!({
+        "ops": [
+            {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2 # dở\n"},
+            {"op": "write", "path": "out/video/a.txt", "content": "phần 1\n"}
+        ],
+        "events": [
+            {"type": "system", "subtype": "init", "session_id": "fake-fail", "model": "fake"},
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": true,
+                "result": "boom",
+                "num_turns": 1,
+                "session_id": "fake-fail",
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+                "permission_denials": []
+            }
+        ],
+        "exit_code": 1,
+    });
+    let first = sb.run(&["run", "dev", "web-ban-hang"], Some(failing));
+    assert_eq!(
+        first.code, 1,
+        "stderr: {}\nstdout: {}",
+        first.stderr, first.stdout
+    );
+    assert_eq!(sb.git(&repo, &["rev-parse", "HEAD"]).trim(), plan_commit);
+    let dirty = sb.git(&repo, &["status", "--porcelain", "-uall"]);
+    assert!(dirty.contains("src/app.py"), "status: {dirty}");
+    assert!(dirty.contains("out/video/a.txt"), "status: {dirty}");
+
+    let db = sb.db();
+    let id: i64 = db
+        .query_row(
+            "SELECT id FROM runs WHERE role = 'dev' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let current: String = db
+        .query_row("SELECT status FROM runs WHERE id = ?1", [id], |r| r.get(0))
+        .unwrap();
+    assert_eq!(current, "failed", "a Dev run that errors out is `failed`");
+    db.execute(
+        "UPDATE runs SET status = ?1 WHERE id = ?2",
+        rusqlite::params![status, id],
+    )
+    .unwrap();
+    repo
+}
+
+/// (a) + (b): the partial diff of a failed / timed-out / killed / lost Dev run is continued, and
+/// the Dev is told so with the status.
+#[test]
+fn dev_continues_after_failed_timed_out_killed_or_lost_run() {
+    for status in ["failed", "timed_out", "killed", "lost"] {
+        let sb = Sandbox::new();
+        let repo = failed_dev_leaves_dirty_tree(&sb, status);
+        let plan_commit = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+        let calls = sb.records().len();
+
+        let finish = serde_json::json!({ "ops": [
+            {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"}
+        ]});
+        let out = sb.run(&["run", "dev", "web-ban-hang"], Some(finish));
+        assert_eq!(
+            out.code, 0,
+            "[{status}] stderr: {}\nstdout: {}",
+            out.stderr, out.stdout
+        );
+        assert_eq!(
+            sb.records().len(),
+            calls + 1,
+            "[{status}] Dev ran once more"
+        );
+
+        let argv = last_argv(&sb);
+        let input = user_input_of(&argv);
+        assert!(
+            input.contains(&format!(
+                "{FAILED_CONTINUE_PREFIX} ({status}). {FAILED_CONTINUE_REST}"
+            )),
+            "[{status}] input: {input}"
+        );
+        // Not the quota text: that one stays for quota stops only.
+        assert!(
+            !input.contains("dừng vì hết quota"),
+            "[{status}] input: {input}"
+        );
+        assert!(argv.contains(&"Bash(git diff *)".to_string()));
+        assert!(argv.contains(&"Bash(git status *)".to_string()));
+
+        // The leftover of the stopped run is kept and committed with the finished file.
+        let diff = sb.git(
+            &repo,
+            &["diff", "--name-only", &format!("{plan_commit}..HEAD")],
+        );
+        let mut names: Vec<&str> = diff.lines().collect();
+        names.sort();
+        assert_eq!(names, vec!["out/video/a.txt", "src/app.py"], "[{status}]");
+        assert_eq!(
+            std::fs::read_to_string(repo.join("out/video/a.txt")).unwrap(),
+            "phần 1\n"
+        );
+        assert!(
+            sb.git(&repo, &["status", "--porcelain"]).trim().is_empty(),
+            "[{status}] tree clean after the run"
+        );
+    }
+}
+
+/// (c): a dirty file outside the plan's scope is still refused, with the new message listing it.
+#[test]
+fn dev_after_failed_run_refuses_dirty_file_outside_plan() {
+    let sb = Sandbox::new();
+    let repo = failed_dev_leaves_dirty_tree(&sb, "failed");
+    std::fs::write(repo.join("ngoai-plan.txt"), "ngoài plan\n").unwrap();
+    let calls = sb.records().len();
+
+    let out = sb.run(
+        &["run", "dev", "web-ban-hang"],
+        Some(serde_json::json!({ "ops": [] })),
+    );
+    assert_eq!(out.code, 1, "stderr: {}", out.stderr);
+    assert!(
+        out.stderr
+            .contains(&format!("{OUT_OF_SCOPE_REFUSAL}\n  ngoai-plan.txt")),
+        "stderr: {}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains(": plan'"), "stderr: {}", out.stderr);
+    assert!(
+        !out.stderr.contains("  src/app.py"),
+        "stderr: {}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("out/video/a.txt"),
+        "stderr: {}",
+        out.stderr
+    );
+    assert_eq!(sb.records().len(), calls, "no process was spawned");
+}
+
+/// (d): after a succeeded Dev run a dirty tree is not Dev's leftover — refused, new message.
+#[test]
+fn dev_after_succeeded_run_refuses_dirty_tree() {
+    let sb = Sandbox::new();
+    let repo = failed_dev_leaves_dirty_tree(&sb, "succeeded");
+    let calls = sb.records().len();
+
+    let out = sb.run(
+        &["run", "dev", "web-ban-hang"],
+        Some(serde_json::json!({ "ops": [] })),
+    );
+    assert_eq!(out.code, 1, "stderr: {}", out.stderr);
+    assert!(
+        out.stderr.contains(OUT_OF_SCOPE_REFUSAL),
+        "stderr: {}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains(": plan'"), "stderr: {}", out.stderr);
+    assert!(
+        out.stderr.contains("  src/app.py"),
+        "stderr: {}",
+        out.stderr
+    );
+    assert_eq!(sb.records().len(), calls, "no process was spawned");
+    assert!(sb
+        .git(&repo, &["status", "--porcelain"])
+        .contains("src/app.py"));
+}
