@@ -96,6 +96,10 @@ def main() -> None:
             role = "qa"
         elif first_line.startswith("Bạn là Dev"):
             role = "dev"
+        elif "analyst" in first_line.lower() and "review" not in first_line.lower():
+            role = "analyst"
+        elif "analysis reviewer" in first_line.lower() or "analysis-review" in first_line.lower():
+            role = "analysis-review"
         else:
             role = "unknown"
 
@@ -401,6 +405,8 @@ def main() -> None:
             "usage": usage,
             "permission_denials": [],
         }
+        if "result" in scenario:
+            result_event["result"] = scenario["result"]
         sys.stdout.write(json.dumps(result_event) + "\n")
         sys.stdout.flush()
 

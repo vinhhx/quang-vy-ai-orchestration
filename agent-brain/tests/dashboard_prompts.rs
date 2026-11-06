@@ -25,7 +25,9 @@ fn prompt_api_crud_and_preview() {
     let builtin_stacks = j["builtin_stacks"].as_array().expect("builtin_stacks");
     assert!(builtin_stacks.iter().any(|v| v == "video-srt"));
     let roles = j["roles"].as_array().expect("roles");
-    assert_eq!(roles.len(), 5);
+    assert_eq!(roles.len(), 7);
+    assert!(roles.iter().any(|v| v == "analyst"));
+    assert!(roles.iter().any(|v| v == "analysis-review"));
 
     // 2. GET /api/prompts/stacks/video-srt/lead returns builtin
     let r = srv.get("/api/prompts/stacks/video-srt/lead");

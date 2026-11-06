@@ -781,6 +781,9 @@ fn agy_plan(
         Some(file) if role != "dev" => format!(
             "{prompt}\n\n---\nBạn đang chạy ở chế độ chỉ đọc: không sửa và không tạo file nào. Bạn không chạy được lệnh shell (bị từ chối quyền); dùng ngữ cảnh đã cho và công cụ đọc file. Nếu thiếu thông tin, vẫn phải trả file đầy đủ, không được trả rỗng. Trả lời bằng TOÀN BỘ nội dung file {file} theo đúng định dạng ở trên, không thêm lời dẫn, không bọc trong khối mã.\n\n---\n{input}"
         ),
+        _ if role == "analyst" || role == "analysis-review" => format!(
+            "{prompt}\n\n---\nBạn đang chạy ở chế độ chỉ đọc: không sửa và không tạo file nào. Bạn không chạy được lệnh shell (bị từ chối quyền); dùng ngữ cảnh đã cho và công cụ đọc file. Trả lời bằng TOÀN BỘ nội dung phân tích theo đúng định dạng ở trên, không bọc trong khối mã.\n\n---\n{input}"
+        ),
         _ => format!("{prompt}\n\n---\n{input}"),
     };
 

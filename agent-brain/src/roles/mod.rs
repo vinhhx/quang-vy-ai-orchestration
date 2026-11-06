@@ -1017,7 +1017,7 @@ pub fn execute_role_staged(
 
     // D-05: a read-only agy role answers with the whole protocol file; agent-brain writes it, and
     // the role's own checks (meta, plan validation, review front matter) decide what it is worth.
-    if agy_stream && outcome.status == crate::runner::RunStatus::Succeeded {
+    if agy_stream && outcome.status == crate::runner::RunStatus::Succeeded && plan.role != "analyst" && plan.role != "analysis-review" {
         if let (Some(file), Some(resp)) = (ep.response_file, obs.summary.agy_response.as_deref()) {
             if obs.summary.agy_status.as_deref() == Some("SUCCESS") && !resp.trim().is_empty() {
                 let mut body = unwrap_code_fence(resp);
@@ -1084,15 +1084,13 @@ pub fn cmd_run(
         return Err(BrainError::error("--fix chỉ dùng với vai trò dev"));
     }
 
-    if (opts.review || opts.note.is_some()) && role != Role::Lead {
+    if (opts.review
+        || opts.note.is_some()
+        || (opts.workflow.is_some() && role != Role::Analyst))
+        && role != Role::Lead
+    {
         return Err(BrainError::error(
-            "--review và --note chỉ dùng với vai trò lead",
-        ));
-    }
-
-    if opts.workflow.is_some() && role != Role::Lead && role != Role::Analyst {
-        return Err(BrainError::error(
-            "--workflow chỉ dùng với vai trò lead hoặc analyst",
+            "--review, --note và --workflow chỉ dùng với vai trò lead",
         ));
     }
 
