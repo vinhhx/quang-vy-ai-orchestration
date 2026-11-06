@@ -9,6 +9,7 @@ pub mod dsh;
 pub mod engine;
 pub mod error;
 pub mod fastpath;
+pub mod fixbug;
 pub mod gitops;
 pub mod guard;
 pub mod human;
