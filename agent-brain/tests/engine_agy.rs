@@ -894,9 +894,8 @@ fn run_lead_watching(
     env: &AgyEnv,
     pidfile: &std::path::Path,
 ) -> (RunOut, Vec<agent_brain::procs::ProcId>, std::time::Duration) {
-    use std::time::{Duration, Instant};
-    let t0 = Instant::now();
-    let mut cmd = sb.command(
+    run_watching(
+        sb,
         &[
             "run",
             "lead",
@@ -908,8 +907,21 @@ fn run_lead_watching(
             "web",
             "sửa app",
         ],
-        &env.vars(),
-    );
+        env,
+        pidfile,
+    )
+}
+
+/// `run_lead_watching` for any agent-brain command.
+fn run_watching(
+    sb: &Sandbox,
+    args: &[&str],
+    env: &AgyEnv,
+    pidfile: &std::path::Path,
+) -> (RunOut, Vec<agent_brain::procs::ProcId>, std::time::Duration) {
+    use std::time::{Duration, Instant};
+    let t0 = Instant::now();
+    let mut cmd = sb.command(args, &env.vars());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     let child = cmd.spawn().expect("spawn run lead");
@@ -1097,4 +1109,166 @@ fn agy_timeout_without_result_stays_timed_out() {
     assert_all_dead(&procs);
     assert_ne!(res.code, 0);
     assert_eq!(run_row(&sb, "lead").status, "timed_out");
+}
+
+// ---------------------------------------------------------------------------
+// agy Dev tool steps checked against the plan's permissions
+// ---------------------------------------------------------------------------
+
+/// One agy tool step about to run, shaped like a real agy 1.x Dev log line.
+fn active_tool(idx: i64, tool: &str, params: Value) -> Value {
+    json!({"event": "step_update", "step_update": {
+        "conversation_id": "c1", "step_index": idx, "state": "ACTIVE", "step_type": "tool",
+        "tool_name": tool, "tool_info": {"name": tool, "parameters": params}}})
+}
+
+fn dev_error(sb: &Sandbox) -> Option<String> {
+    sb.db()
+        .query_row(
+            "SELECT error FROM runs WHERE role = 'dev' ORDER BY id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn agy_dev_forbidden_command_stops_the_run() {
+    use std::time::Duration;
+
+    let sb = Sandbox::new();
+    let repo = plan_task(&sb, dev_roles(), &["src/a.txt"]);
+
+    let pidfile = sb.root.join("agy-dev.pid");
+    let env = AgyEnv::new(
+        &sb,
+        json!({
+            "lines": [
+                {"event": "init", "conversation_id": "c1",
+                 "init": {"cwd": repo.to_str().unwrap(), "permission_mode": "accept-edits"}},
+                active_tool(2, "read_file", json!({"Path": repo.join(".plan.md").to_str().unwrap()})),
+                active_tool(4, "run_command", json!({"CommandLine": "python3 -c 'print(1)'"})),
+            ],
+            "spawn_child": true,
+            "pidfile": pidfile.to_str().unwrap(),
+            "hang_s": 600,
+        }),
+    );
+    let (res, procs, elapsed) = run_watching(&sb, &["run", "dev", "web"], &env, &pidfile);
+    assert_eq!(
+        res.code, 3,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "the run was not stopped at the step: {elapsed:?}"
+    );
+    assert!(
+        res.stderr.contains(
+            "agy Dev dùng công cụ ngoài quyền của plan: run_command {\"CommandLine\":\"python3 -c 'print(1)'\"}"
+        ),
+        "stderr: {}",
+        res.stderr
+    );
+    let row = run_row(&sb, "dev");
+    assert_eq!(row.status, "succeeded");
+    assert_eq!(row.outcome.as_deref(), Some("protocol_violation"));
+    let err = dev_error(&sb).unwrap_or_default();
+    assert!(err.contains("python3 -c"), "runs.error: {err}");
+    assert_all_dead(&procs);
+
+    // the decision is in the run's guard log, like a hook decision
+    let log = std::fs::read_to_string(PathBuf::from(&row.run_dir).join("guard.jsonl")).unwrap();
+    assert!(log.contains("\"decision\":\"block\""), "{log}");
+}
+
+#[test]
+fn agy_dev_write_outside_plan_stops_the_run() {
+    let sb = Sandbox::new();
+    let repo = plan_task(&sb, dev_roles(), &["src/a.txt"]);
+
+    let env = AgyEnv::new(
+        &sb,
+        json!({
+            "lines": [
+                active_tool(3, "write_file", json!({"Path": repo.join("src/other.txt").to_str().unwrap()})),
+            ],
+            "hang_s": 600,
+        }),
+    );
+    let res = sb.run_env(&["run", "dev", "web"], None, &env.vars());
+    assert_eq!(
+        res.code, 3,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        res.stderr
+            .contains("agy Dev dùng công cụ ngoài quyền của plan: write_file"),
+        "stderr: {}",
+        res.stderr
+    );
+    assert_eq!(
+        run_row(&sb, "dev").outcome.as_deref(),
+        Some("protocol_violation")
+    );
+}
+
+#[test]
+fn agy_dev_allowed_tools_do_not_stop_the_run() {
+    let sb = Sandbox::new();
+    let repo = plan_task(&sb, dev_roles(), &["src/a.txt"]);
+
+    let mut lines = vec![
+        json!({"event": "init", "conversation_id": "c1",
+               "init": {"cwd": repo.to_str().unwrap(), "permission_mode": "accept-edits"}}),
+        active_tool(
+            2,
+            "read_file",
+            json!({"Path": repo.join(".plan.md").to_str().unwrap(), "StartLine": 1}),
+        ),
+        active_tool(
+            4,
+            "write_file",
+            json!({"Path": repo.join("src/a.txt").to_str().unwrap()}),
+        ),
+        // the same step again (its DONE echo, or a repeat) is not checked twice
+        active_tool(
+            4,
+            "write_file",
+            json!({"Path": repo.join("src/a.txt").to_str().unwrap()}),
+        ),
+        active_tool(
+            6,
+            "run_command",
+            json!({"CommandLine": "git status --short"}),
+        ),
+        active_tool(
+            8,
+            "manage_task",
+            json!({"Action": "status", "TaskId": "t-1"}),
+        ),
+        active_tool(10, "ask_question", json!({"Question": "?"})),
+    ];
+    lines.extend(
+        agy_lines("xong", "SUCCESS", "accept-edits")
+            .into_iter()
+            .skip(1),
+    );
+    let (res, _env) = run_dev(
+        &sb,
+        json!({"lines": lines, "ops": [write_op("src/a.txt", "a\n")]}),
+    );
+    assert_ok(&res, "run dev (agy, allowed tools)");
+    assert!(
+        !res.stderr.contains("ngoài quyền của plan"),
+        "stderr: {}",
+        res.stderr
+    );
+    let row = run_row(&sb, "dev");
+    assert_eq!(row.status, "succeeded");
+    assert_ne!(row.outcome.as_deref(), Some("protocol_violation"));
+    let files = sb.git(&repo, &["show", "--name-only", "--format=", "HEAD"]);
+    assert!(files.lines().any(|l| l == "src/a.txt"), "{files}");
 }

@@ -274,6 +274,181 @@ pub fn decide(policy: &Policy, payload: &serde_json::Value) -> Decision {
     }
 }
 
+/// How one agy tool maps onto the claude tool the guard knows: (agy tool name, claude tool name,
+/// agy parameter keys holding the path or command, tried in order). Names and keys seen in real
+/// agy 1.x run logs: `read_file` / `write_file` / `edit_file` (`Path`) and `run_command`
+/// (`CommandLine`); the others are the names the agy docs use for the same tools.
+pub const AGY_TOOL_MAP: &[(&str, &str, &[&str])] = &[
+    ("run_command", "Bash", &["CommandLine", "Command"]),
+    (
+        "read_file",
+        "Read",
+        &["Path", "AbsolutePath", "TargetFile", "File"],
+    ),
+    (
+        "view_file",
+        "Read",
+        &["AbsolutePath", "Path", "TargetFile", "File"],
+    ),
+    (
+        "write_file",
+        "Write",
+        &["Path", "TargetFile", "AbsolutePath", "File"],
+    ),
+    (
+        "write_to_file",
+        "Write",
+        &["TargetFile", "Path", "AbsolutePath", "File"],
+    ),
+    (
+        "edit_file",
+        "Edit",
+        &["Path", "TargetFile", "AbsolutePath", "File"],
+    ),
+    (
+        "replace_file_content",
+        "Edit",
+        &["TargetFile", "Path", "AbsolutePath", "File"],
+    ),
+    (
+        "multi_replace_file_content",
+        "Edit",
+        &["TargetFile", "Path", "AbsolutePath", "File"],
+    ),
+    // a directory listing / search: the guard refuses Glob and Grep whenever reads are limited
+    (
+        "list_dir",
+        "Glob",
+        &["DirectoryPath", "Path", "SearchDirectory"],
+    ),
+    (
+        "grep_search",
+        "Grep",
+        &["SearchPath", "SearchDirectory", "Path", "DirectoryPath"],
+    ),
+    (
+        "find_by_name",
+        "Glob",
+        &["SearchDirectory", "SearchPath", "Path", "DirectoryPath"],
+    ),
+];
+
+/// agy tools that only ask the user something: nothing to check.
+pub const AGY_ASK_TOOLS: &[&str] = &["ask_question", "ask_permission", "ask_custom_permission"];
+
+/// The agy parameter that sets where `run_command` runs.
+const AGY_CWD_KEY: &str = "Cwd";
+
+/// The PreToolUse payload claude would send for one agy tool step, for `decide`. A mapped tool
+/// becomes its claude tool (`run_command` -> Bash with `command`, file tools -> Read/Write/Edit
+/// with `file_path`, listing/search -> Glob/Grep with `path`); a missing parameter stays missing
+/// so `decide` refuses a path tool without a path. Any other tool keeps its own name (which
+/// `decide` does not guard). `None` for the tools that only ask the user something.
+pub fn agy_tool_payload(
+    tool_name: &str,
+    params: &serde_json::Map<String, serde_json::Value>,
+    root: &Path,
+) -> Option<serde_json::Value> {
+    if AGY_ASK_TOOLS.contains(&tool_name) {
+        return None;
+    }
+    let first = |keys: &[&str]| -> Option<String> {
+        keys.iter()
+            .find_map(|k| params.get(*k).and_then(|v| v.as_str()))
+            .map(str::to_string)
+    };
+    let root_str = root.to_string_lossy().to_string();
+    let Some((_, claude_tool, keys)) = AGY_TOOL_MAP.iter().find(|(n, _, _)| *n == tool_name) else {
+        return Some(serde_json::json!({
+            "tool_name": tool_name,
+            "tool_input": params,
+            "cwd": root_str,
+        }));
+    };
+    let value = first(keys);
+    let mut input = serde_json::Map::new();
+    let key = match *claude_tool {
+        "Bash" => "command",
+        "Glob" | "Grep" => "path",
+        _ => "file_path",
+    };
+    if let Some(v) = value {
+        input.insert(key.to_string(), serde_json::Value::String(v));
+    }
+    let cwd = if *claude_tool == "Bash" {
+        first(&[AGY_CWD_KEY]).unwrap_or(root_str)
+    } else {
+        root_str
+    };
+    Some(serde_json::json!({
+        "tool_name": claude_tool,
+        "tool_input": input,
+        "cwd": cwd,
+    }))
+}
+
+/// The guard's decision on one agy tool step of a Dev run, logged like a hook decision. `None`
+/// when there is nothing to check (a tool that only asks the user). On top of `decide`:
+/// - every `browser_*` tool is refused (no plan grants a browser);
+/// - `run_command` must run in the project root (`Cwd`), because the command check reads
+///   relative paths from the root;
+/// - a policy without a command list allows only git: agy has no `--allowedTools` layer behind
+///   the guard, which is what limits a claude Dev's other commands.
+pub fn agy_tool_decision(
+    policy: &Policy,
+    tool_name: &str,
+    params: &serde_json::Map<String, serde_json::Value>,
+) -> Option<Decision> {
+    let decision = agy_tool_decision_inner(policy, tool_name, params)?;
+    if let Some(log_path) = &policy.log {
+        append_log(log_path, &decision);
+    }
+    Some(decision)
+}
+
+fn agy_tool_decision_inner(
+    policy: &Policy,
+    tool_name: &str,
+    params: &serde_json::Map<String, serde_json::Value>,
+) -> Option<Decision> {
+    if tool_name.starts_with("browser_") {
+        return Some(Decision {
+            allow: false,
+            tool: tool_name.to_string(),
+            path: String::new(),
+            reason: "công cụ trình duyệt không nằm trong quyền của plan".to_string(),
+        });
+    }
+    let payload = agy_tool_payload(tool_name, params, &policy.root)?;
+    if payload.get("tool_name").and_then(|v| v.as_str()) == Some("Bash") {
+        if let Some(cwd) = params.get(AGY_CWD_KEY).and_then(|v| v.as_str()) {
+            let cwd_path = Path::new(cwd);
+            let resolved = if cwd_path.is_absolute() {
+                realpath_nfc(cwd_path)
+            } else {
+                realpath_nfc(&policy.root.join(cwd_path))
+            };
+            if resolved != realpath_nfc(&policy.root) {
+                return Some(Decision {
+                    allow: false,
+                    tool: "Bash".to_string(),
+                    path: cwd.chars().take(BASH_LOG_MAX_CHARS).collect(),
+                    reason: format!(
+                        "lệnh chạy trong thư mục {} — chỉ được chạy ở thư mục gốc dự án",
+                        resolved.display()
+                    ),
+                });
+            }
+        }
+        if policy.bash_allow.is_none() {
+            let mut git_only = policy.clone();
+            git_only.bash_allow = Some(Vec::new());
+            return Some(decide(&git_only, &payload));
+        }
+    }
+    Some(decide(policy, &payload))
+}
+
 /// True when the root-relative path is one a directory grant never covers: anything under
 /// `.git` or `.planning`, any `.env*` component, and the sensitive paths of `report`.
 pub fn grant_denied_rel(rel: &str) -> bool {
@@ -2037,38 +2212,18 @@ fn append_log(log_path: &Path, decision: &Decision) {
     }
 }
 
-pub fn cmd_guard(policy: Option<&Path>) -> i32 {
-    let policy_path = match policy {
-        Some(p) => p,
-        None => {
-            crate::term::emit("agent-brain guard: thiếu đối số --policy");
-            return 2;
-        }
-    };
+/// Reads a run's `policy.json` (written by `write_hook_settings*`). `Err` is the text shown after
+/// `agent-brain guard: `.
+pub fn load_policy(policy_path: &Path) -> Result<Policy, String> {
+    let policy_str =
+        std::fs::read_to_string(policy_path).map_err(|e| format!("không thể đọc policy: {e}"))?;
 
-    let policy_str = match std::fs::read_to_string(policy_path) {
-        Ok(s) => s,
-        Err(e) => {
-            crate::term::emit(&format!("agent-brain guard: không thể đọc policy: {e}"));
-            return 2;
-        }
-    };
+    let policy_val: serde_json::Value =
+        serde_json::from_str(&policy_str).map_err(|e| format!("không thể đọc policy: {e}"))?;
 
-    let policy_val: serde_json::Value = match serde_json::from_str(&policy_str) {
-        Ok(v) => v,
-        Err(e) => {
-            crate::term::emit(&format!("agent-brain guard: không thể đọc policy: {e}"));
-            return 2;
-        }
-    };
-
-    let policy_obj = match policy_val.as_object() {
-        Some(o) => o,
-        None => {
-            crate::term::emit("agent-brain guard: policy không phải object");
-            return 2;
-        }
-    };
+    let policy_obj = policy_val
+        .as_object()
+        .ok_or_else(|| "policy không phải object".to_string())?;
 
     let root = policy_obj
         .get("root")
@@ -2131,16 +2286,34 @@ pub fn cmd_guard(policy: Option<&Path>) -> i32 {
         ),
     };
 
-    let pol = Policy {
+    Ok(Policy {
         root,
         read_allow,
         write_allow,
-        log: log.clone(),
+        log,
         read_dirs: path_list("read_dirs"),
         write_dirs: path_list("write_dirs"),
         read_files: path_list("read_files"),
         write_files: path_list("write_files"),
         bash_allow,
+    })
+}
+
+pub fn cmd_guard(policy: Option<&Path>) -> i32 {
+    let policy_path = match policy {
+        Some(p) => p,
+        None => {
+            crate::term::emit("agent-brain guard: thiếu đối số --policy");
+            return 2;
+        }
+    };
+
+    let pol = match load_policy(policy_path) {
+        Ok(p) => p,
+        Err(e) => {
+            crate::term::emit(&format!("agent-brain guard: {e}"));
+            return 2;
+        }
     };
 
     let mut raw_stdin = String::new();
@@ -2772,5 +2945,259 @@ mod tests {
         assert!(v["read_files"][0].as_str().unwrap().ends_with("/a.md"));
         assert!(v["write_files"][0].as_str().unwrap().ends_with("/b.md"));
         assert!(v.get("read_dirs").is_none());
+    }
+
+    // ---- agy Dev tool steps ----
+
+    fn agy_params(pairs: &[(&str, &str)]) -> serde_json::Map<String, serde_json::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+            .collect()
+    }
+
+    fn agy_allows(pol: &Policy, tool: &str, pairs: &[(&str, &str)]) -> bool {
+        agy_tool_decision(pol, tool, &agy_params(pairs))
+            .unwrap_or_else(|| panic!("{tool} must be checked"))
+            .allow
+    }
+
+    #[test]
+    fn agy_tool_payload_maps_onto_claude_tools() {
+        let root = Path::new("/p");
+        let p = agy_tool_payload(
+            "run_command",
+            &agy_params(&[("CommandLine", "git status")]),
+            root,
+        )
+        .unwrap();
+        assert_eq!(p["tool_name"], "Bash");
+        assert_eq!(p["tool_input"]["command"], "git status");
+        assert_eq!(p["cwd"], "/p");
+        let p = agy_tool_payload(
+            "run_command",
+            &agy_params(&[("CommandLine", "ls"), ("Cwd", "/p/sub")]),
+            root,
+        )
+        .unwrap();
+        assert_eq!(p["cwd"], "/p/sub");
+
+        for (agy, claude) in [
+            ("read_file", "Read"),
+            ("write_file", "Write"),
+            ("edit_file", "Edit"),
+        ] {
+            let p = agy_tool_payload(agy, &agy_params(&[("Path", "/p/a.py")]), root).unwrap();
+            assert_eq!(p["tool_name"], claude, "{agy}");
+            assert_eq!(p["tool_input"]["file_path"], "/p/a.py", "{agy}");
+        }
+        let p = agy_tool_payload(
+            "write_to_file",
+            &agy_params(&[("TargetFile", "/p/b.py")]),
+            root,
+        )
+        .unwrap();
+        assert_eq!(p["tool_name"], "Write");
+        assert_eq!(p["tool_input"]["file_path"], "/p/b.py");
+        let p = agy_tool_payload(
+            "view_file",
+            &agy_params(&[("AbsolutePath", "/p/c.py")]),
+            root,
+        )
+        .unwrap();
+        assert_eq!(p["tool_name"], "Read");
+        assert_eq!(p["tool_input"]["file_path"], "/p/c.py");
+        let p = agy_tool_payload(
+            "list_dir",
+            &agy_params(&[("DirectoryPath", "/p/src")]),
+            root,
+        )
+        .unwrap();
+        assert_eq!(p["tool_name"], "Glob");
+        assert_eq!(p["tool_input"]["path"], "/p/src");
+
+        // a path tool without its path stays without one (decide refuses it)
+        let p = agy_tool_payload("write_file", &agy_params(&[]), root).unwrap();
+        assert!(p["tool_input"].get("file_path").is_none());
+
+        // ask-only tools: nothing to check; any other tool keeps its name
+        for t in AGY_ASK_TOOLS {
+            assert!(agy_tool_payload(t, &agy_params(&[]), root).is_none(), "{t}");
+        }
+        let p =
+            agy_tool_payload("manage_task", &agy_params(&[("Action", "status")]), root).unwrap();
+        assert_eq!(p["tool_name"], "manage_task");
+        assert_eq!(p["tool_input"]["Action"], "status");
+    }
+
+    #[test]
+    fn agy_tool_steps_checked_against_the_plan() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        let pol = grant_policy(&root);
+        let r = |rel: &str| root.join(rel).to_string_lossy().to_string();
+
+        // run_command: only a command of `## Lệnh được chạy`, one plain command
+        assert!(!agy_allows(
+            &pol,
+            "run_command",
+            &[("CommandLine", "python3 -c 'x'")]
+        ));
+        assert!(agy_allows(
+            &pol,
+            "run_command",
+            &[("CommandLine", "python scripts/make.py --all")]
+        ));
+        assert!(!agy_allows(
+            &pol,
+            "run_command",
+            &[("CommandLine", "cat << 'EOF' > /tmp/a.py\nimport os\nEOF")]
+        ));
+        assert!(agy_allows(
+            &pol,
+            "run_command",
+            &[("CommandLine", "git status")]
+        ));
+        // ...run from the project root only
+        assert!(!agy_allows(
+            &pol,
+            "run_command",
+            &[("CommandLine", "python scripts/make.py a"), ("Cwd", "/tmp")]
+        ));
+        assert!(agy_allows(
+            &pol,
+            "run_command",
+            &[
+                ("CommandLine", "python scripts/make.py a"),
+                ("Cwd", &root.to_string_lossy())
+            ]
+        ));
+
+        // files: writes only to the Thay đổi files / write dirs, reads from the read dirs
+        assert!(!agy_allows(&pol, "write_file", &[("Path", &r("src/x.py"))]));
+        assert!(!agy_allows(
+            &pol,
+            "write_to_file",
+            &[("TargetFile", &r("src/x.py"))]
+        ));
+        assert!(agy_allows(
+            &pol,
+            "write_file",
+            &[("Path", &r("out/new.txt"))]
+        ));
+        assert!(agy_allows(&pol, "edit_file", &[("Path", &r(".plan.md"))]));
+        assert!(agy_allows(
+            &pol,
+            "read_file",
+            &[("Path", &r("scripts/make.py"))]
+        ));
+        assert!(!agy_allows(
+            &pol,
+            "read_file",
+            &[("Path", &r("src/secret.py"))]
+        ));
+        assert!(!agy_allows(&pol, "write_file", &[]));
+        // listing and searching: refused whenever reads are limited (as Glob/Grep for claude)
+        assert!(!agy_allows(
+            &pol,
+            "list_dir",
+            &[("DirectoryPath", &r("scripts"))]
+        ));
+        assert!(!agy_allows(
+            &pol,
+            "grep_search",
+            &[("SearchPath", &r("scripts"))]
+        ));
+
+        // browser tools are refused, ask-only tools are not checked, other tools pass
+        assert!(!agy_allows(
+            &pol,
+            "browser_navigate",
+            &[("Url", "https://x")]
+        ));
+        assert!(agy_tool_decision(&pol, "ask_question", &agy_params(&[])).is_none());
+        assert!(agy_allows(&pol, "manage_task", &[("Action", "status")]));
+    }
+
+    #[test]
+    fn agy_policy_without_command_list_allows_only_git() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        // the policy of an agy Dev: the plan's grants are claude-only, so no command list
+        let pol = Policy {
+            bash_allow: None,
+            read_dirs: vec![],
+            write_dirs: vec![],
+            ..grant_policy(&root)
+        };
+        // the commands of the 2026-11-05 incident (run 56)
+        assert!(!agy_allows(
+            &pol,
+            "run_command",
+            &[(
+                "CommandLine",
+                "python3 -c 'import PIL; print(PIL.__version__)'"
+            )]
+        ));
+        assert!(!agy_allows(
+            &pol,
+            "run_command",
+            &[(
+                "CommandLine",
+                "cat << 'EOF' > /tmp/generate_assets.py\nimport os\nEOF"
+            )]
+        ));
+        assert!(!agy_allows(
+            &pol,
+            "run_command",
+            &[("CommandLine", "ls -la")]
+        ));
+        for cmd in [
+            "git status --short",
+            "git add projects/a",
+            "git commit -m \"t: x\"",
+        ] {
+            assert!(
+                agy_allows(&pol, "run_command", &[("CommandLine", cmd)]),
+                "{cmd}"
+            );
+        }
+        // the hook decision for claude is unchanged: claude's own allow rules cover other commands
+        assert!(decide(&pol, &bash_payload("ls -la")).allow);
+    }
+
+    #[test]
+    fn agy_decisions_are_logged() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        let log = root.join("guard.jsonl");
+        let pol = Policy {
+            log: Some(log.clone()),
+            ..grant_policy(&root)
+        };
+        assert!(!agy_allows(&pol, "run_command", &[("CommandLine", "id")]));
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("\"decision\":\"block\""), "{text}");
+    }
+
+    #[test]
+    fn load_policy_reads_a_written_policy() {
+        let td = tempfile::tempdir().unwrap();
+        let run = td.path().join("run");
+        let root = td.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let g = GuardGrants {
+            bash_allow: Some(vec!["make test".to_string()]),
+            ..GuardGrants::default()
+        };
+        write_hook_settings_grants(&run, &root, Some(&[root.join("a.md")]), &[], &exe, &g).unwrap();
+        let pol = load_policy(&run.join("policy.json")).unwrap();
+        assert_eq!(pol.bash_allow, Some(vec!["make test".to_string()]));
+        assert_eq!(pol.read_allow.as_ref().map(|v| v.len()), Some(1));
+        assert!(pol.log.is_some());
+        assert!(load_policy(&run.join("missing.json")).is_err());
     }
 }

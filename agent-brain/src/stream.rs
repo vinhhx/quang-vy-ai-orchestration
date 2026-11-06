@@ -185,6 +185,38 @@ pub fn classify(line: &[u8]) -> Option<StreamEvent> {
     }
 }
 
+/// One agy tool step about to run: a `step_update` with `state: ACTIVE` that carries
+/// `tool_info`. Returns `(step_index, tool name, parameters)`; the step index is `None` when the
+/// line has none, the parameters are empty when `tool_info.parameters` is missing.
+pub fn agy_active_tool(
+    value: &serde_json::Value,
+) -> Option<(
+    Option<i64>,
+    String,
+    serde_json::Map<String, serde_json::Value>,
+)> {
+    if value.get("event").and_then(|v| v.as_str()) != Some("step_update") {
+        return None;
+    }
+    let step = value.get("step_update")?.as_object()?;
+    if step.get("state").and_then(|v| v.as_str()) != Some("ACTIVE") {
+        return None;
+    }
+    let info = step.get("tool_info")?.as_object()?;
+    let name = info
+        .get("name")
+        .and_then(|v| v.as_str())
+        .or_else(|| step.get("tool_name").and_then(|v| v.as_str()))
+        .filter(|n| !n.is_empty())?;
+    let params = info
+        .get("parameters")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let idx = step.get("step_index").and_then(|v| v.as_i64());
+    Some((idx, name.to_string(), params))
+}
+
 #[derive(Debug, Clone)]
 pub struct Summary {
     pub session_id: String,
@@ -899,5 +931,42 @@ mod tests {
         assert_eq!(s.usage.input_tokens, 30);
         assert_eq!(s.usage.output_tokens, 14);
         assert_eq!(s.thinking_tokens, 4);
+    }
+
+    fn value_of(line: &str) -> serde_json::Value {
+        serde_json::from_str(line).unwrap()
+    }
+
+    #[test]
+    fn agy_active_tool_reads_active_tool_steps_only() {
+        // Shape of a real agy 1.x Dev step (run log, 2026-11-05).
+        let active = value_of(
+            r#"{"event":"step_update","step_update":{"conversation_id":"c","step_index":18,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"python3 -c 'x'"}}}}"#,
+        );
+        let (idx, name, params) = agy_active_tool(&active).unwrap();
+        assert_eq!(idx, Some(18));
+        assert_eq!(name, "run_command");
+        assert_eq!(params["CommandLine"], "python3 -c 'x'");
+
+        // The DONE / ERROR echo of the same step is not checked again.
+        let done = value_of(
+            r#"{"event":"step_update","step_update":{"step_index":18,"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"ls"}}}}"#,
+        );
+        assert!(agy_active_tool(&done).is_none());
+        // An ACTIVE step without tool_info (a model turn) is not a tool step.
+        let turn = value_of(
+            r#"{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response"}}"#,
+        );
+        assert!(agy_active_tool(&turn).is_none());
+        assert!(agy_active_tool(&value_of(r#"{"event":"result","result":{}}"#)).is_none());
+
+        // tool_name is the fallback name; missing parameters read as empty.
+        let bare = value_of(
+            r#"{"event":"step_update","step_update":{"state":"ACTIVE","tool_name":"manage_task","tool_info":{}}}"#,
+        );
+        let (idx, name, params) = agy_active_tool(&bare).unwrap();
+        assert_eq!(idx, None);
+        assert_eq!(name, "manage_task");
+        assert!(params.is_empty());
     }
 }

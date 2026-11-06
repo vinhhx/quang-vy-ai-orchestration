@@ -229,6 +229,8 @@ pub enum RunStop {
     Timeout,
     /// The child had not exited `finish_after_result` after the final `result` event.
     AfterResult,
+    /// The observer asked for the stop (`RunObserver::stop_requested`).
+    Observer,
 }
 
 /// What one stop of a run did: the container part (dsh only) and the host process tree.
@@ -269,6 +271,11 @@ pub trait RunObserver {
     /// The final `result` event of the run has been seen (read after every `on_line`).
     fn result_seen(&self) -> bool {
         false
+    }
+    /// `Some(reason)` asks the runner to stop the run now (read after every `on_line`). The stop
+    /// is the same S4 tree stop as a timeout; the outcome carries `RunStop::Observer`.
+    fn stop_requested(&self) -> Option<String> {
+        None
     }
 }
 
@@ -511,6 +518,18 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
                             let _ = f.flush();
                         }
                         obs.on_line(&line);
+                        if stopping.is_none() {
+                            if let Some(reason) = obs.stop_requested() {
+                                stopping = Some(RunStop::Observer);
+                                obs.on_notice(&format!("Dừng run: {reason}"));
+                                kill_task = Some(spawn_stop(
+                                    root,
+                                    req.kill_grace,
+                                    force.clone(),
+                                    req.container_stop.clone(),
+                                ));
+                            }
+                        }
                         if let Some(grace) = req.finish_after_result {
                             if !after_result_armed && stopping.is_none() && obs.result_seen() {
                                 after_result_armed = true;
@@ -704,6 +723,8 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
                 RunStatus::Succeeded
             }
         }
+        // The observer decides what its stop means; the runner reports a stopped run.
+        Some(RunStop::Observer) => RunStatus::Killed,
         None => {
             if obs.kill_requested() {
                 RunStatus::Killed

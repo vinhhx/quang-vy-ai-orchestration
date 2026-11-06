@@ -503,6 +503,22 @@ pub fn execute_role_staged(
             .then(|| Duration::from_secs(AGY_AFTER_RESULT_GRACE_SECS)),
     };
 
+    // An agy Dev is not behind claude's PreToolUse hook: every tool step it starts is checked
+    // here with the same policy (`policy.json`, written by the Dev before the run). Lead and the
+    // reviewers run agy read-only and are not checked.
+    let agy_policy = if plan.role == "dev" && ep.stream == crate::engine::StreamFormat::Agy {
+        let policy_path = run_dir.join("policy.json");
+        let policy = crate::guard::load_policy(&policy_path).map_err(|e| {
+            BrainError::error(format!(
+                "Không nạp được quyền của plan cho Dev agy ({}): {e}",
+                policy_path.display()
+            ))
+        })?;
+        Some(policy)
+    } else {
+        None
+    };
+
     struct Observer<'a> {
         ctx: &'a Ctx,
         plan: &'a RunPlan,
@@ -519,6 +535,47 @@ pub fn execute_role_staged(
         summary: Summary,
         run_id: Option<i64>,
         seq: i64,
+        agy_policy: Option<crate::guard::Policy>,
+        agy_checked_steps: std::collections::BTreeSet<i64>,
+        violation: Option<String>,
+    }
+
+    impl Observer<'_> {
+        /// Checks one agy tool step about to run against the run's policy; the first refusal is
+        /// kept as the run's violation and stops the run (`stop_requested`).
+        fn check_agy_tool(&mut self, value: &serde_json::Value) {
+            if self.violation.is_some() {
+                return;
+            }
+            let Some(policy) = self.agy_policy.as_ref() else {
+                return;
+            };
+            let Some((idx, tool, params)) = crate::stream::agy_active_tool(value) else {
+                return;
+            };
+            if let Some(i) = idx {
+                if !self.agy_checked_steps.insert(i) {
+                    return;
+                }
+            }
+            let Some(decision) = crate::guard::agy_tool_decision(policy, &tool, &params) else {
+                return;
+            };
+            if decision.allow {
+                return;
+            }
+            let shown: String = serde_json::Value::Object(params)
+                .to_string()
+                .chars()
+                .take(200)
+                .collect();
+            let msg = format!(
+                "agy Dev dùng công cụ ngoài quyền của plan: {tool} {shown} — {}",
+                decision.reason
+            );
+            crate::term::emit(&msg);
+            self.violation = Some(msg);
+        }
     }
 
     impl<'a> crate::runner::RunObserver for Observer<'a> {
@@ -599,6 +656,11 @@ pub fn execute_role_staged(
                 line
             };
             if let Some(ev) = self.summary.feed(line) {
+                if ev.kind == "agy/step_update" {
+                    if let Some(value) = ev.value.as_ref() {
+                        self.check_agy_tool(value);
+                    }
+                }
                 self.seq += 1;
                 if let Some(run_id) = self.run_id {
                     let _ = crate::db::insert_event(
@@ -621,6 +683,12 @@ pub fn execute_role_staged(
 
         fn result_seen(&self) -> bool {
             self.summary.result_seen()
+        }
+
+        fn stop_requested(&self) -> Option<String> {
+            self.violation
+                .as_ref()
+                .map(|_| "agy Dev dùng công cụ ngoài quyền của plan".to_string())
         }
 
         fn kill_requested(&mut self) -> bool {
@@ -657,15 +725,31 @@ pub fn execute_role_staged(
         summary: Summary::new(plan.plan_files.clone(), Some(root.to_path_buf())),
         run_id: None,
         seq: 0,
+        agy_policy,
+        agy_checked_steps: std::collections::BTreeSet::new(),
+        violation: None,
     };
 
     let mut outcome = crate::runner::supervise(&req, &mut obs)?;
     obs.summary.finish();
 
+    // An agy Dev tool step outside the plan's permissions: the run was stopped for it (or ended
+    // before the stop). Like every other protocol violation the run is a finished run with outcome
+    // `protocol_violation` (what the autopilot stops on), not a kill by the user. A signal or a
+    // timeout that came first keeps its own status.
+    let violation = obs.violation.clone().filter(|_| match outcome.stopped_by {
+        Some(crate::runner::RunStop::Observer) => true,
+        None => outcome.status != crate::runner::RunStatus::Killed,
+        Some(_) => false,
+    });
+    if violation.is_some() {
+        outcome.status = crate::runner::RunStatus::Succeeded;
+    }
+
     // agy exits 0 with a non-SUCCESS result more often than not (S7): the result decides. A
     // `--print-timeout` expiry looks like a success too (status SUCCESS, exit 0, empty response,
     // S7b); its only signal is a stderr line, so that line is what maps it to `timed_out`.
-    let agy_stream = ep.stream == crate::engine::StreamFormat::Agy;
+    let agy_stream = ep.stream == crate::engine::StreamFormat::Agy && violation.is_none();
     let print_timeout =
         agy_stream && agy_print_timeout_hit(&crate::quota::stderr_tail(&quota_stderr_path, 4096));
     // The run was stopped by the runner after agy had answered (it did not exit by itself): what
@@ -706,11 +790,14 @@ pub fn execute_role_staged(
 
     // ENG-02 / D-15: one detector decides quota for every claude-format run (claude, deepseek)
     // that was not killed or timed out. A hit only stops the step (D-16).
-    let quota_hit = if ep.stream == crate::engine::StreamFormat::Claude
+    let quota_hit = if violation.is_some() {
+        None
+    } else if ep.stream == crate::engine::StreamFormat::Claude
         && !matches!(
             outcome.status,
             crate::runner::RunStatus::Killed | crate::runner::RunStatus::TimedOut
-        ) {
+        )
+    {
         crate::quota::detect_claude(
             &obs.summary,
             outcome.exit_code,
@@ -774,12 +861,17 @@ pub fn execute_role_staged(
             permission_denials: obs.summary.permission_denials,
             // Built from the already-redacted summary and stderr tail; redacted once more as a
             // defence so no later change to the detector can store a key here (ENG-05).
-            error: quota_hit
-                .as_ref()
-                .map(|h| crate::secrets::redact_str(&format!("quota: {}", h.detail), &ep.redact)),
+            error: match (&violation, &quota_hit) {
+                (Some(v), _) => Some(crate::secrets::redact_str(v, &ep.redact)),
+                (None, Some(h)) => Some(crate::secrets::redact_str(
+                    &format!("quota: {}", h.detail),
+                    &ep.redact,
+                )),
+                (None, None) => None,
+            },
         };
         crate::db::finish_run(&ctx.conn, run_id, &finish)?;
-        if agy_stream {
+        if ep.stream == crate::engine::StreamFormat::Agy {
             crate::db::merge_run_metrics(
                 &ctx.conn,
                 run_id,
@@ -822,6 +914,22 @@ pub fn execute_role_staged(
                 }),
             )?;
         }
+    }
+
+    // Same exit as the other Dev protocol violations: nothing is committed or undone.
+    if let Some(msg) = violation {
+        if let Some(run_id) = obs.run_id {
+            crate::db::set_run_outcome(&ctx.conn, run_id, "protocol_violation")?;
+        }
+        return Err(BrainError::new(
+            crate::secrets::redact_str(
+                &format!(
+                    "{msg}\nRun đã bị dừng — vi phạm giao thức. agent-brain không tự hoàn tác."
+                ),
+                &ep.redact,
+            ),
+            EXIT_PROTOCOL,
+        ));
     }
 
     // The role code after this call never runs on a quota stop: nothing is committed, nothing
