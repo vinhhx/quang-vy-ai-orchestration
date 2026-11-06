@@ -25,6 +25,7 @@ fn app_state(sb: &Sandbox) -> Arc<AppState> {
     let value: serde_json::Value = serde_json::from_str(&text).expect("parse config");
     let cfg = agent_brain::config::config_from_value(&value).expect("config_from_value");
     Arc::new(AppState {
+        orch: std::sync::RwLock::new(cfg.orchestrator.clone()),
         cfg,
         port: 0,
         token: "0".repeat(64),
@@ -402,6 +403,80 @@ fn test_triage_disabled_does_nothing() {
 
     let proposals = agent_brain::db::list_proposals(&conn, None).expect("list proposals");
     assert_eq!(proposals.len(), 0);
+}
+
+/// Live settings: `tick` reads `AppState::orch()`, so turning the queue off and on at
+/// runtime (the Cài đặt switch) takes effect without rebuilding the state.
+#[test]
+fn test_triage_follows_live_toggle() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true
+        }
+    }));
+    std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let intake_id = agent_brain::db::insert_intake(
+        &conn,
+        "ui",
+        None,
+        "Thêm trang giới thiệu cho web",
+        "normal",
+    )
+    .expect("insert intake");
+    let fake_result = json!({
+        "tasks": [
+            {
+                "project": "web-ban-hang",
+                "title": "Thêm trang giới thiệu",
+                "request": "Tạo trang about.html",
+                "priority": "normal",
+                "team": "mac-dinh",
+                "workflow": "mac-dinh",
+                "reason": "Phù hợp"
+            }
+        ]
+    })
+    .to_string();
+    sb.write_scenario(json!({
+        "events": [
+            { "type": "result", "subtype": "success", "result": fake_result }
+        ]
+    }));
+
+    let st = app_state(&sb);
+    let mut off = st.orch();
+    off.enabled = false;
+    st.set_orch(off);
+    assert!(!st.orch().enabled);
+
+    agent_brain::orchestrator::tick(&st).expect("tick while off");
+    let intake = agent_brain::db::get_intake(&conn, intake_id)
+        .expect("get intake")
+        .expect("intake");
+    assert_eq!(intake.status, "queued", "off: queued intake stays queued");
+    assert!(agent_brain::db::list_proposals(&conn, None)
+        .expect("list proposals")
+        .is_empty());
+
+    let mut on = st.orch();
+    on.enabled = true;
+    st.set_orch(on);
+    agent_brain::orchestrator::tick(&st).expect("tick while on");
+    let intake = agent_brain::db::get_intake(&conn, intake_id)
+        .expect("get intake")
+        .expect("intake");
+    assert_eq!(intake.status, "proposed", "on: the queued intake is triaged");
+    assert_eq!(
+        agent_brain::db::list_proposals(&conn, None)
+            .expect("list proposals")
+            .len(),
+        1
+    );
 }
 
 /// Test thứ tự ưu tiên: intake queued urgent được xử lý trước normal.

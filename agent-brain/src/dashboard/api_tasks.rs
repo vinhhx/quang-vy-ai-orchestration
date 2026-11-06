@@ -825,7 +825,7 @@ fn start_response(outcome: StartOutcome) -> Response {
 }
 
 async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>) -> Response {
-    if st.cfg.orchestrator.enabled {
+    if st.orch().enabled {
         let req_text = body.request.trim().to_string();
         if req_text.is_empty() {
             return json_response(

@@ -39,12 +39,13 @@ pub(crate) fn active_task_count(st: &AppState, conn: &rusqlite::Connection) -> B
 
 /// Nhịp xử lý của bộ lập lịch: gọi định kỳ bởi orchestrator loop
 pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
-    if !st.cfg.orchestrator.enabled {
+    let orch = st.orch();
+    if !orch.enabled {
         return Ok(());
     }
 
     let conn = crate::db::open(&st.db_path)?;
-    let max_parallel = st.cfg.orchestrator.max_parallel;
+    let max_parallel = orch.max_parallel;
 
     // (b) & (c): Quét các task dừng vì quota để ghi vào quota_stops và xử lý auto_resume nếu có
     handle_quota_stops(st, &conn)?;
@@ -196,8 +197,9 @@ fn handle_quota_stops(st: &AppState, conn: &rusqlite::Connection) -> BrainResult
     }
 
     // (c) auto_resume chỉ khi auto_resume_quota = true và đã qua resume_after_minutes
-    if st.cfg.orchestrator.auto_resume_quota {
-        let resume_after_ms = st.cfg.orchestrator.resume_after_minutes as i64 * 60 * 1000;
+    let orch = st.orch();
+    if orch.auto_resume_quota {
+        let resume_after_ms = orch.resume_after_minutes as i64 * 60 * 1000;
         let quota_stops = crate::db::list_quota_stops(conn)?;
 
         for qs in quota_stops {

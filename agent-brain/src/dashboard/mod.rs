@@ -39,6 +39,24 @@ pub struct AppState {
     pub hints: broadcast::Sender<i64>,
     pub shutdown: watch::Receiver<bool>,
     pub jobs: std::sync::Arc<jobs::JobManager>,
+    /// Live orchestrator settings. Starts from `cfg.orchestrator`; the Cài đặt screen
+    /// changes it at runtime, so read it through `orch()`, never `cfg.orchestrator`.
+    pub orch: std::sync::RwLock<crate::config::OrchestratorConfig>,
+}
+
+impl AppState {
+    /// A copy of the live orchestrator settings.
+    pub fn orch(&self) -> crate::config::OrchestratorConfig {
+        self.orch
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// Replaces the live orchestrator settings (the next tick and request see them).
+    pub fn set_orch(&self, value: crate::config::OrchestratorConfig) {
+        *self.orch.write().unwrap_or_else(|p| p.into_inner()) = value;
+    }
 }
 
 pub fn json_error(status: StatusCode, message: &str) -> Response {
@@ -195,6 +213,7 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
     let jobs = jobs::JobManager::new(exe.clone());
 
     let state = Arc::new(AppState {
+        orch: std::sync::RwLock::new(cfg.orchestrator.clone()),
         cfg: cfg.clone(),
         port: real_port,
         token: token.clone(),

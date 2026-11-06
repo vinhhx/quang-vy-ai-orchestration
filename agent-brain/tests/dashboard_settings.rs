@@ -1,4 +1,7 @@
 mod common;
+#[allow(dead_code)]
+#[path = "support/protocol.rs"]
+mod protocol;
 
 use common::Sandbox;
 use serde_json::{json, Value};
@@ -1253,6 +1256,236 @@ fn engines_models_save_and_get() {
         &json!({"id": "agy", "command": "rm"}),
     );
     assert!(bad.status == 400 || bad.status == 422, "{}", bad.status);
+
+    stop(srv);
+}
+
+// ---- orchestrator settings (hàng đợi) ----
+
+fn file_version_of(path: &std::path::Path) -> String {
+    let bytes = std::fs::read(path).expect("read config");
+    agent_brain::dashboard::settings_store::file_version(Some(&bytes))
+}
+
+fn without_orchestrator(mut v: Value) -> Value {
+    v.as_object_mut().unwrap().remove("orchestrator");
+    v
+}
+
+fn orch_body(enabled: bool, max: u64, auto: bool, mins: u64, version: &str) -> Value {
+    json!({
+        "enabled": enabled,
+        "max_parallel": max,
+        "auto_resume_quota": auto,
+        "resume_after_minutes": mins,
+        "version": version,
+    })
+}
+
+fn error_fields(j: &Value) -> Vec<String> {
+    j["errors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("errors array: {j}"))
+        .iter()
+        .map(|e| e["field"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn orchestrator_settings_get_save_live() {
+    let sb = Sandbox::new();
+    sb.write_config(json!({
+        "orchestrator": {"enabled": false, "max_parallel": 2},
+        "telegram_max_tasks_per_day": 7
+    }));
+    let srv = sb.serve(&[]);
+
+    // GET: the values in use and the version of config.json.
+    let r = srv.get("/api/orchestrator/settings");
+    assert_eq!(r.status, 200, "{}", r.text());
+    let j = r.json();
+    assert_eq!(j["enabled"], false);
+    assert_eq!(j["max_parallel"], 2);
+    assert_eq!(j["auto_resume_quota"], false);
+    assert_eq!(j["resume_after_minutes"], 60);
+    let v1 = j["version"].as_str().unwrap().to_string();
+    assert_eq!(v1, file_version_of(&sb.config_path));
+    let before: Value =
+        serde_json::from_str(&std::fs::read_to_string(&sb.config_path).unwrap()).unwrap();
+
+    // A valid save writes the orchestrator block only and is live at once.
+    let r = srv.post_json(
+        "/api/orchestrator/settings",
+        &orch_body(true, 5, true, 90, &v1),
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    let j = r.json();
+    assert_eq!(j["ok"], true);
+    assert_eq!(j["enabled"], true);
+    assert_eq!(j["max_parallel"], 5);
+    assert_eq!(j["auto_resume_quota"], true);
+    assert_eq!(j["resume_after_minutes"], 90);
+    let v2 = j["version"].as_str().unwrap().to_string();
+    assert!(is_hex16(&v2), "version: {v2}");
+    assert_ne!(v2, v1);
+    assert_eq!(v2, file_version_of(&sb.config_path));
+
+    let text = std::fs::read_to_string(&sb.config_path).unwrap();
+    assert!(text.ends_with('\n'));
+    let after: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        after["orchestrator"],
+        json!({"enabled": true, "max_parallel": 5, "auto_resume_quota": true, "resume_after_minutes": 90})
+    );
+    assert_eq!(without_orchestrator(after), without_orchestrator(before));
+    let mode = std::fs::metadata(&sb.config_path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+
+    let j = srv.get("/api/orchestrator/settings").json();
+    assert_eq!(j["enabled"], true);
+    assert_eq!(j["max_parallel"], 5);
+    assert_eq!(j["version"], v2.as_str());
+    let st = srv.get("/api/orchestrator/status").json();
+    assert_eq!(
+        st,
+        json!({"enabled": true, "max_parallel": 5, "auto_resume_quota": true, "resume_after_minutes": 90})
+    );
+    let board = srv.get("/api/orchestrator/board");
+    assert_eq!(board.status, 200, "{}", board.text());
+    assert_eq!(board.json()["status"]["enabled"], true, "{}", board.text());
+    assert_eq!(board.json()["status"]["max_parallel"], 5);
+
+    // Wrong type / out of range: 400 with one error per field, nothing written.
+    let saved = std::fs::read(&sb.config_path).unwrap();
+    let bad = json!({
+        "enabled": "yes",
+        "max_parallel": 0,
+        "auto_resume_quota": 1,
+        "resume_after_minutes": 1441,
+        "version": v2,
+    });
+    let r = srv.post_json("/api/orchestrator/settings", &bad);
+    assert_eq!(r.status, 400, "{}", r.text());
+    let j = r.json();
+    assert_eq!(
+        error_fields(&j),
+        ["enabled", "max_parallel", "auto_resume_quota", "resume_after_minutes"]
+    );
+    assert_eq!(j["error"], "Không lưu được cài đặt hàng đợi");
+    for (body, field) in [
+        (orch_body(true, 11, false, 60, &v2), "max_parallel"),
+        (orch_body(true, 3, false, 0, &v2), "resume_after_minutes"),
+        (
+            json!({"enabled": true, "max_parallel": 2.5, "auto_resume_quota": false, "resume_after_minutes": 60, "version": v2}),
+            "max_parallel",
+        ),
+        (
+            json!({"max_parallel": 2, "auto_resume_quota": false, "resume_after_minutes": 60, "version": v2}),
+            "enabled",
+        ),
+        (
+            json!({"enabled": true, "max_parallel": 2, "auto_resume_quota": false, "resume_after_minutes": 60}),
+            "version",
+        ),
+        (
+            json!({"enabled": true, "max_parallel": 2, "auto_resume_quota": false, "resume_after_minutes": 60, "version": v2, "command": "rm"}),
+            "command",
+        ),
+    ] {
+        let r = srv.post_json("/api/orchestrator/settings", &body);
+        assert_eq!(r.status, 400, "{body}: {}", r.text());
+        assert_eq!(error_fields(&r.json()), [field], "{body}");
+    }
+    assert_eq!(std::fs::read(&sb.config_path).unwrap(), saved);
+
+    // A stale version is a conflict: file and live values unchanged.
+    let r = srv.post_json(
+        "/api/orchestrator/settings",
+        &orch_body(false, 1, false, 60, &v1),
+    );
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(r.json()["code"], "conflict");
+    assert_eq!(std::fs::read(&sb.config_path).unwrap(), saved);
+    let j = srv.get("/api/orchestrator/settings").json();
+    assert_eq!(j["enabled"], true);
+    assert_eq!(j["max_parallel"], 5);
+
+    // Same auth gate as the other settings routes.
+    let r = srv.request("POST", "/api/orchestrator/settings", &[], b"{}");
+    assert_eq!(r.status, 401);
+
+    // A config.json that fails to load is never overwritten.
+    std::fs::write(&sb.config_path, "{\"orchestrator\": {\"enabled\": \"x\"}}\n").unwrap();
+    let v3 = file_version_of(&sb.config_path);
+    let r = srv.post_json(
+        "/api/orchestrator/settings",
+        &orch_body(false, 3, false, 60, &v3),
+    );
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(r.json()["code"], "invalid_file");
+    assert_eq!(
+        std::fs::read_to_string(&sb.config_path).unwrap(),
+        "{\"orchestrator\": {\"enabled\": \"x\"}}\n"
+    );
+    assert_eq!(srv.get("/api/orchestrator/settings").json()["enabled"], true);
+
+    stop(srv);
+}
+
+#[test]
+fn orchestrator_toggle_routes_create_task_live() {
+    let sb = Sandbox::new();
+    let _repo = protocol::setup_project(&sb, "work");
+    sb.write_config(json!({"orchestrator": {"enabled": true}}));
+    let sc = protocol::lead_scenario(&[("src/app.py", "1", "sửa app", "yêu cầu")]);
+    std::fs::write(&sb.scenario_file, serde_json::to_string(&sc).unwrap()).unwrap();
+    let srv = sb.serve(&[]);
+
+    let count = |sql: &str| -> i64 { sb.db().query_row(sql, [], |r| r.get(0)).unwrap() };
+
+    // Off over the API: POST /api/tasks runs straight, no intake row.
+    let v1 = srv.get("/api/orchestrator/settings").json()["version"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = srv.post_json(
+        "/api/orchestrator/settings",
+        &orch_body(false, 3, false, 60, &v1),
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    let v2 = r.json()["version"].as_str().unwrap().to_string();
+    assert_eq!(srv.get("/api/orchestrator/status").json()["enabled"], false);
+
+    let r = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "web-ban-hang", "request": "sửa app", "name": "sua-app"}),
+    );
+    assert_eq!(r.status, 202, "{}", r.text());
+    let job_id = r.json()["job_id"].as_u64().expect("job_id");
+    let exited = common::wait_until(Duration::from_secs(30), || {
+        let j = srv.get(&format!("/api/jobs/{job_id}"));
+        j.status == 200 && j.json()["state"] == "exited"
+    });
+    assert!(exited, "job did not exit in 30s");
+    assert_eq!(count("SELECT COUNT(*) FROM intake"), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM tasks"), 1);
+
+    // On again: the next POST /api/tasks goes to the queue.
+    let r = srv.post_json(
+        "/api/orchestrator/settings",
+        &orch_body(true, 3, false, 60, &v2),
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    let r = srv.post_json(
+        "/api/tasks",
+        &json!({"project": "web-ban-hang", "request": "Yêu cầu qua giao diện"}),
+    );
+    assert_eq!(r.status, 201, "{}", r.text());
+    let j = r.json();
+    assert_eq!(j["status"], "queued");
+    assert!(j["intake_id"].as_i64().is_some(), "{j}");
+    assert_eq!(count("SELECT COUNT(*) FROM intake"), 1);
+    assert_eq!(count("SELECT COUNT(*) FROM tasks"), 1);
 
     stop(srv);
 }

@@ -35,6 +35,7 @@ fn app_state(sb: &Sandbox, exe: PathBuf) -> Arc<AppState> {
     let value: serde_json::Value = serde_json::from_str(&text).expect("parse config");
     let cfg = agent_brain::config::config_from_value(&value).expect("config_from_value");
     Arc::new(AppState {
+        orch: std::sync::RwLock::new(cfg.orchestrator.clone()),
         cfg,
         port: 0,
         token: "0".repeat(64),

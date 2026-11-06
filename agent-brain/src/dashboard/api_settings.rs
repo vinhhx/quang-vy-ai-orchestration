@@ -31,6 +31,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/workflows/delete", post(delete_workflow))
         .route("/api/engines", get(get_engines))
         .route("/api/engines/models", post(save_engine_models))
+        .route(
+            "/api/orchestrator/settings",
+            get(get_orchestrator_settings).post(save_orchestrator_settings),
+        )
 }
 
 // ---- shared response shapes ----
@@ -1127,6 +1131,186 @@ fn save_engine_models_blocking(st: &AppState, body: EngineModelsSaveBody) -> Res
     match engines_payload(st) {
         Ok(v) => json_response(StatusCode::OK, with_ok(v)),
         Err(e) => internal_save(&e.message),
+    }
+}
+
+// ---- orchestrator (hàng đợi) ----
+
+const ORCH_HEADING: &str = "Không lưu được cài đặt hàng đợi";
+const ORCH_CONFLICT: &str = "config.json vừa bị sửa ở nơi khác";
+const ORCH_FIELDS: [&str; 5] = [
+    "enabled",
+    "max_parallel",
+    "auto_resume_quota",
+    "resume_after_minutes",
+    "version",
+];
+
+fn orchestrator_json(o: &crate::config::OrchestratorConfig, version: &str) -> Value {
+    json!({
+        "enabled": o.enabled,
+        "max_parallel": o.max_parallel,
+        "auto_resume_quota": o.auto_resume_quota,
+        "resume_after_minutes": o.resume_after_minutes,
+        "version": version,
+    })
+}
+
+/// The live settings (what the queue uses now) and the version of config.json.
+async fn get_orchestrator_settings(State(st): State<Arc<AppState>>) -> Response {
+    let path = crate::config::config_path();
+    match blocking(move || settings_store::read_doc(&path)).await {
+        Ok((_, version)) => json_response(StatusCode::OK, orchestrator_json(&st.orch(), &version)),
+        Err(e) => internal_read(&e.message),
+    }
+}
+
+fn bool_field(
+    body: &serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+) -> Result<bool, FieldError> {
+    match body.get(key) {
+        Some(Value::Bool(b)) => Ok(*b),
+        _ => Err(field_err(key, format!("{label} phải là true hoặc false."))),
+    }
+}
+
+fn int_field(
+    body: &serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+    max: u64,
+) -> Result<u32, FieldError> {
+    match body.get(key).and_then(Value::as_u64) {
+        Some(n) if (1..=max).contains(&n) => Ok(n as u32),
+        _ => Err(field_err(
+            key,
+            format!("{label} phải là số nguyên từ 1 đến {max}."),
+        )),
+    }
+}
+
+/// Same rules as `config::config_from_value` for the `orchestrator` block, every field
+/// required. Returns the new settings and the version the client read.
+fn parse_orchestrator_body(
+    body: &Value,
+) -> Result<(crate::config::OrchestratorConfig, String), Vec<FieldError>> {
+    let Some(obj) = body.as_object() else {
+        return Err(vec![field_err(
+            "body",
+            "Dữ liệu gửi lên phải là object JSON.",
+        )]);
+    };
+    let mut errors = Vec::new();
+    for key in obj.keys() {
+        if !ORCH_FIELDS.contains(&key.as_str()) {
+            errors.push(field_err(key, format!("Trường '{key}' không hợp lệ.")));
+        }
+    }
+    let version = match obj.get("version").and_then(Value::as_str) {
+        Some(v) if !v.is_empty() => v.to_string(),
+        _ => {
+            errors.push(field_err("version", "Thiếu version của config.json."));
+            String::new()
+        }
+    };
+    let mut out = crate::config::OrchestratorConfig::default();
+    match bool_field(obj, "enabled", "Bật/tắt hàng đợi") {
+        Ok(b) => out.enabled = b,
+        Err(e) => errors.push(e),
+    }
+    match int_field(obj, "max_parallel", "Số việc chạy song song", 10) {
+        Ok(n) => out.max_parallel = n,
+        Err(e) => errors.push(e),
+    }
+    match bool_field(obj, "auto_resume_quota", "Tự chạy lại sau khi hết quota") {
+        Ok(b) => out.auto_resume_quota = b,
+        Err(e) => errors.push(e),
+    }
+    match int_field(obj, "resume_after_minutes", "Chạy lại sau (phút)", 1440) {
+        Ok(n) => out.resume_after_minutes = n,
+        Err(e) => errors.push(e),
+    }
+    if errors.is_empty() {
+        Ok((out, version))
+    } else {
+        Err(errors)
+    }
+}
+
+async fn save_orchestrator_settings(
+    State(st): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Response {
+    run_write(move || save_orchestrator_blocking(&st, body)).await
+}
+
+/// Writes the `orchestrator` block of config.json (other keys untouched), then makes
+/// the new values live: the next orchestrator tick and the next intake read them.
+fn save_orchestrator_blocking(st: &AppState, body: Value) -> Response {
+    let (new_orch, version) = match parse_orchestrator_body(&body) {
+        Ok(v) => v,
+        Err(errors) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": ORCH_HEADING, "errors": errors }),
+            )
+        }
+    };
+
+    let path = crate::config::config_path();
+    let (text, _) = match read_for_write(&path) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Some(text) = text {
+        let loaded = serde_json::from_str::<Value>(&text)
+            .map_err(|e| e.to_string())
+            .and_then(|v| crate::config::config_from_value(&v).map_err(|e| e.message));
+        if let Err(msg) = loaded {
+            return invalid_file("config.json", &[msg]);
+        }
+    }
+
+    let write_res = settings_store::write_object(&path, &version, |root| {
+        if root.is_empty() {
+            if let Ok(Value::Object(def_map)) =
+                serde_json::from_str::<Value>(crate::config::DEFAULT_CONFIG_JSON)
+            {
+                *root = def_map;
+            }
+        }
+        if !matches!(root.get("orchestrator"), Some(Value::Object(_))) {
+            root.insert("orchestrator".to_string(), json!({}));
+        }
+        if let Some(block) = root.get_mut("orchestrator").and_then(Value::as_object_mut) {
+            block.insert("enabled".to_string(), json!(new_orch.enabled));
+            block.insert("max_parallel".to_string(), json!(new_orch.max_parallel));
+            block.insert(
+                "auto_resume_quota".to_string(),
+                json!(new_orch.auto_resume_quota),
+            );
+            block.insert(
+                "resume_after_minutes".to_string(),
+                json!(new_orch.resume_after_minutes),
+            );
+        }
+        if let Err(e) = crate::config::config_from_value(&Value::Object(root.clone())) {
+            return Err(vec![field_err("orchestrator", e.message)]);
+        }
+        Ok(())
+    });
+
+    match write_res {
+        Ok(new_version) => {
+            st.set_orch(new_orch.clone());
+            json_response(
+                StatusCode::OK,
+                with_ok(orchestrator_json(&new_orch, &new_version)),
+            )
+        }
+        Err(err) => write_error_response(err, ORCH_CONFLICT, ORCH_HEADING),
     }
 }
 

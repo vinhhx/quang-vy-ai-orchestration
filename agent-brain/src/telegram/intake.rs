@@ -667,7 +667,7 @@ fn find_slug(ctx: &BotCtx, f: &Intake, project_id: &str) -> Result<(String, Star
             Ok(StartOutcome::Ready(info)) => return Ok((info.slug.clone(), info)),
             Ok(StartOutcome::PreflightRefused { kind, .. })
                 if kind == "branch_exists" || kind == "exists" => {}
-            Ok(StartOutcome::PreflightRefused { .. }) if ctx.st.cfg.orchestrator.enabled => {
+            Ok(StartOutcome::PreflightRefused { .. }) if ctx.st.orch().enabled => {
                 let map = crate::projects::load_map(&ctx.st.map_path).map_err(|e| e.message)?;
                 let (projects, _) = allowed_projects(&map, &ctx.st.cfg)?;
                 let proj = projects
@@ -1241,7 +1241,7 @@ fn confirm(ctx: &Arc<BotCtx>, state: &PollState, f: &mut Intake, cq_id: &str, mi
         Err(reason) => return refuse(ctx, cq_id, mid, &reason, "yêu cầu"),
     };
 
-    if ctx.st.cfg.orchestrator.enabled {
+    if ctx.st.orch().enabled {
         let conn = match crate::db::open(&ctx.st.db_path) {
             Ok(c) => c,
             Err(e) => return refuse(ctx, cq_id, mid, &e.message, "nội bộ"),

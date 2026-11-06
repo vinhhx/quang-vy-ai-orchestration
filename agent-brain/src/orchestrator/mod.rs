@@ -43,7 +43,7 @@ pub fn next_queued_intake(conn: &Connection) -> BrainResult<Option<IntakeRow>> {
 
 /// Một nhịp xử lý của orchestrator: nếu bật `enabled`, lấy một intake queued và phân tích thành proposals.
 pub fn tick(st: &AppState) -> BrainResult<()> {
-    if !st.cfg.orchestrator.enabled {
+    if !st.orch().enabled {
         return Ok(());
     }
 

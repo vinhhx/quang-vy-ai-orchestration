@@ -464,13 +464,14 @@ async fn post_proposal_reject(
 }
 
 async fn get_orchestrator_status(State(st): State<Arc<AppState>>) -> Response {
+    let orch = st.orch();
     json_response(
         StatusCode::OK,
         serde_json::json!({
-            "enabled": st.cfg.orchestrator.enabled,
-            "max_parallel": st.cfg.orchestrator.max_parallel,
-            "auto_resume_quota": st.cfg.orchestrator.auto_resume_quota,
-            "resume_after_minutes": st.cfg.orchestrator.resume_after_minutes,
+            "enabled": orch.enabled,
+            "max_parallel": orch.max_parallel,
+            "auto_resume_quota": orch.auto_resume_quota,
+            "resume_after_minutes": orch.resume_after_minutes,
         }),
     )
 }
@@ -479,14 +480,15 @@ async fn get_orchestrator_board(State(st): State<Arc<AppState>>) -> Response {
     let st_clone = st.clone();
     let res = blocking(move || {
         let conn = crate::db::open(&st_clone.db_path)?;
+        let orch = st_clone.orch();
         let active =
             crate::orchestrator::scheduler::active_task_count(&st_clone, &conn).unwrap_or(0);
         let status = serde_json::json!({
-            "enabled": st_clone.cfg.orchestrator.enabled,
-            "max_parallel": st_clone.cfg.orchestrator.max_parallel,
+            "enabled": orch.enabled,
+            "max_parallel": orch.max_parallel,
             "active": active,
-            "auto_resume_quota": st_clone.cfg.orchestrator.auto_resume_quota,
-            "resume_after_minutes": st_clone.cfg.orchestrator.resume_after_minutes,
+            "auto_resume_quota": orch.auto_resume_quota,
+            "resume_after_minutes": orch.resume_after_minutes,
         });
 
         let proj_map = crate::db::list_project_display_map(&conn)?;
@@ -546,8 +548,8 @@ async fn get_orchestrator_board(State(st): State<Arc<AppState>>) -> Response {
             .collect();
 
         let raw_quota_stops = crate::db::list_orchestrator_board_quota_stops(&conn)?;
-        let auto_resume = st_clone.cfg.orchestrator.auto_resume_quota;
-        let resume_mins = st_clone.cfg.orchestrator.resume_after_minutes as i64;
+        let auto_resume = orch.auto_resume_quota;
+        let resume_mins = orch.resume_after_minutes as i64;
         let quota_list: Vec<serde_json::Value> = raw_quota_stops
             .into_iter()
             .map(|qs| {
