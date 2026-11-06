@@ -43,6 +43,11 @@ pub const QA_PROMPT: &str = include_str!("../../assets/prompts/qa.md");
 pub const PLAN_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/plan-review.md");
 pub const CODE_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/code-review.md");
 
+/// Seconds an agy run gets to exit by itself after its final `result` event; after that the
+/// runner stops its process tree (an MCP server agy started can keep it alive) and the run counts
+/// as ended by itself.
+pub const AGY_AFTER_RESULT_GRACE_SECS: u64 = 15;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum FixInput {
     Qa,
@@ -494,7 +499,8 @@ pub fn execute_role_staged(
         stdout_file: ep.stdout_file,
         redact: ep.redact.clone(),
         container_stop: ep.dsh.clone(),
-        finish_after_result: None,
+        finish_after_result: (ep.stream == crate::engine::StreamFormat::Agy)
+            .then(|| Duration::from_secs(AGY_AFTER_RESULT_GRACE_SECS)),
     };
 
     struct Observer<'a> {
@@ -613,6 +619,10 @@ pub fn execute_role_staged(
             crate::term::emit(message);
         }
 
+        fn result_seen(&self) -> bool {
+            self.summary.result_seen()
+        }
+
         fn kill_requested(&mut self) -> bool {
             if let Some(run_id) = self.run_id {
                 let req: Option<i64> = self
@@ -656,11 +666,35 @@ pub fn execute_role_staged(
     // `--print-timeout` expiry looks like a success too (status SUCCESS, exit 0, empty response,
     // S7b); its only signal is a stderr line, so that line is what maps it to `timed_out`.
     let agy_stream = ep.stream == crate::engine::StreamFormat::Agy;
-    if agy_stream
+    let print_timeout =
+        agy_stream && agy_print_timeout_hit(&crate::quota::stderr_tail(&quota_stderr_path, 4096));
+    // The run was stopped by the runner after agy had answered (it did not exit by itself): what
+    // the role code sees is a run that ended by itself, the stored exit code stays the real one.
+    let mut ended_after_answer = agy_stream
         && outcome.status == crate::runner::RunStatus::Succeeded
-        && agy_print_timeout_hit(&crate::quota::stderr_tail(&quota_stderr_path, 4096))
+        && outcome.stopped_by == Some(crate::runner::RunStop::AfterResult);
+    // A timeout that came after a complete SUCCESS answer loses nothing: the answer is used as if
+    // agy had exited. A `--print-timeout` expiry (empty partial answer) stays a timeout.
+    if agy_stream
+        && outcome.status == crate::runner::RunStatus::TimedOut
+        && !print_timeout
+        && obs.summary.result_seen()
+        && obs.summary.agy_status.as_deref() == Some("SUCCESS")
+        && obs
+            .summary
+            .agy_response
+            .as_deref()
+            .is_some_and(|r| !r.trim().is_empty())
     {
+        outcome.status = crate::runner::RunStatus::Succeeded;
+        ended_after_answer = true;
+        crate::term::emit(
+            "Run quá thời gian nhưng agy đã trả kết quả SUCCESS trước đó — dùng kết quả này",
+        );
+    }
+    if agy_stream && outcome.status == crate::runner::RunStatus::Succeeded && print_timeout {
         outcome.status = crate::runner::RunStatus::TimedOut;
+        ended_after_answer = false;
     }
     if agy_stream
         && outcome.status == crate::runner::RunStatus::Succeeded
@@ -850,6 +884,12 @@ pub fn execute_role_staged(
                 std::fs::write(root.join(file), body)?;
             }
         }
+    }
+
+    if ended_after_answer && outcome.status == crate::runner::RunStatus::Succeeded {
+        // The stop signal's exit code (143/137) is in `runs.exit_code`; the role code must not
+        // read it as a failure of a run that had already answered.
+        outcome.exit_code = Some(0);
     }
 
     let run_id = obs.run_id.unwrap_or(0);

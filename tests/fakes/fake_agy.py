@@ -21,6 +21,7 @@ Environment:
     status          result.status (default "SUCCESS")
     error           result.error (default: the stderr text) when status is not SUCCESS
     sleep_s         sleep before the result line
+    hang_s          sleep after the last line instead of exiting (an MCP child keeping agy alive)
     spawn_child     start one long-lived child (python3 sleeping 300 s) first and leave it running
     pidfile         path; written as "{own pid} {child pid}" once the child runs (needs spawn_child)
     permission_mode init.permission_mode to print (default: derived from argv)
@@ -236,6 +237,10 @@ def main() -> None:
         emit(text, newline=(i != last or final_newline))
         if delay > 0 and i != last:
             time.sleep(delay)
+
+    hang_s = float(scenario.get("hang_s", 0) or 0)
+    if hang_s > 0:
+        time.sleep(hang_s)
 
     sys.exit(int(scenario.get("exit_code", 0) or 0))
 

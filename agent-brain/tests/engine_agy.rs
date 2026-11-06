@@ -870,3 +870,231 @@ fn agy_kill_s4() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// agy that answered but does not exit (an MCP child keeps it alive)
+// ---------------------------------------------------------------------------
+
+/// The fake agy config plus a 1 s kill grace and, when given, a short Lead timeout.
+fn agy_config_with(sb: &Sandbox, lead_timeout: Option<u64>) {
+    let mut cfg = json!({
+        "engines": {"agy": {"command": fake_agy().to_str().unwrap()}},
+        "kill_grace_secs": 1,
+    });
+    if let Some(t) = lead_timeout {
+        cfg["timeout_seconds"] = json!({"lead": t, "dev": 30, "qa": 30, "inspect": 30});
+    }
+    sb.write_config(cfg);
+}
+
+/// Runs the agy Lead and, while it runs, records the fake agy and its sleeping child from the
+/// pidfile ("{agy pid} {child pid}"). Returns the output, those processes and the run time.
+fn run_lead_watching(
+    sb: &Sandbox,
+    env: &AgyEnv,
+    pidfile: &std::path::Path,
+) -> (RunOut, Vec<agent_brain::procs::ProcId>, std::time::Duration) {
+    use std::time::{Duration, Instant};
+    let t0 = Instant::now();
+    let mut cmd = sb.command(
+        &[
+            "run",
+            "lead",
+            "--team",
+            "doi-agy",
+            "--name",
+            "sua-app",
+            "--",
+            "web",
+            "sửa app",
+        ],
+        &env.vars(),
+    );
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let child = cmd.spawn().expect("spawn run lead");
+    let mut procs = Vec::new();
+    common::wait_until(Duration::from_secs(10), || {
+        let text = std::fs::read_to_string(pidfile).unwrap_or_default();
+        let ids: Vec<agent_brain::procs::ProcId> = text
+            .split_whitespace()
+            .filter_map(|x| x.parse::<i32>().ok())
+            .filter_map(agent_brain::procs::proc_id)
+            .collect();
+        if ids.len() == 2 {
+            procs = ids;
+            true
+        } else {
+            false
+        }
+    });
+    let guard = common::ProcGuard(procs.clone());
+    let output = child.wait_with_output().expect("wait run lead");
+    let elapsed = t0.elapsed();
+    drop(guard);
+    let out = RunOut {
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    };
+    (out, procs, elapsed)
+}
+
+fn assert_all_dead(procs: &[agent_brain::procs::ProcId]) {
+    assert_eq!(procs.len(), 2, "the fake agy and its child were recorded");
+    for p in procs {
+        assert!(!agent_brain::procs::alive(*p), "process {p:?} survived");
+    }
+}
+
+fn run_exit_code(sb: &Sandbox) -> Option<i64> {
+    sb.db()
+        .query_row(
+            "SELECT exit_code FROM runs WHERE role = 'lead' ORDER BY id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn agy_lead_hung_after_result_is_stopped_and_plan_written() {
+    use std::time::Duration;
+
+    let sb = Sandbox::new();
+    agy_config_with(&sb, None);
+    write_doi_agy(&sb, json!({"lead": "agy"}));
+    let repo = setup_project(&sb, "work");
+
+    let pidfile = sb.root.join("agy.pid");
+    let env = AgyEnv::new(
+        &sb,
+        json!({
+            "lines": agy_lines(&lead_plan_text(), "SUCCESS", "request-review"),
+            "spawn_child": true,
+            "pidfile": pidfile.to_str().unwrap(),
+            "hang_s": 600,
+        }),
+    );
+    let (res, procs, elapsed) = run_lead_watching(&sb, &env, &pidfile);
+    assert_ok(&res, "run lead (agy hung after result)");
+
+    // 15 s grace + 1 s kill grace + the 2 s drain, far below the 1800 s Lead timeout.
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "run took {elapsed:?}: {}",
+        res.stderr
+    );
+    assert!(
+        res.stderr
+            .contains("agy đã trả kết quả nhưng chưa thoát sau 15s"),
+        "stderr: {}",
+        res.stderr
+    );
+    let plan = std::fs::read_to_string(repo.join(".plan.md")).unwrap();
+    assert!(
+        plan.contains("| 1 | src/app.py | app() | trả về 2 | demo |"),
+        "{plan}"
+    );
+    let subjects = sb.git(&repo, &["log", "--format=%s"]);
+    assert!(
+        subjects.lines().any(|l| l == "sua-app: plan"),
+        "no plan commit: {subjects}"
+    );
+    let row = run_row(&sb, "lead");
+    assert_eq!(row.status, "succeeded");
+    assert_eq!(row.usage_source.as_deref(), Some("result"));
+    // The real exit code of the stopped agy is kept for the log.
+    assert_ne!(run_exit_code(&sb), Some(0));
+    assert_all_dead(&procs);
+}
+
+#[test]
+fn agy_timeout_after_success_result_uses_the_answer() {
+    let sb = Sandbox::new();
+    // The 3 s timeout fires before the 15 s grace after the result.
+    agy_config_with(&sb, Some(3));
+    write_doi_agy(&sb, json!({"lead": "agy"}));
+    let repo = setup_project(&sb, "work");
+
+    let pidfile = sb.root.join("agy.pid");
+    let env = AgyEnv::new(
+        &sb,
+        json!({
+            "lines": agy_lines(&lead_plan_text(), "SUCCESS", "request-review"),
+            "spawn_child": true,
+            "pidfile": pidfile.to_str().unwrap(),
+            "hang_s": 600,
+        }),
+    );
+    let (res, procs, _) = run_lead_watching(&sb, &env, &pidfile);
+    assert_all_dead(&procs);
+    assert_ok(&res, "run lead (agy timed out after a SUCCESS result)");
+    assert!(
+        res.stderr
+            .contains("Run quá thời gian nhưng agy đã trả kết quả SUCCESS trước đó"),
+        "stderr: {}",
+        res.stderr
+    );
+    let plan = std::fs::read_to_string(repo.join(".plan.md")).unwrap();
+    assert!(
+        plan.contains("| 1 | src/app.py | app() | trả về 2 | demo |"),
+        "{plan}"
+    );
+    assert_eq!(run_row(&sb, "lead").status, "succeeded");
+}
+
+#[test]
+fn agy_print_timeout_then_hang_stays_timed_out() {
+    let sb = Sandbox::new();
+    agy_config_with(&sb, Some(3));
+    write_doi_agy(&sb, json!({"lead": "agy"}));
+    setup_project(&sb, "work");
+
+    let pidfile = sb.root.join("agy.pid");
+    let env = AgyEnv::new(
+        &sb,
+        json!({
+            "stderr": "[agy] print timeout after 5s with turn in progress; returning partial output\n",
+            "response": "",
+            "spawn_child": true,
+            "pidfile": pidfile.to_str().unwrap(),
+            "hang_s": 600,
+        }),
+    );
+    let (res, procs, _) = run_lead_watching(&sb, &env, &pidfile);
+    assert_all_dead(&procs);
+    assert_ne!(
+        res.code, 0,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        !res.stderr.contains("dùng kết quả này"),
+        "stderr: {}",
+        res.stderr
+    );
+    assert_eq!(run_row(&sb, "lead").status, "timed_out");
+}
+
+#[test]
+fn agy_timeout_without_result_stays_timed_out() {
+    let sb = Sandbox::new();
+    agy_config_with(&sb, Some(3));
+    write_doi_agy(&sb, json!({"lead": "agy"}));
+    setup_project(&sb, "work");
+
+    let pidfile = sb.root.join("agy.pid");
+    let env = AgyEnv::new(
+        &sb,
+        json!({
+            "sleep_s": 600,
+            "spawn_child": true,
+            "pidfile": pidfile.to_str().unwrap(),
+        }),
+    );
+    let (res, procs, _) = run_lead_watching(&sb, &env, &pidfile);
+    assert_all_dead(&procs);
+    assert_ne!(res.code, 0);
+    assert_eq!(run_row(&sb, "lead").status, "timed_out");
+}
