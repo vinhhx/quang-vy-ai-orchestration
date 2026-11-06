@@ -927,28 +927,23 @@ fn dev_with_invalid_grants_in_approved_plan_is_refused() {
     assert!(format!("{}{}", out.stdout, out.stderr).contains("bị từ chối"));
 }
 
-#[test]
-fn agy_dev_ignores_grants_and_says_so() {
-    let sb = Sandbox::new();
-    let fake_agy = common::repo_root()
-        .join("tests")
-        .join("fakes")
-        .join("fake_agy.py")
-        .canonicalize()
-        .unwrap();
-    sb.write_config(
-        serde_json::json!({"engines": {"agy": {"command": fake_agy.to_str().unwrap()}}}),
-    );
-    sb.write_teams(
-        serde_json::json!({"doi-agy": {"description": "Dev bằng agy", "roles": {"dev": "agy"}}}),
-    );
+/// A repo `web` (profile `profile`) whose Dev engine is `dev_engine` of team `doi-x`, with an
+/// approved plan carrying `GRANTS_SECTIONS`, written by the fake claude Lead.
+fn grants_plan_for_engine(
+    sb: &Sandbox,
+    engines: serde_json::Value,
+    dev_engine: &str,
+    profile: &str,
+) {
+    sb.write_config(serde_json::json!({ "engines": engines }));
+    sb.write_teams(serde_json::json!({"doi-x": {"description": "Dev khác claude", "roles": {"dev": dev_engine}}}));
     let repo = sb.make_repo(
         "web",
         &[("src/app.py", "def app():\n    return 1\n")],
         None,
         None,
     );
-    let mut entry = sb.project_entry(&repo, "web", "work");
+    let mut entry = sb.project_entry(&repo, "web", profile);
     entry.as_object_mut().unwrap().remove("workflow");
     sb.write_map(serde_json::json!([entry]), &[]);
     let mut p_text = plan_text(
@@ -967,7 +962,7 @@ fn agy_dev_ignores_grants_and_says_so() {
             "run",
             "lead",
             "--team",
-            "doi-agy",
+            "doi-x",
             "--name",
             "sua-app",
             "--",
@@ -977,6 +972,23 @@ fn agy_dev_ignores_grants_and_says_so() {
         Some(lead),
     );
     assert_eq!(out.code, 0, "lead: {}\n{}", out.stderr, out.stdout);
+}
+
+#[test]
+fn agy_dev_gets_grants_without_claude_flags() {
+    let sb = Sandbox::new();
+    let fake_agy = common::repo_root()
+        .join("tests")
+        .join("fakes")
+        .join("fake_agy.py")
+        .canonicalize()
+        .unwrap();
+    grants_plan_for_engine(
+        &sb,
+        serde_json::json!({"agy": {"command": fake_agy.to_str().unwrap()}}),
+        "agy",
+        "work",
+    );
 
     let scenario_path = sb.root.join("fake_agy_scenario.json");
     let record_path = sb.root.join("fake_agy_record.jsonl");
@@ -986,10 +998,13 @@ fn agy_dev_ignores_grants_and_says_so() {
         serde_json::to_string(&serde_json::json!({
             "ops": [
                 {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
-                {"op": "write", "path": "out/x.txt", "content": "no\n"}
+                {"op": "write", "path": "out/x.txt", "content": "ok\n"}
             ],
             "lines": [
                 {"event": "init", "conversation_id": "c1", "init": {"cwd": "/x", "tools": [], "permission_mode": "accept-edits"}},
+                {"event": "step_update", "step_update": {"step_index": 2, "state": "ACTIVE", "step_type": "tool",
+                    "tool_name": "run_command", "tool_info": {"name": "run_command",
+                    "parameters": {"CommandLine": "python scripts/create.py --all"}}}},
                 {"event": "result", "result": {"conversation_id": "c1", "status": "SUCCESS", "response": "ok", "num_turns": 1, "usage": usage}}
             ]
         }))
@@ -1004,22 +1019,95 @@ fn agy_dev_ignores_grants_and_says_so() {
             ("FAKE_AGY_RECORD", record_path.to_str().unwrap()),
         ],
     );
-    assert!(
-        out.stdout
-            .contains("Quyền chạy lệnh của plan chỉ áp dụng cho engine claude."),
-        "{}",
-        out.stdout
-    );
-    // run as before: a file under the declared dir is outside the plan for agy
+    // the plan's command is allowed and the declared write dir is in scope
     assert_eq!(
-        out.code, 3,
+        out.code, 0,
         "stderr: {}\nstdout: {}",
         out.stderr, out.stdout
     );
-    assert!(out.stdout.contains("out/x.txt"));
-    let rec = std::fs::read_to_string(&record_path).unwrap();
+    assert!(
+        !out.stdout.contains("Quyền chạy lệnh của plan chỉ áp dụng"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        !out.stderr.contains("ngoài quyền của plan"),
+        "{}",
+        out.stderr
+    );
+
+    // the Dev is told the rules; claude's allow-rule flags never reach agy
+    let rec_line = std::fs::read_to_string(&record_path).unwrap();
+    let rec_json: serde_json::Value =
+        serde_json::from_str(rec_line.lines().last().unwrap()).unwrap();
+    let rec = rec_json["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rec.contains("Plan có khai báo Lệnh được chạy"), "{rec}");
+    assert!(rec.contains("command not found"), "{rec}");
     assert!(!rec.contains("Bash("), "{rec}");
-    assert!(!rec.contains("create.py"), "{rec}");
+    assert!(!rec.contains("--allowedTools"), "{rec}");
+    assert!(!rec.contains("--settings"), "{rec}");
+
+    // policy.json of the run carries the plan's command and directories
+    let run_dir: String = sb
+        .db()
+        .query_row(
+            "SELECT run_dir FROM runs WHERE role = 'dev' ORDER BY id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let policy: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(std::path::Path::new(&run_dir).join("policy.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        policy["bash_allow"],
+        serde_json::json!(["python scripts/create.py *"])
+    );
+    assert!(
+        policy["read_dirs"][0].as_str().unwrap().ends_with("/data"),
+        "{policy}"
+    );
+    assert!(
+        policy["write_dirs"][0].as_str().unwrap().ends_with("/out"),
+        "{policy}"
+    );
+}
+
+#[test]
+fn dsh_dev_ignores_grants_and_says_so() {
+    let sb = Sandbox::new();
+    grants_plan_for_engine(
+        &sb,
+        serde_json::json!([{
+            "id": "dsh",
+            "kind": "dsh",
+            "docker": "/nonexistent/docker-test",
+            "container": "fake-dsh",
+            "allowed_profiles": ["personal"]
+        }]),
+        "dsh",
+        "personal",
+    );
+    let out = sb.run(&["run", "dev", "web", "--dry-run"], None);
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+    assert!(
+        out.stdout
+            .contains("Quyền chạy lệnh của plan chỉ áp dụng cho engine claude và agy."),
+        "{}",
+        out.stdout
+    );
+    assert!(!out.stdout.contains("create.py"), "{}", out.stdout);
 }
 
 #[test]

@@ -315,7 +315,7 @@ pub const AGY_TOOL_MAP: &[(&str, &str, &[&str])] = &[
         "Edit",
         &["TargetFile", "Path", "AbsolutePath", "File"],
     ),
-    // a directory listing / search: the guard refuses Glob and Grep whenever reads are limited
+    // a directory listing / search: judged by `agy_listing_decision` when reads are limited
     (
         "list_dir",
         "Glob",
@@ -393,7 +393,9 @@ pub fn agy_tool_payload(
 /// - `run_command` must run in the project root (`Cwd`), because the command check reads
 ///   relative paths from the root;
 /// - a policy without a command list allows only git: agy has no `--allowedTools` layer behind
-///   the guard, which is what limits a claude Dev's other commands.
+///   the guard, which is what limits a claude Dev's other commands;
+/// - with limited reads, a listing or search step is judged by `agy_listing_decision` (where
+///   the plan lets the Dev read) instead of `decide`'s blanket Glob/Grep refusal.
 pub fn agy_tool_decision(
     policy: &Policy,
     tool_name: &str,
@@ -404,6 +406,93 @@ pub fn agy_tool_decision(
         append_log(log_path, &decision);
     }
     Some(decision)
+}
+
+/// A listing or search step of an agy Dev (`list_dir`, `find_by_name`, `grep_search`) when its
+/// reads are limited. `decide` refuses every Glob/Grep then (a claude Dev has no such tool); an
+/// agy Dev may look where it may read: inside the project root, not a hard-denied path, and
+///   - inside (or exactly) a granted read or write directory, or a granted single file;
+///   - exactly a plan file (read or write allowlist);
+///   - for a name listing only (`list_dir`, `find_by_name`): the directory that holds a plan
+///     file from the Thay đổi table (protocol files such as `.plan.md` do not count). A content
+///     search there would read the files beside it, so `grep_search` does not get this one.
+fn agy_listing_decision(policy: &Policy, tool_name: &str, raw_path: &str) -> Decision {
+    let decision = |allow: bool, reason: String| Decision {
+        allow,
+        tool: tool_name.to_string(),
+        path: raw_path.chars().take(BASH_LOG_MAX_CHARS).collect(),
+        reason,
+    };
+    let norm: String = raw_path.nfc().collect();
+    let joined = if Path::new(&norm).is_absolute() {
+        PathBuf::from(&norm)
+    } else {
+        policy.root.join(&norm)
+    };
+    let resolved = realpath_nfc(&joined);
+    let root_real = realpath_nfc(&policy.root);
+    let Ok(rel) = resolved.strip_prefix(&root_real) else {
+        return decision(false, format!("{} ngoài thư mục dự án", resolved.display()));
+    };
+    if grant_denied_rel(&rel.to_string_lossy()) {
+        return decision(
+            false,
+            format!("{} không được xem (đường dẫn bị cấm)", resolved.display()),
+        );
+    }
+    let granted_dir = policy
+        .read_dirs
+        .iter()
+        .chain(policy.write_dirs.iter())
+        .map(|d| realpath_nfc(d))
+        .any(|d| d != root_real && d.starts_with(&root_real) && d == resolved);
+    if granted_dir
+        || under_grant_any(
+            &policy.root,
+            &policy.read_dirs,
+            &policy.read_files,
+            &resolved,
+        )
+        || under_grant_any(
+            &policy.root,
+            &policy.write_dirs,
+            &policy.write_files,
+            &resolved,
+        )
+    {
+        return decision(true, "in approved plan directory".to_string());
+    }
+    let plan_files: Vec<PathBuf> = policy
+        .read_allow
+        .iter()
+        .flatten()
+        .chain(policy.write_allow.iter())
+        .map(|p| realpath_nfc(p))
+        .collect();
+    if plan_files.contains(&resolved) {
+        return decision(true, "plan file".to_string());
+    }
+    if tool_name != "grep_search" {
+        let holds_plan_file = plan_files.iter().any(|f| {
+            let name = f
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            !crate::stream::is_protocol_file(&name)
+                && name != ".handover.md"
+                && f.parent() == Some(resolved.as_path())
+        });
+        if holds_plan_file {
+            return decision(true, "directory of a plan file".to_string());
+        }
+    }
+    decision(
+        false,
+        format!(
+            "{} không nằm trong thư mục được đọc/ghi của plan",
+            resolved.display()
+        ),
+    )
 }
 
 fn agy_tool_decision_inner(
@@ -420,7 +509,18 @@ fn agy_tool_decision_inner(
         });
     }
     let payload = agy_tool_payload(tool_name, params, &policy.root)?;
-    if payload.get("tool_name").and_then(|v| v.as_str()) == Some("Bash") {
+    let claude_tool = payload.get("tool_name").and_then(|v| v.as_str());
+    if matches!(claude_tool, Some("Glob") | Some("Grep")) && policy.read_allow.is_some() {
+        let raw = payload
+            .get("tool_input")
+            .and_then(|ti| ti.get("path"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| policy.root.to_string_lossy().to_string());
+        return Some(agy_listing_decision(policy, tool_name, &raw));
+    }
+    if claude_tool == Some("Bash") {
         if let Some(cwd) = params.get(AGY_CWD_KEY).and_then(|v| v.as_str()) {
             let cwd_path = Path::new(cwd);
             let resolved = if cwd_path.is_absolute() {
@@ -3099,16 +3199,21 @@ mod tests {
             &[("Path", &r("src/secret.py"))]
         ));
         assert!(!agy_allows(&pol, "write_file", &[]));
-        // listing and searching: refused whenever reads are limited (as Glob/Grep for claude)
-        assert!(!agy_allows(
+        // listing and searching: where the plan lets the Dev read (see the listing test)
+        assert!(agy_allows(
             &pol,
             "list_dir",
             &[("DirectoryPath", &r("scripts"))]
         ));
-        assert!(!agy_allows(
+        assert!(agy_allows(
             &pol,
             "grep_search",
             &[("SearchPath", &r("scripts"))]
+        ));
+        assert!(!agy_allows(
+            &pol,
+            "list_dir",
+            &[("DirectoryPath", &r("src"))]
         ));
 
         // browser tools are refused, ask-only tools are not checked, other tools pass
@@ -3166,6 +3271,59 @@ mod tests {
         }
         // the hook decision for claude is unchanged: claude's own allow rules cover other commands
         assert!(decide(&pol, &bash_payload("ls -la")).allow);
+    }
+
+    #[test]
+    fn agy_listing_inside_and_outside_granted_dirs() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        for d in ["scripts/sub", "out/a", "src/app", "other", ".git"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        // the plan's Thay đổi file `src/app/main.py`, read dir `scripts`, write dir `out`
+        let pol = Policy {
+            read_allow: Some(vec![root.join(".plan.md"), root.join("src/app/main.py")]),
+            write_allow: vec![root.join(".plan.md"), root.join("src/app/main.py")],
+            ..grant_policy(&root)
+        };
+        let r = |rel: &str| root.join(rel).to_string_lossy().to_string();
+        let lists = |tool: &str, key: &str, rel: &str| agy_allows(&pol, tool, &[(key, &r(rel))]);
+
+        // inside (or exactly) a granted read / write directory
+        for rel in ["scripts", "scripts/sub", "out", "out/a"] {
+            assert!(lists("list_dir", "DirectoryPath", rel), "{rel}");
+            assert!(lists("find_by_name", "SearchDirectory", rel), "{rel}");
+            assert!(lists("grep_search", "SearchPath", rel), "{rel}");
+        }
+        // a plan file, and (names only) the directory that holds it
+        assert!(lists("grep_search", "SearchPath", "src/app/main.py"));
+        assert!(lists("list_dir", "DirectoryPath", "src/app"));
+        assert!(lists("find_by_name", "SearchDirectory", "src/app"));
+        assert!(!lists("grep_search", "SearchPath", "src/app"));
+        // outside: other directories, the root (only .plan.md lives there), parents, .git
+        for rel in ["other", "src", "", ".git", "scripts/../other"] {
+            assert!(!lists("list_dir", "DirectoryPath", rel), "{rel:?}");
+        }
+        assert!(!agy_allows(&pol, "list_dir", &[("DirectoryPath", "/etc")]));
+        assert!(!agy_allows(&pol, "find_by_name", &[]), "no path = the root");
+        // relative paths are read from the root
+        assert!(agy_allows(
+            &pol,
+            "list_dir",
+            &[("DirectoryPath", "scripts")]
+        ));
+        assert!(!agy_allows(&pol, "list_dir", &[("DirectoryPath", "other")]));
+
+        // without limited reads the guard's own rule (read-free) is unchanged
+        let free = Policy {
+            read_allow: None,
+            ..pol.clone()
+        };
+        assert!(agy_allows(
+            &free,
+            "list_dir",
+            &[("DirectoryPath", &r("other"))]
+        ));
     }
 
     #[test]

@@ -1272,3 +1272,233 @@ fn agy_dev_allowed_tools_do_not_stop_the_run() {
     let files = sb.git(&repo, &["show", "--name-only", "--format=", "HEAD"]);
     assert!(files.lines().any(|l| l == "src/a.txt"), "{files}");
 }
+
+// ---------------------------------------------------------------------------
+// A skill-mode plan (shaped like the `srt` video studio) run by an agy Dev: the plan's grants
+// reach the run's policy and are checked step by step.
+// ---------------------------------------------------------------------------
+
+const STUDIO_GRANTS: &str = "\n## Skill sử dụng\n- `studio` (.agents/skills/studio/SKILL.md)\n\n## Lệnh được chạy\n- `.venv/bin/python scripts/build_video.py *`\n\n## Thư mục được đọc\n- `scripts/**`\n\n## Thư mục được ghi\n- `projects/x/**`\n";
+
+/// Repo `web` with a studio-like layout and an approved plan (written by an agy Lead) that
+/// lists `src/app.py` and declares `STUDIO_GRANTS`; Lead and Dev run on agy.
+fn studio_task(sb: &Sandbox) -> PathBuf {
+    agy_config(sb);
+    write_doi_agy(sb, dev_roles());
+    let repo = sb.make_repo(
+        "web",
+        &[
+            ("src/app.py", "def app():\n    return 1\n"),
+            ("scripts/build_video.py", "print('build')\n"),
+            (
+                ".agents/skills/studio/SKILL.md",
+                "---\nname: studio\ndescription: dựng video\n---\n",
+            ),
+            ("projects/x/brief.md", "# x\n"),
+        ],
+        None,
+        None,
+    );
+    let mut entry = sb.project_entry(&repo, "web", "work");
+    entry.as_object_mut().unwrap().remove("workflow");
+    sb.write_map(json!([entry]), &[]);
+    let mut plan = protocol::plan_text(
+        "Kế hoạch",
+        &[("src/app.py", "toàn file", "sửa", "demo")],
+        "python3 -m unittest",
+        "",
+    );
+    plan.push_str(STUDIO_GRANTS);
+    let env = AgyEnv::new(
+        sb,
+        json!({"lines": agy_lines(&plan, "SUCCESS", "request-review")}),
+    );
+    let res = run_lead(sb, &env);
+    assert_ok(&res, "run lead (agy, studio plan)");
+    repo
+}
+
+fn studio_dev_lines(repo: &std::path::Path, steps: Vec<Value>) -> Vec<Value> {
+    let mut lines = vec![json!({"event": "init", "conversation_id": "c1",
+        "init": {"cwd": repo.to_str().unwrap(), "permission_mode": "accept-edits"}})];
+    lines.extend(steps);
+    lines
+}
+
+#[test]
+fn agy_dev_skill_plan_gets_grants_and_runs_its_command() {
+    let sb = Sandbox::new();
+    let repo = studio_task(&sb);
+    let p = |rel: &str| repo.join(rel).to_str().unwrap().to_string();
+
+    let mut lines = studio_dev_lines(
+        &repo,
+        vec![
+            active_tool(2, "read_file", json!({"Path": p("scripts/build_video.py")})),
+            active_tool(3, "list_dir", json!({"DirectoryPath": p("scripts")})),
+            active_tool(
+                4,
+                "run_command",
+                json!({"CommandLine": ".venv/bin/python scripts/build_video.py --project projects/x --stage all"}),
+            ),
+            active_tool(6, "write_file", json!({"Path": p("projects/x/out.txt")})),
+            active_tool(8, "edit_file", json!({"Path": p("src/app.py")})),
+        ],
+    );
+    lines.extend(
+        agy_lines("xong", "SUCCESS", "accept-edits")
+            .into_iter()
+            .skip(1),
+    );
+    let (res, env) = run_dev(
+        &sb,
+        json!({"lines": lines, "ops": [
+            write_op("src/app.py", "def app():\n    return 2\n"),
+            write_op("projects/x/out.txt", "video\n"),
+        ]}),
+    );
+    assert_ok(&res, "run dev (agy, studio plan)");
+    assert!(
+        !res.stderr.contains("ngoài quyền của plan"),
+        "stderr: {}",
+        res.stderr
+    );
+    assert!(
+        !res.stdout.contains("chỉ áp dụng cho engine"),
+        "stdout: {}",
+        res.stdout
+    );
+
+    // the input carries the grants note; no claude allow-rule reaches agy
+    let recs = env.records();
+    let input = argv_of(recs.last().unwrap()).join("\n");
+    assert!(input.contains("Plan có khai báo Lệnh được chạy"), "{input}");
+    assert!(input.contains("command not found"), "{input}");
+    assert!(!input.contains("Bash("), "{input}");
+
+    let row = run_row(&sb, "dev");
+    assert_eq!(row.status, "succeeded");
+    assert_eq!(row.outcome, None);
+    let policy: Value = serde_json::from_str(
+        &std::fs::read_to_string(PathBuf::from(&row.run_dir).join("policy.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        policy["bash_allow"],
+        json!([".venv/bin/python scripts/build_video.py *"])
+    );
+    assert!(
+        policy["read_dirs"][0]
+            .as_str()
+            .unwrap()
+            .ends_with("/scripts"),
+        "{policy}"
+    );
+    assert!(
+        policy["write_dirs"][0]
+            .as_str()
+            .unwrap()
+            .ends_with("/projects/x"),
+        "{policy}"
+    );
+
+    // the write under the declared dir is committed with the plan file
+    let files = sb.git(&repo, &["show", "--name-only", "--format=", "HEAD"]);
+    assert!(files.lines().any(|l| l == "projects/x/out.txt"), "{files}");
+    assert!(files.lines().any(|l| l == "src/app.py"), "{files}");
+}
+
+#[test]
+fn agy_dev_skill_plan_still_stops_other_commands_and_writes() {
+    for (step, needle) in [
+        (
+            json!({"CommandLine": "python3 -c 'x'"}),
+            "run_command {\"CommandLine\":\"python3 -c 'x'\"}",
+        ),
+        (
+            json!({"CommandLine": "cat << 'EOF' > /tmp/a.py\nimport os\nEOF"}),
+            "run_command",
+        ),
+    ] {
+        let sb = Sandbox::new();
+        let repo = studio_task(&sb);
+        let lines = studio_dev_lines(&repo, vec![active_tool(4, "run_command", step)]);
+        let (res, _env) = run_dev(&sb, json!({"lines": lines, "hang_s": 600}));
+        assert_eq!(
+            res.code, 3,
+            "stderr: {}\nstdout: {}",
+            res.stderr, res.stdout
+        );
+        assert!(
+            res.stderr.contains(&format!(
+                "agy Dev dùng công cụ ngoài quyền của plan: {needle}"
+            )),
+            "stderr: {}",
+            res.stderr
+        );
+        assert_eq!(
+            run_row(&sb, "dev").outcome.as_deref(),
+            Some("protocol_violation")
+        );
+    }
+
+    // a write into the read-only directory
+    let sb = Sandbox::new();
+    let repo = studio_task(&sb);
+    let lines = studio_dev_lines(
+        &repo,
+        vec![active_tool(
+            6,
+            "write_file",
+            json!({"Path": repo.join("scripts/a.py").to_str().unwrap()}),
+        )],
+    );
+    let (res, _env) = run_dev(&sb, json!({"lines": lines, "hang_s": 600}));
+    assert_eq!(
+        res.code, 3,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        res.stderr
+            .contains("agy Dev dùng công cụ ngoài quyền của plan: write_file"),
+        "stderr: {}",
+        res.stderr
+    );
+    assert_eq!(
+        run_row(&sb, "dev").outcome.as_deref(),
+        Some("protocol_violation")
+    );
+}
+
+#[test]
+fn agy_dev_without_grants_still_allows_only_git() {
+    let sb = Sandbox::new();
+    let repo = plan_task(&sb, dev_roles(), &["src/a.txt"]);
+    let lines = studio_dev_lines(
+        &repo,
+        vec![active_tool(
+            4,
+            "run_command",
+            json!({"CommandLine": ".venv/bin/python scripts/build_video.py --stage all"}),
+        )],
+    );
+    let (res, _env) = run_dev(&sb, json!({"lines": lines, "hang_s": 600}));
+    assert_eq!(
+        res.code, 3,
+        "stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        res.stderr
+            .contains("lệnh không nằm trong danh sách Lệnh được chạy"),
+        "stderr: {}",
+        res.stderr
+    );
+    let row = run_row(&sb, "dev");
+    let policy: Value = serde_json::from_str(
+        &std::fs::read_to_string(PathBuf::from(&row.run_dir).join("policy.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(policy.get("bash_allow").is_none(), "{policy}");
+}
