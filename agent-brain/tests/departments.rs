@@ -590,3 +590,42 @@ fn cli_dept_check_and_list_and_pick() {
     let pick_res = agent_brain::departments::cmd_pick(&ctx, 1, "dev").unwrap();
     assert_eq!(pick_res, 0);
 }
+
+#[test]
+fn resolve_for_run_with_broken_config_has_no_member() {
+    let (_tmp, conn) = test_db();
+    let tmp_cfg = tempfile::tempdir().unwrap();
+    let bad_cfg = tmp_cfg.path().join("config.json");
+    std::fs::write(&bad_cfg, "{invalid json}").unwrap();
+    std::env::set_var("AGENT_BRAIN_CONFIG", &bad_cfg);
+
+    let dept_file = tmp_cfg.path().join("departments.json");
+    let dept_json = json!({
+        "thi-cong": {
+            "members": {
+                "tc-opus": {
+                    "display_name": "Thi công Opus",
+                    "engine": "claude",
+                    "model": "claude-opus-5-5",
+                    "levels": ["kho"]
+                }
+            }
+        }
+    })
+    .to_string();
+    std::fs::write(&dept_file, dept_json).unwrap();
+    std::env::set_var("AGENT_BRAIN_CONFIG_DIR", tmp_cfg.path());
+
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level, team_json)
+         VALUES (99, 1, 'task-99', 'Task 99', 'task/99', 'main', 'base1', 'open', 1000, 1000, 'kho', '{\"name\":\"phong-ban\"}')",
+        [],
+    )
+    .unwrap();
+
+    let res = agent_brain::engine::resolve_for_run(&conn, Some(99), "dev").unwrap();
+    assert_eq!(res.engine, Engine::Claude);
+    assert!(res.member.is_none());
+
+    std::env::remove_var("AGENT_BRAIN_CONFIG");
+}

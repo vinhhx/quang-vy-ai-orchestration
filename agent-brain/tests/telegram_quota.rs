@@ -357,19 +357,20 @@ fn quota_message_with_team_buttons() {
         labels(&env.quota),
         vec![
             "Đội hình mac-dinh",
+            "Đội hình phong-ban",
             "Đội hình tiet-kiem",
             "Đội hình doi-b",
             "Thử lại sau"
         ]
     );
-    let pick = Regex::new(r"^t:1:[0-2]:[0-9a-f]{4}:[0-9a-f]{16}$").unwrap();
+    let pick = Regex::new(r"^t:1:[0-3]:[0-9a-f]{4}:[0-9a-f]{16}$").unwrap();
     let later = Regex::new(r"^l:1:[0-9a-f]{16}$").unwrap();
     let data = buttons(&env.quota);
-    for (label, d) in &data[..3] {
+    for (label, d) in &data[..4] {
         assert!(pick.is_match(d), "{label}: {d}");
         assert!(d.len() <= 64, "{d}");
     }
-    assert!(later.is_match(&data[3].1), "{data:?}");
+    assert!(later.is_match(&data[4].1), "{data:?}");
     // No Xong or Trả lại button on Telegram (D-20).
     assert!(
         !labels(&env.quota)
@@ -528,6 +529,7 @@ fn quota_stale_team_list() {
         labels(&fresh),
         vec![
             "Đội hình mac-dinh",
+            "Đội hình phong-ban",
             "Đội hình tiet-kiem",
             "Đội hình doi-b",
             "Đội hình doi-c",
@@ -614,6 +616,7 @@ fn quota_cancel_restores() {
         labels(&back),
         vec![
             "Đội hình mac-dinh",
+            "Đội hình phong-ban",
             "Đội hình tiet-kiem",
             "Đội hình doi-b",
             "Thử lại sau"

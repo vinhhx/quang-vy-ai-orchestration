@@ -1079,6 +1079,7 @@ fn intake_team_step_choose_team() {
         vec![
             "Mặc định (tiet-kiem)".to_string(),
             "mac-dinh".to_string(),
+            "phong-ban".to_string(),
             "tiet-kiem".to_string(),
             "doi-b".to_string(),
             "Huỷ".to_string(),
@@ -1088,10 +1089,10 @@ fn intake_team_step_choose_team() {
     let b = buttons(&team);
     let flow = flow_of(&b[0].1);
     assert!(is_flow_id(&flow), "{team}");
-    for (i, (_, data)) in b[..4].iter().enumerate() {
+    for (i, (_, data)) in b[..5].iter().enumerate() {
         assert_eq!(data, &format!("iD:{flow}:{i}"));
     }
-    assert_eq!(b[4].1, format!("iX:{flow}"));
+    assert_eq!(b[5].1, format!("iX:{flow}"));
 
     press_on(&tg, mid, &team, "doi-b");
     let confirm = wait_edit(&tg, &srv, mid, |r| {
@@ -1151,6 +1152,41 @@ fn intake_team_default() {
 }
 
 #[test]
+fn intake_team_default_phong_ban_when_members_exist() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    let dept_file = sb.xdg_config.join("agent-brain").join("departments.json");
+    let dept_json = json!({
+        "thi-cong": {
+            "members": {
+                "dev-1": {
+                    "display_name": "Dev 1",
+                    "engine": "claude",
+                    "model": "claude-sonnet-5-5",
+                    "levels": ["de", "vua", "kho"]
+                }
+            }
+        }
+    })
+    .to_string();
+    std::fs::write(&dept_file, dept_json).unwrap();
+
+    setup_team_flow(&sb, "");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+
+    let (_mid, team) = reach_team_screen(&tg, &srv);
+    assert_eq!(
+        labels(&team).first().map(String::as_str),
+        Some("Mặc định (phong-ban)"),
+        "{team}"
+    );
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
 fn intake_team_bad_index() {
     let sb = Sandbox::new();
     let tg = FakeTelegram::start(&sb);
@@ -1162,8 +1198,8 @@ fn intake_team_bad_index() {
 
     let (mid, team) = reach_team_screen(&tg, &srv);
     let flow = flow_of(&buttons(&team)[0].1);
-    // Four teams (indexes 1..=3 after the default 0): 4 and 99 are past the list.
-    for bad in [format!("iD:{flow}:4"), format!("iD:{flow}:99")] {
+    // Five buttons (indexes 1..=4 after the default 0): 5 and 99 are past the list.
+    for bad in [format!("iD:{flow}:5"), format!("iD:{flow}:99")] {
         let cb = press_data(&tg, mid, text_of(&team), &bad);
         let ans = wait_answer(&tg, &srv, &cb);
         assert_eq!(ans["json"]["text"], json!(INVALID), "{bad}: {ans}");

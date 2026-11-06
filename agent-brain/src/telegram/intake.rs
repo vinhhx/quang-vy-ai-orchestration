@@ -1122,7 +1122,7 @@ fn pick_project(
     let (teams, _) = crate::teams::load();
     f.default_team = team_of(&map, &project_id)
         .filter(|t| teams.get(t).is_some())
-        .unwrap_or_else(|| crate::teams::DEFAULT_TEAM.to_string());
+        .unwrap_or_else(|| crate::teams::default_team_name().to_string());
     f.teams = teams.names().into_iter().take(MAX_TEAM_BUTTONS).collect();
     f.team = None;
     f.project = Some(i);

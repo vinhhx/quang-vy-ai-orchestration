@@ -509,26 +509,41 @@ pub fn resolve_for_run_with(
 
         let fallback_cfg;
         let active_cfg = match cfg {
-            Some(c) => c,
+            Some(c) => Some(c),
             None => match crate::config::load_config() {
                 Ok(c) => {
                     fallback_cfg = Some(c);
-                    fallback_cfg.as_ref().unwrap()
+                    fallback_cfg.as_ref()
                 }
-                Err(_) => {
-                    let val = serde_json::json!({
-                        "models": { "lead": "opus", "dev": "sonnet", "qa": "sonnet" },
-                        "profiles": { "work": {}, "personal": {} },
-                    });
-                    fallback_cfg = crate::config::config_from_value(&val).ok();
-                    fallback_cfg.as_ref().unwrap()
+                Err(e) => {
+                    crate::term::emit(&format!(
+                        "Cảnh báo: không tải được cấu hình để chọn thành viên phòng ban: {e}"
+                    ));
+                    None
                 }
             },
         };
 
-        if let Ok(Some(picked)) = crate::departments::pick(conn, active_cfg, task_id, role, level, &project_profile) {
-            resolved_engine = picked.member.engine.clone();
-            member_pick = Some(picked);
+        if let Some(active_cfg) = active_cfg {
+            match crate::departments::pick(
+                conn,
+                active_cfg,
+                task_id,
+                role,
+                level,
+                &project_profile,
+            ) {
+                Ok(Some(picked)) => {
+                    resolved_engine = picked.member.engine.clone();
+                    member_pick = Some(picked);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    crate::term::emit(&format!(
+                        "Cảnh báo: không chọn được thành viên phòng ban: {e}"
+                    ));
+                }
+            }
         }
     }
 
