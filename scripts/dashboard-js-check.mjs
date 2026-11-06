@@ -4174,6 +4174,8 @@ const sections = [
         ],
       };
 
+      const ORCH = { enabled: false, max_parallel: 3, auto_resume_quota: false, resume_after_minutes: 60, version: 'ov1' };
+
       let routes;
       let calls;
       const ok = (data) => ({ ok: true, status: 200, data: JSON.parse(JSON.stringify(data)) });
@@ -4182,6 +4184,7 @@ const sections = [
         'GET /api/workflows': () => ok(WORKFLOWS),
         'GET /api/staff': () => ok(STAFF),
         'GET /api/engines': () => ok(ENGINES),
+        'GET /api/orchestrator/settings': () => ok(ORCH),
       });
       const savedApi = ctx.AB.api;
       ctx.AB.api = function (method, url, body) {
@@ -4203,7 +4206,9 @@ const sections = [
         // ---- load, rows and chips ----
         let c = await fresh();
         check('settings: loaded after the three reads', c.loaded === true && c.loadedAttr === 'yes', `got ${c.loadedAttr}`);
-        check('settings: starts on the Đội hình section', c.section === 'teams' && c.showTeams === true);
+        check('settings: starts on the Hàng đợi section', c.section === 'orchestrator' && c.showOrchestrator === true && c.showTeams === false);
+        c.showSection('teams');
+        check('settings: Đội hình section after picking it', c.showTeams === true);
         const chips = (name) => JSON.stringify(c.teamRows.filter((r) => r.name === name)[0].chips);
         check('settings: builtin chips', chips('mac-dinh') === JSON.stringify(['có sẵn']), chips('mac-dinh'));
         check('settings: file chips', chips('doi-thu') === JSON.stringify(['từ teams.json']), chips('doi-thu'));
@@ -4440,7 +4445,7 @@ const sections = [
         c = await fresh();
         calls.length = 0;
         await c.reload();
-        check('settings: Đọc lại re-reads teams, workflows, staff and engines', calls.map((x) => x.url).sort().join(',') === '/api/engines,/api/staff,/api/teams,/api/workflows', calls.map((x) => x.url).join(','));
+        check('settings: Đọc lại re-reads teams, workflows, staff, engines and the queue settings', calls.map((x) => x.url).sort().join(',') === '/api/engines,/api/orchestrator/settings,/api/staff,/api/teams,/api/workflows', calls.map((x) => x.url).join(','));
         check('settings: reload label idle', c.reloadLabel === 'Đọc lại');
         let release;
         const gate = new Promise((r) => { release = r; });
@@ -4461,18 +4466,72 @@ const sections = [
         const c2 = factories.settings();
         await c2.load();
         check('settings: first load failure shows the error card', c2.hasError === true && c2.loaded === false && c2.loadedAttr === 'no' && c2.errorBody === 'Mất kết nối tới agent-brain serve. Bấm Thử lại; nếu vẫn lỗi, kiểm tra terminal đang chạy agent-brain serve.', c2.errorBody);
-        check('settings: sections stay hidden until loaded', c2.showTeams === false);
+        check('settings: sections stay hidden until loaded', c2.showTeams === false && c2.showOrchestrator === false);
         routes['GET /api/workflows'] = () => ok(WORKFLOWS);
         await c2.retry();
-        check('settings: Thử lại recovers', c2.loaded === true && c2.hasError === false && c2.showTeams === true);
+        check('settings: Thử lại recovers', c2.loaded === true && c2.hasError === false && c2.showOrchestrator === true);
 
         // ---- sub-nav ----
-        check('settings: four sections', c.sections.map((s) => s.label).join(',') === 'Đội hình,Quy trình,Nhân sự,Engine');
+        check('settings: five sections, the queue first', c.sections.map((s) => s.label).join(',') === 'Hàng đợi (Orchestrator),Đội hình,Quy trình,Nhân sự,Engine');
         c.showSection('staff');
-        check('settings: showSection switches', c.showStaff === true && c.showTeams === false && c.navCurrent(c.sections[2]) === 'true' && c.navCurrent(c.sections[0]) === false);
-        check('settings: active nav class', c.navClass(c.sections[2]).indexOf('bg-indigo-100') === 0 && c.navClass(c.sections[0]).indexOf('hover:bg-slate-100') >= 0);
+        check('settings: showSection switches', c.showStaff === true && c.showTeams === false && c.navCurrent(c.sections[3]) === 'true' && c.navCurrent(c.sections[1]) === false);
+        check('settings: active nav class', c.navClass(c.sections[3]).indexOf('bg-indigo-100') === 0 && c.navClass(c.sections[1]).indexOf('hover:bg-slate-100') >= 0);
         c.showSection('khong-co');
         check('settings: an unknown section is ignored', c.section === 'staff');
+
+        // ---- hàng đợi (orchestrator) ----
+        c = await fresh();
+        await c.loadOrchestrator();
+        c.showSection('orchestrator');
+        check('settings: queue section shows', c.showOrchestrator === true && c.showTeams === false);
+        check('settings: queue values loaded', c.oLoaded === true && c.oEnabled === false && c.oDraftMax === '3' && c.oDraftMinutes === '60' && c.oVersion === 'ov1');
+        const boolGetters = ['orchToggleDisabled', 'orchFormDisabled', 'orchMinutesDisabled', 'orchMaxInvalid', 'orchMinutesInvalid', 'orchHasToggleError', 'orchHasFormError', 'orchHasNotice', 'orchLoading', 'orchLoadFailed', 'showOrchestrator'];
+        check('settings: queue boolean bindings are real booleans', boolGetters.every((k) => typeof c[k] === 'boolean'), boolGetters.filter((k) => typeof c[k] !== 'boolean').join(','));
+        check('settings: queue switch is off and the minutes field is off', c.orchEnabledAttr === 'false' && c.orchEnabledWord === 'Tắt' && c.orchMinutesDisabled === true && c.orchToggleDisabled === false);
+        let posted = null;
+        routes['POST /api/orchestrator/settings'] = (body) => {
+          posted = body;
+          return ok(Object.assign({ ok: true }, body, { version: 'ov2' }));
+        };
+        await c.toggleOrchestrator();
+        check('settings: switch posts every field with the version', posted && posted.enabled === true && posted.max_parallel === 3 && posted.auto_resume_quota === false && posted.resume_after_minutes === 60 && posted.version === 'ov1', JSON.stringify(posted));
+        check('settings: switch on after save', c.oEnabled === true && c.orchEnabledAttr === 'true' && c.oVersion === 'ov2' && c.oNotice === 'Đã bật hàng đợi. Có hiệu lực ngay.', c.oNotice);
+        // Client checks: nothing is posted for out-of-range values.
+        posted = null;
+        c.oDraftMax = '11';
+        c.toggleOrchAuto();
+        c.oDraftMinutes = '0';
+        check('settings: auto switch turns the minutes field on', c.oDraftAuto === true && c.orchMinutesDisabled === false && c.orchAutoAttr === 'true');
+        await c.saveOrchestratorForm();
+        check('settings: out-of-range values stay in the browser', posted === null && c.oMaxErr === 'Số việc chạy song song phải là số nguyên từ 1 đến 10.' && c.oMinutesErr === 'Chạy lại sau (phút) phải là số nguyên từ 1 đến 1440.' && c.orchMaxInvalidAttr === 'true' && c.orchMaxClass.indexOf('ring-rose-600') >= 0);
+        c.clearOrchMax();
+        check('settings: typing clears the field error', c.oMaxErr === '' && c.orchMaxInvalid === false);
+        c.oDraftMax = '4';
+        c.oDraftMinutes = '90';
+        await c.saveOrchestratorForm();
+        check('settings: Lưu posts the form with the saved switch', posted && posted.enabled === true && posted.max_parallel === 4 && posted.auto_resume_quota === true && posted.resume_after_minutes === 90 && posted.version === 'ov2', JSON.stringify(posted));
+        check('settings: saved form values become the draft', c.oMaxParallel === 4 && c.oDraftMax === '4' && c.oResumeMinutes === 90 && c.oNotice === 'Đã lưu. Có hiệu lực ngay.');
+        // Server field errors land under their field; other errors under the form.
+        routes['POST /api/orchestrator/settings'] = { ok: false, status: 400, data: { error: 'Không lưu được cài đặt hàng đợi', errors: [{ field: 'max_parallel', message: 'Lỗi số việc' }, { field: 'enabled', message: 'Lỗi bật' }] } };
+        await c.saveOrchestratorForm();
+        check('settings: 400 field errors are mapped', c.oMaxErr === 'Lỗi số việc' && c.oFormError === 'Lỗi bật' && c.orchHasFormError === true, c.oFormError);
+        // A version conflict tells the user and reloads the live values.
+        routes['POST /api/orchestrator/settings'] = { ok: false, status: 409, data: { error: 'config.json vừa bị sửa ở nơi khác', code: 'conflict' } };
+        routes['GET /api/orchestrator/settings'] = () => ok({ enabled: false, max_parallel: 2, auto_resume_quota: false, resume_after_minutes: 30, version: 'ov9' });
+        await c.toggleOrchestrator();
+        check('settings: switch conflict reloads', c.oToggleError === 'Config vừa đổi ở nơi khác — tải lại.' && c.oEnabled === false && c.oMaxParallel === 2 && c.oDraftMax === '2' && c.oVersion === 'ov9' && c.oToggling === false, c.oToggleError);
+        c.oDraftMax = '5';
+        await c.saveOrchestratorForm();
+        check('settings: form conflict reloads and says so', c.oFormError === 'Config vừa đổi ở nơi khác — tải lại.' && c.oDraftMax === '2' && c.oSaving === false, c.oFormError);
+        routes['POST /api/orchestrator/settings'] = { ok: false, status: 0, data: null };
+        await c.toggleOrchestrator();
+        check('settings: network failure on the switch shows an error', c.oToggleError.length > 0 && c.oEnabled === false && c.orchToggleDisabled === false, c.oToggleError);
+        routes['GET /api/orchestrator/settings'] = { ok: false, status: 500, data: null };
+        const c4 = factories.settings();
+        await c4.loadOrchestrator();
+        check('settings: queue load failure keeps the switch disabled', c4.orchLoadFailed === true && c4.orchToggleDisabled === true && c4.orchFormDisabled === true && c4.orchLoadFailText.indexOf('HTTP 500') >= 0, c4.orchLoadFailText);
+        routes['GET /api/orchestrator/settings'] = () => ok(ORCH);
+        delete routes['POST /api/orchestrator/settings'];
 
         // ---- engines: read-only, never a secret ----
         c = await fresh();

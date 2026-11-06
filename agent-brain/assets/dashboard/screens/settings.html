@@ -23,6 +23,58 @@
     <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="retry">Thử lại</button>
   </div>
 
+  <div data-settings-section="orchestrator" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-6" x-show="showOrchestrator">
+    <h2 id="ab-set-orch-title" class="text-xl font-semibold leading-[1.2]">Hàng đợi (Orchestrator)</h2>
+    <p id="ab-set-orch-desc" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Bật: việc giao từ dashboard/Telegram vào hàng chờ, Lead phân tích thành đề xuất để bạn duyệt. Tắt: việc giao chạy thẳng. Có hiệu lực ngay, không cần khởi động lại serve.</p>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Tắt không dừng việc đang chạy. Việc đã vào hàng chờ và đề xuất đã duyệt nhưng chưa bắt đầu được giữ nguyên, sẽ được xử lý khi bật lại. Giá trị lưu vào mục orchestrator trong config.json.</p>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="orchLoading">Đang tải...</p>
+    <p class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="orchLoadFailed" x-text="orchLoadFailText"></p>
+
+    <div class="space-y-2">
+      <div class="flex flex-wrap items-center gap-4">
+        <span id="ab-set-orch-enabled-label" class="text-base font-semibold leading-normal">Bật hàng đợi</span>
+        <button id="ab-set-orch-enabled" type="button" role="switch" class="inline-flex min-h-12 items-center gap-3 rounded-xl px-2 py-2 text-base font-semibold text-slate-900 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" aria-labelledby="ab-set-orch-enabled-label" aria-describedby="ab-set-orch-desc ab-set-orch-enabled-err" :aria-checked="orchEnabledAttr" :disabled="orchToggleDisabled" @click="toggleOrchestrator">
+          <span class="relative inline-flex h-7 w-12 shrink-0 items-center rounded-full motion-safe:transition-colors" :class="orchTrackClass" aria-hidden="true">
+            <span class="inline-block h-5 w-5 rounded-full bg-white shadow-sm motion-safe:transition-transform" :class="orchKnobClass"></span>
+          </span>
+          <span x-text="orchEnabledWord"></span>
+        </button>
+      </div>
+      <p id="ab-set-orch-enabled-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" role="alert" x-show="orchHasToggleError" x-text="oToggleError"></p>
+    </div>
+
+    <form data-orch-form novalidate class="space-y-4 max-w-3xl" @submit.prevent="saveOrchestratorForm" aria-labelledby="ab-set-orch-title">
+      <div class="space-y-2">
+        <label for="ab-set-orch-max" class="block text-sm font-semibold leading-normal">Số việc chạy song song</label>
+        <input id="ab-set-orch-max" type="number" inputmode="numeric" min="1" max="10" class="w-full max-w-xs min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-50" :class="orchMaxClass" x-model="oDraftMax" :disabled="orchFormDisabled" @input="clearOrchMax" :aria-invalid="orchMaxInvalidAttr" aria-describedby="ab-set-orch-max-help ab-set-orch-max-err">
+        <p id="ab-set-orch-max-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Từ 1 đến 10: số đề xuất đã duyệt được chạy cùng lúc.</p>
+        <p id="ab-set-orch-max-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="orchMaxInvalid" x-text="oMaxErr"></p>
+      </div>
+      <div class="space-y-2">
+        <div class="flex flex-wrap items-center gap-4">
+          <span id="ab-set-orch-auto-label" class="text-sm font-semibold leading-normal">Tự chạy lại sau khi hết quota</span>
+          <button id="ab-set-orch-auto" type="button" role="switch" class="inline-flex min-h-12 items-center gap-3 rounded-xl px-2 py-2 text-base font-semibold text-slate-900 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" aria-labelledby="ab-set-orch-auto-label" :aria-checked="orchAutoAttr" :disabled="orchFormDisabled" @click="toggleOrchAuto">
+            <span class="relative inline-flex h-7 w-12 shrink-0 items-center rounded-full motion-safe:transition-colors" :class="orchAutoTrackClass" aria-hidden="true">
+              <span class="inline-block h-5 w-5 rounded-full bg-white shadow-sm motion-safe:transition-transform" :class="orchAutoKnobClass"></span>
+            </span>
+            <span x-text="orchAutoWord"></span>
+          </button>
+        </div>
+      </div>
+      <div class="space-y-2">
+        <label for="ab-set-orch-minutes" class="block text-sm font-semibold leading-normal">Chạy lại sau (phút)</label>
+        <input id="ab-set-orch-minutes" type="number" inputmode="numeric" min="1" max="1440" class="w-full max-w-xs min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-50" :class="orchMinutesClass" x-model="oDraftMinutes" :disabled="orchMinutesDisabled" @input="clearOrchMinutes" :aria-invalid="orchMinutesInvalidAttr" aria-describedby="ab-set-orch-minutes-help ab-set-orch-minutes-err">
+        <p id="ab-set-orch-minutes-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Từ 1 đến 1440. Chỉ dùng khi bật Tự chạy lại sau khi hết quota.</p>
+        <p id="ab-set-orch-minutes-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="orchMinutesInvalid" x-text="oMinutesErr"></p>
+      </div>
+      <div class="flex flex-wrap items-center gap-4">
+        <button id="ab-set-orch-save" type="submit" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="orchFormDisabled" x-text="orchSaveLabel">Lưu</button>
+      </div>
+      <p class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" role="alert" x-show="orchHasFormError" x-text="oFormError"></p>
+    </form>
+    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" aria-live="polite" x-show="orchHasNotice" x-text="oNotice"></p>
+  </div>
+
   <div data-settings-section="teams" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-6" x-show="showTeams">
     <div class="flex flex-wrap items-center gap-4">
       <h2 class="text-xl font-semibold leading-[1.2]">Đội hình</h2>

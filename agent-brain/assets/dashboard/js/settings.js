@@ -1,7 +1,8 @@
-// js/settings.js — Cài đặt screen component (teams, workflows, staff, engines)
+// js/settings.js — Cài đặt screen component (orchestrator queue, teams, workflows, staff, engines)
 (function () {
   var SECTION_KEY = 'ab.settings.section';
   var SECTIONS = [
+    { id: 'orchestrator', label: 'Hàng đợi (Orchestrator)' },
     { id: 'teams', label: 'Đội hình' },
     { id: 'workflows', label: 'Quy trình' },
     { id: 'staff', label: 'Nhân sự' },
@@ -12,6 +13,18 @@
   var NAV_ACTIVE = 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200';
   var RING_OK = 'ring-1 ring-slate-500 dark:ring-slate-400';
   var RING_BAD = 'ring-2 ring-rose-600 dark:ring-rose-400';
+  var TRACK_ON = 'bg-indigo-600 dark:bg-indigo-500';
+  var TRACK_OFF = 'bg-slate-300 dark:bg-slate-600';
+  var KNOB_ON = 'translate-x-6';
+  var KNOB_OFF = 'translate-x-1';
+
+  // Hàng đợi (orchestrator) section.
+  var ORCH_CONFLICT = 'Config vừa đổi ở nơi khác — tải lại.';
+  var ORCH_ON_NOTICE = 'Đã bật hàng đợi. Có hiệu lực ngay.';
+  var ORCH_OFF_NOTICE = 'Đã tắt hàng đợi. Việc giao mới chạy thẳng.';
+  var ORCH_SAVED_NOTICE = 'Đã lưu. Có hiệu lực ngay.';
+  var ORCH_MAX_ERR = 'Số việc chạy song song phải là số nguyên từ 1 đến 10.';
+  var ORCH_MINUTES_ERR = 'Chạy lại sau (phút) phải là số nguyên từ 1 đến 1440.';
 
   // Fixed stage order of the workflow editor (UI-SPEC § Quy trình).
   var STAGES = [
@@ -170,9 +183,25 @@
     }, 120);
   }
 
+  // A link with data-settings-goto (e.g. "Bật trong Cài đặt" on Điều phối) opens that section.
+  // This script loads on the first visit to Cài đặt; before that no section is stored and
+  // the screen opens on the first section (Hàng đợi) anyway.
+  if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
+    document.addEventListener('click', function (ev) {
+      var t = ev && ev.target;
+      var link = t && typeof t.closest === 'function' ? t.closest('[data-settings-goto]') : null;
+      if (!link) return;
+      var name = link.getAttribute('data-settings-goto') || '';
+      if (!validSection(name)) return;
+      try {
+        sessionStorage.setItem(SECTION_KEY, name);
+      } catch (e) {}
+    });
+  }
+
   window.AB.onReady('settings', function () {
     return {
-      section: 'teams',
+      section: 'orchestrator',
       sections: SECTIONS,
       loaded: false,
       loadError: '',
@@ -195,6 +224,25 @@
       engines: [],
       enginesChecking: false,
       enginesFailed: false,
+
+      // Hàng đợi (orchestrator): saved (live) values, then the form draft.
+      oLoaded: false,
+      oLoadFail: '',
+      oEnabled: false,
+      oMaxParallel: 3,
+      oAutoResume: false,
+      oResumeMinutes: 60,
+      oVersion: '',
+      oDraftMax: '3',
+      oDraftAuto: false,
+      oDraftMinutes: '60',
+      oToggling: false,
+      oSaving: false,
+      oToggleError: '',
+      oMaxErr: '',
+      oMinutesErr: '',
+      oFormError: '',
+      oNotice: '',
 
       stages: STAGES,
       loops: LOOPS,
@@ -275,6 +323,7 @@
           window.AB.lockScroll(false);
         });
         this.resetWorkflowDraft();
+        this.loadOrchestrator();
         this.loadEngines();
         this.load();
       },
@@ -380,6 +429,7 @@
         this.reloading = true;
         this.statusText = '';
         this.loadEngines();
+        this.loadOrchestrator();
         return this.load().then(function () {
           self.reloading = false;
         });
@@ -397,6 +447,248 @@
         return this.loadEngines().then(function () {
           self.enginesChecking = false;
         });
+      },
+
+      // ---- hàng đợi (orchestrator) ----
+
+      applyOrchestrator: function (data) {
+        this.oEnabled = data.enabled === true;
+        this.oMaxParallel = Number(data.max_parallel) || 3;
+        this.oAutoResume = data.auto_resume_quota === true;
+        this.oResumeMinutes = Number(data.resume_after_minutes) || 60;
+        this.oVersion = String(data.version || '');
+        this.oLoaded = true;
+        this.oLoadFail = '';
+      },
+
+      resetOrchestratorDraft: function () {
+        this.oDraftMax = String(this.oMaxParallel);
+        this.oDraftAuto = this.oAutoResume;
+        this.oDraftMinutes = String(this.oResumeMinutes);
+        this.oMaxErr = '';
+        this.oMinutesErr = '';
+        this.oFormError = '';
+      },
+
+      // Values in use by the queue now (live, not only the file) and the file version.
+      loadOrchestrator: function () {
+        var self = this;
+        return window.AB.api('GET', '/api/orchestrator/settings').then(function (res) {
+          var data = res ? res.data : null;
+          if (res && res.ok && data && typeof data.enabled === 'boolean') {
+            self.applyOrchestrator(data);
+            self.resetOrchestratorDraft();
+            return true;
+          }
+          self.oLoadFail = window.AB.errorText(res);
+          return false;
+        });
+      },
+
+      postOrchestrator: function (body) {
+        body.version = this.oVersion;
+        return window.AB.api('POST', '/api/orchestrator/settings', body);
+      },
+
+      // The switch saves at once; the three other values keep their saved state.
+      toggleOrchestrator: function () {
+        var self = this;
+        if (this.orchBusy || !this.oLoaded) return Promise.resolve();
+        var next = !this.oEnabled;
+        this.oToggling = true;
+        this.oToggleError = '';
+        this.oNotice = '';
+        return this.postOrchestrator({
+          enabled: next,
+          max_parallel: this.oMaxParallel,
+          auto_resume_quota: this.oAutoResume,
+          resume_after_minutes: this.oResumeMinutes,
+        }).then(function (res) {
+          self.oToggling = false;
+          var data = res ? res.data : null;
+          if (res && res.ok && data && typeof data.enabled === 'boolean') {
+            self.applyOrchestrator(data);
+            self.oNotice = data.enabled ? ORCH_ON_NOTICE : ORCH_OFF_NOTICE;
+            return;
+          }
+          if (res && res.status === 409 && data && data.code === 'conflict') {
+            self.oToggleError = ORCH_CONFLICT;
+            return self.loadOrchestrator();
+          }
+          self.oToggleError = errorLines(data, res).join(' ');
+        });
+      },
+
+      toggleOrchAuto: function () {
+        if (this.orchFormDisabled) return;
+        this.oDraftAuto = !this.oDraftAuto;
+        this.oMinutesErr = '';
+      },
+
+      clearOrchMax: function () {
+        this.oMaxErr = '';
+        this.oNotice = '';
+      },
+
+      clearOrchMinutes: function () {
+        this.oMinutesErr = '';
+        this.oNotice = '';
+      },
+
+      saveOrchestratorForm: function () {
+        var self = this;
+        if (this.orchBusy || !this.oLoaded) return Promise.resolve();
+        this.oMaxErr = '';
+        this.oMinutesErr = '';
+        this.oFormError = '';
+        this.oToggleError = '';
+        this.oNotice = '';
+        var maxOk = isInt(this.oDraftMax) && Number(this.oDraftMax) >= 1 && Number(this.oDraftMax) <= 10;
+        var minOk = isInt(this.oDraftMinutes) && Number(this.oDraftMinutes) >= 1 && Number(this.oDraftMinutes) <= 1440;
+        if (!maxOk) this.oMaxErr = ORCH_MAX_ERR;
+        // The minutes field is off while auto resume is off: an invalid draft then keeps the saved value.
+        if (!minOk && this.oDraftAuto) this.oMinutesErr = ORCH_MINUTES_ERR;
+        if (this.oMaxErr || this.oMinutesErr) {
+          window.AB.focusLater(this.oMaxErr ? 'ab-set-orch-max' : 'ab-set-orch-minutes');
+          return Promise.resolve();
+        }
+        this.oSaving = true;
+        return this.postOrchestrator({
+          enabled: this.oEnabled,
+          max_parallel: Number(this.oDraftMax),
+          auto_resume_quota: this.oDraftAuto,
+          resume_after_minutes: minOk ? Number(this.oDraftMinutes) : this.oResumeMinutes,
+        }).then(function (res) {
+          self.oSaving = false;
+          var data = res ? res.data : null;
+          if (res && res.ok && data && typeof data.enabled === 'boolean') {
+            self.applyOrchestrator(data);
+            self.resetOrchestratorDraft();
+            self.oNotice = ORCH_SAVED_NOTICE;
+            return;
+          }
+          if (res && res.status === 409 && data && data.code === 'conflict') {
+            self.oFormError = ORCH_CONFLICT;
+            return self.loadOrchestrator().then(function () {
+              self.oFormError = ORCH_CONFLICT;
+            });
+          }
+          var rest = [];
+          var errs = data && Array.isArray(data.errors) ? data.errors : [];
+          for (var i = 0; i < errs.length; i++) {
+            var e = errs[i] || {};
+            if (e.field === 'max_parallel') self.oMaxErr = String(e.message || '');
+            else if (e.field === 'resume_after_minutes') self.oMinutesErr = String(e.message || '');
+            else if (e.message) rest.push(String(e.message));
+          }
+          if (rest.length === 0 && !self.oMaxErr && !self.oMinutesErr) rest.push(window.AB.errorText(res));
+          self.oFormError = rest.join(' ');
+        });
+      },
+
+      get showOrchestrator() {
+        return this.loaded && this.section === 'orchestrator';
+      },
+
+      get orchBusy() {
+        return this.oToggling || this.oSaving;
+      },
+
+      get orchLoading() {
+        return !this.oLoaded && !this.oLoadFail;
+      },
+
+      get orchLoadFailed() {
+        return !this.oLoaded && Boolean(this.oLoadFail);
+      },
+
+      get orchLoadFailText() {
+        return 'Không đọc được cài đặt hàng đợi: ' + this.oLoadFail + '. Bấm Đọc lại để thử lại.';
+      },
+
+      get orchToggleDisabled() {
+        return this.orchBusy || !this.oLoaded;
+      },
+
+      get orchEnabledAttr() {
+        return this.oEnabled ? 'true' : 'false';
+      },
+
+      get orchEnabledWord() {
+        if (this.oToggling) return 'Đang lưu...';
+        return this.oEnabled ? 'Bật' : 'Tắt';
+      },
+
+      get orchTrackClass() {
+        return this.oEnabled ? TRACK_ON : TRACK_OFF;
+      },
+
+      get orchKnobClass() {
+        return this.oEnabled ? KNOB_ON : KNOB_OFF;
+      },
+
+      get orchHasToggleError() {
+        return Boolean(this.oToggleError);
+      },
+
+      get orchFormDisabled() {
+        return this.orchBusy || !this.oLoaded;
+      },
+
+      get orchAutoAttr() {
+        return this.oDraftAuto ? 'true' : 'false';
+      },
+
+      get orchAutoWord() {
+        return this.oDraftAuto ? 'Bật' : 'Tắt';
+      },
+
+      get orchAutoTrackClass() {
+        return this.oDraftAuto ? TRACK_ON : TRACK_OFF;
+      },
+
+      get orchAutoKnobClass() {
+        return this.oDraftAuto ? KNOB_ON : KNOB_OFF;
+      },
+
+      get orchMinutesDisabled() {
+        return this.orchFormDisabled || !this.oDraftAuto;
+      },
+
+      get orchMaxInvalid() {
+        return Boolean(this.oMaxErr);
+      },
+
+      get orchMaxInvalidAttr() {
+        return this.oMaxErr ? 'true' : 'false';
+      },
+
+      get orchMaxClass() {
+        return this.oMaxErr ? RING_BAD : RING_OK;
+      },
+
+      get orchMinutesInvalid() {
+        return Boolean(this.oMinutesErr);
+      },
+
+      get orchMinutesInvalidAttr() {
+        return this.oMinutesErr ? 'true' : 'false';
+      },
+
+      get orchMinutesClass() {
+        return this.oMinutesErr ? RING_BAD : RING_OK;
+      },
+
+      get orchHasFormError() {
+        return Boolean(this.oFormError);
+      },
+
+      get orchHasNotice() {
+        return Boolean(this.oNotice);
+      },
+
+      get orchSaveLabel() {
+        return this.oSaving ? 'Đang lưu...' : 'Lưu';
       },
 
       // ---- sub-nav ----
