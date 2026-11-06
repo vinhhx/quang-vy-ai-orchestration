@@ -88,6 +88,7 @@ fn project_json(
         "profile": p.profile,
         "repo": p.repo,
         "missing": p.missing,
+        "stack": p.stack,
         "workflow": crate::projects::workflow_of(map, &p.id),
         "runnable_issue": runnable_issue(p, profiles),
     })
@@ -267,6 +268,13 @@ pub struct UpdateProfileBody {
 }
 
 #[derive(serde::Deserialize)]
+pub struct UpdateStackBody {
+    pub stack: Vec<String>,
+    #[serde(default)]
+    pub etag: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct FsDirsQuery {
     path: Option<String>,
     hidden: Option<String>,
@@ -286,6 +294,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/projects/{id}", put(update_aliases))
         .route("/api/projects/{id}/telegram", put(update_telegram))
         .route("/api/projects/{id}/profile", put(update_profile))
+        .route("/api/projects/{id}/stack", put(update_stack))
         .route("/api/projects/{id}/status", get(project_status))
 }
 
@@ -559,6 +568,79 @@ async fn update_profile(
             return Ok(json_error(StatusCode::UNPROCESSABLE_ENTITY, &e.message));
         }
         project_obj["profile"] = serde_json::Value::String(profile);
+
+        save_and_respond(&st, &data, StatusCode::OK, None)
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+async fn update_stack(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<UpdateStackBody>,
+) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if let Some(ref req_etag) = body.etag {
+            if req_etag != &current_etag {
+                return conflict_response(&st, current_etag);
+            }
+        }
+
+        if body.stack.len() > 6 {
+            return Ok(json_error(
+                StatusCode::BAD_REQUEST,
+                "Tối đa 6 stack",
+            ));
+        }
+
+        let mut cleaned = Vec::new();
+        for s in body.stack {
+            let trimmed = s.trim().to_string();
+            if !crate::prompts::valid_name(&trimmed) {
+                return Ok(json_error(
+                    StatusCode::BAD_REQUEST,
+                    &format!("Tên stack '{trimmed}' không hợp lệ"),
+                ));
+            }
+            if !cleaned.contains(&trimmed) {
+                cleaned.push(trimmed);
+            }
+        }
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        let projects_arr = data
+            .get_mut("projects")
+            .and_then(|p| p.as_array_mut())
+            .ok_or_else(|| {
+                crate::error::BrainError::error("projects_map.json thiếu mảng 'projects'")
+            })?;
+        let project_obj = match projects_arr
+            .iter_mut()
+            .find(|obj| obj.get("id").and_then(|v| v.as_str()) == Some(&id))
+        {
+            Some(obj) => obj,
+            None => {
+                return Ok(json_error(
+                    StatusCode::NOT_FOUND,
+                    &format!("Không tìm thấy dự án {id}"),
+                ))
+            }
+        };
+
+        project_obj["stack"] = serde_json::Value::Array(
+            cleaned
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        );
 
         save_and_respond(&st, &data, StatusCode::OK, None)
     })

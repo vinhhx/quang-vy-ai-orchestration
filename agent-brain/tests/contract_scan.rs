@@ -430,3 +430,31 @@ fn unreadable_map_left_untouched() {
     let content = std::fs::read_to_string(&map_path).unwrap();
     assert_eq!(content, "{bad", "unreadable map must not be modified");
 }
+
+#[test]
+fn scan_suggests_stack_for_detected_project() {
+    let sb = Sandbox::new();
+    let root = sb.root.join("roots");
+    std::fs::create_dir_all(&root).unwrap();
+
+    // Create a repo with artisan (laravel)
+    let repo = sb.make_repo("laravel-app", &[], Some(&root), None);
+    std::fs::write(repo.join("artisan"), "<?php // artisan").unwrap();
+
+    let res = sb.run(
+        &["projects", "scan", "--root", root.to_str().unwrap()],
+        None,
+    );
+    assert_eq!(res.code, 0);
+    assert!(res.stdout.contains("gợi ý stack"), "stdout: {}", res.stdout);
+
+    let map_content = std::fs::read_to_string(sb.map_path()).unwrap();
+    let map: serde_json::Value = serde_json::from_str(&map_content).unwrap();
+    let proj = map["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "laravel-app")
+        .expect("laravel-app found");
+    assert_eq!(proj["stack"], serde_json::json!(["laravel"]));
+}

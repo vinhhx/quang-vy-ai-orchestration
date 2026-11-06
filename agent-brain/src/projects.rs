@@ -434,6 +434,44 @@ pub fn save_map(path: &Path, data: &serde_json::Value) -> BrainResult<()> {
     Ok(())
 }
 
+pub fn detect_stack(root: &Path) -> Vec<String> {
+    let mut stacks = Vec::new();
+    let has_artisan = root.join("artisan").exists();
+    let has_yii = root.join("yii").exists()
+        || root.join("protected").join("yiic").exists()
+        || (root.join("config").join("web.php").exists()
+            && root.join("vendor").join("yiisoft").exists());
+    let has_composer = root.join("composer.json").exists();
+    let has_package_json = root.join("package.json").exists();
+    let has_video_srt = root.join(".agents").join("skills").join("srt-idea").exists()
+        || root.join("scripts").join("build_video.py").exists();
+    let has_cargo = root.join("Cargo.toml").exists();
+    let has_python = root.join("pyproject.toml").exists() || root.join("requirements.txt").exists();
+
+    if has_artisan {
+        stacks.push("laravel".to_string());
+    }
+    if has_yii {
+        stacks.push("yii2".to_string());
+    }
+    if has_composer && !has_artisan && !has_yii {
+        stacks.push("php".to_string());
+    }
+    if has_package_json {
+        stacks.push("node".to_string());
+    }
+    if has_video_srt {
+        stacks.push("video-srt".to_string());
+    }
+    if has_cargo {
+        stacks.push("rust".to_string());
+    }
+    if has_python {
+        stacks.push("python".to_string());
+    }
+    stacks
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ScanReport {
     pub added: usize,
@@ -442,6 +480,7 @@ pub struct ScanReport {
     pub unchanged: usize,
     pub bad_roots: Vec<String>,
     pub suffixed: Vec<(String, String, String)>,
+    pub stack_suggested: usize,
 }
 
 pub fn scan(data: &mut serde_json::Value) -> ScanReport {
@@ -483,6 +522,7 @@ pub fn scan(data: &mut serde_json::Value) -> ScanReport {
     let mut unchanged_count = 0;
     let mut suffixed_ids = Vec::new();
     let mut scanned_realpaths = HashSet::new();
+    let mut stack_suggested = 0;
 
     for r in &valid_roots {
         let entries = match std::fs::read_dir(r) {
@@ -596,6 +636,23 @@ pub fn scan(data: &mut serde_json::Value) -> ScanReport {
         .filter(|p| p.get("missing").and_then(|b| b.as_bool()).unwrap_or(false))
         .count();
 
+    for p in projects.iter_mut() {
+        if p.get("stack").is_none() {
+            if let Some(pth) = p.get("path").and_then(|s| s.as_str()) {
+                let p_dir = Path::new(pth);
+                if p_dir.is_dir() {
+                    let detected = detect_stack(p_dir);
+                    if !detected.is_empty() {
+                        p["stack"] = serde_json::Value::Array(
+                            detected.into_iter().map(serde_json::Value::String).collect(),
+                        );
+                        stack_suggested += 1;
+                    }
+                }
+            }
+        }
+    }
+
     ScanReport {
         added: added_count,
         missing: total_missing,
@@ -603,6 +660,7 @@ pub fn scan(data: &mut serde_json::Value) -> ScanReport {
         unchanged: unchanged_count,
         bad_roots,
         suffixed: suffixed_ids,
+        stack_suggested,
     }
 }
 
@@ -620,6 +678,14 @@ pub fn add_project(
             if to_realpath(ppath) == real_path {
                 if p.get("missing").and_then(|b| b.as_bool()).unwrap_or(false) {
                     p["missing"] = serde_json::Value::Bool(false);
+                }
+                if p.get("stack").is_none() {
+                    let detected = detect_stack(&abs_path);
+                    if !detected.is_empty() {
+                        p["stack"] = serde_json::Value::Array(
+                            detected.into_iter().map(serde_json::Value::String).collect(),
+                        );
+                    }
                 }
                 return Ok((p.clone(), false));
             }
@@ -642,7 +708,15 @@ pub fn add_project(
         }
     };
 
-    let entry = new_entry(data, &abs_path, actual_kind);
+    let mut entry = new_entry(data, &abs_path, actual_kind);
+    if entry.get("stack").is_none() {
+        let detected = detect_stack(&abs_path);
+        if !detected.is_empty() {
+            entry["stack"] = serde_json::Value::Array(
+                detected.into_iter().map(serde_json::Value::String).collect(),
+            );
+        }
+    }
     if let Some(projects) = data.get_mut("projects").and_then(|p| p.as_array_mut()) {
         projects.push(entry.clone());
     } else {
@@ -770,9 +844,14 @@ pub fn cmd_scan(roots: &[String]) -> BrainResult<i32> {
     }
 
     let num_roots = existing_roots.len().saturating_sub(report.bad_roots.len());
+    let stack_msg = if report.stack_suggested > 0 {
+        format!(", {} gợi ý stack", report.stack_suggested)
+    } else {
+        String::new()
+    };
     crate::term::emit_out(&format!(
-        "Đã quét {} thư mục gốc: +{} mới, {} thiếu (missing), {} khôi phục, {} không đổi",
-        num_roots, report.added, report.missing, report.restored, report.unchanged
+        "Đã quét {} thư mục gốc: +{} mới, {} thiếu (missing), {} khôi phục, {} không đổi{}",
+        num_roots, report.added, report.missing, report.restored, report.unchanged, stack_msg
     ));
 
     for (base, new_id, _path) in &report.suffixed {
@@ -924,5 +1003,114 @@ mod tests {
         assert!(created);
         assert_eq!(e["type"], "idea");
         assert!(e["repo"].is_null());
+    }
+
+    #[test]
+    fn test_detect_stack_variants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+
+        // 1. Laravel: artisan
+        let laravel_dir = p.join("laravel");
+        std::fs::create_dir_all(&laravel_dir).unwrap();
+        std::fs::write(laravel_dir.join("artisan"), "").unwrap();
+        assert_eq!(detect_stack(&laravel_dir), vec!["laravel"]);
+
+        // 2. Yii2: yii
+        let yii_dir = p.join("yii");
+        std::fs::create_dir_all(&yii_dir).unwrap();
+        std::fs::write(yii_dir.join("yii"), "").unwrap();
+        assert_eq!(detect_stack(&yii_dir), vec!["yii2"]);
+
+        // 3. Yii2: protected/yiic
+        let yii_yiic = p.join("yiic");
+        std::fs::create_dir_all(yii_yiic.join("protected")).unwrap();
+        std::fs::write(yii_yiic.join("protected").join("yiic"), "").unwrap();
+        assert_eq!(detect_stack(&yii_yiic), vec!["yii2"]);
+
+        // 4. Yii2: config/web.php + vendor/yiisoft
+        let yii_conf = p.join("yiiconf");
+        std::fs::create_dir_all(yii_conf.join("config")).unwrap();
+        std::fs::create_dir_all(yii_conf.join("vendor").join("yiisoft")).unwrap();
+        std::fs::write(yii_conf.join("config").join("web.php"), "").unwrap();
+        assert_eq!(detect_stack(&yii_conf), vec!["yii2"]);
+
+        // 5. composer.json without artisan or yii -> php
+        let php_dir = p.join("php");
+        std::fs::create_dir_all(&php_dir).unwrap();
+        std::fs::write(php_dir.join("composer.json"), "").unwrap();
+        assert_eq!(detect_stack(&php_dir), vec!["php"]);
+
+        // 6. package.json -> node
+        let node_dir = p.join("node");
+        std::fs::create_dir_all(&node_dir).unwrap();
+        std::fs::write(node_dir.join("package.json"), "").unwrap();
+        assert_eq!(detect_stack(&node_dir), vec!["node"]);
+
+        // 7. video-srt: .agents/skills/srt-idea
+        let srt_dir1 = p.join("srt1");
+        std::fs::create_dir_all(srt_dir1.join(".agents").join("skills").join("srt-idea")).unwrap();
+        assert_eq!(detect_stack(&srt_dir1), vec!["video-srt"]);
+
+        // 8. video-srt: scripts/build_video.py
+        let srt_dir2 = p.join("srt2");
+        std::fs::create_dir_all(srt_dir2.join("scripts")).unwrap();
+        std::fs::write(srt_dir2.join("scripts").join("build_video.py"), "").unwrap();
+        assert_eq!(detect_stack(&srt_dir2), vec!["video-srt"]);
+
+        // 9. Cargo.toml -> rust
+        let rust_dir = p.join("rust");
+        std::fs::create_dir_all(&rust_dir).unwrap();
+        std::fs::write(rust_dir.join("Cargo.toml"), "").unwrap();
+        assert_eq!(detect_stack(&rust_dir), vec!["rust"]);
+
+        // 10. pyproject.toml -> python
+        let py_dir1 = p.join("py1");
+        std::fs::create_dir_all(&py_dir1).unwrap();
+        std::fs::write(py_dir1.join("pyproject.toml"), "").unwrap();
+        assert_eq!(detect_stack(&py_dir1), vec!["python"]);
+
+        // 11. requirements.txt -> python
+        let py_dir2 = p.join("py2");
+        std::fs::create_dir_all(&py_dir2).unwrap();
+        std::fs::write(py_dir2.join("requirements.txt"), "").unwrap();
+        assert_eq!(detect_stack(&py_dir2), vec!["python"]);
+
+        // 12. Combined: artisan + package.json -> laravel, node
+        let combo = p.join("combo");
+        std::fs::create_dir_all(&combo).unwrap();
+        std::fs::write(combo.join("artisan"), "").unwrap();
+        std::fs::write(combo.join("package.json"), "").unwrap();
+        assert_eq!(detect_stack(&combo), vec!["laravel", "node"]);
+    }
+
+    #[test]
+    fn test_scan_only_fills_missing_stack() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj_dir = tmp.path().join("proj-rust");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::write(proj_dir.join("Cargo.toml"), "").unwrap();
+
+        // 1. Existing project with user-chosen stack: ["custom"] -> remains ["custom"]
+        let mut data = serde_json::json!({
+            "scan_roots": [tmp.path().to_str().unwrap()],
+            "projects": [
+                {
+                    "id": "proj-custom",
+                    "path": proj_dir.to_str().unwrap(),
+                    "stack": ["custom"]
+                },
+                {
+                    "id": "proj-nostack",
+                    "path": proj_dir.to_str().unwrap()
+                }
+            ]
+        });
+
+        let rep = scan(&mut data);
+        assert_eq!(rep.stack_suggested, 1);
+        let projs = data["projects"].as_array().unwrap();
+        assert_eq!(projs[0]["stack"], serde_json::json!(["custom"]));
+        assert_eq!(projs[1]["stack"], serde_json::json!(["rust"]));
     }
 }

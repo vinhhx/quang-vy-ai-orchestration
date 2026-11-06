@@ -1037,3 +1037,70 @@ fn runnable_issue_in_project_list() {
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
 }
+
+#[test]
+fn update_project_stack() {
+    let sb = Sandbox::new();
+    let r_ok = sb.make_repo("proj-stk", &[], None, None);
+    let entry = sb.project_entry(&r_ok, "proj-stk", "work");
+    sb.write_map(serde_json::json!([entry]), &[]);
+    let mut srv = sb.serve(&[]);
+
+    let j = srv.get("/api/projects").json();
+    let etag = j["etag"].as_str().unwrap();
+
+    // 1. Success update stack
+    let r = srv.put_json(
+        "/api/projects/proj-stk/stack",
+        &serde_json::json!({
+            "stack": ["laravel", "node"],
+            "etag": etag
+        }),
+    );
+    assert_eq!(r.status, 200);
+
+    // Verify in map
+    let j2 = srv.get("/api/projects").json();
+    let p = j2["projects"].as_array().unwrap().iter().find(|p| p["id"] == "proj-stk").unwrap();
+    assert_eq!(p["stack"], serde_json::json!(["laravel", "node"]));
+
+    // 2. Conflict when etag differs
+    let r_conflict = srv.put_json(
+        "/api/projects/proj-stk/stack",
+        &serde_json::json!({
+            "stack": ["laravel"],
+            "etag": "wrong_etag"
+        }),
+    );
+    assert_eq!(r_conflict.status, 409);
+
+    // 3. More than 6 stacks -> 400
+    let r_too_many = srv.put_json(
+        "/api/projects/proj-stk/stack",
+        &serde_json::json!({
+            "stack": ["s1", "s2", "s3", "s4", "s5", "s6", "s7"]
+        }),
+    );
+    assert_eq!(r_too_many.status, 400);
+
+    // 4. Invalid name -> 400
+    let r_invalid = srv.put_json(
+        "/api/projects/proj-stk/stack",
+        &serde_json::json!({
+            "stack": ["invalid name with spaces!"]
+        }),
+    );
+    assert_eq!(r_invalid.status, 400);
+
+    // 5. Unknown project -> 404
+    let r_not_found = srv.put_json(
+        "/api/projects/non-existent-proj/stack",
+        &serde_json::json!({
+            "stack": ["laravel"]
+        }),
+    );
+    assert_eq!(r_not_found.status, 404);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}

@@ -172,6 +172,49 @@ pub fn write_object(
     Ok(file_version(Some(out.as_bytes())))
 }
 
+/// Ghi văn bản thô (UTF-8) atomically có kiểm tra phiên bản.
+pub fn write_text(
+    path: &Path,
+    expected_version: &str,
+    text: &str,
+) -> Result<String, WriteError> {
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let bytes = match std::fs::read(path) {
+        Ok(b) => Some(b),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(WriteError::Io(format!(
+                "Không đọc được {}: {e}",
+                path.display()
+            )));
+        }
+    };
+    if file_version(bytes.as_deref()) != expected_version {
+        return Err(WriteError::Conflict);
+    }
+
+    atomic_write(path, text.as_bytes()).map_err(WriteError::Io)?;
+    Ok(file_version(Some(text.as_bytes())))
+}
+
+/// Xóa file an toàn dưới WRITE_LOCK (idempotent: NotFound coi như thành công).
+pub fn delete_file(path: &Path) -> Result<(), WriteError> {
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            if let Some(parent) = path.parent() {
+                if parent.exists() {
+                    let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
+                }
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(WriteError::Io(format!("Không thể xóa {}: {e}", path.display()))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

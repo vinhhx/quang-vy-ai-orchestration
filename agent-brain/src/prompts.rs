@@ -38,7 +38,98 @@ pub fn notes_dir() -> PathBuf {
     dir.join("prompts")
 }
 
-pub const BUILTIN_STACK_NOTES: &[(&str, &str, &str)] = &[];
+pub const BUILTIN_STACK_NOTES: &[(&str, &str, &str)] = &[
+    (
+        "video-srt",
+        "lead",
+        include_str!("../assets/prompts/stacks/video-srt/lead.md"),
+    ),
+    (
+        "video-srt",
+        "dev",
+        include_str!("../assets/prompts/stacks/video-srt/dev.md"),
+    ),
+    (
+        "video-srt",
+        "qa",
+        include_str!("../assets/prompts/stacks/video-srt/qa.md"),
+    ),
+    (
+        "laravel",
+        "lead",
+        include_str!("../assets/prompts/stacks/laravel/lead.md"),
+    ),
+    (
+        "laravel",
+        "dev",
+        include_str!("../assets/prompts/stacks/laravel/dev.md"),
+    ),
+    (
+        "laravel",
+        "qa",
+        include_str!("../assets/prompts/stacks/laravel/qa.md"),
+    ),
+    (
+        "yii2",
+        "lead",
+        include_str!("../assets/prompts/stacks/yii2/lead.md"),
+    ),
+    (
+        "yii2",
+        "dev",
+        include_str!("../assets/prompts/stacks/yii2/dev.md"),
+    ),
+    (
+        "yii2",
+        "qa",
+        include_str!("../assets/prompts/stacks/yii2/qa.md"),
+    ),
+];
+
+pub fn builtin_stacks() -> Vec<&'static str> {
+    let mut list = Vec::new();
+    for (s, _, _) in BUILTIN_STACK_NOTES {
+        if !list.contains(s) {
+            list.push(*s);
+        }
+    }
+    list
+}
+
+pub fn note_path(layer: &str, name: &str, role: &str) -> PathBuf {
+    notes_dir().join(layer).join(name).join(format!("{role}.md"))
+}
+
+pub fn list_layer_names(layer: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let dir = notes_dir().join(layer);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry_res in entries.flatten() {
+            let path = entry_res.path();
+            if path.is_dir() {
+                if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                    if valid_name(file_name) {
+                        let has_role_file = VALID_ROLES
+                            .iter()
+                            .any(|role| path.join(format!("{role}.md")).exists());
+                        if has_role_file && !names.contains(&file_name.to_string()) {
+                            names.push(file_name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if layer == "stacks" {
+        for s in builtin_stacks() {
+            if !names.iter().any(|existing| existing == s) {
+                names.push(s.to_string());
+            }
+        }
+    }
+    names.sort();
+    names
+}
 
 pub type TestBuiltinNote = (&'static str, &'static str, &'static str);
 
