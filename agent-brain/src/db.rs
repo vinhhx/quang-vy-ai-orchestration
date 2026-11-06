@@ -93,9 +93,62 @@ CREATE TABLE fixbug_refs (
   updated_at INTEGER NOT NULL,
   UNIQUE (project_id, kind, ext_id)
 );"#,
+    r#"CREATE TABLE runs_new (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER REFERENCES tasks(id),
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  role TEXT NOT NULL CHECK (role IN ('lead','dev','qa','inspect','plan-review','code-review','analyst','analysis-review')),
+  engine TEXT NOT NULL DEFAULT 'claude',
+  profile TEXT NOT NULL,
+  model TEXT,
+  session_id TEXT,
+  pid INTEGER,
+  pgid INTEGER,
+  pid_start INTEGER,
+  status TEXT NOT NULL CHECK (status IN ('running','succeeded','failed','timed_out','killed','lost')),
+  outcome TEXT,
+  exit_code INTEGER,
+  kill_requested_at INTEGER,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  num_turns INTEGER,
+  assistant_turns INTEGER,
+  turns_before_first_edit INTEGER,
+  reads_outside_plan INTEGER,
+  permission_denials INTEGER NOT NULL DEFAULT 0,
+  usage_source TEXT NOT NULL DEFAULT 'none' CHECK (usage_source IN ('result','partial','none')),
+  base_commit TEXT,
+  run_dir TEXT,
+  error TEXT,
+  stage TEXT,
+  round INTEGER,
+  metrics_json TEXT
+);
+INSERT INTO runs_new (
+  id, task_id, project_id, role, engine, profile, model, session_id, pid, pgid, pid_start,
+  status, outcome, exit_code, kill_requested_at, started_at, ended_at, input_tokens, output_tokens,
+  cache_read_tokens, cache_write_tokens, cost_usd, num_turns, assistant_turns, turns_before_first_edit,
+  reads_outside_plan, permission_denials, usage_source, base_commit, run_dir, error, stage, round, metrics_json
+)
+  SELECT
+    id, task_id, project_id, role, engine, profile, model, session_id, pid, pgid, pid_start,
+    status, outcome, exit_code, kill_requested_at, started_at, ended_at, input_tokens, output_tokens,
+    cache_read_tokens, cache_write_tokens, cost_usd, num_turns, assistant_turns, turns_before_first_edit,
+    reads_outside_plan, permission_denials, usage_source, base_commit, run_dir, error, stage, round, metrics_json
+  FROM runs;
+DROP TABLE runs;
+ALTER TABLE runs_new RENAME TO runs;
+CREATE INDEX runs_started ON runs(started_at);
+CREATE INDEX runs_task ON runs(task_id);
+CREATE INDEX runs_running ON runs(status) WHERE status = 'running';"#,
 ];
 
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {

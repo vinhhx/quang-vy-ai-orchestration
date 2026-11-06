@@ -963,6 +963,11 @@ pub struct Config {
 
 impl Config {
     pub fn timeout_for(&self, role: &str) -> Duration {
+        let role = match role {
+            "analyst" => "lead",
+            "analysis-review" => "plan-review",
+            other => other,
+        };
         self.timeout_seconds
             .get(role)
             .copied()
@@ -977,6 +982,11 @@ impl Config {
     }
 
     pub fn model_for(&self, role: &str) -> BrainResult<String> {
+        let role = match role {
+            "analyst" => "lead",
+            "analysis-review" => "plan-review",
+            other => other,
+        };
         self.models
             .get(role)
             .cloned()

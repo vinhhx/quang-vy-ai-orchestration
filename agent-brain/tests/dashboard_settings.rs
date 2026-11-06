@@ -961,7 +961,7 @@ fn workflows_save_rules() {
         .iter()
         .map(|w| w["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["mac-dinh", "nhanh", "tay"]);
+    assert_eq!(names, ["mac-dinh", "nhanh", "phan-tich", "phan-tich-review", "tay"]);
     let disk = disk_json(&sb.workflows_path());
     assert_eq!(
         disk,

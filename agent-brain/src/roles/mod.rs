@@ -1,3 +1,4 @@
+pub mod analyst;
 pub mod dev;
 pub mod lead;
 pub mod qa;
@@ -19,6 +20,8 @@ pub enum Role {
     Qa,
     PlanReview,
     CodeReview,
+    Analyst,
+    AnalysisReview,
 }
 
 impl Role {
@@ -29,6 +32,16 @@ impl Role {
             Role::Qa => "qa",
             Role::PlanReview => "plan-review",
             Role::CodeReview => "code-review",
+            Role::Analyst => "analyst",
+            Role::AnalysisReview => "analysis-review",
+        }
+    }
+
+    pub fn config_role(&self) -> Role {
+        match self {
+            Role::Analyst => Role::Lead,
+            Role::AnalysisReview => Role::PlanReview,
+            other => *other,
         }
     }
 }
@@ -42,6 +55,8 @@ pub const DEV_FIX_PROMPT: &str = include_str!("../../assets/prompts/dev-fix.md")
 pub const QA_PROMPT: &str = include_str!("../../assets/prompts/qa.md");
 pub const PLAN_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/plan-review.md");
 pub const CODE_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/code-review.md");
+pub const ANALYST_PROMPT: &str = include_str!("../../assets/prompts/analyst.md");
+pub const ANALYSIS_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/analysis-review.md");
 
 /// Seconds an agy run gets to exit by itself after its final `result` event; after that the
 /// runner stops its process tree (an MCP server agy started can keep it alive) and the run counts
@@ -84,6 +99,8 @@ pub fn prompt_for(role: Role) -> &'static str {
         Role::Qa => QA_PROMPT,
         Role::PlanReview => PLAN_REVIEW_PROMPT,
         Role::CodeReview => CODE_REVIEW_PROMPT,
+        Role::Analyst => ANALYST_PROMPT,
+        Role::AnalysisReview => ANALYSIS_REVIEW_PROMPT,
     }
 }
 
@@ -156,7 +173,8 @@ pub fn build_command_with_prompt(
     check_forbidden_args(&cfg.common_args)?;
     check_forbidden_args(&spec.extra_args)?;
 
-    let model = cfg.model_for(spec.role.as_str())?;
+    let cfg_role = spec.role.config_role();
+    let model = cfg.model_for(cfg_role.as_str())?;
 
     let mut cmd = vec![
         cfg.claude_bin.clone(),
@@ -173,7 +191,7 @@ pub fn build_command_with_prompt(
 
     cmd.extend(cfg.common_args.iter().cloned());
 
-    if let Some(Some(max_turns)) = cfg.max_turns.get(spec.role.as_str()) {
+    if let Some(Some(max_turns)) = cfg.max_turns.get(cfg_role.as_str()) {
         cmd.push("--max-turns".to_string());
         cmd.push(max_turns.to_string());
     }
@@ -1066,18 +1084,28 @@ pub fn cmd_run(
         return Err(BrainError::error("--fix chỉ dùng với vai trò dev"));
     }
 
-    if (opts.review || opts.note.is_some() || opts.workflow.is_some()) && role != Role::Lead {
+    if (opts.review || opts.note.is_some()) && role != Role::Lead {
         return Err(BrainError::error(
-            "--review, --note và --workflow chỉ dùng với vai trò lead",
+            "--review và --note chỉ dùng với vai trò lead",
         ));
     }
 
-    if opts.origin.is_some() && role != Role::Lead {
-        return Err(BrainError::error("--origin chỉ dùng với vai trò lead"));
+    if opts.workflow.is_some() && role != Role::Lead && role != Role::Analyst {
+        return Err(BrainError::error(
+            "--workflow chỉ dùng với vai trò lead hoặc analyst",
+        ));
     }
 
-    if opts.team.is_some() && role != Role::Lead {
-        return Err(BrainError::error("--team chỉ dùng với vai trò lead"));
+    if opts.origin.is_some() && role != Role::Lead && role != Role::Analyst {
+        return Err(BrainError::error(
+            "--origin chỉ dùng với vai trò lead hoặc analyst",
+        ));
+    }
+
+    if opts.team.is_some() && role != Role::Lead && role != Role::Analyst {
+        return Err(BrainError::error(
+            "--team chỉ dùng với vai trò lead hoặc analyst",
+        ));
     }
 
     match role {
@@ -1133,6 +1161,22 @@ pub fn cmd_run(
                 }
             }
             review::cmd_review(ctx, project, crate::report::ReviewKind::Code, opts)
+        }
+        Role::Analyst => {
+            let req = match request {
+                Some(r) if !r.trim().is_empty() => r.trim(),
+                _ => {
+                    return Err(BrainError::error(
+                        "run analyst cần <câu hỏi> — ví dụ: agent-brain run analyst \"<dự án>\" \"<câu hỏi>\"",
+                    ));
+                }
+            };
+            analyst::cmd_analyst(ctx, project, req, opts)
+        }
+        Role::AnalysisReview => {
+            Err(BrainError::error(
+                "Vai trò analysis-review chỉ được gọi nội bộ bởi bước review của phân tích",
+            ))
         }
     }
 }

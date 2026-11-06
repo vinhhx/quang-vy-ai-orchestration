@@ -642,12 +642,14 @@ fn list_tasks_auto_fields() {
 
     let wf = agent_brain::workflows::Workflow {
         name: "generate-video".to_string(),
+        kind: "code".to_string(),
         stages: vec!["plan".to_string()],
         loops: vec![],
         max_rounds: 3,
         budget_minutes: 60,
         budget_usd: 0.0,
         auto: true,
+        review: false,
         source: "test".to_string(),
     };
     sb.db()

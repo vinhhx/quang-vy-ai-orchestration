@@ -2784,6 +2784,7 @@ mod tests {
     fn test_mac_dinh() -> Workflow {
         Workflow {
             name: "mac-dinh".to_string(),
+            kind: "code".to_string(),
             stages: vec![
                 "plan".to_string(),
                 "plan-review".to_string(),
@@ -2798,6 +2799,7 @@ mod tests {
             budget_minutes: 60,
             budget_usd: 20.0,
             auto: true,
+            review: false,
             source: "builtin".to_string(),
         }
     }
@@ -2805,6 +2807,7 @@ mod tests {
     fn test_nhanh() -> Workflow {
         Workflow {
             name: "nhanh".to_string(),
+            kind: "code".to_string(),
             stages: vec![
                 "plan".to_string(),
                 "gate:you".to_string(),
@@ -2816,6 +2819,7 @@ mod tests {
             budget_minutes: 60,
             budget_usd: 20.0,
             auto: false,
+            review: false,
             source: "builtin".to_string(),
         }
     }

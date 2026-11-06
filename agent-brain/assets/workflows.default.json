@@ -24,5 +24,15 @@
       "qa"
     ],
     "auto": false
+  },
+  "phan-tich": {
+    "kind": "analysis",
+    "review": false,
+    "auto": false
+  },
+  "phan-tich-review": {
+    "kind": "analysis",
+    "review": true,
+    "auto": false
   }
 }

@@ -28,7 +28,10 @@ fn workflows_endpoint_builtins() {
         .iter()
         .map(|w| w["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, vec!["mac-dinh", "nhanh"]);
+    assert_eq!(
+        names,
+        vec!["mac-dinh", "nhanh", "phan-tich", "phan-tich-review"]
+    );
 
     let mac_dinh = &workflows[0];
     assert_eq!(mac_dinh["source"], "builtin");
@@ -99,7 +102,10 @@ fn workflows_endpoint_file_and_errors() {
         .iter()
         .map(|w| w["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, vec!["mac-dinh", "nhanh", "chi-phi-thap"]);
+    assert_eq!(
+        names,
+        vec!["mac-dinh", "nhanh", "phan-tich", "phan-tich-review", "chi-phi-thap"]
+    );
 
     let chi_phi = workflows
         .iter()
@@ -129,7 +135,10 @@ fn workflows_endpoint_file_and_errors() {
         .iter()
         .map(|w| w["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names_broken, vec!["mac-dinh", "nhanh"]);
+    assert_eq!(
+        names_broken,
+        vec!["mac-dinh", "nhanh", "phan-tich", "phan-tich-review"]
+    );
     let errs_broken = j_broken["errors"].as_array().unwrap();
     assert_eq!(errs_broken.len(), 1);
     assert!(

@@ -601,12 +601,14 @@ mod tests {
     fn test_limits_from_workflow() {
         let mac_dinh = Workflow {
             name: "mac-dinh".to_string(),
+            kind: "code".to_string(),
             stages: vec![],
             loops: vec![],
             max_rounds: 3,
             budget_minutes: 60,
             budget_usd: 20.0,
             auto: true,
+            review: false,
             source: "builtin".to_string(),
         };
         let limits = BudgetLimits::from_workflow(&mac_dinh);

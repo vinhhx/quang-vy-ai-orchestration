@@ -476,8 +476,14 @@ pub fn resolve_for_run(
         }
     }
 
+    let lookup_role = match role {
+        "analyst" => "lead",
+        "analysis-review" => "plan-review",
+        other => other,
+    };
+
     Ok(ResolvedEngine {
-        engine: team.engine_for(role),
+        engine: team.engine_for(lookup_role),
         team: Some(task_team.name.clone()),
         wait: task_team.wait.clone(),
     })

@@ -2,7 +2,15 @@ use std::path::{Path, PathBuf};
 
 pub const PROMPT_NOTE_MAX_BYTES: usize = 8192;
 pub const LAYERS: [&str; 4] = ["stacks", "projects", "workflows", "teams"];
-pub const VALID_ROLES: [&str; 5] = ["lead", "dev", "qa", "plan-review", "code-review"];
+pub const VALID_ROLES: [&str; 7] = [
+    "lead",
+    "dev",
+    "qa",
+    "plan-review",
+    "code-review",
+    "analyst",
+    "analysis-review",
+];
 
 pub fn valid_name(s: &str) -> bool {
     if s.is_empty() || s.len() > 64 {
@@ -377,6 +385,8 @@ pub fn base_prompt_for(role: &str) -> Result<&'static str, String> {
         "qa" => Ok(crate::roles::prompt_for(crate::roles::Role::Qa)),
         "plan-review" => Ok(crate::roles::prompt_for(crate::roles::Role::PlanReview)),
         "code-review" => Ok(crate::roles::prompt_for(crate::roles::Role::CodeReview)),
+        "analyst" => Ok(crate::roles::prompt_for(crate::roles::Role::Analyst)),
+        "analysis-review" => Ok(crate::roles::prompt_for(crate::roles::Role::AnalysisReview)),
         _ => Err(format!(
             "Vai '{role}' không hợp lệ (phải là một trong: {})",
             VALID_ROLES.join(", ")

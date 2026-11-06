@@ -16,15 +16,23 @@ pub const STAGES: [&str; 7] = [
 pub const DEFAULT_WORKFLOW: &str = "mac-dinh";
 pub const MAX_FILE_BYTES: u64 = 262_144;
 
+fn default_workflow_kind() -> String {
+    "code".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Workflow {
     pub name: String,
+    #[serde(default = "default_workflow_kind")]
+    pub kind: String,
     pub stages: Vec<String>,
     pub loops: Vec<String>,
     pub max_rounds: u32,
     pub budget_minutes: u32,
     pub budget_usd: f64,
     pub auto: bool,
+    #[serde(default)]
+    pub review: bool,
     pub source: String,
 }
 
@@ -38,6 +46,14 @@ impl Workflow {
     }
 
     pub fn summary(&self) -> String {
+        if self.kind == "analysis" {
+            return if self.review {
+                "phân tích ⇄ review".to_string()
+            } else {
+                "phân tích".to_string()
+            };
+        }
+
         let mut parts = Vec::new();
         let mut skip_plan_review = false;
         let mut skip_code_review = false;
@@ -116,6 +132,14 @@ impl Workflow {
     /// so `validate_entry` reads it back to the same workflow. A whole `budget_usd` is
     /// written as an integer.
     pub fn to_file_entry(&self) -> serde_json::Value {
+        if self.kind == "analysis" {
+            let mut entry = serde_json::Map::new();
+            entry.insert("kind".to_string(), serde_json::Value::String(self.kind.clone()));
+            entry.insert("review".to_string(), serde_json::Value::Bool(self.review));
+            entry.insert("auto".to_string(), serde_json::Value::Bool(self.auto));
+            return serde_json::Value::Object(entry);
+        }
+
         let mut loops = serde_json::Map::new();
         if self.has_loop("plan") {
             loops.insert("plan".to_string(), "plan-review".into());
@@ -511,7 +535,9 @@ pub fn validate_entry(
     };
 
     for (k, _) in obj {
-        if k != "stages"
+        if k != "kind"
+            && k != "review"
+            && k != "stages"
             && k != "loops"
             && k != "max_rounds"
             && k != "budget_minutes"
@@ -528,184 +554,268 @@ pub fn validate_entry(
         }
     }
 
-    let stages_line = lines
-        .get(&format!("{name}/stages"))
-        .copied()
-        .unwrap_or(entry_line);
-    let stages_val = obj.get("stages");
-    let mut stages: Vec<String> = Vec::new();
-
-    let stages_ok = match stages_val {
-        Some(serde_json::Value::Array(arr)) if !arr.is_empty() => {
-            let all_strings = arr.iter().all(|v| v.is_string());
-            if all_strings {
-                stages = arr
-                    .iter()
-                    .map(|v| v.as_str().unwrap().to_string())
-                    .collect();
-                true
+    let kind_val = obj.get("kind");
+    let kind = match kind_val {
+        Some(serde_json::Value::String(s)) => {
+            if s == "code" || s == "analysis" {
+                s.clone()
             } else {
-                false
+                let l = lines
+                    .get(&format!("{name}/kind"))
+                    .copied()
+                    .unwrap_or(entry_line);
+                entry_errors.push(format!(
+                    "Dòng {l}: quy trình \"{name}\": \"kind\" chỉ nhận \"code\" hoặc \"analysis\"."
+                ));
+                "code".to_string()
             }
         }
-        _ => false,
+        Some(_) => {
+            let l = lines
+                .get(&format!("{name}/kind"))
+                .copied()
+                .unwrap_or(entry_line);
+            entry_errors.push(format!(
+                "Dòng {l}: quy trình \"{name}\": \"kind\" chỉ nhận \"code\" hoặc \"analysis\"."
+            ));
+            "code".to_string()
+        }
+        None => "code".to_string(),
     };
 
-    if !stages_ok {
-        entry_errors.push(format!(
-            "Dòng {stages_line}: quy trình \"{name}\" thiếu \"stages\" (danh sách giai đoạn)."
-        ));
-    } else {
-        let mut seen = std::collections::HashSet::new();
-        let mut last_canonical_idx = 0;
-        let mut first = true;
-
-        for (i, tok) in stages.iter().enumerate() {
-            let elem_line = lines
-                .get(&format!("{name}/stages/{i}"))
+    let review_val = obj.get("review");
+    let review = match review_val {
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(_) => {
+            let l = lines
+                .get(&format!("{name}/review"))
                 .copied()
-                .unwrap_or(stages_line);
+                .unwrap_or(entry_line);
+            entry_errors.push(format!(
+                "Dòng {l}: quy trình \"{name}\": \"review\" phải là true hoặc false."
+            ));
+            false
+        }
+        None => false,
+    };
 
-            if !STAGES.contains(&tok.as_str()) {
+    let (stages, loops) = if kind == "analysis" {
+        if let Some(stages_val) = obj.get("stages") {
+            let invalid = match stages_val {
+                serde_json::Value::Array(arr) => !arr.is_empty(),
+                _ => true,
+            };
+            if invalid {
+                let stages_line = lines
+                    .get(&format!("{name}/stages"))
+                    .copied()
+                    .unwrap_or(entry_line);
                 entry_errors.push(format!(
-                    "Dòng {elem_line}: quy trình \"{name}\": giai đoạn \"{tok}\" không hợp lệ (dùng: plan, plan-review, gate:you, implement, code-review, qa, fix)."
+                    "Dòng {stages_line}: quy trình \"{name}\": quy trình phân tích không được có \"stages\" (phải để trống hoặc không khai báo)."
                 ));
-            } else {
-                if seen.contains(tok) {
-                    entry_errors.push(format!(
-                        "Dòng {elem_line}: quy trình \"{name}\": giai đoạn \"{tok}\" bị lặp."
-                    ));
-                } else {
-                    seen.insert(tok.clone());
-                }
+            }
+        }
+        if obj.contains_key("loops") {
+            let loops_line = lines
+                .get(&format!("{name}/loops"))
+                .copied()
+                .unwrap_or(entry_line);
+            entry_errors.push(format!(
+                "Dòng {loops_line}: quy trình \"{name}\": quy trình phân tích không được có khóa \"loops\"."
+            ));
+        }
+        (Vec::new(), Vec::new())
+    } else {
+        if obj.contains_key("review") {
+            let review_line = lines
+                .get(&format!("{name}/review"))
+                .copied()
+                .unwrap_or(entry_line);
+            entry_errors.push(format!(
+                "Dòng {review_line}: quy trình \"{name}\": quy trình code không được có khóa \"review\"."
+            ));
+        }
 
-                let canon_idx = STAGES.iter().position(|&s| s == tok.as_str()).unwrap();
-                if first {
-                    last_canonical_idx = canon_idx;
-                    first = false;
-                } else if canon_idx < last_canonical_idx {
+        let stages_line = lines
+            .get(&format!("{name}/stages"))
+            .copied()
+            .unwrap_or(entry_line);
+        let stages_val = obj.get("stages");
+        let mut stages: Vec<String> = Vec::new();
+
+        let stages_ok = match stages_val {
+            Some(serde_json::Value::Array(arr)) if !arr.is_empty() => {
+                let all_strings = arr.iter().all(|v| v.is_string());
+                if all_strings {
+                    stages = arr
+                        .iter()
+                        .map(|v| v.as_str().unwrap().to_string())
+                        .collect();
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+
+        if !stages_ok {
+            entry_errors.push(format!(
+                "Dòng {stages_line}: quy trình \"{name}\" thiếu \"stages\" (danh sách giai đoạn)."
+            ));
+        } else {
+            let mut seen = std::collections::HashSet::new();
+            let mut last_canonical_idx = 0;
+            let mut first = true;
+
+            for (i, tok) in stages.iter().enumerate() {
+                let elem_line = lines
+                    .get(&format!("{name}/stages/{i}"))
+                    .copied()
+                    .unwrap_or(stages_line);
+
+                if !STAGES.contains(&tok.as_str()) {
                     entry_errors.push(format!(
-                        "Dòng {elem_line}: quy trình \"{name}\": giai đoạn \"{tok}\" sai thứ tự (đúng: plan → plan-review → gate:you → implement → code-review → qa → fix)."
+                        "Dòng {elem_line}: quy trình \"{name}\": giai đoạn \"{tok}\" không hợp lệ (dùng: plan, plan-review, gate:you, implement, code-review, qa, fix)."
                     ));
                 } else {
-                    last_canonical_idx = canon_idx;
+                    if seen.contains(tok) {
+                        entry_errors.push(format!(
+                            "Dòng {elem_line}: quy trình \"{name}\": giai đoạn \"{tok}\" bị lặp."
+                        ));
+                    } else {
+                        seen.insert(tok.clone());
+                    }
+
+                    let canon_idx = STAGES.iter().position(|&s| s == tok.as_str()).unwrap();
+                    if first {
+                        last_canonical_idx = canon_idx;
+                        first = false;
+                    } else if canon_idx < last_canonical_idx {
+                        entry_errors.push(format!(
+                            "Dòng {elem_line}: quy trình \"{name}\": giai đoạn \"{tok}\" sai thứ tự (đúng: plan → plan-review → gate:you → implement → code-review → qa → fix)."
+                        ));
+                    } else {
+                        last_canonical_idx = canon_idx;
+                    }
                 }
+            }
+
+            let has_plan = stages.iter().any(|s| s == "plan");
+            let has_plan_or_review = stages.iter().any(|s| s == "plan" || s == "plan-review");
+            let has_later = stages
+                .iter()
+                .any(|s| s == "implement" || s == "code-review" || s == "qa" || s == "fix");
+            let has_gate = stages.iter().any(|s| s == "gate:you");
+
+            if has_plan_or_review && has_later && !has_gate {
+                entry_errors.push(format!(
+                    "Dòng {stages_line}: quy trình \"{name}\" phải có \"gate:you\" giữa bước plan và bước code/QA — autopilot luôn dừng ở bước bạn duyệt plan."
+                ));
+            }
+
+            if has_gate && !has_plan {
+                let gate_i = stages.iter().position(|s| s == "gate:you").unwrap();
+                let gate_line = lines
+                    .get(&format!("{name}/stages/{gate_i}"))
+                    .copied()
+                    .unwrap_or(stages_line);
+                entry_errors.push(format!(
+                    "Dòng {gate_line}: quy trình \"{name}\": \"gate:you\" cần có \"plan\" trước đó."
+                ));
+            }
+
+            let has_qa = stages.iter().any(|s| s == "qa");
+            let has_fix = stages.iter().any(|s| s == "fix");
+            if has_fix && !has_qa {
+                let fix_i = stages.iter().position(|s| s == "fix").unwrap();
+                let fix_line = lines
+                    .get(&format!("{name}/stages/{fix_i}"))
+                    .copied()
+                    .unwrap_or(stages_line);
+                entry_errors.push(format!(
+                    "Dòng {fix_line}: quy trình \"{name}\": \"fix\" cần có \"qa\"."
+                ));
             }
         }
 
-        let has_plan = stages.iter().any(|s| s == "plan");
-        let has_plan_or_review = stages.iter().any(|s| s == "plan" || s == "plan-review");
-        let has_later = stages
-            .iter()
-            .any(|s| s == "implement" || s == "code-review" || s == "qa" || s == "fix");
-        let has_gate = stages.iter().any(|s| s == "gate:you");
-
-        if has_plan_or_review && has_later && !has_gate {
-            entry_errors.push(format!(
-                "Dòng {stages_line}: quy trình \"{name}\" phải có \"gate:you\" giữa bước plan và bước code/QA — autopilot luôn dừng ở bước bạn duyệt plan."
-            ));
-        }
-
-        if has_gate && !has_plan {
-            let gate_i = stages.iter().position(|s| s == "gate:you").unwrap();
-            let gate_line = lines
-                .get(&format!("{name}/stages/{gate_i}"))
+        let mut loops = Vec::new();
+        if let Some(loops_val) = obj.get("loops") {
+            let loops_line = lines
+                .get(&format!("{name}/loops"))
                 .copied()
-                .unwrap_or(stages_line);
-            entry_errors.push(format!(
-                "Dòng {gate_line}: quy trình \"{name}\": \"gate:you\" cần có \"plan\" trước đó."
-            ));
-        }
+                .unwrap_or(entry_line);
+            let mut loops_err = false;
 
-        let has_qa = stages.iter().any(|s| s == "qa");
-        let has_fix = stages.iter().any(|s| s == "fix");
-        if has_fix && !has_qa {
-            let fix_i = stages.iter().position(|s| s == "fix").unwrap();
-            let fix_line = lines
-                .get(&format!("{name}/stages/{fix_i}"))
-                .copied()
-                .unwrap_or(stages_line);
-            entry_errors.push(format!(
-                "Dòng {fix_line}: quy trình \"{name}\": \"fix\" cần có \"qa\"."
-            ));
-        }
-    }
+            match loops_val.as_object() {
+                Some(lobj) => {
+                    let has_stage = |s: &str| stages.iter().any(|st| st == s);
 
-    let mut loops = Vec::new();
-    if let Some(loops_val) = obj.get("loops") {
-        let loops_line = lines
-            .get(&format!("{name}/loops"))
-            .copied()
-            .unwrap_or(entry_line);
-        let mut loops_err = false;
-
-        match loops_val.as_object() {
-            Some(lobj) => {
-                let has_stage = |s: &str| stages.iter().any(|st| st == s);
-
-                for (k, v) in lobj {
-                    match k.as_str() {
-                        "plan" => {
-                            if v.as_str() != Some("plan-review")
-                                || !has_stage("plan")
-                                || !has_stage("plan-review")
-                            {
+                    for (k, v) in lobj {
+                        match k.as_str() {
+                            "plan" => {
+                                if v.as_str() != Some("plan-review")
+                                    || !has_stage("plan")
+                                    || !has_stage("plan-review")
+                                {
+                                    loops_err = true;
+                                }
+                            }
+                            "implement" => {
+                                if v.as_str() != Some("code-review")
+                                    || !has_stage("implement")
+                                    || !has_stage("code-review")
+                                {
+                                    loops_err = true;
+                                }
+                            }
+                            "qa" => {
+                                if v.as_str() != Some("fix") || !has_stage("qa") || !has_stage("fix") {
+                                    loops_err = true;
+                                }
+                            }
+                            _ => {
                                 loops_err = true;
                             }
                         }
-                        "implement" => {
-                            if v.as_str() != Some("code-review")
-                                || !has_stage("implement")
-                                || !has_stage("code-review")
-                            {
-                                loops_err = true;
-                            }
+                    }
+
+                    if loops_err {
+                        entry_errors.push(format!(
+                            "Dòng {loops_line}: quy trình \"{name}\": \"loops\" chỉ nhận \"plan\": \"plan-review\", \"implement\": \"code-review\", \"qa\": \"fix\" và cả hai giai đoạn phải có trong \"stages\"."
+                        ));
+                    } else {
+                        if lobj.get("plan").and_then(|v| v.as_str()) == Some("plan-review") {
+                            loops.push("plan".to_string());
                         }
-                        "qa" => {
-                            if v.as_str() != Some("fix") || !has_stage("qa") || !has_stage("fix") {
-                                loops_err = true;
-                            }
+                        if lobj.get("implement").and_then(|v| v.as_str()) == Some("code-review") {
+                            loops.push("build".to_string());
                         }
-                        _ => {
-                            loops_err = true;
+                        if lobj.get("qa").and_then(|v| v.as_str()) == Some("fix") {
+                            loops.push("qa".to_string());
                         }
                     }
                 }
-
-                if loops_err {
+                None => {
                     entry_errors.push(format!(
                         "Dòng {loops_line}: quy trình \"{name}\": \"loops\" chỉ nhận \"plan\": \"plan-review\", \"implement\": \"code-review\", \"qa\": \"fix\" và cả hai giai đoạn phải có trong \"stages\"."
                     ));
-                } else {
-                    if lobj.get("plan").and_then(|v| v.as_str()) == Some("plan-review") {
-                        loops.push("plan".to_string());
-                    }
-                    if lobj.get("implement").and_then(|v| v.as_str()) == Some("code-review") {
-                        loops.push("build".to_string());
-                    }
-                    if lobj.get("qa").and_then(|v| v.as_str()) == Some("fix") {
-                        loops.push("qa".to_string());
-                    }
                 }
             }
-            None => {
-                entry_errors.push(format!(
-                    "Dòng {loops_line}: quy trình \"{name}\": \"loops\" chỉ nhận \"plan\": \"plan-review\", \"implement\": \"code-review\", \"qa\": \"fix\" và cả hai giai đoạn phải có trong \"stages\"."
-                ));
+        } else {
+            let has_stage = |s: &str| stages.iter().any(|st| st == s);
+            if has_stage("plan") && has_stage("plan-review") {
+                loops.push("plan".to_string());
+            }
+            if has_stage("implement") && has_stage("code-review") {
+                loops.push("build".to_string());
+            }
+            if has_stage("qa") && has_stage("fix") {
+                loops.push("qa".to_string());
             }
         }
-    } else {
-        let has_stage = |s: &str| stages.iter().any(|st| st == s);
-        if has_stage("plan") && has_stage("plan-review") {
-            loops.push("plan".to_string());
-        }
-        if has_stage("implement") && has_stage("code-review") {
-            loops.push("build".to_string());
-        }
-        if has_stage("qa") && has_stage("fix") {
-            loops.push("qa".to_string());
-        }
-    }
+        (stages, loops)
+    };
 
     let max_rounds = if let Some(v) = obj.get("max_rounds") {
         let l = lines
@@ -767,7 +877,14 @@ pub fn validate_entry(
             .copied()
             .unwrap_or(entry_line);
         match v.as_bool() {
-            Some(b) => b,
+            Some(b) => {
+                if kind == "analysis" && b {
+                    entry_errors.push(format!(
+                        "Dòng {l}: quy trình \"{name}\": quy trình phân tích không hỗ trợ \"auto\": true (phải là false)."
+                    ));
+                }
+                b
+            }
             None => {
                 entry_errors.push(format!("Dòng {l}: \"auto\" phải là true hoặc false."));
                 false
@@ -783,12 +900,14 @@ pub fn validate_entry(
 
     Ok(Workflow {
         name: name.to_string(),
+        kind,
         stages,
         loops,
         max_rounds,
         budget_minutes,
         budget_usd,
         auto,
+        review,
         source: source.to_string(),
     })
 }
@@ -919,21 +1038,28 @@ mod tests {
     fn to_file_entry_round_trips() {
         let cfg = test_cfg();
         let loaded = load_from(None, &cfg);
-        assert_eq!(loaded.names(), vec!["mac-dinh", "nhanh"]);
+        assert_eq!(
+            loaded.names(),
+            vec!["mac-dinh", "nhanh", "phan-tich", "phan-tich-review"]
+        );
         for wf in &loaded.workflows {
             let entry = wf.to_file_entry();
             let keys: Vec<&String> = entry.as_object().unwrap().keys().collect();
-            assert_eq!(
-                keys,
-                [
-                    "stages",
-                    "loops",
-                    "auto",
-                    "max_rounds",
-                    "budget_minutes",
-                    "budget_usd"
-                ]
-            );
+            if wf.kind == "analysis" {
+                assert_eq!(keys, ["kind", "review", "auto"]);
+            } else {
+                assert_eq!(
+                    keys,
+                    [
+                        "stages",
+                        "loops",
+                        "auto",
+                        "max_rounds",
+                        "budget_minutes",
+                        "budget_usd"
+                    ]
+                );
+            }
             let back = validate_entry(&wf.name, &entry, &BTreeMap::new(), &cfg, &wf.source)
                 .unwrap_or_else(|e| panic!("{}: {e:?}", wf.name));
             assert_eq!(&back, wf);
@@ -953,6 +1079,7 @@ mod tests {
         // A fractional budget and a partial loop set survive the round trip.
         let wf = Workflow {
             name: "le".to_string(),
+            kind: "code".to_string(),
             stages: ["plan", "plan-review", "gate:you", "implement"]
                 .iter()
                 .map(|s| s.to_string())
@@ -962,6 +1089,7 @@ mod tests {
             budget_minutes: 15,
             budget_usd: 7.5,
             auto: true,
+            review: false,
             source: "file".to_string(),
         };
         let entry = wf.to_file_entry();
@@ -975,7 +1103,10 @@ mod tests {
     fn test_builtins_only() {
         let cfg = test_cfg();
         let loaded = load_from(None, &cfg);
-        assert_eq!(loaded.names(), vec!["mac-dinh", "nhanh"]);
+        assert_eq!(
+            loaded.names(),
+            vec!["mac-dinh", "nhanh", "phan-tich", "phan-tich-review"]
+        );
         assert!(loaded.errors.is_empty());
 
         let mac = loaded.get("mac-dinh").unwrap();
@@ -995,6 +1126,20 @@ mod tests {
         assert_eq!(nhanh.max_rounds, 3);
         assert_eq!(nhanh.budget_minutes, 60);
         assert_eq!(nhanh.budget_usd, 20.0);
+
+        let pt = loaded.get("phan-tich").unwrap();
+        assert_eq!(pt.kind, "analysis");
+        assert!(!pt.review);
+        assert!(!pt.auto);
+        assert!(pt.stages.is_empty());
+        assert!(pt.loops.is_empty());
+
+        let ptr = loaded.get("phan-tich-review").unwrap();
+        assert_eq!(ptr.kind, "analysis");
+        assert!(ptr.review);
+        assert!(!ptr.auto);
+        assert!(ptr.stages.is_empty());
+        assert!(ptr.loops.is_empty());
     }
 
     #[test]
@@ -1025,20 +1170,29 @@ mod tests {
         let nhanh = loaded.get("nhanh").unwrap();
         assert_eq!(nhanh.summary(), "plan → Bạn → code → QA");
 
+        let pt = loaded.get("phan-tich").unwrap();
+        assert_eq!(pt.summary(), "phân tích");
+
+        let ptr = loaded.get("phan-tich-review").unwrap();
+        assert_eq!(ptr.summary(), "phân tích ⇄ review");
+
         let lone = Workflow {
             name: "lone".to_string(),
+            kind: "code".to_string(),
             stages: vec!["code-review".to_string()],
             loops: vec![],
             max_rounds: 3,
             budget_minutes: 60,
             budget_usd: 20.0,
             auto: false,
+            review: false,
             source: "builtin".to_string(),
         };
         assert_eq!(lone.summary(), "review code");
 
         let custom = Workflow {
             name: "custom".to_string(),
+            kind: "code".to_string(),
             stages: vec![
                 "plan".to_string(),
                 "plan-review".to_string(),
@@ -1049,6 +1203,7 @@ mod tests {
             budget_minutes: 60,
             budget_usd: 20.0,
             auto: false,
+            review: false,
             source: "builtin".to_string(),
         };
         assert_eq!(custom.summary(), "plan → review plan → Bạn");
@@ -1098,7 +1253,7 @@ mod tests {
         let err = resolve(&loaded, Some("khong-co"), None).unwrap_err();
         assert!(err
             .to_string()
-            .starts_with("Không có quy trình 'khong-co' — các quy trình có: mac-dinh, nhanh"));
+            .starts_with("Không có quy trình 'khong-co' — các quy trình có: mac-dinh, nhanh, phan-tich, phan-tich-review"));
 
         let err = resolve(&loaded, Some("Bad Name"), None).unwrap_err();
         assert_eq!(err.to_string(), "Tên quy trình 'Bad Name' không hợp lệ");
@@ -1108,7 +1263,7 @@ mod tests {
     fn test_snapshot_round_trip() {
         let cfg = test_cfg();
         let loaded = load_from(None, &cfg);
-        for name in &["mac-dinh", "nhanh"] {
+        for name in &["mac-dinh", "nhanh", "phan-tich", "phan-tich-review"] {
             let wf = loaded.get(name).unwrap();
             let snap = wf.to_snapshot();
             let round_trip = Workflow::from_snapshot(&snap);
@@ -1142,7 +1297,10 @@ mod tests {
   }
 }"#;
         let loaded = load_from(Some(json), &cfg);
-        assert_eq!(loaded.names(), vec!["mac-dinh", "nhanh", "chi-phi-thap"]);
+        assert_eq!(
+            loaded.names(),
+            vec!["mac-dinh", "nhanh", "phan-tich", "phan-tich-review", "chi-phi-thap"]
+        );
         assert!(loaded.errors.is_empty());
 
         let cpt = loaded.get("chi-phi-thap").unwrap();
@@ -1164,7 +1322,10 @@ mod tests {
   }
 }"#;
         let loaded = load_from(Some(json), &cfg);
-        assert_eq!(loaded.names(), vec!["mac-dinh", "nhanh"]);
+        assert_eq!(
+            loaded.names(),
+            vec!["mac-dinh", "nhanh", "phan-tich", "phan-tich-review"]
+        );
         assert!(loaded.errors.is_empty());
 
         let nhanh = loaded.get("nhanh").unwrap();
@@ -1182,7 +1343,10 @@ mod tests {
   }
 }"#;
         let loaded = load_from(Some(json), &cfg);
-        assert_eq!(loaded.names(), vec!["mac-dinh", "nhanh"]);
+        assert_eq!(
+            loaded.names(),
+            vec!["mac-dinh", "nhanh", "phan-tich", "phan-tich-review"]
+        );
         assert_eq!(loaded.errors.len(), 1);
         assert!(loaded.errors[0].contains(
             "quy trình \"mac-dinh\" phải có \"gate:you\" giữa bước plan và bước code/QA"
@@ -1200,7 +1364,10 @@ mod tests {
         let expected_err = serde_json::from_str::<serde_json::Value>(text).unwrap_err();
         let loaded = load_from(Some(text), &cfg);
 
-        assert_eq!(loaded.names(), vec!["mac-dinh", "nhanh"]);
+        assert_eq!(
+            loaded.names(),
+            vec!["mac-dinh", "nhanh", "phan-tich", "phan-tich-review"]
+        );
         assert_eq!(loaded.errors.len(), 1);
         let expected_msg = format!(
             "Dòng {}, cột {}: workflows.json không phải JSON hợp lệ.",
@@ -1216,7 +1383,10 @@ mod tests {
         let text = "{\n  \"valid\": {\n    \"stages\": [\"plan\", \"gate:you\", \"implement\", \"qa\"]\n  },\n  \"x\": {\n    \"stages\": [\n      \"plan\",\n      \"gate:you\",\n      \"implement\",\n      \"qa\"\n    ],\n    \"max_rounds\": 0,\n    \"auto\": false\n  }\n}";
         let loaded = load_from(Some(text), &cfg);
 
-        assert_eq!(loaded.names(), vec!["mac-dinh", "nhanh", "valid"]);
+        assert_eq!(
+            loaded.names(),
+            vec!["mac-dinh", "nhanh", "phan-tich", "phan-tich-review", "valid"]
+        );
         assert_eq!(loaded.errors.len(), 1);
         assert_eq!(
             loaded.errors[0],
@@ -1232,7 +1402,10 @@ mod tests {
         let text = "{\n  \"y\": {\n    \"stages\": [\"plan\", \"gate:you\", \"implement\", \"qa\"],\n    \"skip_gate\": true\n  }\n}";
         let loaded = load_from(Some(text), &cfg);
 
-        assert_eq!(loaded.names(), vec!["mac-dinh", "nhanh"]);
+        assert_eq!(
+            loaded.names(),
+            vec!["mac-dinh", "nhanh", "phan-tich", "phan-tich-review"]
+        );
         assert_eq!(loaded.errors.len(), 1);
         assert_eq!(
             loaded.errors[0],
@@ -1389,11 +1562,91 @@ mod tests {
         std::fs::write(&file_path, content).unwrap();
 
         let loaded = load_path(&file_path, &cfg);
-        assert_eq!(loaded.names(), vec!["mac-dinh", "nhanh"]);
+        assert_eq!(
+            loaded.names(),
+            vec!["mac-dinh", "nhanh", "phan-tich", "phan-tich-review"]
+        );
         assert_eq!(
             loaded.errors,
             vec!["workflows.json lớn quá 256 KiB — bỏ qua file.".to_string()]
         );
+    }
+
+    #[test]
+    fn test_analysis_workflow_rules() {
+        let cfg = test_cfg();
+
+        // 1. Valid analysis workflow
+        let text1 = r#"{
+  "my-analysis": {
+    "kind": "analysis",
+    "review": true,
+    "auto": false
+  }
+}"#;
+        let loaded1 = load_from(Some(text1), &cfg);
+        assert!(loaded1.errors.is_empty());
+        let wf1 = loaded1.get("my-analysis").unwrap();
+        assert_eq!(wf1.kind, "analysis");
+        assert!(wf1.review);
+        assert!(!wf1.auto);
+        assert!(wf1.stages.is_empty());
+        assert!(wf1.loops.is_empty());
+        assert_eq!(wf1.summary(), "phân tích ⇄ review");
+
+        // 2. Analysis workflow with non-empty stages -> error
+        let text2 = r#"{
+  "err-stages": {
+    "kind": "analysis",
+    "stages": ["plan"]
+  }
+}"#;
+        let loaded2 = load_from(Some(text2), &cfg);
+        assert!(loaded2.get("err-stages").is_none());
+        assert!(loaded2.errors.iter().any(|e| e.contains("quy trình phân tích không được có \"stages\"")));
+
+        // 3. Analysis workflow with loops -> error
+        let text3 = r#"{
+  "err-loops": {
+    "kind": "analysis",
+    "loops": {}
+  }
+}"#;
+        let loaded3 = load_from(Some(text3), &cfg);
+        assert!(loaded3.get("err-loops").is_none());
+        assert!(loaded3.errors.iter().any(|e| e.contains("quy trình phân tích không được có khóa \"loops\"")));
+
+        // 4. Analysis workflow with auto: true -> error
+        let text4 = r#"{
+  "err-auto": {
+    "kind": "analysis",
+    "auto": true
+  }
+}"#;
+        let loaded4 = load_from(Some(text4), &cfg);
+        assert!(loaded4.get("err-auto").is_none());
+        assert!(loaded4.errors.iter().any(|e| e.contains("quy trình phân tích không hỗ trợ \"auto\": true (phải là false)")));
+
+        // 5. Code workflow with review -> error
+        let text5 = r#"{
+  "err-review": {
+    "stages": ["plan", "gate:you", "implement", "qa"],
+    "review": true
+  }
+}"#;
+        let loaded5 = load_from(Some(text5), &cfg);
+        assert!(loaded5.get("err-review").is_none());
+        assert!(loaded5.errors.iter().any(|e| e.contains("quy trình code không được có khóa \"review\"")));
+
+        // 6. Invalid kind -> error
+        let text6 = r#"{
+  "err-kind": {
+    "kind": "other"
+  }
+}"#;
+        let loaded6 = load_from(Some(text6), &cfg);
+        assert!(loaded6.get("err-kind").is_none());
+        assert!(loaded6.errors.iter().any(|e| e.contains("\"kind\" chỉ nhận \"code\" hoặc \"analysis\"")));
     }
 
     #[test]

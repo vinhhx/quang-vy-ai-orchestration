@@ -1371,6 +1371,28 @@ fn rule_d9_budget(candidate: StageRun, f: &Facts) -> Decision {
 
 /// Quyết định hành động tiếp theo của autopilot (D1 .. D9).
 pub fn decide(wf: &Workflow, f: &Facts) -> Decision {
+    if wf.kind == "analysis" {
+        return Decision::Stop(StopInfo {
+            reason: StopReason::DungBoiBan,
+            loop_name: None,
+            stage: None,
+            round: None,
+            cap: None,
+            run_id: None,
+            role: None,
+            at_ms: f.now_ms,
+            detail_line: Some(format!(
+                "Quy trình \"{}\" là loại phân tích, không hỗ trợ chạy autopilot.",
+                wf.name
+            )),
+            used_ms: None,
+            used_usd: None,
+            estimated: None,
+            limit_minutes: None,
+            limit_usd: None,
+        });
+    }
+
     let eff_rounds = effective_rounds(&f.runs);
     let cycs = cycles(&f.runs);
     let current_cycle = cycs.last().copied().unwrap_or(1);
@@ -2574,12 +2596,14 @@ mod tests {
         // Workflow {stages ["code-review"], loops []} approved → Run(CodeReview, 1), revise → Stop{HetVong, Build, 1, 1}
         let o4_wf = Workflow {
             name: "o4-test".to_string(),
+            kind: "code".to_string(),
             stages: vec!["code-review".to_string()],
             loops: vec![],
             max_rounds: 3,
             budget_minutes: 60,
             budget_usd: 20.0,
             auto: false,
+            review: false,
             source: "test".to_string(),
         };
         let f_o4_1 = build_facts(
@@ -2648,6 +2672,7 @@ mod tests {
     fn gate_has_priority_over_build() {
         let custom_wf = Workflow {
             name: "no-gate-token".to_string(),
+            kind: "code".to_string(),
             stages: vec![
                 "plan".to_string(),
                 "implement".to_string(),
@@ -2658,6 +2683,7 @@ mod tests {
             budget_minutes: 60,
             budget_usd: 20.0,
             auto: false,
+            review: false,
             source: "test".to_string(),
         };
         let pricing = crate::config::default_pricing();

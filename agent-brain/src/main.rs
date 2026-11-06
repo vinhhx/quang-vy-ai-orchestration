@@ -25,7 +25,7 @@ enum Commands {
         #[command(subcommand)]
         subcommand: ProjectsCommands,
     },
-    /// Chạy tác vụ theo vai trò (lead, dev, qa, plan-review, code-review)
+    /// Chạy tác vụ theo vai trò (lead, dev, qa, plan-review, code-review, analyst)
     Run {
         /// Vai trò thực thi
         role: roles::Role,

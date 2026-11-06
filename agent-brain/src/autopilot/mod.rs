@@ -607,6 +607,12 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
             opts.workflow.as_deref(),
             crate::projects::workflow_of(&ctx.map, &project.id).as_deref(),
         )?;
+        if resolved.workflow.kind == "analysis" {
+            return Err(BrainError::error(format!(
+                "Quy trình \"{}\" là loại phân tích, không hỗ trợ chạy autopilot.",
+                resolved.workflow.name
+            )));
+        }
         if let Some(ref n) = resolved.note {
             crate::term::emit(n);
         }
