@@ -12,6 +12,13 @@ Rules và skill gắn theo phòng chứ không theo người. Lý do: điểm c�
 
 ## Thay đổi
 
+### 0. Sửa sau review plan core (làm trước, commit riêng `fix(agent-brain): department pick fallbacks`)
+- `engine::resolve_for_run_with`: khi `cfg` là `None` và `config::load_config()` lỗi thì **không chọn thành viên** (`member: None`, giữ `team.engine_for`). Bỏ đoạn dựng config giả (`"models": {"lead": "opus", …}`). Lỗi của `departments::pick` cũng in một dòng cảnh báo qua `crate::term::emit` thay vì im lặng.
+- `telegram/intake.rs` (chỗ `f.default_team = … unwrap_or_else(|| DEFAULT_TEAM)`): dùng `teams::default_team_name()`, để `/task` trên Telegram mặc định chọn `phong-ban` khi có thành viên. Các chỗ `DEFAULT_TEAM` ở `api_tasks.rs` (`current_team_name`, `team_view`) mô tả task cũ nên giữ nguyên.
+- Test:
+  - `resolve_for_run` với config lỗi → không có `member`;
+  - Telegram có `departments.json` có thành viên → nút đội hình mặc định là `phong-ban`.
+
 ### 1. Lớp ghi chú `departments` (`src/prompts.rs`)
 - Thêm `"departments"` vào `LAYERS`. Tên trong lớp này phải là id phòng (`departments::DEPARTMENTS`), vai phải thuộc phòng đó (`dept_of_role`).
 - `compose_detailed_with_reader` đọc lớp này **tự động từ vai** (không thêm trường vào `PromptLayers`, để khỏi sửa 12 chỗ dựng struct). Ghép sau lớp `teams`, block có tiêu đề `### Phòng: <tên hiển thị>`. Vai không thuộc phòng nào thì bỏ qua.
@@ -107,7 +114,7 @@ spikes/lib/scan-secrets.sh
 ```
 
 ## Commit
-Hai commit:
+Ba commit: commit của mục 0 trước, rồi hai commit:
 1. `feat(agent-brain): department rules and skills, member rules in the run prompt`: mục 1–5 và test.
 2. `feat(dashboard): department rules, skills and member prompt preview`: mục 6 và test.
 
