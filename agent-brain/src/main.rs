@@ -208,7 +208,7 @@ enum FixbugCommands {
         #[arg(long, required = true)]
         reason: String,
     },
-    /// Khởi tạo cấu hình .agent-brain/fixbugs.json
+    /// Khởi tạo cấu hình fixbugs.json trong thư mục tri thức của dự án
     Init {
         /// Tên, id hoặc alias dự án
         project: String,

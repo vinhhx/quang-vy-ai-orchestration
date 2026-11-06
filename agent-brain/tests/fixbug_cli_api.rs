@@ -44,8 +44,8 @@ fn write_mock_trello_config_and_env(
     fixed_list: &str,
     rejected_list: &str,
 ) {
-    let ab_dir = root.join(".agent-brain");
-    std::fs::create_dir_all(&ab_dir).unwrap();
+    let cfg_path = agent_brain::fixbug::config::config_path(root);
+    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
     let cfg = json!({
         "sources": [
             {
@@ -60,7 +60,7 @@ fn write_mock_trello_config_and_env(
             }
         ]
     });
-    std::fs::write(ab_dir.join("fixbugs.json"), cfg.to_string()).unwrap();
+    std::fs::write(&cfg_path, cfg.to_string()).unwrap();
 
     let env_content = format!(
         "TRELLO_API_KEY=mock_key_123\nTRELLO_TOKEN=mock_token_456\nTRELLO_BOARD_ID={board_id}\n"
@@ -258,8 +258,8 @@ fn test_writeback_gsheet_no_http() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
 
-    let ab_dir = root.join(".agent-brain");
-    std::fs::create_dir_all(&ab_dir).unwrap();
+    let cfg_path = agent_brain::fixbug::config::config_path(root);
+    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
     let cfg = json!({
         "sources": [
             {
@@ -268,7 +268,7 @@ fn test_writeback_gsheet_no_http() {
             }
         ]
     });
-    std::fs::write(ab_dir.join("fixbugs.json"), cfg.to_string()).unwrap();
+    std::fs::write(&cfg_path, cfg.to_string()).unwrap();
 
     let (mut conn, _proj) = setup_sandbox(root);
 
@@ -340,16 +340,38 @@ fn test_init_with_legacy_gsd_and_dryrun() {
     assert!(proposed.contains("\"HTML\""));
     assert!(proposed.contains("\"[fix-bugs]\""));
     assert!(proposed.contains("\"v1\""));
-    assert!(!root.join(".agent-brain/fixbugs.json").exists());
+    assert!(!root.join(".gsd/fix-bugs/fixbugs.json").exists());
 
-    // 2. Chạy thật: tạo file .agent-brain/fixbugs.json
+    // 2. Chạy thật: tạo file .gsd/fix-bugs/fixbugs.json và không đụng config.json cũ
     let created = init(root, false).expect("init write");
-    assert!(root.join(".agent-brain/fixbugs.json").is_file());
+    assert!(root.join(".gsd/fix-bugs/fixbugs.json").is_file());
+    assert!(root.join(".gsd/fix-bugs/config.json").is_file());
     assert_eq!(created, proposed);
 
     // 3. Chạy lại khi đã có file -> báo lỗi không ghi đè
     let err = init(root, false).unwrap_err();
     assert!(err.to_string().contains("đã tồn tại, không ghi đè"));
+}
+
+#[test]
+fn test_init_with_planning_only() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    let plan_dir = root.join(".planning");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+
+    let _ = init(root, false).expect("init planning");
+    assert!(root.join(".planning/fix-bugs/fixbugs.json").is_file());
+}
+
+#[test]
+fn test_init_empty_project_defaults_to_agent_brain() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    let _ = init(root, false).expect("init empty");
+    assert!(root.join(".agent-brain/fix-bugs/fixbugs.json").is_file());
 }
 
 fn http_request(
@@ -413,8 +435,8 @@ async fn test_fixbug_api_endpoints() {
     let (_conn, _project) = setup_sandbox(root);
 
     // Cấu hình fixbugs.json và .env.fixbugs
-    let ab_dir = root.join(".agent-brain");
-    std::fs::create_dir_all(&ab_dir).unwrap();
+    let cfg_path = agent_brain::fixbug::config::config_path(root);
+    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
     let cfg_json = json!({
         "sources": [
             {
@@ -423,7 +445,7 @@ async fn test_fixbug_api_endpoints() {
             }
         ]
     });
-    std::fs::write(ab_dir.join("fixbugs.json"), cfg_json.to_string()).unwrap();
+    std::fs::write(&cfg_path, cfg_json.to_string()).unwrap();
 
     // Ghi project map
     let map_path = root.join("projects_map.json");
@@ -470,6 +492,8 @@ async fn test_fixbug_api_endpoints() {
     let (code, body, raw_body) = http_request(port, "GET", "/api/fixbug/demo", Some(&token), None);
     assert_eq!(code, 200, "raw body: {raw_body}");
     assert_eq!(body["configured"], true);
+    assert_eq!(body["config_path"], ".agent-brain/fix-bugs/fixbugs.json");
+    assert_eq!(body["home"], "agent-brain");
     assert!(body["sources"].is_array());
     assert!(!raw_body.contains("TRELLO_TOKEN"));
     assert!(!raw_body.contains("TRELLO_API_KEY"));
@@ -570,6 +594,7 @@ fn test_cli_fixbug_commands() {
     // 2. cmd_init write -> 0
     let code = cmd_init(&ctx, "demo", false);
     assert_eq!(code, 0);
+    assert!(agent_brain::fixbug::config::config_path(root).is_file());
 
     // 3. cmd_check -> 0
     let code = cmd_check(&ctx, "demo");

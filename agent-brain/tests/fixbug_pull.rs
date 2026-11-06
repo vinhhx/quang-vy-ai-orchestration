@@ -61,9 +61,9 @@ fn test_gsheet_pull_with_fake() {
 
     fake.set_csv(csv);
 
-    // Tạo file cấu hình fixbugs.json trong sandbox
-    let ab_dir = temp.path().join(".agent-brain");
-    std::fs::create_dir_all(&ab_dir).unwrap();
+    // Tạo file cấu hình fixbugs.json trong thư mục tri thức
+    let cfg_path = agent_brain::fixbug::config::config_path(temp.path());
+    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
     let config_json = json!({
         "sources": [
             {
@@ -72,7 +72,7 @@ fn test_gsheet_pull_with_fake() {
             }
         ]
     });
-    std::fs::write(ab_dir.join("fixbugs.json"), config_json.to_string()).unwrap();
+    std::fs::write(&cfg_path, config_json.to_string()).unwrap();
 
     std::env::set_var("AGENT_BRAIN_GSHEET_BASE", fake.url());
 
@@ -188,9 +188,9 @@ fn test_trello_pull_with_fake() {
         }
     }));
 
-    // Tạo .agent-brain/fixbugs.json trong sandbox
-    let ab_dir = temp.path().join(".agent-brain");
-    std::fs::create_dir_all(&ab_dir).unwrap();
+    // Tạo file cấu hình fixbugs.json trong thư mục tri thức
+    let cfg_path = agent_brain::fixbug::config::config_path(temp.path());
+    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
     let config_json = json!({
         "sources": [
             {
@@ -207,7 +207,7 @@ fn test_trello_pull_with_fake() {
             }
         ]
     });
-    std::fs::write(ab_dir.join("fixbugs.json"), config_json.to_string()).unwrap();
+    std::fs::write(&cfg_path, config_json.to_string()).unwrap();
 
     // Tạo .env.fixbugs trong sandbox
     let env_content = "TRELLO_API_KEY=key_test_12345678\nTRELLO_TOKEN=token_test_12345678\n";

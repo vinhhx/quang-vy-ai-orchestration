@@ -1,11 +1,9 @@
-//! Đọc và kiểm tra cấu hình fixbug theo dự án (.agent-brain/fixbugs.json).
+//! Đọc và kiểm tra cấu hình fixbug theo dự án (<thư mục tri thức>/fix-bugs/fixbugs.json).
 
 use super::FixbugError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
-
-pub const CONFIG_REL_PATH: &str = ".agent-brain/fixbugs.json";
 
 /// Chuẩn hóa chuỗi để so khớp tên cột, list, nhãn, giá trị (trim, NFC, chữ thường).
 pub fn normalize_match(s: &str) -> String {
@@ -272,7 +270,15 @@ fn extract_gid(path_and_query: &str) -> Option<String> {
 }
 
 pub fn config_path(project_root: &Path) -> PathBuf {
-    project_root.join(".agent-brain").join("fixbugs.json")
+    crate::knowledge::find_or_default(project_root)
+        .dir
+        .join("fix-bugs")
+        .join("fixbugs.json")
+}
+
+pub fn config_rel_path(project_root: &Path) -> String {
+    let home = crate::knowledge::find_or_default(project_root);
+    format!("{}/fix-bugs/fixbugs.json", home.rel)
 }
 
 pub fn load_config(project_root: &Path) -> Result<FixbugConfig, FixbugError> {
@@ -280,7 +286,7 @@ pub fn load_config(project_root: &Path) -> Result<FixbugConfig, FixbugError> {
     if !path.is_file() {
         return Err(FixbugError::NotConfigured(format!(
             "Dự án chưa có file cấu hình {} — chạy 'agent-brain fixbug init' để khởi tạo",
-            path.display()
+            config_rel_path(project_root)
         )));
     }
 

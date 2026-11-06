@@ -75,6 +75,8 @@ struct SourceSummary {
 #[derive(Serialize)]
 struct FixbugStatusResponse {
     configured: bool,
+    config_path: String,
+    home: Option<String>,
     sources: Vec<SourceSummary>,
     refs: Vec<crate::db::FixbugRefRow>,
 }
@@ -122,8 +124,13 @@ async fn get_fixbug_status(
             Err(_) => (false, Vec::new()),
         };
 
+        let home = crate::knowledge::find(&root).map(|h| h.kind.as_str().to_string());
+        let config_path = crate::fixbug::config::config_rel_path(&root);
+
         Ok(FixbugStatusResponse {
             configured,
+            config_path,
+            home,
             sources,
             refs,
         })

@@ -308,7 +308,7 @@ pub fn cmd_init(ctx: &crate::app::Ctx, project_query: &str, dry_run: bool) -> i3
             } else {
                 crate::term::emit(&format!(
                     "Đã khởi tạo file cấu hình: {}",
-                    config::config_path(root).display()
+                    config::config_rel_path(root)
                 ));
             }
             0

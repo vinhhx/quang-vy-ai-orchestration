@@ -1,10 +1,12 @@
-//! Khởi tạo file cấu hình .agent-brain/fixbugs.json cho dự án (Plan fixbug-sources-engine).
+//! Khởi tạo file cấu hình fixbugs.json cho dự án trong thư mục tri thức.
 //!
-//! Tự động đọc cấu hình cũ từ .gsd/fix-bugs/config.json (nếu có) để giữ lại
+//! Tự động đọc cấu hình cũ từ <home>/fix-bugs/config.json (nếu có) để giữ lại
 //! comment_prefix, tên list và labels; hoặc sinh cấu hình mẫu mặc định.
 //! Hỗ trợ --dry-run; chỉ ghi khi file chưa tồn tại (không bao giờ ghi đè).
 
-use super::config::{config_path, FixbugConfig, PriorityLabels, SourceConfig, TrelloConfig};
+use super::config::{
+    config_path, config_rel_path, FixbugConfig, PriorityLabels, SourceConfig, TrelloConfig,
+};
 use super::envfile::load_env;
 use super::trello::{trello_api_base, TrelloClient};
 use super::FixbugError;
@@ -17,15 +19,16 @@ pub fn init(project_root: &Path, dry_run: bool) -> Result<String, FixbugError> {
     if !dry_run && out_path.is_file() {
         return Err(FixbugError::Config(format!(
             "File cấu hình {} đã tồn tại, không ghi đè — hãy xoá hoặc sửa file trực tiếp",
-            out_path.display()
+            config_rel_path(project_root)
         )));
     }
 
-    let gsd_config_path = project_root.join(".gsd/fix-bugs/config.json");
+    let home = crate::knowledge::find_or_default(project_root);
+    let legacy_config_path = home.dir.join("fix-bugs/config.json");
     let mut trello_cfg = TrelloConfig::default();
 
-    if gsd_config_path.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&gsd_config_path) {
+    if legacy_config_path.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&legacy_config_path) {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(trello) = val.get("trello") {
                     if let Some(intake) = trello.get("lists").and_then(|l| l.get("intake")).and_then(|i| i.as_array()) {
