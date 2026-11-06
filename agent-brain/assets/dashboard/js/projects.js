@@ -46,11 +46,34 @@
       workflowsLoading: true,
       workflowLoadError: '',
       reloadingWorkflows: false,
+      builtinStacks: [],
+      stackSaving: {},
+      stackErrors: {},
+      promptModalOpen: false,
+      promptProject: null,
+      promptRoles: ['lead', 'dev', 'qa', 'plan-review', 'code-review'],
+      promptRole: 'lead',
+      promptText: '',
+      promptDraft: '',
+      promptVersion: 'absent',
+      promptSource: 'none',
+      promptLoading: false,
+      promptSaving: false,
+      promptError: '',
+      promptSuccess: '',
+      previewLoading: false,
+      previewText: '',
+      previewWarnings: [],
+      previewWorkflow: '',
+      previewTeam: '',
+      teamsList: [],
 
       init: function () {
         var self = this;
         this.load();
         this.loadWorkflows();
+        this.loadPromptsMeta();
+        this.loadTeams();
 
         var profileHandler = function (e) {
           self.profile = (e.detail && e.detail.profile) ? e.detail.profile : window.AB.profile();
@@ -621,6 +644,299 @@
 
       get rescanLabel() {
         return this.scanning ? 'Đang quét...' : 'Quét lại';
+      },
+
+      loadPromptsMeta: function () {
+        var self = this;
+        return window.AB.api('GET', '/api/prompts').then(function (res) {
+          if (res && res.ok && res.data) {
+            self.promptsMeta = res.data;
+            self.builtinStacks = Array.isArray(res.data.builtin_stacks) ? res.data.builtin_stacks : [];
+          }
+        });
+      },
+
+      loadTeams: function () {
+        var self = this;
+        return window.AB.api('GET', '/api/teams').then(function (res) {
+          if (res && res.ok && res.data && Array.isArray(res.data.teams)) {
+            self.teamsList = res.data.teams;
+          }
+        });
+      },
+
+      projectStacks: function (p) {
+        return (p && Array.isArray(p.stack)) ? p.stack : [];
+      },
+
+      hasNoStack: function (p) {
+        return !p || !Array.isArray(p.stack) || p.stack.length === 0;
+      },
+
+      allKnownStacks: function () {
+        var map = {};
+        (this.builtinStacks || []).forEach(function (s) {
+          if (s) map[s] = true;
+        });
+        if (this.promptsMeta && Array.isArray(this.promptsMeta.builtin_stacks)) {
+          this.promptsMeta.builtin_stacks.forEach(function (s) {
+            if (s) map[s] = true;
+          });
+        }
+        if (this.promptsMeta && this.promptsMeta.layers && Array.isArray(this.promptsMeta.layers.stacks)) {
+          this.promptsMeta.layers.stacks.forEach(function (s) {
+            if (s) map[s] = true;
+          });
+        }
+        (this.projects || []).forEach(function (p) {
+          if (Array.isArray(p.stack)) {
+            p.stack.forEach(function (s) {
+              if (s) map[s] = true;
+            });
+          }
+        });
+        return Object.keys(map).sort();
+      },
+
+      availableStacksFor: function (p) {
+        var cur = this.projectStacks(p);
+        return this.allKnownStacks().filter(function (s) {
+          return cur.indexOf(s) === -1;
+        });
+      },
+
+      isStackSaving: function (id) {
+        return Boolean(this.stackSaving && this.stackSaving[id]);
+      },
+
+      stackError: function (id) {
+        return (this.stackErrors && this.stackErrors[id]) ? this.stackErrors[id] : '';
+      },
+
+      addProjectStackFromSelect: function (p, val) {
+        if (!val) return;
+        this.addProjectStack(p, val);
+      },
+
+      promptCustomStack: function (p) {
+        var name = window.prompt('Nhập tên stack (chữ thường, số, gạch ngang, ví dụ: vue, python):');
+        if (name && name.trim()) {
+          this.addProjectStack(p, name.trim());
+        }
+      },
+
+      addProjectStack: function (p, name) {
+        if (!p) return;
+        name = (name || '').trim();
+        var re = /^[a-z0-9][a-z0-9-_]*$/;
+        if (!re.test(name)) {
+          this.stackErrors[p.id] = 'Tên stack không hợp lệ (dùng chữ thường, số, gạch ngang, gạch dưới)';
+          return;
+        }
+        var cur = this.projectStacks(p).slice();
+        if (cur.indexOf(name) >= 0) return;
+        if (cur.length >= 6) {
+          this.stackErrors[p.id] = 'Tối đa 6 stack';
+          return;
+        }
+        cur.push(name);
+        this.saveStack(p, cur);
+      },
+
+      removeProjectStack: function (p, name) {
+        if (!p) return;
+        var cur = this.projectStacks(p).filter(function (s) {
+          return s !== name;
+        });
+        this.saveStack(p, cur);
+      },
+
+      saveStack: function (p, list) {
+        var self = this;
+        this.stackSaving[p.id] = true;
+        this.stackErrors[p.id] = '';
+        return window.AB.api('PUT', '/api/projects/' + encodeURIComponent(p.id) + '/stack', {
+          stack: list,
+          etag: this.etag
+        }).then(function (res) {
+          self.stackSaving[p.id] = false;
+          if (res && res.ok) {
+            p.stack = list;
+          } else if (res && res.status === 409) {
+            self.stackErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+            self.load();
+          } else {
+            self.stackErrors[p.id] = window.AB.errorText(res);
+          }
+        });
+      },
+
+      openPromptPanel: function (p) {
+        this.promptProject = p;
+        this.promptRole = 'lead';
+        this.promptDraft = '';
+        this.promptText = '';
+        this.promptError = '';
+        this.promptSuccess = '';
+        this.previewText = '';
+        this.previewWarnings = [];
+        this.previewWorkflow = (p && p.workflow) ? p.workflow : 'mac-dinh';
+        this.previewTeam = '';
+        this.promptModalOpen = true;
+        this.loadProjectPromptNote();
+      },
+
+      closePromptPanel: function () {
+        this.promptModalOpen = false;
+        this.promptProject = null;
+        this.promptError = '';
+        this.promptSuccess = '';
+      },
+
+      selectPromptRole: function (role) {
+        this.promptRole = role;
+        this.previewText = '';
+        this.previewWarnings = [];
+        this.loadProjectPromptNote();
+      },
+
+      loadProjectPromptNote: function () {
+        if (!this.promptProject) return Promise.resolve();
+        var self = this;
+        this.promptLoading = true;
+        this.promptError = '';
+        this.promptSuccess = '';
+        return window.AB.api('GET', '/api/prompts/projects/' + encodeURIComponent(this.promptProject.id) + '/' + this.promptRole).then(function (res) {
+          self.promptLoading = false;
+          if (res && res.ok && res.data) {
+            self.promptText = res.data.text || '';
+            self.promptDraft = self.promptText;
+            self.promptVersion = res.data.version || 'absent';
+            self.promptSource = res.data.source || 'none';
+          } else {
+            self.promptError = window.AB.errorText(res);
+          }
+        });
+      },
+
+      saveProjectPromptNote: function () {
+        if (!this.promptProject || this.isPromptSaveDisabled()) return Promise.resolve();
+        var self = this;
+        this.promptSaving = true;
+        this.promptError = '';
+        this.promptSuccess = '';
+        return window.AB.api('PUT', '/api/prompts/projects/' + encodeURIComponent(this.promptProject.id) + '/' + this.promptRole, {
+          text: this.promptDraft,
+          version: this.promptVersion
+        }).then(function (res) {
+          self.promptSaving = false;
+          if (res && res.ok && res.data) {
+            self.promptVersion = res.data.version;
+            self.promptText = self.promptDraft;
+            self.promptSource = 'user';
+            self.promptSuccess = 'Đã lưu ghi chú dự án.';
+          } else if (res && res.status === 409) {
+            var msg = 'Ghi chú vừa bị sửa ở nơi khác — đã tải lại, vui lòng kiểm tra và lưu lại.';
+            return self.loadProjectPromptNote().then(function () {
+              self.promptError = msg;
+            });
+          } else {
+            self.promptError = window.AB.errorText(res);
+          }
+        });
+      },
+
+      deleteProjectPromptNote: function () {
+        if (!this.promptProject) return Promise.resolve();
+        var self = this;
+        this.promptSaving = true;
+        this.promptError = '';
+        this.promptSuccess = '';
+        return window.AB.api('DELETE', '/api/prompts/projects/' + encodeURIComponent(this.promptProject.id) + '/' + this.promptRole).then(function (res) {
+          self.promptSaving = false;
+          if (res && res.ok) {
+            self.promptDraft = '';
+            self.promptText = '';
+            self.promptVersion = 'absent';
+            self.promptSource = 'none';
+            self.promptSuccess = 'Đã xóa ghi chú dự án.';
+          } else {
+            self.promptError = window.AB.errorText(res);
+          }
+        });
+      },
+
+      loadPromptPreview: function () {
+        if (!this.promptProject) return Promise.resolve();
+        var self = this;
+        this.previewLoading = true;
+        var url = '/api/prompts/preview?project=' + encodeURIComponent(this.promptProject.id) + '&role=' + encodeURIComponent(this.promptRole);
+        if (this.previewWorkflow) url += '&workflow=' + encodeURIComponent(this.previewWorkflow);
+        if (this.previewTeam) url += '&team=' + encodeURIComponent(this.previewTeam);
+        return window.AB.api('GET', url).then(function (res) {
+          self.previewLoading = false;
+          if (res && res.ok && res.data) {
+            self.previewText = res.data.prompt || '';
+            self.previewWarnings = Array.isArray(res.data.warnings) ? res.data.warnings : [];
+          } else {
+            self.previewText = 'Lỗi xem trước: ' + window.AB.errorText(res);
+            self.previewWarnings = [];
+          }
+        });
+      },
+
+      isPromptPanelOpen: function () {
+        return Boolean(this.promptModalOpen);
+      },
+
+      promptPanelTitle: function () {
+        return this.promptProject ? 'Ghi chú prompt: ' + (this.promptProject.name_vi || this.promptProject.id) : '';
+      },
+
+      isRoleActive: function (r) {
+        return this.promptRole === r;
+      },
+
+      roleTabClass: function (r) {
+        return (this.promptRole === r)
+          ? 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200'
+          : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700';
+      },
+
+      promptByteCount: function () {
+        var str = this.promptDraft || '';
+        if (typeof TextEncoder !== 'undefined') {
+          return new TextEncoder().encode(str).length;
+        }
+        return encodeURIComponent(str).replace(/%[A-F\d]{2}/g, 'U').length;
+      },
+
+      promptByteCountText: function () {
+        return this.promptByteCount() + ' / 8192 byte';
+      },
+
+      isPromptOverLimit: function () {
+        return this.promptByteCount() > 8192;
+      },
+
+      promptByteClass: function () {
+        return this.isPromptOverLimit() ? 'text-rose-600 dark:text-rose-400 font-bold' : 'text-slate-500 dark:text-slate-400';
+      },
+
+      isPromptSaveDisabled: function () {
+        return Boolean(this.promptLoading || this.promptSaving || this.isPromptOverLimit());
+      },
+
+      hasUserPromptNote: function () {
+        return this.promptSource === 'user';
+      },
+
+      hasPreviewWarnings: function () {
+        return Array.isArray(this.previewWarnings) && this.previewWarnings.length > 0;
+      },
+
+      hasPreviewText: function () {
+        return Boolean(this.previewText);
       },
     };
   });

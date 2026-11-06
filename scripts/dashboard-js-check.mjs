@@ -995,6 +995,29 @@ const sections = [
         wfResponse = { ok: true, status: 200, data: { workflows: WF_LIST, errors: [], project_defaults: {} } };
         await c2.reloadWorkflows();
         check('projects: Đọc lại clears the error', c2.workflowLoadError === '' && c2.hasWorkflowLoadError === false && c2.workflowList.length === 3, `got "${c2.workflowLoadError}"`);
+
+        // ---- project stacks and prompt notes panel ----
+        const cp = factories.projects();
+        check('projects: projectStacks defaults', Array.isArray(cp.projectStacks({})) && cp.projectStacks({}).length === 0);
+        check('projects: projectStacks with stack', JSON.stringify(cp.projectStacks({ stack: ['laravel', 'node'] })) === JSON.stringify(['laravel', 'node']));
+        check('projects: hasNoStack check', cp.hasNoStack({}) === true && cp.hasNoStack({ stack: ['laravel'] }) === false);
+        cp.promptsMeta = {
+          builtin_stacks: ['laravel', 'video-srt', 'yii2'],
+          layers: { stacks: ['php'] },
+        };
+        check('projects: allKnownStacks merges builtin and layers', cp.allKnownStacks().includes('laravel') && cp.allKnownStacks().includes('php'));
+        check('projects: availableStacksFor excludes already added', !cp.availableStacksFor({ stack: ['laravel'] }).includes('laravel'));
+        check('projects: openPromptPanel / closePromptPanel', cp.isPromptPanelOpen() === false);
+        cp.openPromptPanel({ id: 'proj-1', name_vi: 'Dự án 1' });
+        check('projects: panel open', cp.isPromptPanelOpen() === true && cp.promptPanelTitle().includes('Dự án 1'));
+        cp.selectPromptRole('dev');
+        check('projects: select role', cp.promptRole === 'dev' && cp.isRoleActive('dev') === true);
+        cp.promptDraft = 'abc';
+        check('projects: prompt byte count', cp.promptByteCount() === 3 && cp.isPromptOverLimit() === false);
+        cp.promptDraft = 'x'.repeat(8193);
+        check('projects: prompt over limit', cp.isPromptOverLimit() === true && cp.isPromptSaveDisabled() === true);
+        cp.closePromptPanel();
+        check('projects: panel closed', cp.isPromptPanelOpen() === false);
       } finally {
         ctx.AB.api = savedApi;
       }
@@ -4185,6 +4208,17 @@ const sections = [
         'GET /api/staff': () => ok(STAFF),
         'GET /api/engines': () => ok(ENGINES),
         'GET /api/orchestrator/settings': () => ok(ORCH),
+        'GET /api/prompts': () => ok({
+          layers: { stacks: ['laravel'], projects: [], workflows: [], teams: [] },
+          roles: ['lead', 'dev', 'qa', 'plan-review', 'code-review'],
+          builtin_stacks: ['laravel', 'video-srt', 'yii2'],
+        }),
+        'GET /api/prompts/stacks/laravel/lead': () => ok({
+          text: '### Stack: laravel\nRule...',
+          source: 'builtin',
+          version: 'absent',
+          max_bytes: 8192,
+        }),
       });
       const savedApi = ctx.AB.api;
       ctx.AB.api = function (method, url, body) {
@@ -4445,7 +4479,7 @@ const sections = [
         c = await fresh();
         calls.length = 0;
         await c.reload();
-        check('settings: Đọc lại re-reads teams, workflows, staff, engines and the queue settings', calls.map((x) => x.url).sort().join(',') === '/api/engines,/api/orchestrator/settings,/api/staff,/api/teams,/api/workflows', calls.map((x) => x.url).join(','));
+        check('settings: Đọc lại re-reads teams, workflows, staff, engines, prompts and the queue settings', calls.map((x) => x.url).sort().join(',') === '/api/engines,/api/orchestrator/settings,/api/prompts,/api/prompts/stacks/laravel/lead,/api/staff,/api/teams,/api/workflows', calls.map((x) => x.url).join(','));
         check('settings: reload label idle', c.reloadLabel === 'Đọc lại');
         let release;
         const gate = new Promise((r) => { release = r; });
@@ -4472,12 +4506,25 @@ const sections = [
         check('settings: Thử lại recovers', c2.loaded === true && c2.hasError === false && c2.showOrchestrator === true);
 
         // ---- sub-nav ----
-        check('settings: five sections, the queue first', c.sections.map((s) => s.label).join(',') === 'Hàng đợi (Orchestrator),Đội hình,Quy trình,Nhân sự,Engine');
+        check('settings: six sections, the queue first', c.sections.map((s) => s.label).join(',') === 'Hàng đợi (Orchestrator),Đội hình,Quy trình,Nhân sự,Engine,Ghi chú prompt');
         c.showSection('staff');
         check('settings: showSection switches', c.showStaff === true && c.showTeams === false && c.navCurrent(c.sections[3]) === 'true' && c.navCurrent(c.sections[1]) === false);
         check('settings: active nav class', c.navClass(c.sections[3]).indexOf('bg-indigo-100') === 0 && c.navClass(c.sections[1]).indexOf('hover:bg-slate-100') >= 0);
         c.showSection('khong-co');
         check('settings: an unknown section is ignored', c.section === 'staff');
+
+        // ---- prompts section ----
+        c.showSection('prompts');
+        check('settings: showPrompts is true', c.showPrompts === true);
+        check('settings: prompts groups exist', c.promptGroups.length === 3 && c.promptsGroup === 'stacks');
+        check('settings: isPromptsGroupActive', c.isPromptsGroupActive('stacks') === true && c.isPromptsGroupActive('workflows') === false);
+        check('settings: isBuiltinStack identifies laravel', c.isBuiltinStack('laravel') === true);
+        c.pickPromptsGroup('workflows');
+        check('settings: pickPromptsGroup switches group', c.promptsGroup === 'workflows');
+        c.pickPromptsRole('qa');
+        check('settings: pickPromptsRole switches role', c.promptsRole === 'qa' && c.isPromptsRoleActive('qa') === true);
+        c.promptsDraft = 'y'.repeat(8193);
+        check('settings: prompts over limit is detected', c.isPromptsOverLimit() === true && c.isPromptsSaveDisabled() === true);
 
         // ---- hàng đợi (orchestrator) ----
         c = await fresh();
