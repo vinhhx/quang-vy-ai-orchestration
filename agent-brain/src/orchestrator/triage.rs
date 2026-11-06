@@ -370,6 +370,7 @@ r#"Phân tích yêu cầu sau và trả về JSON đề xuất công việc:
         stdout_file: ep.stdout_file,
         redact: ep.redact,
         container_stop: ep.dsh,
+        finish_after_result: None,
     };
 
     let mut obs = TriageObserver::default();

@@ -212,6 +212,23 @@ pub struct RunRequest {
     /// (by marker and recorded pids), because killing the host-side docker client leaves them
     /// running (S6 4a). `None` for every other engine.
     pub container_stop: Option<crate::dsh::DshRun>,
+    /// agy only: once the observer has seen the final `result` event, the child gets this long to
+    /// exit by itself; after it the whole tree is stopped (S4) and the run counts as ended by
+    /// itself (`RunStop::AfterResult`), because an MCP server agy started can keep it alive.
+    /// `None` = wait for the child (or the timeout) as before.
+    pub finish_after_result: Option<Duration>,
+}
+
+/// Why the runner itself stopped a run. `None` in `RunOutcome::stopped_by` = the child exited
+/// by itself (or was killed from another process, see `RunObserver::kill_requested`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunStop {
+    /// SIGINT, SIGTERM or SIGHUP reached the runner.
+    Signal,
+    /// `RunRequest::timeout` expired.
+    Timeout,
+    /// The child had not exited `finish_after_result` after the final `result` event.
+    AfterResult,
 }
 
 /// What one stop of a run did: the container part (dsh only) and the host process tree.
@@ -240,6 +257,8 @@ pub struct RunOutcome {
     pub status: RunStatus,
     pub exit_code: Option<i32>,
     pub elapsed: Duration,
+    /// What made the runner stop the child, if the runner stopped it.
+    pub stopped_by: Option<RunStop>,
 }
 
 pub trait RunObserver {
@@ -247,6 +266,10 @@ pub trait RunObserver {
     fn on_line(&mut self, line: &[u8]);
     fn on_notice(&mut self, message: &str);
     fn kill_requested(&mut self) -> bool;
+    /// The final `result` event of the run has been seen (read after every `on_line`).
+    fn result_seen(&self) -> bool {
+        false
+    }
 }
 
 struct TreeGuard {
@@ -460,17 +483,14 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         })
     };
 
-    #[derive(PartialEq, Eq)]
-    enum StopReason {
-        Signal,
-        Timeout,
-    }
-
     let start_time = std::time::Instant::now();
     let sleep_fut = tokio::time::sleep(req.timeout);
     tokio::pin!(sleep_fut);
+    // Armed once, when the observer first reports the final `result` (agy only).
+    let mut after_result: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+    let mut after_result_armed = false;
 
-    let mut stopping: Option<StopReason> = None;
+    let mut stopping: Option<RunStop> = None;
     let force = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut kill_task: Option<tokio::task::JoinHandle<StopResult>> = None;
     let mut child_exit = None;
@@ -491,9 +511,35 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
                             let _ = f.flush();
                         }
                         obs.on_line(&line);
+                        if let Some(grace) = req.finish_after_result {
+                            if !after_result_armed && stopping.is_none() && obs.result_seen() {
+                                after_result_armed = true;
+                                after_result = Some(Box::pin(tokio::time::sleep(grace)));
+                            }
+                        }
                     }
                     None => {}
                 }
+            }
+            _ = async {
+                match after_result.as_mut() {
+                    Some(t) => t.await,
+                    None => std::future::pending().await,
+                }
+            }, if after_result.is_some() && stopping.is_none() => {
+                after_result = None;
+                let grace = req.finish_after_result.unwrap_or_default();
+                stopping = Some(RunStop::AfterResult);
+                obs.on_notice(&format!(
+                    "agy đã trả kết quả nhưng chưa thoát sau {}s — dừng cây tiến trình",
+                    grace.as_secs()
+                ));
+                kill_task = Some(spawn_stop(
+                    root,
+                    req.kill_grace,
+                    force.clone(),
+                    req.container_stop.clone(),
+                ));
             }
             status = child.wait(), if child_exit.is_none() => {
                 child_exit = Some(status?);
@@ -501,7 +547,7 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
             }
             _ = sigint.recv() => {
                 if stopping.is_none() {
-                    stopping = Some(StopReason::Signal);
+                    stopping = Some(RunStop::Signal);
                     obs.on_notice(&format!(
                         "Đang dừng run: SIGTERM nhóm tiến trình, chờ {}s (Ctrl+C lần nữa để dừng ngay)",
                         req.kill_grace.as_secs()
@@ -519,7 +565,7 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
             }
             _ = sigterm.recv() => {
                 if stopping.is_none() {
-                    stopping = Some(StopReason::Signal);
+                    stopping = Some(RunStop::Signal);
                     obs.on_notice(&format!(
                         "Đang dừng run: SIGTERM nhóm tiến trình, chờ {}s (Ctrl+C lần nữa để dừng ngay)",
                         req.kill_grace.as_secs()
@@ -534,7 +580,7 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
             }
             _ = sighup.recv() => {
                 if stopping.is_none() {
-                    stopping = Some(StopReason::Signal);
+                    stopping = Some(RunStop::Signal);
                     obs.on_notice(&format!(
                         "Đang dừng run: SIGTERM nhóm tiến trình, chờ {}s (Ctrl+C lần nữa để dừng ngay)",
                         req.kill_grace.as_secs()
@@ -548,7 +594,7 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
                 }
             }
             _ = &mut sleep_fut, if stopping.is_none() => {
-                stopping = Some(StopReason::Timeout);
+                stopping = Some(RunStop::Timeout);
                 obs.on_notice(&format!("Quá thời gian {}s — dừng run", req.timeout.as_secs()));
                 kill_task = Some(spawn_stop(
                     root,
@@ -647,8 +693,17 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
     });
 
     let status = match stopping {
-        Some(StopReason::Signal) => RunStatus::Killed,
-        Some(StopReason::Timeout) => RunStatus::TimedOut,
+        Some(RunStop::Signal) => RunStatus::Killed,
+        Some(RunStop::Timeout) => RunStatus::TimedOut,
+        // The run had already answered: it counts as ended by itself (the exit code stays the
+        // real one, for the log), unless a kill from another process arrived meanwhile.
+        Some(RunStop::AfterResult) => {
+            if obs.kill_requested() {
+                RunStatus::Killed
+            } else {
+                RunStatus::Succeeded
+            }
+        }
         None => {
             if obs.kill_requested() {
                 RunStatus::Killed
@@ -664,5 +719,6 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         status,
         exit_code,
         elapsed,
+        stopped_by: stopping,
     })
 }

@@ -724,3 +724,163 @@ exit 0
         elapsed
     );
 }
+
+// ---------------------------------------------------------------------------
+// finish_after_result: a run that already sent its final `result` but does not exit (an MCP
+// child agy started keeps it alive) is stopped by the runner after the grace and counts as
+// ended by itself. The runner is driven directly; no agy, no claude.
+// ---------------------------------------------------------------------------
+
+const RESULT_LINE: &str = r#"{"event":"result","result":{"status":"SUCCESS","response":"xong"}}"#;
+
+/// Sees the result line and, at that moment, records the shell and its sleeping child from the
+/// pidfile the fake wrote just before printing it.
+struct ResultObserver {
+    pidfile: PathBuf,
+    result_seen: bool,
+    procs: Vec<agent_brain::procs::ProcId>,
+    notices: Vec<String>,
+}
+
+impl agent_brain::runner::RunObserver for ResultObserver {
+    fn on_spawn(
+        &mut self,
+        _pid: i32,
+        _pgid: i32,
+        _pid_start: u64,
+    ) -> agent_brain::error::BrainResult<()> {
+        Ok(())
+    }
+
+    fn on_line(&mut self, line: &[u8]) {
+        if String::from_utf8_lossy(line).contains(r#""event":"result""#) {
+            self.result_seen = true;
+            if let Ok(text) = std::fs::read_to_string(&self.pidfile) {
+                for pid in text
+                    .split_whitespace()
+                    .filter_map(|p| p.parse::<i32>().ok())
+                {
+                    if let Some(id) = agent_brain::procs::proc_id(pid) {
+                        self.procs.push(id);
+                    }
+                }
+            }
+        }
+    }
+
+    fn on_notice(&mut self, message: &str) {
+        self.notices.push(message.to_string());
+    }
+
+    fn kill_requested(&mut self) -> bool {
+        false
+    }
+
+    fn result_seen(&self) -> bool {
+        self.result_seen
+    }
+}
+
+/// A shell that starts a sleeping child, writes "{own pid} {child pid}", prints one agy
+/// `result` line and then sleeps 600 s.
+fn hanging_after_result_request(
+    dir: &Path,
+    timeout: Duration,
+    finish_after_result: Option<Duration>,
+) -> agent_brain::runner::RunRequest {
+    let pidfile = dir.join("hang.pid");
+    let script = format!(
+        "sleep 600 >/dev/null 2>&1 & echo \"$$ $!\" > '{}'; echo '{}'; sleep 600",
+        pidfile.display(),
+        RESULT_LINE
+    );
+    let mut env = std::collections::BTreeMap::new();
+    env.insert(
+        "PATH".to_string(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string()),
+    );
+    agent_brain::runner::RunRequest {
+        argv: vec!["bash".to_string(), "-c".to_string(), script],
+        cwd: dir.to_path_buf(),
+        env,
+        stderr_path: dir.join("stderr.txt"),
+        stream_path: dir.join("stream.jsonl"),
+        timeout,
+        kill_grace: Duration::from_secs(1),
+        stdout_file: false,
+        redact: Vec::new(),
+        container_stop: None,
+        finish_after_result,
+    }
+}
+
+fn result_observer(dir: &Path) -> ResultObserver {
+    ResultObserver {
+        pidfile: dir.join("hang.pid"),
+        result_seen: false,
+        procs: Vec::new(),
+        notices: Vec::new(),
+    }
+}
+
+#[test]
+fn finish_after_result_stops_hung_tree_as_success() {
+    let tmp = tempfile::tempdir().unwrap();
+    let req = hanging_after_result_request(
+        tmp.path(),
+        Duration::from_secs(60),
+        Some(Duration::from_secs(1)),
+    );
+    let mut obs = result_observer(tmp.path());
+
+    let t0 = Instant::now();
+    let outcome = agent_brain::runner::supervise(&req, &mut obs).expect("supervise");
+    let _guard = TestTreeGuard {
+        procs: obs.procs.clone(),
+    };
+
+    assert!(
+        t0.elapsed() < Duration::from_secs(10),
+        "run took {:?}",
+        t0.elapsed()
+    );
+    assert_eq!(outcome.status, agent_brain::runner::RunStatus::Succeeded);
+    assert_eq!(
+        outcome.stopped_by,
+        Some(agent_brain::runner::RunStop::AfterResult)
+    );
+    assert!(
+        obs.notices
+            .iter()
+            .any(|n| n.contains("agy đã trả kết quả nhưng chưa thoát sau 1s")),
+        "notices: {:?}",
+        obs.notices
+    );
+    assert_eq!(obs.procs.len(), 2, "pidfile read at the result line");
+    for p in &obs.procs {
+        assert!(!agent_brain::procs::alive(*p), "process {p:?} survived");
+    }
+}
+
+#[test]
+fn without_finish_after_result_a_hung_tree_times_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let req = hanging_after_result_request(tmp.path(), Duration::from_secs(2), None);
+    let mut obs = result_observer(tmp.path());
+
+    let outcome = agent_brain::runner::supervise(&req, &mut obs).expect("supervise");
+    let _guard = TestTreeGuard {
+        procs: obs.procs.clone(),
+    };
+
+    assert!(obs.result_seen);
+    assert_eq!(outcome.status, agent_brain::runner::RunStatus::TimedOut);
+    assert_eq!(
+        outcome.stopped_by,
+        Some(agent_brain::runner::RunStop::Timeout)
+    );
+    assert_eq!(obs.procs.len(), 2, "pidfile read at the result line");
+    for p in &obs.procs {
+        assert!(!agent_brain::procs::alive(*p), "process {p:?} survived");
+    }
+}

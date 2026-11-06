@@ -494,6 +494,7 @@ pub fn execute_role_staged(
         stdout_file: ep.stdout_file,
         redact: ep.redact.clone(),
         container_stop: ep.dsh.clone(),
+        finish_after_result: None,
     };
 
     struct Observer<'a> {
