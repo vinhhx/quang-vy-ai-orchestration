@@ -221,17 +221,52 @@ pub fn departments_payload(st: &AppState) -> BrainResult<Value> {
                 "model": m.model,
                 "levels": m.levels.iter().map(|l| l.as_str()).collect::<Vec<_>>(),
                 "notes": m.notes,
+                "rules": m.rules,
                 "ready": ready,
                 "ready_reason": ready_reason,
                 "stats": stats,
             }));
         }
 
+        let dept_skills = departments::dept_skills(dept_id);
+        let skills_dir = departments::dept_skills_dir(dept_id);
+        let skills_json: Vec<Value> = dept_skills
+            .into_iter()
+            .map(|s| {
+                json!({
+                    "name": s.name,
+                    "description": s.description,
+                    "path": s.path.to_string_lossy().to_string(),
+                })
+            })
+            .collect();
+
+        let roles_meta: Vec<Value> = roles
+            .iter()
+            .map(|r| {
+                let is_custom = crate::prompts::note_path("departments", dept_id, r).is_file();
+                let source = if is_custom {
+                    "user"
+                } else if crate::prompts::builtin_department_note(dept_id, r).is_some() {
+                    "builtin"
+                } else {
+                    "none"
+                };
+                json!({
+                    "role": r,
+                    "source": source,
+                })
+            })
+            .collect();
+
         depts_json.push(json!({
             "id": dept_id,
             "name": dept_name,
             "roles": roles,
+            "roles_meta": roles_meta,
             "members": members_json,
+            "skills": skills_json,
+            "skills_dir": skills_dir.to_string_lossy().to_string(),
         }));
     }
 
@@ -393,6 +428,9 @@ fn save_member_blocking(st: &AppState, body: MemberSaveBody) -> Response {
         entry.insert("levels".to_string(), Value::Array(lvls));
         if let Some(n) = validated.notes {
             entry.insert("notes".to_string(), Value::String(n));
+        }
+        if let Some(r) = validated.rules {
+            entry.insert("rules".to_string(), Value::String(r));
         }
 
         members_obj.insert(member_id, Value::Object(entry));

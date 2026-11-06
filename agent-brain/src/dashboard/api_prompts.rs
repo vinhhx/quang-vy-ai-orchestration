@@ -29,12 +29,15 @@ pub struct PutPromptBody {
 
 #[derive(serde::Deserialize)]
 pub struct PreviewQuery {
-    pub project: String,
+    #[serde(default)]
+    pub project: Option<String>,
     pub role: String,
     #[serde(default)]
     pub workflow: Option<String>,
     #[serde(default)]
     pub team: Option<String>,
+    #[serde(default)]
+    pub member: Option<String>,
 }
 
 fn conflict(message: &str) -> Response {
@@ -58,6 +61,7 @@ async fn list_prompts() -> Response {
         let projects = crate::prompts::list_layer_names("projects");
         let workflows = crate::prompts::list_layer_names("workflows");
         let teams = crate::prompts::list_layer_names("teams");
+        let departments = crate::prompts::list_layer_names("departments");
         let roles: Vec<&str> = crate::prompts::VALID_ROLES.to_vec();
         let builtin_stacks = crate::prompts::builtin_stacks();
 
@@ -67,6 +71,7 @@ async fn list_prompts() -> Response {
                 "projects": projects,
                 "workflows": workflows,
                 "teams": teams,
+                "departments": departments,
             },
             "roles": roles,
             "builtin_stacks": builtin_stacks,
@@ -127,6 +132,25 @@ async fn get_prompt_note(
 
         if layer == "stacks" {
             if let Some(builtin) = crate::prompts::builtin_stack_note(&name, &role) {
+                return Ok((
+                    StatusCode::OK,
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "application/json; charset=utf-8",
+                    )],
+                    Json(serde_json::json!({
+                        "text": builtin,
+                        "source": "builtin",
+                        "version": settings_store::VERSION_ABSENT,
+                        "max_bytes": crate::prompts::PROMPT_NOTE_MAX_BYTES,
+                    })),
+                )
+                    .into_response());
+            }
+        }
+
+        if layer == "departments" {
+            if let Some(builtin) = crate::prompts::builtin_department_note(&name, &role) {
                 return Ok((
                     StatusCode::OK,
                     [(
@@ -272,6 +296,26 @@ async fn delete_prompt_note(
             }
         }
 
+        if layer == "departments" {
+            if let Some(builtin) = crate::prompts::builtin_department_note(&name, &role) {
+                return Ok((
+                    StatusCode::OK,
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "application/json; charset=utf-8",
+                    )],
+                    Json(serde_json::json!({
+                        "ok": true,
+                        "text": builtin,
+                        "source": "builtin",
+                        "version": settings_store::VERSION_ABSENT,
+                        "max_bytes": crate::prompts::PROMPT_NOTE_MAX_BYTES,
+                    })),
+                )
+                    .into_response());
+            }
+        }
+
         Ok((
             StatusCode::OK,
             [(
@@ -310,23 +354,42 @@ async fn preview_prompt(
             Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, &e)),
         };
 
-        let map = match crate::projects::load_map(&st.map_path) {
-            Ok(m) => m,
-            Err(e) => return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message)),
+        let layers = if let Some(proj_id) = q.project.as_deref().filter(|s| !s.trim().is_empty()) {
+            let map = match crate::projects::load_map(&st.map_path) {
+                Ok(m) => m,
+                Err(e) => return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message)),
+            };
+
+            let proj = match crate::projects::select_project(proj_id, &map) {
+                Ok(p) => p,
+                Err(e) => return Ok(json_error(StatusCode::NOT_FOUND, &e.message)),
+            };
+
+            crate::prompts::layers_for(
+                &proj,
+                q.workflow.as_deref().filter(|s| !s.trim().is_empty()),
+                q.team.as_deref().filter(|s| !s.trim().is_empty()),
+            )
+        } else {
+            crate::prompts::PromptLayers {
+                stacks: vec![],
+                project: None,
+                workflow: q.workflow.as_deref().filter(|s| !s.trim().is_empty()).map(str::to_string),
+                team: q.team.as_deref().filter(|s| !s.trim().is_empty()).map(str::to_string),
+            }
         };
 
-        let proj = match crate::projects::select_project(&q.project, &map) {
-            Ok(p) => p,
-            Err(e) => return Ok(json_error(StatusCode::NOT_FOUND, &e.message)),
-        };
-
-        let layers = crate::prompts::layers_for(
-            &proj,
-            q.workflow.as_deref().filter(|s| !s.trim().is_empty()),
-            q.team.as_deref().filter(|s| !s.trim().is_empty()),
-        );
-
-        let (composed, warnings) = crate::prompts::compose(base, &q.role, &layers);
+        let (mut composed, mut warnings) = crate::prompts::compose(base, &q.role, &layers);
+        let (extra, dept_warns) = crate::departments::prompt_append_for(&q.role, q.member.as_deref());
+        warnings.extend(dept_warns);
+        if !extra.trim().is_empty() {
+            if !composed.ends_with('\n') {
+                composed.push('\n');
+            }
+            composed.push('\n');
+            composed.push_str(extra.trim());
+            composed.push('\n');
+        }
 
         Ok((
             StatusCode::OK,

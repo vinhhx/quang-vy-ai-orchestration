@@ -5,6 +5,9 @@ use agent_brain::departments::{
 use agent_brain::engine::{plan_for, resolve_for_run_with, Engine};
 use rusqlite::Connection;
 use serde_json::json;
+use std::sync::Mutex;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn test_cfg_with_agy() -> Config {
     let val = json!({
@@ -412,6 +415,7 @@ fn pick_rules_fewest_running_and_score_tie_break() {
 
 #[test]
 fn resolve_for_run_and_plan_for_phong_ban_and_mac_dinh() {
+    let _lock = ENV_LOCK.lock().unwrap();
     let (_tmp, conn) = test_db();
     let cfg = test_cfg_with_agy();
 
@@ -542,6 +546,7 @@ fn resolve_for_run_and_plan_for_phong_ban_and_mac_dinh() {
 
 #[test]
 fn cli_dept_check_and_list_and_pick() {
+    let _lock = ENV_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let example_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("assets/departments.example.json");
@@ -593,6 +598,7 @@ fn cli_dept_check_and_list_and_pick() {
 
 #[test]
 fn resolve_for_run_with_broken_config_has_no_member() {
+    let _lock = ENV_LOCK.lock().unwrap();
     let (_tmp, conn) = test_db();
     let tmp_cfg = tempfile::tempdir().unwrap();
     let bad_cfg = tmp_cfg.path().join("config.json");
@@ -632,6 +638,7 @@ fn resolve_for_run_with_broken_config_has_no_member() {
 
 #[test]
 fn prompts_departments_layer_and_builtins() {
+    let _lock = ENV_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let cfg_file = tmp.path().join("config.json");
     std::fs::write(&cfg_file, agent_brain::config::DEFAULT_CONFIG_JSON).unwrap();
@@ -675,6 +682,7 @@ fn prompts_departments_layer_and_builtins() {
 
 #[test]
 fn dept_skills_discovery_and_budget() {
+    let _lock = ENV_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     std::env::set_var("AGENT_BRAIN_CONFIG_DIR", tmp.path());
 
@@ -788,6 +796,7 @@ fn member_rules_validation() {
 
 #[test]
 fn execute_seam_phong_ban_and_mac_dinh() {
+    let _lock = ENV_LOCK.lock().unwrap();
     let (_tmp, conn) = test_db();
     let cfg = test_cfg_with_agy();
 

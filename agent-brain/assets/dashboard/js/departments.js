@@ -25,6 +25,7 @@
       formLevelVua: true,
       formLevelKho: false,
       formNotes: '',
+      formRules: '',
       fieldErrors: {},
       modalError: '',
       saving: false,
@@ -36,6 +37,32 @@
       delDeptId: '',
       delError: '',
       deleting: false,
+
+      // Prompt preview modal state
+      promptPreviewModalOpen: false,
+      previewMember: null,
+      previewDept: null,
+      previewRole: 'dev',
+      previewProject: '',
+      previewPrompt: '',
+      previewWarnings: [],
+      previewLoading: false,
+      previewError: '',
+      previewCopied: false,
+
+      // Department rules modal state
+      rulesModalOpen: false,
+      rulesDeptId: '',
+      rulesRole: '',
+      rulesText: '',
+      rulesDraft: '',
+      rulesVersion: 'absent',
+      rulesSource: 'builtin',
+      rulesLoading: false,
+      rulesSaving: false,
+      rulesDeleting: false,
+      rulesError: '',
+      rulesSuccess: '',
 
       // Init example state
       initing: false,
@@ -205,6 +232,7 @@
         this.formLevelVua = true;
         this.formLevelKho = false;
         this.formNotes = '';
+        this.formRules = '';
         this.fieldErrors = {};
         this.modalError = '';
         this.modalOpen = true;
@@ -224,10 +252,15 @@
         this.formLevelVua = lvls.includes('vua');
         this.formLevelKho = lvls.includes('kho');
         this.formNotes = m.notes || '';
+        this.formRules = m.rules || '';
         this.fieldErrors = {};
         this.modalError = '';
         this.modalOpen = true;
         this.fetchModels(m.engine);
+      },
+
+      rulesCharCount: function () {
+        return (this.formRules || '').length;
       },
 
       closeModal: function () {
@@ -261,6 +294,7 @@
             model: self.formModel.trim() || null,
             levels: levels,
             notes: self.formNotes.trim() || null,
+            rules: self.formRules.trim() || null,
           },
           old_department: self.isEdit ? self.oldDept : null,
         };
@@ -386,6 +420,311 @@
             self.initing = false;
             self.error = err.message || 'Lỗi mạng khi khởi tạo từ mẫu';
           });
+      },
+
+      // ---- Prompt Preview ----
+
+      openPromptPreview: function (dept, m) {
+        this.previewMember = m;
+        this.previewDept = dept;
+        var roles = (dept && Array.isArray(dept.roles) && dept.roles.length > 0) ? dept.roles : ['dev'];
+        this.previewRole = roles[0];
+        this.previewProject = '';
+        this.previewCopied = false;
+        this.promptPreviewModalOpen = true;
+        this.fetchPromptPreview();
+      },
+
+      closePromptPreview: function () {
+        this.promptPreviewModalOpen = false;
+        this.previewMember = null;
+        this.previewDept = null;
+        this.previewPrompt = '';
+        this.previewWarnings = [];
+        this.previewError = '';
+      },
+
+      previewRolesList: function () {
+        if (this.previewDept && Array.isArray(this.previewDept.roles) && this.previewDept.roles.length > 0) {
+          return this.previewDept.roles;
+        }
+        return ['lead', 'dev', 'qa', 'plan-review', 'code-review', 'analyst', 'analysis-review'];
+      },
+
+      fetchPromptPreview: function () {
+        if (!this.previewMember) return;
+        var self = this;
+        self.previewLoading = true;
+        self.previewError = '';
+        var url = '/api/prompts/preview?role=' + encodeURIComponent(self.previewRole) + '&member=' + encodeURIComponent(self.previewMember.id);
+        if (self.previewProject) {
+          url += '&project=' + encodeURIComponent(self.previewProject);
+        }
+        fetch(url, { credentials: 'same-origin' })
+          .then(function (res) {
+            return res.json().then(function (data) {
+              return { ok: res.ok, status: res.status, data: data };
+            });
+          })
+          .then(function (result) {
+            self.previewLoading = false;
+            if (result.ok && result.data) {
+              self.previewPrompt = result.data.prompt || '';
+              self.previewWarnings = Array.isArray(result.data.warnings) ? result.data.warnings : [];
+            } else {
+              self.previewError = (result.data && result.data.error) || 'Không thể xem trước prompt';
+            }
+          })
+          .catch(function (err) {
+            self.previewLoading = false;
+            self.previewError = err.message || 'Lỗi mạng khi xem trước prompt';
+          });
+      },
+
+      copyPromptPreview: function () {
+        var self = this;
+        if (!self.previewPrompt) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(self.previewPrompt).then(function () {
+            self.previewCopied = true;
+            setTimeout(function () {
+              self.previewCopied = false;
+            }, 2000);
+          });
+        }
+      },
+
+      // ---- Department Rules Modal ----
+
+      openDeptRulesModal: function (deptId, role) {
+        this.rulesDeptId = deptId;
+        this.rulesRole = role;
+        this.rulesText = '';
+        this.rulesDraft = '';
+        this.rulesVersion = 'absent';
+        this.rulesSource = 'builtin';
+        this.rulesError = '';
+        this.rulesSuccess = '';
+        this.rulesModalOpen = true;
+        this.loadDeptRule();
+      },
+
+      closeDeptRulesModal: function () {
+        this.rulesModalOpen = false;
+        this.rulesError = '';
+        this.rulesSuccess = '';
+      },
+
+      loadDeptRule: function () {
+        var self = this;
+        self.rulesLoading = true;
+        self.rulesError = '';
+        var url = '/api/prompts/departments/' + encodeURIComponent(self.rulesDeptId) + '/' + encodeURIComponent(self.rulesRole);
+        fetch(url, { credentials: 'same-origin' })
+          .then(function (res) {
+            return res.json().then(function (data) {
+              return { ok: res.ok, status: res.status, data: data };
+            });
+          })
+          .then(function (result) {
+            self.rulesLoading = false;
+            if (result.ok && result.data) {
+              self.rulesText = result.data.text || '';
+              self.rulesDraft = self.rulesText;
+              self.rulesVersion = result.data.version || 'absent';
+              self.rulesSource = result.data.source || 'builtin';
+            } else {
+              self.rulesError = (result.data && result.data.error) || 'Không thể tải rules của phòng';
+            }
+          })
+          .catch(function (err) {
+            self.rulesLoading = false;
+            self.rulesError = err.message || 'Lỗi mạng khi tải rules';
+          });
+      },
+
+      saveDeptRule: function () {
+        var self = this;
+        self.rulesSaving = true;
+        self.rulesError = '';
+        self.rulesSuccess = '';
+        var url = '/api/prompts/departments/' + encodeURIComponent(self.rulesDeptId) + '/' + encodeURIComponent(self.rulesRole);
+        fetch(url, {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: self.rulesDraft,
+            version: self.rulesVersion,
+          }),
+        })
+          .then(function (res) {
+            return res.json().then(function (data) {
+              return { ok: res.ok, status: res.status, data: data };
+            });
+          })
+          .then(function (result) {
+            self.rulesSaving = false;
+            if (result.ok && result.data) {
+              self.rulesVersion = result.data.version || self.rulesVersion;
+              self.rulesText = self.rulesDraft;
+              self.rulesSource = 'user';
+              self.rulesSuccess = 'Đã lưu rules phòng ban.';
+              self.updateRoleMetaSource(self.rulesDeptId, self.rulesRole, 'user');
+            } else if (result.status === 409) {
+              self.rulesError = (result.data && result.data.error) || 'Ghi chú vừa bị sửa ở nơi khác — vui lòng tải lại.';
+              self.loadDeptRule();
+            } else {
+              self.rulesError = (result.data && result.data.error) || 'Không thể lưu ghi chú';
+            }
+          })
+          .catch(function (err) {
+            self.rulesSaving = false;
+            self.rulesError = err.message || 'Lỗi mạng khi lưu ghi chú';
+          });
+      },
+
+      deleteDeptRule: function () {
+        var self = this;
+        self.rulesDeleting = true;
+        self.rulesError = '';
+        self.rulesSuccess = '';
+        var url = '/api/prompts/departments/' + encodeURIComponent(self.rulesDeptId) + '/' + encodeURIComponent(self.rulesRole);
+        fetch(url, {
+          method: 'DELETE',
+          credentials: 'same-origin',
+        })
+          .then(function (res) {
+            return res.json().then(function (data) {
+              return { ok: res.ok, status: res.status, data: data };
+            });
+          })
+          .then(function (result) {
+            self.rulesDeleting = false;
+            if (result.ok && result.data) {
+              self.rulesText = result.data.text || '';
+              self.rulesDraft = self.rulesText;
+              self.rulesVersion = result.data.version || 'absent';
+              self.rulesSource = result.data.source || 'builtin';
+              self.rulesSuccess = 'Đã khôi phục về bản có sẵn.';
+              self.updateRoleMetaSource(self.rulesDeptId, self.rulesRole, self.rulesSource);
+            } else {
+              self.rulesError = (result.data && result.data.error) || 'Không thể khôi phục ghi chú';
+            }
+          })
+          .catch(function (err) {
+            self.rulesDeleting = false;
+            self.rulesError = err.message || 'Lỗi mạng khi xóa ghi chú';
+          });
+      },
+
+      updateRoleMetaSource: function (deptId, role, source) {
+        if (!Array.isArray(this.departments)) return;
+        var dept = this.departments.find(function (d) { return d.id === deptId; });
+        if (dept && Array.isArray(dept.roles_meta)) {
+          var rm = dept.roles_meta.find(function (r) { return r.role === role; });
+          if (rm) {
+            rm.source = source;
+          }
+        }
+      },
+
+      deptRoleBadgeText: function (rm) {
+        if (!rm) return '';
+        if (rm.source === 'builtin') return 'đang dùng bản có sẵn';
+        if (rm.source === 'user') return 'đã tùy chỉnh';
+        return 'chưa có';
+      },
+
+      deptRoleBadgeClass: function (rm) {
+        if (!rm) return '';
+        if (rm.source === 'builtin') {
+          return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300';
+        }
+        if (rm.source === 'user') {
+          return 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300';
+        }
+        return 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300';
+      },
+
+      rulesByteCountText: function () {
+        var str = this.rulesDraft || '';
+        var bytes = new Blob([str]).size;
+        return bytes + ' / 32768 bytes';
+      },
+
+      // ---- Helper booleans for Alpine bindings ----
+
+      hasMemberRules: function (m) {
+        return Boolean(m && m.rules);
+      },
+
+      hasMemberNotes: function (m) {
+        return Boolean(m && m.notes);
+      },
+
+      hasDeptSkills: function (dept) {
+        return Boolean(dept && Array.isArray(dept.skills) && dept.skills.length > 0);
+      },
+
+      hasDeptRoles: function (dept) {
+        return Boolean(dept && Array.isArray(dept.roles_meta) && dept.roles_meta.length > 0);
+      },
+
+      isSavingMember: function () {
+        return Boolean(this.saving);
+      },
+
+      isDeletingMember: function () {
+        return Boolean(this.deleting);
+      },
+
+      isInitingExample: function () {
+        return Boolean(this.initing);
+      },
+
+      isLoadingData: function () {
+        return Boolean(this.loading);
+      },
+
+      isRulesSaving: function () {
+        return Boolean(this.rulesSaving || this.rulesLoading);
+      },
+
+      isRulesDeleting: function () {
+        return Boolean(this.rulesDeleting || this.rulesLoading);
+      },
+
+      isRulesUser: function () {
+        return this.rulesSource === 'user';
+      },
+
+      isRulesBuiltin: function () {
+        return this.rulesSource === 'builtin';
+      },
+
+      hasRulesError: function () {
+        return Boolean(this.rulesError);
+      },
+
+      hasRulesSuccess: function () {
+        return Boolean(this.rulesSuccess);
+      },
+
+      hasPromptPreviewWarnings: function () {
+        return Array.isArray(this.previewWarnings) && this.previewWarnings.length > 0;
+      },
+
+      hasPromptPreviewError: function () {
+        return Boolean(this.previewError);
+      },
+
+      hasPromptPreviewText: function () {
+        return Boolean(this.previewPrompt);
+      },
+
+      isPromptPreviewLoading: function () {
+        return Boolean(this.previewLoading);
       },
     };
   });

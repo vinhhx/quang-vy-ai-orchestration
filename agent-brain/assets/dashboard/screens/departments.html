@@ -6,11 +6,11 @@
       <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Tổ chức 5 phòng ban và thành viên xử lý công việc theo độ khó.</p>
     </div>
     <div class="ml-auto flex items-center gap-2">
-      <button type="button" aria-label="Tải lại danh sách phòng ban" class="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-700 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="loading" @click="reload">
+      <button type="button" aria-label="Tải lại danh sách phòng ban" class="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-700 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isLoadingData()" @click="reload">
         <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
         <span>Tải lại</span>
       </button>
-      <button type="button" aria-label="Khởi tạo từ mẫu departments.example.json" class="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="!fileExists" :disabled="initing" @click="initExample">
+      <button type="button" aria-label="Khởi tạo từ mẫu departments.example.json" class="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="!fileExists" :disabled="isInitingExample()" @click="initExample">
         <span>Tạo từ mẫu</span>
       </button>
     </div>
@@ -61,6 +61,46 @@
           </button>
         </div>
 
+        <!-- Rules of Department -->
+        <div class="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-700/60">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100">Rules của phòng</h3>
+            <span class="text-xs text-slate-500 dark:text-slate-400">Playbook & quy tắc gắn theo vai trò của phòng</span>
+          </div>
+          <div class="flex flex-wrap items-center gap-2" x-show="hasDeptRoles(dept)">
+            <template x-for="rm in dept.roles_meta" :key="rm.role">
+              <button type="button" :aria-label="'Sửa rules phòng ban cho vai ' + rm.role" class="inline-flex min-h-9 items-center gap-2 rounded-lg bg-slate-100 px-3 py-1 text-xs font-medium text-slate-800 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="openDeptRulesModal(dept.id, rm.role)">
+                <span class="font-mono font-semibold" x-text="rm.role"></span>
+                <span class="rounded px-1.5 py-0.5 text-[10px]" :class="deptRoleBadgeClass(rm)" x-text="deptRoleBadgeText(rm)"></span>
+              </button>
+            </template>
+          </div>
+          <p x-show="!hasDeptRoles(dept)" class="text-xs text-slate-500 dark:text-slate-400 italic">Phòng này không có vai trò trực tiếp.</p>
+        </div>
+
+        <!-- Skills of Department -->
+        <div class="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-700/60">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100">Skill của phòng</h3>
+            <span class="text-xs text-slate-500 dark:text-slate-400">Playbook dùng chung cho mọi thành viên (tối đa 24 KiB)</span>
+          </div>
+          <div x-show="hasDeptSkills(dept)" class="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <template x-for="sk in dept.skills" :key="sk.name">
+              <div class="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200 dark:bg-slate-900/60 dark:ring-slate-700/60 text-xs space-y-1">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-semibold text-slate-900 dark:text-slate-100" x-text="sk.name"></span>
+                  <span class="font-mono text-[10px] text-slate-400 dark:text-slate-500 truncate" :title="sk.path" x-text="sk.path"></span>
+                </div>
+                <p class="text-slate-600 dark:text-slate-400 line-clamp-2" x-text="sk.description || '(không có mô tả)'"></p>
+              </div>
+            </template>
+          </div>
+          <div x-show="!hasDeptSkills(dept)" class="rounded-xl bg-slate-50 p-3 ring-1 ring-dashed ring-slate-200 dark:bg-slate-900/30 dark:ring-slate-700 text-xs text-slate-500 dark:text-slate-400 space-y-1">
+            <p class="italic">Chưa có skill nào cho phòng này.</p>
+            <p>Để thêm skill, đặt thư mục chứa file <code class="font-mono font-semibold text-slate-700 dark:text-slate-300">SKILL.md</code> trong: <code class="font-mono text-indigo-600 dark:text-indigo-400" x-text="dept.skills_dir"></code></p>
+          </div>
+        </div>
+
         <!-- Empty Department Notice -->
         <p class="text-sm font-normal text-slate-500 dark:text-slate-400 py-3 italic" x-show="!hasMembers(dept)">
           Chưa có thành viên — vai của phòng chạy theo đội hình.
@@ -89,7 +129,8 @@
                   <td class="py-3.5 pr-4">
                     <div class="font-semibold text-slate-900 dark:text-slate-100" x-text="m.display_name"></div>
                     <div class="font-mono text-xs text-slate-500 dark:text-slate-400" x-text="m.id"></div>
-                    <div x-show="m.notes" class="text-xs text-slate-500 dark:text-slate-400 italic mt-0.5 line-clamp-1" x-text="m.notes"></div>
+                    <div x-show="hasMemberNotes(m)" class="text-xs text-slate-500 dark:text-slate-400 italic mt-0.5 line-clamp-1" x-text="m.notes"></div>
+                    <div x-show="hasMemberRules(m)" class="text-xs text-indigo-600 dark:text-indigo-400 font-mono mt-0.5 line-clamp-1" :title="m.rules" x-text="'Rules: ' + m.rules"></div>
                   </td>
                   <!-- Engine -->
                   <td class="py-3.5 pr-4">
@@ -123,6 +164,7 @@
                   <!-- Actions -->
                   <td class="py-3.5 text-right whitespace-nowrap">
                     <div class="flex items-center justify-end gap-1.5">
+                      <button type="button" :aria-label="'Xem prompt của ' + m.display_name" class="inline-flex min-h-9 items-center justify-center rounded-lg px-2.5 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 dark:text-indigo-300 dark:hover:bg-indigo-950/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="openPromptPreview(dept, m)">Xem prompt</button>
                       <button type="button" :aria-label="'Sửa thành viên ' + m.display_name" class="inline-flex min-h-9 items-center justify-center rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="openEditModal(dept.id, m)">Sửa</button>
                       <button type="button" :aria-label="'Xóa thành viên ' + m.display_name" class="inline-flex min-h-9 items-center justify-center rounded-lg px-2.5 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="openDeleteModal(m)">Xóa</button>
                     </div>
@@ -231,10 +273,21 @@
           <p class="text-xs text-rose-600 dark:text-rose-400" x-show="hasFieldError('notes')" x-text="fieldError('notes')"></p>
         </div>
 
+        <!-- Rules field -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <label for="ab-dept-m-rules" class="text-sm font-semibold text-slate-900 dark:text-slate-100">Rules riêng (vào prompt)</label>
+            <span class="text-xs font-mono text-slate-500 dark:text-slate-400" x-text="rulesCharCount() + ' / 1000'"></span>
+          </div>
+          <textarea id="ab-dept-m-rules" rows="3" maxlength="1000" x-model="formRules" class="w-full rounded-xl bg-white px-3.5 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 dark:bg-slate-800 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="fieldClass('rules')" placeholder="vd: Flash: không refactor ngoài phạm vi, chỉ sửa đúng file trong plan"></textarea>
+          <p class="text-xs text-slate-500 dark:text-slate-400">Khác với ghi chú, quy tắc này sẽ được nối trực tiếp vào prompt hệ thống của thành viên khi chạy task.</p>
+          <p class="text-xs text-rose-600 dark:text-rose-400" x-show="hasFieldError('rules')" x-text="fieldError('rules')"></p>
+        </div>
+
         <!-- Modal Footer Actions -->
         <div class="flex items-center justify-end gap-3 pt-4 border-t border-slate-200 dark:border-slate-800">
-          <button type="button" aria-label="Hủy chỉnh sửa thành viên" class="inline-flex min-h-11 items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="saving" @click="closeModal">Hủy</button>
-          <button type="submit" aria-label="Lưu thông tin thành viên" class="inline-flex min-h-11 items-center justify-center rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="saving">
+          <button type="button" aria-label="Hủy chỉnh sửa thành viên" class="inline-flex min-h-11 items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isSavingMember()" @click="closeModal">Hủy</button>
+          <button type="submit" aria-label="Lưu thông tin thành viên" class="inline-flex min-h-11 items-center justify-center rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isSavingMember()">
             <span x-text="saving ? 'Đang lưu...' : 'Lưu thành viên'"></span>
           </button>
         </div>
@@ -251,10 +304,120 @@
       </p>
       <div class="rounded-xl bg-rose-50 p-3 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal" x-show="delError" x-text="delError"></div>
       <div class="flex items-center justify-end gap-3 pt-2">
-        <button type="button" aria-label="Hủy xóa thành viên" class="inline-flex min-h-11 items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="deleting" @click="closeDeleteModal">Hủy</button>
-        <button type="button" aria-label="Xác nhận xóa thành viên khỏi phòng ban" class="inline-flex min-h-11 items-center justify-center rounded-xl bg-rose-600 px-5 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="deleting" @click="confirmDelete">
+        <button type="button" aria-label="Hủy xóa thành viên" class="inline-flex min-h-11 items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isDeletingMember()" @click="closeDeleteModal">Hủy</button>
+        <button type="button" aria-label="Xác nhận xóa thành viên khỏi phòng ban" class="inline-flex min-h-11 items-center justify-center rounded-xl bg-rose-600 px-5 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isDeletingMember()" @click="confirmDelete">
           <span x-text="deleting ? 'Đang xóa...' : 'Xóa thành viên'"></span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt Preview Modal Dialog -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 sm:p-6 backdrop-blur-xs" x-show="promptPreviewModalOpen" style="display: none;">
+    <div role="dialog" aria-modal="true" aria-labelledby="ab-dept-preview-title" class="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-2xl bg-white p-6 shadow-2xl ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700 overflow-hidden" @keydown.escape="closePromptPreview">
+      <div class="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-slate-800">
+        <div>
+          <h2 id="ab-dept-preview-title" class="text-xl font-semibold text-slate-900 dark:text-slate-100">
+            <span>Xem prompt thành viên: </span>
+            <span class="text-indigo-600 dark:text-indigo-400" x-text="previewMember ? previewMember.display_name : ''"></span>
+          </h2>
+          <p class="text-xs text-slate-500 dark:text-slate-400">
+            <span x-text="previewMember ? 'ID: ' + previewMember.id + ' | Engine: ' + previewMember.engine + (previewMember.model ? ' (' + previewMember.model + ')' : '') : ''"></span>
+          </p>
+        </div>
+        <button type="button" aria-label="Đóng cửa sổ xem prompt" class="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="closePromptPreview">
+          <span aria-hidden="true" class="text-2xl leading-none">&times;</span>
+        </button>
+      </div>
+
+      <!-- Controls row -->
+      <div class="flex flex-wrap items-center justify-between gap-3 pt-3 pb-2">
+        <div class="flex items-center gap-3">
+          <div class="flex items-center gap-2">
+            <label for="ab-dept-prev-role" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Vai trò:</label>
+            <select id="ab-dept-prev-role" x-model="previewRole" @change="fetchPromptPreview" class="min-h-9 rounded-lg bg-white px-2.5 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+              <template x-for="r in previewRolesList()" :key="r">
+                <option :value="r" x-text="r"></option>
+              </template>
+            </select>
+          </div>
+          <div class="flex items-center gap-2">
+            <label for="ab-dept-prev-proj" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Dự án:</label>
+            <input id="ab-dept-prev-proj" type="text" placeholder="(tùy chọn)" x-model="previewProject" @change="fetchPromptPreview" class="min-h-9 w-32 rounded-lg bg-white px-2.5 py-1 text-xs text-slate-900 ring-1 ring-slate-300 placeholder:text-slate-400 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button type="button" aria-label="Sao chép prompt vào bộ nhớ tạm" class="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-3 py-1 text-xs font-semibold text-indigo-700 ring-1 ring-indigo-300 hover:bg-indigo-50 dark:text-indigo-300 dark:ring-indigo-700 dark:hover:bg-indigo-950/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isPromptPreviewLoading()" @click="copyPromptPreview">
+            <span x-text="previewCopied ? 'Đã sao chép!' : 'Sao chép prompt'"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Warnings -->
+      <div class="rounded-xl bg-amber-50 p-3 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 text-xs font-normal space-y-1" x-show="hasPromptPreviewWarnings()">
+        <template x-for="w in previewWarnings" :key="w">
+          <p x-text="w"></p>
+        </template>
+      </div>
+
+      <!-- Error -->
+      <div class="rounded-xl bg-rose-50 p-3 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-xs font-normal" x-show="hasPromptPreviewError()" x-text="previewError"></div>
+
+      <!-- Loading -->
+      <p class="text-xs text-slate-500 dark:text-slate-400 py-2" x-show="isPromptPreviewLoading()">Đang tải prompt...</p>
+
+      <!-- Prompt Content -->
+      <div class="flex-1 overflow-y-auto pt-2" x-show="hasPromptPreviewText()">
+        <pre class="max-h-[55vh] overflow-y-auto rounded-xl bg-slate-900 p-4 font-mono text-xs leading-relaxed text-slate-100 whitespace-pre-wrap select-text break-words" x-text="previewPrompt"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Department Rules Modal Dialog -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 sm:p-6 backdrop-blur-xs" x-show="rulesModalOpen" style="display: none;">
+    <div role="dialog" aria-modal="true" aria-labelledby="ab-dept-rules-modal-title" class="w-full max-w-3xl max-h-[90vh] flex flex-col rounded-2xl bg-white p-6 shadow-2xl ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700 overflow-hidden" @keydown.escape="closeDeptRulesModal">
+      <div class="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-slate-800">
+        <div>
+          <h2 id="ab-dept-rules-modal-title" class="text-xl font-semibold text-slate-900 dark:text-slate-100">
+            <span>Rules phòng ban: </span>
+            <span class="font-mono text-indigo-600 dark:text-indigo-400" x-text="rulesDeptId + ' / ' + rulesRole"></span>
+          </h2>
+          <div class="flex items-center gap-2 pt-1 text-xs text-slate-500 dark:text-slate-400">
+            <span>Nguồn:</span>
+            <span class="rounded px-1.5 py-0.5 font-medium" :class="isRulesBuiltin() ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300' : 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300'" x-text="isRulesBuiltin() ? 'Đang dùng bản có sẵn' : 'Bản tùy chỉnh của bạn'"></span>
+          </div>
+        </div>
+        <button type="button" aria-label="Đóng cửa sổ rules phòng ban" class="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="closeDeptRulesModal">
+          <span aria-hidden="true" class="text-2xl leading-none">&times;</span>
+        </button>
+      </div>
+
+      <!-- Body -->
+      <div class="flex-1 overflow-y-auto py-3 space-y-3">
+        <div class="rounded-xl bg-rose-50 p-3 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-xs font-normal" x-show="hasRulesError()" x-text="rulesError"></div>
+        <div class="rounded-xl bg-emerald-50 p-3 ring-1 ring-emerald-300 text-emerald-900 dark:bg-emerald-900/20 dark:ring-emerald-700 dark:text-emerald-200 text-xs font-normal" x-show="hasRulesSuccess()" x-text="rulesSuccess"></div>
+        <p class="text-xs text-slate-500 dark:text-slate-400" x-show="rulesLoading">Đang tải...</p>
+
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <label for="ab-dept-rule-editor" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Nội dung ghi chú quy tắc (Markdown):</label>
+            <span class="text-xs font-mono text-slate-500 dark:text-slate-400" x-text="rulesByteCountText()"></span>
+          </div>
+          <textarea id="ab-dept-rule-editor" rows="12" x-model="rulesDraft" class="w-full rounded-xl bg-white p-3 font-mono text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"></textarea>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="flex items-center justify-between border-t border-slate-200 pt-3 dark:border-slate-800">
+        <div>
+          <button type="button" aria-label="Khôi phục bản mẫu có sẵn" class="inline-flex min-h-10 items-center justify-center rounded-xl px-3 py-1.5 text-xs font-semibold text-rose-700 ring-1 ring-rose-300 hover:bg-rose-50 dark:text-rose-300 dark:ring-rose-700 dark:hover:bg-rose-950/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isRulesDeleting()" x-show="isRulesUser()" @click="deleteDeptRule">Khôi phục bản có sẵn</button>
+        </div>
+        <div class="flex items-center gap-2">
+          <button type="button" aria-label="Đóng chỉnh sửa rules phòng ban" class="inline-flex min-h-10 items-center justify-center rounded-xl px-4 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="closeDeptRulesModal">Đóng</button>
+          <button type="button" aria-label="Lưu rules phòng ban" class="inline-flex min-h-10 items-center justify-center rounded-xl bg-indigo-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isRulesSaving()" @click="saveDeptRule">
+            <span x-text="rulesSaving ? 'Đang lưu...' : 'Lưu rules'"></span>
+          </button>
+        </div>
       </div>
     </div>
   </div>

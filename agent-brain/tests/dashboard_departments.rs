@@ -556,3 +556,152 @@ fn departments_get_task_details() {
 
     stop(srv);
 }
+
+#[test]
+fn departments_payload_includes_skills_rules_and_preview() {
+    let sb = Sandbox::new();
+
+    // 1. Set up a department skill on disk
+    let skill_dir = sb
+        .xdg_config
+        .join("agent-brain")
+        .join("departments")
+        .join("thi-cong")
+        .join("skills")
+        .join("dev-playbook");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: Dev Playbook\ndescription: Quy trình thi công chuẩn\n---\nNội dung playbook thi công.",
+    )
+    .unwrap();
+
+    let srv = sb.serve(&[]);
+
+    // 2. Initial init example
+    let r_init = srv.post_json("/api/departments/init-example", &json!({}));
+    assert_eq!(r_init.status, 200);
+    let v1 = r_init.json()["version"].as_str().unwrap().to_string();
+
+    // 3. GET /api/departments returns skills and roles_meta
+    let r_depts = srv.get("/api/departments");
+    assert_eq!(r_depts.status, 200);
+    let j_depts = r_depts.json();
+    let tc = find_dept(&j_depts, "thi-cong");
+
+    let skills = tc["skills"].as_array().expect("skills array");
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0]["name"], "Dev Playbook");
+    assert_eq!(skills[0]["description"], "Quy trình thi công chuẩn");
+
+    let roles_meta = tc["roles_meta"].as_array().expect("roles_meta array");
+    let dev_meta = roles_meta.iter().find(|rm| rm["role"] == "dev").unwrap();
+    assert_eq!(dev_meta["source"], "builtin");
+
+    // 4. Save member with rules
+    let body_save = json!({
+        "version": v1,
+        "department": "thi-cong",
+        "id": "senior-dev-1",
+        "old_department": "thi-cong",
+        "member": {
+            "display_name": "Senior Dev One",
+            "engine": "claude",
+            "model": "claude-sonnet-5-5",
+            "levels": ["vua", "kho"],
+            "notes": "Dev cứng",
+            "rules": "Flash: không refactor ngoài phạm vi, chỉ sửa đúng file trong plan"
+        }
+    });
+    let r_save = srv.post_json("/api/departments/member/save", &body_save);
+    assert_eq!(r_save.status, 200, "{}", r_save.text());
+    let j_save = r_save.json();
+    let m = find_member(find_dept(&j_save, "thi-cong"), "senior-dev-1").unwrap();
+    assert_eq!(m["rules"], "Flash: không refactor ngoài phạm vi, chỉ sửa đúng file trong plan");
+    let v2 = j_save["version"].as_str().unwrap().to_string();
+
+    // 5. Save with rules > 1000 chars -> 422
+    let long_rules = "a".repeat(1001);
+    let body_bad_rules = json!({
+        "version": v2,
+        "department": "thi-cong",
+        "id": "senior-dev-1",
+        "old_department": "thi-cong",
+        "member": {
+            "display_name": "Senior Dev One",
+            "engine": "claude",
+            "levels": ["vua"],
+            "rules": long_rules
+        }
+    });
+    let r_bad = srv.post_json("/api/departments/member/save", &body_bad_rules);
+    assert_eq!(r_bad.status, 422);
+    let j_bad = r_bad.json();
+    assert!(j_bad["errors"].as_array().unwrap().iter().any(|e| e["field"] == "rules"));
+
+    // 6. GET /api/prompts/preview?role=dev&member=senior-dev-1
+    let r_prev = srv.get("/api/prompts/preview?role=dev&member=senior-dev-1");
+    assert_eq!(r_prev.status, 200);
+    let j_prev = r_prev.json();
+    let prompt_text = j_prev["prompt"].as_str().expect("prompt text");
+    assert!(prompt_text.contains("### Phòng: Phòng thi công"), "must have department layer");
+    assert!(prompt_text.contains("## Skill của phòng Phòng thi công"), "must have dept skills");
+    assert!(prompt_text.contains("Nội dung playbook thi công"), "must have skill content");
+    assert!(prompt_text.contains("## Rules riêng của thành viên Senior Dev One"), "must have member rules header");
+    assert!(prompt_text.contains("Flash: không refactor ngoài phạm vi"), "must have member rules body");
+
+    // 7. GET /api/prompts/departments/thi-cong/dev (builtin note)
+    let r_note_builtin = srv.get("/api/prompts/departments/thi-cong/dev");
+    assert_eq!(r_note_builtin.status, 200);
+    let j_note1 = r_note_builtin.json();
+    assert_eq!(j_note1["source"], "builtin");
+    assert!(j_note1["text"].as_str().unwrap().contains("liệt kê trong plan"));
+
+    // 8. PUT /api/prompts/departments/thi-cong/dev
+    let r_put = srv.put_json(
+        "/api/prompts/departments/thi-cong/dev",
+        &json!({
+            "text": "Quy tắc thi công tùy chỉnh riêng của team.",
+            "version": "absent"
+        }),
+    );
+    assert_eq!(r_put.status, 200);
+    let j_put = r_put.json();
+    assert_eq!(j_put["ok"], true);
+    assert_eq!(j_put["source"], "user");
+
+    // Check /api/departments now shows source: "user"
+    let r_depts2 = srv.get("/api/departments");
+    let j_depts2 = r_depts2.json();
+    let tc2 = find_dept(&j_depts2, "thi-cong");
+    let rm_dev2 = tc2["roles_meta"].as_array().unwrap().iter().find(|rm| rm["role"] == "dev").unwrap();
+    assert_eq!(rm_dev2["source"], "user");
+
+    // 9. DELETE /api/prompts/departments/thi-cong/dev (restores builtin)
+    let origin = format!("http://127.0.0.1:{}", srv.port);
+    let r_del = srv.request(
+        "DELETE",
+        "/api/prompts/departments/thi-cong/dev",
+        &[("Cookie", &srv.cookie), ("Origin", &origin)],
+        b"",
+    );
+    assert_eq!(r_del.status, 200);
+    let j_del = r_del.json();
+    assert_eq!(j_del["source"], "builtin");
+    assert!(j_del["text"].as_str().unwrap().contains("liệt kê trong plan"));
+
+    // Check /api/departments now shows source: "builtin"
+    let r_depts3 = srv.get("/api/departments");
+    let j_depts3 = r_depts3.json();
+    let tc3 = find_dept(&j_depts3, "thi-cong");
+    let rm_dev3 = tc3["roles_meta"].as_array().unwrap().iter().find(|rm| rm["role"] == "dev").unwrap();
+    assert_eq!(rm_dev3["source"], "builtin");
+
+    // 10. Check GET /api/prompts has departments layer
+    let r_prompts = srv.get("/api/prompts");
+    assert_eq!(r_prompts.status, 200);
+    let j_prompts = r_prompts.json();
+    assert!(j_prompts["layers"]["departments"].is_array());
+
+    stop(srv);
+}

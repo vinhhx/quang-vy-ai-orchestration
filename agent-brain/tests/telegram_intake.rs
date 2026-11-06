@@ -2287,10 +2287,9 @@ fn forward_burst_one_task() {
     ] {
         assert!(block.contains(&want.as_str()), "{want:?} not in {block:#?}");
     }
-    assert_eq!(
-        last_lead_system_prompt(&sb),
-        agent_brain::roles::lead_untrusted_prompt()
-    );
+    let sys = last_lead_system_prompt(&sb);
+    assert!(sys.starts_with(&agent_brain::roles::lead_untrusted_prompt()));
+    assert!(sys.contains("### Phòng: Phòng kế hoạch"));
 
     // Still exactly one selection message, seconds after the window closed.
     assert_eq!(sent_starting(&tg, "Đã nhận"), 1, "{:#?}", tg.records());
@@ -2779,10 +2778,9 @@ fn untrusted_block_survives_return_lead() {
 
     let first = last_lead_prompt(&sb);
     let nonce = nonce_of(&first);
-    assert_eq!(
-        last_lead_system_prompt(&sb),
-        agent_brain::roles::lead_untrusted_prompt()
-    );
+    let sys1 = last_lead_system_prompt(&sb);
+    assert!(sys1.starts_with(&agent_brain::roles::lead_untrusted_prompt()));
+    assert!(sys1.contains("### Phòng: Phòng kế hoạch"));
     assert_eq!(lead_records(&sb), 1);
 
     // `Trả về Lead` with a note: the next Lead run keeps the same framing.
@@ -2809,10 +2807,9 @@ fn untrusted_block_survives_return_lead() {
         second.contains("Ghi chú của người dùng: tách bước 2"),
         "{second}"
     );
-    assert_eq!(
-        last_lead_system_prompt(&sb),
-        agent_brain::roles::lead_untrusted_prompt()
-    );
+    let sys2 = last_lead_system_prompt(&sb);
+    assert!(sys2.starts_with(&agent_brain::roles::lead_untrusted_prompt()));
+    assert!(sys2.contains("### Phòng: Phòng kế hoạch"));
     assert_eq!(approved_commit(&sb, 1), None);
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }

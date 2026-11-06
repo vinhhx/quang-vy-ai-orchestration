@@ -126,7 +126,8 @@ fn p2_01_run_lead_prints_steps_and_records_run() {
     assert_eq!(argv_strs[5], "--model");
     assert_eq!(argv_strs[6], "opus");
     assert_eq!(argv_strs[7], "--append-system-prompt");
-    assert_eq!(argv_strs[8], prompt_bytes);
+    assert!(argv_strs[8].starts_with(prompt_bytes));
+    assert!(argv_strs[8].contains("### Phòng: Phòng kế hoạch"));
     assert!(argv_strs.contains(&"--strict-mcp-config"));
 
     let abs_plan_str = repo.join(".plan.md").to_str().unwrap().to_string();
