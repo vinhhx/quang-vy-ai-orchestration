@@ -55,6 +55,13 @@
       answerLoading: false,
       answerError: '',
 
+      // Task level and scoring state
+      levelBusy: false,
+      levelError: '',
+      scoresState: {},
+      scoreBusy: {},
+      scoreErrors: {},
+
       stageTitles: {
         start: 'Bắt đầu',
         plan: 'Lên plan',
@@ -1671,6 +1678,9 @@
             if (this.task.runs[i].id === id) {
               role = window.AB.roleName(this.task.runs[i].role);
               status = this.task.runs[i].status;
+              if (this.task.runs[i].member_name) {
+                role = role + ' · ' + this.task.runs[i].member_name;
+              }
               break;
             }
           }
@@ -2661,6 +2671,128 @@
 
       showMoreRuns: function () {
         this.ledgerVisible += 20;
+      },
+
+      get taskLevel() {
+        return (this.task && this.task.level) || 'vua';
+      },
+
+      get hasRunningRun() {
+        return Boolean(this.task && this.task.runs && this.task.runs.some(function (r) {
+          return r.status === 'running';
+        }));
+      },
+
+      get isLevelDisabled() {
+        return Boolean(this.levelBusy || this.hasRunningRun);
+      },
+
+      changeTaskLevel: function (newLevel) {
+        var self = this;
+        if (this.hasRunningRun) {
+          this.levelError = 'Không thể đổi độ khó khi task đang có tiến trình chạy';
+          return;
+        }
+        this.levelBusy = true;
+        this.levelError = '';
+        window.AB.api('POST', '/api/tasks/' + this.id + '/level', { level: newLevel }).then(function (res) {
+          self.levelBusy = false;
+          if (res && res.ok) {
+            if (self.task) self.task.level = newLevel;
+          } else {
+            self.levelError = window.AB.errorText(res);
+          }
+        });
+      },
+
+      runData: function (runId) {
+        var runs = (this.task && this.task.runs) ? this.task.runs : [];
+        for (var i = 0; i < runs.length; i++) {
+          if (runs[i] && runs[i].id === runId) return runs[i];
+        }
+        return null;
+      },
+
+      runMemberName: function (r) {
+        if (!r) return '';
+        var run = this.runData(r.run_id);
+        return (run && run.member_name) ? run.member_name : '';
+      },
+
+      canScoreRun: function (r) {
+        if (!r) return false;
+        var run = this.runData(r.run_id);
+        return Boolean(run && run.member_id && run.status !== 'running');
+      },
+
+      getScoreObj: function (runId) {
+        if (!this.scoresState[runId]) {
+          var run = this.runData(runId);
+          this.scoresState[runId] = {
+            score: (run && run.score) ? run.score : 0,
+            note: (run && run.score_note) ? run.score_note : '',
+          };
+        }
+        return this.scoresState[runId];
+      },
+
+      setRunScore: function (runId, score) {
+        var obj = this.getScoreObj(runId);
+        obj.score = score;
+      },
+
+      setRunNote: function (runId, note) {
+        var obj = this.getScoreObj(runId);
+        obj.note = note;
+      },
+
+      runScoreNote: function (runId) {
+        return this.getScoreObj(runId).note || '';
+      },
+
+      hasRunScore: function (runId) {
+        return Boolean(this.getScoreObj(runId).score > 0);
+      },
+
+      runScoreText: function (runId) {
+        var s = this.getScoreObj(runId).score;
+        return s > 0 ? (s + ' / 5 điểm') : '';
+      },
+
+      starClass: function (runId, star) {
+        var s = this.getScoreObj(runId).score;
+        return s >= star ? 'text-amber-500 font-bold' : 'text-slate-300 dark:text-slate-600';
+      },
+
+      isScoring: function (runId) {
+        return Boolean(this.scoreBusy[runId]);
+      },
+
+      scoreError: function (runId) {
+        return this.scoreErrors[runId] || '';
+      },
+
+      saveRunScore: function (runId) {
+        var self = this;
+        var obj = this.getScoreObj(runId);
+        if (!obj.score || obj.score < 1 || obj.score > 5) {
+          this.scoreErrors[runId] = 'Vui lòng chọn từ 1 đến 5 sao';
+          return;
+        }
+        this.scoreBusy[runId] = true;
+        this.scoreErrors[runId] = '';
+        window.AB.api('POST', '/api/runs/' + runId + '/score', { score: obj.score, note: obj.note }).then(function (res) {
+          self.scoreBusy[runId] = false;
+          if (res && res.ok) {
+            var run = self.runData(runId);
+            if (run) {
+              run.score = res.score;
+              run.score_note = obj.note;
+            }
+          } else {
+            self.scoreErrors[runId] = window.AB.errorText(res);
+          }
+        });
       }
     };
   });

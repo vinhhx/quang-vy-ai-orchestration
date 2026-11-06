@@ -431,6 +431,20 @@
         });
       },
 
+      changeLevel: function (id, newLevel) {
+        var self = this;
+        this.actionBusy[id] = true;
+        this.cardErrors[id] = '';
+        window.AB.api('POST', '/api/proposals/' + id + '/level', { level: newLevel }).then(function (res) {
+          self.actionBusy[id] = false;
+          if (res && res.ok) {
+            self.loadAll();
+          } else {
+            self.cardErrors[id] = window.AB.errorText(res);
+          }
+        });
+      },
+
       // Toggle helpers
       isLongError: function (it) {
         return !!(it && it.error && it.error.length > 90);

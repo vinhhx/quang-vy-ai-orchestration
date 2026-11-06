@@ -2119,14 +2119,23 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
 
         let view = &state.view;
 
+        let loaded_depts = crate::departments::load_path(&crate::departments::departments_path(), &st.cfg);
         let mut runs_stmt = conn.prepare(
-            "SELECT id, role, status, outcome, input_tokens, output_tokens,
-                    cache_read_tokens, cache_write_tokens, cost_usd, started_at, ended_at,
-                    stage, round
-             FROM runs WHERE task_id = ?1 ORDER BY started_at ASC, id ASC",
+            "SELECT r.id, r.role, r.status, r.outcome, r.input_tokens, r.output_tokens,
+                    r.cache_read_tokens, r.cache_write_tokens, r.cost_usd, r.started_at, r.ended_at,
+                    r.stage, r.round, r.member_id, ms.score, ms.note
+             FROM runs r
+             LEFT JOIN member_scores ms ON ms.run_id = r.id
+             WHERE r.task_id = ?1 ORDER BY r.started_at ASC, r.id ASC",
         )?;
         let run_rows: Vec<serde_json::Value> = runs_stmt
             .query_map(rusqlite::params![id], |r| {
+                let member_id: Option<String> = r.get(13)?;
+                let member_name = member_id.as_deref().and_then(|mid| {
+                    loaded_depts.get(mid).map(|m| m.display_name.clone())
+                });
+                let score: Option<i64> = r.get(14)?;
+                let score_note: Option<String> = r.get(15)?;
                 Ok(serde_json::json!({
                     "id": r.get::<_, i64>(0)?,
                     "role": r.get::<_, String>(1)?,
@@ -2141,6 +2150,10 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
                     "ended_at": r.get::<_, Option<i64>>(10)?,
                     "stage": r.get::<_, Option<String>>(11)?,
                     "round": r.get::<_, Option<i64>>(12)?,
+                    "member_id": member_id,
+                    "member_name": member_name,
+                    "score": score,
+                    "score_note": score_note,
                 }))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -2170,6 +2183,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "base_branch": task.base_branch,
             "base_commit": task.base_commit,
             "status": task.status,
+            "level": task.level,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
             "project": {

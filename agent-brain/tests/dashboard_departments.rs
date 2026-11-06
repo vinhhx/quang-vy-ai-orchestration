@@ -340,3 +340,219 @@ fn departments_models_native_and_agy() {
 
     stop(srv);
 }
+
+fn setup_project_and_task(sb: &Sandbox, task_slug: &str, level: &str) -> (i64, i64) {
+    let repo = sb.make_repo(
+        "web-ban-hang",
+        &[("src/app.py", "def app():\n    return 1\n")],
+        None,
+        None,
+    );
+    let mut entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    entry["name_vi"] = serde_json::json!("Web bán hàng");
+    entry["aliases"] = serde_json::json!(["shop"]);
+    sb.write_map(serde_json::json!([entry]), &[]);
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = sb.read_map();
+    let projs = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projs).expect("sync_projects");
+    let p_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").expect("project_row_id");
+    let t_id = agent_brain::db::upsert_task(
+        &conn,
+        p_id,
+        task_slug,
+        "Test Task",
+        &format!("task/{task_slug}"),
+        Some("main"),
+        Some("1234567"),
+    )
+    .expect("upsert_task");
+    agent_brain::db::set_task_level(&conn, t_id, level).expect("set_task_level");
+    (p_id, t_id)
+}
+
+fn setup_proposal(sb: &Sandbox, p_id: i64, level: &str) -> i64 {
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let intake_id = agent_brain::db::insert_intake(&conn, "ui", Some(p_id), "Yêu cầu", "normal").expect("insert_intake");
+    let new_prop = agent_brain::db::NewProposal {
+        intake_id,
+        project_id: p_id,
+        title: "Đề xuất test",
+        request: "Yêu cầu test",
+        priority: "normal",
+        team: "phong-ban",
+        workflow: "mac-dinh",
+        reason: Some("Lý do test"),
+        level,
+    };
+    agent_brain::db::insert_proposal(&conn, &new_prop).expect("insert_proposal")
+}
+
+fn setup_run(sb: &Sandbox, p_id: i64, t_id: i64, role: &str, member_id: Option<&str>, status: &str) -> i64 {
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let nr = agent_brain::db::NewRun {
+        task_id: Some(t_id),
+        project_id: p_id,
+        role: role.to_string(),
+        profile: "work".to_string(),
+        model: None,
+        pid: 1234,
+        pgid: 1234,
+        pid_start: 1000,
+        base_commit: None,
+        run_dir: None,
+    };
+    let run_id = agent_brain::db::insert_run(&conn, &nr).expect("insert_run");
+    conn.execute(
+        "UPDATE runs SET status = ?1, member_id = ?2 WHERE id = ?3",
+        rusqlite::params![status, member_id, run_id],
+    )
+    .expect("update run status and member_id");
+    run_id
+}
+
+#[test]
+fn departments_level_task_and_proposal() {
+    let sb = Sandbox::new();
+    let srv = sb.serve(&[]);
+
+    let (p_id, t_id) = setup_project_and_task(&sb, "task-level-test", "de");
+    let prop_id = setup_proposal(&sb, p_id, "de");
+
+    // 1. Proposal level: valid
+    let r_p1 = srv.post_json(
+        &format!("/api/proposals/{prop_id}/level"),
+        &json!({ "level": "kho" }),
+    );
+    assert_eq!(r_p1.status, 200);
+    assert_eq!(r_p1.json()["level"], "kho");
+
+    // 2. Proposal level: invalid -> 400
+    let r_p_bad = srv.post_json(
+        &format!("/api/proposals/{prop_id}/level"),
+        &json!({ "level": "sieu-kho" }),
+    );
+    assert_eq!(r_p_bad.status, 400);
+
+    // 3. Task level: valid
+    let r_t1 = srv.post_json(
+        &format!("/api/tasks/{t_id}/level"),
+        &json!({ "level": "vua" }),
+    );
+    assert_eq!(r_t1.status, 200);
+    assert_eq!(r_t1.json()["level"], "vua");
+
+    // 4. Task level: invalid -> 400
+    let r_t_bad = srv.post_json(
+        &format!("/api/tasks/{t_id}/level"),
+        &json!({ "level": "bad-level" }),
+    );
+    assert_eq!(r_t_bad.status, 400);
+
+    // 5. Task with running run -> refused (409)
+    let _running_run = setup_run(&sb, p_id, t_id, "dev", Some("opus-1"), "running");
+    let r_t_running = srv.post_json(
+        &format!("/api/tasks/{t_id}/level"),
+        &json!({ "level": "kho" }),
+    );
+    assert_eq!(r_t_running.status, 409);
+    assert_eq!(
+        r_t_running.json()["error"],
+        "Không thể đổi độ khó khi task đang có tiến trình chạy"
+    );
+
+    stop(srv);
+}
+
+#[test]
+fn departments_run_score() {
+    let sb = Sandbox::new();
+    let srv = sb.serve(&[]);
+
+    let (p_id, t_id) = setup_project_and_task(&sb, "score-test", "vua");
+
+    // 1. Run without member_id -> 400
+    let run_no_member = setup_run(&sb, p_id, t_id, "dev", None, "succeeded");
+    let r_no_m = srv.post_json(
+        &format!("/api/runs/{run_no_member}/score"),
+        &json!({ "score": 5 }),
+    );
+    assert_eq!(r_no_m.status, 400);
+
+    // 2. Run currently running -> 400
+    let run_running = setup_run(&sb, p_id, t_id, "dev", Some("opus-1"), "running");
+    let r_running = srv.post_json(
+        &format!("/api/runs/{run_running}/score"),
+        &json!({ "score": 5 }),
+    );
+    assert_eq!(r_running.status, 400);
+
+    // 3. Finished run with member_id -> 200
+    let run_ok = setup_run(&sb, p_id, t_id, "dev", Some("opus-1"), "succeeded");
+    let r_score1 = srv.post_json(
+        &format!("/api/runs/{run_ok}/score"),
+        &json!({ "score": 5, "note": "Rất tốt" }),
+    );
+    assert_eq!(r_score1.status, 200);
+    let j1 = r_score1.json();
+    assert_eq!(j1["ok"], true);
+    assert_eq!(j1["avg_score"], 5.0);
+    assert_eq!(j1["score_count"], 1);
+
+    // 4. Upsert same run -> updates score & avg
+    let r_score2 = srv.post_json(
+        &format!("/api/runs/{run_ok}/score"),
+        &json!({ "score": 3, "note": "Sửa lại điểm" }),
+    );
+    assert_eq!(r_score2.status, 200);
+    let j2 = r_score2.json();
+    assert_eq!(j2["avg_score"], 3.0);
+    assert_eq!(j2["score_count"], 1);
+
+    // 5. Score out of range (0 or 6) -> 400
+    let r_bad_score = srv.post_json(
+        &format!("/api/runs/{run_ok}/score"),
+        &json!({ "score": 6 }),
+    );
+    assert_eq!(r_bad_score.status, 400);
+
+    stop(srv);
+}
+
+#[test]
+fn departments_get_task_details() {
+    let sb = Sandbox::new();
+    let srv = sb.serve(&[]);
+
+    // Init example so opus-1 exists in departments.json
+    let r_init = srv.post_json("/api/departments/init-example", &json!({}));
+    assert_eq!(r_init.status, 200);
+
+    let (p_id, t_id) = setup_project_and_task(&sb, "task-details-test", "kho");
+    let run_id = setup_run(&sb, p_id, t_id, "dev", Some("opus-1"), "succeeded");
+
+    // Score the run
+    let r_score = srv.post_json(
+        &format!("/api/runs/{run_id}/score"),
+        &json!({ "score": 5, "note": "Làm xuất sắc" }),
+    );
+    assert_eq!(r_score.status, 200);
+
+    // GET /api/tasks/{id}
+    let r_task = srv.get(&format!("/api/tasks/{t_id}"));
+    assert_eq!(r_task.status, 200);
+    let j = r_task.json();
+    assert_eq!(j["level"], "kho");
+
+    let runs = j["runs"].as_array().expect("runs array");
+    assert_eq!(runs.len(), 1);
+    let r0 = &runs[0];
+    assert_eq!(r0["id"], run_id);
+    assert_eq!(r0["member_id"], "opus-1");
+    assert_eq!(r0["member_name"], "Senior Opus 1");
+    assert_eq!(r0["score"], 5);
+    assert_eq!(r0["score_note"], "Làm xuất sắc");
+
+    stop(srv);
+}

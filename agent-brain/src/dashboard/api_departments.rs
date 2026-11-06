@@ -8,15 +8,15 @@
 
 use crate::dashboard::settings_store::{self, WriteError};
 use crate::dashboard::{blocking, json_error, AppState};
-use crate::departments::{self, dept_name_of, dept_roles, Member, DEPARTMENTS};
+use crate::departments::{self, dept_name_of, dept_roles, Level, Member, DEPARTMENTS};
 use crate::error::BrainResult;
 use crate::teams::FieldError;
-use axum::extract::{Query, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -36,6 +36,9 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/departments/member/save", post(save_member))
         .route("/api/departments/member/delete", post(delete_member))
         .route("/api/departments/models", get(get_models))
+        .route("/api/tasks/{id}/level", post(post_task_level))
+        .route("/api/proposals/{id}/level", post(post_proposal_level))
+        .route("/api/runs/{id}/score", post(post_run_score))
 }
 
 fn json_response(status: StatusCode, body: Value) -> Response {
@@ -620,4 +623,165 @@ async fn get_models(
     }
 
     json_response(StatusCode::OK, json!({ "models": models }))
+}
+
+#[derive(serde::Deserialize)]
+struct LevelBody {
+    level: String,
+}
+
+async fn post_task_level(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<i64>,
+    Json(body): Json<LevelBody>,
+) -> Response {
+    let level_str = body.level.trim();
+    let level = match Level::parse(level_str) {
+        Some(l) => l,
+        None => return json_error(StatusCode::BAD_REQUEST, "Độ khó không hợp lệ (phải là de, vua, kho)"),
+    };
+
+    let res = blocking(move || {
+        let conn = crate::db::open(&st.db_path)?;
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM tasks WHERE id = ?1",
+                rusqlite::params![id],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if !exists {
+            return Ok(Err((StatusCode::NOT_FOUND, format!("Không tìm thấy task #{id}"))));
+        }
+
+        let running_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM runs WHERE task_id = ?1 AND status = 'running'",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )?;
+        if running_count > 0 {
+            return Ok(Err((
+                StatusCode::CONFLICT,
+                "Không thể đổi độ khó khi task đang có tiến trình chạy".to_string(),
+            )));
+        }
+
+        crate::db::set_task_level(&conn, id, level.as_str())?;
+        Ok(Ok(level.as_str()))
+    })
+    .await;
+
+    match res {
+        Ok(Ok(lvl)) => json_response(StatusCode::OK, json!({ "ok": true, "id": id, "level": lvl })),
+        Ok(Err((status, msg))) => json_error(status, &msg),
+        Err(e) => internal_save(&format!("Lỗi đổi độ khó task: {e}")),
+    }
+}
+
+async fn post_proposal_level(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<i64>,
+    Json(body): Json<LevelBody>,
+) -> Response {
+    let level_str = body.level.trim();
+    let level = match Level::parse(level_str) {
+        Some(l) => l,
+        None => return json_error(StatusCode::BAD_REQUEST, "Độ khó không hợp lệ (phải là de, vua, kho)"),
+    };
+
+    let res = blocking(move || {
+        let conn = crate::db::open(&st.db_path)?;
+        let prop = match crate::db::get_proposal(&conn, id)? {
+            Some(p) => p,
+            None => return Ok(Err((StatusCode::NOT_FOUND, format!("Không tìm thấy đề xuất #{id}")))),
+        };
+
+        if prop.status != "pending" && prop.status != "approved" {
+            return Ok(Err((
+                StatusCode::CONFLICT,
+                "Chỉ có thể đổi độ khó khi đề xuất đang ở trạng thái pending hoặc approved".to_string(),
+            )));
+        }
+
+        crate::db::set_proposal_level(&conn, id, level.as_str())?;
+        Ok(Ok(level.as_str()))
+    })
+    .await;
+
+    match res {
+        Ok(Ok(lvl)) => json_response(StatusCode::OK, json!({ "ok": true, "id": id, "level": lvl })),
+        Ok(Err((status, msg))) => json_error(status, &msg),
+        Err(e) => internal_save(&format!("Lỗi đổi độ khó đề xuất: {e}")),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ScoreBody {
+    score: i64,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+async fn post_run_score(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<i64>,
+    Json(body): Json<ScoreBody>,
+) -> Response {
+    if !(1..=5).contains(&body.score) {
+        return json_error(StatusCode::BAD_REQUEST, "Điểm đánh giá phải từ 1 đến 5");
+    }
+    if let Some(note) = &body.note {
+        if note.chars().count() > 500 {
+            return json_error(StatusCode::BAD_REQUEST, "Ghi chú quá dài (tối đa 500 ký tự)");
+        }
+    }
+
+    let note = body.note.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+
+    let res = blocking(move || {
+        let conn = crate::db::open(&st.db_path)?;
+        let run_opt: Option<(Option<String>, String, Option<i64>)> = conn
+            .query_row(
+                "SELECT member_id, status, task_id FROM runs WHERE id = ?1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+
+        let (member_id_opt, status, task_id) = match run_opt {
+            Some(row) => row,
+            None => return Ok(Err((StatusCode::NOT_FOUND, format!("Không tìm thấy run #{id}")))),
+        };
+
+        let member_id = match member_id_opt {
+            Some(m) if !m.is_empty() => m,
+            _ => return Ok(Err((StatusCode::BAD_REQUEST, "Run này không có thành viên phòng ban".to_string()))),
+        };
+
+        if status == "running" {
+            return Ok(Err((StatusCode::BAD_REQUEST, "Không thể chấm điểm khi run đang chạy".to_string())));
+        }
+
+        crate::db::record_member_score(&conn, id, &member_id, task_id, body.score as i32, note.as_deref())?;
+        let (avg, count) = crate::db::member_score_avg(&conn, &member_id)?;
+        Ok(Ok((member_id, avg, count)))
+    })
+    .await;
+
+    match res {
+        Ok(Ok((member_id, avg, count))) => json_response(
+            StatusCode::OK,
+            json!({
+                "ok": true,
+                "run_id": id,
+                "member_id": member_id,
+                "score": body.score,
+                "avg_score": avg,
+                "score_count": count
+            }),
+        ),
+        Ok(Err((status, msg))) => json_error(status, &msg),
+        Err(e) => internal_save(&format!("Lỗi chấm điểm run: {e}")),
+    }
 }
