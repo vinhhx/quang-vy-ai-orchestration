@@ -107,6 +107,14 @@ pub const QA_SECTIONS: [&str; 4] = [
 ];
 pub const QA_VERDICTS: [&str; 2] = ["Đạt", "Cần sửa"];
 pub const REPORT_SECTION: &str = "Gửi báo cáo";
+/// Optional: the commands the Dev must run, in order, after editing the files.
+pub const PRODUCE_SECTION: &str = "Tạo sản phẩm";
+/// Optional: the result files of the task (may be gitignored), checked after QA and sent.
+pub const PRODUCT_SECTION: &str = "Sản phẩm";
+/// At most this many files in `## Sản phẩm`.
+pub const MAX_PRODUCT_FILES: usize = 5;
+/// At most this many commands in `## Tạo sản phẩm`.
+pub const MAX_PRODUCE_COMMANDS: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
@@ -569,6 +577,9 @@ pub fn validate_plan(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String>
         }
     }
 
+    // 7. optional product sections
+    errors.extend(validate_products(plan, root));
+
     errors
 }
 
@@ -668,6 +679,117 @@ pub fn report_files(plan: &Plan) -> Vec<String> {
         }
     }
     out
+}
+
+/// The commands of `## Tạo sản phẩm`, as written between the backticks, in order (duplicates
+/// kept: running a step twice may be wanted).
+pub fn produce_commands(plan: &Plan) -> Vec<String> {
+    grant_items(grant_section(plan, PRODUCE_SECTION), false)
+}
+
+/// The files of `## Sản phẩm`, normalized, without duplicates, in order.
+pub fn product_files(plan: &Plan) -> Vec<String> {
+    let raw = grant_items(grant_section(plan, PRODUCT_SECTION), false);
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for item in raw {
+        let norm = normalize_plan_path(&item);
+        if !norm.is_empty() && seen.insert(norm.clone()) {
+            out.push(norm);
+        }
+    }
+    out
+}
+
+/// True when the plan has a `## <name>` section (prefix match, like `grant_section`).
+fn has_section(plan: &Plan, name: &str) -> bool {
+    plan.sections.keys().any(|k| k.starts_with(name))
+}
+
+/// Vietnamese errors for `## Tạo sản phẩm` and `## Sản phẩm` (empty when absent or fine).
+fn validate_products(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String> {
+    let mut errors = Vec::new();
+    let grants = run_grants(plan);
+
+    if has_section(plan, PRODUCE_SECTION) {
+        let cmds = produce_commands(plan);
+        if cmds.len() > MAX_PRODUCE_COMMANDS {
+            errors.push(format!(
+                "Mục \"{PRODUCE_SECTION}\" có {} lệnh — tối đa {MAX_PRODUCE_COMMANDS}",
+                cmds.len()
+            ));
+        }
+        for c in &cmds {
+            if let Some(e) = grant_command_error(c) {
+                errors.push(format!("Lệnh tạo sản phẩm `{c}` bị từ chối: {e}"));
+                continue;
+            }
+            let matched = grants
+                .commands
+                .iter()
+                .filter(|p| grant_command_error(p).is_none())
+                .any(|p| crate::guard::command_matches_grant(p, c));
+            if !matched {
+                errors.push(format!(
+                    "Lệnh tạo sản phẩm `{c}` không khớp mẫu nào trong mục \"{GRANT_SECTION_COMMANDS}\" — thêm mẫu cho lệnh này vào mục đó"
+                ));
+            }
+        }
+    }
+
+    if has_section(plan, PRODUCT_SECTION) {
+        let raw_items = grant_items(grant_section(plan, PRODUCT_SECTION), false);
+        let files = product_files(plan);
+        let count = raw_items.len().max(files.len());
+        if count > MAX_PRODUCT_FILES {
+            errors.push(format!(
+                "Mục \"{PRODUCT_SECTION}\" có {count} file — tối đa {MAX_PRODUCT_FILES}"
+            ));
+        }
+        let write_bases: Vec<String> = grants
+            .write_dirs
+            .iter()
+            .filter(|d| grant_dir_error(d, root).is_none())
+            .map(|d| grant_dir_base(d))
+            .collect();
+        let p_files = plan_files(plan);
+        let mut seen = std::collections::HashSet::new();
+        for raw in &raw_items {
+            if !seen.insert(raw.clone()) {
+                continue;
+            }
+            let reason = if raw.starts_with('/') {
+                Some("phải là đường dẫn tương đối (không bắt đầu bằng /)".to_string())
+            } else if raw.starts_with('~') {
+                Some("không được bắt đầu bằng ~".to_string())
+            } else if raw.split('/').any(|c| c == "..") {
+                Some("không được chứa ..".to_string())
+            } else if raw.chars().any(|c| c.is_control()) {
+                Some("có ký tự điều khiển".to_string())
+            } else {
+                let norm = normalize_plan_path(raw);
+                if crate::guard::grant_denied_rel(&norm) {
+                    Some("là đường dẫn nhạy cảm".to_string())
+                } else if let Some(code) = path_error(&norm, root) {
+                    Some(format!("không hợp lệ ({code})"))
+                } else if !(p_files.contains(&norm)
+                    || write_bases
+                        .iter()
+                        .any(|b| norm == *b || norm.starts_with(&format!("{b}/"))))
+                {
+                    Some(format!(
+                        "không nằm trong mục \"{GRANT_SECTION_WRITE}\" và không có trong bảng Thay đổi"
+                    ))
+                } else {
+                    None
+                }
+            };
+            if let Some(r) = reason {
+                errors.push(format!("File sản phẩm `{raw}` {r}"));
+            }
+        }
+    }
+    errors
 }
 
 /// Characters a granted command may never hold (shell constructs).
@@ -1549,5 +1671,140 @@ mod tests {
         let p6 = parse_plan(plan_text);
         let errs6 = validate_plan(&p6, None);
         assert!(errs6.is_empty(), "{errs6:?}");
+    }
+
+    // ---- product sections: `## Tạo sản phẩm` / `## Sản phẩm` ----
+
+    const SRT_LIKE_PRODUCT: &str = "## Lệnh được chạy\n- `.venv/bin/python scripts/build_video.py *`\n## Thư mục được ghi\n- `projects/x/**`\n## Tạo sản phẩm\n- `.venv/bin/python scripts/build_video.py --project projects/x --stage all`\n## Sản phẩm\n- `projects/x/final/x-complete.mp4`\n";
+
+    #[test]
+    fn product_section_names_are_nfc_and_do_not_prefix_each_other() {
+        for name in [PRODUCE_SECTION, PRODUCT_SECTION] {
+            let nfc: String = name.nfc().collect();
+            assert_eq!(nfc, name);
+        }
+        assert!(!PRODUCE_SECTION.starts_with(PRODUCT_SECTION));
+        assert!(!PRODUCT_SECTION.starts_with(PRODUCE_SECTION));
+    }
+
+    #[test]
+    fn product_sections_are_read_apart() {
+        // `## Sản phẩm` before `## Tạo sản phẩm`, and the other way round
+        for text in [
+            "## Sản phẩm\n- `out/a.mp4`\n- `./out/a.mp4`\n- `out/b.pdf` (ghi chú)\n## Tạo sản phẩm\n- `tool run`\n- `tool run`\n- `tool pack *`\n",
+            "## Tạo sản phẩm\n- `tool run`\n- `tool run`\n- `tool pack *`\n## Sản phẩm\n- `out/a.mp4`\n- `./out/a.mp4`\n- `out/b.pdf` (ghi chú)\n",
+        ] {
+            let p = plan_with(text);
+            assert_eq!(
+                produce_commands(&p),
+                vec!["tool run", "tool run", "tool pack *"]
+            );
+            assert_eq!(product_files(&p), vec!["out/a.mp4", "out/b.pdf"]);
+        }
+        // one section alone never reads as the other
+        let only_produce = plan_with("## Tạo sản phẩm\n- `tool run`\n");
+        assert!(product_files(&only_produce).is_empty());
+        let only_product = plan_with("## Sản phẩm\n- `a.txt`\n");
+        assert!(produce_commands(&only_product).is_empty());
+        assert_eq!(product_files(&only_product), vec!["a.txt"]);
+        // an old plan has neither
+        let old = parse_plan(PLAN_BASE);
+        assert!(produce_commands(&old).is_empty());
+        assert!(product_files(&old).is_empty());
+    }
+
+    #[test]
+    fn srt_like_product_plan_validates() {
+        let p = plan_with(SRT_LIKE_PRODUCT);
+        let errs = validate_plan(&p, None);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(
+            produce_commands(&p),
+            vec![".venv/bin/python scripts/build_video.py --project projects/x --stage all"]
+        );
+        assert_eq!(product_files(&p), vec!["projects/x/final/x-complete.mp4"]);
+    }
+
+    #[test]
+    fn product_without_produce_commands_is_valid() {
+        // the Dev makes the file through the change table
+        let p = plan_with("## Sản phẩm\n- `a.txt`\n");
+        assert!(validate_plan(&p, None).is_empty());
+    }
+
+    #[test]
+    fn produce_command_must_match_an_approved_pattern() {
+        let p = plan_with(
+            "## Lệnh được chạy\n- `python scripts/a.py *`\n## Tạo sản phẩm\n- `python scripts/b.py --all`\n",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(
+            errs.iter().any(
+                |e| e.contains("Lệnh tạo sản phẩm `python scripts/b.py --all`")
+                    && e.contains("không khớp")
+            ),
+            "{errs:?}"
+        );
+        // no command grants at all
+        let p2 = plan_with("## Tạo sản phẩm\n- `python scripts/a.py`\n");
+        assert!(validate_plan(&p2, None)
+            .iter()
+            .any(|e| e.contains("không khớp")));
+        // an exact pattern (no `*`) needs the very same words
+        let p3 = plan_with(
+            "## Lệnh được chạy\n- `python scripts/a.py --x`\n## Tạo sản phẩm\n- `python scripts/a.py --x --y`\n",
+        );
+        assert!(validate_plan(&p3, None)
+            .iter()
+            .any(|e| e.contains("không khớp")));
+        // a command the grant check refuses is refused here too
+        let p4 = plan_with(
+            "## Lệnh được chạy\n- `python scripts/a.py *`\n## Tạo sản phẩm\n- `python scripts/a.py; id`\n",
+        );
+        assert!(validate_plan(&p4, None)
+            .iter()
+            .any(|e| e.contains("Lệnh tạo sản phẩm") && e.contains("bị từ chối")));
+        // matching patterns pass
+        let ok = plan_with(
+            "## Lệnh được chạy\n- `python scripts/a.py *`\n- `make video`\n## Tạo sản phẩm\n- `python scripts/a.py --stage all`\n- `make video`\n",
+        );
+        assert!(validate_plan(&ok, None).is_empty());
+    }
+
+    #[test]
+    fn product_files_refused() {
+        let base = "## Thư mục được ghi\n- `out/**`\n## Sản phẩm\n";
+        for (bad, needle) in [
+            ("../x.mp4", ".."),
+            ("/abs/x.mp4", "tương đối"),
+            ("~/x.mp4", "~"),
+            (".env", "nhạy cảm"),
+            ("out/.env.local", "nhạy cảm"),
+            (".git/x", "nhạy cảm"),
+            ("other/x.mp4", "không nằm trong"),
+        ] {
+            let p = plan_with(&format!("{base}- `{bad}`\n"));
+            let errs = validate_plan(&p, None);
+            assert!(
+                errs.iter()
+                    .any(|e| e.contains(&format!("File sản phẩm `{bad}`")) && e.contains(needle)),
+                "{bad}: {errs:?}"
+            );
+        }
+        let many: String = (0..6).map(|i| format!("- `out/f{i}.mp4`\n")).collect();
+        let p = plan_with(&format!("{base}{many}"));
+        assert!(validate_plan(&p, None)
+            .iter()
+            .any(|e| e.contains("tối đa 5")));
+        let cmds: String = (0..21).map(|i| format!("- `tool s{i}`\n")).collect();
+        let p2 = plan_with(&format!(
+            "## Lệnh được chạy\n- `tool *`\n## Tạo sản phẩm\n{cmds}"
+        ));
+        assert!(validate_plan(&p2, None)
+            .iter()
+            .any(|e| e.contains("Tạo sản phẩm") && e.contains("tối đa 20")));
+        // in a write dir or in the change table: fine
+        let ok = plan_with(&format!("{base}- `out/x/v.mp4`\n- `a.txt`\n"));
+        assert!(validate_plan(&ok, None).is_empty());
     }
 }

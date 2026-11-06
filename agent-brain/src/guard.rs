@@ -669,6 +669,16 @@ fn command_matches(pattern: &str, words: &[ShellWord]) -> bool {
         .all(|(p, w)| *p == w.text.as_str())
 }
 
+/// True when `command` (one shell command line) matches the approved `pattern` by the same rule
+/// the guard applies to a Dev's Bash call (`command_matches`). A command the guard can not split
+/// into plain words never matches.
+pub fn command_matches_grant(pattern: &str, command: &str) -> bool {
+    match shell_words(command) {
+        Ok(words) => command_matches(pattern, &words),
+        Err(_) => false,
+    }
+}
+
 /// Skill mode (D-49): with an approved command list, a non-git command must be one plain command
 /// that matches an approved pattern and does not start with a denied program. Runs after
 /// `bash_command_check`, so the git policy and the one-command rule already held.
