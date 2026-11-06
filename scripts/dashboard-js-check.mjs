@@ -4485,7 +4485,10 @@ const sections = [
         c.showSection('orchestrator');
         check('settings: queue section shows', c.showOrchestrator === true && c.showTeams === false);
         check('settings: queue values loaded', c.oLoaded === true && c.oEnabled === false && c.oDraftMax === '3' && c.oDraftMinutes === '60' && c.oVersion === 'ov1');
-        const boolGetters = ['orchToggleDisabled', 'orchFormDisabled', 'orchMinutesDisabled', 'orchMaxInvalid', 'orchMinutesInvalid', 'orchHasToggleError', 'orchHasFormError', 'orchHasNotice', 'orchLoading', 'orchLoadFailed', 'showOrchestrator'];
+        const boolGetters = ['orchToggleDisabled', 'orchFormDisabled', 'orchMinutesDisabled', 'orchMaxInvalid', 'orchMinutesInvalid', 'orchTriageInvalid', 'orchHasToggleError', 'orchHasFormError', 'orchHasNotice', 'orchLoading', 'orchLoadFailed', 'showOrchestrator'];
+        check('settings: triage engine defaults to claude when the API has none', c.oTriageEngine === 'claude' && c.oDraftTriage === 'claude' && c.triageSelected('claude') === true && c.triageSelected('agy') === false);
+        check('settings: triage options are claude plus anthropic and agy engines', c.triageOptions.map((o) => o.value).join(',') === 'claude,deepseek,agy', c.triageOptions.map((o) => o.value).join(','));
+        check('settings: triage option labels carry the readiness word', c.triageOptions[1].label === 'deepseek — thiếu key' && c.triageOptions[0].label === 'claude', c.triageOptions.map((o) => o.label).join('|'));
         check('settings: queue boolean bindings are real booleans', boolGetters.every((k) => typeof c[k] === 'boolean'), boolGetters.filter((k) => typeof c[k] !== 'boolean').join(','));
         check('settings: queue switch is off and the minutes field is off', c.orchEnabledAttr === 'false' && c.orchEnabledWord === 'Tắt' && c.orchMinutesDisabled === true && c.orchToggleDisabled === false);
         let posted = null;
@@ -4494,7 +4497,7 @@ const sections = [
           return ok(Object.assign({ ok: true }, body, { version: 'ov2' }));
         };
         await c.toggleOrchestrator();
-        check('settings: switch posts every field with the version', posted && posted.enabled === true && posted.max_parallel === 3 && posted.auto_resume_quota === false && posted.resume_after_minutes === 60 && posted.version === 'ov1', JSON.stringify(posted));
+        check('settings: switch posts every field with the version', posted && posted.enabled === true && posted.max_parallel === 3 && posted.auto_resume_quota === false && posted.resume_after_minutes === 60 && posted.triage_engine === 'claude' && posted.version === 'ov1', JSON.stringify(posted));
         check('settings: switch on after save', c.oEnabled === true && c.orchEnabledAttr === 'true' && c.oVersion === 'ov2' && c.oNotice === 'Đã bật hàng đợi. Có hiệu lực ngay.', c.oNotice);
         // Client checks: nothing is posted for out-of-range values.
         posted = null;
@@ -4508,13 +4511,21 @@ const sections = [
         check('settings: typing clears the field error', c.oMaxErr === '' && c.orchMaxInvalid === false);
         c.oDraftMax = '4';
         c.oDraftMinutes = '90';
+        c.oDraftTriage = 'agy';
         await c.saveOrchestratorForm();
-        check('settings: Lưu posts the form with the saved switch', posted && posted.enabled === true && posted.max_parallel === 4 && posted.auto_resume_quota === true && posted.resume_after_minutes === 90 && posted.version === 'ov2', JSON.stringify(posted));
-        check('settings: saved form values become the draft', c.oMaxParallel === 4 && c.oDraftMax === '4' && c.oResumeMinutes === 90 && c.oNotice === 'Đã lưu. Có hiệu lực ngay.');
+        check('settings: Lưu posts the form with the saved switch', posted && posted.enabled === true && posted.max_parallel === 4 && posted.auto_resume_quota === true && posted.resume_after_minutes === 90 && posted.triage_engine === 'agy' && posted.version === 'ov2', JSON.stringify(posted));
+        check('settings: saved form values become the draft', c.oMaxParallel === 4 && c.oDraftMax === '4' && c.oResumeMinutes === 90 && c.oTriageEngine === 'agy' && c.oDraftTriage === 'agy' && c.triageSelected('agy') === true && c.oNotice === 'Đã lưu. Có hiệu lực ngay.');
+        // A saved engine no longer in the list stays visible (never changed silently).
+        c.oDraftTriage = 'cu-da-xoa';
+        check('settings: an unknown triage engine stays offered', c.triageOptions.map((o) => o.value).join(',') === 'claude,deepseek,agy,cu-da-xoa');
+        c.oDraftTriage = 'agy';
         // Server field errors land under their field; other errors under the form.
-        routes['POST /api/orchestrator/settings'] = { ok: false, status: 400, data: { error: 'Không lưu được cài đặt hàng đợi', errors: [{ field: 'max_parallel', message: 'Lỗi số việc' }, { field: 'enabled', message: 'Lỗi bật' }] } };
+        routes['POST /api/orchestrator/settings'] = { ok: false, status: 400, data: { error: 'Không lưu được cài đặt hàng đợi', errors: [{ field: 'max_parallel', message: 'Lỗi số việc' }, { field: 'enabled', message: 'Lỗi bật' }, { field: 'triage_engine', message: 'Lỗi engine' }] } };
         await c.saveOrchestratorForm();
         check('settings: 400 field errors are mapped', c.oMaxErr === 'Lỗi số việc' && c.oFormError === 'Lỗi bật' && c.orchHasFormError === true, c.oFormError);
+        check('settings: a triage_engine error lands under the select', c.oTriageErr === 'Lỗi engine' && c.orchTriageInvalid === true && c.orchTriageInvalidAttr === 'true' && c.orchTriageClass.indexOf('ring-rose-600') >= 0, c.oTriageErr);
+        c.clearOrchTriage();
+        check('settings: changing the select clears its error', c.oTriageErr === '' && c.orchTriageInvalid === false);
         // A version conflict tells the user and reloads the live values.
         routes['POST /api/orchestrator/settings'] = { ok: false, status: 409, data: { error: 'config.json vừa bị sửa ở nơi khác', code: 'conflict' } };
         routes['GET /api/orchestrator/settings'] = () => ok({ enabled: false, max_parallel: 2, auto_resume_quota: false, resume_after_minutes: 30, version: 'ov9' });
@@ -4958,6 +4969,42 @@ const sections = [
       check('queue: cardError is an empty string for an unknown id', q.cardError(7) === '');
       q.cardErrors[7] = 'Lỗi thử';
       check('queue: cardError returns the stored message', q.cardError(7) === 'Lỗi thử');
+
+      // Thử lại on a failed intake: one POST to /retry, busy while it runs, reload on success,
+      // the server's message on the card otherwise.
+      check('queue: Thử lại shows only for a failed intake and calls retryIntake', /x-show="it\.status === 'failed'"\s*@click="retryIntake\(it\.id\)"\s*:disabled="isBusy\(it\.id\)"[^>]*>Thử lại</.test(html));
+      {
+        const savedApi = ctx.AB.api;
+        const posts = [];
+        let answer = { ok: true, status: 200, data: { id: 9, status: 'queued' } };
+        let release;
+        ctx.AB.api = function (method, url, body) {
+          posts.push(method + ' ' + url);
+          return new Promise((resolve) => {
+            release = () => resolve(answer);
+          });
+        };
+        let reloaded = 0;
+        const savedLoadAll = q.loadAll;
+        q.loadAll = () => {
+          reloaded++;
+        };
+        try {
+          q.retryIntake(9);
+          check('queue: retryIntake posts to /api/intake/{id}/retry and is busy', posts.join(',') === 'POST /api/intake/9/retry' && q.isBusy(9) === true, posts.join(','));
+          release();
+          await new Promise((r) => setTimeout(r, 0));
+          check('queue: a successful retry reloads and frees the card', q.isBusy(9) === false && reloaded === 1 && q.cardError(9) === '');
+          answer = { ok: false, status: 409, data: { error: 'Chỉ thử lại được việc bị lỗi' } };
+          q.retryIntake(9);
+          release();
+          await new Promise((r) => setTimeout(r, 0));
+          check('queue: a refused retry shows the error on the card', q.isBusy(9) === false && reloaded === 1 && q.cardError(9).length > 0, q.cardError(9));
+        } finally {
+          ctx.AB.api = savedApi;
+          q.loadAll = savedLoadAll;
+        }
+      }
 
       const p = { id: 7, title: 'Đề xuất A', team: 'mac-dinh', workflow: 'nhanh', priority: 'low' };
       const pf = factories.proposalForm();

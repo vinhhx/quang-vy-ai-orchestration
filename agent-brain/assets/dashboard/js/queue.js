@@ -236,6 +236,21 @@
         });
       },
 
+      // Retry a failed intake: back to the queue, the next orchestrator tick triages it again.
+      retryIntake: function (id) {
+        var self = this;
+        this.actionBusy[id] = true;
+        this.cardErrors[id] = '';
+        window.AB.api('POST', '/api/intake/' + id + '/retry', {}).then(function (res) {
+          self.actionBusy[id] = false;
+          if (res && res.ok) {
+            self.loadAll();
+          } else {
+            self.cardErrors[id] = window.AB.errorText(res);
+          }
+        });
+      },
+
       // ---- Per-id state read through methods ----
       // Alpine x-bind turns an undefined result into '' when the expression has a '.'
       // (`actionBusy[it.id]` before the key exists), and '' keeps a boolean attribute such as

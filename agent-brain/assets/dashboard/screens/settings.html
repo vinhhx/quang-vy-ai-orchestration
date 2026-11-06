@@ -67,6 +67,16 @@
         <p id="ab-set-orch-minutes-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Từ 1 đến 1440. Chỉ dùng khi bật Tự chạy lại sau khi hết quota.</p>
         <p id="ab-set-orch-minutes-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="orchMinutesInvalid" x-text="oMinutesErr"></p>
       </div>
+      <div class="space-y-2">
+        <label for="ab-set-orch-triage" class="block text-sm font-semibold leading-normal">Engine phân tích (triage)</label>
+        <select id="ab-set-orch-triage" class="w-full max-w-md min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 dark:bg-slate-900 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-50" :class="orchTriageClass" x-model="oDraftTriage" :disabled="orchFormDisabled" @change="clearOrchTriage" :aria-invalid="orchTriageInvalidAttr" aria-describedby="ab-set-orch-triage-help ab-set-orch-triage-err">
+          <template x-for="o in triageOptions" :key="o.value">
+            <option :value="o.value" :selected="triageSelected(o.value)" x-text="o.label"></option>
+          </template>
+        </select>
+        <p id="ab-set-orch-triage-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Engine đọc yêu cầu trong hàng chờ và tách thành đề xuất: claude, hoặc một engine loại anthropic hay agy. Đổi khi tài khoản claude hết hạn đăng nhập hoặc hết quota.</p>
+        <p id="ab-set-orch-triage-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="orchTriageInvalid" x-text="oTriageErr"></p>
+      </div>
       <div class="flex flex-wrap items-center gap-4">
         <button id="ab-set-orch-save" type="submit" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="orchFormDisabled" x-text="orchSaveLabel">Lưu</button>
       </div>

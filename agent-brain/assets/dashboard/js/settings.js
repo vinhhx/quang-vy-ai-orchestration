@@ -232,10 +232,13 @@
       oMaxParallel: 3,
       oAutoResume: false,
       oResumeMinutes: 60,
+      oTriageEngine: 'claude',
       oVersion: '',
       oDraftMax: '3',
       oDraftAuto: false,
       oDraftMinutes: '60',
+      oDraftTriage: 'claude',
+      oTriageErr: '',
       oToggling: false,
       oSaving: false,
       oToggleError: '',
@@ -456,6 +459,7 @@
         this.oMaxParallel = Number(data.max_parallel) || 3;
         this.oAutoResume = data.auto_resume_quota === true;
         this.oResumeMinutes = Number(data.resume_after_minutes) || 60;
+        this.oTriageEngine = String(data.triage_engine || 'claude');
         this.oVersion = String(data.version || '');
         this.oLoaded = true;
         this.oLoadFail = '';
@@ -465,8 +469,10 @@
         this.oDraftMax = String(this.oMaxParallel);
         this.oDraftAuto = this.oAutoResume;
         this.oDraftMinutes = String(this.oResumeMinutes);
+        this.oDraftTriage = this.oTriageEngine;
         this.oMaxErr = '';
         this.oMinutesErr = '';
+        this.oTriageErr = '';
         this.oFormError = '';
       },
 
@@ -503,6 +509,7 @@
           max_parallel: this.oMaxParallel,
           auto_resume_quota: this.oAutoResume,
           resume_after_minutes: this.oResumeMinutes,
+          triage_engine: this.oTriageEngine,
         }).then(function (res) {
           self.oToggling = false;
           var data = res ? res.data : null;
@@ -535,11 +542,56 @@
         this.oNotice = '';
       },
 
+      clearOrchTriage: function () {
+        this.oTriageErr = '';
+        this.oNotice = '';
+      },
+
+      // Engines the triage step can run on: `claude`, then every anthropic / agy engine in API
+      // order (dsh and người cannot answer the JSON triage asks for). A saved value that is no
+      // longer offered stays visible so it is never changed silently.
+      get triageOptions() {
+        var opts = [{ value: 'claude', label: this.engineOptionLabel('claude') }];
+        var seen = { claude: true };
+        var list = this.engines || [];
+        for (var i = 0; i < list.length; i++) {
+          var e = list[i];
+          if (!e || !e.name || seen[e.name]) continue;
+          if (e.kind !== 'anthropic' && e.kind !== 'agy') continue;
+          var label = this.engineOptionLabel(e.name);
+          if (e.label) label = label + ' (' + e.label + ')';
+          opts.push({ value: e.name, label: label });
+          seen[e.name] = true;
+        }
+        var cur = this.oDraftTriage;
+        if (cur && !seen[cur]) {
+          opts.push({ value: cur, label: cur });
+        }
+        return opts;
+      },
+
+      triageSelected: function (value) {
+        return this.oDraftTriage === value;
+      },
+
+      get orchTriageInvalid() {
+        return Boolean(this.oTriageErr);
+      },
+
+      get orchTriageInvalidAttr() {
+        return this.oTriageErr ? 'true' : 'false';
+      },
+
+      get orchTriageClass() {
+        return this.oTriageErr ? RING_BAD : RING_OK;
+      },
+
       saveOrchestratorForm: function () {
         var self = this;
         if (this.orchBusy || !this.oLoaded) return Promise.resolve();
         this.oMaxErr = '';
         this.oMinutesErr = '';
+        this.oTriageErr = '';
         this.oFormError = '';
         this.oToggleError = '';
         this.oNotice = '';
@@ -558,6 +610,7 @@
           max_parallel: Number(this.oDraftMax),
           auto_resume_quota: this.oDraftAuto,
           resume_after_minutes: minOk ? Number(this.oDraftMinutes) : this.oResumeMinutes,
+          triage_engine: this.oDraftTriage || 'claude',
         }).then(function (res) {
           self.oSaving = false;
           var data = res ? res.data : null;
@@ -579,9 +632,12 @@
             var e = errs[i] || {};
             if (e.field === 'max_parallel') self.oMaxErr = String(e.message || '');
             else if (e.field === 'resume_after_minutes') self.oMinutesErr = String(e.message || '');
+            else if (e.field === 'triage_engine') self.oTriageErr = String(e.message || '');
             else if (e.message) rest.push(String(e.message));
           }
-          if (rest.length === 0 && !self.oMaxErr && !self.oMinutesErr) rest.push(window.AB.errorText(res));
+          if (rest.length === 0 && !self.oMaxErr && !self.oMinutesErr && !self.oTriageErr) {
+            rest.push(window.AB.errorText(res));
+          }
           self.oFormError = rest.join(' ');
         });
       },
