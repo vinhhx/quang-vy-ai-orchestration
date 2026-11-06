@@ -15,6 +15,7 @@ Rules và skill gắn theo phòng chứ không theo người. Lý do: điểm c�
 ### 0. Sửa sau review plan core (làm trước, commit riêng `fix(agent-brain): department pick fallbacks`)
 - `engine::resolve_for_run_with`: khi `cfg` là `None` và `config::load_config()` lỗi thì **không chọn thành viên** (`member: None`, giữ `team.engine_for`). Bỏ đoạn dựng config giả (`"models": {"lead": "opus", …}`). Lỗi của `departments::pick` cũng in một dòng cảnh báo qua `crate::term::emit` thay vì im lặng.
 - `telegram/intake.rs` (chỗ `f.default_team = … unwrap_or_else(|| DEFAULT_TEAM)`): dùng `teams::default_team_name()`, để `/task` trên Telegram mặc định chọn `phong-ban` khi có thành viên. Các chỗ `DEFAULT_TEAM` ở `api_tasks.rs` (`current_team_name`, `team_view`) mô tả task cũ nên giữ nguyên.
+- 5 test đang lỗi sau plan core: `telegram_intake::{intake_team_step_choose_team, intake_team_bad_index}`, `telegram_quota::{quota_message_with_team_buttons, quota_cancel_restores, quota_stale_team_list}`. Nguyên nhân: danh sách đội hình giờ có thêm `phong-ban` (đội hình có sẵn mới), đây là hành vi đúng. Sửa giá trị mong đợi và chỉ số nút trong test, không sửa code để giấu `phong-ban`.
 - Test:
   - `resolve_for_run` với config lỗi → không có `member`;
   - Telegram có `departments.json` có thành viên → nút đội hình mặc định là `phong-ban`.
