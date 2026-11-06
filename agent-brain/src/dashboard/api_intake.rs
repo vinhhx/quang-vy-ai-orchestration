@@ -402,6 +402,7 @@ async fn post_proposal_approve(
             title: title.clone(),
             request: prop.request.clone(),
             priority: priority.clone(),
+            level: prop.level.clone(),
             team: team.clone(),
             workflow: workflow.clone(),
             reason: prop.reason.clone(),

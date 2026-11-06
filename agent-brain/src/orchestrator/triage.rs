@@ -16,6 +16,8 @@ pub struct ProposalDraft {
     pub request: String,
     #[serde(default = "default_priority")]
     pub priority: String,
+    #[serde(default = "default_level")]
+    pub level: String,
     pub team: String,
     pub workflow: String,
     #[serde(default)]
@@ -24,6 +26,10 @@ pub struct ProposalDraft {
 
 fn default_priority() -> String {
     "normal".to_string()
+}
+
+fn default_level() -> String {
+    "vua".to_string()
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -333,6 +339,15 @@ pub fn validate(
         ));
     }
 
+    // level thuộc 3 giá trị: de, vua, kho
+    let lvl = draft.level.trim();
+    if lvl != "de" && lvl != "vua" && lvl != "kho" {
+        return Err(format!(
+            "Độ khó '{}' không hợp lệ (chỉ chấp nhận 'de', 'vua', 'kho')",
+            draft.level
+        ));
+    }
+
     // 5. title và request không rỗng, không quá độ dài
     let title_trimmed = draft.title.trim();
     if title_trimmed.is_empty() {
@@ -431,10 +446,14 @@ QUY TẮC BẮT BUỘC:
    - Câu hỏi/yêu cầu phân tích, ước lượng, đánh giá khả thi/rủi ro, hỏi hệ thống đã có chức năng chưa → workflow loại phân tích; chỉ chọn `phan-tich-review` khi yêu cầu ghi rõ cần review.
    - Yêu cầu sửa/làm code → workflow code như cũ.
 5. Mức ưu tiên ('priority') chỉ nhận một trong 3 giá trị: "urgent", "normal", "low". Mặc định "normal" trừ khi người dùng yêu cầu gấp.
-6. 'title' là tiêu đề ngắn gọn cho công việc; 'request' là mô tả chi tiết công việc cần làm.
-7. 'reason' nêu lý do ngắn gọn vì sao chọn dự án/đội hình/quy trình.
-8. Trả về DUY NHẤT một JSON hợp lệ dạng:
-{{{{"tasks":[{{"project":"...","title":"...","request":"...","priority":"...","team":"...","workflow":"...","reason":"..."}}]}}}}
+6. Độ khó ('level') chỉ nhận một trong 3 giá trị: "de", "vua", "kho". Mặc định "vua":
+   - "de": sửa chữ, cấu hình, một file, bug rõ nguyên nhân.
+   - "vua": tính năng hoặc bug vài file trong một module.
+   - "kho": nhiều module, kiến trúc, migration dữ liệu, bảo mật, hoặc nguyên nhân chưa rõ.
+7. 'title' là tiêu đề ngắn gọn cho công việc; 'request' là mô tả chi tiết công việc cần làm.
+8. 'reason' nêu lý do ngắn gọn vì sao chọn dự án/đội hình/quy trình.
+9. Trả về DUY NHẤT một JSON hợp lệ dạng:
+{{{{"tasks":[{{"project":"...","title":"...","request":"...","priority":"...","level":"...","team":"...","workflow":"...","reason":"..."}}]}}}}
 Tối đa 5 mục trong 'tasks'. Không viết thêm bất kỳ văn bản giải thích nào ngoài JSON."#
     );
 

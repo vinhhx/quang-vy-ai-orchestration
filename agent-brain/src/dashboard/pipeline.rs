@@ -1660,6 +1660,7 @@ mod tests {
             status: status.to_string(),
             created_at: 1000,
             updated_at: 1000,
+            level: "vua".to_string(),
         }
     }
 
@@ -1699,6 +1700,7 @@ mod tests {
             stage: None,
             round: None,
             metrics_json: None,
+            member_id: None,
         }
     }
 

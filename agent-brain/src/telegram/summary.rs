@@ -695,6 +695,7 @@ mod tests {
             status: "planned".to_string(),
             created_at: 0,
             updated_at: 0,
+            level: "vua".to_string(),
         };
         let project = crate::projects::Project {
             id: "test-proj".to_string(),

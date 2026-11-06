@@ -953,7 +953,7 @@ async fn list_tasks(
         let conn = crate::db::open(&st.db_path)?;
         let mut stmt = conn.prepare(
             "SELECT tasks.id, tasks.project_id, tasks.slug, tasks.title, tasks.branch,
-                    tasks.base_branch, tasks.base_commit, tasks.status, tasks.created_at, tasks.updated_at,
+                    tasks.base_branch, tasks.base_commit, tasks.status, tasks.created_at, tasks.updated_at, tasks.level,
                     projects.slug, projects.name_vi, projects.profile
              FROM tasks
              JOIN projects ON tasks.project_id = projects.id
@@ -982,10 +982,11 @@ async fn list_tasks(
                 status: r.get(7)?,
                 created_at: r.get(8)?,
                 updated_at: r.get(9)?,
+                level: r.get(10)?,
             };
-            let proj_slug: String = r.get(10)?;
-            let proj_name: String = r.get(11)?;
-            let proj_profile: String = r.get(12)?;
+            let proj_slug: String = r.get(11)?;
+            let proj_name: String = r.get(12)?;
+            let proj_profile: String = r.get(13)?;
 
             let lead_run = crate::db::latest_run_for_task_role(&conn, task.id, "lead")?;
             let dev_run = crate::db::latest_run_for_task_role(&conn, task.id, "dev")?;

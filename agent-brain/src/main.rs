@@ -60,6 +60,9 @@ enum Commands {
         /// Đội hình cho task mới (chỉ với vai trò lead)
         #[arg(long)]
         team: Option<String>,
+        /// Mức độ khó cho task (de | vua | kho)
+        #[arg(long)]
+        level: Option<String>,
         /// Nguồn của task (nội bộ: bot Telegram)
         #[arg(long, hide = true, value_parser = ["telegram"])]
         origin: Option<String>,
@@ -117,6 +120,9 @@ enum Commands {
         /// Đội hình cho task mới (chỉ với --start)
         #[arg(long)]
         team: Option<String>,
+        /// Mức độ khó cho task mới (chỉ với --start: de | vua | kho)
+        #[arg(long)]
+        level: Option<String>,
         /// Chạy thêm 1 vòng sau khi autopilot đã dừng
         #[arg(long)]
         more_round: bool,
@@ -401,6 +407,7 @@ fn main() {
             note,
             workflow,
             team,
+            level,
             origin,
         } => {
             let opts = roles::RunOpts {
@@ -414,6 +421,7 @@ fn main() {
                 workflow,
                 origin,
                 team,
+                level,
             };
             roles::cmd_run(&mut ctx, role, &project, request.as_deref(), &opts)
         }
@@ -428,6 +436,7 @@ fn main() {
             name,
             workflow,
             team,
+            level,
             more_round,
             replan,
             note,
@@ -443,6 +452,7 @@ fn main() {
                 note,
                 origin,
                 team,
+                level,
             };
             autopilot::cmd_auto(&mut ctx, &opts)
         }

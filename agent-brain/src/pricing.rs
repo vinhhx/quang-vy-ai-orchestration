@@ -290,6 +290,7 @@ mod tests {
             stage: None,
             round: None,
             metrics_json: None,
+            member_id: None,
         }
     }
 

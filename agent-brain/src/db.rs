@@ -146,9 +146,23 @@ ALTER TABLE runs_new RENAME TO runs;
 CREATE INDEX runs_started ON runs(started_at);
 CREATE INDEX runs_task ON runs(task_id);
 CREATE INDEX runs_running ON runs(status) WHERE status = 'running';"#,
+    r#"ALTER TABLE tasks ADD COLUMN level TEXT NOT NULL DEFAULT 'vua' CHECK (level IN ('de','vua','kho'));
+ALTER TABLE proposals ADD COLUMN level TEXT NOT NULL DEFAULT 'vua' CHECK (level IN ('de','vua','kho'));
+ALTER TABLE runs ADD COLUMN member_id TEXT;
+CREATE TABLE member_scores (
+  id INTEGER PRIMARY KEY,
+  run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id),
+  member_id TEXT NOT NULL,
+  task_id INTEGER REFERENCES tasks(id),
+  score INTEGER NOT NULL CHECK (score BETWEEN 1 AND 5),
+  note TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX member_scores_member ON member_scores(member_id);"#,
 ];
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -310,10 +324,11 @@ pub struct TaskRow {
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
+    pub level: String,
 }
 
 pub const TASK_COLUMNS: &str =
-    "id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at";
+    "id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level";
 
 fn task_from_row(r: &rusqlite::Row) -> rusqlite::Result<TaskRow> {
     Ok(TaskRow {
@@ -327,6 +342,7 @@ fn task_from_row(r: &rusqlite::Row) -> rusqlite::Result<TaskRow> {
         status: r.get(7)?,
         created_at: r.get(8)?,
         updated_at: r.get(9)?,
+        level: r.get(10)?,
     })
 }
 
@@ -632,6 +648,7 @@ pub struct RunRow {
     pub stage: Option<String>,
     pub round: Option<i64>,
     pub metrics_json: Option<String>,
+    pub member_id: Option<String>,
 }
 
 fn row_to_run(r: &rusqlite::Row) -> rusqlite::Result<RunRow> {
@@ -670,13 +687,14 @@ fn row_to_run(r: &rusqlite::Row) -> rusqlite::Result<RunRow> {
         stage: r.get(31)?,
         round: r.get(32)?,
         metrics_json: r.get(33)?,
+        member_id: r.get(34)?,
     })
 }
 
 const RUN_COLUMNS: &str = "id, task_id, project_id, role, engine, profile, model, session_id, pid, pgid, pid_start,
   status, outcome, exit_code, kill_requested_at, started_at, ended_at, input_tokens, output_tokens,
   cache_read_tokens, cache_write_tokens, cost_usd, num_turns, assistant_turns, turns_before_first_edit,
-  reads_outside_plan, permission_denials, usage_source, base_commit, run_dir, error, stage, round, metrics_json";
+  reads_outside_plan, permission_denials, usage_source, base_commit, run_dir, error, stage, round, metrics_json, member_id";
 
 pub fn get_run(conn: &Connection, id: i64) -> BrainResult<Option<RunRow>> {
     let sql = format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1");
@@ -1143,10 +1161,11 @@ pub struct ProposalRow {
     pub error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub level: String,
 }
 
 const PROPOSAL_COLUMNS: &str =
-    "id, intake_id, project_id, title, request, priority, team, workflow, reason, status, task_id, error, created_at, updated_at";
+    "id, intake_id, project_id, title, request, priority, team, workflow, reason, status, task_id, error, created_at, updated_at, level";
 
 fn row_to_proposal(r: &rusqlite::Row) -> rusqlite::Result<ProposalRow> {
     Ok(ProposalRow {
@@ -1164,6 +1183,7 @@ fn row_to_proposal(r: &rusqlite::Row) -> rusqlite::Result<ProposalRow> {
         error: r.get(11)?,
         created_at: r.get(12)?,
         updated_at: r.get(13)?,
+        level: r.get(14)?,
     })
 }
 
@@ -1177,6 +1197,7 @@ pub struct NewProposal<'a> {
     pub team: &'a str,
     pub workflow: &'a str,
     pub reason: Option<&'a str>,
+    pub level: &'a str,
 }
 
 pub fn insert_proposal(conn: &Connection, p: &NewProposal<'_>) -> BrainResult<i64> {
@@ -1186,9 +1207,14 @@ pub fn insert_proposal(conn: &Connection, p: &NewProposal<'_>) -> BrainResult<i6
     } else {
         p.priority
     };
+    let level_val = if p.level.is_empty() {
+        "vua"
+    } else {
+        p.level
+    };
     conn.execute(
-        "INSERT INTO proposals (intake_id, project_id, title, request, priority, team, workflow, reason, status, task_id, error, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', NULL, NULL, ?9, ?9)",
+        "INSERT INTO proposals (intake_id, project_id, title, request, priority, team, workflow, reason, status, task_id, error, created_at, updated_at, level)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', NULL, NULL, ?9, ?9, ?10)",
         params![
             p.intake_id,
             p.project_id,
@@ -1199,6 +1225,7 @@ pub fn insert_proposal(conn: &Connection, p: &NewProposal<'_>) -> BrainResult<i6
             p.workflow,
             p.reason,
             now,
+            level_val,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -1726,6 +1753,94 @@ pub fn list_fixbug_refs(
         .query_map(params![project_id], row_to_fixbug_ref)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+pub fn set_task_level(conn: &Connection, task_id: i64, level: &str) -> BrainResult<()> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE tasks SET level = ?1, updated_at = ?2 WHERE id = ?3",
+        params![level, now, task_id],
+    )?;
+    if changes == 0 {
+        return Err(BrainError::error(format!("Không tìm thấy task #{task_id}")));
+    }
+    Ok(())
+}
+
+pub fn task_level(conn: &Connection, task_id: i64) -> BrainResult<String> {
+    let lvl: Option<String> = conn
+        .query_row(
+            "SELECT level FROM tasks WHERE id = ?1",
+            params![task_id],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok(lvl.unwrap_or_else(|| "vua".to_string()))
+}
+
+pub fn set_proposal_level(conn: &Connection, id: i64, level: &str) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE proposals SET level = ?1, updated_at = ?2 WHERE id = ?3",
+        params![level, now, id],
+    )?;
+    Ok(changes > 0)
+}
+
+pub fn set_run_member_id(conn: &Connection, run_id: i64, member_id: &str) -> BrainResult<()> {
+    conn.execute(
+        "UPDATE runs SET member_id = ?1 WHERE id = ?2",
+        params![member_id, run_id],
+    )?;
+    Ok(())
+}
+
+pub fn member_score_avg(conn: &Connection, member_id: &str) -> BrainResult<(f64, i64)> {
+    let row: (Option<f64>, i64) = conn.query_row(
+        "SELECT AVG(score), COUNT(*) FROM member_scores WHERE member_id = ?1",
+        params![member_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok((row.0.unwrap_or(0.0), row.1))
+}
+
+pub fn running_count_by_member(conn: &Connection, member_id: &str) -> BrainResult<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM runs WHERE member_id = ?1 AND status = 'running'",
+        params![member_id],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
+pub fn last_member_for(conn: &Connection, task_id: i64, role: &str) -> BrainResult<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT member_id FROM runs WHERE task_id = ?1 AND role = ?2 AND member_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query(params![task_id, role])?;
+    if let Some(r) = rows.next()? {
+        Ok(r.get(0)?)
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn record_member_score(
+    conn: &Connection,
+    run_id: i64,
+    member_id: &str,
+    task_id: Option<i64>,
+    score: i32,
+    note: Option<&str>,
+) -> BrainResult<i64> {
+    let now = now_ms();
+    conn.execute(
+        "INSERT INTO member_scores (run_id, member_id, task_id, score, note, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+         ON CONFLICT(run_id) DO UPDATE SET score = ?4, note = ?5, updated_at = ?6",
+        params![run_id, member_id, task_id, score, note, now],
+    )?;
+    Ok(conn.last_insert_rowid())
 }
 
 #[cfg(test)]

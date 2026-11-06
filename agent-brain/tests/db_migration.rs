@@ -955,7 +955,7 @@ fn v3_db_gains_team_json() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
-    assert_eq!(agent_brain::db::SCHEMA_VERSION, 7);
+    assert_eq!(agent_brain::db::SCHEMA_VERSION, 8);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 
     let n: i64 = conn
@@ -1008,7 +1008,7 @@ fn fresh_db_has_team_json_at_current_version() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
-    assert_eq!(user_ver, 7);
+    assert_eq!(user_ver, 8);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 }
 
@@ -1044,7 +1044,7 @@ fn v4_db_upgrades_to_v5_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 7);
+    assert_eq!(user_ver, 8);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Verify existing data preserved
@@ -1122,7 +1122,7 @@ fn v5_db_upgrades_to_v6_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 7);
+    assert_eq!(user_ver, 8);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong intake phải được giữ nguyên
@@ -1223,7 +1223,7 @@ fn v6_db_upgrades_to_v7_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 7);
+    assert_eq!(user_ver, 8);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong runs phải được giữ nguyên
@@ -1251,6 +1251,105 @@ fn v6_db_upgrades_to_v7_keeping_data() {
     bad_run.role = "invalid_role".to_string();
     let bad = agent_brain::db::insert_run(&conn, &bad_run);
     assert!(bad.is_err(), "Kỳ vọng CHECK constraint chặn role không hợp lệ");
+
+    // Kiểm tra khóa ngoại
+    let bad_fk: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(bad_fk, 0);
+}
+
+fn build_v7(path: &Path) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    for sql in &agent_brain::db::MIGRATIONS[..7] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 7).unwrap();
+    conn.execute(
+        "INSERT INTO projects (id, slug, path, name_vi, aliases_json, type, profile, repo, missing)
+         VALUES (1, 'proj-1', '/path/1', 'Dự án 1', '[]', 'code', 'work', NULL, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at)
+         VALUES (1, 1, 'task-1', 'Task 1', 'task/1', 'main', 'base1', 'open', 1000, 1000)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO intake (id, source, project_id, request, priority, status, error, created_at, updated_at)
+         VALUES (1, 'ui', 1, 'Yêu cầu 1', 'normal', 'proposed', NULL, 1000, 1000)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO proposals (id, intake_id, project_id, title, request, priority, team, workflow, reason, status, task_id, error, created_at, updated_at)
+         VALUES (1, 1, 1, 'Đề xuất 1', 'Yêu cầu 1', 'normal', 'mac-dinh', 'mac-dinh', NULL, 'pending', NULL, NULL, 1000, 1000)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO runs (id, task_id, project_id, role, engine, profile, model, session_id, pid, pgid, pid_start, status, outcome, exit_code, kill_requested_at, started_at, ended_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, num_turns, assistant_turns, turns_before_first_edit, reads_outside_plan, permission_denials, usage_source, base_commit, run_dir, error)
+         VALUES (1, 1, 1, 'lead', 'claude', 'work', 'sonnet', 's1', 101, 101, 1, 'succeeded', 'lead:done', 0, NULL, 1000, 1050, 100, 50, 10, 5, 0.05, 2, 2, 1, 0, 0, 'result', 'c1', '/tmp/r1', NULL)",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn v7_db_upgrades_to_v8_keeping_data() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v7(&db_path);
+
+    let conn = agent_brain::db::open(&db_path).expect("open v7 DB upgrades to v8");
+
+    let user_ver: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(user_ver, 8);
+    assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
+
+    // Dữ liệu cũ trong tasks phải được giữ nguyên và cột level mặc định là 'vua'
+    let task = agent_brain::db::get_task(&conn, 1).unwrap().expect("task 1 exists");
+    assert_eq!(task.level, "vua");
+    assert_eq!(task.title, "Task 1");
+
+    // Dữ liệu cũ trong proposals phải có level mặc định là 'vua'
+    let prop = agent_brain::db::get_proposal(&conn, 1).unwrap().expect("proposal 1 exists");
+    assert_eq!(prop.level, "vua");
+    assert_eq!(prop.title, "Đề xuất 1");
+
+    // Dữ liệu cũ trong runs có member_id = None
+    let run = agent_brain::db::get_run(&conn, 1).unwrap().expect("run 1 exists");
+    assert_eq!(run.member_id, None);
+
+    // Cập nhật level cho task
+    agent_brain::db::set_task_level(&conn, 1, "kho").unwrap();
+    assert_eq!(agent_brain::db::task_level(&conn, 1).unwrap(), "kho");
+
+    // CHECK constraint chặn level không hợp lệ trên tasks
+    let bad_level = conn.execute("UPDATE tasks SET level = 'invalid' WHERE id = 1", []);
+    assert!(bad_level.is_err(), "CHECK constraint phải chặn level không hợp lệ trên tasks");
+
+    // Gán member_id cho run và ghi điểm member_scores
+    agent_brain::db::set_run_member_id(&conn, 1, "opus-1").unwrap();
+    let run_after = agent_brain::db::get_run(&conn, 1).unwrap().unwrap();
+    assert_eq!(run_after.member_id.as_deref(), Some("opus-1"));
+
+    agent_brain::db::record_member_score(&conn, 1, "opus-1", Some(1), 5, Some("Làm rất tốt")).unwrap();
+    let (avg, count) = agent_brain::db::member_score_avg(&conn, "opus-1").unwrap();
+    assert_eq!(count, 1);
+    assert!((avg - 5.0).abs() < 1e-6);
+
+    // CHECK constraint chặn score ngoài 1..5
+    let bad_score = conn.execute(
+        "INSERT INTO member_scores (run_id, member_id, task_id, score, created_at, updated_at) VALUES (99, 'opus-1', 1, 6, 1000, 1000)",
+        [],
+    );
+    assert!(bad_score.is_err(), "CHECK constraint phải chặn score ngoài 1..5");
 
     // Kiểm tra khóa ngoại
     let bad_fk: i64 = conn

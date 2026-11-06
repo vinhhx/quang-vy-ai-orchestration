@@ -155,6 +155,7 @@ fn task_row() -> agent_brain::db::TaskRow {
         status: "planned".to_string(),
         created_at: 0,
         updated_at: 0,
+        level: "vua".to_string(),
     }
 }
 

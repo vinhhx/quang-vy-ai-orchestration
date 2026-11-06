@@ -400,6 +400,7 @@ pub struct RunOpts {
     pub workflow: Option<String>,
     pub origin: Option<String>,
     pub team: Option<String>,
+    pub level: Option<String>,
 }
 
 pub fn execute_role(

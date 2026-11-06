@@ -81,6 +81,7 @@ pub fn tick(st: &AppState) -> BrainResult<()> {
                         team: &draft.team,
                         workflow: &draft.workflow,
                         reason: draft.reason.as_deref(),
+                        level: &draft.level,
                     };
                     crate::db::insert_proposal(&conn, &new_p)?;
                 }

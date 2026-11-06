@@ -5,6 +5,7 @@ pub mod app;
 pub mod autopilot;
 pub mod config;
 pub mod dashboard;
+pub mod departments;
 pub mod db;
 pub mod dsh;
 pub mod engine;

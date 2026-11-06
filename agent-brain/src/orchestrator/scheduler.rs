@@ -98,6 +98,9 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
                         |r| r.get(0),
                     )
                     .ok();
+                if let Some(tid) = task_id {
+                    let _ = crate::db::set_task_level(&conn, tid, &prop.level);
+                }
                 crate::db::set_proposal_started(&conn, prop.id, task_id)?;
             }
             StartOutcome::PreflightRefused { reason, kind } => {

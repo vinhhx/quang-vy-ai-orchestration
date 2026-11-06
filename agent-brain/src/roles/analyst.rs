@@ -133,6 +133,14 @@ pub fn cmd_analyst(
         .and_then(|tt| teams_loaded.get(&tt.name).cloned());
     let effective_team = existing_task_team.as_ref().unwrap_or(&team_res.team);
 
+    if let Some(ref lvl_str) = opts.level {
+        if crate::departments::Level::parse(lvl_str).is_none() {
+            return Err(BrainError::error(format!(
+                "Mức độ khó '{lvl_str}' không hợp lệ (chỉ nhận 'de', 'vua', 'kho')"
+            )));
+        }
+    }
+
     if opts.dry_run {
         let user_input = build_analyst_user_input(&proj_path, question, opts.origin.as_deref());
         let allowed = ANALYST_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect();
@@ -194,6 +202,11 @@ pub fn cmd_analyst(
         curr_branch.as_deref(),
         Some(&initial_head),
     )?;
+
+    if let Some(ref lvl_str) = opts.level {
+        let lvl = crate::departments::Level::parse(lvl_str).unwrap();
+        crate::db::set_task_level(&ctx.conn, task_id, lvl.as_str())?;
+    }
 
     if opts.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM) {
         crate::db::mark_task_origin(&ctx.conn, task_id, crate::db::ORIGIN_TELEGRAM)?;

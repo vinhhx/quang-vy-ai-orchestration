@@ -601,6 +601,7 @@ fn test_validate_rules() {
         title: "Tieu de hop le".to_string(),
         request: "Yeu cau hop le".to_string(),
         priority: "normal".to_string(),
+        level: "vua".to_string(),
         team: "mac-dinh".to_string(),
         workflow: "mac-dinh".to_string(),
         reason: Some("Ly do".to_string()),
@@ -644,6 +645,31 @@ fn test_validate_rules() {
     let mut d = valid_draft.clone();
     d.request = "a".repeat(20_001);
     assert!(validate(&d, &projects, &teams, &workflows, &st.cfg.engines).is_err());
+
+    // 7. Level không hợp lệ
+    let mut d = valid_draft.clone();
+    d.level = "x".to_string();
+    assert!(validate(&d, &projects, &teams, &workflows, &st.cfg.engines).is_err());
+
+    let mut d = valid_draft.clone();
+    d.level = "de".to_string();
+    assert!(validate(&d, &projects, &teams, &workflows, &st.cfg.engines).is_ok());
+
+    let mut d = valid_draft.clone();
+    d.level = "kho".to_string();
+    assert!(validate(&d, &projects, &teams, &workflows, &st.cfg.engines).is_ok());
+
+    // JSON thiếu level tự mặc định "vua"
+    let json_no_level = serde_json::json!({
+        "project": "web-ban-hang",
+        "title": "Tieu de",
+        "request": "Yeu cau",
+        "team": "mac-dinh",
+        "workflow": "mac-dinh"
+    });
+    let parsed: ProposalDraft = serde_json::from_value(json_no_level).unwrap();
+    assert_eq!(parsed.level, "vua");
+    assert_eq!(parsed.priority, "normal");
 }
 
 #[test]

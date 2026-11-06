@@ -1500,6 +1500,7 @@ mod tests {
             stage: stage.map(|s| s.to_string()),
             round,
             metrics_json: metrics_json.map(|s| s.to_string()),
+            member_id: None,
         }
     }
 

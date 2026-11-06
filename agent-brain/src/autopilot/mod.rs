@@ -60,6 +60,7 @@ pub struct AutoOpts {
     pub note: Option<String>,
     pub origin: Option<String>,
     pub team: Option<String>,
+    pub level: Option<String>,
 }
 
 /// Kết quả một tiến trình con.
@@ -678,6 +679,10 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
             args.push("--team".to_string());
             args.push(team.to_string());
         }
+        if let Some(level) = opts.level.as_deref() {
+            args.push("--level".to_string());
+            args.push(level.to_string());
+        }
         args.push("--".to_string());
         args.push(project.id.clone());
         args.push(request.to_string());
@@ -728,9 +733,9 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
         return drive(ctx, task.id, false);
     }
 
-    if opts.name.is_some() || opts.workflow.is_some() {
+    if opts.name.is_some() || opts.workflow.is_some() || opts.level.is_some() {
         return Err(BrainError::error(
-            "--name và --workflow chỉ dùng với --start",
+            "--name, --workflow và --level chỉ dùng với --start",
         ));
     }
     if opts.args.len() != 1 {
