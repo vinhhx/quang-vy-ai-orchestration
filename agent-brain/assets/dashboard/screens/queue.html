@@ -1,151 +1,13 @@
-<section data-screen="queue" x-data="queue" :data-loaded="loadedAttr" class="space-y-6">
-  <!-- Thanh trạng thái -->
-  <div class="flex flex-wrap items-center justify-between gap-4">
-    <div class="flex flex-wrap items-center gap-3">
-      <h1 class="text-2xl font-semibold leading-[1.2]">Điều phối</h1>
-      <span
-        x-show="isOrchestratorEnabled"
-        class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-semibold bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300 dark:bg-emerald-900/40 dark:text-emerald-200 dark:ring-emerald-700"
-      >Orchestrator: Bật</span>
-      <span
-        x-show="!isOrchestratorEnabled"
-        class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-semibold bg-slate-100 text-slate-700 ring-1 ring-slate-300 dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-600"
-      >Orchestrator: Tắt</span>
-      <span
-        class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-semibold bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:ring-indigo-800"
-        x-text="slotText"
-      ></span>
-      <button
-        type="button"
-        @click="openAssignModal"
-        title="Giao việc (n)"
-        class="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-      >Giao việc</button>
-      <button
-        type="button"
-        @click="openOverviewModal"
-        title="Tổng quan (o)"
-        class="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-      >Tổng quan</button>
-    </div>
-    <div x-show="hasAutoResume" class="text-sm font-normal text-slate-600 dark:text-slate-400" x-text="autoResumeText"></div>
-  </div>
-
-  <!-- Cảnh báo khi Orchestrator tắt -->
-  <div
-    role="alert"
-    x-show="!isOrchestratorEnabled"
-    class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 text-sm font-normal leading-normal"
-  >
-    Orchestrator đang tắt: việc giao mới sẽ chạy thẳng, không qua hàng chờ. Bật bằng <code class="font-mono text-xs bg-amber-100 px-1 py-0.5 rounded dark:bg-amber-950/40">"orchestrator": {"enabled": true}</code> trong config.json rồi khởi động lại serve.
-  </div>
-
-  <!-- Lỗi nạp API nếu có -->
-  <div
-    role="alert"
-    x-show="boardError"
-    class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal leading-normal"
-    x-text="'Lỗi nạp hàng chờ: ' + boardError"
-  ></div>
-  <div
-    role="alert"
-    x-show="tasksError"
-    class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal leading-normal"
-    x-text="'Lỗi nạp danh sách task: ' + tasksError"
-  ></div>
-
-  <!-- Ô giao nhanh (chỉ hiện khi enabled) -->
-  <div
-    x-show="isOrchestratorEnabled"
-    class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4"
-  >
-    <div class="flex flex-wrap items-center justify-between gap-2">
-      <h2 class="text-lg font-semibold leading-normal">Giao việc nhanh vào hàng chờ</h2>
-      <button
-        type="button"
-        @click="openAssignModal"
-        class="text-xs font-semibold text-indigo-600 hover:text-indigo-500 hover:underline dark:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-      >Mở form đầy đủ (chọn đội hình, quy trình…)</button>
-    </div>
-    <div class="space-y-2">
-      <label for="ab-quick-request" class="text-sm font-semibold leading-normal">Yêu cầu</label>
-      <textarea
-        id="ab-quick-request"
-        rows="3"
-        maxlength="20000"
-        placeholder="Mô tả công việc cần giao..."
-        class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-300 placeholder:text-slate-400 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 dark:placeholder:text-slate-500 resize-y focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-        x-model="quickRequest"
-      ></textarea>
-    </div>
-
-    <div class="flex flex-wrap items-end gap-4">
-      <div class="min-w-64 flex-1 space-y-1">
-        <label for="ab-quick-project" class="text-sm font-semibold leading-normal">Dự án (tuỳ chọn)</label>
-        <select
-          id="ab-quick-project"
-          class="w-full min-h-10 rounded-xl bg-white px-3 py-1.5 text-sm text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-          x-model="quickProject"
-        >
-          <option value="">Để agent tự chọn</option>
-          <template x-for="p in projects" :key="p.id">
-            <option :value="p.id" x-text="(p.name_vi || p.id) + ' (' + p.id + ')'"></option>
-          </template>
-        </select>
-      </div>
-
-      <div class="space-y-1">
-        <span class="block text-sm font-semibold leading-normal">Mức ưu tiên</span>
-        <div class="inline-flex rounded-xl p-1 bg-slate-100 dark:bg-slate-900 ring-1 ring-slate-200 dark:ring-slate-700 gap-1" role="group" aria-label="Mức ưu tiên">
-          <button
-            type="button"
-            @click="setQuickPriority('urgent')"
-            :aria-pressed="quickPriority === 'urgent' ? 'true' : 'false'"
-            class="rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-            :class="quickPriority === 'urgent' ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'"
-          >Gấp</button>
-          <button
-            type="button"
-            @click="setQuickPriority('normal')"
-            :aria-pressed="quickPriority === 'normal' ? 'true' : 'false'"
-            class="rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-            :class="quickPriority === 'normal' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'"
-          >Thường</button>
-          <button
-            type="button"
-            @click="setQuickPriority('low')"
-            :aria-pressed="quickPriority === 'low' ? 'true' : 'false'"
-            class="rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-            :class="quickPriority === 'low' ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'"
-          >Thấp</button>
-        </div>
-      </div>
-
-      <button
-        type="button"
-        @click="submitQuickIntake"
-        :disabled="quickSending || !quickRequest.trim()"
-        class="inline-flex min-h-10 items-center justify-center rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-      >
-        <span x-show="!quickSending">Đưa vào hàng chờ</span>
-        <span x-show="quickSending">Đang gửi...</span>
-      </button>
-    </div>
-
-    <div
-      role="alert"
-      x-show="quickError"
-      class="rounded-xl bg-rose-50 p-3 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal"
-      x-text="quickError"
-    ></div>
-  </div>
-
+<section data-screen="queue" x-data="queue" :data-loaded="loadedAttr" class="flex flex-col gap-4 lg:-my-8 lg:-mr-6 lg:h-screen lg:flex-row lg:gap-0">
+  <!-- Cột chính: < lg là "contents" để sắp xếp 3D → nhóm việc → phần còn lại; ≥ lg tự cuộn bên trong, trang không cuộn -->
+  <div data-queue-main class="contents lg:flex lg:min-w-0 lg:flex-1 lg:flex-col lg:gap-4 lg:overflow-y-auto lg:py-4 lg:pr-4">
   <!-- Vùng sơ đồ visual U2: Văn phòng ảo 3D -->
-  <section data-queue-visual class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-3">
+  <section data-queue-visual class="order-1 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-3">
     <!-- Thanh điều khiển văn phòng -->
     <div class="flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-slate-200 dark:border-slate-700">
       <div class="flex items-center gap-2">
         <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Văn phòng 3D</h2>
+        <span class="text-xs text-slate-500 dark:text-slate-400" x-text="totalOfficeCount + ' nhân vật'"></span>
         <span class="text-xs text-slate-500 dark:text-slate-400 hidden sm:inline">8 phòng ban theo tiến độ thực tế</span>
       </div>
       <div class="flex items-center gap-2">
@@ -169,47 +31,29 @@
     </div>
 
     <!-- Khối văn phòng chính -->
-    <div x-show="showOffice && hasWebGL" class="flex flex-col lg:flex-row gap-4">
-      <!-- Cây phòng ban bên trái (chỉ hiện từ lg) -->
-      <aside class="hidden lg:flex flex-col w-64 shrink-0 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200 dark:bg-slate-900/40 dark:ring-slate-800 space-y-2 max-h-[520px] overflow-y-auto">
-        <div class="flex items-center justify-between pb-1 border-b border-slate-200 dark:border-slate-700">
-          <h3 class="text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Phòng ban</h3>
-          <span class="text-xs text-slate-500 dark:text-slate-400" x-text="totalOfficeCount + ' nhân vật'"></span>
-        </div>
-        <div class="space-y-1">
-          <template x-for="r in officeRoomList" :key="r.id">
-            <div class="rounded-lg p-1.5 hover:bg-white dark:hover:bg-slate-800/80 transition-colors space-y-1">
-              <button
-                type="button"
-                @click="focusRoom(r.id)"
-                class="w-full flex items-center justify-between text-left text-xs font-semibold text-slate-800 dark:text-slate-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-              >
-                <span class="flex items-center gap-1.5">
-                  <span class="w-2 h-2 rounded-full" :style="roomDotStyle(r)"></span>
-                  <span x-text="r.name"></span>
-                </span>
-                <span class="rounded-full bg-slate-200 px-1.5 py-0.2 text-[10px] font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="r.items.length"></span>
-              </button>
-              <!-- Danh sách task/mục trong phòng -->
-              <div x-show="r.items.length !== 0" class="pl-3.5 space-y-0.5">
-                <template x-for="item in r.items" :key="item.type + '-' + item.id">
-                  <button
-                    type="button"
-                    @click="focusOfficeTask(item.id)"
-                    class="w-full text-left truncate text-[11px] text-slate-600 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 py-0.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                    :class="selectedTaskId === item.id ? 'font-semibold text-indigo-600 dark:text-indigo-400' : ''"
-                    :title="item.title"
-                    x-text="item.title"
-                  ></button>
-                </template>
-              </div>
-            </div>
-          </template>
-        </div>
-      </aside>
+    <div x-show="showOffice && hasWebGL" class="space-y-3">
+      <!-- Phòng ban trải ngang: tên ở trên, số lượng ở dưới -->
+      <div class="grid grid-cols-4 gap-2 sm:grid-cols-8" role="group" aria-label="Phòng ban">
+        <template x-for="r in officeRoomList" :key="r.id">
+          <button
+            type="button"
+            @click="focusRoom(r.id)"
+            :aria-pressed="roomPressed(r)"
+            :title="roomTitle(r)"
+            class="flex min-w-0 flex-col items-start gap-0.5 rounded-xl px-3 py-1.5 text-left ring-1 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+            :class="roomButtonClass(r)"
+          >
+            <span class="flex w-full min-w-0 items-center gap-1.5 text-xs font-semibold">
+              <span class="h-2 w-2 shrink-0 rounded-full" :style="roomDotStyle(r)"></span>
+              <span class="truncate" x-text="r.name"></span>
+            </span>
+            <span class="text-xl font-bold leading-tight tabular-nums" x-text="r.items.length"></span>
+          </button>
+        </template>
+      </div>
 
       <!-- Khung nhìn 3D Viewport -->
-      <div class="flex-1 relative rounded-xl overflow-hidden bg-slate-900/5 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 h-80 lg:h-[520px]">
+      <div class="relative rounded-xl overflow-hidden bg-slate-900/5 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 h-[50vh] min-h-80 lg:h-[calc(100vh-15rem)]">
         <!-- Container cho Three.js Canvas -->
         <div id="office3d-canvas-container" class="w-full h-full"></div>
 
@@ -295,574 +139,719 @@
 
     <!-- Thông báo dự phòng khi tắt 3D hoặc không có WebGL -->
     <div x-show="!showOffice || !hasWebGL" class="p-6 text-center text-sm text-slate-500 dark:text-slate-400 rounded-xl bg-slate-50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-800">
-      <span x-show="!hasWebGL">Trình duyệt không hỗ trợ WebGL. Văn phòng 3D tạm tắt; năm cột bên dưới vẫn hoạt động bình thường.</span>
+      <span x-show="!hasWebGL">Trình duyệt không hỗ trợ WebGL. Văn phòng 3D tạm tắt; danh sách nhóm việc vẫn hoạt động bình thường.</span>
       <span x-show="hasWebGL && !showOffice">Văn phòng 3D đang tạm tắt. Bấm "Văn phòng 3D: Bật" để xem lại.</span>
     </div>
   </section>
 
-  <!-- Năm cột điều phối -->
-  <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4 items-start">
-    <!-- Cột 1: Hàng chờ -->
-    <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
-      <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
-        <h2 class="text-base font-semibold">Hàng chờ</h2>
-        <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="intakeItems.length"></span>
+  <div class="order-3 space-y-4">
+    <!-- Thanh trạng thái -->
+    <div class="flex flex-wrap items-center justify-between gap-4">
+      <div class="flex flex-wrap items-center gap-3">
+        <h1 class="text-2xl font-semibold leading-[1.2]">Điều phối</h1>
+        <span
+          x-show="isOrchestratorEnabled"
+          class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-semibold bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300 dark:bg-emerald-900/40 dark:text-emerald-200 dark:ring-emerald-700"
+        >Orchestrator: Bật</span>
+        <span
+          x-show="!isOrchestratorEnabled"
+          class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-semibold bg-slate-100 text-slate-700 ring-1 ring-slate-300 dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-600"
+        >Orchestrator: Tắt</span>
+        <span
+          class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-semibold bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:ring-indigo-800"
+          x-text="slotText"
+        ></span>
+        <button
+          type="button"
+          @click="openAssignModal"
+          title="Giao việc (n)"
+          class="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+        >Giao việc</button>
+        <button
+          type="button"
+          @click="openOverviewModal"
+          title="Tổng quan (o)"
+          class="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+        >Tổng quan</button>
       </div>
-
-      <div x-show="intakeItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
-        Trống
-      </div>
-
-      <div class="space-y-3">
-        <template x-for="it in intakeItems" :key="'intake-' + it.id">
-          <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
-            <div class="flex flex-wrap items-center justify-between gap-1">
-              <span
-                x-show="it.status === 'queued'"
-                class="inline-flex items-center rounded-md bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-              >Chờ phân tích</span>
-              <span
-                x-show="it.status === 'triaging'"
-                class="inline-flex items-center rounded-md bg-indigo-100 px-2 py-0.5 text-xs font-semibold text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200"
-              >Đang phân tích…</span>
-              <span
-                x-show="it.status === 'failed'"
-                class="inline-flex items-center rounded-md bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-800 dark:bg-rose-900/40 dark:text-rose-200"
-              >Lỗi</span>
-
-              <span
-                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
-                :class="it.priority === 'urgent' ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200' : (it.priority === 'low' ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200')"
-                x-text="it.priority === 'urgent' ? 'Gấp' : (it.priority === 'low' ? 'Thấp' : 'Thường')"
-              ></span>
-            </div>
-
-            <div x-show="it.project || it.project_name" class="text-xs font-semibold text-slate-600 dark:text-slate-400" x-text="it.project_name || it.project"></div>
-
-            <p class="text-sm font-normal text-slate-900 dark:text-slate-100 line-clamp-4 whitespace-pre-wrap" x-text="it.request"></p>
-
-            <!-- Lỗi rút gọn / đầy đủ nếu failed -->
-            <div x-show="it.status === 'failed' && it.error" class="rounded-lg bg-rose-50 p-2 text-xs text-rose-900 dark:bg-rose-900/20 dark:text-rose-200 space-y-1">
-              <p x-show="!isErrorExpanded(it.id)" x-text="(it.error || '').slice(0, 90) + ((it.error || '').length > 90 ? '...' : '')"></p>
-              <p x-show="isErrorExpanded(it.id)" class="whitespace-pre-wrap" x-text="it.error"></p>
-              <button
-                type="button"
-                x-show="isLongError(it)"
-                @click="toggleError(it.id)"
-                class="text-indigo-600 dark:text-indigo-400 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                x-text="isErrorExpanded(it.id) ? 'Thu gọn' : 'Xem đầy đủ'"
-              ></button>
-            </div>
-
-            <!-- Nút Huỷ (chỉ queued và failed) và Xem trong VP -->
-            <div class="pt-1 flex items-center justify-between gap-1">
-              <button
-                type="button"
-                @click="focusOfficeTask(it.id)"
-                class="inline-flex min-h-8 items-center text-xs font-semibold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-              >Xem trong VP</button>
-              <button
-                type="button"
-                x-show="it.status === 'queued' || it.status === 'failed'"
-                @click="cancelIntake(it.id)"
-                :disabled="actionBusy[it.id]"
-                class="inline-flex min-h-8 items-center justify-center rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-rose-600 ring-1 ring-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-800 dark:text-rose-400 dark:ring-rose-800 dark:hover:bg-rose-950/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 dark:focus-visible:outline-rose-400"
-              >Huỷ</button>
-            </div>
-
-            <div
-              role="alert"
-              x-show="cardErrors[it.id]"
-              class="rounded-lg bg-rose-50 p-2 text-xs text-rose-800 dark:bg-rose-900/30 dark:text-rose-200"
-              x-text="cardErrors[it.id]"
-            ></div>
-          </div>
-        </template>
-      </div>
+      <div x-show="hasAutoResume" class="text-sm font-normal text-slate-600 dark:text-slate-400" x-text="autoResumeText"></div>
     </div>
 
-    <!-- Cột 2: Cần bạn duyệt -->
-    <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
-      <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
-        <h2 class="text-base font-semibold">Cần bạn duyệt</h2>
-        <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="approvalItems.length"></span>
-      </div>
+    <!-- Cảnh báo khi Orchestrator tắt -->
+    <div
+      role="alert"
+      x-show="!isOrchestratorEnabled"
+      class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 text-sm font-normal leading-normal"
+    >
+      Orchestrator đang tắt: việc giao mới sẽ chạy thẳng, không qua hàng chờ. Bật bằng <code class="font-mono text-xs bg-amber-100 px-1 py-0.5 rounded dark:bg-amber-950/40">"orchestrator": {"enabled": true}</code> trong config.json rồi khởi động lại serve.
+    </div>
 
-      <div x-show="approvalItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
-        Trống
-      </div>
+    <!-- Lỗi nạp API nếu có -->
+    <div
+      role="alert"
+      x-show="boardError"
+      class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal leading-normal"
+      x-text="'Lỗi nạp hàng chờ: ' + boardError"
+    ></div>
+    <div
+      role="alert"
+      x-show="tasksError"
+      class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal leading-normal"
+      x-text="'Lỗi nạp danh sách task: ' + tasksError"
+    ></div>
 
-      <div class="space-y-3">
-        <template x-for="item in approvalItems" :key="item.kind + '-' + item.data.id">
-          <div>
-            <!-- (b) Thẻ Task chờ duyệt plan -->
-            <template x-if="item.kind === 'task'">
-              <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
-                <div class="flex items-center justify-between gap-1">
-                  <span class="inline-flex items-center rounded-md bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">Chờ duyệt plan</span>
-                  <span class="text-xs text-slate-500 dark:text-slate-400" x-text="item.data.project_name || item.data.project"></span>
-                </div>
-                <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="item.data.title"></h3>
-                <div class="text-xs text-slate-600 dark:text-slate-400" x-text="'Bước: ' + (item.data.current_step || '—')"></div>
-                <div class="pt-1 flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    @click="focusOfficeTask(item.data.id)"
-                    class="inline-flex min-h-8 items-center text-xs font-semibold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                  >Xem trong VP</button>
-                  <a
-                    :href="'#/task/' + item.data.id"
-                    class="inline-flex min-h-8 items-center justify-center rounded-lg bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-300 dark:ring-indigo-800 dark:hover:bg-indigo-900/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                  >Xem và duyệt plan →</a>
-                </div>
+    <!-- Năm cột điều phối -->
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4 items-start">
+      <!-- Cột 1: Hàng chờ -->
+      <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
+        <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
+          <h2 class="text-base font-semibold">Hàng chờ</h2>
+          <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="intakeItems.length"></span>
+        </div>
+
+        <div x-show="intakeItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
+          Trống
+        </div>
+
+        <div class="space-y-3">
+          <template x-for="it in intakeItems" :key="'intake-' + it.id">
+            <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+              <div class="flex flex-wrap items-center justify-between gap-1">
+                <span
+                  x-show="it.status === 'queued'"
+                  class="inline-flex items-center rounded-md bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                >Chờ phân tích</span>
+                <span
+                  x-show="it.status === 'triaging'"
+                  class="inline-flex items-center rounded-md bg-indigo-100 px-2 py-0.5 text-xs font-semibold text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200"
+                >Đang phân tích…</span>
+                <span
+                  x-show="it.status === 'failed'"
+                  class="inline-flex items-center rounded-md bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-800 dark:bg-rose-900/40 dark:text-rose-200"
+                >Lỗi</span>
+
+                <span
+                  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
+                  :class="it.priority === 'urgent' ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200' : (it.priority === 'low' ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200')"
+                  x-text="it.priority === 'urgent' ? 'Gấp' : (it.priority === 'low' ? 'Thấp' : 'Thường')"
+                ></span>
               </div>
-            </template>
 
-            <!-- (a) Thẻ Đề xuất pending -->
-            <template x-if="item.kind === 'proposal'">
-              <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
-                <div class="flex flex-wrap items-center justify-between gap-1">
-                  <span
-                    class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
-                    :class="item.data.priority === 'urgent' ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200' : (item.data.priority === 'low' ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200')"
-                    x-text="item.data.priority === 'urgent' ? 'Gấp' : (item.data.priority === 'low' ? 'Thấp' : 'Thường')"
-                  ></span>
-                  <span class="text-xs text-slate-500 dark:text-slate-400" x-text="item.data.project_name || item.data.project"></span>
-                </div>
+              <div x-show="it.project || it.project_name" class="text-xs font-semibold text-slate-600 dark:text-slate-400" x-text="it.project_name || it.project"></div>
 
-                <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="item.data.title"></h3>
+              <p class="text-sm font-normal text-slate-900 dark:text-slate-100 line-clamp-4 whitespace-pre-wrap" x-text="it.request"></p>
 
-                <div class="text-xs text-slate-600 dark:text-slate-400 space-y-0.5">
-                  <div x-text="'Đội hình: ' + item.data.team"></div>
-                  <div x-text="'Quy trình: ' + item.data.workflow"></div>
-                </div>
+              <!-- Lỗi rút gọn / đầy đủ nếu failed -->
+              <div x-show="it.status === 'failed' && it.error" class="rounded-lg bg-rose-50 p-2 text-xs text-rose-900 dark:bg-rose-900/20 dark:text-rose-200 space-y-1">
+                <p x-show="!isErrorExpanded(it.id)" x-text="(it.error || '').slice(0, 90) + ((it.error || '').length > 90 ? '...' : '')"></p>
+                <p x-show="isErrorExpanded(it.id)" class="whitespace-pre-wrap" x-text="it.error"></p>
+                <button
+                  type="button"
+                  x-show="isLongError(it)"
+                  @click="toggleError(it.id)"
+                  class="text-indigo-600 dark:text-indigo-400 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                  x-text="isErrorExpanded(it.id) ? 'Thu gọn' : 'Xem đầy đủ'"
+                ></button>
+              </div>
 
-                <!-- Lý do đề xuất (cắt 3 dòng, nút xem thêm) -->
-                <div x-show="item.data.reason" class="text-xs text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-900/50 p-2 rounded-lg space-y-1">
-                  <span class="font-semibold block text-slate-700 dark:text-slate-300">Lý do:</span>
-                  <p :class="isReasonExpanded(item.data.id) ? '' : 'line-clamp-3'" x-text="item.data.reason"></p>
-                  <button
-                    type="button"
-                    x-show="isLongReason(item.data)"
-                    @click="toggleReason(item.data.id)"
-                    class="text-indigo-600 dark:text-indigo-400 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                    x-text="isReasonExpanded(item.data.id) ? 'Thu gọn' : 'Xem thêm'"
-                  ></button>
-                </div>
+              <!-- Nút Huỷ (chỉ queued và failed) và Xem trong VP -->
+              <div class="pt-1 flex items-center justify-between gap-1">
+                <button
+                  type="button"
+                  @click="focusOfficeTask(it.id)"
+                  class="inline-flex min-h-8 items-center text-xs font-semibold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                >Xem trong VP</button>
+                <button
+                  type="button"
+                  x-show="it.status === 'queued' || it.status === 'failed'"
+                  @click="cancelIntake(it.id)"
+                  :disabled="actionBusy[it.id]"
+                  class="inline-flex min-h-8 items-center justify-center rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-rose-600 ring-1 ring-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-800 dark:text-rose-400 dark:ring-rose-800 dark:hover:bg-rose-950/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 dark:focus-visible:outline-rose-400"
+                >Huỷ</button>
+              </div>
 
-                <!-- Yêu cầu gốc (thu gọn) -->
-                <details class="text-xs text-slate-500 dark:text-slate-400">
-                  <summary class="cursor-pointer font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">Yêu cầu gốc</summary>
-                  <p class="mt-1 whitespace-pre-wrap p-2 rounded bg-slate-50 dark:bg-slate-900/50" x-text="item.data.request"></p>
-                </details>
+              <div
+                role="alert"
+                x-show="cardErrors[it.id]"
+                class="rounded-lg bg-rose-50 p-2 text-xs text-rose-800 dark:bg-rose-900/30 dark:text-rose-200"
+                x-text="cardErrors[it.id]"
+              ></div>
+            </div>
+          </template>
+        </div>
+      </div>
 
-                <!-- Các nút hành động chính -->
-                <div class="flex flex-wrap items-center gap-1.5 pt-1">
-                  <button
-                    type="button"
-                    @click="approveProposal(item.data.id)"
-                    :disabled="actionBusy[item.data.id]"
-                    class="inline-flex min-h-8 flex-1 items-center justify-center rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                  >Duyệt</button>
-                  <button
-                    type="button"
-                    @click="openEdit(item.data)"
-                    :disabled="actionBusy[item.data.id]"
-                    class="inline-flex min-h-8 flex-1 items-center justify-center rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-600 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                  >Sửa rồi duyệt</button>
-                  <button
-                    type="button"
-                    @click="openReject(item.data)"
-                    :disabled="actionBusy[item.data.id]"
-                    class="inline-flex min-h-8 items-center justify-center rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-rose-600 ring-1 ring-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-800 dark:text-rose-400 dark:ring-rose-800 dark:hover:bg-rose-950/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 dark:focus-visible:outline-rose-400"
-                  >Từ chối</button>
-                  <button
-                    type="button"
-                    @click="focusOfficeTask(item.data.id)"
-                    class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                    title="Xem trong văn phòng 3D"
-                  >Xem VP</button>
-                </div>
+      <!-- Cột 2: Cần bạn duyệt -->
+      <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
+        <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
+          <h2 class="text-base font-semibold">Cần bạn duyệt</h2>
+          <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="approvalItems.length"></span>
+        </div>
 
-                <!-- Form Sửa rồi duyệt (Esc để đóng) -->
-                <div
-                  x-show="editForms[item.data.id] && editForms[item.data.id].open"
-                  @keydown.escape="closeEdit(item.data.id)"
-                  class="rounded-xl border border-indigo-200 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-950/30 space-y-2 mt-2"
-                >
-                  <h4 class="text-xs font-semibold text-indigo-900 dark:text-indigo-200">Chỉnh sửa đề xuất</h4>
-                  <div class="space-y-1">
-                    <label :for="'edit-title-' + item.data.id" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Tiêu đề</label>
-                    <input
-                      :id="'edit-title-' + item.data.id"
-                      type="text"
-                      class="w-full min-h-8 rounded-lg bg-white px-2.5 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                      x-model="editForms[item.data.id].title"
-                    >
+        <div x-show="approvalItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
+          Trống
+        </div>
+
+        <div class="space-y-3">
+          <template x-for="item in approvalItems" :key="item.kind + '-' + item.data.id">
+            <div>
+              <!-- (b) Thẻ Task chờ duyệt plan -->
+              <template x-if="item.kind === 'task'">
+                <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+                  <div class="flex items-center justify-between gap-1">
+                    <span class="inline-flex items-center rounded-md bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">Chờ duyệt plan</span>
+                    <span class="text-xs text-slate-500 dark:text-slate-400" x-text="item.data.project_name || item.data.project"></span>
                   </div>
-                  <div class="space-y-1">
-                    <label :for="'edit-team-' + item.data.id" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Đội hình</label>
-                    <select
-                      :id="'edit-team-' + item.data.id"
-                      class="w-full min-h-8 rounded-lg bg-white px-2 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                      x-model="editForms[item.data.id].team"
-                    >
-                      <template x-for="t in availableTeams" :key="t">
-                        <option :value="t" x-text="t"></option>
-                      </template>
-                    </select>
+                  <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="item.data.title"></h3>
+                  <div class="text-xs text-slate-600 dark:text-slate-400" x-text="'Bước: ' + (item.data.current_step || '—')"></div>
+                  <div class="pt-1 flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      @click="focusOfficeTask(item.data.id)"
+                      class="inline-flex min-h-8 items-center text-xs font-semibold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                    >Xem trong VP</button>
+                    <a
+                      :href="'#/task/' + item.data.id"
+                      class="inline-flex min-h-8 items-center justify-center rounded-lg bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-300 dark:ring-indigo-800 dark:hover:bg-indigo-900/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                    >Xem và duyệt plan →</a>
                   </div>
-                  <div class="space-y-1">
-                    <label :for="'edit-wf-' + item.data.id" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Quy trình</label>
-                    <select
-                      :id="'edit-wf-' + item.data.id"
-                      class="w-full min-h-8 rounded-lg bg-white px-2 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                      x-model="editForms[item.data.id].workflow"
-                    >
-                      <template x-for="w in availableWorkflows" :key="w">
-                        <option :value="w" x-text="w"></option>
-                      </template>
-                    </select>
+                </div>
+              </template>
+
+              <!-- (a) Thẻ Đề xuất pending -->
+              <template x-if="item.kind === 'proposal'">
+                <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+                  <div class="flex flex-wrap items-center justify-between gap-1">
+                    <span
+                      class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
+                      :class="item.data.priority === 'urgent' ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200' : (item.data.priority === 'low' ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200')"
+                      x-text="item.data.priority === 'urgent' ? 'Gấp' : (item.data.priority === 'low' ? 'Thấp' : 'Thường')"
+                    ></span>
+                    <span class="text-xs text-slate-500 dark:text-slate-400" x-text="item.data.project_name || item.data.project"></span>
                   </div>
-                  <div class="space-y-1">
-                    <span class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Mức ưu tiên</span>
-                    <div class="flex gap-1" role="group" aria-label="Mức ưu tiên">
+
+                  <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="item.data.title"></h3>
+
+                  <div class="text-xs text-slate-600 dark:text-slate-400 space-y-0.5">
+                    <div x-text="'Đội hình: ' + item.data.team"></div>
+                    <div x-text="'Quy trình: ' + item.data.workflow"></div>
+                  </div>
+
+                  <!-- Lý do đề xuất (cắt 3 dòng, nút xem thêm) -->
+                  <div x-show="item.data.reason" class="text-xs text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-900/50 p-2 rounded-lg space-y-1">
+                    <span class="font-semibold block text-slate-700 dark:text-slate-300">Lý do:</span>
+                    <p :class="isReasonExpanded(item.data.id) ? '' : 'line-clamp-3'" x-text="item.data.reason"></p>
+                    <button
+                      type="button"
+                      x-show="isLongReason(item.data)"
+                      @click="toggleReason(item.data.id)"
+                      class="text-indigo-600 dark:text-indigo-400 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                      x-text="isReasonExpanded(item.data.id) ? 'Thu gọn' : 'Xem thêm'"
+                    ></button>
+                  </div>
+
+                  <!-- Yêu cầu gốc (thu gọn) -->
+                  <details class="text-xs text-slate-500 dark:text-slate-400">
+                    <summary class="cursor-pointer font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">Yêu cầu gốc</summary>
+                    <p class="mt-1 whitespace-pre-wrap p-2 rounded bg-slate-50 dark:bg-slate-900/50" x-text="item.data.request"></p>
+                  </details>
+
+                  <!-- Các nút hành động chính -->
+                  <div class="flex flex-wrap items-center gap-1.5 pt-1">
+                    <button
+                      type="button"
+                      @click="approveProposal(item.data.id)"
+                      :disabled="actionBusy[item.data.id]"
+                      class="inline-flex min-h-8 flex-1 items-center justify-center rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                    >Duyệt</button>
+                    <button
+                      type="button"
+                      @click="openEdit(item.data)"
+                      :disabled="actionBusy[item.data.id]"
+                      class="inline-flex min-h-8 flex-1 items-center justify-center rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-600 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                    >Sửa rồi duyệt</button>
+                    <button
+                      type="button"
+                      @click="openReject(item.data)"
+                      :disabled="actionBusy[item.data.id]"
+                      class="inline-flex min-h-8 items-center justify-center rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-rose-600 ring-1 ring-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-800 dark:text-rose-400 dark:ring-rose-800 dark:hover:bg-rose-950/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 dark:focus-visible:outline-rose-400"
+                    >Từ chối</button>
+                    <button
+                      type="button"
+                      @click="focusOfficeTask(item.data.id)"
+                      class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                      title="Xem trong văn phòng 3D"
+                    >Xem VP</button>
+                  </div>
+
+                  <!-- Form Sửa rồi duyệt (Esc để đóng) -->
+                  <div
+                    x-show="editForms[item.data.id] && editForms[item.data.id].open"
+                    @keydown.escape="closeEdit(item.data.id)"
+                    class="rounded-xl border border-indigo-200 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-950/30 space-y-2 mt-2"
+                  >
+                    <h4 class="text-xs font-semibold text-indigo-900 dark:text-indigo-200">Chỉnh sửa đề xuất</h4>
+                    <div class="space-y-1">
+                      <label :for="'edit-title-' + item.data.id" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Tiêu đề</label>
+                      <input
+                        :id="'edit-title-' + item.data.id"
+                        type="text"
+                        class="w-full min-h-8 rounded-lg bg-white px-2.5 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                        x-model="editForms[item.data.id].title"
+                      >
+                    </div>
+                    <div class="space-y-1">
+                      <label :for="'edit-team-' + item.data.id" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Đội hình</label>
+                      <select
+                        :id="'edit-team-' + item.data.id"
+                        class="w-full min-h-8 rounded-lg bg-white px-2 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                        x-model="editForms[item.data.id].team"
+                      >
+                        <template x-for="t in availableTeams" :key="t">
+                          <option :value="t" x-text="t"></option>
+                        </template>
+                      </select>
+                    </div>
+                    <div class="space-y-1">
+                      <label :for="'edit-wf-' + item.data.id" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Quy trình</label>
+                      <select
+                        :id="'edit-wf-' + item.data.id"
+                        class="w-full min-h-8 rounded-lg bg-white px-2 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                        x-model="editForms[item.data.id].workflow"
+                      >
+                        <template x-for="w in availableWorkflows" :key="w">
+                          <option :value="w" x-text="w"></option>
+                        </template>
+                      </select>
+                    </div>
+                    <div class="space-y-1">
+                      <span class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Mức ưu tiên</span>
+                      <div class="flex gap-1" role="group" aria-label="Mức ưu tiên">
+                        <button
+                          type="button"
+                          @click="setEditPriority(item.data.id, 'urgent')"
+                          :aria-pressed="editForms[item.data.id].priority === 'urgent' ? 'true' : 'false'"
+                          class="flex-1 rounded-md py-1 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                          :class="editForms[item.data.id].priority === 'urgent' ? 'bg-rose-600 text-white' : 'bg-white dark:bg-slate-800 ring-1 ring-slate-300 dark:ring-slate-600'"
+                        >Gấp</button>
+                        <button
+                          type="button"
+                          @click="setEditPriority(item.data.id, 'normal')"
+                          :aria-pressed="editForms[item.data.id].priority === 'normal' ? 'true' : 'false'"
+                          class="flex-1 rounded-md py-1 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                          :class="editForms[item.data.id].priority === 'normal' ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 ring-1 ring-slate-300 dark:ring-slate-600'"
+                        >Thường</button>
+                        <button
+                          type="button"
+                          @click="setEditPriority(item.data.id, 'low')"
+                          :aria-pressed="editForms[item.data.id].priority === 'low' ? 'true' : 'false'"
+                          class="flex-1 rounded-md py-1 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                          :class="editForms[item.data.id].priority === 'low' ? 'bg-sky-600 text-white' : 'bg-white dark:bg-slate-800 ring-1 ring-slate-300 dark:ring-slate-600'"
+                        >Thấp</button>
+                      </div>
+                    </div>
+
+                    <div
+                      role="alert"
+                      x-show="editForms[item.data.id].error"
+                      class="rounded-lg bg-rose-50 p-2 text-xs text-rose-800 dark:bg-rose-900/30 dark:text-rose-200"
+                      x-text="editForms[item.data.id].error"
+                    ></div>
+
+                    <div class="flex items-center justify-end gap-2 pt-1">
                       <button
                         type="button"
-                        @click="setEditPriority(item.data.id, 'urgent')"
-                        :aria-pressed="editForms[item.data.id].priority === 'urgent' ? 'true' : 'false'"
-                        class="flex-1 rounded-md py-1 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                        :class="editForms[item.data.id].priority === 'urgent' ? 'bg-rose-600 text-white' : 'bg-white dark:bg-slate-800 ring-1 ring-slate-300 dark:ring-slate-600'"
-                      >Gấp</button>
+                        @click="closeEdit(item.data.id)"
+                        class="inline-flex min-h-8 items-center justify-center rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 dark:text-slate-400 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                      >Đóng (Esc)</button>
                       <button
                         type="button"
-                        @click="setEditPriority(item.data.id, 'normal')"
-                        :aria-pressed="editForms[item.data.id].priority === 'normal' ? 'true' : 'false'"
-                        class="flex-1 rounded-md py-1 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                        :class="editForms[item.data.id].priority === 'normal' ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 ring-1 ring-slate-300 dark:ring-slate-600'"
-                      >Thường</button>
+                        @click="submitApproveEdit(item.data.id)"
+                        :disabled="editForms[item.data.id].sending"
+                        class="inline-flex min-h-8 items-center justify-center rounded-lg bg-indigo-600 px-3 py-1 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                      >
+                        <span x-show="!editForms[item.data.id].sending">Lưu & Duyệt</span>
+                        <span x-show="editForms[item.data.id].sending">Đang lưu...</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Ô Từ chối xác nhận -->
+                  <div
+                    x-show="rejectForms[item.data.id] && rejectForms[item.data.id].open"
+                    class="rounded-xl border border-rose-200 bg-rose-50/50 p-3 dark:border-rose-900 dark:bg-rose-950/30 space-y-2 mt-2"
+                  >
+                    <h4 class="text-xs font-semibold text-rose-900 dark:text-rose-200">Xác nhận từ chối đề xuất</h4>
+                    <div class="space-y-1">
+                      <label :for="'reject-reason-' + item.data.id" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Lý do từ chối (tuỳ chọn)</label>
+                      <input
+                        :id="'reject-reason-' + item.data.id"
+                        type="text"
+                        placeholder="Nhập lý do nếu có..."
+                        class="w-full min-h-8 rounded-lg bg-white px-2.5 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                        x-model="rejectForms[item.data.id].reason"
+                      >
+                    </div>
+
+                    <div
+                      role="alert"
+                      x-show="rejectForms[item.data.id].error"
+                      class="rounded-lg bg-rose-100 p-2 text-xs text-rose-900 dark:bg-rose-900/50 dark:text-rose-200"
+                      x-text="rejectForms[item.data.id].error"
+                    ></div>
+
+                    <div class="flex items-center justify-end gap-2 pt-1">
                       <button
                         type="button"
-                        @click="setEditPriority(item.data.id, 'low')"
-                        :aria-pressed="editForms[item.data.id].priority === 'low' ? 'true' : 'false'"
-                        class="flex-1 rounded-md py-1 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                        :class="editForms[item.data.id].priority === 'low' ? 'bg-sky-600 text-white' : 'bg-white dark:bg-slate-800 ring-1 ring-slate-300 dark:ring-slate-600'"
-                      >Thấp</button>
+                        @click="closeReject(item.data.id)"
+                        class="inline-flex min-h-8 items-center justify-center rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 dark:text-slate-400 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                      >Huỷ</button>
+                      <button
+                        type="button"
+                        @click="confirmReject(item.data.id)"
+                        :disabled="rejectForms[item.data.id].sending"
+                        class="inline-flex min-h-8 items-center justify-center rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white shadow-sm hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-rose-500 dark:hover:bg-rose-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 dark:focus-visible:outline-rose-400"
+                      >
+                        <span x-show="!rejectForms[item.data.id].sending">Xác nhận từ chối</span>
+                        <span x-show="rejectForms[item.data.id].sending">Đang gửi...</span>
+                      </button>
                     </div>
                   </div>
 
                   <div
                     role="alert"
-                    x-show="editForms[item.data.id].error"
+                    x-show="cardErrors[item.data.id]"
                     class="rounded-lg bg-rose-50 p-2 text-xs text-rose-800 dark:bg-rose-900/30 dark:text-rose-200"
-                    x-text="editForms[item.data.id].error"
+                    x-text="cardErrors[item.data.id]"
                   ></div>
-
-                  <div class="flex items-center justify-end gap-2 pt-1">
-                    <button
-                      type="button"
-                      @click="closeEdit(item.data.id)"
-                      class="inline-flex min-h-8 items-center justify-center rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 dark:text-slate-400 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                    >Đóng (Esc)</button>
-                    <button
-                      type="button"
-                      @click="submitApproveEdit(item.data.id)"
-                      :disabled="editForms[item.data.id].sending"
-                      class="inline-flex min-h-8 items-center justify-center rounded-lg bg-indigo-600 px-3 py-1 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                    >
-                      <span x-show="!editForms[item.data.id].sending">Lưu & Duyệt</span>
-                      <span x-show="editForms[item.data.id].sending">Đang lưu...</span>
-                    </button>
-                  </div>
                 </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </div>
 
-                <!-- Ô Từ chối xác nhận -->
-                <div
-                  x-show="rejectForms[item.data.id] && rejectForms[item.data.id].open"
-                  class="rounded-xl border border-rose-200 bg-rose-50/50 p-3 dark:border-rose-900 dark:bg-rose-950/30 space-y-2 mt-2"
+      <!-- Cột 3: Chờ slot -->
+      <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
+        <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
+          <h2 class="text-base font-semibold">Chờ slot</h2>
+          <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="waitingSlotItems.length"></span>
+        </div>
+
+        <div x-show="waitingSlotItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
+          Trống
+        </div>
+
+        <div class="space-y-3">
+          <template x-for="entry in waitingSlotItems" :key="'slot-' + entry.item.id">
+            <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+              <div class="flex items-center justify-between gap-1">
+                <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-indigo-100 text-indigo-800 dark:bg-indigo-900/60 dark:text-indigo-200 font-bold text-xs" x-text="'#' + entry.order"></span>
+                <span
+                  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
+                  :class="entry.item.priority === 'urgent' ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200' : (entry.item.priority === 'low' ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200')"
+                  x-text="entry.item.priority === 'urgent' ? 'Gấp' : (entry.item.priority === 'low' ? 'Thấp' : 'Thường')"
+                ></span>
+              </div>
+
+              <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="entry.item.title"></h3>
+              <div class="text-xs text-slate-500 dark:text-slate-400" x-text="entry.item.project_name || entry.item.project"></div>
+
+              <div class="text-xs text-slate-600 dark:text-slate-400 space-y-0.5">
+                <div x-text="'Đội hình: ' + entry.item.team"></div>
+                <div x-text="'Quy trình: ' + entry.item.workflow"></div>
+              </div>
+
+              <!-- Đổi ưu tiên -->
+              <div class="pt-1 space-y-1">
+                <label :for="'prio-change-' + entry.item.id" class="text-xs font-semibold text-slate-600 dark:text-slate-400">Đổi ưu tiên:</label>
+                <select
+                  :id="'prio-change-' + entry.item.id"
+                  @change="changePriority(entry.item.id, $event.target.value)"
+                  :value="entry.item.priority"
+                  :disabled="actionBusy[entry.item.id]"
+                  class="w-full min-h-8 rounded-lg bg-white px-2 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
                 >
-                  <h4 class="text-xs font-semibold text-rose-900 dark:text-rose-200">Xác nhận từ chối đề xuất</h4>
-                  <div class="space-y-1">
-                    <label :for="'reject-reason-' + item.data.id" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Lý do từ chối (tuỳ chọn)</label>
-                    <input
-                      :id="'reject-reason-' + item.data.id"
-                      type="text"
-                      placeholder="Nhập lý do nếu có..."
-                      class="w-full min-h-8 rounded-lg bg-white px-2.5 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                      x-model="rejectForms[item.data.id].reason"
-                    >
-                  </div>
+                  <option value="urgent">Gấp (urgent)</option>
+                  <option value="normal">Thường (normal)</option>
+                  <option value="low">Thấp (low)</option>
+                </select>
+              </div>
 
-                  <div
-                    role="alert"
-                    x-show="rejectForms[item.data.id].error"
-                    class="rounded-lg bg-rose-100 p-2 text-xs text-rose-900 dark:bg-rose-900/50 dark:text-rose-200"
-                    x-text="rejectForms[item.data.id].error"
-                  ></div>
+              <div class="pt-1 flex items-center justify-between gap-1">
+                <button
+                  type="button"
+                  @click="focusOfficeTask(entry.item.id)"
+                  class="inline-flex min-h-8 items-center text-xs font-semibold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                >Xem trong VP</button>
+              </div>
 
-                  <div class="flex items-center justify-end gap-2 pt-1">
-                    <button
-                      type="button"
-                      @click="closeReject(item.data.id)"
-                      class="inline-flex min-h-8 items-center justify-center rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 dark:text-slate-400 dark:hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                    >Huỷ</button>
-                    <button
-                      type="button"
-                      @click="confirmReject(item.data.id)"
-                      :disabled="rejectForms[item.data.id].sending"
-                      class="inline-flex min-h-8 items-center justify-center rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white shadow-sm hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-rose-500 dark:hover:bg-rose-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 dark:focus-visible:outline-rose-400"
-                    >
-                      <span x-show="!rejectForms[item.data.id].sending">Xác nhận từ chối</span>
-                      <span x-show="rejectForms[item.data.id].sending">Đang gửi...</span>
-                    </button>
-                  </div>
+              <div
+                role="alert"
+                x-show="cardErrors[entry.item.id]"
+                class="rounded-lg bg-rose-50 p-2 text-xs text-rose-800 dark:bg-rose-900/30 dark:text-rose-200"
+                x-text="cardErrors[entry.item.id]"
+              ></div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Cột 4: Đang chạy -->
+      <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
+        <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
+          <h2 class="text-base font-semibold">Đang chạy</h2>
+          <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="runningTasks.length"></span>
+        </div>
+
+        <div x-show="runningTasks.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
+          Trống
+        </div>
+
+        <div class="space-y-3">
+          <template x-for="t in runningTasks" :key="'running-' + t.id">
+            <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+              <div class="flex items-center justify-between gap-1">
+                <span class="inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">Đang chạy</span>
+                <span class="text-xs text-slate-500 dark:text-slate-400" x-text="t.project_name || t.project"></span>
+              </div>
+
+              <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="t.title"></h3>
+              <div class="text-xs text-slate-600 dark:text-slate-400" x-text="'Bước: ' + (t.current_step || '—')"></div>
+
+              <!-- Thanh tiến độ -->
+              <div class="space-y-1">
+                <div class="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
+                  <span>Tiến độ</span>
+                  <span x-text="stepProgress(t).text"></span>
                 </div>
+                <div class="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2 overflow-hidden">
+                  <div class="bg-indigo-600 dark:bg-indigo-500 h-2 rounded-full" :style="progressStyle(t)"></div>
+                </div>
+              </div>
 
-                <div
-                  role="alert"
-                  x-show="cardErrors[item.data.id]"
-                  class="rounded-lg bg-rose-50 p-2 text-xs text-rose-800 dark:bg-rose-900/30 dark:text-rose-200"
-                  x-text="cardErrors[item.data.id]"
-                ></div>
+              <div class="pt-1 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  @click="focusOfficeTask(t.id)"
+                  class="inline-flex min-h-8 items-center text-xs font-semibold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                >Xem trong VP</button>
+                <a
+                  :href="'#/task/' + t.id"
+                  class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                >Mở task →</a>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Cột 5: Dừng -->
+      <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
+        <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
+          <h2 class="text-base font-semibold">Dừng</h2>
+          <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="stoppedTasks.length"></span>
+        </div>
+
+        <div x-show="stoppedTasks.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
+          Trống
+        </div>
+
+        <div class="space-y-3">
+          <template x-for="st in stoppedTasks" :key="'stopped-' + st.task.id">
+            <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+              <div class="flex items-center justify-between gap-1">
+                <span
+                  x-show="st.isQuota"
+                  class="inline-flex items-center rounded-md bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-800 dark:bg-rose-900/40 dark:text-rose-200"
+                >Hết quota</span>
+                <span
+                  x-show="!st.isQuota"
+                  class="inline-flex items-center rounded-md bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                >Dừng</span>
+                <span class="text-xs text-slate-500 dark:text-slate-400" x-text="st.task.project_name || st.task.project"></span>
+              </div>
+
+              <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="st.task.title"></h3>
+
+              <!-- Chi tiết Quota -->
+              <div x-show="st.isQuota" class="rounded-lg bg-rose-50/70 p-2 text-xs text-rose-900 dark:bg-rose-900/20 dark:text-rose-200 space-y-1">
+                <div x-text="'Engine: ' + st.engine"></div>
+                <div x-text="'Thời điểm: ' + fmtTime(st.quotaStop ? st.quotaStop.stopped_at : st.task.updated_at)"></div>
+                <div class="font-semibold" x-text="countdownText(st.quotaStop)"></div>
+              </div>
+
+              <!-- Chi tiết không phải Quota -->
+              <div x-show="!st.isQuota" class="rounded-lg bg-amber-50/70 p-2 text-xs text-amber-900 dark:bg-amber-900/20 dark:text-amber-200 space-y-1">
+                <p x-text="st.task.stop_reason || st.task.banner || st.task.stop_detail || 'Dừng xử lý'"></p>
+              </div>
+
+              <div class="pt-1 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  @click="focusOfficeTask(st.task.id)"
+                  class="inline-flex min-h-8 items-center text-xs font-semibold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                >Xem trong VP</button>
+                <a
+                  :href="'#/task/' + st.task.id"
+                  class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                >Mở task →</a>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ô giao nhanh (chỉ hiện khi enabled) -->
+    <div
+      x-show="isOrchestratorEnabled"
+      class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-lg font-semibold leading-normal">Giao việc nhanh vào hàng chờ</h2>
+        <button
+          type="button"
+          @click="openAssignModal"
+          class="text-xs font-semibold text-indigo-600 hover:text-indigo-500 hover:underline dark:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+        >Mở form đầy đủ (chọn đội hình, quy trình…)</button>
+      </div>
+      <div class="space-y-2">
+        <label for="ab-quick-request" class="text-sm font-semibold leading-normal">Yêu cầu</label>
+        <textarea
+          id="ab-quick-request"
+          rows="3"
+          maxlength="20000"
+          placeholder="Mô tả công việc cần giao..."
+          class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-300 placeholder:text-slate-400 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 dark:placeholder:text-slate-500 resize-y focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+          x-model="quickRequest"
+        ></textarea>
+      </div>
+
+      <div class="flex flex-wrap items-end gap-4">
+        <div class="min-w-64 flex-1 space-y-1">
+          <label for="ab-quick-project" class="text-sm font-semibold leading-normal">Dự án (tuỳ chọn)</label>
+          <select
+            id="ab-quick-project"
+            class="w-full min-h-10 rounded-xl bg-white px-3 py-1.5 text-sm text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+            x-model="quickProject"
+          >
+            <option value="">Để agent tự chọn</option>
+            <template x-for="p in projects" :key="p.id">
+              <option :value="p.id" x-text="(p.name_vi || p.id) + ' (' + p.id + ')'"></option>
+            </template>
+          </select>
+        </div>
+
+        <div class="space-y-1">
+          <span class="block text-sm font-semibold leading-normal">Mức ưu tiên</span>
+          <div class="inline-flex rounded-xl p-1 bg-slate-100 dark:bg-slate-900 ring-1 ring-slate-200 dark:ring-slate-700 gap-1" role="group" aria-label="Mức ưu tiên">
+            <button
+              type="button"
+              @click="setQuickPriority('urgent')"
+              :aria-pressed="quickPriority === 'urgent' ? 'true' : 'false'"
+              class="rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+              :class="quickPriority === 'urgent' ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'"
+            >Gấp</button>
+            <button
+              type="button"
+              @click="setQuickPriority('normal')"
+              :aria-pressed="quickPriority === 'normal' ? 'true' : 'false'"
+              class="rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+              :class="quickPriority === 'normal' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'"
+            >Thường</button>
+            <button
+              type="button"
+              @click="setQuickPriority('low')"
+              :aria-pressed="quickPriority === 'low' ? 'true' : 'false'"
+              class="rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+              :class="quickPriority === 'low' ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'"
+            >Thấp</button>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          @click="submitQuickIntake"
+          :disabled="quickSending || !quickRequest.trim()"
+          class="inline-flex min-h-10 items-center justify-center rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+        >
+          <span x-show="!quickSending">Đưa vào hàng chờ</span>
+          <span x-show="quickSending">Đang gửi...</span>
+        </button>
+      </div>
+
+      <div
+        role="alert"
+        x-show="quickError"
+        class="rounded-xl bg-rose-50 p-3 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal"
+        x-text="quickError"
+      ></div>
+    </div>
+
+    <!-- Phần Gần đây (thu gọn mặc định) -->
+    <details class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <summary class="cursor-pointer text-base font-semibold text-slate-900 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+        Gần đây
+      </summary>
+
+      <div class="pt-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Đề xuất & intake gần đây -->
+        <div class="space-y-3">
+          <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300">Đề xuất và yêu cầu gần đây</h3>
+          <div x-show="recentItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-2">
+            Không có dữ liệu 24 giờ qua
+          </div>
+          <div class="space-y-2">
+            <template x-for="r in recentItems" :key="r.kind + '-' + r.id">
+              <div class="rounded-xl border border-slate-200 p-3 text-xs dark:border-slate-700 space-y-1">
+                <div class="flex items-center justify-between gap-1">
+                  <span class="font-semibold text-slate-800 dark:text-slate-200" x-text="r.kind === 'proposal' ? 'Đề xuất #' + r.id : 'Intake #' + r.id"></span>
+                  <span
+                    class="rounded-full px-2 py-0.5 text-xs font-semibold"
+                    :class="r.status === 'rejected' ? 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300' : 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200'"
+                    x-text="r.status === 'rejected' ? 'Bị từ chối' : (r.status === 'cancelled' ? 'Đã huỷ' : 'Thất bại')"
+                  ></span>
+                </div>
+                <div class="font-medium text-slate-900 dark:text-slate-100" x-text="r.title || r.request"></div>
+                <div class="text-slate-500 dark:text-slate-400 flex items-center justify-between">
+                  <span x-text="r.project_name || r.project || '—'"></span>
+                  <span x-text="fmtTime(r.updated_at)"></span>
+                </div>
+                <div x-show="r.reason || r.error" class="text-slate-600 dark:text-slate-400 italic" x-text="r.reason ? 'Lý do: ' + r.reason : 'Lỗi: ' + r.error"></div>
               </div>
             </template>
           </div>
-        </template>
-      </div>
-    </div>
+        </div>
 
-    <!-- Cột 3: Chờ slot -->
-    <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
-      <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
-        <h2 class="text-base font-semibold">Chờ slot</h2>
-        <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="waitingSlotItems.length"></span>
-      </div>
-
-      <div x-show="waitingSlotItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
-        Trống
-      </div>
-
-      <div class="space-y-3">
-        <template x-for="entry in waitingSlotItems" :key="'slot-' + entry.item.id">
-          <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
-            <div class="flex items-center justify-between gap-1">
-              <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-indigo-100 text-indigo-800 dark:bg-indigo-900/60 dark:text-indigo-200 font-bold text-xs" x-text="'#' + entry.order"></span>
-              <span
-                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
-                :class="entry.item.priority === 'urgent' ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200' : (entry.item.priority === 'low' ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200')"
-                x-text="entry.item.priority === 'urgent' ? 'Gấp' : (entry.item.priority === 'low' ? 'Thấp' : 'Thường')"
-              ></span>
-            </div>
-
-            <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="entry.item.title"></h3>
-            <div class="text-xs text-slate-500 dark:text-slate-400" x-text="entry.item.project_name || entry.item.project"></div>
-
-            <div class="text-xs text-slate-600 dark:text-slate-400 space-y-0.5">
-              <div x-text="'Đội hình: ' + entry.item.team"></div>
-              <div x-text="'Quy trình: ' + entry.item.workflow"></div>
-            </div>
-
-            <!-- Đổi ưu tiên -->
-            <div class="pt-1 space-y-1">
-              <label :for="'prio-change-' + entry.item.id" class="text-xs font-semibold text-slate-600 dark:text-slate-400">Đổi ưu tiên:</label>
-              <select
-                :id="'prio-change-' + entry.item.id"
-                @change="changePriority(entry.item.id, $event.target.value)"
-                :value="entry.item.priority"
-                :disabled="actionBusy[entry.item.id]"
-                class="w-full min-h-8 rounded-lg bg-white px-2 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-              >
-                <option value="urgent">Gấp (urgent)</option>
-                <option value="normal">Thường (normal)</option>
-                <option value="low">Thấp (low)</option>
-              </select>
-            </div>
-
-            <div class="pt-1 flex items-center justify-between gap-1">
-              <button
-                type="button"
-                @click="focusOfficeTask(entry.item.id)"
-                class="inline-flex min-h-8 items-center text-xs font-semibold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-              >Xem trong VP</button>
-            </div>
-
-            <div
-              role="alert"
-              x-show="cardErrors[entry.item.id]"
-              class="rounded-lg bg-rose-50 p-2 text-xs text-rose-800 dark:bg-rose-900/30 dark:text-rose-200"
-              x-text="cardErrors[entry.item.id]"
-            ></div>
+        <!-- 10 task đã xong mới nhất -->
+        <div class="space-y-3">
+          <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300">10 việc đã xong mới nhất</h3>
+          <div x-show="doneTasks.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-2">
+            Chưa có việc nào xong
           </div>
-        </template>
-      </div>
-    </div>
-
-    <!-- Cột 4: Đang chạy -->
-    <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
-      <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
-        <h2 class="text-base font-semibold">Đang chạy</h2>
-        <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="runningTasks.length"></span>
-      </div>
-
-      <div x-show="runningTasks.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
-        Trống
-      </div>
-
-      <div class="space-y-3">
-        <template x-for="t in runningTasks" :key="'running-' + t.id">
-          <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
-            <div class="flex items-center justify-between gap-1">
-              <span class="inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">Đang chạy</span>
-              <span class="text-xs text-slate-500 dark:text-slate-400" x-text="t.project_name || t.project"></span>
-            </div>
-
-            <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="t.title"></h3>
-            <div class="text-xs text-slate-600 dark:text-slate-400" x-text="'Bước: ' + (t.current_step || '—')"></div>
-
-            <!-- Thanh tiến độ -->
-            <div class="space-y-1">
-              <div class="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
-                <span>Tiến độ</span>
-                <span x-text="stepProgress(t).text"></span>
+          <div class="space-y-2">
+            <template x-for="dt in doneTasks" :key="'done-' + dt.id">
+              <div class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-3 text-xs dark:border-slate-700">
+                <div class="space-y-0.5 min-w-0 flex-1">
+                  <div class="font-medium text-slate-900 dark:text-slate-100 truncate" x-text="dt.title"></div>
+                  <div class="text-slate-500 dark:text-slate-400 flex items-center gap-2">
+                    <span x-text="dt.project_name || dt.project"></span>
+                    <span>·</span>
+                    <span x-text="fmtTime(dt.updated_at)"></span>
+                  </div>
+                </div>
+                <a
+                  :href="'#/task/' + dt.id"
+                  class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                >Mở →</a>
               </div>
-              <div class="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2 overflow-hidden">
-                <div class="bg-indigo-600 dark:bg-indigo-500 h-2 rounded-full" :style="progressStyle(t)"></div>
-              </div>
-            </div>
-
-            <div class="pt-1 flex items-center justify-between gap-2">
-              <button
-                type="button"
-                @click="focusOfficeTask(t.id)"
-                class="inline-flex min-h-8 items-center text-xs font-semibold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-              >Xem trong VP</button>
-              <a
-                :href="'#/task/' + t.id"
-                class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-              >Mở task →</a>
-            </div>
+            </template>
           </div>
-        </template>
+        </div>
       </div>
-    </div>
-
-    <!-- Cột 5: Dừng -->
-    <div class="rounded-2xl bg-slate-100/70 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700 space-y-3">
-      <div class="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
-        <h2 class="text-base font-semibold">Dừng</h2>
-        <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-300" x-text="stoppedTasks.length"></span>
-      </div>
-
-      <div x-show="stoppedTasks.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
-        Trống
-      </div>
-
-      <div class="space-y-3">
-        <template x-for="st in stoppedTasks" :key="'stopped-' + st.task.id">
-          <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
-            <div class="flex items-center justify-between gap-1">
-              <span
-                x-show="st.isQuota"
-                class="inline-flex items-center rounded-md bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-800 dark:bg-rose-900/40 dark:text-rose-200"
-              >Hết quota</span>
-              <span
-                x-show="!st.isQuota"
-                class="inline-flex items-center rounded-md bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-              >Dừng</span>
-              <span class="text-xs text-slate-500 dark:text-slate-400" x-text="st.task.project_name || st.task.project"></span>
-            </div>
-
-            <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="st.task.title"></h3>
-
-            <!-- Chi tiết Quota -->
-            <div x-show="st.isQuota" class="rounded-lg bg-rose-50/70 p-2 text-xs text-rose-900 dark:bg-rose-900/20 dark:text-rose-200 space-y-1">
-              <div x-text="'Engine: ' + st.engine"></div>
-              <div x-text="'Thời điểm: ' + fmtTime(st.quotaStop ? st.quotaStop.stopped_at : st.task.updated_at)"></div>
-              <div class="font-semibold" x-text="countdownText(st.quotaStop)"></div>
-            </div>
-
-            <!-- Chi tiết không phải Quota -->
-            <div x-show="!st.isQuota" class="rounded-lg bg-amber-50/70 p-2 text-xs text-amber-900 dark:bg-amber-900/20 dark:text-amber-200 space-y-1">
-              <p x-text="st.task.stop_reason || st.task.banner || st.task.stop_detail || 'Dừng xử lý'"></p>
-            </div>
-
-            <div class="pt-1 flex items-center justify-between gap-2">
-              <button
-                type="button"
-                @click="focusOfficeTask(st.task.id)"
-                class="inline-flex min-h-8 items-center text-xs font-semibold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-              >Xem trong VP</button>
-              <a
-                :href="'#/task/' + st.task.id"
-                class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-              >Mở task →</a>
-            </div>
-          </div>
-        </template>
-      </div>
-    </div>
+    </details>
+  </div>
   </div>
 
-  <!-- Phần Gần đây (thu gọn mặc định) -->
-  <details class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
-    <summary class="cursor-pointer text-base font-semibold text-slate-900 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
-      Gần đây
-    </summary>
-
-    <div class="pt-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <!-- Đề xuất & intake gần đây -->
-      <div class="space-y-3">
-        <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300">Đề xuất và yêu cầu gần đây</h3>
-        <div x-show="recentItems.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-2">
-          Không có dữ liệu 24 giờ qua
-        </div>
-        <div class="space-y-2">
-          <template x-for="r in recentItems" :key="r.kind + '-' + r.id">
-            <div class="rounded-xl border border-slate-200 p-3 text-xs dark:border-slate-700 space-y-1">
-              <div class="flex items-center justify-between gap-1">
-                <span class="font-semibold text-slate-800 dark:text-slate-200" x-text="r.kind === 'proposal' ? 'Đề xuất #' + r.id : 'Intake #' + r.id"></span>
-                <span
-                  class="rounded-full px-2 py-0.5 text-xs font-semibold"
-                  :class="r.status === 'rejected' ? 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300' : 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200'"
-                  x-text="r.status === 'rejected' ? 'Bị từ chối' : (r.status === 'cancelled' ? 'Đã huỷ' : 'Thất bại')"
-                ></span>
-              </div>
-              <div class="font-medium text-slate-900 dark:text-slate-100" x-text="r.title || r.request"></div>
-              <div class="text-slate-500 dark:text-slate-400 flex items-center justify-between">
-                <span x-text="r.project_name || r.project || '—'"></span>
-                <span x-text="fmtTime(r.updated_at)"></span>
-              </div>
-              <div x-show="r.reason || r.error" class="text-slate-600 dark:text-slate-400 italic" x-text="r.reason ? 'Lý do: ' + r.reason : 'Lỗi: ' + r.error"></div>
-            </div>
-          </template>
-        </div>
-      </div>
-
-      <!-- 10 task đã xong mới nhất -->
-      <div class="space-y-3">
-        <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300">10 việc đã xong mới nhất</h3>
-        <div x-show="doneTasks.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-2">
-          Chưa có việc nào xong
-        </div>
-        <div class="space-y-2">
-          <template x-for="dt in doneTasks" :key="'done-' + dt.id">
-            <div class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-3 text-xs dark:border-slate-700">
-              <div class="space-y-0.5 min-w-0 flex-1">
-                <div class="font-medium text-slate-900 dark:text-slate-100 truncate" x-text="dt.title"></div>
-                <div class="text-slate-500 dark:text-slate-400 flex items-center gap-2">
-                  <span x-text="dt.project_name || dt.project"></span>
-                  <span>·</span>
-                  <span x-text="fmtTime(dt.updated_at)"></span>
-                </div>
-              </div>
-              <a
-                :href="'#/task/' + dt.id"
-                class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-              >Mở →</a>
-            </div>
-          </template>
-        </div>
-      </div>
-    </div>
-  </details>
 </section>

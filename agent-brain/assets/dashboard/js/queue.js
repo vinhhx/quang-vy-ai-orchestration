@@ -36,6 +36,8 @@
       selectedItem: null,
       selectedItemType: null,
       selectedTaskId: null,
+      // Room picked in the horizontal room row (UI only, highlights its button)
+      selectedRoomId: '',
 
       nowSec: Math.floor(Date.now() / 1000),
 
@@ -421,6 +423,22 @@
         return { backgroundColor: r.color };
       },
 
+      // Horizontal room row: the picked room stands out, the others stay quiet.
+      roomPressed: function (r) {
+        return this.selectedRoomId === r.id ? 'true' : 'false';
+      },
+
+      roomButtonClass: function (r) {
+        if (this.selectedRoomId === r.id) {
+          return 'bg-indigo-50 text-indigo-900 ring-indigo-400 dark:bg-indigo-950/50 dark:text-indigo-100 dark:ring-indigo-500';
+        }
+        return 'bg-slate-50 text-slate-800 ring-slate-200 hover:bg-white dark:bg-slate-900/40 dark:text-slate-200 dark:ring-slate-700 dark:hover:bg-slate-800/80';
+      },
+
+      roomTitle: function (r) {
+        return r.name + ': ' + r.items.length;
+      },
+
       progressStyle: function (task) {
         return { width: this.stepProgress(task).pct + '%' };
       },
@@ -571,12 +589,14 @@
       },
 
       focusRoom: function (roomId) {
+        this.selectedRoomId = roomId;
         if (this.officeInstance) {
           this.officeInstance.focusTask(roomId);
         }
       },
 
       resetOfficeCamera: function () {
+        this.selectedRoomId = '';
         if (this.officeInstance) {
           this.officeInstance.focusTask(0);
         }
