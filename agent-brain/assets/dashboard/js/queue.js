@@ -236,6 +236,65 @@
         });
       },
 
+      // ---- Per-id state read through methods ----
+      // Alpine x-bind turns an undefined result into '' when the expression has a '.'
+      // (`actionBusy[it.id]` before the key exists), and '' keeps a boolean attribute such as
+      // `disabled` on the element. Templates read per-id maps through these methods instead,
+      // which always return a boolean or a string.
+      isBusy: function (id) {
+        return !!this.actionBusy[id];
+      },
+
+      cardError: function (id) {
+        return this.cardErrors[id] || '';
+      },
+
+      // The Sửa rồi duyệt / Từ chối form objects of one proposal, created once and then only
+      // mutated in place: the proposal card's `proposalForm` component keeps references to
+      // them as `edit` / `reject`, so its x-model bindings use static paths (`edit.title`).
+      formsFor: function (p) {
+        var id = p.id;
+        if (!this.editForms[id]) {
+          this.editForms[id] = {
+            open: false,
+            title: p.title || '',
+            team: p.team || '',
+            workflow: p.workflow || '',
+            priority: p.priority || 'normal',
+            sending: false,
+            error: '',
+          };
+        }
+        if (!this.rejectForms[id]) {
+          this.rejectForms[id] = {
+            open: false,
+            reason: '',
+            sending: false,
+            error: '',
+          };
+        }
+        return { edit: this.editForms[id], reject: this.rejectForms[id] };
+      },
+
+      // Move keyboard focus into a form once x-show has revealed it. x-show reveals on a later
+      // animation frame, so wait until the field is rendered (bounded retries).
+      focusField: function (elId) {
+        var tries = 0;
+        var run = function () {
+          var el = document.getElementById(elId);
+          var rendered = !!(el && el.getClientRects && el.getClientRects().length);
+          if (rendered && typeof el.focus === 'function') {
+            el.focus();
+            return;
+          }
+          tries++;
+          if (tries < 20) {
+            setTimeout(run, 25);
+          }
+        };
+        setTimeout(run, 0);
+      },
+
       // Approve proposal
       approveProposal: function (id) {
         var self = this;
@@ -254,15 +313,15 @@
       // Edit form
       openEdit: function (p) {
         this.cardErrors[p.id] = '';
-        this.editForms[p.id] = {
-          open: true,
-          title: p.title || '',
-          team: p.team || '',
-          workflow: p.workflow || '',
-          priority: p.priority || 'normal',
-          sending: false,
-          error: '',
-        };
+        var f = this.formsFor(p).edit;
+        f.title = p.title || '';
+        f.team = p.team || '';
+        f.workflow = p.workflow || '';
+        f.priority = p.priority || 'normal';
+        f.sending = false;
+        f.error = '';
+        f.open = true;
+        this.focusField('edit-title-' + p.id);
       },
 
       closeEdit: function (id) {
@@ -305,12 +364,12 @@
       // Reject form
       openReject: function (p) {
         this.cardErrors[p.id] = '';
-        this.rejectForms[p.id] = {
-          open: true,
-          reason: '',
-          sending: false,
-          error: '',
-        };
+        var r = this.formsFor(p).reject;
+        r.reason = '';
+        r.sending = false;
+        r.error = '';
+        r.open = true;
+        this.focusField('reject-reason-' + p.id);
       },
 
       closeReject: function (id) {
@@ -702,12 +761,22 @@
         }
       },
 
+      // The 3D detail card opens the form on the proposal's card in the Cần duyệt group,
+      // so that group is opened first.
+      openApprovalGroup: function () {
+        if (this.sideGroup !== 'approval') {
+          this.setSide('approval');
+        }
+      },
+
       openEditFromDetail: function (p) {
-        this.openEdit(p.id, p);
+        this.openApprovalGroup();
+        this.openEdit(p);
       },
 
       openRejectFromDetail: function (p) {
-        this.openReject(p.id);
+        this.openApprovalGroup();
+        this.openReject(p);
       },
 
       get totalOfficeCount() {
@@ -941,6 +1010,38 @@
           return self.classifyTask(t) === 'done';
         });
         return list.slice(0, 10);
+      },
+    };
+  });
+
+  // One pending proposal card in Cần duyệt (x-data="proposalForm" inside the approvalItems loop).
+  // It only aliases that proposal's form objects from the queue component under static names,
+  // because the CSP build's templates cannot safely use `editForms[item.data.id].title`
+  // (it throws before the form exists, and x-model needs an assignable path). The queue
+  // component stays the owner: its methods open, submit and close the forms, and its
+  // background poll still sees an open form through editForms / rejectForms.
+  window.AB.onReady('proposalForm', function () {
+    return {
+      edit: { open: false, title: '', team: '', workflow: '', priority: 'normal', sending: false, error: '' },
+      reject: { open: false, reason: '', sending: false, error: '' },
+
+      init: function () {
+        var forms = this.formsFor(this.item.data);
+        this.edit = forms.edit;
+        this.reject = forms.reject;
+      },
+
+      editPriorityPressed: function (prio) {
+        return this.edit.priority === prio ? 'true' : 'false';
+      },
+
+      editPriorityClass: function (prio) {
+        if (this.edit.priority !== prio) {
+          return 'bg-white dark:bg-slate-800 ring-1 ring-slate-300 dark:ring-slate-600';
+        }
+        if (prio === 'urgent') return 'bg-rose-600 text-white';
+        if (prio === 'low') return 'bg-sky-600 text-white';
+        return 'bg-indigo-600 text-white';
       },
     };
   });

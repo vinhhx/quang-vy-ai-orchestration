@@ -101,19 +101,19 @@
               <button
                 type="button"
                 @click="approveProposal(selectedItem.id)"
-                :disabled="actionBusy[selectedItem.id]"
+                :disabled="isBusy(selectedItem.id)"
                 class="flex-1 inline-flex min-h-8 items-center justify-center rounded-lg bg-emerald-600 px-2 py-1 text-xs font-semibold text-white shadow-sm hover:bg-emerald-500 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600 dark:focus-visible:outline-emerald-400"
               >Duyệt</button>
               <button
                 type="button"
                 @click="openEditFromDetail(selectedItem)"
-                :disabled="actionBusy[selectedItem.id]"
+                :disabled="isBusy(selectedItem.id)"
                 class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
               >Sửa & Duyệt</button>
               <button
                 type="button"
                 @click="openRejectFromDetail(selectedItem)"
-                :disabled="actionBusy[selectedItem.id]"
+                :disabled="isBusy(selectedItem.id)"
                 class="inline-flex min-h-8 items-center justify-center rounded-lg px-2 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 dark:focus-visible:outline-rose-400"
               >Từ chối</button>
             </div>
@@ -429,16 +429,16 @@
                   type="button"
                   x-show="it.status === 'queued' || it.status === 'failed'"
                   @click="cancelIntake(it.id)"
-                  :disabled="actionBusy[it.id]"
+                  :disabled="isBusy(it.id)"
                   class="inline-flex min-h-8 items-center justify-center rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-rose-600 ring-1 ring-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-800 dark:text-rose-400 dark:ring-rose-800 dark:hover:bg-rose-950/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 dark:focus-visible:outline-rose-400"
                 >Huỷ</button>
               </div>
 
               <div
                 role="alert"
-                x-show="cardErrors[it.id]"
+                x-show="cardError(it.id)"
                 class="rounded-lg bg-rose-50 p-2 text-xs text-rose-800 dark:bg-rose-900/30 dark:text-rose-200"
-                x-text="cardErrors[it.id]"
+                x-text="cardError(it.id)"
               ></div>
             </div>
           </template>
@@ -495,9 +495,9 @@
                 </div>
               </template>
 
-              <!-- (a) Thẻ Đề xuất pending -->
+              <!-- (a) Thẻ Đề xuất pending: proposalForm (queue.js) đặt form của đề xuất này dưới tên tĩnh edit / reject -->
               <template x-if="item.kind === 'proposal'">
-                <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+                <div x-data="proposalForm" :data-proposal-id="item.data.id" class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
                   <div class="flex flex-wrap items-center justify-between gap-1">
                     <span
                       class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
@@ -538,19 +538,19 @@
                     <button
                       type="button"
                       @click="approveProposal(item.data.id)"
-                      :disabled="actionBusy[item.data.id]"
+                      :disabled="isBusy(item.data.id)"
                       class="inline-flex min-h-8 flex-1 items-center justify-center rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
                     >Duyệt</button>
                     <button
                       type="button"
                       @click="openEdit(item.data)"
-                      :disabled="actionBusy[item.data.id]"
+                      :disabled="isBusy(item.data.id)"
                       class="inline-flex min-h-8 flex-1 items-center justify-center rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-600 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
                     >Sửa rồi duyệt</button>
                     <button
                       type="button"
                       @click="openReject(item.data)"
-                      :disabled="actionBusy[item.data.id]"
+                      :disabled="isBusy(item.data.id)"
                       class="inline-flex min-h-8 items-center justify-center rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-rose-600 ring-1 ring-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-800 dark:text-rose-400 dark:ring-rose-800 dark:hover:bg-rose-950/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 dark:focus-visible:outline-rose-400"
                     >Từ chối</button>
                     <button
@@ -563,7 +563,7 @@
 
                   <!-- Form Sửa rồi duyệt (Esc để đóng) -->
                   <div
-                    x-show="editForms[item.data.id] && editForms[item.data.id].open"
+                    x-show="edit.open"
                     @keydown.escape="closeEdit(item.data.id)"
                     class="rounded-xl border border-indigo-200 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-950/30 space-y-2 mt-2"
                   >
@@ -574,7 +574,7 @@
                         :id="'edit-title-' + item.data.id"
                         type="text"
                         class="w-full min-h-8 rounded-lg bg-white px-2.5 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                        x-model="editForms[item.data.id].title"
+                        x-model="edit.title"
                       >
                     </div>
                     <div class="space-y-1">
@@ -582,7 +582,7 @@
                       <select
                         :id="'edit-team-' + item.data.id"
                         class="w-full min-h-8 rounded-lg bg-white px-2 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                        x-model="editForms[item.data.id].team"
+                        x-model="edit.team"
                       >
                         <template x-for="t in availableTeams" :key="t">
                           <option :value="t" x-text="t"></option>
@@ -594,7 +594,7 @@
                       <select
                         :id="'edit-wf-' + item.data.id"
                         class="w-full min-h-8 rounded-lg bg-white px-2 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                        x-model="editForms[item.data.id].workflow"
+                        x-model="edit.workflow"
                       >
                         <template x-for="w in availableWorkflows" :key="w">
                           <option :value="w" x-text="w"></option>
@@ -607,32 +607,32 @@
                         <button
                           type="button"
                           @click="setEditPriority(item.data.id, 'urgent')"
-                          :aria-pressed="editForms[item.data.id].priority === 'urgent' ? 'true' : 'false'"
+                          :aria-pressed="editPriorityPressed('urgent')"
                           class="flex-1 rounded-md py-1 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                          :class="editForms[item.data.id].priority === 'urgent' ? 'bg-rose-600 text-white' : 'bg-white dark:bg-slate-800 ring-1 ring-slate-300 dark:ring-slate-600'"
+                          :class="editPriorityClass('urgent')"
                         >Gấp</button>
                         <button
                           type="button"
                           @click="setEditPriority(item.data.id, 'normal')"
-                          :aria-pressed="editForms[item.data.id].priority === 'normal' ? 'true' : 'false'"
+                          :aria-pressed="editPriorityPressed('normal')"
                           class="flex-1 rounded-md py-1 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                          :class="editForms[item.data.id].priority === 'normal' ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 ring-1 ring-slate-300 dark:ring-slate-600'"
+                          :class="editPriorityClass('normal')"
                         >Thường</button>
                         <button
                           type="button"
                           @click="setEditPriority(item.data.id, 'low')"
-                          :aria-pressed="editForms[item.data.id].priority === 'low' ? 'true' : 'false'"
+                          :aria-pressed="editPriorityPressed('low')"
                           class="flex-1 rounded-md py-1 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                          :class="editForms[item.data.id].priority === 'low' ? 'bg-sky-600 text-white' : 'bg-white dark:bg-slate-800 ring-1 ring-slate-300 dark:ring-slate-600'"
+                          :class="editPriorityClass('low')"
                         >Thấp</button>
                       </div>
                     </div>
 
                     <div
                       role="alert"
-                      x-show="editForms[item.data.id].error"
+                      x-show="edit.error"
                       class="rounded-lg bg-rose-50 p-2 text-xs text-rose-800 dark:bg-rose-900/30 dark:text-rose-200"
-                      x-text="editForms[item.data.id].error"
+                      x-text="edit.error"
                     ></div>
 
                     <div class="flex items-center justify-end gap-2 pt-1">
@@ -644,18 +644,19 @@
                       <button
                         type="button"
                         @click="submitApproveEdit(item.data.id)"
-                        :disabled="editForms[item.data.id].sending"
+                        :disabled="edit.sending"
                         class="inline-flex min-h-8 items-center justify-center rounded-lg bg-indigo-600 px-3 py-1 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
                       >
-                        <span x-show="!editForms[item.data.id].sending">Lưu & Duyệt</span>
-                        <span x-show="editForms[item.data.id].sending">Đang lưu...</span>
+                        <span x-show="!edit.sending">Lưu & Duyệt</span>
+                        <span x-show="edit.sending">Đang lưu...</span>
                       </button>
                     </div>
                   </div>
 
-                  <!-- Ô Từ chối xác nhận -->
+                  <!-- Ô Từ chối xác nhận (Esc để đóng) -->
                   <div
-                    x-show="rejectForms[item.data.id] && rejectForms[item.data.id].open"
+                    x-show="reject.open"
+                    @keydown.escape="closeReject(item.data.id)"
                     class="rounded-xl border border-rose-200 bg-rose-50/50 p-3 dark:border-rose-900 dark:bg-rose-950/30 space-y-2 mt-2"
                   >
                     <h4 class="text-xs font-semibold text-rose-900 dark:text-rose-200">Xác nhận từ chối đề xuất</h4>
@@ -666,15 +667,15 @@
                         type="text"
                         placeholder="Nhập lý do nếu có..."
                         class="w-full min-h-8 rounded-lg bg-white px-2.5 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
-                        x-model="rejectForms[item.data.id].reason"
+                        x-model="reject.reason"
                       >
                     </div>
 
                     <div
                       role="alert"
-                      x-show="rejectForms[item.data.id].error"
+                      x-show="reject.error"
                       class="rounded-lg bg-rose-100 p-2 text-xs text-rose-900 dark:bg-rose-900/50 dark:text-rose-200"
-                      x-text="rejectForms[item.data.id].error"
+                      x-text="reject.error"
                     ></div>
 
                     <div class="flex items-center justify-end gap-2 pt-1">
@@ -686,20 +687,20 @@
                       <button
                         type="button"
                         @click="confirmReject(item.data.id)"
-                        :disabled="rejectForms[item.data.id].sending"
+                        :disabled="reject.sending"
                         class="inline-flex min-h-8 items-center justify-center rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white shadow-sm hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-rose-500 dark:hover:bg-rose-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 dark:focus-visible:outline-rose-400"
                       >
-                        <span x-show="!rejectForms[item.data.id].sending">Xác nhận từ chối</span>
-                        <span x-show="rejectForms[item.data.id].sending">Đang gửi...</span>
+                        <span x-show="!reject.sending">Xác nhận từ chối</span>
+                        <span x-show="reject.sending">Đang gửi...</span>
                       </button>
                     </div>
                   </div>
 
                   <div
                     role="alert"
-                    x-show="cardErrors[item.data.id]"
+                    x-show="cardError(item.data.id)"
                     class="rounded-lg bg-rose-50 p-2 text-xs text-rose-800 dark:bg-rose-900/30 dark:text-rose-200"
-                    x-text="cardErrors[item.data.id]"
+                    x-text="cardError(item.data.id)"
                   ></div>
                 </div>
               </template>
@@ -759,7 +760,7 @@
                   :id="'prio-change-' + entry.item.id"
                   @change="changePriority(entry.item.id, $event.target.value)"
                   :value="entry.item.priority"
-                  :disabled="actionBusy[entry.item.id]"
+                  :disabled="isBusy(entry.item.id)"
                   class="w-full min-h-8 rounded-lg bg-white px-2 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
                 >
                   <option value="urgent">Gấp (urgent)</option>
@@ -778,9 +779,9 @@
 
               <div
                 role="alert"
-                x-show="cardErrors[entry.item.id]"
+                x-show="cardError(entry.item.id)"
                 class="rounded-lg bg-rose-50 p-2 text-xs text-rose-800 dark:bg-rose-900/30 dark:text-rose-200"
-                x-text="cardErrors[entry.item.id]"
+                x-text="cardError(entry.item.id)"
               ></div>
             </div>
           </template>

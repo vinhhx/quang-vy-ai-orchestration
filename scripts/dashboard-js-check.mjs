@@ -4837,6 +4837,131 @@ const sections = [
       check('overview.html: uses openAssign button', overviewHtml.includes('@click="openAssign"'));
     },
   },
+  {
+    // Điều phối action buttons and forms under the Alpine CSP build. Alpine's x-bind turns an
+    // undefined result into '' when the expression contains a '.', and '' keeps `disabled` on
+    // the element: `:disabled="actionBusy[it.id]"` disabled every button on load. Per-id maps
+    // are read through methods, and the proposal forms are bound through static paths.
+    name: 'queue-csp-bindings',
+    async run(ctx) {
+      const dash = (f) => path.join(repoRoot, 'agent-brain/assets/dashboard', f);
+
+      // ---- No computed member access with a non-literal key in any Alpine attribute ----
+      const attrRe = /\s(x-[\w:.-]+|:[\w.-]+|@[\w.:-]+)="([^"]*)"/g;
+      const dynKeyRe = /[\w$\])]\[(?!\s*(?:\d|'|"))/;
+      const screenFiles = fs.readdirSync(dash('screens')).filter((f) => f.endsWith('.html')).sort();
+      const hits = [];
+      for (const f of screenFiles) {
+        const src = fs.readFileSync(dash('screens/' + f), 'utf8');
+        let m;
+        attrRe.lastIndex = 0;
+        while ((m = attrRe.exec(src)) !== null) {
+          if (dynKeyRe.test(m[2])) {
+            const line = src.slice(0, m.index).split('\n').length;
+            hits.push(f + ':' + line + ' ' + m[1] + '="' + m[2] + '"');
+          }
+        }
+      }
+      check('csp-bindings: no obj[expr] access in Alpine attributes of screens/*.html', hits.length === 0, hits.join(' | '));
+
+      // ---- queue.html uses the method / static-path forms ----
+      const html = fs.readFileSync(dash('screens/queue.html'), 'utf8');
+      check('queue: no actionBusy / cardErrors / editForms / rejectForms in the markup', !/actionBusy|cardErrors|editForms|rejectForms/.test(html));
+      const disabledExprs = (html.match(/:disabled="[^"]*"/g) || []).map((s) => s.slice(11, -1));
+      const okDisabled = (e) => /^isBusy\([\w.]+\)$/.test(e) || e === 'edit.sending' || e === 'reject.sending' || e === "quickSending || !quickRequest.trim()";
+      check('queue: every :disabled is isBusy(id), a form sending flag, or the quick intake rule', disabledExprs.length >= 8 && disabledExprs.every(okDisabled), disabledExprs.filter((e) => !okDisabled(e)).join(' | '));
+      check('queue: the proposal card is a proposalForm component', /<div x-data="proposalForm"/.test(html));
+      check('queue: the edit form binds static paths', ['edit.title', 'edit.team', 'edit.workflow'].every((p) => html.includes('x-model="' + p + '"')));
+      check('queue: the reject form binds a static path and closes on Esc', html.includes('x-model="reject.reason"') && html.includes('@keydown.escape="closeReject(item.data.id)"'));
+
+      // ---- queue.js methods ----
+      const factories = {};
+      const savedAlpine = ctx.Alpine;
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      try {
+        vm.runInContext(fs.readFileSync(dash('js/queue.js'), 'utf8'), ctx, { filename: 'queue.js' });
+      } finally {
+        ctx.Alpine = savedAlpine;
+      }
+      check('queue: queue and proposalForm factories registered', typeof factories.queue === 'function' && typeof factories.proposalForm === 'function');
+      if (typeof factories.queue !== 'function' || typeof factories.proposalForm !== 'function') return;
+
+      const q = factories.queue();
+      check('queue: isBusy is false (a boolean) for an unknown id', q.isBusy(7) === false);
+      q.actionBusy[7] = true;
+      check('queue: isBusy is true while an action runs', q.isBusy(7) === true);
+      q.actionBusy[7] = false;
+      check('queue: isBusy is false again after the action', q.isBusy(7) === false);
+      check('queue: cardError is an empty string for an unknown id', q.cardError(7) === '');
+      q.cardErrors[7] = 'Lỗi thử';
+      check('queue: cardError returns the stored message', q.cardError(7) === 'Lỗi thử');
+
+      const p = { id: 7, title: 'Đề xuất A', team: 'mac-dinh', workflow: 'nhanh', priority: 'low' };
+      const pf = factories.proposalForm();
+      const scope = Object.assign(pf, { item: { data: p }, formsFor: q.formsFor.bind(q) });
+      pf.init.call(scope);
+      check('queue: proposalForm aliases the queue form objects', scope.edit === q.editForms[7] && scope.reject === q.rejectForms[7]);
+      check('queue: forms start closed with the proposal values', scope.edit.open === false && scope.reject.open === false && scope.edit.title === 'Đề xuất A' && scope.edit.priority === 'low');
+      check('queue: no form counts as active before opening', q.hasActiveForm() === false);
+
+      scope.edit.title = 'cũ';
+      q.openEdit(p);
+      check('queue: openEdit opens the aliased form with the proposal values', scope.edit === q.editForms[7] && scope.edit.open === true && scope.edit.title === 'Đề xuất A' && scope.edit.team === 'mac-dinh' && scope.edit.workflow === 'nhanh');
+      check('queue: an open edit form pauses the background poll', q.hasActiveForm() === true);
+      check('queue: openEdit clears the card error', q.cardError(7) === '');
+      q.setEditPriority(7, 'urgent');
+      check('queue: priority buttons follow the edit form', scope.editPriorityPressed('urgent') === 'true' && scope.editPriorityPressed('low') === 'false' && scope.editPriorityClass('urgent').indexOf('bg-rose-600') >= 0 && scope.editPriorityClass('low').indexOf('ring-1') >= 0);
+      q.closeEdit(7);
+      check('queue: closeEdit closes the aliased form', scope.edit.open === false && q.hasActiveForm() === false);
+
+      scope.reject.reason = 'cũ';
+      q.openReject(p);
+      check('queue: openReject opens the aliased form with an empty reason', scope.reject === q.rejectForms[7] && scope.reject.open === true && scope.reject.reason === '');
+      q.closeReject(7);
+      check('queue: closeReject closes the aliased form', scope.reject.open === false);
+
+      // 3D detail card buttons open the same form and the Cần duyệt group.
+      q.sideGroup = 'intake';
+      q.openEditFromDetail(p);
+      check('queue: detail-card Sửa & Duyệt opens Cần duyệt and the edit form', q.sideGroup === 'approval' && scope.edit.open === true);
+      q.closeEdit(7);
+      q.openRejectFromDetail(p);
+      check('queue: detail-card Từ chối keeps Cần duyệt open and opens the reject form', q.sideGroup === 'approval' && scope.reject.open === true);
+      q.closeReject(7);
+
+      // Submit bodies go through the aliased objects.
+      const savedApi = ctx.AB.api;
+      const calls = [];
+      let reply = { ok: true, status: 200, data: {} };
+      ctx.AB.api = function (method, url, body) {
+        calls.push({ method, url, body });
+        if (method === 'GET') return Promise.resolve({ ok: true, status: 200, data: {} });
+        return Promise.resolve(reply);
+      };
+      try {
+        q.openEdit(p);
+        scope.edit.title = '  Tiêu đề mới  ';
+        scope.edit.team = 'tiet-kiem';
+        scope.edit.workflow = 'mac-dinh';
+        scope.edit.priority = 'urgent';
+        reply = { ok: false, status: 409, data: { error: 'Đề xuất đã đổi' } };
+        const sub = q.submitApproveEdit(7);
+        check('queue: Lưu & Duyệt sets sending while the request runs', scope.edit.sending === true);
+        await sub;
+        await new Promise((r) => setTimeout(r, 0));
+        const post = calls.find((c) => c.method === 'POST');
+        check('queue: Lưu & Duyệt posts the edited values', post && post.url === '/api/proposals/7/approve' && JSON.stringify(post.body) === JSON.stringify({ title: 'Tiêu đề mới', team: 'tiet-kiem', workflow: 'mac-dinh', priority: 'urgent' }), JSON.stringify(post));
+        check('queue: an API error stays in the open edit form', scope.edit.sending === false && scope.edit.open === true && scope.edit.error.length > 0, scope.edit.error);
+        q.closeEdit(7);
+      } finally {
+        ctx.AB.api = savedApi;
+      }
+    },
+  },
 ];
 
 // A promise that never settles would let node exit 0 with no output; fail loudly instead.
