@@ -645,6 +645,27 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
             }
         }
         crate::term::emit_out(&format!("Allowlist: {}", active_files.join(", ")));
+        let workflow = existing_task_id.and_then(|tid| {
+            crate::db::task_auto(&ctx.conn, tid)
+                .ok()
+                .flatten()
+                .and_then(|a| a.workflow_json)
+                .and_then(|j| crate::workflows::Workflow::from_snapshot(&j))
+                .map(|wf| wf.name)
+        });
+        let team = existing_task_id.and_then(|tid| {
+            crate::db::task_team_json(&ctx.conn, tid)
+                .ok()
+                .flatten()
+                .and_then(|j| crate::teams::TaskTeam::parse(Some(&j)))
+                .map(|t| t.name)
+        });
+        let layers = crate::prompts::PromptLayers {
+            stacks: proj.stack.clone(),
+            project: Some(proj.id.clone()),
+            workflow,
+            team,
+        };
         let spec_dry = crate::roles::RoleSpec {
             role: crate::roles::Role::Dev,
             user_input,
@@ -655,15 +676,21 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
                 "<run_dir/settings.json>".to_string(),
             ],
         };
-        let cmd = if is_fix {
-            crate::roles::build_command_with_prompt(
-                &spec_dry,
-                &ctx.cfg,
-                crate::roles::DEV_FIX_PROMPT,
-            )?
+        let base_prompt = if is_fix {
+            crate::roles::DEV_FIX_PROMPT
         } else {
-            crate::roles::build_command(&spec_dry, &ctx.cfg)?
+            crate::roles::prompt_for(crate::roles::Role::Dev)
         };
+        let (cmd, warnings) = crate::roles::build_command_layered(
+            &spec_dry,
+            &ctx.cfg,
+            base_prompt,
+            &layers,
+        )?;
+        for w in warnings {
+            crate::term::emit(&w);
+        }
+        crate::term::emit_out(&crate::prompts::dry_run_summary(&layers, "dev"));
         crate::term::emit_out(&format!(
             "Command: {}",
             crate::roles::display_argv(&cmd, prompt_path)
@@ -786,11 +813,41 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         ],
     };
 
-    let argv = if is_fix {
-        crate::roles::build_command_with_prompt(&spec, &ctx.cfg, crate::roles::DEV_FIX_PROMPT)?
-    } else {
-        crate::roles::build_command(&spec, &ctx.cfg)?
+    let workflow = task_id.and_then(|tid| {
+        crate::db::task_auto(&ctx.conn, tid)
+            .ok()
+            .flatten()
+            .and_then(|a| a.workflow_json)
+            .and_then(|j| crate::workflows::Workflow::from_snapshot(&j))
+            .map(|wf| wf.name)
+    });
+    let team = task_id.and_then(|tid| {
+        crate::db::task_team_json(&ctx.conn, tid)
+            .ok()
+            .flatten()
+            .and_then(|j| crate::teams::TaskTeam::parse(Some(&j)))
+            .map(|t| t.name)
+    });
+    let layers = crate::prompts::PromptLayers {
+        stacks: proj.stack.clone(),
+        project: Some(proj.id.clone()),
+        workflow,
+        team,
     };
+    let base_prompt = if is_fix {
+        crate::roles::DEV_FIX_PROMPT
+    } else {
+        crate::roles::prompt_for(crate::roles::Role::Dev)
+    };
+    let (argv, warnings) = crate::roles::build_command_layered(
+        &spec,
+        &ctx.cfg,
+        base_prompt,
+        &layers,
+    )?;
+    for w in warnings {
+        crate::term::emit(&w);
+    }
     let model = ctx.cfg.model_for("dev")?;
     let timeout = ctx.cfg.timeout_for("dev");
 

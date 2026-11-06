@@ -483,6 +483,12 @@ pub fn execute_role_staged(
         None => new_run_dir(&ctx.cfg, &project.id, &plan.task_slug, &plan.role)?,
     };
 
+    if let Some((_, prompt)) = crate::engine::claude_argv_parts(&plan.argv) {
+        let prompt_path = run_dir.join("prompt.md");
+        let redacted = crate::secrets::redact_str(&prompt, &ep.redact);
+        let _ = std::fs::write(&prompt_path, redacted);
+    }
+
     let p_desc = crate::profile::describe_profile(&project.profile, &ctx.cfg.profiles);
     // D-40: an endpoint with no E-09 evidence runs, and the header says so.
     let unverified_mark = if ep.unverified {

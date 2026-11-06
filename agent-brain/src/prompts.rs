@@ -40,15 +40,12 @@ pub fn notes_dir() -> PathBuf {
 
 pub const BUILTIN_STACK_NOTES: &[(&str, &str, &str)] = &[];
 
-#[cfg(test)]
-type TestBuiltinNote = (&'static str, &'static str, &'static str);
+pub type TestBuiltinNote = (&'static str, &'static str, &'static str);
 
-#[cfg(test)]
 thread_local! {
     static TEST_BUILTIN_OVERRIDE: std::cell::RefCell<Option<Vec<TestBuiltinNote>>> = const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
 pub fn with_test_builtin_notes<R>(
     notes: Vec<TestBuiltinNote>,
     f: impl FnOnce() -> R,
@@ -64,17 +61,14 @@ pub fn with_test_builtin_notes<R>(
 }
 
 pub fn builtin_stack_note(name: &str, role: &str) -> Option<&'static str> {
-    #[cfg(test)]
-    {
-        if let Some(found) = TEST_BUILTIN_OVERRIDE.with(|cell| {
-            cell.borrow().as_ref().and_then(|list| {
-                list.iter()
-                    .find(|(n, r, _)| *n == name && *r == role)
-                    .map(|(_, _, c)| *c)
-            })
-        }) {
-            return Some(found);
-        }
+    if let Some(found) = TEST_BUILTIN_OVERRIDE.with(|cell| {
+        cell.borrow().as_ref().and_then(|list| {
+            list.iter()
+                .find(|(n, r, _)| *n == name && *r == role)
+                .map(|(_, _, c)| *c)
+        })
+    }) {
+        return Some(found);
     }
     BUILTIN_STACK_NOTES
         .iter()
@@ -306,6 +300,30 @@ pub fn dry_run_summary(layers: &PromptLayers, role: &str) -> String {
     let wf = layers.workflow.as_deref().unwrap_or("-");
     let team = layers.team.as_deref().unwrap_or("-");
     format!("Ghi chú nghiệp vụ: stack=[{stacks}] dự án={proj} workflow={wf} team={team} ({count} khối)")
+}
+
+pub fn cmd_show(
+    ctx: &crate::app::Ctx,
+    project: &str,
+    role: &str,
+    workflow: Option<&str>,
+    team: Option<&str>,
+) -> crate::error::BrainResult<i32> {
+    let proj = crate::projects::select_project(project, &ctx.map)?;
+    let base = match base_prompt_for(role) {
+        Ok(b) => b,
+        Err(e) => return Err(crate::error::BrainError::error(e)),
+    };
+    let layers = layers_for(&proj, workflow, team);
+    let (composed, warnings) = compose(base, role, &layers);
+    for w in &warnings {
+        crate::term::emit(w);
+    }
+    print!("{composed}");
+    if !composed.ends_with('\n') {
+        println!();
+    }
+    Ok(crate::error::EXIT_OK)
 }
 
 #[cfg(test)]

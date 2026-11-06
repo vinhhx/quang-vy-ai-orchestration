@@ -247,6 +247,37 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
 
     if dry_run {
         crate::term::emit_out(&format!("Diff command: {diff_cmd}"));
+        let existing_task_id = crate::db::project_row_id(&ctx.conn, &proj.id)
+            .ok()
+            .and_then(|pid| {
+                crate::gitops::current_branch(&proj_path).and_then(|b| {
+                    crate::db::find_task_by_branch(&ctx.conn, pid, &b)
+                        .ok()
+                        .flatten()
+                })
+            })
+            .map(|t| t.id);
+        let workflow = existing_task_id.and_then(|tid| {
+            crate::db::task_auto(&ctx.conn, tid)
+                .ok()
+                .flatten()
+                .and_then(|a| a.workflow_json)
+                .and_then(|j| crate::workflows::Workflow::from_snapshot(&j))
+                .map(|wf| wf.name)
+        });
+        let team = existing_task_id.and_then(|tid| {
+            crate::db::task_team_json(&ctx.conn, tid)
+                .ok()
+                .flatten()
+                .and_then(|j| crate::teams::TaskTeam::parse(Some(&j)))
+                .map(|t| t.name)
+        });
+        let layers = crate::prompts::PromptLayers {
+            stacks: proj.stack.clone(),
+            project: Some(proj.id.clone()),
+            workflow,
+            team,
+        };
         let spec_dry = crate::roles::RoleSpec {
             role: crate::roles::Role::Qa,
             user_input: format!(
@@ -259,7 +290,16 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
                 "<run_dir/settings.json>".to_string(),
             ],
         };
-        let argv = crate::roles::build_command(&spec_dry, &ctx.cfg)?;
+        let (argv, warnings) = crate::roles::build_command_layered(
+            &spec_dry,
+            &ctx.cfg,
+            crate::roles::prompt_for(crate::roles::Role::Qa),
+            &layers,
+        )?;
+        for w in warnings {
+            crate::term::emit(&w);
+        }
+        crate::term::emit_out(&crate::prompts::dry_run_summary(&layers, "qa"));
         crate::term::emit_out(&format!(
             "Command: {}",
             crate::roles::display_argv(&argv, "assets/prompts/qa.md")
@@ -308,7 +348,36 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         ],
     };
 
-    let argv = crate::roles::build_command(&spec, &ctx.cfg)?;
+    let workflow = task_id.and_then(|tid| {
+        crate::db::task_auto(&ctx.conn, tid)
+            .ok()
+            .flatten()
+            .and_then(|a| a.workflow_json)
+            .and_then(|j| crate::workflows::Workflow::from_snapshot(&j))
+            .map(|wf| wf.name)
+    });
+    let team = task_id.and_then(|tid| {
+        crate::db::task_team_json(&ctx.conn, tid)
+            .ok()
+            .flatten()
+            .and_then(|j| crate::teams::TaskTeam::parse(Some(&j)))
+            .map(|t| t.name)
+    });
+    let layers = crate::prompts::PromptLayers {
+        stacks: proj.stack.clone(),
+        project: Some(proj.id.clone()),
+        workflow,
+        team,
+    };
+    let (argv, warnings) = crate::roles::build_command_layered(
+        &spec,
+        &ctx.cfg,
+        crate::roles::prompt_for(crate::roles::Role::Qa),
+        &layers,
+    )?;
+    for w in warnings {
+        crate::term::emit(&w);
+    }
     let model = ctx.cfg.model_for("qa")?;
     let timeout = ctx.cfg.timeout_for("qa");
 

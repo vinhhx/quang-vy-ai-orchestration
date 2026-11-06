@@ -311,16 +311,27 @@ pub fn cmd_lead(
                 "<run_dir/settings.json>".to_string(),
             ],
         };
-        let untrusted = wants_untrusted_prompt(opts.origin.as_deref(), request);
-        let argv = if untrusted {
-            crate::roles::build_command_with_prompt(
-                &spec_dry,
-                &ctx.cfg,
-                &crate::roles::lead_untrusted_prompt(),
-            )?
-        } else {
-            crate::roles::build_command(&spec_dry, &ctx.cfg)?
+        let layers = crate::prompts::PromptLayers {
+            stacks: proj.stack.clone(),
+            project: Some(proj.id.clone()),
+            workflow: Some(resolved.workflow.name.clone()),
+            team: Some(effective_team.name.clone()),
         };
+        let untrusted = wants_untrusted_prompt(opts.origin.as_deref(), request);
+        let base_prompt = if untrusted {
+            crate::roles::lead_untrusted_prompt()
+        } else {
+            crate::roles::prompt_for(crate::roles::Role::Lead).to_string()
+        };
+        let (argv, warnings) = crate::roles::build_command_layered(
+            &spec_dry,
+            &ctx.cfg,
+            &base_prompt,
+            &layers,
+        )?;
+        for w in warnings {
+            crate::term::emit(&w);
+        }
         let p_prof = &proj.profile;
         let p_desc = crate::profile::describe_profile(p_prof, &ctx.cfg.profiles);
         let model = ctx.cfg.model_for("lead")?;
@@ -334,6 +345,7 @@ pub fn cmd_lead(
             resolved.workflow.name,
             resolved.workflow.summary()
         ));
+        crate::term::emit_out(&crate::prompts::dry_run_summary(&layers, "lead"));
         crate::term::emit_out(&format!(
             "Command: {}",
             crate::roles::display_argv(
@@ -508,16 +520,28 @@ pub fn cmd_lead(
             ],
         };
 
-        let argv = if wants_untrusted_prompt(origin.as_deref(), request) {
-            crate::term::emit("Lead: yêu cầu có tin chuyển tiếp — dùng quy tắc dữ liệu không tin cậy");
-            crate::roles::build_command_with_prompt(
-                &spec,
-                &ctx.cfg,
-                &crate::roles::lead_untrusted_prompt(),
-            )?
-        } else {
-            crate::roles::build_command(&spec, &ctx.cfg)?
+        let layers = crate::prompts::PromptLayers {
+            stacks: proj.stack.clone(),
+            project: Some(proj.id.clone()),
+            workflow: Some(resolved.workflow.name.clone()),
+            team: Some(effective_team.name.clone()),
         };
+        let base_prompt = if wants_untrusted_prompt(origin.as_deref(), request) {
+            crate::term::emit("Lead: yêu cầu có tin chuyển tiếp — dùng quy tắc dữ liệu không tin cậy");
+            crate::roles::lead_untrusted_prompt()
+        } else {
+            crate::roles::prompt_for(crate::roles::Role::Lead).to_string()
+        };
+
+        let (argv, warnings) = crate::roles::build_command_layered(
+            &spec,
+            &ctx.cfg,
+            &base_prompt,
+            &layers,
+        )?;
+        for w in warnings {
+            crate::term::emit(&w);
+        }
 
         let plan = crate::roles::RunPlan {
             role: "lead".to_string(),

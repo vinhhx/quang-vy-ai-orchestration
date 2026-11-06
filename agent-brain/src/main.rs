@@ -154,6 +154,30 @@ enum Commands {
         #[command(subcommand)]
         action: HumanCommands,
     },
+    /// Xem prompt sau khi ghép ghi chú nghiệp vụ
+    Prompt {
+        #[command(subcommand)]
+        subcommand: PromptCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PromptCommands {
+    /// In prompt cuối cùng ra stdout (không chạy gì)
+    Show {
+        /// Tên, id hoặc alias dự án
+        #[arg(long)]
+        project: String,
+        /// Vai trò (lead, dev, qa, plan-review, code-review)
+        #[arg(long)]
+        role: String,
+        /// Quy trình (workflow)
+        #[arg(long)]
+        workflow: Option<String>,
+        /// Đội hình
+        #[arg(long)]
+        team: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -272,6 +296,20 @@ fn main() {
         Commands::Projects { subcommand } => match subcommand {
             ProjectsCommands::Scan { roots } => projects::cmd_scan(&roots),
             ProjectsCommands::Add { path, r#type } => projects::cmd_add(&path, r#type.as_deref()),
+        },
+        Commands::Prompt { subcommand } => match subcommand {
+            PromptCommands::Show {
+                project,
+                role,
+                workflow,
+                team,
+            } => agent_brain::prompts::cmd_show(
+                &ctx,
+                &project,
+                &role,
+                workflow.as_deref(),
+                team.as_deref(),
+            ),
         },
         Commands::Run {
             role,
