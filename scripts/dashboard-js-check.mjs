@@ -4765,7 +4765,7 @@ const sections = [
       check('telegram: the screen has no input, textarea, select or form', !/<(input|textarea|select|form)\b/i.test(html));
       check('telegram: the screen has no token field or x-model', !/token/i.test(html.replace(/token không bao giờ hiện ở đây/i, '')) && html.indexOf('x-model') === -1 && html.indexOf('x-html') === -1 && !/\sstyle=/.test(html));
       check('telegram: the only button is the retry button', (html.match(/<button\b/g) || []).length === 1 && html.indexOf('@click="reload"') >= 0);
-      check('telegram: nav link with navClass and navCurrent', index.indexOf('href="#/telegram"') >= 0 && index.indexOf("navClass('telegram')") >= 0 && index.indexOf("navCurrent('telegram')") >= 0 && />Telegram<\/a>/.test(index));
+      check('telegram: nav link with navClass and navCurrent', index.indexOf('href="#/telegram"') >= 0 && index.indexOf("navClass('telegram')") >= 0 && index.indexOf("navCurrent('telegram')") >= 0 && /aria-label="Telegram"/.test(index) && />Telegram<\/span><\/a>/.test(index));
       check('telegram: app.js has the route and the title', appJs.indexOf("'#/telegram'") >= 0 && appJs.indexOf("telegram: 'Telegram'") >= 0);
     },
   },

@@ -833,6 +833,70 @@
         window.AB.setProfile(this.profile);
       },
 
+      // Icon sidebar: the profile filter lives in a small popover next to the person icon.
+      profileMenuOpen: false,
+
+      toggleProfileMenu: function () {
+        this.profileMenuOpen = !this.profileMenuOpen;
+      },
+
+      closeProfileMenu: function () {
+        this.profileMenuOpen = false;
+      },
+
+      escapeProfileMenu: function () {
+        if (!this.profileMenuOpen) return;
+        this.profileMenuOpen = false;
+        if (this.$refs && this.$refs.profileBtn) {
+          this.$refs.profileBtn.focus();
+        }
+      },
+
+      pickProfile: function (p) {
+        this.profile = p;
+        this.profileChanged();
+        this.escapeProfileMenu();
+      },
+
+      profilePressed: function (p) {
+        return this.profile === p ? 'true' : 'false';
+      },
+
+      profileOptionClass: function (p) {
+        if (this.profile === p) {
+          return 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200';
+        }
+        return 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700';
+      },
+
+      get profileMenuExpanded() {
+        return this.profileMenuOpen ? 'true' : 'false';
+      },
+
+      get profileTip() {
+        return 'Profile: ' + (this.profile === 'all' ? 'Tất cả' : this.profile);
+      },
+
+      get profileTipShown() {
+        return !this.profileMenuOpen;
+      },
+
+      get profileFiltered() {
+        return this.profile !== 'all';
+      },
+
+      get themeIsLight() {
+        return this.themeMode === 'light';
+      },
+
+      get themeIsDark() {
+        return this.themeMode === 'dark';
+      },
+
+      get themeIsSystem() {
+        return this.themeMode !== 'light' && this.themeMode !== 'dark';
+      },
+
       toggleTheme: function () {
         var current = this.themeMode;
         var next = current === 'system' ? 'dark' : (current === 'dark' ? 'light' : 'system');

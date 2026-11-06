@@ -413,9 +413,9 @@ async function main() {
   `, 3000, 'ledger', `Dòng ${firstRowRunId} không có aria-current="true", chưa giữ focus hoặc #ab-stream-line không chứa run ${firstRowRunId}`);
   console.log('OK ledger');
 
-  // Check E, layout at 1280 / 1024 / 768 / 480 px. The left sidebar (md:w-64)
-  // takes 256 px, so the pipeline region needs a 1280 px viewport to fit
-  // without scrolling (the old 1024 px header layout had the same content width).
+  // Check E, layout at 1280 / 1024 / 768 / 480 px. The left icon sidebar (md:w-16)
+  // takes 64 px; the pipeline region must fit without scrolling at 1280 px and
+  // the page must never overflow sideways at any of these widths.
   for (const width of [1280, 1024, 768, 480]) {
     await cdp('Emulation.setDeviceMetricsOverride', {
       width,
