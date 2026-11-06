@@ -11,10 +11,15 @@ pub struct GitFacts {
     pub plan_errors: Vec<String>,
     pub plan_commit: Option<String>,
     pub code_after_plan: bool,
-    /// ENG-03 (06-07): the latest Dev run stopped on quota and every dirty path is a plan file,
-    /// a protocol file or `.handover.md`, so a Dev re-run continues the partial diff instead of
-    /// being refused for a dirty tree. Computed by `load_task_state`.
+    /// ENG-03 (06-07): the latest Dev run stopped on quota or ended failed / timed out / killed /
+    /// lost, and every dirty path is a plan file, a protocol file, `.handover.md` or under the
+    /// approved plan's write dirs, so a Dev re-run continues the partial diff instead of being
+    /// refused for a dirty tree (`roles::dev::continuation_reason`). Computed by
+    /// `load_task_state`.
     pub continuation_ok: bool,
+    /// The dirty paths `run dev` would refuse, listed in Chạy Dev's reason. Empty when not
+    /// computed; the reason then lists every dirty path.
+    pub dirty_outside_plan: Vec<String>,
 }
 
 pub struct TaskFacts<'a> {
@@ -182,17 +187,12 @@ fn build_run_dev(f: &TaskFacts) -> ActionView {
         ));
     } else if !f.git.dirty.is_empty() && !f.git.continuation_ok {
         enabled = false;
-        let mut sorted = f.git.dirty.clone();
-        sorted.sort();
-        let list = sorted
-            .iter()
-            .map(|p| format!("  {p}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        reason = Some(format!(
-            "Working tree có thay đổi chưa commit — hãy commit thay đổi tay với message '{}: plan':\n{list}",
-            f.task.slug
-        ));
+        let refused = if f.git.dirty_outside_plan.is_empty() {
+            &f.git.dirty
+        } else {
+            &f.git.dirty_outside_plan
+        };
+        reason = Some(crate::roles::dev::dirty_outside_plan_message(refused));
     } else if !f.git.plan_exists {
         enabled = false;
         reason = Some("Không tìm thấy .plan.md ở gốc dự án".to_string());
@@ -1241,6 +1241,7 @@ mod tests {
             plan_commit: Some("abc".to_string()),
             code_after_plan: true,
             continuation_ok: false,
+            dirty_outside_plan: Vec::new(),
         };
 
         // planned -> [run_dev, relead]
@@ -1364,6 +1365,7 @@ mod tests {
             plan_commit: Some("abc".to_string()),
             code_after_plan: true,
             continuation_ok: false,
+            dirty_outside_plan: Vec::new(),
         };
 
         let task = dummy_task("open");
@@ -1413,6 +1415,7 @@ mod tests {
             plan_commit: Some("abc".to_string()),
             code_after_plan: true,
             continuation_ok: false,
+            dirty_outside_plan: Vec::new(),
         };
         let facts = TaskFacts {
             task: &task,
@@ -1468,7 +1471,7 @@ mod tests {
         let view = derive(&facts);
         assert_eq!(
             view.actions[0].reason.as_deref(),
-            Some("Working tree có thay đổi chưa commit — hãy commit thay đổi tay với message 'sua-app: plan':\n  file1.py\n  file2.py")
+            Some("Working tree có thay đổi chưa commit ngoài phạm vi plan — commit hoặc bỏ các file này rồi chạy lại:\n  file1.py\n  file2.py")
         );
         assert_eq!(
             view.actions[1].reason.as_deref(),
@@ -1555,6 +1558,7 @@ mod tests {
         let git_no_code = GitFacts {
             code_after_plan: false,
             continuation_ok: false,
+            dirty_outside_plan: Vec::new(),
             ..git.clone()
         };
         let facts = TaskFacts {
@@ -1686,6 +1690,7 @@ mod tests {
             plan_commit: Some("abc".to_string()),
             code_after_plan: false,
             continuation_ok: false,
+            dirty_outside_plan: Vec::new(),
         };
         let facts = TaskFacts {
             task: &task,
@@ -1731,6 +1736,7 @@ mod tests {
             plan_commit: Some("abc".to_string()),
             code_after_plan: false,
             continuation_ok: false,
+            dirty_outside_plan: Vec::new(),
         }
     }
 
@@ -2049,6 +2055,7 @@ mod tests {
             plan_commit: Some("abc".to_string()),
             code_after_plan: false,
             continuation_ok: false,
+            dirty_outside_plan: Vec::new(),
         };
 
         // 1. plan_dirty -> approve disabled
@@ -2913,9 +2920,19 @@ mod tests {
             a.reason
                 .as_deref()
                 .unwrap_or("")
-                .starts_with("Working tree có thay đổi chưa commit"),
+                .starts_with("Working tree có thay đổi chưa commit ngoài phạm vi plan"),
             "reason: {:?}",
             a.reason
+        );
+
+        // When a continuation applies only partly, the reason lists only the refused paths.
+        git.dirty = vec!["src/a.txt".to_string(), "x.txt".to_string()];
+        git.dirty_outside_plan = vec!["x.txt".to_string()];
+        let a = build_run_dev(&facts_without(&task, &git));
+        assert!(!a.enabled);
+        assert_eq!(
+            a.reason.as_deref(),
+            Some("Working tree có thay đổi chưa commit ngoài phạm vi plan — commit hoặc bỏ các file này rồi chạy lại:\n  x.txt")
         );
 
         // The continuation never lifts the other refusals (wrong branch).

@@ -24,7 +24,7 @@ const HANDOVER_FILE: &str = ".handover.md";
 
 /// Why `run dev` may continue on a dirty working tree: how the latest Dev run of the task ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ContinuationReason {
+pub(crate) enum ContinuationReason {
     /// ENG-03 / D-18: the latest Dev run stopped on quota (outcome `quota`).
     Quota,
     /// The latest Dev run ended `failed`, `timed_out`, `killed` or `lost` mid-way; carries that
@@ -38,8 +38,9 @@ const CONTINUABLE_STATUSES: [&str; 4] = ["failed", "timed_out", "killed", "lost"
 /// ENG-03 / D-18: `Some` when the latest Dev run of the task on the current branch stopped on
 /// quota, or ended failed / timed out / killed / lost, so the partial diff it left is the work to
 /// continue. `None` otherwise — also after a succeeded run, when a dirty tree is not Dev's
-/// leftover. Read-only — never creates a task row. The old session is never resumed.
-fn continuation_reason(
+/// leftover. Read-only — never creates a task row. The old session is never resumed. The
+/// dashboard's Chạy Dev gate uses the same rule.
+pub(crate) fn continuation_reason(
     conn: &rusqlite::Connection,
     project_slug: &str,
     root: &Path,
@@ -145,30 +146,30 @@ fn produce_note(produce: &[String], products: &[String]) -> String {
 /// checks its steps) or the step is a person's. An agy Dev gets them: each of its tool steps is
 /// checked against the run's `policy.json` (`guard::agy_tool_decision`). A fix run gets them
 /// only when the approved plan declares `## Tạo sản phẩm` (it must run those commands again).
+/// `announce` prints why a dsh Dev gets no grants (off for the dashboard's read-only lookup).
 fn resolve_dev_grants(
-    ctx: &Ctx,
+    conn: &rusqlite::Connection,
+    cfg: &crate::config::Config,
     project_slug: &str,
     root: &Path,
     task: &str,
     fix: bool,
+    announce: bool,
 ) -> BrainResult<Option<DevGrants>> {
-    let task_id = crate::db::project_row_id(&ctx.conn, project_slug)
+    let task_id = crate::db::project_row_id(conn, project_slug)
         .ok()
         .and_then(|pid| {
-            crate::gitops::current_branch(root).and_then(|b| {
-                crate::db::find_task_by_branch(&ctx.conn, pid, &b)
-                    .ok()
-                    .flatten()
-            })
+            crate::gitops::current_branch(root)
+                .and_then(|b| crate::db::find_task_by_branch(conn, pid, &b).ok().flatten())
         })
         .map(|t| t.id);
     let approved = match task_id {
-        Some(tid) => crate::db::task_auto(&ctx.conn, tid)?.and_then(|a| a.approved_commit),
+        Some(tid) => crate::db::task_auto(conn, tid)?.and_then(|a| a.approved_commit),
         None => None,
     };
     let commit = match approved {
         Some(c) => Some(c),
-        None => crate::roles::plan_commit_for(&ctx.conn, project_slug, root, task)?,
+        None => crate::roles::plan_commit_for(conn, project_slug, root, task)?,
     };
     let Some(commit) = commit else {
         return Ok(None);
@@ -200,13 +201,13 @@ fn resolve_dev_grants(
             "Quyền khai trong plan đã duyệt không hợp lệ:\n{list}"
         )));
     }
-    let resolved = match crate::engine::resolve_for_run(&ctx.conn, task_id, "dev") {
+    let resolved = match crate::engine::resolve_for_run(conn, task_id, "dev") {
         Ok(r) => r,
         Err(_) => return Ok(None),
     };
     let kind = match &resolved.engine {
         crate::engine::Engine::Claude => Some(crate::config::EngineKind::Anthropic),
-        crate::engine::Engine::Named(id) => ctx.cfg.engines.kind_of(id),
+        crate::engine::Engine::Named(id) => cfg.engines.kind_of(id),
         crate::engine::Engine::Human(_) => return Ok(None),
     };
     match kind {
@@ -218,11 +219,67 @@ fn resolve_dev_grants(
             }))
         }
         Some(crate::config::EngineKind::Dsh) => {
-            crate::term::emit_out(GRANTS_CLAUDE_ONLY_MESSAGE);
+            if announce {
+                crate::term::emit_out(GRANTS_CLAUDE_ONLY_MESSAGE);
+            }
             Ok(None)
         }
         None => Ok(None),
     }
+}
+
+/// Write-dir prefixes a (non-fix) `run dev` of `task` would get from the approved plan — the
+/// same lookup `cmd_dev` makes, without printing. Empty when there are none or the approved
+/// grants are invalid (the run itself refuses those).
+pub(crate) fn approved_write_prefixes(
+    conn: &rusqlite::Connection,
+    cfg: &crate::config::Config,
+    project_slug: &str,
+    root: &Path,
+    task: &str,
+) -> Vec<String> {
+    resolve_dev_grants(conn, cfg, project_slug, root, task, false, false)
+        .ok()
+        .flatten()
+        .map(|d| grant_prefixes(&d.grants.write_dirs))
+        .unwrap_or_default()
+}
+
+/// The dirty paths a continuation may NOT carry over, sorted: everything except the plan's
+/// files, protocol files, `.handover.md` and files under the approved write dirs.
+pub(crate) fn dirty_outside_continuation(
+    plan: &crate::planfile::Plan,
+    dirty: impl IntoIterator<Item = String>,
+    write_prefixes: &[String],
+) -> Vec<String> {
+    let plan_set: std::collections::BTreeSet<String> = crate::planfile::plan_files(plan)
+        .iter()
+        .map(|f| crate::planfile::normalize_plan_path(f).nfc().collect())
+        .collect();
+    let mut out: Vec<String> = dirty
+        .into_iter()
+        .filter(|p| {
+            let n: String = p.nfc().collect();
+            !(plan_set.contains(&n)
+                || crate::stream::PROTOCOL_FILES.contains(&n.as_str())
+                || n == HANDOVER_FILE
+                || in_write_dirs(&n, write_prefixes))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Refusal for a working tree with uncommitted changes `run dev` may not carry over.
+pub(crate) fn dirty_outside_plan_message(paths: &[String]) -> String {
+    let mut sorted = paths.to_vec();
+    sorted.sort();
+    let list = sorted
+        .iter()
+        .map(|p| format!("  {p}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("Working tree có thay đổi chưa commit ngoài phạm vi plan — commit hoặc bỏ các file này rồi chạy lại:\n{list}")
 }
 
 /// Root-relative directory of a grant glob, as a prefix to compare changed paths with.
@@ -305,7 +362,15 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
 
     // Skill mode (D-49): the rights the approved plan declares; a fix run gets them only when
     // the plan has product commands to run again.
-    let dev_plan_grants = resolve_dev_grants(ctx, &proj.id, &proj_path, &task, opts.fix.is_some())?;
+    let dev_plan_grants = resolve_dev_grants(
+        &ctx.conn,
+        &ctx.cfg,
+        &proj.id,
+        &proj_path,
+        &task,
+        opts.fix.is_some(),
+        true,
+    )?;
     let dev_grants = dev_plan_grants.as_ref().map(|d| &d.grants);
     let write_prefixes = dev_grants
         .map(|g| grant_prefixes(&g.write_dirs))
@@ -313,36 +378,15 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
 
     let dirty = crate::gitops::changed_paths(&proj_path)?;
     if !dirty.is_empty() {
-        let mut sorted_dirty: Vec<String> = if continuation {
-            // Only the plan's files, protocol files and `.handover.md` may be dirty; anything
-            // else is still refused with the same message.
-            let plan_set: std::collections::BTreeSet<String> = crate::planfile::plan_files(&plan)
-                .iter()
-                .map(|f| crate::planfile::normalize_plan_path(f).nfc().collect())
-                .collect();
-            dirty
-                .into_iter()
-                .filter(|p| {
-                    let n: String = p.nfc().collect();
-                    !(plan_set.contains(&n)
-                        || crate::stream::PROTOCOL_FILES.contains(&n.as_str())
-                        || n == HANDOVER_FILE
-                        || in_write_dirs(&n, &write_prefixes))
-                })
-                .collect()
+        let sorted_dirty: Vec<String> = if continuation {
+            // Only the plan's files, protocol files, `.handover.md` and files under the approved
+            // write dirs may be dirty; anything else is still refused.
+            dirty_outside_continuation(&plan, dirty, &write_prefixes)
         } else {
             dirty.into_iter().collect()
         };
-        sorted_dirty.sort();
         if !sorted_dirty.is_empty() {
-            let list = sorted_dirty
-                .iter()
-                .map(|p| format!("  {p}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            return Err(BrainError::error(format!(
-                "Working tree có thay đổi chưa commit ngoài phạm vi plan — commit hoặc bỏ các file này rồi chạy lại:\n{list}"
-            )));
+            return Err(BrainError::error(dirty_outside_plan_message(&sorted_dirty)));
         }
     }
 

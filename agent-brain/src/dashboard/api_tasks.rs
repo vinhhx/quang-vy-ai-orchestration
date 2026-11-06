@@ -1133,23 +1133,6 @@ fn running_of(runs: &[RunRow]) -> Option<&RunRow> {
         .max_by_key(|r| (r.started_at, r.id))
 }
 
-/// Mọi đường dơ đều thuộc việc dở của Dev: file trong bảng Thay đổi của plan, file giao thức
-/// hoặc `.handover.md` (cùng luật với `roles::dev::cmd_dev` khi tiếp tục sau hết quota).
-fn dirty_is_continuation(plan_text: &str, dirty: &[String]) -> bool {
-    use unicode_normalization::UnicodeNormalization;
-    let plan = crate::planfile::parse_plan(plan_text);
-    let plan_set: std::collections::BTreeSet<String> = crate::planfile::plan_files(&plan)
-        .iter()
-        .map(|f| crate::planfile::normalize_plan_path(f).nfc().collect())
-        .collect();
-    dirty.iter().all(|p| {
-        let n: String = p.nfc().collect();
-        plan_set.contains(&n)
-            || crate::stream::PROTOCOL_FILES.contains(&n.as_str())
-            || n == ".handover.md"
-    })
-}
-
 /// Đọc toàn bộ trạng thái task (Err(thông báo) = task / dự án không có; dashboard trả 404).
 pub fn load_task_state(
     st: &AppState,
@@ -1237,6 +1220,7 @@ pub fn load_task_state(
         plan_commit,
         code_after_plan,
         continuation_ok: false,
+        dirty_outside_plan: Vec::new(),
     };
 
     let busy = busy_reason_for_task(conn, &st.jobs, &project, task.id, &task.branch)?;
@@ -1251,17 +1235,35 @@ pub fn load_task_state(
     let runs = crate::db::runs_for_task(conn, task.id)?;
     let now = crate::db::now_ms();
 
-    // D-16 / ENG-03: the same rule `run dev` applies (06-07) — the latest Dev run stopped on
-    // quota, and every dirty path is a plan file, a protocol file or `.handover.md`. Then the
-    // partial diff is work to continue, so Chạy Dev stays enabled instead of refusing the tree.
-    git.continuation_ok = is_on_branch
-        && !git.dirty.is_empty()
-        && latest_of(&runs, "dev").map_or(false, |r| {
-            r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA)
-        })
-        && plan_text
-            .as_deref()
-            .map_or(false, |text| dirty_is_continuation(text, &git.dirty));
+    // D-16 / ENG-03: the same rule `run dev` applies (`roles::dev::continuation_reason`) — the
+    // latest Dev run stopped on quota or ended failed / timed out / killed / lost, and every dirty
+    // path is a plan file, a protocol file, `.handover.md` or under the approved plan's write
+    // dirs. Then the partial diff is work to continue, so Chạy Dev stays enabled instead of
+    // refusing the tree; otherwise the refusal lists the paths `run dev` would refuse.
+    if is_on_branch && !git.dirty.is_empty() {
+        let reason =
+            crate::roles::dev::continuation_reason(conn, &project_slug, &root).unwrap_or(None);
+        let outside = match (reason, plan_text.as_deref()) {
+            (Some(_), Some(text)) => {
+                let plan = crate::planfile::parse_plan(text);
+                let prefixes = crate::roles::dev::approved_write_prefixes(
+                    conn,
+                    &st.cfg,
+                    &project_slug,
+                    &root,
+                    &task.slug,
+                );
+                crate::roles::dev::dirty_outside_continuation(
+                    &plan,
+                    git.dirty.iter().cloned(),
+                    &prefixes,
+                )
+            }
+            _ => git.dirty.clone(),
+        };
+        git.continuation_ok = outside.is_empty();
+        git.dirty_outside_plan = outside;
+    }
 
     let gate = workflow.as_ref().map(|wf| {
         let facts = decide::build_facts(

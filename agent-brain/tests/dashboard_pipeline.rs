@@ -401,10 +401,10 @@ fn d02_new_plan_commit_is_picked_up() {
     let actions = task["actions"].as_array().unwrap();
     let run_dev = actions.iter().find(|a| a["id"] == "run_dev").unwrap();
     assert!(!run_dev["enabled"].as_bool().unwrap());
-    assert!(run_dev["reason"]
-        .as_str()
-        .unwrap()
-        .contains("sua-app: plan"));
+    assert_eq!(
+        run_dev["reason"].as_str().unwrap(),
+        "Working tree có thay đổi chưa commit ngoài phạm vi plan — commit hoặc bỏ các file này rồi chạy lại:\n  .plan.md"
+    );
 
     let commit_count_before = sb
         .git(&repo, &["rev-list", "--count", "HEAD"])
@@ -1688,4 +1688,117 @@ fn pipeline_quota_state() {
     assert_eq!(code["state"], "het_quota");
     assert_eq!(code["state_word"], "hết quota");
     assert_eq!(code["engine"], "deepseek");
+}
+
+// ---- Chạy Dev continues after a stopped Dev run (same rule as `run dev`) ----
+
+const DIRTY_OUTSIDE_PLAN: &str = "Working tree có thay đổi chưa commit ngoài phạm vi plan — commit hoặc bỏ các file này rồi chạy lại:";
+
+/// Task 1 `sua-app` whose committed plan changes `src/app.py` and declares the write dir
+/// `out/**`; returns the repo.
+fn lead_task_with_write_dir(sb: &Sandbox) -> std::path::PathBuf {
+    let repo = sb.make_repo(
+        "web-ban-hang",
+        &[
+            ("src/app.py", "def app():\n    return 1\n"),
+            ("scripts/create.py", "print('x')\n"),
+            (
+                ".agents/skills/fake-idea/SKILL.md",
+                "---\nname: fake-idea\ndescription: giả\n---\n",
+            ),
+        ],
+        None,
+        None,
+    );
+    let entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    sb.write_map(json!([entry]), &[]);
+    let mut p_text = protocol::plan_text(
+        "Kế hoạch",
+        &[("src/app.py", "app()", "trả về 2", "yêu cầu")],
+        "python3 -m unittest",
+        "",
+    );
+    p_text.push_str("## Skill sử dụng\n- `fake-idea` (.agents/skills/fake-idea/SKILL.md)\n## Lệnh được chạy\n- `python scripts/create.py *`\n## Thư mục được ghi\n- `out/**`\n");
+    let scenario = json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "write", "path": ".plan.md", "content": p_text, "keep_meta": true}
+        ]
+    });
+    let out = sb.run(&["run", "lead", "web-ban-hang", "sửa app"], Some(scenario));
+    assert_eq!(out.code, 0, "lead failed: {}\n{}", out.stderr, out.stdout);
+    repo
+}
+
+/// The `run_dev` action of task 1 as the dashboard shows it.
+fn run_dev_action(sb: &Sandbox) -> serde_json::Value {
+    let srv = sb.serve(&[]);
+    let task = srv.get("/api/tasks/1").json();
+    task["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "run_dev")
+        .unwrap_or_else(|| panic!("no run_dev action: {}", task["actions"]))
+        .clone()
+}
+
+#[test]
+fn run_dev_enabled_after_failed_or_timed_out_dev_with_dirty_plan_and_write_dir_files() {
+    for status in ["failed", "timed_out", "killed", "lost"] {
+        let sb = Sandbox::new();
+        let repo = lead_task_with_write_dir(&sb);
+        seed_dev_run(&sb, "claude", status, None);
+        std::fs::write(repo.join("src/app.py"), "def app():\n    return 2 # dở\n").unwrap();
+        std::fs::create_dir_all(repo.join("out/video")).unwrap();
+        std::fs::write(repo.join("out/video/a.txt"), "phần 1\n").unwrap();
+
+        let a = run_dev_action(&sb);
+        assert_eq!(a["enabled"], true, "[{status}] {a}");
+
+        // One more dirty file outside the plan's scope: refused, listing only that file.
+        std::fs::write(repo.join("ngoai-plan.txt"), "ngoài plan\n").unwrap();
+        let a = run_dev_action(&sb);
+        assert_eq!(a["enabled"], false, "[{status}] {a}");
+        assert_eq!(
+            a["reason"].as_str().unwrap(),
+            format!("{DIRTY_OUTSIDE_PLAN}\n  ngoai-plan.txt"),
+            "[{status}]"
+        );
+    }
+}
+
+#[test]
+fn run_dev_disabled_after_succeeded_dev_with_dirty_tree() {
+    let sb = Sandbox::new();
+    let repo = lead_task_with_write_dir(&sb);
+    seed_dev_run(&sb, "claude", "succeeded", None);
+    std::fs::write(repo.join("src/app.py"), "def app():\n    return 2\n").unwrap();
+
+    let a = run_dev_action(&sb);
+    assert_eq!(a["enabled"], false, "{a}");
+    assert_eq!(
+        a["reason"].as_str().unwrap(),
+        format!("{DIRTY_OUTSIDE_PLAN}\n  src/app.py")
+    );
+}
+
+#[test]
+fn run_dev_after_quota_keeps_its_continuation() {
+    let sb = Sandbox::new();
+    let repo = lead_task_with_write_dir(&sb);
+    seed_dev_run(&sb, "claude", "failed", Some("quota"));
+    std::fs::write(repo.join("src/app.py"), "def app():\n    return 2 # dở\n").unwrap();
+    std::fs::write(repo.join(".handover.md"), "# Bàn giao\n").unwrap();
+
+    let a = run_dev_action(&sb);
+    assert_eq!(a["enabled"], true, "{a}");
+
+    std::fs::write(repo.join("ngoai-plan.txt"), "ngoài plan\n").unwrap();
+    let a = run_dev_action(&sb);
+    assert_eq!(a["enabled"], false, "{a}");
+    assert_eq!(
+        a["reason"].as_str().unwrap(),
+        format!("{DIRTY_OUTSIDE_PLAN}\n  ngoai-plan.txt")
+    );
 }
