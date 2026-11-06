@@ -19,6 +19,7 @@ fn seed_db(sb: &Sandbox) {
         profile: "work".to_string(),
         repo: None,
         missing: false,
+        stack: vec![],
     };
     let p_b = agent_brain::projects::Project {
         id: "proj-b".to_string(),
@@ -29,6 +30,7 @@ fn seed_db(sb: &Sandbox) {
         profile: "personal".to_string(),
         repo: None,
         missing: false,
+        stack: vec![],
     };
     agent_brain::db::sync_projects(&conn, &[p_a, p_b]).expect("sync projects");
 
@@ -248,6 +250,7 @@ impl QaSeed {
             profile: "work".to_string(),
             repo: None,
             missing: false,
+        stack: vec![],
         };
         agent_brain::db::sync_projects(&conn, &[p]).expect("sync projects");
         let proj_id = agent_brain::db::project_row_id(&conn, "proj-a").expect("proj id");

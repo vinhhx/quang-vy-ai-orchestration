@@ -11,6 +11,7 @@ fn make_proj(id: &str, name_vi: &str, aliases: Vec<&str>) -> Project {
         profile: "work".to_string(),
         repo: None,
         missing: false,
+        stack: vec![],
     }
 }
 

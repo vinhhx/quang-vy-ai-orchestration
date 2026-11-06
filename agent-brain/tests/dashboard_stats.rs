@@ -19,6 +19,7 @@ fn seed_stats_data(sb: &Sandbox) -> rusqlite::Connection {
         profile: "work".to_string(),
         repo: None,
         missing: false,
+        stack: vec![],
     };
     let p_b = agent_brain::projects::Project {
         id: "proj-b".to_string(),
@@ -29,6 +30,7 @@ fn seed_stats_data(sb: &Sandbox) -> rusqlite::Connection {
         profile: "personal".to_string(),
         repo: None,
         missing: false,
+        stack: vec![],
     };
     agent_brain::db::sync_projects(&conn, &[p_a, p_b]).expect("sync projects");
 
@@ -153,6 +155,7 @@ fn query_by_day_in_midnight() {
         profile: "work".to_string(),
         repo: None,
         missing: false,
+        stack: vec![],
     };
     agent_brain::db::sync_projects(&conn, &[p_a]).expect("sync projects");
     let id_a = agent_brain::db::project_row_id(&conn, "proj-a").expect("id_a");
@@ -456,6 +459,7 @@ impl EngineSeed {
                     profile: profile.to_string(),
                     repo: None,
                     missing: false,
+        stack: vec![],
                 })
                 .collect();
         agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");

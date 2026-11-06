@@ -131,6 +131,7 @@ fn seed_task(
         profile: "work".to_string(),
         repo: None,
         missing: false,
+        stack: vec![],
     };
     agent_brain::db::sync_projects(&conn, &[project]).unwrap();
     let pid = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();

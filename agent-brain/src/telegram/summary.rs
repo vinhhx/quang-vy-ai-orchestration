@@ -705,6 +705,7 @@ mod tests {
             profile: "default".to_string(),
             repo: None,
             missing: false,
+            stack: vec![],
         };
         let (teams, staff) = crate::teams::load();
         TaskState {

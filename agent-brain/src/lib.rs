@@ -18,6 +18,7 @@ pub mod pricing;
 pub mod procs;
 pub mod profile;
 pub mod projects;
+pub mod prompts;
 pub mod quota;
 pub mod report;
 pub mod roles;

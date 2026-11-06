@@ -312,6 +312,7 @@ fn next_approved_proposal_ordering_and_count_active_tasks() {
         profile: "work".to_string(),
         repo: None,
         missing: false,
+        stack: vec![],
     };
     agent_brain::db::sync_projects(&conn, &[p]).unwrap();
     let proj_id = agent_brain::db::project_row_id(&conn, "proj").unwrap();

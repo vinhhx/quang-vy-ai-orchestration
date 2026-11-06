@@ -16,6 +16,7 @@ pub struct Project {
     pub profile: String,
     pub repo: Option<String>,
     pub missing: bool,
+    pub stack: Vec<String>,
 }
 
 impl Project {
@@ -63,6 +64,25 @@ impl Project {
             .get("missing")
             .and_then(|b| b.as_bool())
             .unwrap_or(false);
+        let stack = obj
+            .get("stack")
+            .and_then(|s| s.as_array())
+            .map(|arr| {
+                let mut valid = Vec::new();
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        if crate::prompts::valid_name(s) {
+                            valid.push(s.to_string());
+                        } else {
+                            crate::term::emit(&format!(
+                                "Bỏ qua stack '{s}' không hợp lệ của dự án '{id}'"
+                            ));
+                        }
+                    }
+                }
+                valid
+            })
+            .unwrap_or_default();
 
         Some(Project {
             id,
@@ -73,6 +93,7 @@ impl Project {
             profile,
             repo,
             missing,
+            stack,
         })
     }
 
@@ -854,6 +875,7 @@ mod tests {
             repo: None,
             profile: "work".into(),
             missing: false,
+            stack: vec![],
         }
     }
 

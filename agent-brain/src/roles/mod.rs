@@ -137,6 +137,17 @@ pub fn build_command(spec: &RoleSpec, cfg: &Config) -> BrainResult<Vec<String>> 
     build_command_with_prompt(spec, cfg, prompt_for(spec.role))
 }
 
+pub fn build_command_layered(
+    spec: &RoleSpec,
+    cfg: &Config,
+    base_prompt: &str,
+    layers: &crate::prompts::PromptLayers,
+) -> BrainResult<(Vec<String>, Vec<String>)> {
+    let (composed, warnings) = crate::prompts::compose(base_prompt, spec.role.as_str(), layers);
+    let cmd = build_command_with_prompt(spec, cfg, &composed)?;
+    Ok((cmd, warnings))
+}
+
 pub fn build_command_with_prompt(
     spec: &RoleSpec,
     cfg: &Config,
