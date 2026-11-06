@@ -170,6 +170,26 @@ enum Commands {
         #[command(subcommand)]
         subcommand: FixbugCommands,
     },
+    /// Quản lý phòng ban và thành viên
+    Dept {
+        #[command(subcommand)]
+        subcommand: DeptCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DeptCommands {
+    /// Danh sách phòng ban và thành viên
+    List,
+    /// Kiểm tra tính hợp lệ của departments.json
+    Check,
+    /// Chạy thử thuật toán chọn thành viên cho vai trò của task
+    Pick {
+        /// ID của task
+        task_id: i64,
+        /// Vai trò (lead, dev, qa, analyst, ...)
+        role: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -394,6 +414,13 @@ fn main() {
                 agent_brain::fixbug::cmd_init(&ctx, &project, dry_run)
             }
         }),
+        Commands::Dept { subcommand } => match subcommand {
+            DeptCommands::List => agent_brain::departments::cmd_list(&ctx),
+            DeptCommands::Check => agent_brain::departments::cmd_check(&ctx),
+            DeptCommands::Pick { task_id, role } => {
+                agent_brain::departments::cmd_pick(&ctx, task_id, &role)
+            }
+        },
         Commands::Run {
             role,
             project,

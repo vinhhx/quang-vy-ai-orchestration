@@ -427,6 +427,7 @@ pub struct ResolvedEngine {
     /// `None` = a legacy task (no `team_json`) or a run without a task.
     pub team: Option<String>,
     pub wait: Option<crate::teams::HumanWait>,
+    pub member: Option<crate::departments::Pick>,
 }
 
 impl ResolvedEngine {
@@ -435,6 +436,7 @@ impl ResolvedEngine {
             engine: Engine::Claude,
             team: None,
             wait: None,
+            member: None,
         }
     }
 }
@@ -446,6 +448,15 @@ pub fn resolve_for_run(
     conn: &rusqlite::Connection,
     task_id: Option<i64>,
     role: &str,
+) -> BrainResult<ResolvedEngine> {
+    resolve_for_run_with(conn, task_id, role, None)
+}
+
+pub fn resolve_for_run_with(
+    conn: &rusqlite::Connection,
+    task_id: Option<i64>,
+    role: &str,
+    cfg: Option<&Config>,
 ) -> BrainResult<ResolvedEngine> {
     let Some(task_id) = task_id else {
         return Ok(ResolvedEngine::claude());
@@ -482,10 +493,50 @@ pub fn resolve_for_run(
         other => other,
     };
 
+    let mut resolved_engine = team.engine_for(lookup_role);
+    let mut member_pick = None;
+
+    if task_team.name == "phong-ban" && task_team.wait.is_none() && !matches!(resolved_engine, Engine::Human(_)) {
+        let level_str = crate::db::task_level(conn, task_id).unwrap_or_else(|_| "vua".to_string());
+        let level = crate::departments::Level::parse(&level_str).unwrap_or(crate::departments::Level::Vua);
+        let project_profile: String = conn
+            .query_row(
+                "SELECT p.profile FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
+                rusqlite::params![task_id],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "work".to_string());
+
+        let fallback_cfg;
+        let active_cfg = match cfg {
+            Some(c) => c,
+            None => match crate::config::load_config() {
+                Ok(c) => {
+                    fallback_cfg = Some(c);
+                    fallback_cfg.as_ref().unwrap()
+                }
+                Err(_) => {
+                    let val = serde_json::json!({
+                        "models": { "lead": "opus", "dev": "sonnet", "qa": "sonnet" },
+                        "profiles": { "work": {}, "personal": {} },
+                    });
+                    fallback_cfg = crate::config::config_from_value(&val).ok();
+                    fallback_cfg.as_ref().unwrap()
+                }
+            },
+        };
+
+        if let Ok(Some(picked)) = crate::departments::pick(conn, active_cfg, task_id, role, level, &project_profile) {
+            resolved_engine = picked.member.engine.clone();
+            member_pick = Some(picked);
+        }
+    }
+
     Ok(ResolvedEngine {
-        engine: team.engine_for(lookup_role),
+        engine: resolved_engine,
         team: Some(task_team.name.clone()),
         wait: task_team.wait.clone(),
+        member: member_pick,
     })
 }
 
@@ -565,17 +616,35 @@ pub fn plan_for(
     timeout: Duration,
     cwd: &Path,
 ) -> BrainResult<EnginePlan> {
+    let member_model = resolved
+        .member
+        .as_ref()
+        .and_then(|m| m.member.model.as_deref());
+
     match &resolved.engine {
         Engine::Claude => {
             let mut env = base_env;
             strip_key_envs(&mut env, cfg);
+            let mut argv = claude_argv.to_vec();
+            let model_label = if let Some(m) = member_model {
+                match argv.iter().position(|x| x == "--model") {
+                    Some(i) if i + 1 < argv.len() => argv[i + 1] = m.to_string(),
+                    _ => {
+                        argv.push("--model".to_string());
+                        argv.push(m.to_string());
+                    }
+                }
+                m.to_string()
+            } else {
+                claude_model.to_string()
+            };
             Ok(EnginePlan {
                 engine: Engine::Claude,
                 db_engine: ENGINE_CLAUDE.to_string(),
                 display: ENGINE_CLAUDE.to_string(),
-                argv: claude_argv.to_vec(),
+                argv,
                 env,
-                model_label: claude_model.to_string(),
+                model_label,
                 stream: StreamFormat::Claude,
                 stdout_file: false,
                 redact: Vec::new(),
@@ -595,9 +664,11 @@ pub fn plan_for(
                 .ok_or_else(|| unknown_engine_error(id, resolved.team.as_deref()))?;
             match &def.spec {
                 EngineSpec::Anthropic(a) => {
-                    anthropic_plan(cfg, def, a, role, claude_argv, claude_model, base_env)
+                    anthropic_plan(cfg, def, a, role, claude_argv, claude_model, base_env, member_model)
                 }
-                EngineSpec::Agy(a) => agy_plan(cfg, &def.id, a, role, claude_argv, base_env, timeout),
+                EngineSpec::Agy(a) => {
+                    agy_plan(cfg, &def.id, a, role, claude_argv, base_env, timeout, member_model)
+                }
                 EngineSpec::Dsh(d) => {
                     crate::dsh::plan(cfg, &def.id, d, role, claude_argv, base_env, cwd)
                 }
@@ -632,6 +703,7 @@ pub fn profile_refusal(
 /// entry's `command` and the value after `--model` = the entry's model for the role. Nothing
 /// else in the argv changes (Pitfall A1): the guard hooks, the system prompt and the tool lists
 /// stay exactly as the role built them.
+#[allow(clippy::too_many_arguments)]
 fn anthropic_plan(
     cfg: &Config,
     def: &EngineDef,
@@ -640,13 +712,18 @@ fn anthropic_plan(
     claude_argv: &[String],
     claude_model: &str,
     base_env: BTreeMap<String, String>,
+    member_model: Option<&str>,
 ) -> BrainResult<EnginePlan> {
-    let model = match &a.base_url {
-        Some(_) => a.models.get(role).or_else(|| a.models.get("dev")),
-        None => a.models.get(role),
-    }
-    .cloned()
-    .unwrap_or_else(|| claude_model.to_string());
+    let model = if let Some(m) = member_model {
+        m.to_string()
+    } else {
+        match &a.base_url {
+            Some(_) => a.models.get(role).or_else(|| a.models.get("dev")),
+            None => a.models.get(role),
+        }
+        .cloned()
+        .unwrap_or_else(|| claude_model.to_string())
+    };
 
     let mut argv = claude_argv.to_vec();
     if let Some(first) = argv.first_mut() {
@@ -765,6 +842,7 @@ pub fn agy_expected_permission_mode(role: &str) -> &'static str {
     "request-review"
 }
 
+#[allow(clippy::too_many_arguments)]
 fn agy_plan(
     cfg: &Config,
     id: &str,
@@ -773,6 +851,7 @@ fn agy_plan(
     claude_argv: &[String],
     base_env: BTreeMap<String, String>,
     timeout: Duration,
+    member_model: Option<&str>,
 ) -> BrainResult<EnginePlan> {
     let (input, prompt) = claude_argv_parts(claude_argv)
         .ok_or_else(|| BrainError::error("Không dựng được lệnh agy từ lệnh claude"))?;
@@ -797,11 +876,15 @@ fn agy_plan(
         "--print-timeout".to_string(),
         format!("{secs}s"),
     ];
-    let resolved_model = acfg
-        .models
-        .get(role)
-        .or(acfg.model.as_ref())
-        .cloned();
+    let resolved_model = if let Some(m) = member_model {
+        Some(m.to_string())
+    } else {
+        acfg
+            .models
+            .get(role)
+            .or(acfg.model.as_ref())
+            .cloned()
+    };
     if let Some(m) = &resolved_model {
         argv.push("--model".to_string());
         argv.push(m.clone());
@@ -902,6 +985,7 @@ mod tests {
             engine: Engine::Named(id.to_string()),
             team: Some("doi-x".to_string()),
             wait: None,
+            member: None,
         }
     }
 
@@ -945,6 +1029,7 @@ mod tests {
             engine: Engine::Claude,
             team: Some("mac-dinh".to_string()),
             wait: None,
+            member: None,
         };
         let argv = vec!["claude".to_string(), "-p".to_string(), "x".to_string()];
         let mut env = BTreeMap::new();
@@ -974,6 +1059,7 @@ mod tests {
             engine: Engine::Human("ha".to_string()),
             team: None,
             wait: None,
+            member: None,
         };
         assert!(run_plan(&cfg, &r, "dev", &argv, "m", BTreeMap::new(), Duration::ZERO).is_err());
     }
@@ -991,6 +1077,7 @@ mod tests {
             engine: Engine::Claude,
             team: None,
             wait: None,
+            member: None,
         };
         let p = run_plan(
             &cfg,
@@ -1205,6 +1292,7 @@ mod tests {
             engine: Engine::Named("khong-co".to_string()),
             team: None,
             wait: None,
+            member: None,
         };
         let e = run_plan(&cfg, &r, "dev", &argv, "m", BTreeMap::new(), Duration::ZERO).unwrap_err();
         assert!(e.message.contains("đội hình '-'"), "{}", e.message);
@@ -1311,6 +1399,7 @@ mod tests {
             engine: Engine::Named("agy".to_string()),
             team: None,
             wait: None,
+            member: None,
         };
         let claude = vec![
             "claude".to_string(),
@@ -1380,6 +1469,7 @@ mod tests {
             engine: Engine::Named("agy".to_string()),
             team: None,
             wait: None,
+            member: None,
         };
         let claude = vec![
             "claude".to_string(),
@@ -1847,6 +1937,7 @@ mod tests {
             engine: Engine::Named("agy".to_string()),
             team: None,
             wait: None,
+            member: None,
         };
         let claude = vec![
             "claude".to_string(),
@@ -1992,6 +2083,7 @@ mod tests {
             engine: Engine::Named("agy".to_string()),
             team: None,
             wait: None,
+            member: None,
         };
         let claude = vec![
             "claude".to_string(),

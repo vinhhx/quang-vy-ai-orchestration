@@ -58,8 +58,8 @@ fn teams_get_save_get() {
     let j = r.json();
     assert_eq!(j["version"], "absent");
     assert_eq!(j["errors"], json!([]));
-    assert_eq!(team_names(&j), ["mac-dinh", "tiet-kiem"]);
-    assert_eq!(j["builtin_names"], json!(["mac-dinh", "tiet-kiem"]));
+    assert_eq!(team_names(&j), ["mac-dinh", "phong-ban", "tiet-kiem"]);
+    assert_eq!(j["builtin_names"], json!(["mac-dinh", "phong-ban", "tiet-kiem"]));
     for t in j["teams"].as_array().unwrap() {
         assert_eq!(t["source"], "builtin");
     }
@@ -428,7 +428,7 @@ fn teams_delete_rules() {
     assert_eq!(r.status, 200, "{}", r.text());
     let j = r.json();
     assert_eq!(j["ok"], true);
-    assert_eq!(team_names(&j), ["mac-dinh", "tiet-kiem"]);
+    assert_eq!(team_names(&j), ["mac-dinh", "phong-ban", "tiet-kiem"]);
     assert_eq!(disk_json(&sb.teams_path()), json!({}));
 
     stop(srv);
@@ -487,7 +487,7 @@ fn teams_invalid_file_blocks_writes() {
         .collect();
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].ends_with("đội hình 'doi-x': Engine người chỉ dùng cho vai trò dev."));
-    assert_eq!(team_names(&gj), ["mac-dinh", "tiet-kiem"]);
+    assert_eq!(team_names(&gj), ["mac-dinh", "phong-ban", "tiet-kiem"]);
     let v = gj["version"].as_str().unwrap().to_string();
 
     let r = save_team(&srv, &v, true, team_entry("doi-ok", "Tốt", json!({})));

@@ -10,6 +10,16 @@ use std::path::{Path, PathBuf};
 
 pub const BUILTIN_TEAMS_JSON: &str = include_str!("../assets/teams.default.json");
 pub const DEFAULT_TEAM: &str = "mac-dinh";
+pub const TEAM_PHONG_BAN: &str = "phong-ban";
+
+/// Đội hình mặc định: trả `phong-ban` khi có thành viên phòng ban, ngược lại trả `mac-dinh`.
+pub fn default_team_name() -> &'static str {
+    if crate::departments::load().has_members() {
+        TEAM_PHONG_BAN
+    } else {
+        DEFAULT_TEAM
+    }
+}
 pub const MAX_FILE_BYTES: u64 = 262_144;
 pub const MAX_DESCRIPTION_CHARS: usize = 200;
 pub const ROLES: [&str; 5] = ["lead", "dev", "qa", "plan-review", "code-review"];
@@ -471,6 +481,10 @@ pub struct ResolvedTeam {
 }
 
 fn default_team(loaded: &LoadedTeams) -> BrainResult<&Team> {
+    let name = default_team_name();
+    if let Some(t) = loaded.get(name) {
+        return Ok(t);
+    }
     loaded.get(DEFAULT_TEAM).ok_or_else(|| {
         BrainError::error(format!("Không tìm thấy đội hình mặc định '{DEFAULT_TEAM}'"))
     })
@@ -608,7 +622,7 @@ mod tests {
     fn builtins_only() {
         let l = load_from(None, &no_staff());
         assert!(l.errors.is_empty());
-        assert_eq!(names(&l), ["mac-dinh", "tiet-kiem"]);
+        assert_eq!(names(&l), ["mac-dinh", "phong-ban", "tiet-kiem"]);
         assert!(l.teams.iter().all(|t| t.source == "builtin"));
 
         let md = l.get("mac-dinh").unwrap();
@@ -637,7 +651,7 @@ mod tests {
 }"#;
         let l = load_from(Some(text), &no_staff());
         assert!(l.errors.is_empty(), "{:?}", l.errors);
-        assert_eq!(names(&l), ["mac-dinh", "tiet-kiem", "doi-a"]);
+        assert_eq!(names(&l), ["mac-dinh", "phong-ban", "tiet-kiem", "doi-a"]);
         assert_eq!(l.get("mac-dinh").unwrap().source, "override");
         assert_eq!(l.get("mac-dinh").unwrap().description, "Ghi đè");
         assert_eq!(l.get("tiet-kiem").unwrap().source, "builtin");
@@ -694,7 +708,7 @@ mod tests {
         let l = load_from(Some(&text), &staff_ha());
         assert_eq!(
             names(&l),
-            ["mac-dinh", "tiet-kiem"],
+            ["mac-dinh", "phong-ban", "tiet-kiem"],
             "bad entry must not load"
         );
         l.errors
@@ -708,7 +722,7 @@ mod tests {
 "doi-ok": {"description": "Tốt", "roles": {}}
 }"#;
         let l = load_from(Some(text), &no_staff());
-        assert_eq!(names(&l), ["mac-dinh", "tiet-kiem", "doi-ok"]);
+        assert_eq!(names(&l), ["mac-dinh", "phong-ban", "tiet-kiem", "doi-ok"]);
         assert_eq!(
             l.errors,
             ["Dòng 2: đội hình 'doi-x': Engine người chỉ dùng cho vai trò dev."]
@@ -777,19 +791,19 @@ mod tests {
         assert_eq!(l.errors.len(), 1);
         assert!(l.errors[0].starts_with("Dòng 1, cột"));
         assert!(l.errors[0].ends_with("teams.json không phải JSON hợp lệ."));
-        assert_eq!(names(&l), ["mac-dinh", "tiet-kiem"]);
+        assert_eq!(names(&l), ["mac-dinh", "phong-ban", "tiet-kiem"]);
 
         let big = " ".repeat(262_145);
         let l = load_from(Some(&big), &no_staff());
         assert_eq!(l.errors, ["teams.json lớn quá 256 KiB — bỏ qua file."]);
-        assert_eq!(names(&l), ["mac-dinh", "tiet-kiem"]);
+        assert_eq!(names(&l), ["mac-dinh", "phong-ban", "tiet-kiem"]);
 
         let l = load_from(Some("[]"), &no_staff());
         assert_eq!(
             l.errors,
             ["Dòng 1: teams.json phải là một object, mỗi khóa là tên một đội hình."]
         );
-        assert_eq!(names(&l), ["mac-dinh", "tiet-kiem"]);
+        assert_eq!(names(&l), ["mac-dinh", "phong-ban", "tiet-kiem"]);
     }
 
     #[test]
@@ -798,7 +812,7 @@ mod tests {
         let p = dir.path().join("teams.json");
         let l = load_path(&p, &no_staff());
         assert!(l.errors.is_empty());
-        assert_eq!(names(&l), ["mac-dinh", "tiet-kiem"]);
+        assert_eq!(names(&l), ["mac-dinh", "phong-ban", "tiet-kiem"]);
 
         std::fs::write(&p, " ".repeat(262_145)).unwrap();
         let l = load_path(&p, &no_staff());
@@ -817,7 +831,7 @@ mod tests {
         let err = resolve(&l, Some("khong-co"), None).unwrap_err();
         assert_eq!(
             err.message,
-            "Không có đội hình 'khong-co'. Đội hình có: mac-dinh, tiet-kiem, doi-a"
+            "Không có đội hình 'khong-co'. Đội hình có: mac-dinh, phong-ban, tiet-kiem, doi-a"
         );
 
         let r = resolve(&l, None, Some("khong-co")).unwrap();
@@ -967,7 +981,7 @@ mod tests {
 "doi-cu": {"description": "Cũ", "roles": {"dev": "khong-co"}}
 }"#;
         let l = load_from_with(Some(text), &no_staff(), Some(&engines));
-        assert_eq!(names(&l), ["mac-dinh", "tiet-kiem", "doi-cu"]);
+        assert_eq!(names(&l), ["mac-dinh", "phong-ban", "tiet-kiem", "doi-cu"]);
         assert_eq!(
             l.errors,
             ["Dòng 2: đội hình 'doi-sai': Engine 'dsh' là kiểu dsh, chỉ dùng cho vai trò dev."]

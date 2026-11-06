@@ -527,6 +527,7 @@ r#"Phân tích yêu cầu sau và trả về JSON đề xuất công việc:
         },
         team: None,
         wait: None,
+        member: None,
     };
     let fail = |reason: &str| {
         BrainError::error(format!("Triage ({triage_engine}) lỗi: {reason}"))

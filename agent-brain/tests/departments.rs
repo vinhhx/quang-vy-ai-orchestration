@@ -2,6 +2,7 @@ use agent_brain::config::Config;
 use agent_brain::departments::{
     dept_name_of, dept_of_role, load_from, model_family, pick_from, Level,
 };
+use agent_brain::engine::{plan_for, resolve_for_run_with, Engine};
 use rusqlite::Connection;
 use serde_json::json;
 
@@ -407,4 +408,185 @@ fn pick_rules_fewest_running_and_score_tie_break() {
 
     let picked_scored = pick_from(&conn, &cfg, &loaded, 3, "dev", Level::Vua, "work").unwrap().unwrap();
     assert_eq!(picked_scored.member.id, "dev-busy");
+}
+
+#[test]
+fn resolve_for_run_and_plan_for_phong_ban_and_mac_dinh() {
+    let (_tmp, conn) = test_db();
+    let cfg = test_cfg_with_agy();
+
+    // 1. Task với đội hình mac-dinh -> giữ nguyên hành vi, member = None
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level, team_json)
+         VALUES (10, 1, 'task-10', 'Task 10', 'task/10', 'main', 'base1', 'open', 1000, 1000, 'kho', '{\"name\":\"mac-dinh\"}')",
+        [],
+    )
+    .unwrap();
+
+    let resolved_mac_dinh = resolve_for_run_with(&conn, Some(10), "dev", Some(&cfg)).unwrap();
+    assert_eq!(resolved_mac_dinh.engine, Engine::Claude);
+    assert!(resolved_mac_dinh.member.is_none());
+
+    let plan_mac_dinh = plan_for(
+        &cfg,
+        &resolved_mac_dinh,
+        "dev",
+        &[
+            "claude".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+            "--append-system-prompt".to_string(),
+            "sys".to_string(),
+        ],
+        "claude-sonnet-5-5",
+        std::collections::BTreeMap::new(),
+        std::time::Duration::from_secs(60),
+        std::path::Path::new("/tmp"),
+    )
+    .unwrap();
+    assert_eq!(plan_mac_dinh.model_label, "claude-sonnet-5-5");
+
+    // 2. Task với đội hình phong-ban
+    let tmp_cfg = tempfile::tempdir().unwrap();
+    let dept_file = tmp_cfg.path().join("departments.json");
+    let dept_json = json!({
+        "thi-cong": {
+            "members": {
+                "tc-opus": {
+                    "display_name": "Thi công Opus",
+                    "engine": "claude",
+                    "model": "claude-opus-5-5",
+                    "levels": ["kho"]
+                },
+                "tc-flash": {
+                    "display_name": "Thi công Flash",
+                    "engine": "agy",
+                    "model": "gemini-3.8-flash-high",
+                    "levels": ["de"]
+                }
+            }
+        }
+    })
+    .to_string();
+    std::fs::write(&dept_file, dept_json).unwrap();
+    std::env::set_var("AGENT_BRAIN_CONFIG_DIR", tmp_cfg.path());
+
+    // Task 11 mức kho -> chọn tc-opus (engine claude, model claude-opus-5-5)
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level, team_json)
+         VALUES (11, 1, 'task-11', 'Task 11', 'task/11', 'main', 'base1', 'open', 1000, 1000, 'kho', '{\"name\":\"phong-ban\"}')",
+        [],
+    )
+    .unwrap();
+
+    let resolved_claude = resolve_for_run_with(&conn, Some(11), "dev", Some(&cfg)).unwrap();
+    assert_eq!(resolved_claude.engine, Engine::Claude);
+    assert_eq!(resolved_claude.member.as_ref().unwrap().member.id, "tc-opus");
+
+    let plan_claude = plan_for(
+        &cfg,
+        &resolved_claude,
+        "dev",
+        &[
+            "claude".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+            "--append-system-prompt".to_string(),
+            "sys".to_string(),
+        ],
+        "claude-sonnet-5-5",
+        std::collections::BTreeMap::new(),
+        std::time::Duration::from_secs(60),
+        std::path::Path::new("/tmp"),
+    )
+    .unwrap();
+    assert_eq!(plan_claude.model_label, "claude-opus-5-5");
+    assert!(plan_claude.argv.contains(&"--model".to_string()));
+    let model_idx = plan_claude.argv.iter().position(|x| x == "--model").unwrap();
+    assert_eq!(plan_claude.argv[model_idx + 1], "claude-opus-5-5");
+
+    // Task 12 mức de -> chọn tc-flash (engine agy, model gemini-3.8-flash-high)
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level, team_json)
+         VALUES (12, 1, 'task-12', 'Task 12', 'task/12', 'main', 'base1', 'open', 1000, 1000, 'de', '{\"name\":\"phong-ban\"}')",
+        [],
+    )
+    .unwrap();
+
+    let resolved_agy = resolve_for_run_with(&conn, Some(12), "dev", Some(&cfg)).unwrap();
+    assert_eq!(resolved_agy.engine, Engine::Named("agy".to_string()));
+    assert_eq!(resolved_agy.member.as_ref().unwrap().member.id, "tc-flash");
+
+    let plan_agy = plan_for(
+        &cfg,
+        &resolved_agy,
+        "dev",
+        &[
+            "claude".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+            "--append-system-prompt".to_string(),
+            "sys".to_string(),
+        ],
+        "claude-sonnet-5-5",
+        std::collections::BTreeMap::new(),
+        std::time::Duration::from_secs(60),
+        std::path::Path::new("/tmp"),
+    )
+    .unwrap();
+    assert_eq!(plan_agy.model_label, "gemini-3.8-flash-high");
+    assert!(plan_agy.argv.contains(&"--model".to_string()));
+    let agy_model_idx = plan_agy.argv.iter().position(|x| x == "--model").unwrap();
+    assert_eq!(plan_agy.argv[agy_model_idx + 1], "gemini-3.8-flash-high");
+}
+
+#[test]
+fn cli_dept_check_and_list_and_pick() {
+    let tmp = tempfile::tempdir().unwrap();
+    let example_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("assets/departments.example.json");
+    let dept_file = tmp.path().join("departments.json");
+    std::fs::copy(&example_path, &dept_file).unwrap();
+    std::env::set_var("AGENT_BRAIN_CONFIG_DIR", tmp.path());
+
+    let val = json!({
+        "models": { "lead": "opus", "dev": "sonnet", "qa": "sonnet" },
+        "profiles": { "work": {}, "personal": {} },
+        "engines": [
+            { "id": "agy", "kind": "agy" }
+        ]
+    });
+    let cfg = agent_brain::config::config_from_value(&val).unwrap();
+    let conn = agent_brain::db::open(&tmp.path().join("brain.db")).unwrap();
+    conn.execute(
+        "INSERT INTO projects (id, slug, path, name_vi, aliases_json, type, profile, repo, missing)
+         VALUES (1, 'p1', '/path/1', 'Dự án 1', '[]', 'code', 'work', NULL, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level)
+         VALUES (1, 1, 'task-1', 'Task 1', 'task/1', 'main', 'base1', 'open', 1000, 1000, 'kho')",
+        [],
+    )
+    .unwrap();
+
+    let ctx = agent_brain::app::Ctx {
+        cfg,
+        conn,
+        map: json!({}),
+        projects: vec![],
+    };
+
+    // cmd_check trên file mẫu phải thoát 0
+    let check_res = agent_brain::departments::cmd_check(&ctx).unwrap();
+    assert_eq!(check_res, 0);
+
+    // cmd_list phải thoát 0
+    let list_res = agent_brain::departments::cmd_list(&ctx).unwrap();
+    assert_eq!(list_res, 0);
+
+    // cmd_pick phải thoát 0 và chọn được người
+    let pick_res = agent_brain::departments::cmd_pick(&ctx, 1, "dev").unwrap();
+    assert_eq!(pick_res, 0);
 }

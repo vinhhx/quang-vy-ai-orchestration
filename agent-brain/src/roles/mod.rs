@@ -462,7 +462,8 @@ pub fn execute_role_staged(
 
     // ENG-01 / D-14: the one seam that decides the engine of a run. It runs before any run row
     // is inserted and before anything is spawned.
-    let resolved = crate::engine::resolve_for_run(&ctx.conn, plan.task_id, &plan.role)?;
+    let resolved =
+        crate::engine::resolve_for_run_with(&ctx.conn, plan.task_id, &plan.role, Some(&ctx.cfg))?;
     // ENG-10 / D-36 / D-42 backstop: an engine tied to a profile never runs on a project of
     // another one (SPK-10), whatever team the task row names — a hand-edited team included.
     if let crate::engine::Engine::Named(id) = &resolved.engine {
@@ -515,9 +516,14 @@ pub fn execute_role_staged(
     } else {
         ""
     };
+    let member_mark = if let Some(ref pick) = resolved.member {
+        format!(" · {}", pick.member.display_name)
+    } else {
+        String::new()
+    };
     crate::term::emit(&format!(
-        "[agent-brain] {} · {} · profile {} ({}) · engine {} · model {}{}",
-        plan.role, project.id, project.profile, p_desc, ep.display, ep.model_label, unverified_mark
+        "[agent-brain] {} · {} · profile {} ({}) · engine {} · model {}{}{}",
+        plan.role, project.id, project.profile, p_desc, ep.display, ep.model_label, member_mark, unverified_mark
     ));
 
     let stderr_path = run_dir.join("stderr.txt");
@@ -568,6 +574,7 @@ pub fn execute_role_staged(
         stream: crate::engine::StreamFormat,
         dsh: Option<crate::dsh::DshRun>,
         team: Option<String>,
+        member_id: Option<String>,
         summary: Summary,
         run_id: Option<i64>,
         seq: i64,
@@ -632,6 +639,9 @@ pub fn execute_role_staged(
             let run_id =
                 crate::db::insert_run_with_engine(&self.ctx.conn, &new_run, &self.db_engine)?;
             self.run_id = Some(run_id);
+            if let Some(ref mid) = self.member_id {
+                let _ = crate::db::set_run_member_id(&self.ctx.conn, run_id, mid);
+            }
             if self.stage.stage.is_some() || self.stage.round.is_some() {
                 crate::db::set_run_stage_round(
                     &self.ctx.conn,
@@ -758,6 +768,7 @@ pub fn execute_role_staged(
         stream: ep.stream,
         dsh: ep.dsh.clone(),
         team: resolved.team.clone(),
+        member_id: resolved.member.as_ref().map(|m| m.member.id.clone()),
         summary: Summary::new(plan.plan_files.clone(), Some(root.to_path_buf())),
         run_id: None,
         seq: 0,

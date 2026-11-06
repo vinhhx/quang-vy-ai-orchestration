@@ -672,3 +672,130 @@ pub fn pick_from(
         reason,
     }))
 }
+
+pub fn cmd_list(ctx: &crate::app::Ctx) -> BrainResult<i32> {
+    let p = departments_path();
+    let loaded = load_path(&p, &ctx.cfg);
+    let env = crate::profile::current_env();
+    let statuses = crate::engine::readiness(&ctx.cfg, &env, 0);
+
+    for (dept_id, dept_name) in DEPARTMENTS {
+        println!("{dept_name} ({dept_id}):");
+        let members = loaded.members_of(dept_id);
+        if members.is_empty() {
+            println!("  (chưa có thành viên)");
+        } else {
+            for m in members {
+                let levels_str = m
+                    .levels
+                    .iter()
+                    .map(|l| l.display_vi())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let engine_name = m.engine.as_db_str();
+                let status_word = statuses
+                    .iter()
+                    .find(|s| s.name == engine_name)
+                    .map(|s| s.word)
+                    .unwrap_or("chưa rõ");
+
+                let (avg, count) = crate::db::member_score_avg(&ctx.conn, &m.id).unwrap_or((0.0, 0));
+                let score_str = if count == 0 {
+                    "- (0 lượt)".to_string()
+                } else {
+                    format!("{:.1} ({} lượt)", avg, count)
+                };
+
+                let run_count: i64 = ctx
+                    .conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM runs WHERE member_id = ?1",
+                        rusqlite::params![m.id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+
+                println!(
+                    "  - {} | {} | {} | model: {} | mức: {} | {} | điểm: {} | {} run",
+                    m.id,
+                    m.display_name,
+                    engine_name,
+                    m.model.as_deref().unwrap_or("-"),
+                    levels_str,
+                    status_word,
+                    score_str,
+                    run_count
+                );
+            }
+        }
+        println!();
+    }
+
+    if !loaded.errors.is_empty() {
+        println!("Lỗi đọc file {}:", p.display());
+        for err in &loaded.errors {
+            println!("  ! {err}");
+        }
+    }
+
+    Ok(0)
+}
+
+pub fn cmd_check(ctx: &crate::app::Ctx) -> BrainResult<i32> {
+    let p = departments_path();
+    if !p.exists() {
+        println!("Chưa có file cấu hình phòng ban: {}", p.display());
+        println!("Để tạo cấu hình mẫu, hãy sao chép từ assets:");
+        if let Some(parent) = p.parent() {
+            println!("  mkdir -p {}", parent.display());
+        }
+        println!("  cp <agent-brain>/assets/departments.example.json {}", p.display());
+        return Ok(0);
+    }
+
+    let loaded = load_path(&p, &ctx.cfg);
+    if !loaded.errors.is_empty() {
+        eprintln!("File {} có lỗi:", p.display());
+        for err in &loaded.errors {
+            eprintln!("  ! {err}");
+        }
+        return Ok(1);
+    }
+
+    println!("File {} hợp lệ ({} thành viên).", p.display(), loaded.members.len());
+    Ok(0)
+}
+
+pub fn cmd_pick(ctx: &crate::app::Ctx, task_id: i64, role: &str) -> BrainResult<i32> {
+    let level_str = crate::db::task_level(&ctx.conn, task_id)?;
+    let level = Level::parse(&level_str).unwrap_or(Level::Vua);
+    let project_profile: String = ctx
+        .conn
+        .query_row(
+            "SELECT p.profile FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
+            rusqlite::params![task_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| crate::error::BrainError::error(format!("Không tìm thấy task {task_id}: {e}")))?;
+
+    match pick(&ctx.conn, &ctx.cfg, task_id, role, level, &project_profile)? {
+        Some(pick) => {
+            println!("Đã chọn: {} ({})", pick.member.display_name, pick.member.id);
+            println!(
+                "  Phòng ban: {}",
+                dept_name_of(&pick.member.department).unwrap_or(&pick.member.department)
+            );
+            println!("  Lý do: {}", pick.reason);
+            println!("  Engine: {}", pick.member.engine.as_db_str());
+            println!("  Model: {}", pick.member.model.as_deref().unwrap_or("-"));
+        }
+        None => {
+            println!(
+                "Không có thành viên phòng ban phù hợp cho vai trò '{role}' (task mức {}) — sẽ dùng engine mặc định của đội hình.",
+                level.display_vi()
+            );
+        }
+    }
+
+    Ok(0)
+}
