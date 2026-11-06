@@ -33,7 +33,13 @@ pub struct OrchestratorConfig {
     pub max_parallel: u32,
     pub auto_resume_quota: bool,
     pub resume_after_minutes: u32,
+    /// Engine the queue's triage step runs on: `claude`, or the id of an `anthropic` or `agy`
+    /// entry of `engines` (checked by `validate_triage_engine`).
+    pub triage_engine: String,
 }
+
+/// `orchestrator.triage_engine` when config.json has none.
+pub const DEFAULT_TRIAGE_ENGINE: &str = "claude";
 
 impl Default for OrchestratorConfig {
     fn default() -> Self {
@@ -42,7 +48,31 @@ impl Default for OrchestratorConfig {
             max_parallel: 3,
             auto_resume_quota: false,
             resume_after_minutes: 60,
+            triage_engine: DEFAULT_TRIAGE_ENGINE.to_string(),
         }
+    }
+}
+
+/// The engine the triage step may run on: `claude`, or the id of an `anthropic` / `agy` entry of
+/// `engines`. A `dsh` entry (a black box with no JSON answer) and an unknown id are refused with
+/// the reason. Returns the trimmed id.
+pub fn validate_triage_engine(value: &str, engines: &EnginesCfg) -> Result<String, String> {
+    let id = value.trim();
+    if id.is_empty() {
+        return Err("Engine phân tích (triage) không được để trống".to_string());
+    }
+    if id == DEFAULT_TRIAGE_ENGINE {
+        return Ok(id.to_string());
+    }
+    match engines.kind_of(id) {
+        Some(EngineKind::Anthropic) | Some(EngineKind::Agy) => Ok(id.to_string()),
+        Some(kind) => Err(format!(
+            "Engine '{id}' loại {} không dùng được cho triage (chỉ claude hoặc engine loại anthropic, agy)",
+            kind.as_str()
+        )),
+        None => Err(format!(
+            "Engine '{id}' không có trong engines của config.json (triage chỉ dùng claude hoặc engine loại anthropic, agy)"
+        )),
     }
 }
 
@@ -1257,6 +1287,15 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
                     }
                 }
             }
+            if let Some(te) = orch_obj.get("triage_engine") {
+                let raw = te.as_str().ok_or_else(|| {
+                    BrainError::error("Cấu hình orchestrator.triage_engine phải là chuỗi")
+                })?;
+                orchestrator.triage_engine =
+                    validate_triage_engine(raw, &engines).map_err(|m| {
+                        BrainError::error(format!("Cấu hình orchestrator.triage_engine: {m}"))
+                    })?;
+            }
         }
     }
 
@@ -1359,6 +1398,51 @@ pub fn load_config() -> BrainResult<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn triage_cfg(orchestrator: serde_json::Value) -> BrainResult<Config> {
+        let default_val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        let val = serde_json::json!({
+            "models": {"lead": "opus", "dev": "sonnet", "qa": "sonnet"},
+            "profiles": default_val["profiles"],
+            "engines": [
+                {"id": "claude-max", "kind": "anthropic", "claude_config_dir": "~/.claude-max"},
+                {"id": "agy", "kind": "agy"},
+                {"id": "hop", "kind": "dsh", "container": "c1"}
+            ],
+            "orchestrator": orchestrator
+        });
+        config_from_value(&val)
+    }
+
+    #[test]
+    fn triage_engine_defaults_to_claude() {
+        let cfg = triage_cfg(serde_json::json!({})).unwrap();
+        assert_eq!(cfg.orchestrator.triage_engine, "claude");
+        assert_eq!(OrchestratorConfig::default().triage_engine, "claude");
+    }
+
+    #[test]
+    fn triage_engine_accepts_anthropic_and_agy_ids() {
+        let cfg = triage_cfg(serde_json::json!({"triage_engine": "claude-max"})).unwrap();
+        assert_eq!(cfg.orchestrator.triage_engine, "claude-max");
+        let cfg = triage_cfg(serde_json::json!({"triage_engine": " agy "})).unwrap();
+        assert_eq!(cfg.orchestrator.triage_engine, "agy");
+        let cfg = triage_cfg(serde_json::json!({"triage_engine": "claude"})).unwrap();
+        assert_eq!(cfg.orchestrator.triage_engine, "claude");
+    }
+
+    #[test]
+    fn triage_engine_refuses_unknown_dsh_and_non_strings() {
+        let e = triage_cfg(serde_json::json!({"triage_engine": "khong-co"})).unwrap_err();
+        assert!(e.message.contains("orchestrator.triage_engine"), "{}", e.message);
+        assert!(e.message.contains("không có trong engines"), "{}", e.message);
+        let e = triage_cfg(serde_json::json!({"triage_engine": "hop"})).unwrap_err();
+        assert!(e.message.contains("loại dsh"), "{}", e.message);
+        let e = triage_cfg(serde_json::json!({"triage_engine": 3})).unwrap_err();
+        assert!(e.message.contains("phải là chuỗi"), "{}", e.message);
+        let e = triage_cfg(serde_json::json!({"triage_engine": "  "})).unwrap_err();
+        assert!(e.message.contains("không được để trống"), "{}", e.message);
+    }
 
     #[test]
     fn default_config_review_models_and_limits() {

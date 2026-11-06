@@ -1333,9 +1333,10 @@ fn orchestrator_settings_get_save_live() {
     let text = std::fs::read_to_string(&sb.config_path).unwrap();
     assert!(text.ends_with('\n'));
     let after: Value = serde_json::from_str(&text).unwrap();
+    // A body without `triage_engine` keeps the live value (`claude`), written with the block.
     assert_eq!(
         after["orchestrator"],
-        json!({"enabled": true, "max_parallel": 5, "auto_resume_quota": true, "resume_after_minutes": 90})
+        json!({"enabled": true, "max_parallel": 5, "auto_resume_quota": true, "resume_after_minutes": 90, "triage_engine": "claude"})
     );
     assert_eq!(without_orchestrator(after), without_orchestrator(before));
     let mode = std::fs::metadata(&sb.config_path).unwrap().permissions().mode() & 0o777;
@@ -1428,6 +1429,74 @@ fn orchestrator_settings_get_save_live() {
         "{\"orchestrator\": {\"enabled\": \"x\"}}\n"
     );
     assert_eq!(srv.get("/api/orchestrator/settings").json()["enabled"], true);
+
+    stop(srv);
+}
+
+/// (d) plan triage-engine: `triage_engine` is part of the settings, saved live, checked
+/// against the engine list; a body without it keeps the current value.
+#[test]
+fn orchestrator_triage_engine_get_save_validate() {
+    let sb = Sandbox::new();
+    sb.write_config(json!({
+        "engines": [
+            {"id": "claude-max", "kind": "anthropic", "claude_config_dir": "~/.claude-max"},
+            {"id": "agy", "kind": "agy"},
+            {"id": "hop", "kind": "dsh", "container": "c1"}
+        ],
+        "orchestrator": {"enabled": false}
+    }));
+    let srv = sb.serve(&[]);
+
+    let j = srv.get("/api/orchestrator/settings").json();
+    assert_eq!(j["triage_engine"], "claude");
+    let v1 = j["version"].as_str().unwrap().to_string();
+
+    let mut body = orch_body(false, 3, false, 60, &v1);
+    body["triage_engine"] = json!("claude-max");
+    let r = srv.post_json("/api/orchestrator/settings", &body);
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["triage_engine"], "claude-max");
+    let v2 = r.json()["version"].as_str().unwrap().to_string();
+    let j = srv.get("/api/orchestrator/settings").json();
+    assert_eq!(j["triage_engine"], "claude-max");
+    let file: Value =
+        serde_json::from_str(&std::fs::read_to_string(&sb.config_path).unwrap()).unwrap();
+    assert_eq!(file["orchestrator"]["triage_engine"], "claude-max");
+
+    // Missing field: the live value stays.
+    let r = srv.post_json("/api/orchestrator/settings", &orch_body(true, 3, false, 60, &v2));
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["triage_engine"], "claude-max");
+    let v3 = r.json()["version"].as_str().unwrap().to_string();
+
+    // Unknown id, a dsh engine, a non-string: 400 on the field, nothing written.
+    let saved = std::fs::read(&sb.config_path).unwrap();
+    for (value, needle) in [
+        (json!("khong-co"), "không có trong engines"),
+        (json!("hop"), "loại dsh"),
+        (json!(7), "phải là chuỗi"),
+    ] {
+        let mut body = orch_body(true, 3, false, 60, &v3);
+        body["triage_engine"] = value.clone();
+        let r = srv.post_json("/api/orchestrator/settings", &body);
+        assert_eq!(r.status, 400, "{value}: {}", r.text());
+        let j = r.json();
+        assert_eq!(error_fields(&j), ["triage_engine"], "{value}");
+        assert!(j["errors"][0]["message"].as_str().unwrap().contains(needle), "{j}");
+    }
+    assert_eq!(std::fs::read(&sb.config_path).unwrap(), saved);
+    assert_eq!(
+        srv.get("/api/orchestrator/settings").json()["triage_engine"],
+        "claude-max"
+    );
+
+    // agy is accepted too.
+    let mut body = orch_body(true, 3, false, 60, &v3);
+    body["triage_engine"] = json!("agy");
+    let r = srv.post_json("/api/orchestrator/settings", &body);
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(srv.get("/api/orchestrator/settings").json()["triage_engine"], "agy");
 
     stop(srv);
 }

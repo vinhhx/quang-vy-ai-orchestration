@@ -717,3 +717,269 @@ fn test_triage_engine_runs_with_disallowed_tools() {
     assert!(webfetch_idx > disallowed_idx);
 }
 
+// ---------------------------------------------------------------------------
+// Plan triage-engine: a selectable triage engine and a clear failure reason
+// ---------------------------------------------------------------------------
+
+/// The stream claude wrote for an expired login (2026-11-06, ids scrubbed).
+fn auth_failed_lines() -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/triage/claude_auth_failed.jsonl");
+    std::fs::read_to_string(path)
+        .expect("read auth fixture")
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+fn fake_agy() -> std::path::PathBuf {
+    common::repo_root()
+        .join("tests/fakes/fake_agy.py")
+        .canonicalize()
+        .expect("canonicalize fake_agy.py")
+}
+
+fn valid_tasks_json() -> String {
+    json!({
+        "tasks": [{
+            "project": "web-ban-hang",
+            "title": "Trang gioi thieu",
+            "request": "Tao trang gioi thieu",
+            "priority": "normal",
+            "team": "mac-dinh",
+            "workflow": "mac-dinh",
+            "reason": "hop le"
+        }]
+    })
+    .to_string()
+}
+
+fn queued(sb: &Sandbox, request: &str) -> i64 {
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    agent_brain::db::insert_intake(&conn, "ui", None, request, "normal").expect("insert intake")
+}
+
+fn intake_of(sb: &Sandbox, id: i64) -> agent_brain::db::IntakeRow {
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    agent_brain::db::get_intake(&conn, id)
+        .expect("get intake")
+        .expect("intake")
+}
+
+/// (b) An `anthropic` engine (fake claude) whose login expired: the intake fails with claude's
+/// own text and the re-login hint naming the engine's account directory.
+#[test]
+fn test_triage_auth_failed_engine_reports_reason_and_login_hint() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    let account = sb.root.join("claude-max-account");
+    std::fs::create_dir_all(&account).unwrap();
+    sb.write_config(json!({
+        "engines": [{
+            "id": "claude-max",
+            "kind": "anthropic",
+            "command": common::Sandbox::fake_claude().to_str().unwrap(),
+            "claude_config_dir": account.to_str().unwrap()
+        }],
+        "orchestrator": {"enabled": true, "triage_engine": "claude-max"}
+    }));
+    std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
+    std::env::set_var("FAKE_CLAUDE_RECORD", &sb.record_file);
+    let _rec_guard = EnvVarGuard("FAKE_CLAUDE_RECORD");
+    sb.write_scenario(json!({"raw_lines": auth_failed_lines(), "exit_code": 1}));
+
+    let id = queued(&sb, "Thêm trang giới thiệu");
+    let st = app_state(&sb);
+    assert_eq!(st.orch().triage_engine, "claude-max");
+    agent_brain::orchestrator::tick(&st).expect("tick");
+
+    let intake = intake_of(&sb, id);
+    assert_eq!(intake.status, "failed");
+    let err = intake.error.expect("error");
+    assert!(
+        err.starts_with("Triage (claude-max) lỗi: Failed to authenticate: this login reached its time limit"),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!(
+            "— đăng nhập lại: CLAUDE_CONFIG_DIR={} claude auth login, hoặc đổi engine triage trong Cài đặt → Hàng đợi",
+            account.display()
+        )),
+        "{err}"
+    );
+    // The engine's own account was used, not the project profile's.
+    let records = sb.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0]["claude_config_dir"].as_str(),
+        Some(account.to_str().unwrap())
+    );
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    assert!(agent_brain::db::list_proposals(&conn, None).unwrap().is_empty());
+}
+
+/// (b) The default `claude` engine fails the same way on the project's profile account.
+#[test]
+fn test_triage_default_claude_auth_failed_names_profile_account() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "personal");
+    sb.write_config(json!({"orchestrator": {"enabled": true}}));
+    std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
+    sb.write_scenario(json!({"raw_lines": auth_failed_lines(), "exit_code": 1}));
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).unwrap();
+    agent_brain::db::sync_projects(&conn, &agent_brain::projects::projects_of(&map)).unwrap();
+    let pid = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
+    let id = agent_brain::db::insert_intake(&conn, "telegram", Some(pid), "sửa app", "normal")
+        .unwrap();
+
+    let st = app_state(&sb);
+    agent_brain::orchestrator::tick(&st).expect("tick");
+
+    let err = intake_of(&sb, id).error.expect("error");
+    assert!(err.starts_with("Triage (claude) lỗi: Failed to authenticate"), "{err}");
+    assert!(
+        err.contains(&format!(
+            "CLAUDE_CONFIG_DIR={} claude auth login",
+            sb.personal_dir.display()
+        )),
+        "{err}"
+    );
+}
+
+/// (c) agy as the triage engine: read-only (no permission flag), the JSON comes from
+/// `result.response`, and an agy that hangs after its result still finishes the triage.
+#[test]
+fn test_triage_agy_engine_proposes_and_survives_hang_after_result() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    sb.write_config(json!({
+        "engines": [{"id": "agy", "kind": "agy", "command": fake_agy().to_str().unwrap()}],
+        "orchestrator": {"enabled": true, "triage_engine": "agy"}
+    }));
+    let scenario = sb.root.join("fake_agy_scenario.json");
+    let record = sb.root.join("fake_agy_record.jsonl");
+    std::fs::write(
+        &scenario,
+        json!({"response": valid_tasks_json(), "hang_s": 120}).to_string(),
+    )
+    .unwrap();
+    std::env::set_var("FAKE_AGY_SCENARIO", &scenario);
+    let _sc_guard = EnvVarGuard("FAKE_AGY_SCENARIO");
+    std::env::set_var("FAKE_AGY_RECORD", &record);
+    let _rec_guard = EnvVarGuard("FAKE_AGY_RECORD");
+
+    let id = queued(&sb, "Thêm trang giới thiệu");
+    let st = app_state(&sb);
+    let started = std::time::Instant::now();
+    agent_brain::orchestrator::tick(&st).expect("tick");
+    let took = started.elapsed();
+
+    let intake = intake_of(&sb, id);
+    assert_eq!(intake.status, "proposed", "{:?}", intake.error);
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let proposals = agent_brain::db::list_proposals(&conn, None).unwrap();
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(proposals[0].title, "Trang gioi thieu");
+    // Ended by the after-result grace (15 s), well before the 30 s timeout.
+    assert!(took < std::time::Duration::from_secs(28), "took {took:?}");
+
+    let text = std::fs::read_to_string(&record).unwrap();
+    let rec: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(rec["permission"], "request-review");
+    let argv: Vec<String> = rec["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert!(!argv.iter().any(|a| a == "--mode" || a == "--dangerously-skip-permissions"));
+    let prompt = &argv[argv.iter().position(|a| a == "-p").unwrap() + 1];
+    assert!(prompt.contains("Bạn là Agent điều phối"), "{prompt}");
+    assert!(prompt.contains("DUY NHẤT một JSON"), "{prompt}");
+    assert!(!prompt.contains(".plan.md"), "{prompt}");
+    assert!(prompt.contains("Thêm trang giới thiệu"));
+}
+
+/// (b/agy) agy answering with a non-SUCCESS result: the intake carries status and error.
+#[test]
+fn test_triage_agy_error_result_reports_status_and_error() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    sb.write_config(json!({
+        "engines": [{"id": "agy", "kind": "agy", "command": fake_agy().to_str().unwrap()}],
+        "orchestrator": {"enabled": true, "triage_engine": "agy"}
+    }));
+    let scenario = sb.root.join("fake_agy_scenario.json");
+    std::fs::write(
+        &scenario,
+        json!({"status": "ERROR", "error": "invalid model selection (--model \"x\")", "response": ""})
+            .to_string(),
+    )
+    .unwrap();
+    std::env::set_var("FAKE_AGY_SCENARIO", &scenario);
+    let _sc_guard = EnvVarGuard("FAKE_AGY_SCENARIO");
+
+    let id = queued(&sb, "Việc bất kỳ");
+    let st = app_state(&sb);
+    agent_brain::orchestrator::tick(&st).expect("tick");
+
+    let intake = intake_of(&sb, id);
+    assert_eq!(intake.status, "failed");
+    assert_eq!(
+        intake.error.as_deref(),
+        Some("Triage (agy) lỗi: ERROR: invalid model selection (--model \"x\")")
+    );
+}
+
+/// The triage engine follows the live setting (Cài đặt saves without a restart).
+#[test]
+fn test_triage_engine_follows_live_setting() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    sb.write_config(json!({
+        "engines": [{"id": "agy", "kind": "agy", "command": fake_agy().to_str().unwrap()}],
+        "orchestrator": {"enabled": true}
+    }));
+    let scenario = sb.root.join("fake_agy_scenario.json");
+    std::fs::write(&scenario, json!({"response": valid_tasks_json()}).to_string()).unwrap();
+    std::env::set_var("FAKE_AGY_SCENARIO", &scenario);
+    let _sc_guard = EnvVarGuard("FAKE_AGY_SCENARIO");
+    // claude would fail: only agy can produce the proposal.
+    std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
+    sb.write_scenario(json!({"raw_lines": auth_failed_lines(), "exit_code": 1}));
+
+    let id = queued(&sb, "Thêm trang giới thiệu");
+    let st = app_state(&sb);
+    let mut live = st.orch();
+    live.triage_engine = "agy".to_string();
+    st.set_orch(live);
+    agent_brain::orchestrator::tick(&st).expect("tick");
+    assert_eq!(intake_of(&sb, id).status, "proposed");
+}
+
+/// Malformed output keeps a clear, prefixed reason.
+#[test]
+fn test_triage_malformed_output_reason_is_prefixed() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    sb.write_config(json!({"orchestrator": {"enabled": true}}));
+    std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
+    sb.write_scenario(json!({"raw_lines": ["Xin lỗi, không phân tích được."]}));
+
+    let id = queued(&sb, "Yêu cầu bất kỳ");
+    let st = app_state(&sb);
+    agent_brain::orchestrator::tick(&st).expect("tick");
+    assert_eq!(
+        intake_of(&sb, id).error.as_deref(),
+        Some("Triage (claude) lỗi: Output của engine không đúng định dạng JSON đề xuất (yêu cầu {\"tasks\":[...]})")
+    );
+}
+

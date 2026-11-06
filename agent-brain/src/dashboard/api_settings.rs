@@ -1138,11 +1138,12 @@ fn save_engine_models_blocking(st: &AppState, body: EngineModelsSaveBody) -> Res
 
 const ORCH_HEADING: &str = "Không lưu được cài đặt hàng đợi";
 const ORCH_CONFLICT: &str = "config.json vừa bị sửa ở nơi khác";
-const ORCH_FIELDS: [&str; 5] = [
+const ORCH_FIELDS: [&str; 6] = [
     "enabled",
     "max_parallel",
     "auto_resume_quota",
     "resume_after_minutes",
+    "triage_engine",
     "version",
 ];
 
@@ -1152,6 +1153,7 @@ fn orchestrator_json(o: &crate::config::OrchestratorConfig, version: &str) -> Va
         "max_parallel": o.max_parallel,
         "auto_resume_quota": o.auto_resume_quota,
         "resume_after_minutes": o.resume_after_minutes,
+        "triage_engine": o.triage_engine,
         "version": version,
     })
 }
@@ -1192,9 +1194,12 @@ fn int_field(
 }
 
 /// Same rules as `config::config_from_value` for the `orchestrator` block, every field
-/// required. Returns the new settings and the version the client read.
+/// required except `triage_engine` (absent = keep `current`'s, so an older client still saves).
+/// Returns the new settings and the version the client read.
 fn parse_orchestrator_body(
     body: &Value,
+    current: &crate::config::OrchestratorConfig,
+    engines: &crate::config::EnginesCfg,
 ) -> Result<(crate::config::OrchestratorConfig, String), Vec<FieldError>> {
     let Some(obj) = body.as_object() else {
         return Err(vec![field_err(
@@ -1232,6 +1237,17 @@ fn parse_orchestrator_body(
         Ok(n) => out.resume_after_minutes = n,
         Err(e) => errors.push(e),
     }
+    match obj.get("triage_engine") {
+        None => out.triage_engine = current.triage_engine.clone(),
+        Some(Value::String(s)) => match crate::config::validate_triage_engine(s, engines) {
+            Ok(id) => out.triage_engine = id,
+            Err(m) => errors.push(field_err("triage_engine", format!("{m}."))),
+        },
+        Some(_) => errors.push(field_err(
+            "triage_engine",
+            "Engine phân tích (triage) phải là chuỗi.",
+        )),
+    }
     if errors.is_empty() {
         Ok((out, version))
     } else {
@@ -1249,7 +1265,7 @@ async fn save_orchestrator_settings(
 /// Writes the `orchestrator` block of config.json (other keys untouched), then makes
 /// the new values live: the next orchestrator tick and the next intake read them.
 fn save_orchestrator_blocking(st: &AppState, body: Value) -> Response {
-    let (new_orch, version) = match parse_orchestrator_body(&body) {
+    let (new_orch, version) = match parse_orchestrator_body(&body, &st.orch(), &st.cfg.engines) {
         Ok(v) => v,
         Err(errors) => {
             return json_response(
@@ -1294,6 +1310,10 @@ fn save_orchestrator_blocking(st: &AppState, body: Value) -> Response {
             block.insert(
                 "resume_after_minutes".to_string(),
                 json!(new_orch.resume_after_minutes),
+            );
+            block.insert(
+                "triage_engine".to_string(),
+                json!(new_orch.triage_engine),
             );
         }
         if let Err(e) = crate::config::config_from_value(&Value::Object(root.clone())) {
