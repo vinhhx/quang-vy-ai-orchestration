@@ -88,17 +88,47 @@ fn command_not_found_note(have: &[String]) -> String {
     )
 }
 
+/// Added to the Dev's input when the approved plan declares `## Tạo sản phẩm`.
+const DEV_PRODUCE_NOTE: &str = "\n\nSau khi sửa xong các file, chạy lần lượt các lệnh sau từ gốc dự án, mỗi lệnh riêng một lần, đợi lệnh xong mới chạy lệnh tiếp. Lệnh nào lỗi: sửa nguyên nhân trong phạm vi plan rồi chạy lại; không sửa được thì ghi Vướng mắc và dừng. Không đánh dấu hoàn thành khi chưa có đủ file ở mục Sản phẩm:";
+
+/// What the approved plan gives a Dev run: its grants and its product steps.
+struct DevGrants {
+    grants: crate::planfile::Grants,
+    /// `## Tạo sản phẩm`, in order.
+    produce: Vec<String>,
+    /// `## Sản phẩm`.
+    products: Vec<String>,
+}
+
+/// The block listing the product commands (numbered, in order) and the product files.
+fn produce_note(produce: &[String], products: &[String]) -> String {
+    let mut out = DEV_PRODUCE_NOTE.to_string();
+    for (i, c) in produce.iter().enumerate() {
+        out.push_str(&format!("\n{}. `{c}`", i + 1));
+    }
+    out.push_str("\nFile sản phẩm:");
+    if products.is_empty() {
+        out.push_str(" (plan không khai)");
+    }
+    for f in products {
+        out.push_str(&format!("\n- `{f}`"));
+    }
+    out
+}
+
 /// The grants a Dev run gets: read from the APPROVED plan (the task's `approved_commit`, else
 /// the committed plan commit), never from the working-tree file, so editing the plan after the
 /// approval cannot widen them. `None` when the plan declares none, the engine is dsh (nothing
 /// checks its steps) or the step is a person's. An agy Dev gets them: each of its tool steps is
-/// checked against the run's `policy.json` (`guard::agy_tool_decision`).
+/// checked against the run's `policy.json` (`guard::agy_tool_decision`). A fix run gets them
+/// only when the approved plan declares `## Tạo sản phẩm` (it must run those commands again).
 fn resolve_dev_grants(
     ctx: &Ctx,
     project_slug: &str,
     root: &Path,
     task: &str,
-) -> BrainResult<Option<crate::planfile::Grants>> {
+    fix: bool,
+) -> BrainResult<Option<DevGrants>> {
     let task_id = crate::db::project_row_id(&ctx.conn, project_slug)
         .ok()
         .and_then(|pid| {
@@ -126,10 +156,16 @@ fn resolve_dev_grants(
     let Ok(text) = crate::gitops::git(root, &["show", &format!("{commit}:.plan.md")]) else {
         return Ok(None);
     };
-    let grants = crate::planfile::run_grants(&crate::planfile::parse_plan(&text));
+    let approved_plan = crate::planfile::parse_plan(&text);
+    let grants = crate::planfile::run_grants(&approved_plan);
     if grants.is_empty() {
         return Ok(None);
     }
+    let produce = crate::planfile::produce_commands(&approved_plan);
+    if fix && produce.is_empty() {
+        return Ok(None);
+    }
+    let products = crate::planfile::product_files(&approved_plan);
     let errors = crate::planfile::validate_grants(&grants, Some(root));
     if !errors.is_empty() {
         let list = errors
@@ -152,7 +188,11 @@ fn resolve_dev_grants(
     };
     match kind {
         Some(crate::config::EngineKind::Anthropic) | Some(crate::config::EngineKind::Agy) => {
-            Ok(Some(grants))
+            Ok(Some(DevGrants {
+                grants,
+                produce,
+                products,
+            }))
         }
         Some(crate::config::EngineKind::Dsh) => {
             crate::term::emit_out(GRANTS_CLAUDE_ONLY_MESSAGE);
@@ -237,14 +277,11 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     let continuation = quota_continuation(&ctx.conn, &proj.id, &proj_path)?;
     let plan = crate::planfile::parse_plan(&text);
 
-    // Skill mode (D-49): the rights the approved plan declares; none for a fix run.
-    let dev_grants = if opts.fix.is_none() {
-        resolve_dev_grants(ctx, &proj.id, &proj_path, &task)?
-    } else {
-        None
-    };
+    // Skill mode (D-49): the rights the approved plan declares; a fix run gets them only when
+    // the plan has product commands to run again.
+    let dev_plan_grants = resolve_dev_grants(ctx, &proj.id, &proj_path, &task, opts.fix.is_some())?;
+    let dev_grants = dev_plan_grants.as_ref().map(|d| &d.grants);
     let write_prefixes = dev_grants
-        .as_ref()
         .map(|g| grant_prefixes(&g.write_dirs))
         .unwrap_or_default();
 
@@ -421,7 +458,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
 
     // Skill mode: exactly what the approved plan declares, plus reading the discovered skill files.
     let mut grant_skill_files: Vec<String> = Vec::new();
-    if let Some(g) = &dev_grants {
+    if let Some(g) = dev_grants {
         for c in &g.commands {
             allowed.push(format!("Bash({c})"));
         }
@@ -479,6 +516,9 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         user_input.push_str(DEV_GRANTS_NOTE);
         let (have, _) = crate::skills::available_interpreters();
         user_input.push_str(&command_not_found_note(&have));
+    }
+    if let Some(d) = dev_plan_grants.as_ref().filter(|d| !d.produce.is_empty()) {
+        user_input.push_str(&produce_note(&d.produce, &d.products));
     }
 
     // `.handover.md` (Phase 4) is included only when the file exists.
@@ -607,27 +647,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     let run_dir = crate::roles::new_run_dir(&ctx.cfg, &proj.id, &task, "dev")?;
 
     let exe = std::env::current_exe()?;
-    let settings = if let Some(fix) = opts.fix {
-        let mut write_allow = Vec::new();
-        for f in &active_files {
-            write_allow.push(proj_path.join(f));
-        }
-        write_allow.push(proj_path.join(".plan.md"));
-
-        let mut read_allow = write_allow.clone();
-        read_allow.push(proj_path.join(fix.report_file()));
-        if handover_exists {
-            read_allow.push(proj_path.join(HANDOVER_FILE));
-        }
-
-        crate::guard::write_hook_settings(
-            &run_dir,
-            &proj_path,
-            Some(&read_allow),
-            &write_allow,
-            &exe,
-        )?
-    } else {
+    let settings = {
         let mut allow_paths = Vec::new();
         for f in &active_files {
             allow_paths.push(proj_path.join(f));
@@ -635,10 +655,13 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         allow_paths.push(proj_path.join(".plan.md"));
 
         let mut read_allow = allow_paths.clone();
+        if let Some(fix) = opts.fix {
+            read_allow.push(proj_path.join(fix.report_file()));
+        }
         if handover_exists {
             read_allow.push(proj_path.join(HANDOVER_FILE));
         }
-        match &dev_grants {
+        match dev_grants {
             None => crate::guard::write_hook_settings(
                 &run_dir,
                 &proj_path,

@@ -1289,3 +1289,131 @@ fn dev_merge_branch_with_files_outside_plan_is_not_violation() {
     assert_ne!(outcome.as_deref(), Some("protocol_violation"));
     assert!(!out.stdout.contains("vi phạm giao thức"));
 }
+
+// ---- product steps: `## Tạo sản phẩm` / `## Sản phẩm` ----
+
+const PRODUCE_SECTIONS: &str = "## Lệnh được chạy\n- `python scripts/create.py *`\n## Thư mục được ghi\n- `out/**`\n## Tạo sản phẩm\n- `python scripts/create.py --stage pacing`\n- `python scripts/create.py --stage render`\n- `python scripts/create.py --stage assemble`\n## Sản phẩm\n- `out/final/v.mp4`\n- `out/final/v.srt`\n";
+
+fn user_input_of(argv: &[String]) -> String {
+    let p_idx = argv.iter().position(|x| x == "-p").expect("-p in argv");
+    argv[p_idx + 1].clone()
+}
+
+#[test]
+fn dev_input_lists_product_commands_and_files_in_order() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _pc) = setup_grants_task(&sb, Some(PRODUCE_SECTIONS));
+    let scenario = serde_json::json!({ "ops": [
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"}
+    ]});
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(scenario));
+    assert_eq!(
+        out.code, 0,
+        "stderr: {}\nstdout: {}",
+        out.stderr, out.stdout
+    );
+    let argv = last_argv(&sb);
+    assert!(argv.contains(&"Bash(python scripts/create.py *)".to_string()));
+    let input = user_input_of(&argv);
+    let head = input
+        .find("Sau khi sửa xong các file, chạy lần lượt các lệnh sau từ gốc dự án")
+        .unwrap_or_else(|| panic!("no product block: {input}"));
+    assert!(input.contains("Không đánh dấu hoàn thành khi chưa có đủ file ở mục Sản phẩm:"));
+    let order = [
+        "1. `python scripts/create.py --stage pacing`",
+        "2. `python scripts/create.py --stage render`",
+        "3. `python scripts/create.py --stage assemble`",
+        "File sản phẩm:",
+        "- `out/final/v.mp4`",
+        "- `out/final/v.srt`",
+    ];
+    let mut last = head;
+    for needle in order {
+        let at = input
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing {needle}: {input}"));
+        assert!(at > last, "{needle} out of order: {input}");
+        last = at;
+    }
+}
+
+#[test]
+fn dev_input_without_product_commands_has_no_product_block() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _pc) = setup_grants_task(&sb, None);
+    let scenario = serde_json::json!({ "ops": [
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"}
+    ]});
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(scenario));
+    assert_eq!(out.code, 0, "{}\n{}", out.stderr, out.stdout);
+    let input = user_input_of(&last_argv(&sb));
+    assert!(!input.contains("Sau khi sửa xong các file"), "{input}");
+}
+
+/// Dev, then a QA that asks for changes, so `run dev --fix qa` can start.
+fn dev_then_qa_fix(sb: &Sandbox, repo: &std::path::Path) {
+    let scenario = serde_json::json!({ "ops": [
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"}
+    ]});
+    let out = sb.run(&["run", "dev", "web-ban-hang"], Some(scenario));
+    assert_eq!(out.code, 0, "dev: {}\n{}", out.stderr, out.stdout);
+    let qa = serde_json::json!({ "ops": [{
+        "op": "write",
+        "path": ".qa-report.md",
+        "content": "# QA: sửa app\n## Thay đổi có khớp plan không (từng mục)\n- src/app.py: khớp.\n## Sửa ngoài plan (nếu có)\nKhông.\n## Rủi ro\nKhông.\n## Kết luận\nCần sửa\n",
+        "keep_meta": true
+    }]});
+    let out = sb.run(&["run", "qa", "web-ban-hang"], Some(qa));
+    assert_eq!(out.code, 0, "qa: {}\n{}", out.stderr, out.stdout);
+    assert!(repo.join(".qa-report.md").is_file());
+}
+
+#[test]
+fn fix_run_with_product_commands_gets_the_grants_and_the_product_block() {
+    let sb = Sandbox::new();
+    let (repo, _task, _pc) = setup_grants_task(&sb, Some(PRODUCE_SECTIONS));
+    dev_then_qa_fix(&sb, &repo);
+    let fix = serde_json::json!({ "ops": [
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 3\n"}
+    ]});
+    let out = sb.run(&["run", "dev", "web-ban-hang", "--fix", "qa"], Some(fix));
+    assert_eq!(out.code, 0, "fix: {}\n{}", out.stderr, out.stdout);
+    let argv = last_argv(&sb);
+    assert!(argv.contains(&"Bash(python scripts/create.py *)".to_string()));
+    assert!(argv.contains(&"Write(./out/**)".to_string()));
+    let input = user_input_of(&argv);
+    assert!(input.contains("Chế độ sửa theo báo cáo QA"), "{input}");
+    assert!(
+        input.contains("1. `python scripts/create.py --stage pacing`"),
+        "{input}"
+    );
+    assert!(input.contains("- `out/final/v.mp4`"), "{input}");
+    // the guard policy of the fix run carries the commands and reads the QA report
+    let settings_idx = argv.iter().position(|x| x == "--settings").unwrap();
+    let settings = PathBuf::from(&argv[settings_idx + 1]);
+    let policy: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(settings.parent().unwrap().join("policy.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        policy["bash_allow"],
+        serde_json::json!(["python scripts/create.py *"])
+    );
+    assert!(policy.to_string().contains(".qa-report.md"), "{policy}");
+}
+
+#[test]
+fn fix_run_without_product_commands_keeps_no_grants() {
+    let sb = Sandbox::new();
+    let (repo, _task, _pc) = setup_grants_task(&sb, None);
+    dev_then_qa_fix(&sb, &repo);
+    let fix = serde_json::json!({ "ops": [
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 3\n"}
+    ]});
+    let out = sb.run(&["run", "dev", "web-ban-hang", "--fix", "qa"], Some(fix));
+    assert_eq!(out.code, 0, "fix: {}\n{}", out.stderr, out.stdout);
+    let argv = last_argv(&sb);
+    assert!(!argv.iter().any(|a| a.starts_with("Bash(python")));
+    assert!(!argv.iter().any(|a| a.contains("out/**")));
+    assert!(!user_input_of(&argv).contains("Sau khi sửa xong các file"));
+}
