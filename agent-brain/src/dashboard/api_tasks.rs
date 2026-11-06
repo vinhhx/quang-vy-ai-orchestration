@@ -429,6 +429,7 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
     axum::Router::new()
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/{id}", get(get_task))
+        .route("/api/tasks/{id}/answer", get(get_task_answer))
         .route("/api/tasks/{id}/pipeline", get(get_pipeline))
         .route("/api/tasks/{id}/dev", post(post_task_dev))
         .route("/api/tasks/{id}/qa", post(post_task_qa))
@@ -2153,6 +2154,8 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
                 "name": wf.name,
                 "summary": wf.summary(),
                 "auto": wf.auto,
+                "kind": wf.kind,
+                "review": wf.review,
             }),
             None => serde_json::Value::Null,
         };
@@ -2212,6 +2215,47 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
     match res {
         Ok(resp) => resp,
         Err(e) => internal_error("đọc task", &e),
+    }
+}
+
+async fn get_task_answer(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<i64>,
+) -> Response {
+    let res = blocking(move || {
+        let conn = crate::db::open(&st.db_path)?;
+        let state = match load_task_state(&st, &conn, id)? {
+            Ok(s) => s,
+            Err(msg) => return Ok(json_error(StatusCode::NOT_FOUND, &msg)),
+        };
+        let md = crate::answers::read(&state.project.id, id, &state.task.slug)?;
+        match md {
+            Some(markdown) => {
+                let p = crate::answers::path(&state.project.id, id, &state.task.slug);
+                Ok((
+                    StatusCode::OK,
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "application/json; charset=utf-8",
+                    )],
+                    Json(serde_json::json!({
+                        "path": p.to_string_lossy(),
+                        "markdown": markdown,
+                    })),
+                )
+                    .into_response())
+            }
+            None => Ok(json_error(
+                StatusCode::NOT_FOUND,
+                "Chưa có câu trả lời cho task này",
+            )),
+        }
+    })
+    .await;
+
+    match res {
+        Ok(resp) => resp,
+        Err(e) => internal_error("lấy câu trả lời phân tích", &e),
     }
 }
 

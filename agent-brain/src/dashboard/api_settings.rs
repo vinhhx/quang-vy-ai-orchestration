@@ -148,7 +148,7 @@ fn project_display_name(p: &crate::projects::Project) -> String {
 
 fn open_task_count(conn: &Connection, team: &str) -> i64 {
     conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE status != 'qa_pass' \
+        "SELECT COUNT(*) FROM tasks WHERE status != 'qa_pass' AND status != 'answered' \
          AND CASE WHEN json_valid(team_json) THEN json_extract(team_json, '$.name') END = ?1",
         [team],
         |r| r.get::<_, i64>(0),
@@ -156,12 +156,12 @@ fn open_task_count(conn: &Connection, team: &str) -> i64 {
     .unwrap_or(0)
 }
 
-/// Open tasks (any status other than `qa_pass`) whose team is `team`, grouped by the profile of
+/// Open tasks (any status other than `qa_pass` and `answered`) whose team is `team`, grouped by the profile of
 /// their project (D-42).
 fn open_tasks_by_profile(conn: &Connection, team: &str) -> Vec<(String, i64)> {
     let Ok(mut stmt) = conn.prepare(
         "SELECT p.profile, COUNT(*) FROM tasks t JOIN projects p ON p.id = t.project_id \
-         WHERE t.status != 'qa_pass' \
+         WHERE t.status != 'qa_pass' AND t.status != 'answered' \
          AND CASE WHEN json_valid(t.team_json) THEN json_extract(t.team_json, '$.name') END = ?1 \
          GROUP BY p.profile ORDER BY p.profile",
     ) else {
@@ -742,6 +742,10 @@ const READONLY_WORKFLOW: &str = "Quy trình có sẵn chỉ đọc — bấm Nh�
 struct WorkflowEntryBody {
     name: String,
     #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    review: Option<bool>,
+    #[serde(default)]
     stages: Vec<String>,
     #[serde(default)]
     loops: serde_json::Map<String, Value>,
@@ -799,7 +803,22 @@ fn strip_line_prefix(msg: &str) -> String {
 }
 
 fn workflow_file_entry(entry: &WorkflowEntryBody) -> Value {
+    if entry.kind.as_deref() == Some("analysis") {
+        let mut m = serde_json::Map::new();
+        m.insert("kind".to_string(), json!("analysis"));
+        if let Some(r) = entry.review {
+            m.insert("review".to_string(), json!(r));
+        }
+        m.insert("auto".to_string(), json!(entry.auto));
+        return Value::Object(m);
+    }
     let mut m = serde_json::Map::new();
+    if let Some(ref k) = entry.kind {
+        m.insert("kind".to_string(), json!(k));
+    }
+    if let Some(r) = entry.review {
+        m.insert("review".to_string(), json!(r));
+    }
     m.insert("stages".to_string(), json!(entry.stages));
     m.insert("loops".to_string(), Value::Object(entry.loops.clone()));
     m.insert("auto".to_string(), Value::Bool(entry.auto));

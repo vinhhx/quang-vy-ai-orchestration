@@ -616,9 +616,16 @@ fn build_auto_start(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) 
     } else if running_run.is_some() {
         enabled = false;
         reason = Some("Đang có run chạy — chờ run xong hoặc bấm Kill".to_string());
-    } else if f.task.status == "qa_pass" {
+    } else if f.task.status == "qa_pass" || f.task.status == "answered" {
         enabled = false;
-        reason = Some("Task đã xong (QA đạt).".to_string());
+        reason = Some(if f.task.status == "answered" {
+            "Task đã xong (Đã trả lời).".to_string()
+        } else {
+            "Task đã xong (QA đạt).".to_string()
+        });
+    } else if a.workflow.as_ref().map(|w| w.kind == "analysis").unwrap_or(false) {
+        enabled = false;
+        reason = Some("Quy trình phân tích không hỗ trợ autopilot.".to_string());
     } else if a.gate == Some(GateState::Waiting)
         && a.auto.and_then(|auto| auto.auto_state.as_deref()) != Some("ended")
     {
@@ -718,11 +725,11 @@ fn build_auto_end() -> ActionView {
 pub fn current_step_of(f: &TaskFacts, running: Option<&RunRow>) -> String {
     if let Some(r) = running {
         match r.role.as_str() {
-            "lead" | "plan-review" => "lead".to_string(),
+            "lead" | "plan-review" | "analyst" | "analysis-review" => "lead".to_string(),
             "dev" | "code-review" => "dev".to_string(),
             "qa" => "qa".to_string(),
             _ => match f.task.status.as_str() {
-                "open" => "lead".to_string(),
+                "open" | "answered" => "lead".to_string(),
                 "planned" | "blocked" => "dev".to_string(),
                 "dev_done" | "qa_fix" | "qa_pass" => "qa".to_string(),
                 _ => "lead".to_string(),
@@ -730,7 +737,7 @@ pub fn current_step_of(f: &TaskFacts, running: Option<&RunRow>) -> String {
         }
     } else {
         match f.task.status.as_str() {
-            "open" => "lead".to_string(),
+            "open" | "answered" => "lead".to_string(),
             "planned" | "blocked" => "dev".to_string(),
             "dev_done" | "qa_fix" | "qa_pass" => "qa".to_string(),
             _ => "lead".to_string(),
@@ -816,6 +823,7 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
             "blocked" => Some("Vướng mắc".to_string()),
             "qa_fix" => Some("QA: Cần sửa".to_string()),
             "qa_pass" => Some("QA: Đạt".to_string()),
+            "answered" => Some("Đã trả lời".to_string()),
             _ => None,
         }
     };
@@ -828,7 +836,7 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
         "running".to_string()
     } else if auto_state == "stopped" || quota_stop {
         "waiting".to_string()
-    } else if f.task.status == "qa_pass" {
+    } else if f.task.status == "qa_pass" || f.task.status == "answered" {
         "done".to_string()
     } else if f.task.status == "blocked" || f.task.status == "qa_fix" {
         "attention".to_string()
@@ -881,7 +889,7 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
                     vec![]
                 }
             }
-            "qa_pass" => vec![],
+            "qa_pass" | "answered" => vec![],
             _ => vec![],
         };
         if a.driver_alive {
@@ -1110,6 +1118,7 @@ mod tests {
             ("blocked", Some("Vướng mắc")),
             ("qa_fix", Some("QA: Cần sửa")),
             ("qa_pass", Some("QA: Đạt")),
+            ("answered", Some("Đã trả lời")),
             ("open", None),
         ] {
             let task = dummy_task(status);
@@ -1159,6 +1168,19 @@ mod tests {
             now_ms: 2000,
         };
         assert_eq!(derive(&facts_pass).group, "done");
+
+        // 2b. answered -> group: done
+        let task_ans = dummy_task("answered");
+        let facts_ans = TaskFacts {
+            task: &task_ans,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 2000,
+        };
+        assert_eq!(derive(&facts_ans).group, "done");
 
         // 3. blocked / qa_fix -> group: attention
         let task_blk = dummy_task("blocked");
@@ -2765,7 +2787,7 @@ mod tests {
     fn test_current_step_of_matches_derive() {
         let git = GitFacts::default();
         let statuses = [
-            "open", "planned", "dev_done", "blocked", "qa_fix", "qa_pass",
+            "open", "planned", "dev_done", "blocked", "qa_fix", "qa_pass", "answered",
         ];
 
         for st in statuses {

@@ -428,8 +428,27 @@
       </div>
     </div>
 
+    <!-- Answer card -->
+    <div x-show="showAnswerCard()" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <div class="flex flex-wrap items-center gap-4">
+        <h2 class="text-xl font-semibold leading-[1.2]">Câu trả lời</h2>
+        <span x-show="answerLoading" class="text-sm font-normal text-slate-500 dark:text-slate-400">Đang tải...</span>
+      </div>
+      <div class="space-y-2" x-show="showNoAnswer()">
+        <p class="text-sm font-semibold leading-normal">Chưa có câu trả lời</p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Analyst chưa chạy xong hoặc đã lỗi. Khi xong, câu trả lời sẽ hiện ở đây.</p>
+      </div>
+      <div class="space-y-4" x-show="hasAnswer()">
+        <div class="flex flex-wrap items-center gap-2">
+          <code id="ab-answer-path" class="font-mono text-sm leading-normal break-all" x-text="answerPath()"></code>
+          <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="copyAnswerPath">Sao chép</button>
+        </div>
+        <pre class="overflow-x-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-4 font-mono text-sm leading-normal text-slate-900 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-800" x-text="answerMarkdown()"></pre>
+      </div>
+    </div>
+
     <!-- Plan card -->
-    <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+    <div x-show="showPlanCard()" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
       <h2 class="text-xl font-semibold leading-[1.2]">Kế hoạch (.plan.md)</h2>
       <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="planNote"></p>
       <div class="space-y-2" x-show="noPlan">

@@ -234,6 +234,14 @@
           <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-show="collisionNote('workflow')" x-text="collisionNote('workflow')"></p>
           <p id="ab-set-wf-name-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('workflow', 'name')" x-text="fieldMsg('workflow', 'name')"></p>
         </div>
+      <div x-show="isAnalysisWorkflow()" class="space-y-4">
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Quy trình phân tích chỉ đọc mã nguồn để trả lời câu hỏi và xuất tài liệu Markdown. Không có các bước lên plan / code / QA.</p>
+        <label class="flex min-h-12 items-center gap-2 rounded-xl px-4 ring-1 ring-slate-300 dark:ring-slate-600 cursor-pointer">
+          <input id="ab-set-wf-review" type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="isWorkflowReviewChecked()" @change="toggleWorkflowReview">
+          <span class="text-base font-normal leading-normal">Có bước review (analysis-review)</span>
+        </label>
+      </div>
+      <div x-show="!isAnalysisWorkflow()" class="space-y-4">
       <fieldset class="space-y-2">
         <legend class="text-sm font-semibold leading-normal">Các bước</legend>
         <p id="ab-set-wf-stages-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Thứ tự cố định: lên plan, review plan, bạn duyệt, code, review code, QA, sửa. Chọn các bước muốn có.</p>
@@ -287,6 +295,7 @@
           <input id="ab-set-wf-usd" type="number" inputmode="decimal" min="0" step="any" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="fieldClass('workflow', 'budget_usd')" x-model="wBudgetUsd" @input="onField('workflow', 'budget_usd')" @blur="onField('workflow', 'budget_usd')" :aria-invalid="invalidAttr('workflow', 'budget_usd')" :aria-describedby="describedBy('workflow', 'budget_usd', 'ab-set-wf-usd')">
           <p id="ab-set-wf-usd-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('workflow', 'budget_usd')" x-text="fieldMsg('workflow', 'budget_usd')"></p>
         </div>
+      </div>
       </div>
         <div id="ab-set-workflow-refusal" role="alert" tabindex="-1" class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasRefusal('workflow')">
           <p class="font-semibold leading-normal" x-text="refusalHeading('workflow')"></p>

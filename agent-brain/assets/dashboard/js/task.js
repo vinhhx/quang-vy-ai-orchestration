@@ -50,6 +50,11 @@
       humanRefusal: '',
       humanCopyMessage: '',
 
+      // Answer state (analysis tasks)
+      answer: null,
+      answerLoading: false,
+      answerError: '',
+
       stageTitles: {
         start: 'Bắt đầu',
         plan: 'Lên plan',
@@ -111,6 +116,10 @@
             self.stale = false;
             self.error = '';
             self.notFound = false;
+
+            if (self.isAnalysis() || self.task.status === 'answered') {
+              self.loadAnswer();
+            }
 
             if (!self.pinned) {
               var targetId = null;
@@ -1317,12 +1326,93 @@
       },
 
       get isDone() {
-        return Boolean(this.task && this.task.status === 'qa_pass');
+        return Boolean(this.task && (this.task.status === 'qa_pass' || this.task.status === 'answered'));
       },
 
       get doneText() {
+        if (this.task && this.task.status === 'answered') {
+          return 'Đã phân tích xong câu hỏi và gửi tài liệu qua Telegram.';
+        }
         var branch = (this.task && this.task.branch) ? this.task.branch : '';
         return 'Pipeline đã xong. Kiểm tra và merge nhánh \'' + branch + '\' bằng git.';
+      },
+
+      isAnalysis: function () {
+        if (!this.task) return false;
+        if (this.task.workflow && this.task.workflow.kind === 'analysis') return true;
+        if (this.task.status === 'answered') return true;
+        return false;
+      },
+
+      showPlanCard: function () {
+        return !this.isAnalysis();
+      },
+
+      showAnswerCard: function () {
+        return this.isAnalysis() || this.hasAnswer();
+      },
+
+      hasAnswer: function () {
+        return Boolean(this.answer && this.answer.markdown);
+      },
+
+      showNoAnswer: function () {
+        return !this.hasAnswer() && !this.answerLoading;
+      },
+
+      answerPath: function () {
+        return (this.answer && this.answer.path) ? this.answer.path : '';
+      },
+
+      answerMarkdown: function () {
+        return (this.answer && this.answer.markdown) ? this.answer.markdown : '';
+      },
+
+      copyAnswerPath: function () {
+        var self = this;
+        var p = this.answerPath();
+        if (!p) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(p).then(function () {
+            self.message = 'Đã sao chép đường dẫn';
+          }).catch(function () {
+            self.selectAnswerPath();
+          });
+        } else {
+          this.selectAnswerPath();
+        }
+      },
+
+      selectAnswerPath: function () {
+        var el = document.getElementById('ab-answer-path');
+        if (el && window.getSelection) {
+          var range = document.createRange();
+          range.selectNodeContents(el);
+          var sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+        this.message = 'Đã sao chép đường dẫn';
+      },
+
+      loadAnswer: function () {
+        var self = this;
+        if (!this.id || this._left) return;
+        this.answerLoading = true;
+        window.AB.api('GET', '/api/tasks/' + this.id + '/answer').then(function (res) {
+          self.answerLoading = false;
+          if (res.ok && res.data) {
+            self.answer = res.data;
+            self.answerError = '';
+          } else if (res.status === 404) {
+            self.answer = null;
+            self.answerError = '';
+          } else {
+            self.answerError = window.AB.errorText(res);
+          }
+        }).catch(function () {
+          self.answerLoading = false;
+        });
       },
 
       get hasPlan() {

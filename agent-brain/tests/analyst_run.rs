@@ -707,3 +707,108 @@ fn test_telegram_answered_notification_j() {
         Some(0)
     );
 }
+
+#[test]
+fn test_api_task_answer_and_taskstate_k() {
+    let sb = Sandbox::new();
+    let _repo = init_project(&sb, "my-proj");
+
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let map = agent_brain::projects::load_map(&sb.map_path()).unwrap();
+    agent_brain::db::sync_projects(&conn, &agent_brain::projects::projects_of(&map)).unwrap();
+    let pid = agent_brain::db::project_row_id(&conn, "my-proj").unwrap();
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "task-answer-api",
+        "Câu hỏi API",
+        "analysis/task-answer-api",
+        Some("main"),
+        None,
+    )
+    .unwrap();
+    let text = std::fs::read_to_string(&sb.config_path).expect("read config");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("parse config");
+    let cfg = agent_brain::config::config_from_value(&value).expect("config_from_value");
+    let workflows_loaded = agent_brain::workflows::load(&cfg);
+    let wf = workflows_loaded.get("phan-tich").unwrap();
+    agent_brain::db::set_task_workflow_if_null(&conn, task_id, &wf.to_snapshot()).unwrap();
+
+    let mut srv = sb.serve(&[]);
+
+    // 1. When answer file doesn't exist -> 404
+    let r404 = srv.get(&format!("/api/tasks/{task_id}/answer"));
+    assert_eq!(r404.status, 404);
+    assert_eq!(
+        r404.json()["error"],
+        "Chưa có câu trả lời cho task này"
+    );
+
+    // 2. Save answer file
+    let ans_text = valid_analyst_text();
+    let ans_dir = sb.xdg_data.join("agent-brain").join("answers").join("my-proj");
+    std::fs::create_dir_all(&ans_dir).unwrap();
+    let ans_file = ans_dir.join(format!("{task_id}-task-answer-api.md"));
+    std::fs::write(&ans_file, &ans_text).unwrap();
+
+    // Now GET /api/tasks/{id}/answer -> 200 with path and markdown
+    let r200 = srv.get(&format!("/api/tasks/{task_id}/answer"));
+    assert_eq!(r200.status, 200);
+    let j200 = r200.json();
+    assert_eq!(j200["markdown"], ans_text);
+    assert!(j200["path"]
+        .as_str()
+        .unwrap()
+        .ends_with(&format!("{task_id}-task-answer-api.md")));
+
+    // 3. Check taskstate when answered
+    conn.execute(
+        "UPDATE tasks SET status = 'answered', updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![agent_brain::db::now_ms(), task_id],
+    )
+    .unwrap();
+
+    let r_task = srv.get(&format!("/api/tasks/{task_id}"));
+    assert_eq!(r_task.status, 200);
+    let task_json = r_task.json();
+    assert_eq!(task_json["group"], "done");
+    assert_eq!(task_json["banner"], "Đã trả lời");
+    assert!(!task_json["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["id"] == "run_dev" || a["id"] == "relead" || a["id"] == "run_qa"));
+
+    // Check taskstate::derive directly has no actions
+    let task_row = agent_brain::db::get_task(&conn, task_id).unwrap().unwrap();
+    let facts = agent_brain::dashboard::taskstate::TaskFacts {
+        task: &task_row,
+        lead: None,
+        dev: None,
+        qa: None,
+        git: &agent_brain::dashboard::taskstate::GitFacts::default(),
+        busy: None,
+        now_ms: 2000,
+    };
+    let derived = agent_brain::dashboard::taskstate::derive(&facts);
+    assert_eq!(derived.group, "done");
+    assert_eq!(derived.banner.as_deref(), Some("Đã trả lời"));
+    assert!(derived.actions.is_empty());
+
+    let auto_ctl = task_json["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "auto_start")
+        .unwrap();
+    assert_eq!(auto_ctl["enabled"], false);
+    assert_eq!(
+        auto_ctl["reason"],
+        "Task đã xong (Đã trả lời)."
+    );
+
+    assert_eq!(
+        srv.stop(libc::SIGINT, std::time::Duration::from_secs(10)),
+        Some(0)
+    );
+}

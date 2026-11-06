@@ -285,6 +285,8 @@
       wMode: '',
       wEditing: '',
       wName: '',
+      wKind: 'code',
+      wReview: false,
       wStageOn: {},
       wLoopOn: {},
       wAuto: false,
@@ -1041,25 +1043,27 @@
               out.push({ field: 'name', message: "Đã có quy trình tên '" + name + "'." });
             }
           }
-          for (var i = 0; i < STAGES.length; i++) {
-            if (this.wStageOn[STAGES[i].key]) n += 1;
-          }
-          if (n === 0) {
-            out.push({ field: 'stages', message: 'Chọn ít nhất một bước.' });
-          }
-          if (this.anyLoopOn) {
-            var r = String(this.wMaxRounds).trim();
-            if (!isInt(r) || Number(r) < 1 || Number(r) > 10) {
-              out.push({ field: 'max_rounds', message: 'Số vòng phải là số nguyên từ 1 đến 10.' });
+          if (!this.isAnalysisWorkflow()) {
+            for (var i = 0; i < STAGES.length; i++) {
+              if (this.wStageOn[STAGES[i].key]) n += 1;
             }
-          }
-          var m = String(this.wBudgetMinutes).trim();
-          if (!isInt(m) || Number(m) < 1) {
-            out.push({ field: 'budget_minutes', message: 'Ngân sách thời gian phải là số nguyên dương.' });
-          }
-          var u = String(this.wBudgetUsd).trim();
-          if (u.length === 0 || !isFinite(Number(u)) || Number(u) <= 0) {
-            out.push({ field: 'budget_usd', message: 'Ngân sách chi phí phải là số dương.' });
+            if (n === 0) {
+              out.push({ field: 'stages', message: 'Chọn ít nhất một bước.' });
+            }
+            if (this.anyLoopOn) {
+              var r = String(this.wMaxRounds).trim();
+              if (!isInt(r) || Number(r) < 1 || Number(r) > 10) {
+                out.push({ field: 'max_rounds', message: 'Số vòng phải là số nguyên từ 1 đến 10.' });
+              }
+            }
+            var m = String(this.wBudgetMinutes).trim();
+            if (!isInt(m) || Number(m) < 1) {
+              out.push({ field: 'budget_minutes', message: 'Ngân sách thời gian phải là số nguyên dương.' });
+            }
+            var u = String(this.wBudgetUsd).trim();
+            if (u.length === 0 || !isFinite(Number(u)) || Number(u) <= 0) {
+              out.push({ field: 'budget_usd', message: 'Ngân sách chi phí phải là số dương.' });
+            }
           }
         } else {
           name = this.sId;
@@ -1417,6 +1421,8 @@
       // ---- workflow editor ----
 
       resetWorkflowDraft: function () {
+        this.wKind = 'code';
+        this.wReview = false;
         var on = {};
         on['plan'] = true;
         on['gate:you'] = true;
@@ -1432,6 +1438,8 @@
 
       fillWorkflow: function (w) {
         var edit = w.edit || {};
+        this.wKind = edit.kind || w.kind || 'code';
+        this.wReview = Boolean(edit.review !== undefined ? edit.review : w.review);
         var on = {};
         var stages = edit.stages || w.stages || [];
         for (var i = 0; i < stages.length; i++) {
@@ -1448,6 +1456,18 @@
         this.wMaxRounds = String(edit.max_rounds !== undefined ? edit.max_rounds : (w.max_rounds || 3));
         this.wBudgetMinutes = String(edit.budget_minutes !== undefined ? edit.budget_minutes : (w.budget_minutes || 60));
         this.wBudgetUsd = String(edit.budget_usd !== undefined ? edit.budget_usd : (w.budget_usd || 20));
+      },
+
+      isAnalysisWorkflow: function () {
+        return this.wKind === 'analysis';
+      },
+
+      isWorkflowReviewChecked: function () {
+        return Boolean(this.wReview);
+      },
+
+      toggleWorkflowReview: function () {
+        this.wReview = !this.wReview;
       },
 
       newWorkflow: function () {
@@ -1589,10 +1609,18 @@
       workflowChips: function (w) {
         if (!w) return [];
         var chips = [];
+        var kind = (w.edit && w.edit.kind) || w.kind || 'code';
+        var review = (w.edit && w.edit.review !== undefined) ? w.edit.review : w.review;
+        if (kind === 'analysis') {
+          chips.push('Phân tích');
+          if (review) chips.push('có review');
+        }
         if (w.source === 'builtin') chips.push('có sẵn');
         else if (w.source === 'override') chips.push('ghi đè quy trình có sẵn');
         else chips.push('từ workflows.json');
-        chips.push(w.auto ? 'autopilot' : 'chạy tay');
+        if (kind !== 'analysis') {
+          chips.push(w.auto ? 'autopilot' : 'chạy tay');
+        }
         return chips;
       },
 
@@ -1714,6 +1742,14 @@
           };
         }
         if (kind === 'workflow') {
+          if (this.wKind === 'analysis') {
+            return {
+              name: this.wName,
+              kind: 'analysis',
+              review: Boolean(this.wReview),
+              auto: false,
+            };
+          }
           var stages = [];
           for (i = 0; i < STAGES.length; i++) {
             if (this.wStageOn[STAGES[i].key]) stages.push(STAGES[i].key);
