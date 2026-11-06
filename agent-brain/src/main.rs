@@ -159,6 +159,63 @@ enum Commands {
         #[command(subcommand)]
         subcommand: PromptCommands,
     },
+    /// Quản lý bug từ Trello và Google Sheet
+    Fixbug {
+        #[command(subcommand)]
+        subcommand: FixbugCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum FixbugCommands {
+    /// Kiểm tra cấu hình và kết nối tới nguồn bug
+    Check {
+        /// Tên, id hoặc alias dự án
+        project: String,
+    },
+    /// Lấy bug từ nguồn vào hàng chờ intake
+    Pull {
+        /// Tên, id hoặc alias dự án
+        project: String,
+        /// Số bug tối đa lấy mỗi lần (mặc định: 10)
+        #[arg(long)]
+        max: Option<usize>,
+    },
+    /// Danh sách bug đã lấy trong dự án
+    List {
+        /// Tên, id hoặc alias dự án
+        project: String,
+    },
+    /// Đánh dấu bug đã sửa và deploy (chuyển cột Testing trên Trello)
+    Deployed {
+        /// Tên, id hoặc alias dự án
+        project: String,
+        /// Mã các bug cần đánh dấu (ví dụ: T-42 S-1)
+        #[arg(required = true)]
+        keys: Vec<String>,
+        /// Ghi chú kèm theo
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Từ chối sửa bug (chuyển cột Reject trên Trello)
+    Reject {
+        /// Tên, id hoặc alias dự án
+        project: String,
+        /// Mã các bug cần từ chối (ví dụ: T-42 S-1)
+        #[arg(required = true)]
+        keys: Vec<String>,
+        /// Lý do từ chối (bắt buộc)
+        #[arg(long, required = true)]
+        reason: String,
+    },
+    /// Khởi tạo cấu hình .agent-brain/fixbugs.json
+    Init {
+        /// Tên, id hoặc alias dự án
+        project: String,
+        /// Chỉ in cấu hình đề xuất, không ghi file
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -311,6 +368,26 @@ fn main() {
                 team.as_deref(),
             ),
         },
+        Commands::Fixbug { subcommand } => Ok(match subcommand {
+            FixbugCommands::Check { project } => agent_brain::fixbug::cmd_check(&ctx, &project),
+            FixbugCommands::Pull { project, max } => {
+                agent_brain::fixbug::cmd_pull(&mut ctx, &project, max)
+            }
+            FixbugCommands::List { project } => agent_brain::fixbug::cmd_list(&ctx, &project),
+            FixbugCommands::Deployed {
+                project,
+                keys,
+                note,
+            } => agent_brain::fixbug::cmd_deployed(&mut ctx, &project, &keys, note.as_deref()),
+            FixbugCommands::Reject {
+                project,
+                keys,
+                reason,
+            } => agent_brain::fixbug::cmd_reject(&mut ctx, &project, &keys, &reason),
+            FixbugCommands::Init { project, dry_run } => {
+                agent_brain::fixbug::cmd_init(&ctx, &project, dry_run)
+            }
+        }),
         Commands::Run {
             role,
             project,

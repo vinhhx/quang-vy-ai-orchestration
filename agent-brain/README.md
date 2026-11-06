@@ -89,6 +89,7 @@ Quay lại bản cũ: dừng `serve`, rồi khôi phục **cùng lúc** binary c
 | **telegram test** | `agent-brain telegram test` | Gửi một tin thử tới chat đã ghép nối. Chưa ghép nối: `Chưa ghép nối Telegram — chạy agent-brain telegram setup`, thoát `1`. |
 | **human done** | `agent-brain human done TASK_ID` | Bước Dev do nhân sự làm (engine `người`): lấy nhánh task mà nhân sự đã đẩy lên remote (`git fetch origin` rồi chỉ `merge --ff-only`, không bao giờ force-push), ghi một run engine `người` không có token và chạy tiếp quy trình. Từ chối khi task không chờ nhân sự (`Task N không chờ nhân sự làm`), khi chưa có nhánh trên remote, khi nhánh remote không có commit mới hoặc không đi tiếp từ nhánh trong máy, khi working tree có thay đổi chưa commit, hoặc khi nhân sự sửa file ngoài danh sách của plan (vi phạm giao thức, thoát `3`). Cũng là nút `Xong` của màn hình task. |
 | **human return** | `agent-brain human return TASK_ID` | Trả việc lại cho nhân sự kèm báo cáo lần trước (`.qa-report.md` hoặc `.code-review.md`); task lại ở trạng thái `Chờ <tên> làm`. Cũng là nút `Trả lại`. |
+| **fixbug** | `agent-brain fixbug {check\|pull\|list\|deployed\|reject\|init} PROJECT` | Quản lý nguồn bug từ Trello và Google Sheet: kiểm tra cấu hình (`check`), lấy bug vào hàng chờ intake (`pull`), xem danh sách ref (`list`), đánh dấu đã sửa và deploy (`deployed`), từ chối sửa (`reject`), khởi tạo file cấu hình (`init`). |
 
 ### Dự án loại `idea`
 

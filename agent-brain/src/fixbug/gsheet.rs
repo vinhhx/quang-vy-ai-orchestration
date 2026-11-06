@@ -485,8 +485,8 @@ mod tests {
 1,QA A,Giao diện,Nút bấm lệch,,Cao,,Hoàn Thành\n\
 2,QA A,,Font chữ quá nhỏ,,Thấp,,\n\
 ,QA B,Chức năng,Lỗi 500 khi submit,,Gấp,,\n\
-4,QA B,,Chức năng bị từ chối,,,Từ chối thực hiện\n\
-5,QA C,,Nội dung trống,,,,";
+4,QA B,,Chức năng bị từ chối,,,,Từ chối thực hiện\n\
+5,QA C,,,,,,,";
 
         let config = GsheetConfig {
             url: "https://docs.google.com/spreadsheets/d/abc/edit?gid=123".to_string(),

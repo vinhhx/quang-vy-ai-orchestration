@@ -1,4 +1,5 @@
 pub mod api_board;
+pub mod api_fixbug;
 pub mod api_intake;
 pub mod api_projects;
 pub mod api_prompts;
@@ -98,6 +99,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .merge(api_telegram::routes())
         .merge(api_intake::routes())
         .merge(api_prompts::routes())
+        .merge(api_fixbug::routes())
         .route("/api/runs/{id}/stream", axum::routing::get(sse::stream))
         .fallback(assets::serve)
         .layer(axum::extract::DefaultBodyLimit::max(65536))
