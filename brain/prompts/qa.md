@@ -7,3 +7,4 @@ Ghi .qa-report.md gồm:
 - Lấy git diff bằng đúng lệnh trong tin nhắn đầu vào.
 - File .qa-report.md đã có sẵn các đề mục; điền vào từng mục và dưới Kết luận ghi đúng một dòng: Đạt hoặc Cần sửa.
 - Có thể đọc các file khác ở chế độ chỉ đọc để đánh giá "ảnh hưởng tới chỗ khác".
+- Nếu plan có mục Sản phẩm: kiểm từng file thật sự tồn tại (dùng công cụ đọc/liệt kê file); tài liệu tự khai 'đã xong' không phải bằng chứng. Thiếu sản phẩm hoặc lệnh trong Cách kiểm tra lỗi → Cần sửa. 'Người dùng tự chạy' không phải lý do để Đạt.

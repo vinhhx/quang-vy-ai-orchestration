@@ -686,3 +686,167 @@ ok
     assert!(user_input.contains("failing:"));
     assert!(user_input.contains("':(exclude).plan-review.md' ':(exclude).code-review.md'"));
 }
+
+// ---- `## Sản phẩm`: agent-brain checks the product files after QA ----
+
+/// Lead + Dev on a repo that ignores `out/`; the plan declares `out/v.mp4` as its product.
+fn setup_product_task(sb: &Sandbox) -> (PathBuf, String) {
+    let repo = sb.make_repo(
+        "web-ban-hang",
+        &[
+            ("src/app.py", "def app():\n    return 1\n"),
+            (".gitignore", "out/\n"),
+        ],
+        None,
+        None,
+    );
+    let entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    sb.write_map(serde_json::json!([entry]), &[]);
+    let mut p_text = protocol::plan_text(
+        "Kế hoạch",
+        &[("src/app.py", "app()", "trả về 2", "demo")],
+        "python3 -m unittest",
+        "",
+    );
+    p_text.push_str("\n## Thư mục được ghi\n- `out/**`\n## Sản phẩm\n- `out/v.mp4`\n");
+    let sc_lead = serde_json::json!({"ops": [
+        {"op": "read", "path": ".plan.md"},
+        {"op": "write", "path": ".plan.md", "content": p_text, "keep_meta": true}
+    ]});
+    let res = sb.run(&["run", "lead", "web-ban-hang", "sửa app"], Some(sc_lead));
+    assert_eq!(res.code, 0, "lead: {}\n{}", res.stderr, res.stdout);
+    let task = "sua-app".to_string();
+    let sc_dev = serde_json::json!({"ops": [
+        {"op": "write", "path": "src/app.py", "content": "def app():\n    return 2\n"},
+        {"op": "git", "args": ["add", "src/app.py"]},
+        {"op": "git", "args": ["commit", "-m", format!("{task}: sửa app")]}
+    ]});
+    let res = sb.run(&["run", "dev", "web-ban-hang"], Some(sc_dev));
+    assert_eq!(res.code, 0, "dev: {}\n{}", res.stderr, res.stdout);
+    (repo, task)
+}
+
+const QA_PASS_REPORT: &str = "# QA: sửa app\n## Thay đổi có khớp plan không (từng mục)\n- src/app.py: khớp.\n## Sửa ngoài plan (nếu có)\nKhông.\n## Rủi ro\nKhông.\n## Kết luận\nĐạt\n";
+
+/// Runs QA (the fake QA writes `Đạt`); returns `(stdout, task status, committed report)`.
+fn run_qa_pass(sb: &Sandbox, repo: &std::path::Path, task: &str) -> (String, String, String) {
+    let sc = serde_json::json!({"ops": [
+        {"op": "write", "path": ".qa-report.md", "content": QA_PASS_REPORT, "keep_meta": true}
+    ]});
+    let res = sb.run(&["run", "qa", "web-ban-hang"], Some(sc));
+    assert_eq!(res.code, 0, "qa: {}\n{}", res.stderr, res.stdout);
+    let status: String = sb
+        .db()
+        .query_row(
+            "SELECT status FROM tasks WHERE slug = ?1",
+            rusqlite::params![task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let report = sb.git(repo, &["show", "HEAD:.qa-report.md"]);
+    assert_eq!(
+        sb.git(repo, &["log", "-1", "--format=%s"]).trim(),
+        format!("{task}: qa")
+    );
+    (res.stdout, status, report)
+}
+
+fn verdict_of(report: &str) -> Option<&'static str> {
+    agent_brain::planfile::parse_qa_verdict(report)
+}
+
+#[test]
+fn qa_pass_without_the_product_file_becomes_qa_fix() {
+    let sb = Sandbox::new();
+    let (repo, task) = setup_product_task(&sb);
+    let (stdout, status, report) = run_qa_pass(&sb, &repo, &task);
+    assert_eq!(status, "qa_fix");
+    assert!(
+        stdout.contains("Thiếu sản phẩm — QA chuyển thành Cần sửa"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Kết luận QA: Cần sửa"), "{stdout}");
+    assert!(
+        report.contains("## Kiểm tra sản phẩm (agent-brain)"),
+        "{report}"
+    );
+    assert!(report.contains("- out/v.mp4: không tồn tại"), "{report}");
+    assert_eq!(verdict_of(&report), Some("Cần sửa"), "{report}");
+    // the QA's own sections are kept
+    assert!(report.contains("- src/app.py: khớp."), "{report}");
+    let outcome: String = sb
+        .db()
+        .query_row(
+            "SELECT outcome FROM runs WHERE role = 'qa' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(outcome, "qa:fix");
+}
+
+#[test]
+fn qa_pass_with_the_ignored_product_file_stays_qa_pass() {
+    let sb = Sandbox::new();
+    let (repo, task) = setup_product_task(&sb);
+    std::fs::create_dir_all(repo.join("out")).unwrap();
+    std::fs::write(repo.join("out/v.mp4"), b"fake video bytes").unwrap();
+    // the product is gitignored: the tree stays clean for QA
+    assert!(sb.git(&repo, &["status", "--porcelain"]).trim().is_empty());
+    let (stdout, status, report) = run_qa_pass(&sb, &repo, &task);
+    assert_eq!(status, "qa_pass", "{stdout}\n{report}");
+    assert!(!stdout.contains("Thiếu sản phẩm"), "{stdout}");
+    assert!(
+        report.contains("## Kiểm tra sản phẩm (agent-brain)"),
+        "{report}"
+    );
+    assert!(report.contains("- out/v.mp4: có, 16 byte"), "{report}");
+    assert_eq!(verdict_of(&report), Some("Đạt"), "{report}");
+}
+
+#[test]
+fn qa_product_symlink_outside_root_or_empty_file_is_qa_fix() {
+    let sb = Sandbox::new();
+    let (repo, task) = setup_product_task(&sb);
+    std::fs::create_dir_all(repo.join("out")).unwrap();
+
+    // a symlink to a real file outside the project root
+    let outside = sb.root.join("outside-video.mp4");
+    std::fs::write(&outside, b"not ours").unwrap();
+    std::os::unix::fs::symlink(&outside, repo.join("out/v.mp4")).unwrap();
+    let (_stdout, status, report) = run_qa_pass(&sb, &repo, &task);
+    assert_eq!(status, "qa_fix");
+    assert!(
+        report.contains("- out/v.mp4: ra ngoài gốc dự án"),
+        "{report}"
+    );
+    assert_eq!(verdict_of(&report), Some("Cần sửa"));
+
+    // an empty file
+    std::fs::remove_file(repo.join("out/v.mp4")).unwrap();
+    std::fs::write(repo.join("out/v.mp4"), b"").unwrap();
+    let (_stdout, status, report) = run_qa_pass(&sb, &repo, &task);
+    assert_eq!(status, "qa_fix");
+    assert!(report.contains("- out/v.mp4: rỗng (0 byte)"), "{report}");
+
+    // a directory
+    std::fs::remove_file(repo.join("out/v.mp4")).unwrap();
+    std::fs::create_dir_all(repo.join("out/v.mp4")).unwrap();
+    std::fs::write(repo.join("out/v.mp4/x"), b"x").unwrap();
+    let (_stdout, status, report) = run_qa_pass(&sb, &repo, &task);
+    assert_eq!(status, "qa_fix");
+    assert!(
+        report.contains("- out/v.mp4: không phải file thường"),
+        "{report}"
+    );
+}
+
+#[test]
+fn qa_without_product_section_adds_no_product_check() {
+    let sb = Sandbox::new();
+    let (repo, task, _plan_sha, _dev_sha) = setup_lead_and_dev(&sb);
+    let (stdout, status, report) = run_qa_pass(&sb, &repo, &task);
+    assert_eq!(status, "qa_pass");
+    assert!(!stdout.contains("Thiếu sản phẩm"));
+    assert!(!report.contains("Kiểm tra sản phẩm"), "{report}");
+}

@@ -11,6 +11,147 @@ pub const QA_ALLOWED_TOOLS: &[&str] = crate::with_git_read_only_tools!(
 
 pub const QA_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
 
+/// Heading of the section agent-brain appends to `.qa-report.md` after checking the products.
+pub const PRODUCT_CHECK_HEADING: &str = "## Kiểm tra sản phẩm (agent-brain)";
+
+/// One product file checked on disk: its path resolved through symlinks and its size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductFound {
+    pub path: std::path::PathBuf,
+    pub size: u64,
+}
+
+/// Checks one `## Sản phẩm` file deterministically: it must exist, resolve (through symlinks)
+/// inside the canonical project root, be a regular file and hold at least one byte. `Err` is
+/// the Vietnamese reason.
+pub fn check_product(root: &std::path::Path, rel: &str) -> Result<ProductFound, &'static str> {
+    let path = root.join(rel);
+    if std::fs::symlink_metadata(&path).is_err() {
+        return Err("không tồn tại");
+    }
+    let Ok(resolved) = path.canonicalize() else {
+        // a symlink whose target is missing
+        return Err("không tồn tại");
+    };
+    let Ok(root_real) = root.canonicalize() else {
+        return Err("ra ngoài gốc dự án");
+    };
+    if resolved == root_real || !resolved.starts_with(&root_real) {
+        return Err("ra ngoài gốc dự án");
+    }
+    let meta = match std::fs::metadata(&resolved) {
+        Ok(m) => m,
+        Err(_) => return Err("không tồn tại"),
+    };
+    if !meta.is_file() {
+        return Err("không phải file thường");
+    }
+    if meta.len() == 0 {
+        return Err("rỗng (0 byte)");
+    }
+    Ok(ProductFound {
+        path: resolved,
+        size: meta.len(),
+    })
+}
+
+/// The `## Sản phẩm` files of a task: those of the plan at each commit in `commits` (the
+/// approved plan first), then those of `head_plan_text`, without duplicates. A plan edited after
+/// the approval can add products but never drop one.
+pub fn task_product_files(
+    root: &std::path::Path,
+    commits: &[&str],
+    head_plan_text: Option<&str>,
+) -> Vec<String> {
+    let mut texts: Vec<String> = Vec::new();
+    for c in commits {
+        if !crate::gitops::is_hex_sha(c) {
+            continue;
+        }
+        if let Ok(t) = crate::gitops::git(root, &["show", &format!("{c}:.plan.md")]) {
+            texts.push(t);
+        }
+    }
+    if let Some(t) = head_plan_text {
+        texts.push(t.to_string());
+    }
+    let mut out: Vec<String> = Vec::new();
+    for t in &texts {
+        for f in crate::planfile::product_files(&crate::planfile::parse_plan(t)) {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
+/// `(file, outcome)` for each product file, in order.
+pub fn check_products(
+    root: &std::path::Path,
+    files: &[String],
+) -> Vec<(String, Result<ProductFound, &'static str>)> {
+    files
+        .iter()
+        .map(|f| (f.clone(), check_product(root, f)))
+        .collect()
+}
+
+/// `text` with every verdict line under `## Kết luận` replaced by `verdict`; nothing else
+/// changes. When the section has no verdict line, `verdict` is put right under the heading.
+pub fn set_qa_verdict(text: &str, verdict: &str) -> String {
+    let norm_heading = |line: &str| -> Option<String> {
+        if line.starts_with("## ") || line.starts_with("# ") {
+            Some(
+                unicode_normalization::UnicodeNormalization::nfc(
+                    line.trim_start_matches('#').trim(),
+                )
+                .collect(),
+            )
+        } else {
+            None
+        }
+    };
+    let is_verdict_line = |line: &str| -> bool {
+        let one = format!("## Kết luận\n{line}\n");
+        crate::planfile::parse_qa_verdict(&one).is_some()
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut in_section = false;
+    let mut heading_at: Option<usize> = None;
+    let mut replaced = false;
+    for line in text.split('\n') {
+        if let Some(h) = norm_heading(line) {
+            if in_section {
+                in_section = false;
+            } else if heading_at.is_none() && h.starts_with("Kết luận") {
+                in_section = true;
+                out.push(line.to_string());
+                heading_at = Some(out.len() - 1);
+                continue;
+            }
+        } else if in_section && is_verdict_line(line) {
+            out.push(verdict.to_string());
+            replaced = true;
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    match (replaced, heading_at) {
+        (false, Some(i)) => out.insert(i + 1, verdict.to_string()),
+        (false, None) => {
+            if out.last().is_some_and(|l| l.is_empty()) {
+                out.pop();
+            }
+            out.push("## Kết luận".to_string());
+            out.push(verdict.to_string());
+            out.push(String::new());
+        }
+        _ => {}
+    }
+    out.join("\n")
+}
+
 pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> BrainResult<i32> {
     let dry_run = opts.dry_run;
     let verbose = opts.verbose;
@@ -243,9 +384,9 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         return Err(BrainError::error("QA không tạo file .qa-report.md"));
     }
 
-    let qa_text = std::fs::read_to_string(&qa_path)?;
+    let mut qa_text = std::fs::read_to_string(&qa_path)?;
     let verdict = crate::planfile::parse_qa_verdict(&qa_text);
-    let verdict = match verdict {
+    let mut verdict = match verdict {
         Some(v) => v,
         None => {
             // A report without a verdict is kept as evidence, like the
@@ -254,6 +395,39 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
             return Err(BrainError::error("QA chưa ghi Kết luận (Đạt / Cần sửa)"));
         }
     };
+
+    // `## Sản phẩm`: checked on disk by agent-brain, whatever the QA wrote.
+    let approved = match task_id {
+        Some(tid) => crate::db::task_auto(&ctx.conn, tid)?.and_then(|a| a.approved_commit),
+        None => None,
+    };
+    let mut plan_commits: Vec<&str> = Vec::new();
+    if let Some(a) = approved.as_deref() {
+        plan_commits.push(a);
+    }
+    plan_commits.push(&plan_commit);
+    let products = task_product_files(&proj_path, &plan_commits, Some(&text_plan));
+    if !products.is_empty() {
+        let checked = check_products(&proj_path, &products);
+        let missing = checked.iter().any(|(_, r)| r.is_err());
+        let mut section = format!("\n{PRODUCT_CHECK_HEADING}\n");
+        for (f, r) in &checked {
+            match r {
+                Ok(found) => section.push_str(&format!("- {f}: có, {} byte\n", found.size)),
+                Err(reason) => section.push_str(&format!("- {f}: {reason}\n")),
+            }
+        }
+        if missing {
+            qa_text = set_qa_verdict(&qa_text, "Cần sửa");
+            verdict = "Cần sửa";
+            crate::term::emit_out("Thiếu sản phẩm — QA chuyển thành Cần sửa");
+        }
+        if !qa_text.ends_with('\n') {
+            qa_text.push('\n');
+        }
+        qa_text.push_str(&section);
+        std::fs::write(&qa_path, &qa_text)?;
+    }
 
     crate::gitops::commit_paths(&proj_path, &[".qa-report.md"], &format!("{task}: qa"))?;
     restore.disarm();
@@ -291,4 +465,57 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
     }
 
     Ok(crate::error::EXIT_OK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_qa_verdict_replaces_only_the_verdict_line() {
+        let text = "---\nspecs: 2\n---\n# QA: t\n## Rủi ro\nĐạt\n## Kết luận\n- **Đạt**\n\n## Ghi chú\nĐạt\n";
+        let out = set_qa_verdict(text, "Cần sửa");
+        assert_eq!(
+            out,
+            "---\nspecs: 2\n---\n# QA: t\n## Rủi ro\nĐạt\n## Kết luận\nCần sửa\n\n## Ghi chú\nĐạt\n"
+        );
+        assert_eq!(crate::planfile::parse_qa_verdict(&out), Some("Cần sửa"));
+        // `Kết luận: Đạt` form, at the end of the file
+        let out2 = set_qa_verdict("# QA: t\n## Kết luận\nKết luận: Đạt", "Cần sửa");
+        assert_eq!(out2, "# QA: t\n## Kết luận\nCần sửa");
+        // no verdict line: put under the heading
+        let out3 = set_qa_verdict("# QA: t\n## Kết luận\nghi chú\n", "Cần sửa");
+        assert_eq!(out3, "# QA: t\n## Kết luận\nCần sửa\nghi chú\n");
+        // no section at all
+        let out4 = set_qa_verdict("# QA: t\n", "Cần sửa");
+        assert_eq!(crate::planfile::parse_qa_verdict(&out4), Some("Cần sửa"));
+    }
+
+    #[test]
+    fn check_product_reasons() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let other = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.join("out/d")).unwrap();
+        std::fs::write(root.join("out/ok.bin"), b"abc").unwrap();
+        std::fs::write(root.join("out/empty.bin"), b"").unwrap();
+        std::fs::write(other.path().join("x.bin"), b"abc").unwrap();
+        std::os::unix::fs::symlink(other.path().join("x.bin"), root.join("out/away.bin")).unwrap();
+        std::os::unix::fs::symlink(root.join("out/ok.bin"), root.join("out/inside.bin")).unwrap();
+        std::os::unix::fs::symlink(root.join("out/none"), root.join("out/dangling.bin")).unwrap();
+
+        assert_eq!(check_product(root, "out/ok.bin").unwrap().size, 3);
+        assert_eq!(check_product(root, "out/inside.bin").unwrap().size, 3);
+        assert_eq!(check_product(root, "out/none.bin"), Err("không tồn tại"));
+        assert_eq!(
+            check_product(root, "out/dangling.bin"),
+            Err("không tồn tại")
+        );
+        assert_eq!(
+            check_product(root, "out/away.bin"),
+            Err("ra ngoài gốc dự án")
+        );
+        assert_eq!(check_product(root, "out/d"), Err("không phải file thường"));
+        assert_eq!(check_product(root, "out/empty.bin"), Err("rỗng (0 byte)"));
+    }
 }
