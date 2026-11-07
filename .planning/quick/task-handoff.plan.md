@@ -108,7 +108,7 @@ Kèm một sửa nhỏ: triage chọn đội hình mặc định `teams::default
 - Màn hình Điều phối: thẻ đề xuất có `after_proposal_id` hiện chip "Chờ #N xong". `GET` danh sách đề xuất trả thêm `after_proposal_id`, `inputs` (tên).
 
 ### 5b. Lỗi phát hiện khi chạy thật (2026-11-07, task #14, #15)
-Làm cùng commit 1 (`fix(...)`, đổi tên commit thành `fix(agent-brain): default team in triage, proposal task link, approved-plan state`).
+Làm cùng commit 1 (`fix(...)`, đổi tên commit thành `fix(agent-brain): triage team, proposal link, approval state, QA write-dir restore`).
 
 1. **Đề xuất không ghi `task_id`.**
    - Hiện tượng: đề xuất #3 và #4 chuyển `started` nhưng `proposals.task_id` là NULL. Task #14, #15 vẫn chạy, nhưng thẻ đề xuất không link sang task. Chuỗi việc ở mục 5 cũng cần liên kết này.
@@ -131,6 +131,22 @@ Làm cùng commit 1 (`fix(...)`, đổi tên commit thành `fix(agent-brain): de
      - plan commit đổi sau khi duyệt → lại "Chờ duyệt plan";
      - Telegram approve trên quy trình `auto:false` → tin trả lời có nút Chạy Dev.
 3. **Tin Telegram cũ sau khi plan bị sửa.** Plan được commit lại (`<slug>: plan`) sau khi tin "Chờ duyệt" đã gửi, nên bấm Duyệt trên tin cũ ra "stale". Kiểm tra: khi plan commit đổi trong lúc task ở `planned`, detector gửi tin "Plan đã cập nhật" mới có nút Duyệt. Hiện chưa có thì thêm, kèm test.
+
+4. **Nút "Chạy Dev" bị khóa mà người dùng không thấy lý do.**
+   - Hiện tượng: plan đã duyệt có grant `git add <đường dẫn>/*` không hợp lệ, vì `*` không đứng riêng. Nút bị disabled, `reason` có giá trị nhưng giao diện không hiện rõ.
+   - Sửa:
+     - màn task hiện `reason` của action bị khóa ngay dưới nút (không chỉ tooltip);
+     - lúc **duyệt** (`claim::approve_check`) chạy `planfile::validate_grants` và từ chối duyệt khi grant sai, kèm danh sách lỗi. Không để duyệt xong mới phát hiện.
+   - Test: plan có grant sai → approve trả lỗi liệt kê grant. Task view có `reason` hiển thị.
+5. **QA của dự án e2e luôn bị gắn "vi phạm giao thức".**
+   - Hiện tượng: task #15. QA (agy) chạy lại lệnh test có trong "Lệnh được chạy" (`run-task.mjs`), lệnh này ghi đè `results/report.json` và `results/run.log`. `roles/qa.rs` (đoạn `extra.remove(".qa-report.md")` → `protocol_violation`) coi mọi file khác đổi là vi phạm.
+   - Hậu quả:
+     - task kẹt ở `dev_done` dù QA kết luận Đạt;
+     - "Gửi báo cáo" không chạy, nên không có Review.md / TestCase.md về Telegram.
+   - Sửa: file đổi trong lúc QA chạy mà nằm dưới "Thư mục được ghi" của plan đã duyệt (`grants.write_dirs` / file) thì không tính là vi phạm. agent-brain **khôi phục** các file đó về trạng thái trước QA (`git checkout -- <file>` cho file đã track, xóa file mới chưa track), ghi một dòng cảnh báo vào `warnings` của run, rồi xử lý kết luận như bình thường. File đổi ngoài write dirs vẫn là vi phạm như cũ.
+   - Test:
+     - QA giả ghi `.qa-report.md` (Đạt) cùng sửa một file dưới write dir → task `qa_pass`, file được khôi phục, có cảnh báo;
+     - sửa file ngoài write dir → vẫn `protocol_violation`.
 
 ### 6. Test (`agent-brain/tests/task_inputs.rs` mới, cùng test đơn vị trong các module)
 - `inputs`:
@@ -170,7 +186,7 @@ bash spikes/lib/scan-secrets.sh
 
 ## Commit
 Ba commit:
-1. `fix(agent-brain): default team in triage, proposal task link, approved-plan state`: mục 0, 5b và test.
+1. `fix(agent-brain): triage team, proposal link, approval state, QA write-dir restore`: mục 0, 5b và test.
 2. `feat(agent-brain): task input documents and chained proposals`: mục 1, 2, 5 (phần backend) và test.
 3. `feat(dashboard): input documents, handoff to another project, chained proposal chip`: mục 3, 4, phần giao diện của mục 5, và test.
 
