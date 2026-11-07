@@ -406,6 +406,7 @@ async fn post_proposal_approve(
             team: team.clone(),
             workflow: workflow.clone(),
             reason: prop.reason.clone(),
+            after: None,
         };
 
         let map = crate::projects::load_map(&st.map_path)?;

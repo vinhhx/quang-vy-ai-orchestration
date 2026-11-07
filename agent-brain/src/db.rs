@@ -160,9 +160,29 @@ CREATE TABLE member_scores (
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX member_scores_member ON member_scores(member_id);"#,
+    r#"CREATE TABLE task_inputs (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+  proposal_id INTEGER REFERENCES proposals(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  source TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  CHECK (task_id IS NOT NULL OR proposal_id IS NOT NULL)
+);
+CREATE INDEX task_inputs_task ON task_inputs(task_id);
+CREATE INDEX task_inputs_proposal ON task_inputs(proposal_id);
+CREATE TABLE intake_inputs (
+  id INTEGER PRIMARY KEY,
+  intake_id INTEGER NOT NULL REFERENCES intake(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+ALTER TABLE proposals ADD COLUMN after_proposal_id INTEGER REFERENCES proposals(id);"#,
 ];
 
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -1162,10 +1182,11 @@ pub struct ProposalRow {
     pub created_at: i64,
     pub updated_at: i64,
     pub level: String,
+    pub after_proposal_id: Option<i64>,
 }
 
 const PROPOSAL_COLUMNS: &str =
-    "id, intake_id, project_id, title, request, priority, team, workflow, reason, status, task_id, error, created_at, updated_at, level";
+    "id, intake_id, project_id, title, request, priority, team, workflow, reason, status, task_id, error, created_at, updated_at, level, after_proposal_id";
 
 fn row_to_proposal(r: &rusqlite::Row) -> rusqlite::Result<ProposalRow> {
     Ok(ProposalRow {
@@ -1184,6 +1205,7 @@ fn row_to_proposal(r: &rusqlite::Row) -> rusqlite::Result<ProposalRow> {
         created_at: r.get(12)?,
         updated_at: r.get(13)?,
         level: r.get(14)?,
+        after_proposal_id: r.get(15)?,
     })
 }
 
@@ -1213,8 +1235,8 @@ pub fn insert_proposal(conn: &Connection, p: &NewProposal<'_>) -> BrainResult<i6
         p.level
     };
     conn.execute(
-        "INSERT INTO proposals (intake_id, project_id, title, request, priority, team, workflow, reason, status, task_id, error, created_at, updated_at, level)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', NULL, NULL, ?9, ?9, ?10)",
+        "INSERT INTO proposals (intake_id, project_id, title, request, priority, team, workflow, reason, status, task_id, error, created_at, updated_at, level, after_proposal_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', NULL, NULL, ?9, ?9, ?10, NULL)",
         params![
             p.intake_id,
             p.project_id,
@@ -1229,6 +1251,19 @@ pub fn insert_proposal(conn: &Connection, p: &NewProposal<'_>) -> BrainResult<i6
         ],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+pub fn set_proposal_after_id(
+    conn: &Connection,
+    id: i64,
+    after_proposal_id: Option<i64>,
+) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE proposals SET after_proposal_id = ?1, updated_at = ?2 WHERE id = ?3",
+        params![after_proposal_id, now, id],
+    )?;
+    Ok(changes > 0)
 }
 
 pub fn get_proposal(conn: &Connection, id: i64) -> BrainResult<Option<ProposalRow>> {

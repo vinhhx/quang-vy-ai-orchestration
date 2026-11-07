@@ -562,6 +562,7 @@ fn test_triage_analysis_workflow_validation_i() {
         team: "mac-dinh".to_string(),
         workflow: "phan-tich".to_string(),
         reason: Some("Yêu cầu khảo sát".to_string()),
+        after: None,
     };
 
     let res = agent_brain::orchestrator::triage::validate(
@@ -582,6 +583,7 @@ fn test_triage_analysis_workflow_validation_i() {
         team: "mac-dinh".to_string(),
         workflow: "phan-tich-review".to_string(),
         reason: Some("Cần review kỹ".to_string()),
+        after: None,
     };
 
     let res_review = agent_brain::orchestrator::triage::validate(

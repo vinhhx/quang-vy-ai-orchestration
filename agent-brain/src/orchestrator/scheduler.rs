@@ -59,6 +59,83 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
             break;
         }
 
+        // Xử lý chuỗi việc (after_proposal_id):
+        let mut prior_answer = None;
+        if let Some(prior_id) = prop.after_proposal_id {
+            match crate::db::get_proposal(&conn, prior_id)? {
+                Some(prior_p) => {
+                    if prior_p.status == "rejected" || prior_p.status == "failed" {
+                        crate::db::set_proposal_failed(
+                            &conn,
+                            prop.id,
+                            &format!("Việc trước (#{prior_id}) không có kết quả"),
+                        )?;
+                        continue;
+                    }
+                    if prior_p.status != "started" {
+                        // Việc trước chưa bắt đầu xong: bỏ qua lượt này
+                        continue;
+                    }
+                    // Việc trước đã started: kiểm tra task của nó
+                    let prior_task_id = match prior_p.task_id {
+                        Some(tid) => tid,
+                        None => continue,
+                    };
+                    let prior_task: Option<(String, String, String)> = conn
+                        .query_row(
+                            "SELECT t.status, t.slug, p.slug FROM tasks t
+                             JOIN projects p ON p.id = t.project_id
+                             WHERE t.id = ?1",
+                            [prior_task_id],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        )
+                        .ok();
+
+                    match prior_task {
+                        Some((status, t_slug, p_slug)) => {
+                            if status == "answered" {
+                                match crate::answers::read(&p_slug, prior_task_id, &t_slug) {
+                                    Ok(Some(ans)) => {
+                                        prior_answer = Some((prior_task_id, ans));
+                                    }
+                                    _ => {
+                                        // Chưa đọc được câu trả lời: bỏ qua chờ
+                                        continue;
+                                    }
+                                }
+                            } else if status == "failed" || status == "killed" {
+                                crate::db::set_proposal_failed(
+                                    &conn,
+                                    prop.id,
+                                    &format!("Việc trước (#{prior_id}) không có kết quả"),
+                                )?;
+                                continue;
+                            } else {
+                                // Task trước đang chạy/chưa có câu trả lời: bỏ qua
+                                continue;
+                            }
+                        }
+                        None => {
+                            crate::db::set_proposal_failed(
+                                &conn,
+                                prop.id,
+                                &format!("Việc trước (#{prior_id}) không có kết quả"),
+                            )?;
+                            continue;
+                        }
+                    }
+                }
+                None => {
+                    crate::db::set_proposal_failed(
+                        &conn,
+                        prop.id,
+                        &format!("Việc trước (#{prior_id}) không có kết quả"),
+                    )?;
+                    continue;
+                }
+            }
+        }
+
         let project_slug: String = match conn.query_row(
             "SELECT slug FROM projects WHERE id = ?1",
             rusqlite::params![prop.project_id],
@@ -92,6 +169,19 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
             StartOutcome::Started { task_id, .. } => {
                 active += 1;
                 let _ = crate::db::set_task_level(&conn, task_id, &prop.level);
+                if let Some((prior_tid, ans_content)) = prior_answer {
+                    let doc_name = format!("phan-tich-{prior_tid}.md");
+                    let doc_source = format!("answer:{prior_tid}");
+                    let _ = crate::inputs::add_to_proposal(
+                        &conn,
+                        prop.id,
+                        &doc_name,
+                        &doc_source,
+                        &ans_content,
+                        &[],
+                    );
+                }
+                let _ = crate::inputs::move_proposal_inputs_to_task(&conn, prop.id, task_id);
                 crate::db::set_proposal_started(&conn, prop.id, Some(task_id))?;
             }
             StartOutcome::PreflightRefused { reason, kind } => {

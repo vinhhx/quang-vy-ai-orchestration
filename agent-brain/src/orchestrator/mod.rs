@@ -70,8 +70,12 @@ pub fn tick(st: &AppState) -> BrainResult<()> {
                     let _ = crate::db::sync_projects(&conn, &projs);
                 }
 
+                let mut created_proposal_ids = Vec::new();
                 for draft in &valid_proposals {
                     let proj_row_id = crate::db::project_row_id(&conn, &draft.project)?;
+                    let after_proposal_id = draft
+                        .after
+                        .and_then(|idx| created_proposal_ids.get(idx).copied());
                     let new_p = crate::db::NewProposal {
                         intake_id: intake.id,
                         project_id: proj_row_id,
@@ -83,7 +87,14 @@ pub fn tick(st: &AppState) -> BrainResult<()> {
                         reason: draft.reason.as_deref(),
                         level: &draft.level,
                     };
-                    crate::db::insert_proposal(&conn, &new_p)?;
+                    let prop_id = crate::db::insert_proposal(&conn, &new_p)?;
+                    if let Some(after_id) = after_proposal_id {
+                        crate::db::set_proposal_after_id(&conn, prop_id, Some(after_id))?;
+                    }
+                    created_proposal_ids.push(prop_id);
+
+                    // Sao chép tài liệu đầu vào từ intake_inputs sang task_inputs của proposal
+                    let _ = crate::inputs::copy_intake_inputs_to_proposal(&conn, intake.id, prop_id);
                 }
 
                 let warning_text = if !warnings.is_empty() {

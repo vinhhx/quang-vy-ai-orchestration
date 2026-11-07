@@ -605,6 +605,7 @@ fn test_validate_rules() {
         team: "mac-dinh".to_string(),
         workflow: "mac-dinh".to_string(),
         reason: Some("Ly do".to_string()),
+        after: None,
     };
     assert!(validate(&valid_draft, &projects, &teams, &workflows, &st.cfg.engines).is_ok());
 

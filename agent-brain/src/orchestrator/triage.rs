@@ -22,6 +22,8 @@ pub struct ProposalDraft {
     pub workflow: String,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub after: Option<usize>,
 }
 
 fn default_priority() -> String {
@@ -459,8 +461,9 @@ QUY TẮC BẮT BUỘC:
 7. 'title' là tiêu đề ngắn gọn cho công việc; 'request' là mô tả chi tiết công việc cần làm.
 8. 'reason' nêu lý do ngắn gọn vì sao chọn dự án/đội hình/quy trình.
 9. Trả về DUY NHẤT một JSON hợp lệ dạng:
-{{{{"tasks":[{{"project":"...","title":"...","request":"...","priority":"...","level":"...","team":"...","workflow":"...","reason":"..."}}]}}}}
-Tối đa 5 mục trong 'tasks'. Không viết thêm bất kỳ văn bản giải thích nào ngoài JSON."#
+{{{{\"tasks\":[{{\"project\":\"...\",\"title\":\"...\",\"request\":\"...\",\"priority\":\"...\",\"level\":\"...\",\"team\":\"...\",\"workflow\":\"...\",\"reason\":\"...\",\"after\":null}}]}}}}
+Tối đa 5 mục trong 'tasks'. Không viết thêm bất kỳ văn bản giải thích nào ngoài JSON.
+10. Nếu yêu cầu cần kết quả phân tích ở dự án A làm đầu vào cho việc ở dự án B (ví dụ viết test case từ code A rồi chạy e2e ở B), trả về hai việc: việc phân tích ở A, rồi việc ở B có \"after\": <chỉ số việc A>. Việc B sẽ tự nhận kết quả của việc A làm tài liệu đầu vào. Chỉ dùng after khi việc trước là quy trình loại phân tích."#
     );
 
     let user_input = format!(
@@ -703,12 +706,33 @@ r#"Phân tích yêu cầu sau và trả về JSON đề xuất công việc:
     }
 
     // 8. Validate từng mục
-    let mut valid_proposals = Vec::new();
+    let mut valid_proposals: Vec<ProposalDraft> = Vec::new();
     let mut warnings = Vec::new();
 
-    for draft in tasks {
+    for (idx, mut draft) in tasks.into_iter().enumerate() {
         match validate(&draft, &projects, &teams_loaded, &workflows_loaded, &st.cfg.engines) {
-            Ok(()) => valid_proposals.push(draft),
+            Ok(()) => {
+                if let Some(after_idx) = draft.after {
+                    let mut after_ok = false;
+                    if after_idx < idx {
+                        if let Some(prior) = valid_proposals.get(after_idx) {
+                            if let Some(wf) = workflows_loaded.get(&prior.workflow) {
+                                if wf.kind == "analysis" {
+                                    after_ok = true;
+                                }
+                            }
+                        }
+                    }
+                    if !after_ok {
+                        warnings.push(format!(
+                            "Bỏ 'after' của đề xuất '{}': việc trước không hợp lệ hoặc không phải quy trình phân tích",
+                            draft.title
+                        ));
+                        draft.after = None;
+                    }
+                }
+                valid_proposals.push(draft);
+            }
             Err(reason) => {
                 warnings.push(format!("Bỏ mục '{}': {reason}", draft.title));
             }

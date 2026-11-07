@@ -54,6 +54,17 @@ fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     None
 }
 
+/// True if `content` contains any secret from `secrets` of at least MIN_SECRET_BYTES.
+pub fn contains_secret(content: &[u8], secrets: &[String]) -> bool {
+    let pats = patterns(secrets);
+    for p in pats {
+        if find(content, &p, 0).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
 fn replace_all(input: &[u8], needle: &[u8]) -> Option<Vec<u8>> {
     let mut at = find(input, needle, 0)?;
     let mut out = Vec::with_capacity(input.len());

@@ -15,6 +15,7 @@ pub mod fixbug;
 pub mod gitops;
 pub mod guard;
 pub mod human;
+pub mod inputs;
 pub mod knowledge;
 pub mod orchestrator;
 pub mod planfile;

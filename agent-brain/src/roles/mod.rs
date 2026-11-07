@@ -496,6 +496,22 @@ pub fn execute_role_staged(
         crate::term::emit(w);
     }
     crate::engine::append_to_system_prompt(&mut plan.argv, &sources_block);
+
+    let mut input_warnings = Vec::new();
+    let mut task_inputs = Vec::new();
+    if let Some(task_id) = plan.task_id {
+        if let Ok(inputs) = crate::inputs::list_for_task(&ctx.conn, task_id) {
+            if !inputs.is_empty() {
+                let (block, warns) = crate::inputs::prompt_block(&inputs);
+                for w in &warns {
+                    crate::term::emit(w);
+                }
+                input_warnings.extend(warns);
+                crate::engine::append_to_system_prompt(&mut plan.argv, &block);
+                task_inputs = inputs;
+            }
+        }
+    }
     // ENG-10 / D-36 / D-42 backstop: an engine tied to a profile never runs on a project of
     // another one (SPK-10), whatever team the task row names — a hand-edited team included.
     if let crate::engine::Engine::Named(id) = &resolved.engine {
@@ -539,6 +555,20 @@ pub fn execute_role_staged(
         let prompt_path = run_dir.join("prompt.md");
         let redacted = crate::secrets::redact_str(&prompt, &ep.redact);
         let _ = std::fs::write(&prompt_path, redacted);
+    }
+
+    if !task_inputs.is_empty() {
+        let inputs_dir = run_dir.join("inputs");
+        let _ = std::fs::create_dir_all(&inputs_dir);
+        for inp in &task_inputs {
+            let file_path = inputs_dir.join(&inp.name);
+            let _ = std::fs::write(&file_path, &inp.content);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
     }
 
     let p_desc = crate::profile::describe_profile(&project.profile, &ctx.cfg.profiles);
@@ -1088,12 +1118,14 @@ pub fn execute_role_staged(
     }
 
     let run_id = obs.run_id.unwrap_or(0);
+    let mut all_warnings = source_warnings;
+    all_warnings.extend(input_warnings);
     Ok(RoleRun {
         run_id,
         outcome,
         summary: obs.summary,
         run_dir,
-        warnings: source_warnings,
+        warnings: all_warnings,
     })
 }
 
