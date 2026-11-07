@@ -487,3 +487,182 @@ fn test_intake_inputs_copied_to_proposals() {
     assert_eq!(inputs[0].source, "paste");
     assert_eq!(inputs[0].content, "# Chi tiết yêu cầu");
 }
+
+#[test]
+fn test_task_inputs_api() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let map = agent_brain::projects::load_map(&sb.map_path()).unwrap();
+    agent_brain::db::sync_projects(&conn, &agent_brain::projects::projects_of(&map)).unwrap();
+    let project_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        project_id,
+        "task-inputs-api",
+        "Test API inputs",
+        "task/task-inputs-api",
+        None,
+        None,
+    )
+    .unwrap();
+
+    agent_brain::inputs::add_to_task(
+        &conn,
+        task_id,
+        "spec-test.md",
+        "ui",
+        "# Markdown content for testing",
+        &[],
+    )
+    .unwrap();
+
+    let srv = sb.serve(&[]);
+
+    // 1. GET /api/tasks/{id} trả về mảng inputs với metadata
+    let resp = srv.get(&format!("/api/tasks/{task_id}"));
+    assert_eq!(resp.status, 200);
+    let body = resp.json();
+    let inputs = body["inputs"].as_array().expect("inputs array");
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0]["name"], "spec-test.md");
+    assert_eq!(inputs[0]["source"], "ui");
+    assert_eq!(inputs[0]["bytes"], 30);
+    let input_id = inputs[0]["id"].as_i64().expect("input id");
+
+    // 2. GET /api/tasks/{id}/inputs/{input_id} trả về nội dung raw markdown
+    let resp_content = srv.get(&format!("/api/tasks/{task_id}/inputs/{input_id}"));
+    assert_eq!(resp_content.status, 200);
+    assert_eq!(resp_content.text(), "# Markdown content for testing");
+
+    // 3. GET /api/tasks/{id}/inputs/{input_id} không tồn tại -> 404
+    let resp_missing = srv.get(&format!("/api/tasks/{task_id}/inputs/9999"));
+    assert_eq!(resp_missing.status, 404);
+}
+
+#[test]
+fn test_task_handoff_api() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new();
+    std::env::set_var("XDG_DATA_HOME", &sb.xdg_data);
+    let _xdg_guard = EnvVarGuard("XDG_DATA_HOME");
+
+    let repo_a = sb.make_repo("proj-a", &[("README.md", "# A")], None, None);
+    let repo_b = sb.make_repo("proj-b", &[("README.md", "# B")], None, None);
+    let mut entry_a = sb.project_entry(&repo_a, "proj-a", "work");
+    entry_a["name_vi"] = json!("Dự án A");
+    let mut entry_b = sb.project_entry(&repo_b, "proj-b", "work");
+    entry_b["name_vi"] = json!("Dự án B");
+    sb.write_map(json!([entry_a, entry_b]), &[]);
+
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let map = agent_brain::projects::load_map(&sb.map_path()).unwrap();
+    agent_brain::db::sync_projects(&conn, &agent_brain::projects::projects_of(&map)).unwrap();
+    let pid_a = agent_brain::db::project_row_id(&conn, "proj-a").unwrap();
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        pid_a,
+        "khao-sat",
+        "Khảo sát tính năng",
+        "analysis/khao-sat",
+        None,
+        None,
+    )
+    .unwrap();
+
+    let srv = sb.serve(&[]);
+
+    // 1. Task chưa có câu trả lời -> 400
+    let resp_no_ans = srv.post_json(
+        &format!("/api/tasks/{task_id}/handoff"),
+        &json!({
+            "project": "proj-b",
+            "workflow": "nhanh",
+            "team": "mac-dinh",
+            "level": "vua",
+            "priority": "normal",
+            "request": "Chạy test theo kịch bản\nChi tiết test case"
+        }),
+    );
+    assert_eq!(resp_no_ans.status, 400);
+    assert!(resp_no_ans.text().contains("Task chưa có kết quả để gửi"));
+
+    // Lưu câu trả lời phân tích cho task_id
+    let ans_content = "# Báo cáo phân tích A\n\n1. Bước 1\n2. Bước 2\n";
+    agent_brain::answers::save("proj-a", task_id, "khao-sat", ans_content).unwrap();
+
+    // 2. Đội hình hoặc quy trình sai -> 422
+    let resp_bad_wf = srv.post_json(
+        &format!("/api/tasks/{task_id}/handoff"),
+        &json!({
+            "project": "proj-b",
+            "workflow": "quy-trinh-khong-ton-tai",
+            "team": "mac-dinh",
+            "level": "vua",
+            "priority": "normal",
+            "request": "Chạy test theo kịch bản"
+        }),
+    );
+    assert_eq!(resp_bad_wf.status, 422);
+
+    let resp_bad_team = srv.post_json(
+        &format!("/api/tasks/{task_id}/handoff"),
+        &json!({
+            "project": "proj-b",
+            "workflow": "nhanh",
+            "team": "doi-hinh-khong-ton-tai",
+            "level": "vua",
+            "priority": "normal",
+            "request": "Chạy test theo kịch bản"
+        }),
+    );
+    assert_eq!(resp_bad_team.status, 422);
+
+    // 3. Handoff hợp lệ -> 200, tạo proposal pending ở dự án B có tài liệu answer:<task_id>
+    let resp_ok = srv.post_json(
+        &format!("/api/tasks/{task_id}/handoff"),
+        &json!({
+            "project": "proj-b",
+            "workflow": "nhanh",
+            "team": "mac-dinh",
+            "level": "vua",
+            "priority": "urgent",
+            "request": "Dùng tài liệu đầu vào phan-tich-1.md làm danh sách test case.\nChạy e2e toàn bộ."
+        }),
+    );
+    assert_eq!(resp_ok.status, 200, "body: {}", resp_ok.text());
+    let resp_json = resp_ok.json();
+    assert_eq!(resp_json["ok"], true);
+    let prop_id = resp_json["proposal_id"].as_i64().expect("proposal_id");
+
+    // Kiểm tra đề xuất trong DB
+    let prop = agent_brain::db::get_proposal(&conn, prop_id).unwrap().unwrap();
+    assert_eq!(prop.title, "Dùng tài liệu đầu vào phan-tich-1.md làm danh sách test case.");
+    assert_eq!(prop.status, "pending");
+    assert_eq!(prop.priority, "urgent");
+    assert_eq!(prop.workflow, "nhanh");
+
+    // Kiểm tra tài liệu đầu vào của đề xuất
+    let inputs = agent_brain::inputs::list_for_proposal(&conn, prop_id).unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].name, format!("phan-tich-{task_id}.md"));
+    assert_eq!(inputs[0].source, format!("answer:{task_id}"));
+    assert_eq!(inputs[0].content, ans_content);
+
+    // Kiểm tra GET /api/proposals trả về danh sách có inputs
+    let resp_props = srv.get("/api/proposals");
+    assert_eq!(resp_props.status, 200);
+    let props_arr = resp_props.json();
+    let prop_item = props_arr
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == prop_id)
+        .expect("found proposal in list");
+    assert_eq!(
+        prop_item["inputs"].as_array().unwrap(),
+        &[json!(format!("phan-tich-{task_id}.md"))]
+    );
+}

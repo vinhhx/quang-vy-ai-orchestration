@@ -169,8 +169,9 @@
         .then(function (res) {
           var status = res.status;
           var ct = res.headers.get('content-type') || '';
-          var jsonPromise = ct.indexOf('application/json') !== -1 ? res.json() : Promise.resolve(null);
-          return jsonPromise
+          var isJson = ct.indexOf('application/json') !== -1;
+          var bodyPromise = isJson ? res.json() : res.text();
+          return bodyPromise
             .then(function (data) {
               window.dispatchEvent(new CustomEvent('ab:net', { detail: { status: status } }));
               return { ok: res.ok, status: status, data: data };

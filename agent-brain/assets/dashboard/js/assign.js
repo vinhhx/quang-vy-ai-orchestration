@@ -54,6 +54,7 @@
       engineStates: {},
       engineOrder: [],
       staffNames: {},
+      taskInputs: [],
 
       _slugSeq: 0,
       _suggestSeq: 0,
@@ -575,11 +576,15 @@
         this.submitting = true;
 
         if (this.orchestratorEnabled) {
+          var inps = this.validInputs();
           const body = {
             request: this.request.trim(),
             project: this.selected ? this.selected.id : null,
             priority: 'normal',
           };
+          if (inps.length > 0) {
+            body.inputs = inps;
+          }
           const res = await window.AB.api('POST', '/api/intake', body);
           if (res.status === 201 && res.data) {
             this.accepted = true;
@@ -722,7 +727,8 @@
           this.preflight && this.preflight.can_start &&
           !this.preflightPending &&
           !this.submitting &&
-          !this.accepted
+          !this.accepted &&
+          !this.hasInputErrors()
         );
       },
 
@@ -737,6 +743,7 @@
         if (!this.slug || !this.slug.trim()) return 'Nhập tên task';
         if (this.preflightPending || !this.preflight) return 'Đang kiểm tra...';
         if (this.reasonHead) return this.reasonHead;
+        if (this.hasInputErrors()) return 'Kiểm tra lại tài liệu đầu vào (tên .md hoặc kích thước)';
         return '';
       },
 
@@ -753,7 +760,105 @@
         if (this.teamsLoaded && this.teamName) {
           body.team = this.teamName;
         }
+        var inps = this.validInputs();
+        if (inps.length > 0) {
+          body.inputs = inps;
+        }
         return body;
+      },
+
+      canAddInput: function () {
+        return this.taskInputs.length < 3;
+      },
+
+      addInput: function () {
+        if (this.taskInputs.length < 3) {
+          this.taskInputs.push({ name: '', content: '', nameError: '', contentError: '' });
+        }
+      },
+
+      removeInput: function (idx) {
+        this.taskInputs.splice(idx, 1);
+      },
+
+      onFileInputChange: function (idx, e) {
+        var file = e.target.files && e.target.files[0];
+        if (!file) return;
+        var self = this;
+        var doc = self.taskInputs[idx];
+        if (!doc) return;
+        if (!doc.name) {
+          var fname = file.name.toLowerCase();
+          if (!fname.endsWith('.md')) fname += '.md';
+          doc.name = fname;
+        }
+        var reader = new FileReader();
+        reader.onload = function (evt) {
+          doc.content = evt.target.result || '';
+          self.validateInputDoc(idx);
+        };
+        reader.readAsText(file);
+      },
+
+      validateInputDoc: function (idx) {
+        var doc = this.taskInputs[idx];
+        if (!doc) return;
+        // Name check
+        var trimmedName = (doc.name || '').trim();
+        if (!trimmedName) {
+          doc.nameError = '';
+        } else if (!/^[a-z0-9][a-z0-9._-]*\.md$/.test(trimmedName)) {
+          doc.nameError = 'Tên chỉ gồm chữ thường a-z, 0-9, dấu gạch -, _, chấm . và kết thúc bằng .md';
+        } else if (trimmedName.length > 80) {
+          doc.nameError = 'Tên file quá dài (tối đa 80 ký tự)';
+        } else {
+          doc.nameError = '';
+        }
+
+        // Size check
+        var content = doc.content || '';
+        var bytes = typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(content).length : content.length;
+        if (bytes > 64 * 1024) {
+          doc.contentError = 'Kích thước vượt quá 64 KiB';
+        } else {
+          doc.contentError = '';
+        }
+      },
+
+      hasInputErrors: function () {
+        for (var i = 0; i < this.taskInputs.length; i++) {
+          var doc = this.taskInputs[i];
+          if (doc.nameError || doc.contentError) return true;
+          var hasName = Boolean(doc.name && doc.name.trim());
+          var hasContent = Boolean(doc.content && doc.content.trim());
+          if (hasName !== hasContent) return true;
+        }
+        return false;
+      },
+
+      inputSizeText: function (doc) {
+        var content = (doc && doc.content) ? doc.content : '';
+        var bytes = typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(content).length : content.length;
+        return (bytes / 1024).toFixed(1) + ' / 64 KiB';
+      },
+
+      inputSizeClass: function (doc) {
+        var content = (doc && doc.content) ? doc.content : '';
+        var bytes = typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(content).length : content.length;
+        return bytes > 64 * 1024 ? 'text-rose-600 dark:text-rose-400 font-semibold' : 'text-slate-500 dark:text-slate-400';
+      },
+
+      validInputs: function () {
+        var res = [];
+        for (var i = 0; i < this.taskInputs.length; i++) {
+          var doc = this.taskInputs[i];
+          var name = (doc.name || '').trim();
+          var content = doc.content || '';
+          if (name && content.trim()) {
+            res.push({ name: name, content: content });
+          }
+        }
+        return res;
       },
 
       // `team` only when the list loaded; otherwise the server default applies.

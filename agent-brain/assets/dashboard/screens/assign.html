@@ -10,6 +10,75 @@
       <textarea id="ab-request" rows="5" maxlength="20000" placeholder="Ví dụ: thêm nút đăng xuất ở trang tài khoản" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 resize-y focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="request" @input="onRequestInput"></textarea>
     </div>
 
+    <!-- Tài liệu đầu vào (tùy chọn) -->
+    <fieldset class="space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <legend class="text-sm font-semibold leading-normal">Tài liệu đầu vào (tùy chọn, tối đa 3)</legend>
+        <button
+          type="button"
+          x-show="canAddInput()"
+          @click="addInput"
+          class="inline-flex min-h-12 items-center gap-1 rounded-xl px-3 py-1 text-sm font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+        >
+          + Thêm tài liệu
+        </button>
+      </div>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
+        Đính kèm bảng đặc tả, test case hoặc dữ liệu mẫu dạng Markdown (.md, tối đa 64 KiB/tài liệu).
+      </p>
+
+      <template x-for="(doc, idx) in taskInputs" :key="idx">
+        <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-3 bg-slate-50/50 dark:bg-slate-900/30">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="text-xs font-semibold text-slate-600 dark:text-slate-400" x-text="'Tài liệu #' + (idx + 1)"></span>
+            <button
+              type="button"
+              @click="removeInput(idx)"
+              class="inline-flex min-h-10 items-center justify-center rounded-lg px-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+            >
+              Xóa
+            </button>
+          </div>
+
+          <div class="space-y-1">
+            <label :for="'ab-input-name-' + idx" class="text-xs font-medium text-slate-700 dark:text-slate-300">Tên file (.md)</label>
+            <input
+              :id="'ab-input-name-' + idx"
+              type="text"
+              placeholder="spec.md"
+              maxlength="80"
+              class="w-full min-h-10 rounded-lg bg-white px-3 py-1.5 text-sm text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 font-mono focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+              x-model="doc.name"
+              @input="validateInputDoc(idx)"
+            >
+            <p class="text-xs text-rose-600 dark:text-rose-400" x-show="doc.nameError" x-text="doc.nameError"></p>
+          </div>
+
+          <div class="space-y-1">
+            <div class="flex items-center justify-between gap-2">
+              <label :for="'ab-input-content-' + idx" class="text-xs font-medium text-slate-700 dark:text-slate-300">Nội dung (Markdown)</label>
+              <div class="flex items-center gap-2">
+                <span class="text-xs tabular-nums" :class="inputSizeClass(doc)" x-text="inputSizeText(doc)"></span>
+                <label class="cursor-pointer text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">
+                  <span>Chọn file .md</span>
+                  <input type="file" accept=".md,text/markdown,text/plain" class="sr-only focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @change="onFileInputChange(idx, $event)">
+                </label>
+              </div>
+            </div>
+            <textarea
+              :id="'ab-input-content-' + idx"
+              rows="4"
+              placeholder="# Nội dung tài liệu..."
+              class="w-full rounded-lg bg-white p-3 font-mono text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 resize-y focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+              x-model="doc.content"
+              @input="validateInputDoc(idx)"
+            ></textarea>
+            <p class="text-xs text-rose-600 dark:text-rose-400" x-show="doc.contentError" x-text="doc.contentError"></p>
+          </div>
+        </div>
+      </template>
+    </fieldset>
+
     <div class="space-y-2">
       <label for="ab-project" class="text-sm font-semibold leading-normal">Dự án</label>
       <input id="ab-project" type="text" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="ab-suggest" :aria-expanded="expandedAttr" :aria-activedescendant="activeId" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="query" @input="onQueryInput" @focus="onQueryFocus" @blur="onQueryBlur" @keydown="onQueryKey">

@@ -64,11 +64,19 @@ async fn list_intake(
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct InputItem {
+    pub name: String,
+    pub content: String,
+}
+
 #[derive(Deserialize)]
 pub struct CreateIntakeBody {
     pub request: String,
     pub project: Option<serde_json::Value>,
     pub priority: Option<String>,
+    #[serde(default)]
+    pub inputs: Vec<InputItem>,
 }
 
 async fn create_intake(
@@ -83,6 +91,13 @@ async fn create_intake(
         return json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             &format!("Yêu cầu quá dài (tối đa {MAX_REQUEST_CHARS} ký tự)"),
+        );
+    }
+
+    if body.inputs.len() > 3 {
+        return json_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Chỉ được gửi tối đa 3 tài liệu đầu vào",
         );
     }
 
@@ -101,6 +116,7 @@ async fn create_intake(
 
     let req_text = trimmed.to_string();
     let proj_val = body.project;
+    let input_docs = body.inputs;
 
     let res = blocking(move || {
         let conn = crate::db::open(&st.db_path)?;
@@ -165,6 +181,10 @@ async fn create_intake(
         };
 
         let id = crate::db::insert_intake(&conn, "ui", project_id, &req_text, &priority)?;
+        for doc in &input_docs {
+            crate::inputs::add_to_intake(&conn, id, &doc.name, &doc.content, &[])
+                .map_err(crate::error::BrainError::error)?;
+        }
         Ok(id)
     })
     .await;
@@ -172,7 +192,12 @@ async fn create_intake(
     match res {
         Ok(id) => json_response(StatusCode::CREATED, serde_json::json!({ "id": id })),
         Err(e) => {
-            if e.message.contains("Không tìm thấy dự án") {
+            if e.message.contains("Không tìm thấy dự án")
+                || e.message.contains("tài liệu")
+                || e.message.contains("bí mật")
+                || e.message.contains("64 KiB")
+                || e.message.contains("Tên tài liệu")
+            {
                 json_error(StatusCode::UNPROCESSABLE_ENTITY, &e.message)
             } else {
                 internal_error("tạo intake", &e)
@@ -269,7 +294,20 @@ async fn list_proposals(
 ) -> Response {
     let res = blocking(move || {
         let conn = crate::db::open(&st.db_path)?;
-        crate::db::list_proposals(&conn, query.status.as_deref())
+        let proposals = crate::db::list_proposals(&conn, query.status.as_deref())?;
+        let mut list = Vec::with_capacity(proposals.len());
+        for p in proposals {
+            let input_names: Vec<String> = crate::inputs::list_for_proposal(&conn, p.id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|inp| inp.name)
+                .collect();
+            let mut val = serde_json::to_value(&p)
+                .map_err(|e| crate::error::BrainError::error(e.to_string()))?;
+            val["inputs"] = serde_json::json!(input_names);
+            list.push(val);
+        }
+        Ok(list)
     })
     .await;
 
@@ -561,6 +599,11 @@ async fn get_orchestrator_board(State(st): State<Arc<AppState>>) -> Response {
                     .get(&p.project_id)
                     .cloned()
                     .unwrap_or_else(|| (p.project_id.to_string(), p.project_id.to_string()));
+                let input_names: Vec<String> = crate::inputs::list_for_proposal(&conn, p.id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|inp| inp.name)
+                    .collect();
                 serde_json::json!({
                     "id": p.id,
                     "intake_id": p.intake_id,
@@ -578,6 +621,8 @@ async fn get_orchestrator_board(State(st): State<Arc<AppState>>) -> Response {
                     "error": p.error,
                     "created_at": p.created_at,
                     "updated_at": p.updated_at,
+                    "after_proposal_id": p.after_proposal_id,
+                    "inputs": input_names,
                 })
             })
             .collect();

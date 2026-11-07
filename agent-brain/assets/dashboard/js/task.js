@@ -55,6 +55,26 @@
       answerLoading: false,
       answerError: '',
 
+      // Task inputs and handoff state
+      taskInputs: [],
+      inputDocOpen: false,
+      inputDocTitle: '',
+      inputDocContent: '',
+      inputDocLoading: false,
+      handoffOpen: false,
+      handoffProjects: [],
+      handoffWorkflows: [],
+      handoffTeams: [],
+      handoffProject: '',
+      handoffWorkflow: 'nhanh',
+      handoffTeam: 'mac-dinh',
+      handoffLevel: 'vua',
+      handoffRequest: '',
+      handoffError: '',
+      handoffSuccess: false,
+      handoffSubmitting: false,
+      handoffCreatedPropId: null,
+
       // Task level and scoring state
       levelBusy: false,
       levelError: '',
@@ -117,6 +137,7 @@
           self._taskApplied = seq;
           if (res.ok && res.data) {
             self.task = res.data;
+            self.taskInputs = (res.data && res.data.inputs) ? res.data.inputs : [];
             self.taskAt = Date.now();
             self.syncHumanName();
             self.loaded = true;
@@ -1419,6 +1440,140 @@
           }
         }).catch(function () {
           self.answerLoading = false;
+        });
+      },
+
+      hasInputs: function () {
+        return Array.isArray(this.taskInputs) && this.taskInputs.length > 0;
+      },
+
+      inputsCountText: function () {
+        var n = this.taskInputs ? this.taskInputs.length : 0;
+        return n + ' tài liệu';
+      },
+
+      formatBytes: function (b) {
+        if (!b) return '0 B';
+        if (b < 1024) return b + ' B';
+        return (b / 1024).toFixed(1) + ' KiB';
+      },
+
+      isAnswerSource: function (src) {
+        return typeof src === 'string' && src.indexOf('answer:') === 0;
+      },
+
+      extractAnswerTaskId: function (src) {
+        return typeof src === 'string' ? src.replace('answer:', '') : '';
+      },
+
+      viewInputDoc: function (inp) {
+        var self = this;
+        this.inputDocOpen = true;
+        this.inputDocTitle = inp.name;
+        this.inputDocContent = '';
+        this.inputDocLoading = true;
+        window.AB.api('GET', '/api/tasks/' + this.id + '/inputs/' + inp.id).then(function (res) {
+          self.inputDocLoading = false;
+          if (res.ok && res.data) {
+            self.inputDocContent = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
+          } else {
+            self.inputDocContent = 'Không tải được nội dung tài liệu.';
+          }
+        }).catch(function () {
+          self.inputDocLoading = false;
+          self.inputDocContent = 'Lỗi kết nối khi tải tài liệu.';
+        });
+      },
+
+      closeInputDoc: function () {
+        this.inputDocOpen = false;
+      },
+
+      onInputDocOverlay: function (e) {
+        if (e.target === e.currentTarget) {
+          this.closeInputDoc();
+        }
+      },
+
+      isHandoffSubmitting: function () {
+        return Boolean(this.handoffSubmitting);
+      },
+
+      openHandoffDialog: function () {
+        var self = this;
+        this.handoffOpen = true;
+        this.handoffError = '';
+        this.handoffSuccess = false;
+        this.handoffSubmitting = false;
+        this.handoffCreatedPropId = null;
+        this.handoffRequest = 'Dùng tài liệu đầu vào phan-tich-' + this.id + '.md làm danh sách test case. ';
+        this.handoffLevel = 'vua';
+        this.handoffWorkflow = 'nhanh';
+        this.handoffTeam = 'mac-dinh';
+
+        window.AB.api('GET', '/api/projects').then(function (res) {
+          if (res.ok && res.data) {
+            var arr = Array.isArray(res.data) ? res.data : (res.data.projects || []);
+            var curPid = (self.task && self.task.project) ? self.task.project.id : '';
+            self.handoffProjects = arr.filter(function (p) {
+              return !p.missing && p.id !== curPid;
+            });
+            if (self.handoffProjects.length > 0) {
+              self.handoffProject = self.handoffProjects[0].id;
+            }
+          }
+        });
+
+        window.AB.api('GET', '/api/workflows').then(function (res) {
+          if (res.ok && res.data && Array.isArray(res.data.workflows)) {
+            self.handoffWorkflows = res.data.workflows;
+          }
+        });
+
+        window.AB.api('GET', '/api/teams').then(function (res) {
+          if (res.ok && res.data && Array.isArray(res.data.teams)) {
+            self.handoffTeams = res.data.teams;
+            var hasTietKiem = self.handoffTeams.some(function (t) { return t.name === 'tiet-kiem'; });
+            self.handoffTeam = hasTietKiem ? 'tiet-kiem' : 'mac-dinh';
+          }
+        });
+      },
+
+      closeHandoff: function () {
+        this.handoffOpen = false;
+      },
+
+      submitHandoff: function () {
+        var self = this;
+        if (!this.handoffProject) {
+          this.handoffError = 'Chưa chọn dự án';
+          return;
+        }
+        if (!this.handoffRequest.trim()) {
+          this.handoffError = 'Yêu cầu không được để trống';
+          return;
+        }
+        this.handoffSubmitting = true;
+        this.handoffError = '';
+        var body = {
+          project: this.handoffProject,
+          workflow: this.handoffWorkflow || 'nhanh',
+          team: this.handoffTeam || 'mac-dinh',
+          level: this.handoffLevel || 'vua',
+          priority: 'normal',
+          request: this.handoffRequest.trim()
+        };
+        window.AB.api('POST', '/api/tasks/' + this.id + '/handoff', body).then(function (res) {
+          self.handoffSubmitting = false;
+          if (res.ok && res.data && res.data.ok) {
+            self.handoffSuccess = true;
+            self.handoffCreatedPropId = res.data.proposal_id;
+          } else {
+            self.handoffError = window.AB.errorText(res);
+          }
+        }).catch(function (err) {
+          self.handoffSubmitting = false;
+          self.handoffError = String(err);
         });
       },
 

@@ -34,6 +34,9 @@ pub struct NewTask {
     /// Đội hình cho task mới (D-12); không có thì dùng đội hình của dự án rồi `mac-dinh`.
     #[serde(default)]
     pub team: Option<String>,
+    /// Tài liệu đầu vào đính kèm (tối đa 3).
+    #[serde(default)]
+    pub inputs: Option<Vec<crate::dashboard::api_intake::InputItem>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -430,6 +433,8 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/{id}", get(get_task))
         .route("/api/tasks/{id}/answer", get(get_task_answer))
+        .route("/api/tasks/{id}/inputs/{input_id}", get(get_task_input))
+        .route("/api/tasks/{id}/handoff", post(post_task_handoff))
         .route("/api/tasks/{id}/pipeline", get(get_pipeline))
         .route("/api/tasks/{id}/dev", post(post_task_dev))
         .route("/api/tasks/{id}/qa", post(post_task_qa))
@@ -894,6 +899,16 @@ fn start_response(outcome: StartOutcome) -> Response {
 }
 
 async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>) -> Response {
+    let input_items = body.inputs;
+    if let Some(ref items) = input_items {
+        if items.len() > 3 {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({ "error": "Chỉ được gửi tối đa 3 tài liệu đầu vào" }),
+            );
+        }
+    }
+
     if st.orch().enabled {
         let req_text = body.request.trim().to_string();
         if req_text.is_empty() {
@@ -921,6 +936,12 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
                 &req_text,
                 "normal",
             )?;
+            if let Some(ref inputs) = input_items {
+                for inp in inputs {
+                    crate::inputs::add_to_intake(&conn, intake_id, &inp.name, &inp.content, &[])
+                        .map_err(crate::error::BrainError::error)?;
+                }
+            }
             Ok::<_, crate::error::BrainError>(intake_id)
         })
         .await;
@@ -935,12 +956,23 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
                     "message": format!("Đã chuyển vào hàng chờ #{intake_id}")
                 }),
             ),
-            Err(e) => internal_error("giao việc", &e),
+            Err(e) => {
+                if e.message.contains("tài liệu")
+                    || e.message.contains("bí mật")
+                    || e.message.contains("64 KiB")
+                    || e.message.contains("Tên tài liệu")
+                {
+                    json_response(StatusCode::BAD_REQUEST, serde_json::json!({ "error": e.message }))
+                } else {
+                    internal_error("giao việc", &e)
+                }
+            }
         };
     }
 
+    let input_items_direct = input_items;
     let res = blocking(move || {
-        start_new_task(
+        let outcome = start_new_task(
             &st,
             &StartRequest {
                 project: &body.project,
@@ -951,7 +983,17 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
                 origin: Origin::Dashboard,
                 dry_run: false,
             },
-        )
+        )?;
+        if let StartOutcome::Started { task_id, .. } = outcome {
+            if let Some(ref inputs) = input_items_direct {
+                let conn = crate::db::open(&st.db_path)?;
+                for inp in inputs {
+                    crate::inputs::add_to_task(&conn, task_id, &inp.name, "ui", &inp.content, &[])
+                        .map_err(crate::error::BrainError::error)?;
+                }
+            }
+        }
+        Ok(outcome)
     })
     .await;
 
@@ -2196,6 +2238,8 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             None => serde_json::Value::Null,
         };
 
+        let inputs_meta = crate::inputs::list_meta_for_task(&conn, task.id).unwrap_or_default();
+
         let resp_json = serde_json::json!({
             "id": task.id,
             "project_id": task.project_id,
@@ -2208,6 +2252,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "level": task.level,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
+            "inputs": inputs_meta,
             "project": {
                 "id": project.id,
                 "name_vi": project.name_vi,
@@ -2293,6 +2338,165 @@ async fn get_task_answer(
     match res {
         Ok(resp) => resp,
         Err(e) => internal_error("lấy câu trả lời phân tích", &e),
+    }
+}
+
+async fn get_task_input(
+    State(st): State<Arc<AppState>>,
+    AxumPath((id, input_id)): AxumPath<(i64, i64)>,
+) -> Response {
+    let res = blocking(move || {
+        let conn = crate::db::open(&st.db_path)?;
+        match crate::inputs::get_input_content(&conn, id, input_id)? {
+            Some(content) => Ok((
+                StatusCode::OK,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/markdown; charset=utf-8",
+                )],
+                content,
+            )
+                .into_response()),
+            None => Ok(json_error(StatusCode::NOT_FOUND, "Không tìm thấy tài liệu")),
+        }
+    })
+    .await;
+
+    match res {
+        Ok(resp) => resp,
+        Err(e) => internal_error("lấy nội dung tài liệu", &e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct HandoffBody {
+    project: String,
+    workflow: String,
+    team: String,
+    level: String,
+    priority: String,
+    request: String,
+}
+
+async fn post_task_handoff(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<i64>,
+    Json(body): Json<HandoffBody>,
+) -> Response {
+    let res = blocking(move || {
+        let conn = crate::db::open(&st.db_path)?;
+        let task = match crate::db::get_task(&conn, id)? {
+            Some(t) => t,
+            None => return Ok(json_error(StatusCode::NOT_FOUND, "Không tìm thấy task")),
+        };
+        let project_slug: String = conn.query_row(
+            "SELECT slug FROM projects WHERE id = ?1",
+            [task.project_id],
+            |r| r.get(0),
+        )?;
+        let ans = match crate::answers::read(&project_slug, id, &task.slug)? {
+            Some(a) if !a.trim().is_empty() => a,
+            _ => return Ok(json_error(StatusCode::BAD_REQUEST, "Task chưa có kết quả để gửi")),
+        };
+
+        let first_line = body.request.lines().next().unwrap_or("").trim();
+        let title = if first_line.chars().count() > 80 {
+            first_line.chars().take(80).collect::<String>()
+        } else {
+            first_line.to_string()
+        };
+        let title = if title.is_empty() {
+            format!("Handoff từ task #{id}")
+        } else {
+            title
+        };
+
+        let draft = crate::orchestrator::triage::ProposalDraft {
+            project: body.project.trim().to_string(),
+            title: title.clone(),
+            request: body.request.clone(),
+            priority: body.priority.trim().to_string(),
+            team: body.team.trim().to_string(),
+            workflow: body.workflow.trim().to_string(),
+            reason: Some(format!("Gửi kết quả từ task #{id}")),
+            level: body.level.trim().to_string(),
+            after: None,
+        };
+
+        let map = crate::projects::load_map(&st.map_path)?;
+        let projects = crate::projects::projects_of(&map);
+        let (teams_loaded, _) = crate::teams::load();
+        let workflows_loaded = crate::workflows::load(&st.cfg);
+
+        if let Err(err_msg) = crate::orchestrator::triage::validate(
+            &draft,
+            &projects,
+            &teams_loaded,
+            &workflows_loaded,
+            &st.cfg.engines,
+        ) {
+            return Ok(json_error(StatusCode::UNPROCESSABLE_ENTITY, &err_msg));
+        }
+
+        let target_project_id = match crate::db::project_row_id(&conn, &draft.project) {
+            Ok(pid) => pid,
+            Err(_) => {
+                return Ok(json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    &format!("Không tìm thấy dự án '{}'", draft.project),
+                ));
+            }
+        };
+
+        let intake_id = crate::db::insert_intake(
+            &conn,
+            "ui",
+            Some(target_project_id),
+            &body.request,
+            &body.priority,
+        )?;
+        conn.execute("UPDATE intake SET status = 'proposed' WHERE id = ?1", [intake_id])?;
+
+        let proposal_id = crate::db::insert_proposal(
+            &conn,
+            &crate::db::NewProposal {
+                intake_id,
+                project_id: target_project_id,
+                title: &title,
+                request: &body.request,
+                priority: &body.priority,
+                team: &body.team,
+                workflow: &body.workflow,
+                reason: draft.reason.as_deref(),
+                level: &body.level,
+            },
+        )?;
+
+        let doc_name = format!("phan-tich-{id}.md");
+        let doc_source = format!("answer:{id}");
+        if let Err(e) = crate::inputs::add_to_proposal(&conn, proposal_id, &doc_name, &doc_source, &ans, &[]) {
+            return Ok(json_error(StatusCode::UNPROCESSABLE_ENTITY, &e));
+        }
+
+        Ok((
+            StatusCode::OK,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "application/json; charset=utf-8",
+            )],
+            Json(serde_json::json!({
+                "ok": true,
+                "intake_id": intake_id,
+                "proposal_id": proposal_id,
+            })),
+        )
+            .into_response())
+    })
+    .await;
+
+    match res {
+        Ok(resp) => resp,
+        Err(e) => internal_error("gửi kết quả sang dự án khác", &e),
     }
 }
 

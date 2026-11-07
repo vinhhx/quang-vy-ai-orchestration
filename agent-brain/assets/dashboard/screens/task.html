@@ -474,8 +474,45 @@
         <div class="flex flex-wrap items-center gap-2">
           <code id="ab-answer-path" class="font-mono text-sm leading-normal break-all" x-text="answerPath()"></code>
           <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="copyAnswerPath">Sao chép</button>
+          <button type="button" aria-label="Gửi kết quả sang dự án khác" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="openHandoffDialog">Gửi kết quả sang dự án khác</button>
         </div>
         <pre class="overflow-x-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-4 font-mono text-sm leading-normal text-slate-900 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-800" x-text="answerMarkdown()"></pre>
+      </div>
+    </div>
+
+    <!-- Task Inputs card -->
+    <div x-show="hasInputs()" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <div class="flex flex-wrap items-center gap-4">
+        <h2 class="text-xl font-semibold leading-[1.2]">Tài liệu đầu vào</h2>
+        <span class="text-sm font-normal text-slate-500 dark:text-slate-400" x-text="inputsCountText()"></span>
+      </div>
+      <div class="divide-y divide-slate-100 dark:divide-slate-700/50">
+        <template x-for="inp in taskInputs" :key="inp.id">
+          <div class="py-3 flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                @click="viewInputDoc(inp)"
+                class="font-mono text-sm font-semibold text-indigo-600 dark:text-indigo-400 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                x-text="inp.name"
+              ></button>
+              <span class="text-xs text-slate-500 dark:text-slate-400 tabular-nums" x-text="formatBytes(inp.bytes)"></span>
+            </div>
+            <div class="text-xs text-slate-500 dark:text-slate-400">
+              <span class="mr-1">Nguồn:</span>
+              <template x-if="isAnswerSource(inp.source)">
+                <a
+                  :href="'#/task/' + extractAnswerTaskId(inp.source)"
+                  class="font-mono text-indigo-600 dark:text-indigo-400 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                  x-text="inp.source"
+                ></a>
+              </template>
+              <template x-if="!isAnswerSource(inp.source)">
+                <span class="font-mono" x-text="inp.source"></span>
+              </template>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
 
@@ -641,6 +678,121 @@
       <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200" x-show="rawError" x-text="rawError"></div>
       <div class="flex flex-wrap justify-end gap-2">
         <button id="ab-raw-close" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="closeRaw">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Input document viewer dialog -->
+  <div x-show="inputDocOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-6" @click="onInputDocOverlay">
+    <div role="dialog" aria-modal="true" aria-labelledby="ab-inputdoc-title" @keydown.escape="closeInputDoc" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 w-full max-w-3xl space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 id="ab-inputdoc-title" class="text-xl font-semibold leading-[1.2] font-mono break-all" x-text="inputDocTitle"></h2>
+        <span x-show="inputDocLoading" class="text-sm font-normal text-slate-500 dark:text-slate-400">Đang tải...</span>
+      </div>
+      <pre class="overflow-x-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-4 font-mono text-sm leading-normal text-slate-900 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-800 max-h-[60vh]" x-text="inputDocContent"></pre>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="closeInputDoc">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Handoff dialog: Gửi kết quả sang dự án khác -->
+  <div x-show="handoffOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-6">
+    <div role="dialog" aria-modal="true" aria-labelledby="ab-handoff-title" @keydown.escape="closeHandoff" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 w-full max-w-xl space-y-4">
+      <h2 id="ab-handoff-title" class="text-xl font-semibold leading-[1.2]">Gửi kết quả sang dự án khác</h2>
+      <p class="text-sm text-slate-600 dark:text-slate-400">Tạo đề xuất mới ở dự án đích, tự động gắn kết quả phân tích này làm tài liệu đầu vào.</p>
+
+      <div class="space-y-3">
+        <div class="space-y-1">
+          <label for="ab-handoff-project" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Dự án đích</label>
+          <select
+            id="ab-handoff-project"
+            class="w-full min-h-10 rounded-lg bg-white px-3 py-1.5 text-sm text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+            x-model="handoffProject"
+          >
+            <template x-for="p in handoffProjects" :key="p.id">
+              <option :value="p.id" x-text="p.name_vi + ' (' + p.id + ')'"></option>
+            </template>
+          </select>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div class="space-y-1">
+            <label for="ab-handoff-wf" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Quy trình</label>
+            <select
+              id="ab-handoff-wf"
+              class="w-full min-h-10 rounded-lg bg-white px-3 py-1.5 text-sm text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+              x-model="handoffWorkflow"
+            >
+              <template x-for="w in handoffWorkflows" :key="w.name">
+                <option :value="w.name" x-text="w.name"></option>
+              </template>
+            </select>
+          </div>
+
+          <div class="space-y-1">
+            <label for="ab-handoff-team" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Đội hình</label>
+            <select
+              id="ab-handoff-team"
+              class="w-full min-h-10 rounded-lg bg-white px-3 py-1.5 text-sm text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+              x-model="handoffTeam"
+            >
+              <template x-for="t in handoffTeams" :key="t.name">
+                <option :value="t.name" x-text="t.name"></option>
+              </template>
+            </select>
+          </div>
+
+          <div class="space-y-1">
+            <label for="ab-handoff-level" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Độ khó</label>
+            <select
+              id="ab-handoff-level"
+              class="w-full min-h-10 rounded-lg bg-white px-3 py-1.5 text-sm text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+              x-model="handoffLevel"
+            >
+              <option value="de">Dễ</option>
+              <option value="vua">Vừa</option>
+              <option value="kho">Khó</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="space-y-1">
+          <label for="ab-handoff-request" class="text-xs font-semibold text-slate-700 dark:text-slate-300">Yêu cầu</label>
+          <textarea
+            id="ab-handoff-request"
+            rows="4"
+            class="w-full rounded-lg bg-white p-3 text-sm text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 resize-y"
+            x-model="handoffRequest"
+          ></textarea>
+        </div>
+      </div>
+
+      <div class="rounded-xl bg-rose-50 p-3 text-sm text-rose-900 ring-1 ring-rose-300 dark:bg-rose-900/20 dark:text-rose-200 dark:ring-rose-700" x-show="handoffError" x-text="handoffError"></div>
+
+      <div class="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900 ring-1 ring-emerald-300 dark:bg-emerald-900/20 dark:text-emerald-200 dark:ring-emerald-700 space-y-1" x-show="handoffSuccess">
+        <p class="font-semibold" x-text="'Đã tạo đề xuất #' + handoffCreatedPropId + ', duyệt ở màn Điều phối'"></p>
+        <a :href="'#/queue'" class="text-indigo-600 dark:text-indigo-400 font-semibold hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">Xem hàng chờ điều phối →</a>
+      </div>
+
+      <div class="flex flex-wrap justify-end gap-2">
+        <button
+          type="button"
+          class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+          :disabled="isHandoffSubmitting()"
+          @click="closeHandoff"
+        >
+          Đóng
+        </button>
+        <button
+          type="button"
+          x-show="!handoffSuccess"
+          class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+          :disabled="isHandoffSubmitting()"
+          @click="submitHandoff"
+        >
+          Tạo đề xuất
+        </button>
       </div>
     </div>
   </div>

@@ -92,6 +92,10 @@
               <span class="text-slate-500 dark:text-slate-400">Vị trí:</span>
               <span class="font-medium text-indigo-600 dark:text-indigo-400" x-text="selectedItemRoomName"></span>
             </div>
+            <div x-show="selectedItem && selectedItem.after_proposal_id" class="flex justify-between">
+              <span class="text-slate-500 dark:text-slate-400">Phụ thuộc:</span>
+              <span class="font-semibold text-amber-600 dark:text-amber-400" x-text="'Chờ #' + (selectedItem ? selectedItem.after_proposal_id : '') + ' xong'"></span>
+            </div>
             <div x-show="selectedItemReason" class="text-rose-600 dark:text-rose-400 italic" x-text="selectedItemReason"></div>
           </div>
 
@@ -525,6 +529,12 @@
                         <option value="vua">Vừa</option>
                         <option value="kho">Khó</option>
                       </select>
+                      <template x-if="item.data.after_proposal_id">
+                        <span
+                          class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                          x-text="'Chờ #' + item.data.after_proposal_id + ' xong'"
+                        ></span>
+                      </template>
                     </div>
                     <span class="text-xs text-slate-500 dark:text-slate-400" x-text="item.data.project_name || item.data.project"></span>
                   </div>
@@ -535,6 +545,15 @@
                     <div x-text="'Đội hình: ' + item.data.team"></div>
                     <div x-text="'Quy trình: ' + item.data.workflow"></div>
                   </div>
+
+                  <template x-if="item.data.inputs && item.data.inputs.length > 0">
+                    <div class="flex flex-wrap items-center gap-1 text-xs">
+                      <span class="text-slate-500 dark:text-slate-400">Tài liệu:</span>
+                      <template x-for="name in item.data.inputs" :key="name">
+                        <span class="inline-flex items-center rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-mono text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="name"></span>
+                      </template>
+                    </div>
+                  </template>
 
                   <!-- Lý do đề xuất (cắt 3 dòng, nút xem thêm) -->
                   <div x-show="item.data.reason" class="text-xs text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-900/50 p-2 rounded-lg space-y-1">
