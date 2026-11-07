@@ -49,6 +49,8 @@
       builtinStacks: [],
       stackSaving: {},
       stackErrors: {},
+      readSourcesSaving: {},
+      readSourcesErrors: {},
       promptModalOpen: false,
       promptProject: null,
       promptRoles: ['lead', 'dev', 'qa', 'plan-review', 'code-review'],
@@ -767,6 +769,92 @@
             self.load();
           } else {
             self.stackErrors[p.id] = window.AB.errorText(res);
+          }
+        });
+      },
+
+      projectReadSources: function (p) {
+        return (p && Array.isArray(p.read_sources)) ? p.read_sources : [];
+      },
+
+      hasNoReadSources: function (p) {
+        return !p || !Array.isArray(p.read_sources) || p.read_sources.length === 0;
+      },
+
+      availableProjectsForReadSources: function (p) {
+        if (!p) return [];
+        var cur = this.projectReadSources(p);
+        return (this.projects || []).filter(function (other) {
+          return other.id !== p.id && cur.indexOf(other.id) === -1;
+        });
+      },
+
+      projectSourceLabel: function (srcId) {
+        var found = (this.projects || []).find(function (p) { return p.id === srcId; });
+        if (found && found.name_vi) {
+          return found.name_vi + ' (' + srcId + ')';
+        }
+        return srcId;
+      },
+
+      isReadSourcesSaving: function (id) {
+        return Boolean(this.readSourcesSaving && this.readSourcesSaving[id]);
+      },
+
+      hasReadSourcesError: function (id) {
+        return Boolean(this.readSourcesErrors && this.readSourcesErrors[id]);
+      },
+
+      readSourcesError: function (id) {
+        return (this.readSourcesErrors && this.readSourcesErrors[id]) ? this.readSourcesErrors[id] : '';
+      },
+
+      addProjectReadSourceFromSelect: function (p, val) {
+        if (!val) return;
+        this.addProjectReadSource(p, val);
+      },
+
+      addProjectReadSource: function (p, srcId) {
+        if (!p || !srcId) return;
+        var cur = this.projectReadSources(p).slice();
+        if (cur.indexOf(srcId) >= 0) return;
+        if (cur.length >= 5) {
+          this.readSourcesErrors[p.id] = 'Tối đa 5 nguồn';
+          return;
+        }
+        cur.push(srcId);
+        this.saveReadSources(p, cur);
+      },
+
+      removeProjectReadSource: function (p, srcId) {
+        if (!p) return;
+        var cur = this.projectReadSources(p).filter(function (s) {
+          return s !== srcId;
+        });
+        this.saveReadSources(p, cur);
+      },
+
+      saveReadSources: function (p, list) {
+        var self = this;
+        this.readSourcesSaving[p.id] = true;
+        this.readSourcesErrors[p.id] = '';
+        return window.AB.api('POST', '/api/projects/' + encodeURIComponent(p.id) + '/read-sources', {
+          read_sources: list,
+          etag: this.etag
+        }).then(function (res) {
+          self.readSourcesSaving[p.id] = false;
+          if (res && res.ok) {
+            p.read_sources = list;
+            if (res.data && res.data.etag) self.etag = res.data.etag;
+          } else if (res && res.status === 409) {
+            self.readSourcesErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+            self.load();
+          } else {
+            var msg = window.AB.errorText(res);
+            if (res && res.data && res.data.errors && Array.isArray(res.data.errors) && res.data.errors.length) {
+              msg = res.data.errors[0].message || msg;
+            }
+            self.readSourcesErrors[p.id] = msg || 'Không lưu được dự án nguồn';
           }
         });
       },
