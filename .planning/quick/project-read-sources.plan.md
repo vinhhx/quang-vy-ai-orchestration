@@ -1,6 +1,6 @@
 # Plan: dự án nguồn chỉ đọc (task của dự án A đọc được code dự án B)
 
-Repo: `/mnt/data/IDE/QuangVy-Orchestration`, crate `agent-brain/`, nhánh `main`. Chạy sau `task-handoff.plan.md`. Đọc toàn bộ file này trước khi làm.
+Repo: `/mnt/data/IDE/QuangVy-Orchestration`, crate `agent-brain/`, nhánh `main`. Chạy **trước** `task-handoff.plan.md` (chạy sau `departments-rules.plan.md`). Đọc toàn bộ file này trước khi làm.
 
 ## Bối cảnh (quyết định người dùng 2026-11-07)
 Dự án `automation-test-e2e` viết e2e cho các website của team, ví dụ `apec`. Agent của task e2e cần **chủ động đọc code apec** (route, form, validate, quyền) để viết test case rồi test. Hiện tại:
@@ -31,7 +31,7 @@ Liên kết do người dùng tự đặt là sự cho phép rõ ràng, nên pla
 - Màn hình **Dự án** (`screens/projects.html`, `js/projects.js`): trong phần sửa dự án thêm mục "Dự án nguồn (chỉ đọc)". Gồm danh sách chọn nhiều dự án khác, kèm dòng giải thích "Task của dự án này được đọc code các dự án nguồn, không ghi, không đọc .env". Theo cách sửa `stack` hiện có.
 
 ### 2. Prompt: cho agent biết có nguồn (`src/prompts.rs` hoặc seam `roles/mod.rs`)
-- Ở seam `execute_role_staged` (cạnh chỗ nối tài liệu đầu vào của plan handoff): nếu dự án của task có nguồn hợp lệ, nối block:
+- Ở seam `execute_role_staged` (ngay sau chỗ nối `departments::prompt_append_for_member` / `append_to_system_prompt`): nếu dự án của task có nguồn hợp lệ, nối block:
   ```
   ## Dự án nguồn (chỉ đọc)
   - apec: /mnt/.../apec — thư mục tri thức: .gsd (nếu có)
@@ -95,7 +95,7 @@ Không thêm quyền Bash nào cho nguồn.
 ```bash
 cd /mnt/data/IDE/QuangVy-Orchestration/agent-brain
 cargo test --no-fail-fast 2>&1 | grep -E "^test result" | awk '{p+=$4; f+=$6} END {print "passed", p, "failed", f}'
-cargo clippy --all-targets 2>&1 | grep -c "^warning\|^error"     # không tăng so với sau plan handoff
+cargo clippy --all-targets 2>&1 | grep -c "^warning\|^error"     # không tăng so với 153
 cd /mnt/data/IDE/QuangVy-Orchestration
 node scripts/dashboard-js-check.mjs
 bash scripts/dashboard-ui-lint.sh

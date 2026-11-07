@@ -1,6 +1,6 @@
 # Plan: chuyển tài liệu giữa các task (tài liệu đầu vào, gửi kết quả sang dự án khác, chuỗi việc của điều phối)
 
-Repo: `/mnt/data/IDE/QuangVy-Orchestration`, crate `agent-brain/`, nhánh `main`. Chạy sau `departments-rules.plan.md` (dùng seam nối prompt ở `roles/mod.rs`, `engine::append_to_system_prompt`). Đọc toàn bộ file này trước khi làm.
+Repo: `/mnt/data/IDE/QuangVy-Orchestration`, crate `agent-brain/`, nhánh `main`. Chạy sau `project-read-sources.plan.md` và `departments-rules.plan.md` (dùng seam nối prompt ở `roles/mod.rs`, `engine::append_to_system_prompt`). Đọc toàn bộ file này trước khi làm.
 
 ## Bối cảnh (quyết định người dùng 2026-11-07)
 Ca dùng thật: phòng Phân tích chạy trên dự án `apec` và viết bảng test case từ code. Sau đó một task e2e trên dự án `automation-test-e2e` viết và chạy test theo bảng đó. Hiện tại task thứ hai không đọc được kết quả của task thứ nhất, người dùng phải chép tay. Plan này thêm ba cách chuyển tài liệu, dùng chung một cơ chế:
@@ -63,7 +63,7 @@ Kèm một sửa nhỏ: triage chọn đội hình mặc định `teams::default
   - Chuỗi `</tai_lieu` trong nội dung được thay bằng `</ tai_lieu` để không đóng thẻ sớm.
 
 ### 2. Đưa vào prompt lúc chạy (`src/roles/mod.rs`, seam `execute_role_staged`)
-- Ngay sau chỗ nối `departments::prompt_append_for_member` (dòng gọi `append_to_system_prompt`): nếu task có tài liệu đầu vào thì nối thêm `inputs::prompt_block`. Cảnh báo đi vào `warnings` của run như skill của phòng.
+- Ngay sau chỗ nối `departments::prompt_append_for_member` và block "Dự án nguồn (chỉ đọc)" của plan read-sources: nếu task có tài liệu đầu vào thì nối thêm `inputs::prompt_block`. Cảnh báo đi vào `warnings` của run như skill của phòng.
 - Áp dụng cho mọi vai chạy qua seam này: lead, dev, qa, plan-review, code-review, analyst, analysis-review. Kiểm tra lại analyst (`roles/analyst.rs`) có đi qua seam không. Nếu không, thêm cùng lời gọi ở chỗ dựng argv của analyst.
 - Ghi thêm từng tài liệu ra `run_dir/inputs/<name>` (quyền 0600) để tra lại. `prompt.md` trong run_dir là bản đã nối.
 
@@ -129,13 +129,13 @@ Kèm một sửa nhỏ: triage chọn đội hình mặc định `teams::default
 - Không chạy claude hay agy thật. Dùng `HOME` / `AGENT_BRAIN_*` tạm như các test hiện có.
 
 ## Không sửa
-`Cargo.toml`, `~/.config/agent-brain/*` và `~/.local/share/agent-brain/*` thật, dashboard thật cổng 7437, repo ngoài, `.planning/STATE.md`, `ROADMAP.md`, file `.planning/` khác, `~/.claude-orca`. Không thêm lệnh Telegram (Telegram chỉ nhận thông báo như cũ). Không cho task đọc thư mục dự án khác (là plan `project-read-sources.plan.md`).
+`Cargo.toml`, `~/.config/agent-brain/*` và `~/.local/share/agent-brain/*` thật, dashboard thật cổng 7437, repo ngoài, `.planning/STATE.md`, `ROADMAP.md`, file `.planning/` khác, `~/.claude-orca`. Không thêm lệnh Telegram (Telegram chỉ nhận thông báo như cũ). Không đổi phần dự án nguồn chỉ đọc (đã làm ở `project-read-sources.plan.md`).
 
 ## Cách kiểm tra
 ```bash
 cd /mnt/data/IDE/QuangVy-Orchestration/agent-brain
 cargo test --no-fail-fast 2>&1 | grep -E "^test result" | awk '{p+=$4; f+=$6} END {print "passed", p, "failed", f}'
-cargo clippy --all-targets 2>&1 | grep -c "^warning\|^error"     # không tăng so với 153
+cargo clippy --all-targets 2>&1 | grep -c "^warning\|^error"     # không tăng so với sau plan read-sources
 cd /mnt/data/IDE/QuangVy-Orchestration
 node scripts/dashboard-js-check.mjs
 bash scripts/dashboard-ui-lint.sh
