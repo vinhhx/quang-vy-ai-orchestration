@@ -20,3 +20,16 @@ Ghi lại khi chạy thật, để gộp vào một plan sửa sau. Các mục �
 4. **Không tạo được task trực tiếp khi orchestrator bật.** `POST /api/tasks` luôn đi qua intake → triage. Triage tốn một lượt model và có thể đổi lại đội hình / quy trình. Cần tùy chọn "giao thẳng" với dự án, quy trình, đội hình, độ khó cố định.
 5. **Lead tin rằng Dev không đọc được repo nguồn.** Plan task #16 ghi "Dev KHÔNG đọc được repo apec", dù Dev có `--add-dir` và block "Dự án nguồn". Block nguồn nên nói rõ "mọi vai của task (lead, dev, qa…) đều đọc được".
 6. **Plan e2e đặt luật quá chặt về số lần chạy lại** ("chạy đúng 1 lần, chờ người dùng xác nhận"), khiến Dev có thể kẹt. Ghi chú prompt của dự án nên nói rõ: mỗi lần chạy 1 lần đăng nhập, được chạy lại tối đa 5 lần.
+9. **Dev hết giờ (60 phút) giữa chừng mà không commit gì, và không dọn dữ liệu.**
+   - Task #16: 25 TC, mỗi lần chạy đầy đủ mất 17 phút (Livewire chậm), Dev chạy vài lần thì `timed_out`. File viết dở vẫn nằm trong thư mục làm việc, không có commit, không có `test-results.json`. Các bản ghi `E2E-` còn sót trên site dev.
+   - Gợi ý sửa agent-brain:
+     - (a) cảnh báo hoặc gửi tín hiệu cho Dev khi còn khoảng 10 phút (ví dụ qua file `run_dir/deadline` hoặc nhắc trong prompt "bạn có N phút"), để Dev kịp chốt kết quả;
+     - (b) timeout theo dự án hoặc quy trình (e2e cần dài hơn);
+     - (c) khi Dev `timed_out` mà file trong plan đã đổi, autopilot có thể chạy một lượt "chốt" ngắn: chỉ ghi kết quả và commit.
+   - Về cách làm (ghi chú prompt e2e): giới hạn khoảng 12–15 TC mỗi task để một lần chạy chỉ mất khoảng 6–8 phút.
+10. **Điều phối viên (tôi) duyệt nhầm một plan chưa chứa phần sửa.** Edit thất bại nhưng lệnh commit và duyệt vẫn chạy trong cùng chuỗi. Bài học cho script điều phối: kiểm nội dung plan (grep mục mới) trước khi duyệt. agent-brain cũng nên hiện diff plan so với lần duyệt trước khi bấm Duyệt.
+11. **Lệnh Bash của Dev bị cắt sau 10 phút rồi chuyển ra nền; Dev đọc nhầm kết quả.**
+    - Task #16 lần Dev 2: một lần chạy đầy đủ (~20 phút) vượt giới hạn 600 giây của Bash, bị đẩy ra nền. Lần sau bị ngắt (exit 130/137). Dev kết luận sai là "thiếu DISPLAY" và ghi 25 ca `blocked`.
+    - Gợi ý agent-brain: prompt Dev nên nói rõ giới hạn 10 phút/lệnh và không được dùng lệnh chạy nền trong `-p`; QA nên phát hiện kết luận "blocked toàn bộ" mâu thuẫn với log.
+    - Lỗi của điều phối viên (tôi): plan ghi "chạy riêng ca bằng `--case TC-xx`", nhưng `--case` của `run-task.mjs` chỉ in trace. Lọc ca thật phải dùng `-- --grep`. Bài học: kiểm `--help` của công cụ trước khi viết vào plan.
+12. **Ngân sách workflow tính cả các lần Dev hết giờ.** 120 phút bị hết sau 2 lần Dev 60 phút, nên autopilot dừng ngay sau khi duyệt lại plan (job 6), không chạy Dev. Thông báo chỉ có trên Telegram và log serve; API duyệt vẫn trả `job_id` như thể sẽ chạy. Gợi ý: kiểm ngân sách lúc duyệt và trả lỗi rõ ràng, hoặc cho nút "gia hạn ngân sách". Hiện đã tăng `e2e-tu-dong.budget_minutes` lên 200.
