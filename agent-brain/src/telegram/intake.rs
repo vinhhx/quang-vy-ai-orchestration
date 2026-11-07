@@ -1288,7 +1288,7 @@ fn confirm(ctx: &Arc<BotCtx>, state: &PollState, f: &mut Intake, cq_id: &str, mi
     }
     req.dry_run = false;
     match start_new_task(&ctx.st, &req) {
-        Ok(StartOutcome::Started { job_id, info }) => {
+        Ok(StartOutcome::Started { job_id, info, .. }) => {
             bot::edit(
                 ctx,
                 mid,
@@ -1559,19 +1559,32 @@ fn watch_tick(ctx: &Arc<BotCtx>, state: &mut PollState, now_ms: i64) {
     };
     let mut keep = Vec::new();
     for w in std::mem::take(&mut state.watch) {
-        if let Some(id) = task_row_id(&conn, &w) {
+        let job = ctx.st.jobs.get(w.job_id);
+        let tid = task_row_id(&conn, &w);
+        if job
+            .as_ref()
+            .is_some_and(|j| j.state == "exited" && j.exit_code != Some(0))
+        {
+            let has_run = tid.is_some_and(|id| {
+                conn.query_row("SELECT 1 FROM runs WHERE task_id = ?1", [id], |_| Ok(()))
+                    .is_ok()
+            });
+            if !has_run {
+                if let Some(id) = tid {
+                    let _ = conn.execute("DELETE FROM tasks WHERE id = ?1", [id]);
+                }
+                let output = job.map(|j| j.output).unwrap_or_default();
+                bot::send_message(ctx, &failed_text(&w.branch, &output), render::no_keyboard());
+                audit(&format!("job {} dừng trước khi có task", w.job_id));
+                continue;
+            }
+        }
+        if let Some(id) = tid {
             bot::send_message(ctx, &created_text(id, &w.branch), render::no_keyboard());
             audit(&format!("job {} đã tạo task {id}", w.job_id));
             continue;
         }
-        let job = ctx.st.jobs.get(w.job_id);
         if job.as_ref().is_none_or(|j| j.state == "exited") {
-            // The row may have been written just before the job ended.
-            if let Some(id) = task_row_id(&conn, &w) {
-                bot::send_message(ctx, &created_text(id, &w.branch), render::no_keyboard());
-                audit(&format!("job {} đã tạo task {id}", w.job_id));
-                continue;
-            }
             let output = job.map(|j| j.output).unwrap_or_default();
             bot::send_message(ctx, &failed_text(&w.branch, &output), render::no_keyboard());
             audit(&format!("job {} dừng trước khi có task", w.job_id));

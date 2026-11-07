@@ -499,6 +499,7 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
         Op::ReturnLead | Op::NoNote | Op::CancelNote => on_return_lead(ctx, state, &press, &cb),
         Op::KillAsk | Op::KillConfirm | Op::KillCancel => on_kill(ctx, &press, &cb),
         Op::TeamCancel | Op::RetryLater => on_quota_side(ctx, &press, &cb),
+        Op::RunDev => act(ctx, &press, &cb, "Chạy Dev", "run_dev"),
     }
 }
 
@@ -553,7 +554,8 @@ fn load_fresh(ctx: &BotCtx, task_id: i64) -> Loaded {
 }
 
 fn has_control(s: &TaskState, id: &str) -> bool {
-    s.view.controls.iter().any(|c| c.id == id)
+    s.view.controls.iter().any(|c| c.id == id && c.enabled)
+        || s.view.actions.iter().any(|a| a.id == id && a.enabled)
 }
 
 fn has_action(s: &TaskState, id: &str) -> bool {
@@ -1448,6 +1450,7 @@ pub(crate) fn apply_outcome(
     removed: Option<Tracked>,
 ) {
     let task_id = cb.task_id;
+    let mut dev_row = None;
     let (short, what) = match outcome {
         Ok(ControlOutcome::Approved {
             plan_commit,
@@ -1455,11 +1458,28 @@ pub(crate) fn apply_outcome(
             ..
         }) => {
             let sha7: String = plan_commit.chars().take(7).collect();
-            let mut what = format!("Đã duyệt plan {sha7}");
             if job_id.is_some() {
-                what.push_str(" · autopilot chạy tiếp");
+                let what = format!("Đã duyệt plan {sha7} · autopilot chạy tiếp");
+                ("Đã duyệt plan".to_string(), what)
+            } else {
+                let what = format!("Đã duyệt plan {sha7}. Quy trình không tự chạy — bấm Chạy Dev");
+                if let Loaded::State(s) = load_fresh(ctx, task_id) {
+                    if has_control(&s, "run_dev") {
+                        let row = button_row(
+                            "Chạy Dev",
+                            Op::RunDev,
+                            &Callback {
+                                op: Op::RunDev,
+                                task_id,
+                                run_id: None,
+                                rev: s.rev.clone(),
+                            },
+                        );
+                        dev_row = Some(row);
+                    }
+                }
+                (what.clone(), what)
             }
-            ("Đã duyệt plan".to_string(), what)
         }
         Ok(ControlOutcome::Started { job_id }) => {
             let what = if control == "auto_more_round" {
@@ -1515,12 +1535,16 @@ pub(crate) fn apply_outcome(
 
     answer(ctx, &press.id, &short, false);
     let suffix = render::result_suffix(&what, true, crate::db::now_ms());
+    let keyboard = match dev_row {
+        Some(row) => render::keyboard_json(&[row]),
+        None => render::no_keyboard(),
+    };
     edit_result(
         ctx,
         press.message_id,
         &press.text,
         &suffix,
-        render::no_keyboard(),
+        keyboard,
     );
     audit(label, task_id, &what);
 }

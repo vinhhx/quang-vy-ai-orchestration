@@ -27,9 +27,11 @@ pub enum Op {
     TeamCancel,
     /// `Thử lại sau` on a quota message (Phase 6, D-17).
     RetryLater,
+    /// `Chạy Dev` for manual workflows after plan approval.
+    RunDev,
 }
 
-pub const ALL_OPS: [Op; 14] = [
+pub const ALL_OPS: [Op; 15] = [
     Op::Approve,
     Op::ApproveAsk,
     Op::ApproveConfirm,
@@ -44,6 +46,7 @@ pub const ALL_OPS: [Op; 14] = [
     Op::CancelNote,
     Op::TeamCancel,
     Op::RetryLater,
+    Op::RunDev,
 ];
 
 impl Op {
@@ -63,6 +66,7 @@ impl Op {
             Op::CancelNote => 'c',
             Op::TeamCancel => 'v',
             Op::RetryLater => 'l',
+            Op::RunDev => 'd',
         }
     }
 
@@ -645,7 +649,7 @@ mod tests {
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), n, "a callback code is used twice");
-        assert_eq!(ALL_OPS.len(), 14);
+        assert_eq!(ALL_OPS.len(), 15);
         for op in ALL_OPS {
             assert_eq!(Op::from_code(op.code()), Some(op));
         }

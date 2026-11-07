@@ -410,7 +410,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         run_dir: Some(run_dir),
     };
 
-    let role_run = crate::roles::execute_role_staged(
+    let mut role_run = crate::roles::execute_role_staged(
         ctx,
         &proj,
         &proj_path,
@@ -454,15 +454,60 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
     let mut extra = crate::gitops::changed_paths(&proj_path)?;
     extra.remove(".qa-report.md");
     if !extra.is_empty() {
-        crate::term::emit_out("QA đã sửa file ngoài .qa-report.md — vi phạm giao thức (ROLE-04):");
-        let mut sorted_extra: Vec<String> = extra.into_iter().collect();
-        sorted_extra.sort();
-        for p in sorted_extra {
-            crate::term::emit_out(&format!("  {p}"));
+        let approved = match task_id {
+            Some(tid) => crate::db::task_auto(&ctx.conn, tid)?
+                .and_then(|a| a.approved_commit),
+            None => None,
+        };
+        let plan_text_for_grants = match approved.as_deref() {
+            Some(c) => crate::gitops::git(&proj_path, &["show", &format!("{c}:.plan.md")]).ok(),
+            None => Some(text_plan.clone()),
+        };
+        let write_dirs = plan_text_for_grants
+            .map(|t| crate::planfile::run_grants(&crate::planfile::parse_plan(&t)).write_dirs)
+            .unwrap_or_default();
+
+        let mut violations = Vec::new();
+        let mut restorable = Vec::new();
+        for p in extra {
+            let p_clean = p.trim_start_matches("./");
+            let under_write_dir = write_dirs.iter().any(|wd| {
+                let wd_clean = wd.trim_start_matches("./").trim_end_matches('/');
+                p_clean == wd_clean || p_clean.starts_with(&format!("{wd_clean}/"))
+            });
+            if under_write_dir {
+                restorable.push(p);
+            } else {
+                violations.push(p);
+            }
         }
-        restore.disarm();
-        crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
-        return Ok(crate::error::EXIT_PROTOCOL);
+
+        if !violations.is_empty() {
+            crate::term::emit_out("QA đã sửa file ngoài .qa-report.md — vi phạm giao thức (ROLE-04):");
+            violations.sort();
+            for p in &violations {
+                crate::term::emit_out(&format!("  {p}"));
+            }
+            restore.disarm();
+            crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
+            return Ok(crate::error::EXIT_PROTOCOL);
+        }
+
+        restorable.sort();
+        for p in &restorable {
+            let path_on_disk = proj_path.join(p);
+            let is_tracked = crate::gitops::git(&proj_path, &["ls-files", "--error-unmatch", p]).is_ok();
+            if is_tracked {
+                let _ = crate::gitops::git(&proj_path, &["checkout", "--", p]);
+            } else if path_on_disk.is_file() {
+                let _ = std::fs::remove_file(&path_on_disk);
+            } else if path_on_disk.is_dir() {
+                let _ = std::fs::remove_dir_all(&path_on_disk);
+            }
+            let warn = format!("File '{p}' dưới thư mục được ghi bị đổi trong lúc QA — đã khôi phục");
+            crate::term::emit_out(&format!("QA cảnh báo: {warn}"));
+            role_run.warnings.push(warn);
+        }
     }
 
     if !qa_path.is_file() {

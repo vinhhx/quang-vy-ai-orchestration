@@ -327,7 +327,11 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
     let mut lines: Vec<String> = Vec::new();
     match ev.kind {
         EventKind::Gate => {
-            lines.push(format!("Chờ duyệt plan · task {id}"));
+            if ev.is_update {
+                lines.push(format!("Plan đã cập nhật · task {id}"));
+            } else {
+                lines.push(format!("Chờ duyệt plan · task {id}"));
+            }
             lines.push(title_line(s));
             lines.push(project_line(s));
             if is_telegram_origin(s) {

@@ -560,6 +560,7 @@ pub enum StartOutcome {
     Started {
         job_id: u64,
         info: StartInfo,
+        task_id: i64,
     },
     Invalid(String),
     ProjectRefused {
@@ -788,17 +789,37 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
             req.origin,
         )
     };
+    let pid = crate::db::project_row_id(&conn, &info.project.id).or_else(|_| {
+        crate::db::sync_projects(&conn, &crate::projects::projects_of(&map))?;
+        crate::db::project_row_id(&conn, &info.project.id)
+    })?;
+    let title = req.name.unwrap_or(trimmed_req);
+    let base_branch_opt = if is_analysis { None } else { Some("main") };
+    let task_id = crate::db::upsert_task(
+        &conn,
+        pid,
+        &info.slug,
+        title,
+        &info.branch,
+        base_branch_opt,
+        None,
+    )?;
+
     let spec = crate::dashboard::jobs::JobSpec {
         role: role.to_string(),
         project: info.project.id.clone(),
         profile: info.project.profile.clone(),
         branch: Some(info.branch.clone()),
-        task_id: None,
+        task_id: Some(task_id),
         args,
     };
 
     match st.jobs.start(spec) {
-        Ok(job_id) => Ok(StartOutcome::Started { job_id, info }),
+        Ok(job_id) => Ok(StartOutcome::Started {
+            job_id,
+            info,
+            task_id,
+        }),
         Err(e) => {
             if e.message.contains("Dashboard đang dừng") {
                 Ok(StartOutcome::Unavailable)
@@ -825,9 +846,14 @@ fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
 /// `POST /api/tasks` trước khi tách hàm.
 fn start_response(outcome: StartOutcome) -> Response {
     match outcome {
-        StartOutcome::Started { job_id, info } => {
+        StartOutcome::Started {
+            job_id,
+            info,
+            task_id,
+        } => {
             let mut resp_val = serde_json::json!({
                 "job_id": job_id,
+                "task_id": task_id,
                 "project": info.project.id,
                 "slug": info.slug,
                 "branch": info.branch,
@@ -1245,11 +1271,7 @@ pub fn load_task_state(
     let (plan_exists, plan_blockers, plan_errors) = if let Some(ref text) = plan_text {
         let plan = crate::planfile::parse_plan(text);
         let blockers = crate::planfile::has_blockers(&plan);
-        let errors = if plan_source == Some("worktree") {
-            crate::planfile::validate_plan(&plan, Some(&root))
-        } else {
-            Vec::new()
-        };
+        let errors = crate::planfile::validate_plan(&plan, Some(&root));
         (true, blockers, errors)
     } else {
         (false, false, Vec::new())
@@ -2751,8 +2773,18 @@ pub fn run_control_as(
     let ctl = match state.view.controls.iter().find(|c| c.id == control) {
         Some(c) => c.clone(),
         None => {
-            let (reason, kind) = absent_control(control, &state);
-            return Ok(ControlOutcome::Refused { reason, kind });
+            if control == "run_dev" {
+                match state.view.actions.iter().find(|a| a.id == "run_dev") {
+                    Some(a) => a.clone(),
+                    None => {
+                        let (reason, kind) = absent_control(control, &state);
+                        return Ok(ControlOutcome::Refused { reason, kind });
+                    }
+                }
+            } else {
+                let (reason, kind) = absent_control(control, &state);
+                return Ok(ControlOutcome::Refused { reason, kind });
+            }
         }
     };
     if !ctl.enabled {
@@ -2865,6 +2897,27 @@ pub fn run_control_as(
                 return Ok(ControlOutcome::Stale);
             }
             Ok(ControlOutcome::Ended { at_gate: false })
+        }
+        "run_dev" => {
+            if source == ActionSource::Telegram
+                && state.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
+                && !state.project_telegram_ok
+            {
+                return Ok(ControlOutcome::Refused {
+                    reason: "Dự án không còn trong danh sách Telegram — chạy Dev trên dashboard.".to_string(),
+                    kind: "not_allowed",
+                });
+            }
+            let args = vec![
+                "run".to_string(),
+                "dev".to_string(),
+                "--".to_string(),
+                state.project.id.clone(),
+            ];
+            match start_job_outcome(st, task_job(&state, "dev", args)) {
+                Ok(job_id) => Ok(ControlOutcome::Started { job_id }),
+                Err(outcome) => Ok(outcome),
+            }
         }
         _ => Ok(ControlOutcome::Refused {
             reason: NOT_ALLOWED_MSG.to_string(),

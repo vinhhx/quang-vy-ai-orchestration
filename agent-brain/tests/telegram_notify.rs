@@ -1006,3 +1006,41 @@ fn qa_pass_sends_products_after_summary_and_report() {
     assert_plain_and_paired(&tg);
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+#[test]
+fn gate_plan_commit_change_sends_plan_updated_message() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    let repo = setup_auto_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_connected(&srv);
+
+    auto_start_to_gate(&sb, gate_scenario());
+
+    let msg1 = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
+    let m1 = msg1["response"]["result"]["message_id"].as_i64().unwrap();
+
+    // Update plan on the branch: commit with subject "sua-app: plan"
+    sb.git(&repo, &["checkout", "task/sua-app"]);
+    let plan2 = "<!-- id: sua-app -->\n# Kế hoạch sửa app (v2)\n\n## Mục tiêu\nSửa app tốt hơn\n\n## Các bước\n1. Sửa app.py\n\n## Thay đổi\n| File | Thao tác | Lý do |\n| --- | --- | --- |\n| src/app.py | sửa | cải tiến |\n\n## Không được đụng tới\nKhông có\n\n## Lệnh được chạy\nKhông có\n\n## Thư mục được ghi\nKhông có\n\n## Gửi báo cáo\nKhông có\n\n## Vướng mắc\nKhông có\n";
+    std::fs::write(repo.join(".plan.md"), plan2).unwrap();
+    sb.git(&repo, &["add", ".plan.md"]);
+    sb.git(&repo, &["commit", "-m", "sua-app: plan"]);
+    sb.db()
+        .execute(
+            "UPDATE tasks SET updated_at = updated_at + 1 WHERE id = 1",
+            [],
+        )
+        .unwrap();
+
+    // The detector detects the new plan commit and sends "Plan đã cập nhật · task 1"
+    let msg2 = wait_message(&tg, &srv, "Plan đã cập nhật · task 1");
+    let m2 = msg2["response"]["result"]["message_id"].as_i64().unwrap();
+    assert_ne!(m2, m1);
+    assert_eq!(first_line(&msg2), "Plan đã cập nhật · task 1");
+    assert_eq!(labels(&msg2), vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()]);
+
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}

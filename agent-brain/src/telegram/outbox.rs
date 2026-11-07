@@ -740,6 +740,7 @@ mod tests {
             task_id,
             kind: EventKind::Gate,
             key: format!("gate:{task_id}"),
+            is_update: false,
         }
     }
 

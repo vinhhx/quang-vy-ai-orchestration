@@ -773,3 +773,53 @@ fn test_scheduler_busy_project_skips_and_starts_next_project_proposal() {
     // Dọn dẹp jobs
     st.jobs.kill_all_now();
 }
+
+#[test]
+fn test_scheduler_starts_proposal_links_task_id_and_level() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repos = setup_projects(&sb, &["proj1"]);
+    let fake_job = setup_fake_job(&sb);
+
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true,
+            "max_parallel": 2
+        }
+    }));
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
+    let projects = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+
+    let intake_id = insert_intake(&conn, "ui", None, "viết test", "normal").expect("intake");
+    let pid = agent_brain::db::project_row_id(&conn, "proj1").unwrap();
+    let prop_id = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid,
+            title: "Task Cần Làm",
+            request: "Làm việc này thật tốt",
+            priority: "urgent",
+            level: "kho",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("prop");
+    set_proposal_status(&conn, prop_id, "approved").expect("approve prop");
+
+    let st = app_state(&sb, fake_job);
+    schedule_tick(&st).expect("schedule_tick");
+
+    let prop = get_proposal(&conn, prop_id).unwrap().unwrap();
+    assert_eq!(prop.status, "started");
+    let tid = prop.task_id.expect("proposals.task_id must be populated with new task id");
+    let task = agent_brain::db::get_task(&conn, tid).unwrap().expect("task must exist");
+    assert_eq!(task.level, "kho", "tasks.level must match proposal level");
+
+    st.jobs.kill_all_now();
+}

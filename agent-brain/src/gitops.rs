@@ -312,12 +312,13 @@ pub fn is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> bool {
     ancestry(root, ancestor, descendant) == Some(true)
 }
 
-pub fn plan_commit_on_branch(
+#[allow(clippy::result_unit_err)]
+pub fn all_plan_commits_on_branch(
     root: &Path,
     branch: &str,
     slug: &str,
     base_commit: Option<&str>,
-) -> Result<Option<String>, ()> {
+) -> Result<Vec<String>, ()> {
     if branch.is_empty() || branch.starts_with('-') {
         return Err(());
     }
@@ -343,6 +344,7 @@ pub fn plan_commit_on_branch(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let expected_subj = format!("{slug}: plan");
+    let mut out = Vec::new();
 
     for line in stdout.lines() {
         let trimmed = line.trim();
@@ -351,12 +353,22 @@ pub fn plan_commit_on_branch(
         }
         if let Some((sha, subj)) = trimmed.split_once(' ') {
             if subj.trim() == expected_subj {
-                return Ok(Some(sha.trim().to_string()));
+                out.push(sha.trim().to_string());
             }
         }
     }
 
-    Ok(None)
+    Ok(out)
+}
+
+#[allow(clippy::result_unit_err)]
+pub fn plan_commit_on_branch(
+    root: &Path,
+    branch: &str,
+    slug: &str,
+    base_commit: Option<&str>,
+) -> Result<Option<String>, ()> {
+    all_plan_commits_on_branch(root, branch, slug, base_commit).map(|v| v.into_iter().next())
 }
 
 pub fn commit_time_ms(root: &Path, sha: &str) -> Option<i64> {

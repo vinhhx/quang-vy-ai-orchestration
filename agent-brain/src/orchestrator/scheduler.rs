@@ -89,19 +89,10 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
         };
 
         match start_new_task(st, &req)? {
-            StartOutcome::Started { info, .. } => {
+            StartOutcome::Started { task_id, .. } => {
                 active += 1;
-                let task_id: Option<i64> = conn
-                    .query_row(
-                        "SELECT id FROM tasks WHERE project_id = ?1 AND slug = ?2",
-                        rusqlite::params![prop.project_id, info.slug],
-                        |r| r.get(0),
-                    )
-                    .ok();
-                if let Some(tid) = task_id {
-                    let _ = crate::db::set_task_level(&conn, tid, &prop.level);
-                }
-                crate::db::set_proposal_started(&conn, prop.id, task_id)?;
+                let _ = crate::db::set_task_level(&conn, task_id, &prop.level);
+                crate::db::set_proposal_started(&conn, prop.id, Some(task_id))?;
             }
             StartOutcome::PreflightRefused { reason, kind } => {
                 if kind == "busy" {

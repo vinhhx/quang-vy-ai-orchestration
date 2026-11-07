@@ -50,6 +50,7 @@ pub struct Event {
     pub task_id: i64,
     pub kind: EventKind,
     pub key: String,
+    pub is_update: bool,
 }
 
 fn settling_run(s: &TaskState) -> bool {
@@ -76,7 +77,7 @@ pub fn quota_run(s: &TaskState) -> Option<&RunRow> {
 /// the autopilot stopped for it (`het_quota`), and never as a failed run.
 pub fn current_event(s: &TaskState) -> Option<Event> {
     let task_id = s.task.id;
-    let ev = |kind, key: String| Some(Event { task_id, kind, key });
+    let ev = |kind, key: String| Some(Event { task_id, kind, key, is_update: false });
 
     if let Some(run) = quota_run(s) {
         return ev(EventKind::Quota, format!("quota:{}", run.id));
@@ -296,7 +297,15 @@ impl Detector {
                     {
                         out.push(item);
                     }
-                    if let Some(ev) = ev {
+                    if let Some(mut ev) = ev {
+                        if ev.kind == EventKind::Gate
+                            && self
+                                .seen
+                                .iter()
+                                .any(|(tid, k)| *tid == ev.task_id && k.starts_with("gate:") && k != &ev.key)
+                        {
+                            ev.is_update = true;
+                        }
                         if self.seen.insert((ev.task_id, ev.key.clone()))
                             && !self.unseeded.contains(&task_id)
                         {

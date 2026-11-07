@@ -818,7 +818,20 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
         Some("Chờ duyệt plan".to_string())
     } else {
         match f.task.status.as_str() {
-            "planned" => Some("Chờ duyệt plan".to_string()),
+            "planned" => {
+                let approved = match (
+                    a.auto.and_then(|au| au.approved_commit.as_deref()),
+                    f.git.plan_commit.as_deref(),
+                ) {
+                    (Some(ac), Some(pc)) => ac == pc,
+                    _ => false,
+                };
+                if approved {
+                    Some("Đã duyệt plan — bấm Chạy Dev".to_string())
+                } else {
+                    Some("Chờ duyệt plan".to_string())
+                }
+            }
             "dev_done" => Some("Dev xong — chờ chạy QA".to_string()),
             "blocked" => Some("Vướng mắc".to_string()),
             "qa_fix" => Some("QA: Cần sửa".to_string()),
@@ -1136,6 +1149,51 @@ mod tests {
             let view = derive(&facts);
             assert_eq!(view.banner.as_deref(), expected);
         }
+    }
+
+    #[test]
+    fn test_planned_banner_approved_and_stale() {
+        let task = dummy_task("planned");
+        let git_matching = GitFacts {
+            plan_commit: Some("c1".to_string()),
+            ..GitFacts::default()
+        };
+        let auto = TaskAuto {
+            approved_commit: Some("c1".to_string()),
+            ..TaskAuto::default()
+        };
+        let facts_matching = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git_matching,
+            busy: None,
+            now_ms: 2000,
+        };
+        let auto_facts_matching = AutoFacts {
+            auto: Some(&auto),
+            ..AutoFacts::default()
+        };
+        let view_matching = derive_with(&facts_matching, &auto_facts_matching);
+        assert_eq!(view_matching.banner, Some("Đã duyệt plan — bấm Chạy Dev".to_string()));
+
+        // When plan commit changes to c2, it should revert to "Chờ duyệt plan"
+        let git_changed = GitFacts {
+            plan_commit: Some("c2".to_string()),
+            ..GitFacts::default()
+        };
+        let facts_changed = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git_changed,
+            busy: None,
+            now_ms: 2000,
+        };
+        let view_changed = derive_with(&facts_changed, &auto_facts_matching);
+        assert_eq!(view_changed.banner, Some("Chờ duyệt plan".to_string()));
     }
 
     #[test]

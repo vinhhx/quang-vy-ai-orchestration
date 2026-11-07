@@ -1752,10 +1752,11 @@ fn press_without_text_keeps_tracked_text() {
     // The edit keeps the original text (from the tracked entry), not only the result line.
     let edit = wait_edit(&tg, &srv, m, |r| text_of(r).contains("✓ Đã duyệt plan"));
     assert!(text_of(&edit).starts_with(&shown), "{edit}");
-    assert!(empty_keyboard(&edit), "{edit}");
+    assert_eq!(labels(&edit), vec!["Chạy Dev".to_string()]);
     assert!(approved_commit(&sb, 1).is_some());
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
 
 #[test]
 fn press_without_text_untracked_sends_new_message() {
@@ -1791,11 +1792,48 @@ fn press_without_text_untracked_sends_new_message() {
     // The unreadable message is never overwritten with the result line alone.
     std::thread::sleep(Duration::from_secs(1));
     assert!(edits_of(&tg, other).is_empty(), "{:#?}", tg.records());
-    let stripped = tg
-        .calls("editMessageReplyMarkup")
-        .into_iter()
-        .any(|r| r["json"]["message_id"].as_i64() == Some(other) && empty_keyboard(&r));
-    assert!(stripped, "{:#?}", tg.records());
     assert!(approved_commit(&sb, 1).is_some());
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
+
+#[test]
+fn approve_from_telegram_non_auto_adds_run_dev_button() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    protocol::setup_project(&sb, "work");
+
+    let mut srv = tg.serve(&sb, &[]);
+    wait_polling(&tg, &srv);
+    let gate = nhanh_gate_message(&tg, &srv, &sb);
+    let m = message_id_of(&gate);
+
+    let cb_id = press(&tg, PAIRED_CHAT, PAIRED_CHAT, &gate, "Duyệt plan");
+
+    let ans = wait_answer(&tg, &srv, &cb_id);
+    let ans_text = ans["json"]["text"].as_str().unwrap();
+    assert!(
+        ans_text.contains("Quy trình không tự chạy — bấm Chạy Dev"),
+        "{ans}"
+    );
+
+    let edit = wait_edit(&tg, &srv, m, |r| {
+        let text = text_of(r);
+        text.contains("✓ Đã duyệt plan") && text.contains("Quy trình không tự chạy — bấm Chạy Dev")
+    });
+
+    assert_eq!(labels(&edit), vec!["Chạy Dev".to_string()], "{edit}");
+    assert!(is_rev_data(&button_data(&edit, "Chạy Dev"), "d:1:"), "{edit}");
+
+    // Pressing "Chạy Dev" starts dev job
+    sb.write_scenario(json!({"by_role": {"dev": [{"ops": []}]}}));
+    let cb_id2 = press(&tg, PAIRED_CHAT, PAIRED_CHAT, &edit, "Chạy Dev");
+    let ans2 = wait_answer(&tg, &srv, &cb_id2);
+    assert!(
+        ans2["json"]["text"].as_str().unwrap().contains("Đã bắt đầu job"),
+        "{ans2}"
+    );
+
+    assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+

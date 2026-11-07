@@ -529,7 +529,7 @@ fn test_start_new_task_analysis_dirty_repo_h() {
     };
     let res = agent_brain::dashboard::api_tasks::start_new_task(&st, &analysis_req).unwrap();
     match res {
-        agent_brain::dashboard::api_tasks::StartOutcome::Started { job_id, info } => {
+        agent_brain::dashboard::api_tasks::StartOutcome::Started { job_id, info, .. } => {
             assert!(job_id > 0);
             assert_eq!(info.slug, "test-analysis");
             assert_eq!(info.branch, "analysis/test-analysis");

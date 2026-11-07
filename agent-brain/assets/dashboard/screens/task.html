@@ -292,8 +292,8 @@
         <div class="flex flex-wrap gap-2">
           <template x-for="a in stripActions" :key="a.id">
             <div class="space-y-1">
-              <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
-              <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
+              <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :title="a.reason || ''" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
+              <p :id="reasonId(a)" class="text-sm font-medium leading-normal text-amber-800 dark:text-amber-300 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
               <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="actionHelp(a)" x-text="actionHelp(a)"></p>
             </div>
           </template>

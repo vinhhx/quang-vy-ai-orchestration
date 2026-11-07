@@ -1009,3 +1009,96 @@ fn test_triage_malformed_output_reason_is_prefixed() {
     );
 }
 
+/// Acceptance Mục 0: có departments.json có thành viên → prompt chứa phong-ban (mặc định); không có → mac-dinh là mặc định.
+#[test]
+fn test_triage_prompt_marks_default_team() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    sb.write_config(json!({"orchestrator": {"enabled": true}}));
+    std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
+    std::env::set_var("FAKE_CLAUDE_RECORD", &sb.record_file);
+    let _sc_guard = EnvVarGuard("FAKE_CLAUDE_SCENARIO");
+    let _rec_guard = EnvVarGuard("FAKE_CLAUDE_RECORD");
+
+    // 1. Without departments.json: mac-dinh is default
+    let tmp_cfg1 = tempfile::tempdir().unwrap();
+    std::env::set_var("AGENT_BRAIN_CONFIG_DIR", tmp_cfg1.path());
+    let _cfg_guard = EnvVarGuard("AGENT_BRAIN_CONFIG_DIR");
+
+    let fake_result = valid_tasks_json();
+    sb.write_scenario(json!({
+        "events": [
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": fake_result
+            }
+        ]
+    }));
+    let id1 = queued(&sb, "Yêu cầu 1");
+    let st = app_state(&sb);
+    agent_brain::orchestrator::tick(&st).expect("tick 1");
+    let in1 = intake_of(&sb, id1);
+    assert_eq!(in1.status, "proposed");
+
+    let records1 = std::fs::read_to_string(&sb.record_file).expect("read record 1");
+    let last1: serde_json::Value = serde_json::from_str(records1.lines().last().unwrap()).unwrap();
+    let argv1 = last1["argv"].as_array().unwrap();
+    let prompt_idx1 = argv1
+        .iter()
+        .position(|x| x == "--append-system-prompt" || x == "--system-prompt")
+        .unwrap();
+    let system_prompt1 = argv1[prompt_idx1 + 1].as_str().unwrap();
+
+    assert!(
+        system_prompt1.contains("- tên: \"mac-dinh\"") && system_prompt1.contains("\"mac-dinh\", mô tả: \"Mọi vai trò chạy bằng claude theo profile của dự án.\" (mặc định)"),
+        "mac-dinh should be marked default without departments. Prompt:\n{system_prompt1}"
+    );
+    assert!(
+        !system_prompt1.contains("- tên: \"phong-ban\"") || !system_prompt1.contains("\"phong-ban\", mô tả: \"Chọn thành viên theo phòng ban và độ khó (departments.json); vai chưa có thành viên chạy claude.\" (mặc định)"),
+        "phong-ban should NOT be marked default without departments"
+    );
+
+    // 2. With departments.json having members: phong-ban is default
+    let dept_json = json!({
+        "thi-cong": {
+            "members": {
+                "dev-1": {
+                    "display_name": "Dev 1",
+                    "engine": "claude",
+                    "model": "claude-sonnet-5-5",
+                    "levels": ["de", "vua", "kho"]
+                }
+            }
+        }
+    });
+    let tmp_cfg2 = tempfile::tempdir().unwrap();
+    std::fs::write(tmp_cfg2.path().join("departments.json"), dept_json.to_string()).unwrap();
+    std::env::set_var("AGENT_BRAIN_CONFIG_DIR", tmp_cfg2.path());
+
+    let _ = std::fs::remove_file(&sb.record_file);
+    let id2 = queued(&sb, "Yêu cầu 2");
+    agent_brain::orchestrator::tick(&st).expect("tick 2");
+    assert_eq!(intake_of(&sb, id2).status, "proposed");
+
+    let records2 = std::fs::read_to_string(&sb.record_file).expect("read record 2");
+    let last2: serde_json::Value = serde_json::from_str(records2.lines().last().unwrap()).unwrap();
+    let argv2 = last2["argv"].as_array().unwrap();
+    let prompt_idx2 = argv2
+        .iter()
+        .position(|x| x == "--append-system-prompt" || x == "--system-prompt")
+        .unwrap();
+    let system_prompt2 = argv2[prompt_idx2 + 1].as_str().unwrap();
+
+    assert!(
+        system_prompt2.contains("\"phong-ban\", mô tả: \"Chọn thành viên theo phòng ban và độ khó (departments.json); vai chưa có thành viên chạy claude.\" (mặc định)"),
+        "phong-ban should be marked default when departments have members. Prompt:\n{system_prompt2}"
+    );
+    assert!(
+        !system_prompt2.contains("\"mac-dinh\", mô tả: \"Mọi vai trò chạy bằng claude theo profile của dự án.\" (mặc định)"),
+        "mac-dinh should NOT be marked default when departments have members"
+    );
+}
+
+

@@ -349,6 +349,21 @@ pub fn approve_check(conn: &Connection, task: &TaskRow, root: &Path) -> Result<S
             "Plan hiện tại đã được duyệt lúc {at} — không duyệt lại"
         ));
     }
+    let plan_text = match crate::gitops::git(root, &["show", &format!("{plan_commit}:.plan.md")]) {
+        Ok(t) => t,
+        Err(_) => return Err("Không đọc được .plan.md từ commit của plan".to_string()),
+    };
+    let parsed_plan = crate::planfile::parse_plan(&plan_text);
+    let grants = crate::planfile::run_grants(&parsed_plan);
+    let grant_errors = crate::planfile::validate_grants(&grants, Some(root));
+    if !grant_errors.is_empty() {
+        let list = grant_errors
+            .iter()
+            .map(|e| format!("  - {e}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(format!("Plan có quyền không hợp lệ:\n{list}"));
+    }
     Ok(plan_commit)
 }
 
@@ -480,5 +495,26 @@ mod tests {
         assert_eq!(more_round_grant(Some(2), Some(3)), 1);
         assert_eq!(more_round_grant(None, Some(3)), 1);
         assert_eq!(more_round_grant(Some(4), None), 1);
+    }
+
+    #[test]
+    fn approve_check_rejects_invalid_grants() {
+        let (dir, conn, id) = fresh_task();
+        conn.execute("UPDATE tasks SET workflow_json = '{}' WHERE id = ?1", rusqlite::params![id]).unwrap();
+        let root = dir.path();
+        let _ = std::process::Command::new("git").args(["init"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["config", "user.name", "Test"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["config", "user.email", "test@example.com"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["checkout", "-b", "t"]).current_dir(root).output();
+
+        let plan_content = "# Kế hoạch\n\n## Lệnh được chạy\n- `git add foo/*`\n";
+        std::fs::write(root.join(".plan.md"), plan_content).unwrap();
+        let _ = std::process::Command::new("git").args(["add", ".plan.md"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["commit", "-m", "t: plan"]).current_dir(root).output();
+
+        let task = crate::db::get_task(&conn, id).unwrap().unwrap();
+        let err = approve_check(&conn, &task, root).unwrap_err();
+        assert!(err.contains("Plan có quyền không hợp lệ"), "{err}");
+        assert!(err.contains("git add foo/*"), "{err}");
     }
 }

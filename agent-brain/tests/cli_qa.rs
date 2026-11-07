@@ -850,3 +850,63 @@ fn qa_without_product_section_adds_no_product_check() {
     assert!(!stdout.contains("Thiếu sản phẩm"));
     assert!(!report.contains("Kiểm tra sản phẩm"), "{report}");
 }
+
+#[test]
+fn qa_file_under_write_dir_is_restored_with_warning() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+    let mut plan_content = protocol::plan_text(
+        "test-task",
+        &[("src/app.py", "app()", "trả về 2", "demo")],
+        "echo ok",
+        "",
+    );
+    plan_content.push_str("\n## Thư mục được ghi\n- `results/`\n");
+    let sc_lead = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": "src/app.py"},
+            {"op": "write", "path": ".plan.md", "content": plan_content, "keep_meta": true},
+            {"op": "git", "args": ["add", ".plan.md"]},
+            {"op": "git", "args": ["commit", "-m", "test-task: plan"]}
+        ]
+    });
+    let res_lead = sb.run(&["run", "lead", "web-ban-hang", "test-task"], Some(sc_lead));
+    assert_eq!(res_lead.code, 0, "Lead stderr: {}\nstdout: {}", res_lead.stderr, res_lead.stdout);
+
+    let sc_dev = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "write", "path": "src/app.py", "content": "print('hello')\n"},
+            {"op": "git", "args": ["add", "src/app.py"]},
+            {"op": "git", "args": ["commit", "-m", "test-task: dev"]}
+        ]
+    });
+    let res_dev = sb.run(&["run", "dev", "web-ban-hang"], Some(sc_dev));
+    assert_eq!(res_dev.code, 0);
+
+    let qa_report = "\
+# QA: test-task
+## Kết luận
+Đạt
+";
+    let sc_qa = serde_json::json!({
+        "ops": [
+            {"op": "write", "path": ".qa-report.md", "content": qa_report, "keep_meta": true},
+            {"op": "write", "path": "results/report.json", "content": "{\"status\":\"ok\"}\n"}
+        ]
+    });
+    let res_qa = sb.run(&["run", "qa", "web-ban-hang"], Some(sc_qa));
+    assert_eq!(res_qa.code, 0, "QA must succeed: stdout={}\nstderr={}", res_qa.stdout, res_qa.stderr);
+    assert!(!repo.join("results/report.json").exists(), "file under write_dir should be restored/removed");
+    assert!(res_qa.stdout.contains("bị đổi trong lúc QA — đã khôi phục"));
+
+    let sc_qa_violation = serde_json::json!({
+        "ops": [
+            {"op": "write", "path": ".qa-report.md", "content": qa_report, "keep_meta": true},
+            {"op": "write", "path": "outside.txt", "content": "bad\n"}
+        ]
+    });
+    let res_qa_viol = sb.run(&["run", "qa", "web-ban-hang"], Some(sc_qa_violation));
+    assert_eq!(res_qa_viol.code, 3);
+    assert!(res_qa_viol.stdout.contains("vi phạm giao thức"));
+}
