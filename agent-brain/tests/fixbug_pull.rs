@@ -24,6 +24,7 @@ fn setup_sandbox_db(root: &std::path::Path) -> rusqlite::Connection {
         repo: None,
         missing: false,
         stack: vec![],
+        read_sources: vec![],
     };
     sync_projects(&conn, &[project]).expect("sync projects");
     conn

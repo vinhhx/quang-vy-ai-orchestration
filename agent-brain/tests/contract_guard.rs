@@ -327,6 +327,7 @@ fn hook_settings_shape_and_quoting() {
         Some(&[app_py.clone()]),
         &[app_py.clone()],
         &exe,
+        &[],
     )
     .expect("write_hook_settings");
 
@@ -427,7 +428,7 @@ fn read_free_mode_when_read_allow_none() {
     let run_dir = temp_path.join("run");
     let exe = common::bin();
 
-    agent_brain::guard::write_hook_settings(&run_dir, &root, None, &[], &exe)
+    agent_brain::guard::write_hook_settings(&run_dir, &root, None, &[], &exe, &[])
         .expect("write_hook_settings");
 
     let policy_path = run_dir.join("policy.json");

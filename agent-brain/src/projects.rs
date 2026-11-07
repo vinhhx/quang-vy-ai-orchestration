@@ -17,6 +17,7 @@ pub struct Project {
     pub repo: Option<String>,
     pub missing: bool,
     pub stack: Vec<String>,
+    pub read_sources: Vec<String>,
 }
 
 impl Project {
@@ -84,6 +85,16 @@ impl Project {
             })
             .unwrap_or_default();
 
+        let read_sources = obj
+            .get("read_sources")
+            .and_then(|s| s.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Some(Project {
             id,
             path,
@@ -94,6 +105,7 @@ impl Project {
             repo,
             missing,
             stack,
+            read_sources,
         })
     }
 
@@ -109,6 +121,76 @@ pub fn projects_of(map: &serde_json::Value) -> Vec<Project> {
     } else {
         Vec::new()
     }
+}
+
+pub fn read_source_paths(
+    map: &serde_json::Value,
+    project: &Project,
+) -> (Vec<(String, PathBuf)>, Vec<String>) {
+    let mut sources = Vec::new();
+    let mut warnings = Vec::new();
+
+    let all_projects = projects_of(map);
+    let cur_root = project.root();
+    let cur_real = std::fs::canonicalize(&cur_root).unwrap_or_else(|_| cur_root.clone());
+
+    for src_id in &project.read_sources {
+        if src_id == &project.id {
+            warnings.push(format!("Bỏ qua dự án nguồn trùng chính nó: '{src_id}'"));
+            continue;
+        }
+        let src_proj = match all_projects.iter().find(|p| p.id == *src_id) {
+            Some(p) => p,
+            None => {
+                warnings.push(format!("Bỏ qua dự án nguồn không tồn tại: '{src_id}'"));
+                continue;
+            }
+        };
+        if src_proj.missing {
+            warnings.push(format!("Bỏ qua dự án nguồn bị missing: '{src_id}'"));
+            continue;
+        }
+        let src_root = src_proj.root();
+        let src_real = match std::fs::canonicalize(&src_root) {
+            Ok(p) => p,
+            Err(_) => {
+                warnings.push(format!(
+                    "Bỏ qua dự án nguồn có thư mục không tồn tại: '{src_id}' ({})",
+                    src_root.display()
+                ));
+                continue;
+            }
+        };
+        if src_real == cur_real || src_real.starts_with(&cur_real) || cur_real.starts_with(&src_real) {
+            warnings.push(format!(
+                "Bỏ qua dự án nguồn '{src_id}' vì thư mục chồng lấn với dự án hiện tại"
+            ));
+            continue;
+        }
+        sources.push((src_id.clone(), src_real));
+    }
+
+    (sources, warnings)
+}
+
+pub fn read_sources_prompt_block(
+    map: &serde_json::Value,
+    project: &Project,
+) -> (String, Vec<String>) {
+    let (paths, warnings) = read_source_paths(map, project);
+    if paths.is_empty() {
+        return (String::new(), warnings);
+    }
+    let mut block = String::from("## Dự án nguồn (chỉ đọc)\n");
+    for (id, path) in &paths {
+        let kn = match crate::knowledge::find(path) {
+            Some(home) => format!(" — thư mục tri thức: {}", home.rel),
+            None => String::new(),
+        };
+        block.push_str(&format!("- {}: {}{}\n", id, path.display(), kn));
+    }
+    block.push_str("Đọc bằng đường dẫn tuyệt đối. Không ghi, không chạy lệnh trong các thư mục này, không đọc file .env*.");
+    (block, warnings)
 }
 
 pub fn workflow_of(map: &serde_json::Value, project_id: &str) -> Option<String> {
@@ -214,7 +296,12 @@ pub fn select_project(query: &str, map: &serde_json::Value) -> BrainResult<Proje
                 );
             } else {
                 for c in &err.candidates {
-                    lines.push(format!("  {}\t{}\t{}", c.id, c.name_vi, c.path));
+                    let sources_str = if c.read_sources.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [nguồn: {}]", c.read_sources.join(", "))
+                    };
+                    lines.push(format!("  {}\t{}\t{}{}", c.id, c.name_vi, c.path, sources_str));
                 }
             }
             Err(BrainError::new(
@@ -908,6 +995,28 @@ pub fn cmd_add(path: &str, kind: Option<&str>) -> BrainResult<i32> {
     Ok(0)
 }
 
+pub fn cmd_list() -> BrainResult<i32> {
+    let map_path = crate::config::map_path();
+    let map = load_map(&map_path)?;
+    let projects = projects_of(&map);
+    if projects.is_empty() {
+        crate::term::emit_out("Chưa có dự án nào trong projects_map.json");
+        return Ok(0);
+    }
+    for p in projects {
+        let sources_str = if p.read_sources.is_empty() {
+            String::new()
+        } else {
+            format!(" [nguồn: {}]", p.read_sources.join(", "))
+        };
+        crate::term::emit_out(&format!(
+            "{}\t{}\t{}{}",
+            p.id, p.name_vi, p.path, sources_str
+        ));
+    }
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -955,6 +1064,7 @@ mod tests {
             profile: "work".into(),
             missing: false,
             stack: vec![],
+            read_sources: vec![],
         }
     }
 

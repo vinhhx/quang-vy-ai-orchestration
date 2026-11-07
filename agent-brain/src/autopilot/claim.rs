@@ -378,6 +378,7 @@ mod tests {
             repo: None,
             missing: false,
             stack: vec![],
+            read_sources: vec![],
         };
         sync_projects(&conn, &[project]).expect("sync projects");
         let project_id = project_row_id(&conn, "demo").expect("project id");

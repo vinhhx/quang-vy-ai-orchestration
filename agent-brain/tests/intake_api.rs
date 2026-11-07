@@ -315,6 +315,7 @@ fn next_approved_proposal_ordering_and_count_active_tasks() {
         repo: None,
         missing: false,
         stack: vec![],
+        read_sources: vec![],
     };
     agent_brain::db::sync_projects(&conn, &[p]).unwrap();
     let proj_id = agent_brain::db::project_row_id(&conn, "proj").unwrap();

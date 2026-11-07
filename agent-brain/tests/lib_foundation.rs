@@ -130,6 +130,7 @@ fn routing_normalize_slugify_resolve() {
         repo: None,
         missing: false,
         stack: vec![],
+        read_sources: vec![],
     };
     let p2 = agent_brain::projects::Project {
         id: "kho-anh".to_string(),
@@ -141,6 +142,7 @@ fn routing_normalize_slugify_resolve() {
         repo: None,
         missing: false,
         stack: vec![],
+        read_sources: vec![],
     };
     let projects = vec![p1, p2];
 
@@ -252,6 +254,7 @@ fn require_runnable_checks() {
         repo: None,
         missing: true,
         stack: vec![],
+        read_sources: vec![],
     };
     let err = agent_brain::projects::require_runnable(&p, &cfg).unwrap_err();
     assert_eq!(err.code, 1);
@@ -525,6 +528,7 @@ fn db_task_run_event_api() {
         repo: None,
         missing: false,
         stack: vec![],
+        read_sources: vec![],
     };
     let p2 = agent_brain::projects::Project {
         id: "kho-anh".to_string(),
@@ -536,6 +540,7 @@ fn db_task_run_event_api() {
         repo: None,
         missing: false,
         stack: vec![],
+        read_sources: vec![],
     };
 
     agent_brain::db::sync_projects(&conn, &[p1.clone(), p2.clone()]).unwrap();
@@ -744,6 +749,7 @@ fn tasks_current_task_and_adoption() {
         repo: None,
         missing: false,
         stack: vec![],
+        read_sources: vec![],
     };
     agent_brain::db::sync_projects(&conn, &[p]).unwrap();
     let proj_row_id = agent_brain::db::project_row_id(&conn, "proj").unwrap();
@@ -850,6 +856,7 @@ fn reconcile_marks_only_dead_runs_lost() {
         repo: None,
         missing: false,
         stack: vec![],
+        read_sources: vec![],
     };
     agent_brain::db::sync_projects(&conn, &[p]).unwrap();
     let proj_row_id = agent_brain::db::project_row_id(&conn, "proj").unwrap();

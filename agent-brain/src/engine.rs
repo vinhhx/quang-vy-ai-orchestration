@@ -909,6 +909,17 @@ fn agy_plan(
         argv.push(acfg.dev_permission.clone());
     }
 
+    let mut i = 0;
+    while i < claude_argv.len() {
+        if claude_argv[i] == "--add-dir" && i + 1 < claude_argv.len() {
+            argv.push("--add-dir".to_string());
+            argv.push(claude_argv[i + 1].clone());
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
     // agy never sees claude credentials or config, nor any engine's key (T-06-35, T-06-45).
     let mut env = base_env;
     env.retain(|k, _| {
@@ -978,6 +989,7 @@ mod tests {
             allowed_tools: vec![],
             disallowed_tools: vec![],
             extra_args: vec![],
+            source_paths: vec![],
         };
         let argv = crate::roles::build_command_with_prompt(&spec, &cfg, "luật của dev").unwrap();
         assert_eq!(

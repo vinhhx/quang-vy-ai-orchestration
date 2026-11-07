@@ -215,6 +215,7 @@ fn test_f_run_dir_prompt_md_created_and_matches() {
         allowed_tools: vec![],
         disallowed_tools: vec![],
         extra_args: vec![],
+        source_paths: vec![],
     };
     let cfg = agent_brain::config::config_from_value(&serde_json::from_str(agent_brain::config::DEFAULT_CONFIG_JSON).unwrap()).unwrap();
     let (cmd, _) = agent_brain::roles::build_command_layered(&spec, &cfg, base, &layers).unwrap();
@@ -248,6 +249,7 @@ fn test_g_prompt_show_cli() {
         repo: None,
         missing: false,
         stack: vec!["rust".to_string()],
+        read_sources: vec![],
     };
     agent_brain::db::sync_projects(&conn, std::slice::from_ref(&p)).unwrap();
 

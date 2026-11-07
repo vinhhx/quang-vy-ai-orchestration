@@ -354,7 +354,7 @@ async fn preview_prompt(
             Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, &e)),
         };
 
-        let layers = if let Some(proj_id) = q.project.as_deref().filter(|s| !s.trim().is_empty()) {
+        let (layers, proj_opt, map_opt) = if let Some(proj_id) = q.project.as_deref().filter(|s| !s.trim().is_empty()) {
             let map = match crate::projects::load_map(&st.map_path) {
                 Ok(m) => m,
                 Err(e) => return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message)),
@@ -365,18 +365,23 @@ async fn preview_prompt(
                 Err(e) => return Ok(json_error(StatusCode::NOT_FOUND, &e.message)),
             };
 
-            crate::prompts::layers_for(
+            let l = crate::prompts::layers_for(
                 &proj,
                 q.workflow.as_deref().filter(|s| !s.trim().is_empty()),
                 q.team.as_deref().filter(|s| !s.trim().is_empty()),
-            )
+            );
+            (l, Some(proj), Some(map))
         } else {
-            crate::prompts::PromptLayers {
-                stacks: vec![],
-                project: None,
-                workflow: q.workflow.as_deref().filter(|s| !s.trim().is_empty()).map(str::to_string),
-                team: q.team.as_deref().filter(|s| !s.trim().is_empty()).map(str::to_string),
-            }
+            (
+                crate::prompts::PromptLayers {
+                    stacks: vec![],
+                    project: None,
+                    workflow: q.workflow.as_deref().filter(|s| !s.trim().is_empty()).map(str::to_string),
+                    team: q.team.as_deref().filter(|s| !s.trim().is_empty()).map(str::to_string),
+                },
+                None,
+                None,
+            )
         };
 
         let (mut composed, mut warnings) = crate::prompts::compose(base, &q.role, &layers);
@@ -389,6 +394,19 @@ async fn preview_prompt(
             composed.push('\n');
             composed.push_str(extra.trim());
             composed.push('\n');
+        }
+
+        if let (Some(proj), Some(map)) = (proj_opt, map_opt) {
+            let (sources_block, source_warns) = crate::projects::read_sources_prompt_block(&map, &proj);
+            warnings.extend(source_warns);
+            if !sources_block.trim().is_empty() {
+                if !composed.ends_with('\n') {
+                    composed.push('\n');
+                }
+                composed.push('\n');
+                composed.push_str(sources_block.trim());
+                composed.push('\n');
+            }
         }
 
         Ok((

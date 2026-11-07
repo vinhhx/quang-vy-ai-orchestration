@@ -23,7 +23,7 @@ enum Commands {
     /// Quản lý danh sách dự án
     Projects {
         #[command(subcommand)]
-        subcommand: ProjectsCommands,
+        subcommand: Option<ProjectsCommands>,
     },
     /// Chạy tác vụ theo vai trò (lead, dev, qa, plan-review, code-review, analyst)
     Run {
@@ -290,6 +290,8 @@ enum TelegramCommands {
 
 #[derive(Subcommand, Debug)]
 enum ProjectsCommands {
+    /// Danh sách dự án
+    List,
     /// Quét thư mục tìm dự án
     Scan {
         /// Thư mục gốc cần quét
@@ -380,8 +382,9 @@ fn main() {
             ),
         },
         Commands::Projects { subcommand } => match subcommand {
-            ProjectsCommands::Scan { roots } => projects::cmd_scan(&roots),
-            ProjectsCommands::Add { path, r#type } => projects::cmd_add(&path, r#type.as_deref()),
+            None | Some(ProjectsCommands::List) => projects::cmd_list(),
+            Some(ProjectsCommands::Scan { roots }) => projects::cmd_scan(&roots),
+            Some(ProjectsCommands::Add { path, r#type }) => projects::cmd_add(&path, r#type.as_deref()),
         },
         Commands::Prompt { subcommand } => match subcommand {
             PromptCommands::Show {

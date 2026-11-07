@@ -221,6 +221,9 @@ pub fn cmd_review(
         ReviewKind::Code => crate::roles::Role::CodeReview,
     };
 
+    let (sources, _) = crate::projects::read_source_paths(&ctx.map, &proj);
+    let source_paths: Vec<std::path::PathBuf> = sources.into_iter().map(|(_, p)| p).collect();
+
     if opts.dry_run {
         if kind == ReviewKind::Code {
             crate::term::emit_out(&format!("Diff command: {diff_cmd}"));
@@ -265,6 +268,7 @@ pub fn cmd_review(
                 "--settings".to_string(),
                 "<run_dir/settings.json>".to_string(),
             ],
+            source_paths: source_paths.clone(),
         };
         let (argv, warnings) = crate::roles::build_command_layered(
             &spec_dry,
@@ -295,6 +299,7 @@ pub fn cmd_review(
         None,
         &[proj_path.join(kind.file())],
         &exe,
+        &source_paths,
     )?;
 
     let report_path = proj_path.join(kind.file());
@@ -324,6 +329,7 @@ pub fn cmd_review(
             "--settings".to_string(),
             settings.to_string_lossy().to_string(),
         ],
+        source_paths,
     };
 
     let workflow = task_id.and_then(|tid| {

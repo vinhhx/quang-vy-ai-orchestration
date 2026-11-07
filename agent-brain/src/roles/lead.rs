@@ -308,6 +308,9 @@ pub fn cmd_lead(
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
 
+    let (sources, _) = crate::projects::read_source_paths(&ctx.map, &proj);
+    let source_paths: Vec<std::path::PathBuf> = sources.into_iter().map(|(_, p)| p).collect();
+
     if opts.dry_run {
         let spec_dry = crate::roles::RoleSpec {
             role: crate::roles::Role::Lead,
@@ -318,6 +321,7 @@ pub fn cmd_lead(
                 "--settings".to_string(),
                 "<run_dir/settings.json>".to_string(),
             ],
+            source_paths: source_paths.clone(),
         };
         let layers = crate::prompts::PromptLayers {
             stacks: proj.stack.clone(),
@@ -531,6 +535,7 @@ pub fn cmd_lead(
                 "--settings".to_string(),
                 settings.to_string_lossy().to_string(),
             ],
+            source_paths: source_paths.clone(),
         };
 
         let layers = crate::prompts::PromptLayers {

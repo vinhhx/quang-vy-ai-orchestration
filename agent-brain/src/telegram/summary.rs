@@ -707,6 +707,7 @@ mod tests {
             repo: None,
             missing: false,
             stack: vec![],
+            read_sources: vec![],
         };
         let (teams, staff) = crate::teams::load();
         TaskState {

@@ -498,6 +498,7 @@ r#"Phân tích yêu cầu sau và trả về JSON đề xuất công việc:
             "TodoWrite".to_string(),
         ],
         extra_args: Vec::new(),
+        source_paths: Vec::new(),
     };
     let argv = crate::roles::build_command_with_prompt(&spec, &st.cfg, &system_prompt)?;
 

@@ -245,6 +245,9 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
 
+    let (sources, _) = crate::projects::read_source_paths(&ctx.map, &proj);
+    let source_paths: Vec<std::path::PathBuf> = sources.into_iter().map(|(_, p)| p).collect();
+
     if dry_run {
         crate::term::emit_out(&format!("Diff command: {diff_cmd}"));
         let existing_task_id = crate::db::project_row_id(&ctx.conn, &proj.id)
@@ -295,6 +298,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
                 "--settings".to_string(),
                 "<run_dir/settings.json>".to_string(),
             ],
+            source_paths: source_paths.clone(),
         };
         let (argv, warnings) = crate::roles::build_command_layered(
             &spec_dry,
@@ -357,6 +361,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
             "--settings".to_string(),
             settings.to_string_lossy().to_string(),
         ],
+        source_paths,
     };
 
     let workflow = task_id.and_then(|tid| {

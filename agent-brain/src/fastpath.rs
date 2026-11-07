@@ -23,6 +23,9 @@ pub fn cmd_status(ctx: &mut Ctx, project_query: &str) -> BrainResult<i32> {
     }
 
     term::emit_out(&format!("Dự án: {} ({})", project.id, root.display()));
+    if !project.read_sources.is_empty() {
+        term::emit_out(&format!("Dự án nguồn (chỉ đọc): {}", project.read_sources.join(", ")));
+    }
 
     let branch = crate::gitops::current_branch(&root).unwrap_or_else(|| "(detached)".to_string());
     term::emit_out(&format!("Nhánh: {branch}"));

@@ -24,6 +24,8 @@ pub struct Policy {
     pub write_files: Vec<PathBuf>,
     /// Command patterns the approved plan lets the Dev run; `None` = no extra rule (old policy).
     pub bash_allow: Option<Vec<String>>,
+    /// Read-only source project roots (absolute, realpath).
+    pub source_roots: Vec<PathBuf>,
 }
 
 /// The skill-mode part of a Dev run's policy, built from an approved plan's grants.
@@ -34,6 +36,7 @@ pub struct GuardGrants {
     pub read_files: Vec<PathBuf>,
     pub write_files: Vec<PathBuf>,
     pub bash_allow: Option<Vec<String>>,
+    pub source_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -196,6 +199,18 @@ pub fn decide(policy: &Policy, payload: &serde_json::Value) -> Decision {
         .map(|list| list.iter().map(|p| realpath_nfc(p)).collect());
 
     if is_write {
+        for sr in &policy.source_roots {
+            let sr_real = realpath_nfc(sr);
+            if resolved.starts_with(&sr_real) {
+                return Decision {
+                    allow: false,
+                    tool: tool_name.to_string(),
+                    path: raw_path_str,
+                    reason: "thuộc dự án nguồn chỉ đọc".to_string(),
+                };
+            }
+        }
+
         if write_allow.contains(&resolved) {
             Decision {
                 allow: true,
@@ -232,6 +247,27 @@ pub fn decide(policy: &Policy, payload: &serde_json::Value) -> Decision {
         }
     } else {
         let read_allow_vec = read_allow.unwrap();
+
+        let mut in_source = None;
+        for sr in &policy.source_roots {
+            let sr_real = realpath_nfc(sr);
+            if let Ok(rel) = resolved.strip_prefix(&sr_real) {
+                in_source = Some(rel.to_path_buf());
+                break;
+            }
+        }
+
+        if let Some(rel) = in_source {
+            if !grant_denied_rel(&rel.to_string_lossy()) {
+                return Decision {
+                    allow: true,
+                    tool: tool_name.to_string(),
+                    path: raw_path_str,
+                    reason: "in read-only source project".to_string(),
+                };
+            }
+        }
+
         if tool_name == "Grep" || tool_name == "Glob" {
             Decision {
                 allow: false,
@@ -430,6 +466,20 @@ fn agy_listing_decision(policy: &Policy, tool_name: &str, raw_path: &str) -> Dec
         policy.root.join(&norm)
     };
     let resolved = realpath_nfc(&joined);
+
+    for sr in &policy.source_roots {
+        let sr_real = realpath_nfc(sr);
+        if let Ok(rel) = resolved.strip_prefix(&sr_real) {
+            if grant_denied_rel(&rel.to_string_lossy()) {
+                return decision(
+                    false,
+                    format!("{} không được xem (đường dẫn bị cấm)", resolved.display()),
+                );
+            }
+            return decision(true, "in read-only source project".to_string());
+        }
+    }
+
     let root_real = realpath_nfc(&policy.root);
     let Ok(rel) = resolved.strip_prefix(&root_real) else {
         return decision(false, format!("{} ngoài thư mục dự án", resolved.display()));
@@ -2142,7 +2192,12 @@ pub fn write_hook_settings(
     read_allow: Option<&[PathBuf]>,
     write_allow: &[PathBuf],
     exe: &Path,
+    source_roots: &[PathBuf],
 ) -> BrainResult<PathBuf> {
+    let grants = GuardGrants {
+        source_roots: source_roots.to_vec(),
+        ..GuardGrants::default()
+    };
     write_hook_settings_with_matcher(
         run_dir,
         root,
@@ -2150,7 +2205,7 @@ pub fn write_hook_settings(
         write_allow,
         exe,
         GUARD_MATCHER,
-        &GuardGrants::default(),
+        &grants,
     )
 }
 
@@ -2162,7 +2217,14 @@ pub fn write_hook_settings_grants(
     write_allow: &[PathBuf],
     exe: &Path,
     grants: &GuardGrants,
+    source_roots: &[PathBuf],
 ) -> BrainResult<PathBuf> {
+    let mut g = grants.clone();
+    for sr in source_roots {
+        if !g.source_roots.contains(sr) {
+            g.source_roots.push(sr.clone());
+        }
+    }
     write_hook_settings_with_matcher(
         run_dir,
         root,
@@ -2170,7 +2232,7 @@ pub fn write_hook_settings_grants(
         write_allow,
         exe,
         GUARD_MATCHER,
-        grants,
+        &g,
     )
 }
 
@@ -2258,6 +2320,13 @@ fn write_hook_settings_with_matcher(
     }
     if let Some(list) = &grants.bash_allow {
         policy_data["bash_allow"] = serde_json::json!(list);
+    }
+    if !grants.source_roots.is_empty() {
+        policy_data["source_roots"] = serde_json::json!(grants
+            .source_roots
+            .iter()
+            .map(|p| realpath_nfc(p).to_string_lossy().to_string())
+            .collect::<Vec<_>>());
     }
 
     std::fs::write(
@@ -2406,6 +2475,7 @@ pub fn load_policy(policy_path: &Path) -> Result<Policy, String> {
         read_files: path_list("read_files"),
         write_files: path_list("write_files"),
         bash_allow,
+        source_roots: path_list("source_roots"),
     })
 }
 
@@ -2747,6 +2817,7 @@ mod tests {
             read_files: vec![],
             write_files: vec![],
             bash_allow: Some(vec!["python scripts/make.py *".to_string()]),
+            source_roots: vec![],
         }
     }
 
@@ -2928,7 +2999,7 @@ mod tests {
         let root = td.path().join("proj");
         std::fs::create_dir_all(&root).unwrap();
         let exe = std::env::current_exe().unwrap();
-        write_hook_settings(&run, &root, None, &[], &exe).unwrap();
+        write_hook_settings(&run, &root, None, &[], &exe, &[]).unwrap();
         let old: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(run.join("policy.json")).unwrap())
                 .unwrap();
@@ -2941,7 +3012,7 @@ mod tests {
             bash_allow: Some(vec!["python x.py *".to_string()]),
             ..GuardGrants::default()
         };
-        write_hook_settings_grants(&run, &root, None, &[], &exe, &g).unwrap();
+        write_hook_settings_grants(&run, &root, None, &[], &exe, &g, &[]).unwrap();
         let new: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(run.join("policy.json")).unwrap())
                 .unwrap();
@@ -3048,7 +3119,7 @@ mod tests {
             write_files: vec![root.join("b.md")],
             ..GuardGrants::default()
         };
-        write_hook_settings_grants(&run, &root, None, &[], &exe, &g).unwrap();
+        write_hook_settings_grants(&run, &root, None, &[], &exe, &g, &[]).unwrap();
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(run.join("policy.json")).unwrap())
                 .unwrap();
@@ -3361,7 +3432,7 @@ mod tests {
             bash_allow: Some(vec!["make test".to_string()]),
             ..GuardGrants::default()
         };
-        write_hook_settings_grants(&run, &root, Some(&[root.join("a.md")]), &[], &exe, &g).unwrap();
+        write_hook_settings_grants(&run, &root, Some(&[root.join("a.md")]), &[], &exe, &g, &[]).unwrap();
         let pol = load_policy(&run.join("policy.json")).unwrap();
         assert_eq!(pol.bash_allow, Some(vec!["make test".to_string()]));
         assert_eq!(pol.read_allow.as_ref().map(|v| v.len()), Some(1));

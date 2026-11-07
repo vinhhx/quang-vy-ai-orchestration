@@ -514,6 +514,18 @@ pub fn cmd_show(
         composed.push_str(extra.trim());
         composed.push('\n');
     }
+    let (sources_block, source_warns) = crate::projects::read_sources_prompt_block(&ctx.map, &proj);
+    for w in &source_warns {
+        crate::term::emit(w);
+    }
+    if !sources_block.trim().is_empty() {
+        if !composed.ends_with('\n') {
+            composed.push('\n');
+        }
+        composed.push('\n');
+        composed.push_str(sources_block.trim());
+        composed.push('\n');
+    }
     print!("{composed}");
     if !composed.ends_with('\n') {
         println!();

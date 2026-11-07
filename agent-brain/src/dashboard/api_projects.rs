@@ -2,11 +2,12 @@
 
 use crate::dashboard::{blocking, json_error, AppState};
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::Json;
 use axum::Router;
+use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hasher};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -89,6 +90,7 @@ fn project_json(
         "repo": p.repo,
         "missing": p.missing,
         "stack": p.stack,
+        "read_sources": p.read_sources,
         "workflow": crate::projects::workflow_of(map, &p.id),
         "runnable_issue": runnable_issue(p, profiles),
     })
@@ -275,6 +277,13 @@ pub struct UpdateStackBody {
 }
 
 #[derive(serde::Deserialize)]
+pub struct UpdateReadSourcesBody {
+    pub read_sources: Vec<String>,
+    #[serde(default)]
+    pub etag: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct FsDirsQuery {
     path: Option<String>,
     hidden: Option<String>,
@@ -295,6 +304,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/projects/{id}/telegram", put(update_telegram))
         .route("/api/projects/{id}/profile", put(update_profile))
         .route("/api/projects/{id}/stack", put(update_stack))
+        .route("/api/projects/{id}/read-sources", post(update_read_sources).put(update_read_sources))
         .route("/api/projects/{id}/status", get(project_status))
 }
 
@@ -636,6 +646,139 @@ async fn update_stack(
         };
 
         project_obj["stack"] = serde_json::Value::Array(
+            cleaned
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        );
+
+        save_and_respond(&st, &data, StatusCode::OK, None)
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+async fn update_read_sources(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(body): Json<UpdateReadSourcesBody>,
+) -> Response {
+    let if_match = headers
+        .get(axum::http::header::IF_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim_matches('"').to_string());
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        let check_etag = body.etag.or(if_match);
+        if let Some(ref req_etag) = check_etag {
+            if req_etag != &current_etag {
+                return conflict_response(&st, current_etag);
+            }
+        }
+
+        if body.read_sources.len() > 5 {
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "application/json; charset=utf-8",
+                )],
+                Json(serde_json::json!({
+                    "error": "Tối đa 5 nguồn",
+                    "errors": [{ "field": "read_sources", "message": "Tối đa 5 nguồn" }]
+                })),
+            )
+                .into_response());
+        }
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        let all_projects = crate::projects::projects_of(&data);
+        if !all_projects.iter().any(|p| p.id == id) {
+            return Ok(json_error(
+                StatusCode::NOT_FOUND,
+                &format!("Không tìm thấy dự án {id}"),
+            ));
+        }
+
+        let mut cleaned = Vec::new();
+        let mut seen = HashSet::new();
+        for s in body.read_sources {
+            let trimmed = s.trim().to_string();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed == id {
+                return Ok((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "application/json; charset=utf-8",
+                    )],
+                    Json(serde_json::json!({
+                        "error": "Không thể tự thêm chính dự án làm nguồn",
+                        "errors": [{ "field": "read_sources", "message": "Không thể tự thêm chính dự án làm nguồn" }]
+                    })),
+                )
+                    .into_response());
+            }
+            if !all_projects.iter().any(|p| p.id == trimmed) {
+                return Ok((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "application/json; charset=utf-8",
+                    )],
+                    Json(serde_json::json!({
+                        "error": format!("Dự án nguồn '{trimmed}' không tồn tại"),
+                        "errors": [{ "field": "read_sources", "message": format!("Dự án nguồn '{trimmed}' không tồn tại") }]
+                    })),
+                )
+                    .into_response());
+            }
+            if !seen.insert(trimmed.clone()) {
+                return Ok((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "application/json; charset=utf-8",
+                    )],
+                    Json(serde_json::json!({
+                        "error": format!("Dự án nguồn '{trimmed}' bị trùng lặp"),
+                        "errors": [{ "field": "read_sources", "message": format!("Dự án nguồn '{trimmed}' bị trùng lặp") }]
+                    })),
+                )
+                    .into_response());
+            }
+            cleaned.push(trimmed);
+        }
+
+        let projects_arr = data
+            .get_mut("projects")
+            .and_then(|p| p.as_array_mut())
+            .ok_or_else(|| {
+                crate::error::BrainError::error("projects_map.json thiếu mảng 'projects'")
+            })?;
+        let project_obj = match projects_arr
+            .iter_mut()
+            .find(|obj| obj.get("id").and_then(|v| v.as_str()) == Some(&id))
+        {
+            Some(obj) => obj,
+            None => {
+                return Ok(json_error(
+                    StatusCode::NOT_FOUND,
+                    &format!("Không tìm thấy dự án {id}"),
+                ))
+            }
+        };
+
+        project_obj["read_sources"] = serde_json::Value::Array(
             cleaned
                 .into_iter()
                 .map(serde_json::Value::String)

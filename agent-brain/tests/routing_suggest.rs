@@ -12,6 +12,7 @@ fn make_proj(id: &str, name_vi: &str, aliases: Vec<&str>) -> Project {
         repo: None,
         missing: false,
         stack: vec![],
+        read_sources: vec![],
     }
 }
 

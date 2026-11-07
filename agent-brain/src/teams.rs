@@ -835,7 +835,7 @@ mod tests {
         );
 
         let r = resolve(&l, None, Some("khong-co")).unwrap();
-        assert_eq!(r.team.name, "mac-dinh");
+        assert_eq!(r.team.name, default_team_name());
         assert_eq!(
             r.note.as_deref(),
             Some("Đội hình 'khong-co' của dự án không có trong teams.json — dùng mac-dinh.")
@@ -846,11 +846,11 @@ mod tests {
         assert_eq!(r.note, None);
 
         let r = resolve(&l, None, Some("  ")).unwrap();
-        assert_eq!(r.team.name, "mac-dinh");
+        assert_eq!(r.team.name, default_team_name());
         assert_eq!(r.note, None);
 
         let r = resolve(&l, None, None).unwrap();
-        assert_eq!(r.team.name, "mac-dinh");
+        assert_eq!(r.team.name, default_team_name());
         assert_eq!(r.note, None);
 
         // An explicit request wins over the project default.

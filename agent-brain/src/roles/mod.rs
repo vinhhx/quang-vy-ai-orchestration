@@ -134,6 +134,7 @@ pub struct RoleSpec {
     pub allowed_tools: Vec<String>,
     pub disallowed_tools: Vec<String>,
     pub extra_args: Vec<String>,
+    pub source_paths: Vec<PathBuf>,
 }
 
 pub fn abs_rules(root: &Path, rel_files: &[&str], tools: &[&str]) -> Vec<String> {
@@ -198,14 +199,27 @@ pub fn build_command_with_prompt(
 
     cmd.extend(spec.extra_args.iter().cloned());
 
-    if !spec.allowed_tools.is_empty() {
-        cmd.push("--allowedTools".to_string());
-        cmd.extend(spec.allowed_tools.iter().cloned());
+    for src in &spec.source_paths {
+        cmd.push("--add-dir".to_string());
+        cmd.push(src.to_string_lossy().to_string());
     }
 
-    if !spec.disallowed_tools.is_empty() {
+    let mut allowed = spec.allowed_tools.clone();
+    let mut disallowed = spec.disallowed_tools.clone();
+    for src in &spec.source_paths {
+        allowed.extend(abs_rules(src, &["**"], &["Read"]));
+        disallowed.extend(abs_rules(src, &["**/.env*", ".env*", ".git/**"], &["Read"]));
+        disallowed.extend(abs_rules(src, &["**"], &["Edit", "Write"]));
+    }
+
+    if !allowed.is_empty() {
+        cmd.push("--allowedTools".to_string());
+        cmd.extend(allowed);
+    }
+
+    if !disallowed.is_empty() {
         cmd.push("--disallowedTools".to_string());
-        cmd.extend(spec.disallowed_tools.iter().cloned());
+        cmd.extend(disallowed);
     }
 
     Ok(cmd)
@@ -379,6 +393,7 @@ pub struct RoleRun {
     pub outcome: RunOutcome,
     pub summary: Summary,
     pub run_dir: PathBuf,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -473,6 +488,14 @@ pub fn execute_role_staged(
         crate::term::emit(w);
     }
     crate::engine::append_to_system_prompt(&mut plan.argv, &dept_extra);
+
+    let map = crate::projects::load_map(&crate::config::map_path()).unwrap_or_default();
+    let (sources_block, source_warnings) =
+        crate::projects::read_sources_prompt_block(&map, project);
+    for w in &source_warnings {
+        crate::term::emit(w);
+    }
+    crate::engine::append_to_system_prompt(&mut plan.argv, &sources_block);
     // ENG-10 / D-36 / D-42 backstop: an engine tied to a profile never runs on a project of
     // another one (SPK-10), whatever team the task row names — a hand-edited team included.
     if let crate::engine::Engine::Named(id) = &resolved.engine {
@@ -590,6 +613,7 @@ pub fn execute_role_staged(
         agy_policy: Option<crate::guard::Policy>,
         agy_checked_steps: std::collections::BTreeSet<i64>,
         violation: Option<String>,
+        source_warnings: Vec<String>,
     }
 
     impl Observer<'_> {
@@ -673,6 +697,12 @@ pub fn execute_role_staged(
             );
             if self.unverified {
                 patch.insert("unverified".to_string(), serde_json::Value::Bool(true));
+            }
+            if !self.source_warnings.is_empty() {
+                patch.insert(
+                    "source_warnings".to_string(),
+                    serde_json::to_value(&self.source_warnings).unwrap_or(serde_json::Value::Null),
+                );
             }
             // ENG-09: what a kill from another process needs to find the container-side
             // processes of this run. Written here, before any kill can arrive.
@@ -784,6 +814,7 @@ pub fn execute_role_staged(
         agy_policy,
         agy_checked_steps: std::collections::BTreeSet::new(),
         violation: None,
+        source_warnings: source_warnings.clone(),
     };
 
     let mut outcome = crate::runner::supervise(&req, &mut obs)?;
@@ -1062,6 +1093,7 @@ pub fn execute_role_staged(
         outcome,
         summary: obs.summary,
         run_dir,
+        warnings: source_warnings,
     })
 }
 

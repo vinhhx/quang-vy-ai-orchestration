@@ -626,6 +626,9 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
 
+    let (sources, _) = crate::projects::read_source_paths(&ctx.map, &proj);
+    let source_paths: Vec<std::path::PathBuf> = sources.into_iter().map(|(_, p)| p).collect();
+
     if dry_run {
         // D-19: a human Dev step runs no command. Read-only lookup, never creates a task row.
         let existing_task_id = crate::db::project_row_id(&ctx.conn, &proj.id)
@@ -675,6 +678,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
                 "--settings".to_string(),
                 "<run_dir/settings.json>".to_string(),
             ],
+            source_paths: source_paths.clone(),
         };
         let base_prompt = if is_fix {
             crate::roles::DEV_FIX_PROMPT
@@ -772,6 +776,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
                 Some(&read_allow),
                 &allow_paths,
                 &exe,
+                &source_paths,
             )?,
             Some(g) => {
                 for f in &grant_skill_files {
@@ -789,6 +794,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
                     read_files: dirs(&g.read_dirs, true),
                     write_files: dirs(&g.write_dirs, true),
                     bash_allow: Some(g.commands.clone()),
+                    source_roots: source_paths.clone(),
                 };
                 crate::guard::write_hook_settings_grants(
                     &run_dir,
@@ -797,6 +803,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
                     &allow_paths,
                     &exe,
                     &guard_grants,
+                    &source_paths,
                 )?
             }
         }
@@ -811,6 +818,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
             "--settings".to_string(),
             settings.to_string_lossy().to_string(),
         ],
+        source_paths,
     };
 
     let workflow = task_id.and_then(|tid| {

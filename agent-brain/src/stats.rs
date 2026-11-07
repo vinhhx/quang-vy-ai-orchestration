@@ -546,6 +546,7 @@ mod tests {
             repo: None,
             missing: false,
             stack: vec![],
+            read_sources: vec![],
         };
         crate::db::sync_projects(&conn, &[p]).unwrap();
         let proj_id = crate::db::project_row_id(&conn, "proj").unwrap();
