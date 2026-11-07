@@ -107,6 +107,31 @@ Kèm một sửa nhỏ: triage chọn đội hình mặc định `teams::default
   - Đúng lúc bắt đầu: gắn câu trả lời của task trước làm tài liệu đầu vào (như mục 4), rồi `move_proposal_inputs_to_task` sau khi task được tạo. Trong scheduler, chỗ `StartOutcome::Started`, cạnh `set_task_level`.
 - Màn hình Điều phối: thẻ đề xuất có `after_proposal_id` hiện chip "Chờ #N xong". `GET` danh sách đề xuất trả thêm `after_proposal_id`, `inputs` (tên).
 
+### 5b. Lỗi phát hiện khi chạy thật (2026-11-07, task #14, #15)
+Làm cùng commit 1 (`fix(...)`, đổi tên commit thành `fix(agent-brain): default team in triage, proposal task link, approved-plan state`).
+
+1. **Đề xuất không ghi `task_id`.**
+   - Hiện tượng: đề xuất #3 và #4 chuyển `started` nhưng `proposals.task_id` là NULL. Task #14, #15 vẫn chạy, nhưng thẻ đề xuất không link sang task. Chuỗi việc ở mục 5 cũng cần liên kết này.
+   - Chỗ sửa: `scheduler::schedule_tick`, nhánh `StartOutcome::Started`. Đoạn tìm task bằng `SELECT id FROM tasks WHERE project_id = ?1 AND slug = ?2` trả về None.
+   - Nguyên nhân cần xác định: có thể `start_new_task` tạo task bất đồng bộ (job), hoặc `info.slug` khác slug đã lưu, hoặc `project_id` khác nhau.
+   - Cách sửa: lấy `task_id` trực tiếp từ `StartOutcome::Started` (thêm trường nếu chưa có) thay vì tra lại theo slug. `set_task_level` cũng dùng id này.
+   - Test: approve đề xuất → schedule_tick → `proposals.task_id` = id task mới, `tasks.level` = level của đề xuất.
+2. **Đã duyệt plan nhưng vẫn hiện "Chờ duyệt plan", Dev không chạy, không có hướng dẫn.**
+   - Hiện tượng: task #15, quy trình `nhanh` (`auto: false`). Người dùng duyệt trên Telegram. DB đã ghi `approved_at` và `approved_commit`, nhưng:
+     - `taskstate.rs` (nhánh `match f.task.status`: `"planned" => "Chờ duyệt plan"`) không xét `approved_commit`, nên dashboard và Telegram vẫn báo "Chờ duyệt plan";
+     - `autopilot::cmd_approve` với quy trình không auto chỉ ghi nhận rồi trả về, không ai chạy Dev, không có lời nhắc.
+
+     Người dùng hiểu là duyệt lỗi.
+   - Sửa:
+     - (a) Banner và chữ trạng thái: `status == "planned"` và `approved_commit` bằng plan commit hiện tại → "Đã duyệt plan — bấm Chạy Dev". Không còn "Chờ duyệt plan".
+     - (b) Kết quả bấm Duyệt trên Telegram (`bot.rs` `on_approve` → `act(..., "approve")`) với quy trình không auto: trả lời "Đã duyệt plan <sha7>. Quy trình không tự chạy — bấm Chạy Dev", và tin nhắn có nút **Chạy Dev** nếu control `run_dev` đang được phép (theo `has_control`). Nếu Telegram chưa có control chạy Dev thì thêm, theo đúng cách các nút hiện có, kèm kiểm `project_telegram_ok` và `rev`.
+     - (c) Dashboard: sau khi duyệt task không auto, màn task hiện nút "Chạy Dev" nổi bật.
+   - Test:
+     - taskstate với `planned` và `approved_commit` khớp → banner mới;
+     - plan commit đổi sau khi duyệt → lại "Chờ duyệt plan";
+     - Telegram approve trên quy trình `auto:false` → tin trả lời có nút Chạy Dev.
+3. **Tin Telegram cũ sau khi plan bị sửa.** Plan được commit lại (`<slug>: plan`) sau khi tin "Chờ duyệt" đã gửi, nên bấm Duyệt trên tin cũ ra "stale". Kiểm tra: khi plan commit đổi trong lúc task ở `planned`, detector gửi tin "Plan đã cập nhật" mới có nút Duyệt. Hiện chưa có thì thêm, kèm test.
+
 ### 6. Test (`agent-brain/tests/task_inputs.rs` mới, cùng test đơn vị trong các module)
 - `inputs`:
   - tên sai, trùng tên, quá 64 KiB, quá 3 tài liệu → lỗi;
@@ -145,7 +170,7 @@ bash spikes/lib/scan-secrets.sh
 
 ## Commit
 Ba commit:
-1. `fix(agent-brain): triage prefers the default team`: mục 0 và test.
+1. `fix(agent-brain): default team in triage, proposal task link, approved-plan state`: mục 0, 5b và test.
 2. `feat(agent-brain): task input documents and chained proposals`: mục 1, 2, 5 (phần backend) và test.
 3. `feat(dashboard): input documents, handoff to another project, chained proposal chip`: mục 3, 4, phần giao diện của mục 5, và test.
 
