@@ -10,9 +10,16 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+pub const INPUTS_BODY_LIMIT: usize = 512 * 1024;
+
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/api/intake", get(list_intake).post(create_intake))
+        .route(
+            "/api/intake",
+            get(list_intake)
+                .post(create_intake)
+                .layer(axum::extract::DefaultBodyLimit::max(INPUTS_BODY_LIMIT)),
+        )
         .route("/api/intake/{id}/cancel", post(cancel_intake))
         .route("/api/intake/{id}/retry", post(retry_intake))
         .route("/api/proposals", get(list_proposals))

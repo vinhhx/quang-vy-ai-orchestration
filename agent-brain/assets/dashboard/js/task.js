@@ -66,6 +66,7 @@
       handoffWorkflows: [],
       handoffTeams: [],
       handoffProject: '',
+      handoffProjectDefaults: {},
       handoffWorkflow: 'nhanh',
       handoffTeam: 'mac-dinh',
       handoffLevel: 'vua',
@@ -1510,6 +1511,7 @@
         this.handoffLevel = 'vua';
         this.handoffWorkflow = 'nhanh';
         this.handoffTeam = 'mac-dinh';
+        this.handoffProjectDefaults = {};
 
         window.AB.api('GET', '/api/projects').then(function (res) {
           if (res.ok && res.data) {
@@ -1520,6 +1522,7 @@
             });
             if (self.handoffProjects.length > 0) {
               self.handoffProject = self.handoffProjects[0].id;
+              self.updateHandoffDefaultTeam();
             }
           }
         });
@@ -1531,12 +1534,29 @@
         });
 
         window.AB.api('GET', '/api/teams').then(function (res) {
-          if (res.ok && res.data && Array.isArray(res.data.teams)) {
-            self.handoffTeams = res.data.teams;
-            var hasTietKiem = self.handoffTeams.some(function (t) { return t.name === 'tiet-kiem'; });
-            self.handoffTeam = hasTietKiem ? 'tiet-kiem' : 'mac-dinh';
+          if (res.ok && res.data) {
+            if (Array.isArray(res.data.teams)) {
+              self.handoffTeams = res.data.teams;
+            }
+            if (res.data.project_defaults) {
+              self.handoffProjectDefaults = res.data.project_defaults;
+            }
+            self.updateHandoffDefaultTeam();
           }
         });
+      },
+
+      onHandoffProjectChange: function () {
+        this.updateHandoffDefaultTeam();
+      },
+
+      updateHandoffDefaultTeam: function () {
+        var pid = this.handoffProject;
+        var defaults = this.handoffProjectDefaults;
+        var def = (defaults && pid && defaults[pid])
+          ? (defaults[pid].effective || defaults[pid].team)
+          : null;
+        this.handoffTeam = def || 'mac-dinh';
       },
 
       closeHandoff: function () {

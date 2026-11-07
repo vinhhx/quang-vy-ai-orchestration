@@ -902,3 +902,62 @@ fn test_orphan_task_cleaned_up_on_start_refusal() {
     let task = agent_brain::db::find_task_by_branch(&conn, pid, "task/task-orphan-test").unwrap();
     assert!(task.is_none(), "Task mồ côi phải được xóa khi jobs.start trả Unavailable/Busy");
 }
+
+#[test]
+fn test_body_limits_inputs_accepts_200kib_refuses_1mib() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    // Orchestrator disabled -> direct task creation
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": false
+        }
+    }));
+
+    let srv = sb.serve(&[]);
+
+    // 1. Gửi body khoảng 200 KiB (3 tài liệu x ~60 KiB) -> vượt qua giới hạn 64 KiB chung, không bị 413
+    let content_60k = "b".repeat(60 * 1024);
+    let body_200k = json!({
+        "project": "web-ban-hang",
+        "request": "Task với 3 docs 200 KiB",
+        "inputs": [
+            { "name": "doc-a.md", "content": &content_60k },
+            { "name": "doc-b.md", "content": &content_60k },
+            { "name": "doc-c.md", "content": &content_60k }
+        ]
+    });
+    let resp_200k = srv.post_json("/api/tasks", &body_200k);
+    assert_ne!(
+        resp_200k.status, 413,
+        "Body ~200 KiB tới /api/tasks không được bị 413 Payload Too Large"
+    );
+    assert_eq!(resp_200k.status, 202);
+
+    // 2. Gửi body 1 MiB -> vượt quá giới hạn 512 KiB riêng, bị 413 Payload Too Large
+    let content_1m = "c".repeat(1024 * 1024);
+    let body_1m = json!({
+        "project": "web-ban-hang",
+        "request": "Task với 1 MiB",
+        "inputs": [
+            { "name": "huge.md", "content": &content_1m }
+        ]
+    });
+    let resp_1m = srv.post_json("/api/tasks", &body_1m);
+    assert_eq!(
+        resp_1m.status, 413,
+        "Body 1 MiB tới /api/tasks phải bị 413 Payload Too Large"
+    );
+
+    // 3. Endpoint khác không có layer riêng (ví dụ /api/tasks/1/team) với body 100 KiB (> 64 KiB) bị 413
+    let big_non_input = json!({
+        "team": "x".repeat(70 * 1024)
+    });
+    let resp_default_limit = srv.post_json("/api/tasks/1/team", &big_non_input);
+    assert_eq!(
+        resp_default_limit.status, 413,
+        "Endpoint thông thường với body > 64 KiB phải bị 413 bởi layer chung"
+    );
+}

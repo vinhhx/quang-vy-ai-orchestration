@@ -428,13 +428,24 @@ pub fn lead_preflight(
     })
 }
 
+pub const INPUTS_BODY_LIMIT: usize = 512 * 1024;
+
 pub fn routes() -> axum::Router<Arc<AppState>> {
     axum::Router::new()
-        .route("/api/tasks", get(list_tasks).post(create_task))
+        .route(
+            "/api/tasks",
+            get(list_tasks)
+                .post(create_task)
+                .layer(axum::extract::DefaultBodyLimit::max(INPUTS_BODY_LIMIT)),
+        )
         .route("/api/tasks/{id}", get(get_task))
         .route("/api/tasks/{id}/answer", get(get_task_answer))
         .route("/api/tasks/{id}/inputs/{input_id}", get(get_task_input))
-        .route("/api/tasks/{id}/handoff", post(post_task_handoff))
+        .route(
+            "/api/tasks/{id}/handoff",
+            post(post_task_handoff)
+                .layer(axum::extract::DefaultBodyLimit::max(INPUTS_BODY_LIMIT)),
+        )
         .route("/api/tasks/{id}/pipeline", get(get_pipeline))
         .route("/api/tasks/{id}/dev", post(post_task_dev))
         .route("/api/tasks/{id}/qa", post(post_task_qa))

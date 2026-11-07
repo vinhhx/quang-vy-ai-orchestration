@@ -3976,6 +3976,87 @@ const sections = [
     },
   },
   {
+    name: 'task-handoff',
+    async run(ctx) {
+      const factories = {};
+      ctx.Alpine = {
+        data(name, f) {
+          factories[name] = f;
+        },
+      };
+      ctx.AB.route = { name: 'task', params: { id: '1' } };
+      const taskJsPath = path.join(
+        repoRoot,
+        'agent-brain/assets/dashboard/js/task.js'
+      );
+      const taskJsSrc = fs.readFileSync(taskJsPath, 'utf8');
+      vm.runInContext(taskJsSrc, ctx, { filename: 'task.js' });
+
+      const savedApi = ctx.AB.api;
+      ctx.AB.api = (method, url) => {
+        if (url === '/api/projects') {
+          return Promise.resolve({
+            ok: true,
+            data: [
+              { id: 'proj-a', name_vi: 'Dự án A', missing: false },
+              { id: 'proj-b', name_vi: 'Dự án B', missing: false },
+            ],
+          });
+        }
+        if (url === '/api/workflows') {
+          return Promise.resolve({ ok: true, data: { workflows: [{ name: 'nhanh' }] } });
+        }
+        if (url === '/api/teams') {
+          return Promise.resolve({
+            ok: true,
+            data: {
+              teams: [{ name: 'mac-dinh' }, { name: 'tiet-kiem' }, { name: 'doi-b' }],
+              project_defaults: {
+                'proj-a': { team: 'tiet-kiem', effective: 'tiet-kiem' },
+                'proj-b': { team: 'doi-b', effective: 'doi-b' },
+              },
+            },
+          });
+        }
+        return Promise.resolve({ ok: true, data: {} });
+      };
+
+      try {
+        const c = factories.task();
+        c.task = { id: 1, project: { id: 'other' } };
+        c.openHandoffDialog();
+        await new Promise((r) => setTimeout(r, 10));
+
+        check('handoff: initial project is proj-a', c.handoffProject === 'proj-a', c.handoffProject);
+        check(
+          'handoff: initial team defaults to proj-a effective team (tiet-kiem)',
+          c.handoffTeam === 'tiet-kiem',
+          c.handoffTeam
+        );
+
+        // When user switches project to proj-b
+        c.handoffProject = 'proj-b';
+        c.onHandoffProjectChange();
+        check(
+          'handoff: switching project updates team to proj-b default (doi-b)',
+          c.handoffTeam === 'doi-b',
+          c.handoffTeam
+        );
+
+        // When switching to project with no default
+        c.handoffProject = 'proj-none';
+        c.onHandoffProjectChange();
+        check(
+          'handoff: project without default falls back to mac-dinh',
+          c.handoffTeam === 'mac-dinh',
+          c.handoffTeam
+        );
+      } finally {
+        ctx.AB.api = savedApi;
+      }
+    },
+  },
+  {
     // 06-18: Thống kê `Theo engine` and the QA rate by Dev engine.
     name: 'stats-engines',
     async run(ctx) {

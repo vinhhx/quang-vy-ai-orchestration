@@ -709,6 +709,7 @@
             id="ab-handoff-project"
             class="w-full min-h-10 rounded-lg bg-white px-3 py-1.5 text-sm text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
             x-model="handoffProject"
+            @change="onHandoffProjectChange()"
           >
             <template x-for="p in handoffProjects" :key="p.id">
               <option :value="p.id" x-text="p.name_vi + ' (' + p.id + ')'"></option>
