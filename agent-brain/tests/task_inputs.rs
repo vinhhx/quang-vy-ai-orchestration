@@ -666,3 +666,239 @@ fn test_task_handoff_api() {
         &[json!(format!("phan-tich-{task_id}.md"))]
     );
 }
+
+#[test]
+fn test_duplicate_name_error_message() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new();
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+
+    conn.execute(
+        "INSERT INTO projects (id, slug, path, name_vi, aliases_json, type, profile)
+         VALUES (1, 'p1', '/tmp', 'P1', '[]', 'code', 'work')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, status, created_at, updated_at, level)
+         VALUES (1, 1, 'task-1', 'Task 1', 'task/1', 'open', 1000, 1000, 'vua')",
+        [],
+    )
+    .unwrap();
+
+    let intake_id = agent_brain::db::insert_intake(&conn, "ui", Some(1), "req", "normal").unwrap();
+    let prop_id = agent_brain::db::insert_proposal(
+        &conn,
+        &agent_brain::db::NewProposal {
+            intake_id,
+            project_id: 1,
+            title: "P",
+            request: "R",
+            priority: "normal",
+            level: "vua",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .unwrap();
+
+    // 1. add_to_task duplicate
+    assert!(agent_brain::inputs::add_to_task(&conn, 1, "doc.md", "ui", "abc", &[]).is_ok());
+    let err_task = agent_brain::inputs::add_to_task(&conn, 1, "doc.md", "ui", "xyz", &[]).unwrap_err();
+    assert_eq!(err_task, "Tên tài liệu đã có");
+
+    // 2. add_to_proposal duplicate
+    assert!(agent_brain::inputs::add_to_proposal(&conn, prop_id, "doc.md", "ui", "abc", &[]).is_ok());
+    let err_prop = agent_brain::inputs::add_to_proposal(&conn, prop_id, "doc.md", "ui", "xyz", &[]).unwrap_err();
+    assert_eq!(err_prop, "Tên tài liệu đã có");
+
+    // 3. add_to_intake duplicate
+    assert!(agent_brain::inputs::add_to_intake(&conn, intake_id, "doc.md", "abc", &[]).is_ok());
+    let err_intake = agent_brain::inputs::add_to_intake(&conn, intake_id, "doc.md", "xyz", &[]).unwrap_err();
+    assert_eq!(err_intake, "Tên tài liệu đã có");
+
+    // 4. validate_inputs duplicate in list
+    let items = vec![
+        agent_brain::inputs::InputItem { name: "same.md".to_string(), content: "a".to_string() },
+        agent_brain::inputs::InputItem { name: "same.md".to_string(), content: "b".to_string() },
+    ];
+    let err_val = agent_brain::inputs::validate_inputs(&items, &[]).unwrap_err();
+    assert_eq!(err_val, "Tên tài liệu đã có");
+}
+
+#[test]
+fn test_direct_task_creation_with_inputs_and_lead_stub() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    // Orchestrator disabled -> direct task creation via POST /api/tasks
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": false
+        }
+    }));
+
+    let srv = sb.serve(&[]);
+
+    // 1. Tạo task với input không hợp lệ (trùng tên) -> 400 Bad Request, không có task nào được tạo
+    let resp_bad = srv.post_json(
+        "/api/tasks",
+        &json!({
+            "project": "web-ban-hang",
+            "request": "Task lỗi input",
+            "inputs": [
+                { "name": "dup.md", "content": "nội dung 1" },
+                { "name": "dup.md", "content": "nội dung 2" }
+            ]
+        }),
+    );
+    assert_eq!(resp_bad.status, 400);
+    assert!(resp_bad.text().contains("Tên tài liệu đã có"));
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 0, "Không được tạo task khi input sai");
+
+    // 2. Tạo task trực tiếp với inputs hợp lệ -> 202 ACCEPTED, task row có trong DB và inputs đã được lưu
+    let resp_ok = srv.post_json(
+        "/api/tasks",
+        &json!({
+            "project": "web-ban-hang",
+            "request": "Task trực tiếp có inputs",
+            "inputs": [
+                { "name": "yeu-cau.md", "content": "# Yêu cầu chi tiết" }
+            ]
+        }),
+    );
+    assert_eq!(resp_ok.status, 202, "status={}", resp_ok.status);
+    let task_id = resp_ok.json()["task_id"].as_i64().expect("task_id");
+
+    // Kiểm tra DB: task_inputs có dòng cho task_id
+    let inputs = agent_brain::inputs::list_for_task(&conn, task_id).unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].name, "yeu-cau.md");
+    assert_eq!(inputs[0].content, "# Yêu cầu chi tiết");
+}
+
+#[test]
+fn test_handoff_answer_over_64kib_returns_422_and_rolls_back() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new();
+    std::env::set_var("XDG_DATA_HOME", &sb.xdg_data);
+    let _xdg_guard = EnvVarGuard("XDG_DATA_HOME");
+    let _repo = setup_project(&sb, "work");
+
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let map = agent_brain::projects::load_map(&sb.map_path()).unwrap();
+    agent_brain::db::sync_projects(&conn, &agent_brain::projects::projects_of(&map)).unwrap();
+    let project_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
+
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        project_id,
+        "task-big-ans",
+        "Task có câu trả lời quá lớn",
+        "task/task-big-ans",
+        None,
+        None,
+    )
+    .unwrap();
+
+    let big_answer = "a".repeat(64 * 1024 + 100);
+    agent_brain::answers::save("web-ban-hang", task_id, "task-big-ans", &big_answer).unwrap();
+
+    let srv = sb.serve(&[]);
+
+    let intake_count_before: i64 = conn.query_row("SELECT COUNT(*) FROM intake", [], |r| r.get(0)).unwrap();
+    let prop_count_before: i64 = conn.query_row("SELECT COUNT(*) FROM proposals", [], |r| r.get(0)).unwrap();
+
+    let resp = srv.post_json(
+        &format!("/api/tasks/{task_id}/handoff"),
+        &json!({
+            "project": "web-ban-hang",
+            "workflow": "nhanh",
+            "team": "mac-dinh",
+            "level": "vua",
+            "priority": "normal",
+            "request": "Chuyển tiếp task lớn"
+        }),
+    );
+    assert_eq!(resp.status, 422, "body={}", resp.text());
+    assert!(resp.text().contains("64 KiB"));
+
+    let intake_count_after: i64 = conn.query_row("SELECT COUNT(*) FROM intake", [], |r| r.get(0)).unwrap();
+    let prop_count_after: i64 = conn.query_row("SELECT COUNT(*) FROM proposals", [], |r| r.get(0)).unwrap();
+    assert_eq!(intake_count_after, intake_count_before, "Intake count must not change on rollback");
+    assert_eq!(prop_count_after, prop_count_before, "Proposals count must not change on rollback");
+}
+
+#[test]
+fn test_fake_telegram_token_rejected_in_inputs() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new();
+    let fake_token = "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz123456789";
+
+    let config_dir = sb.map_path().parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let tg_file = config_dir.join("telegram.json");
+    let tg_cfg = agent_brain::telegram::config::TelegramConfig {
+        token: fake_token.to_string(),
+        chat_id: 123456,
+        paired_at: 1000,
+    };
+    agent_brain::telegram::config::save(&tg_file, &tg_cfg).unwrap();
+
+    let st = app_state(&sb, sb.root.join("nonexistent"));
+    let secrets = agent_brain::inputs::collect_secrets(&st);
+    assert!(secrets.contains(&fake_token.to_string()), "collect_secrets must contain telegram token");
+
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO projects (id, slug, path, name_vi, aliases_json, type, profile)
+         VALUES (1, 'p1', '/tmp', 'P1', '[]', 'code', 'work')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, status, created_at, updated_at, level)
+         VALUES (1, 1, 'task-1', 'Task 1', 'task/1', 'open', 1000, 1000, 'vua')",
+        [],
+    )
+    .unwrap();
+
+    let doc_content = format!("Đây là tài liệu lộ token: {fake_token}");
+    let err = agent_brain::inputs::add_to_task(&conn, 1, "leak.md", "ui", &doc_content, &secrets);
+    assert!(err.is_err());
+    assert!(err.unwrap_err().contains("chứa thông tin bí mật"));
+}
+
+#[test]
+fn test_orphan_task_cleaned_up_on_start_refusal() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    let st = app_state(&sb, sb.root.join("nonexistent"));
+    st.jobs.shutdown(std::time::Duration::ZERO);
+
+    let req = agent_brain::dashboard::api_tasks::StartRequest {
+        project: "web-ban-hang",
+        request: "Task thất bại",
+        name: Some("task-orphan-test"),
+        workflow: None,
+        level: None,
+        team: None,
+        inputs: None,
+        origin: agent_brain::dashboard::api_tasks::Origin::Dashboard,
+        dry_run: false,
+    };
+
+    let outcome = agent_brain::dashboard::api_tasks::start_new_task(&st, &req).unwrap();
+    assert_eq!(outcome, agent_brain::dashboard::api_tasks::StartOutcome::Unavailable);
+
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let pid = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
+    let task = agent_brain::db::find_task_by_branch(&conn, pid, "task/task-orphan-test").unwrap();
+    assert!(task.is_none(), "Task mồ côi phải được xóa khi jobs.start trả Unavailable/Busy");
+}

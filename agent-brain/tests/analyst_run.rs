@@ -504,7 +504,9 @@ fn test_start_new_task_analysis_dirty_repo_h() {
         request: "Sửa code",
         name: Some("test-code"),
         workflow: Some("mac-dinh"),
+        level: None,
         team: None,
+        inputs: None,
         origin: agent_brain::dashboard::api_tasks::Origin::Dashboard,
         dry_run: false,
     };
@@ -523,7 +525,9 @@ fn test_start_new_task_analysis_dirty_repo_h() {
         request: "Phân tích hệ thống",
         name: Some("test-analysis"),
         workflow: Some("phan-tich"),
+        level: None,
         team: None,
+        inputs: None,
         origin: agent_brain::dashboard::api_tasks::Origin::Dashboard,
         dry_run: false,
     };
@@ -563,6 +567,7 @@ fn test_triage_analysis_workflow_validation_i() {
         workflow: "phan-tich".to_string(),
         reason: Some("Yêu cầu khảo sát".to_string()),
         after: None,
+        orig_index: None,
     };
 
     let res = agent_brain::orchestrator::triage::validate(
@@ -584,6 +589,7 @@ fn test_triage_analysis_workflow_validation_i() {
         workflow: "phan-tich-review".to_string(),
         reason: Some("Cần review kỹ".to_string()),
         after: None,
+        orig_index: None,
     };
 
     let res_review = agent_brain::orchestrator::triage::validate(

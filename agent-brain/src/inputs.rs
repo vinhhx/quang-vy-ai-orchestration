@@ -12,6 +12,12 @@ pub const MAX_INPUTS: usize = 3;
 pub const MAX_INPUT_BYTES: usize = 64 * 1024;
 pub const MAX_TOTAL_BYTES: usize = 96 * 1024;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct InputItem {
+    pub name: String,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TaskInputRow {
     pub id: i64,
@@ -65,6 +71,35 @@ pub fn env_secrets() -> Vec<String> {
     out
 }
 
+/// Thu thập tất cả các giá trị bí mật đã biết (biến môi trường, token dashboard, token Telegram, engine keys).
+pub fn collect_secrets(st: &crate::dashboard::AppState) -> Vec<String> {
+    let mut out = env_secrets();
+    if st.token.len() >= crate::secrets::MIN_SECRET_BYTES {
+        out.push(st.token.clone());
+    }
+    let config_dir = st
+        .map_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(crate::config::config_dir);
+    let tg_file = config_dir.join(crate::telegram::config::FILE_NAME);
+    if let Ok(tg) = crate::telegram::config::load(&tg_file) {
+        if tg.token.len() >= crate::secrets::MIN_SECRET_BYTES {
+            out.push(tg.token);
+        }
+    }
+    for key_env in st.cfg.engines.all_key_envs() {
+        if let Ok(v) = std::env::var(key_env) {
+            if v.len() >= crate::secrets::MIN_SECRET_BYTES {
+                out.push(v);
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Kiểm tra nội dung tài liệu: không rỗng, <= 64 KiB, không chứa secret.
 pub fn validate_content(content: &str, extra_secrets: &[String]) -> Result<(), String> {
     if content.trim().is_empty() {
@@ -80,6 +115,26 @@ pub fn validate_content(content: &str, extra_secrets: &[String]) -> Result<(), S
     all_secrets.extend_from_slice(extra_secrets);
     if crate::secrets::contains_secret(content.as_bytes(), &all_secrets) {
         return Err("Nội dung tài liệu chứa thông tin bí mật (secret / API key), bị từ chối lưu".to_string());
+    }
+    Ok(())
+}
+
+/// Kiểm tra danh sách tài liệu đầu vào:
+/// - Tối đa 3 tài liệu
+/// - Không trùng tên tài liệu
+/// - Tên hợp lệ (1-80 ký tự, `[a-z0-9-_.]`, đuôi `.md`)
+/// - Nội dung hợp lệ (không rỗng, <= 64 KiB, không chứa secret)
+pub fn validate_inputs(items: &[InputItem], extra_secrets: &[String]) -> Result<(), String> {
+    if items.len() > MAX_INPUTS {
+        return Err(format!("Chỉ được gửi tối đa {MAX_INPUTS} tài liệu đầu vào"));
+    }
+    let mut names = std::collections::HashSet::new();
+    for item in items {
+        validate_name(&item.name)?;
+        if !names.insert(&item.name) {
+            return Err("Tên tài liệu đã có".to_string());
+        }
+        validate_content(&item.content, extra_secrets)?;
     }
     Ok(())
 }
@@ -119,9 +174,7 @@ pub fn add_to_proposal(
         .unwrap_or(false);
 
     if exists {
-        return Err(format!(
-            "Tài liệu có tên '{name}' đã tồn tại trong đề xuất"
-        ));
+        return Err("Tên tài liệu đã có".to_string());
     }
 
     let now = now_ms();
@@ -168,7 +221,7 @@ pub fn add_to_task(
         .unwrap_or(false);
 
     if exists {
-        return Err(format!("Tài liệu có tên '{name}' đã tồn tại trong task"));
+        return Err("Tên tài liệu đã có".to_string());
     }
 
     let now = now_ms();
@@ -302,6 +355,18 @@ pub fn add_to_intake(
 
     if count >= MAX_INPUTS as i64 {
         return Err(format!("Intake đã có tối đa {MAX_INPUTS} tài liệu đầu vào"));
+    }
+
+    let exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM intake_inputs WHERE intake_id = ?1 AND name = ?2",
+            params![intake_id, name],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if exists {
+        return Err("Tên tài liệu đã có".to_string());
     }
 
     let now = now_ms();

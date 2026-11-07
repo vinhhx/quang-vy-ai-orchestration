@@ -536,8 +536,10 @@ pub struct StartRequest<'a> {
     pub request: &'a str,
     pub name: Option<&'a str>,
     pub workflow: Option<&'a str>,
+    pub level: Option<&'a str>,
     /// Đội hình yêu cầu (D-12); `None` = đội hình của dự án rồi `mac-dinh`.
     pub team: Option<&'a str>,
+    pub inputs: Option<&'a [crate::inputs::InputItem]>,
     pub origin: Origin,
     /// Chạy mọi kiểm tra tới hết `lead_preflight` rồi dừng, không bắt đầu job nào.
     pub dry_run: bool,
@@ -763,6 +765,10 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
         return Ok(StartOutcome::Ready(info));
     }
 
+    let valid_level = req
+        .level
+        .and_then(|lvl| crate::departments::Level::parse(lvl).map(|l| l.as_str()));
+
     let (role, args) = if is_analysis {
         let role = "analyst";
         let mut args = vec![
@@ -775,6 +781,10 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
             "--team".to_string(),
             info.team.clone(),
         ];
+        if let Some(lvl) = valid_level {
+            args.push("--level".to_string());
+            args.push(lvl.to_string());
+        }
         if req.origin == Origin::Telegram {
             args.push("--origin".to_string());
             args.push("telegram".to_string());
@@ -784,7 +794,7 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
         args.push(trimmed_req.to_string());
         (role, args)
     } else {
-        new_task_args_team(
+        let (role, mut args) = new_task_args_team(
             workflow.auto,
             &info.slug,
             &workflow.name,
@@ -792,7 +802,17 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
             &info.project.id,
             trimmed_req,
             req.origin,
-        )
+        );
+        if let Some(lvl) = valid_level {
+            if let Some(pos) = args.iter().position(|a| a == "--") {
+                args.insert(pos, lvl.to_string());
+                args.insert(pos, "--level".to_string());
+            } else {
+                args.push("--level".to_string());
+                args.push(lvl.to_string());
+            }
+        }
+        (role, args)
     };
     let pid = crate::db::project_row_id(&conn, &info.project.id).or_else(|_| {
         crate::db::sync_projects(&conn, &crate::projects::projects_of(&map))?;
@@ -800,6 +820,7 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
     })?;
     let title = req.name.unwrap_or(trimmed_req);
     let base_branch_opt = if is_analysis { None } else { Some("main") };
+    let is_new_task = crate::db::find_task_by_branch(&conn, pid, &info.branch)?.is_none();
     let task_id = crate::db::upsert_task(
         &conn,
         pid,
@@ -809,6 +830,22 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
         base_branch_opt,
         None,
     )?;
+
+    if let Some(lvl) = valid_level {
+        crate::db::set_task_level(&conn, task_id, lvl)?;
+    }
+
+    if let Some(inputs) = req.inputs {
+        let secrets = crate::inputs::collect_secrets(st);
+        for inp in inputs {
+            if let Err(e) = crate::inputs::add_to_task(&conn, task_id, &inp.name, "ui", &inp.content, &secrets) {
+                if is_new_task {
+                    let _ = crate::db::cleanup_orphan_task(&conn, task_id);
+                }
+                return Ok(StartOutcome::Invalid(e));
+            }
+        }
+    }
 
     let spec = crate::dashboard::jobs::JobSpec {
         role: role.to_string(),
@@ -826,6 +863,9 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
             task_id,
         }),
         Err(e) => {
+            if is_new_task {
+                let _ = crate::db::cleanup_orphan_task(&conn, task_id);
+            }
             if e.message.contains("Dashboard đang dừng") {
                 Ok(StartOutcome::Unavailable)
             } else {
@@ -900,11 +940,12 @@ fn start_response(outcome: StartOutcome) -> Response {
 
 async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>) -> Response {
     let input_items = body.inputs;
+    let secrets = crate::inputs::collect_secrets(&st);
     if let Some(ref items) = input_items {
-        if items.len() > 3 {
+        if let Err(err_msg) = crate::inputs::validate_inputs(items, &secrets) {
             return json_response(
                 StatusCode::BAD_REQUEST,
-                serde_json::json!({ "error": "Chỉ được gửi tối đa 3 tài liệu đầu vào" }),
+                serde_json::json!({ "error": err_msg }),
             );
         }
     }
@@ -927,10 +968,11 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
         }
 
         let res = blocking(move || {
-            let conn = crate::db::open(&st.db_path)?;
+            let mut conn = crate::db::open(&st.db_path)?;
             let project_id = crate::db::project_row_id(&conn, &body.project).ok();
+            let tx = conn.transaction()?;
             let intake_id = crate::db::insert_intake(
-                &conn,
+                &tx,
                 "ui",
                 project_id,
                 &req_text,
@@ -938,10 +980,11 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
             )?;
             if let Some(ref inputs) = input_items {
                 for inp in inputs {
-                    crate::inputs::add_to_intake(&conn, intake_id, &inp.name, &inp.content, &[])
+                    crate::inputs::add_to_intake(&tx, intake_id, &inp.name, &inp.content, &secrets)
                         .map_err(crate::error::BrainError::error)?;
                 }
             }
+            tx.commit()?;
             Ok::<_, crate::error::BrainError>(intake_id)
         })
         .await;
@@ -970,30 +1013,21 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
         };
     }
 
-    let input_items_direct = input_items;
     let res = blocking(move || {
-        let outcome = start_new_task(
+        start_new_task(
             &st,
             &StartRequest {
                 project: &body.project,
                 request: &body.request,
                 name: body.name.as_deref(),
                 workflow: body.workflow.as_deref(),
+                level: None,
                 team: body.team.as_deref(),
+                inputs: input_items.as_deref(),
                 origin: Origin::Dashboard,
                 dry_run: false,
             },
-        )?;
-        if let StartOutcome::Started { task_id, .. } = outcome {
-            if let Some(ref inputs) = input_items_direct {
-                let conn = crate::db::open(&st.db_path)?;
-                for inp in inputs {
-                    crate::inputs::add_to_task(&conn, task_id, &inp.name, "ui", &inp.content, &[])
-                        .map_err(crate::error::BrainError::error)?;
-                }
-            }
-        }
-        Ok(outcome)
+        )
     })
     .await;
 
@@ -2384,7 +2418,7 @@ async fn post_task_handoff(
     Json(body): Json<HandoffBody>,
 ) -> Response {
     let res = blocking(move || {
-        let conn = crate::db::open(&st.db_path)?;
+        let mut conn = crate::db::open(&st.db_path)?;
         let task = match crate::db::get_task(&conn, id)? {
             Some(t) => t,
             None => return Ok(json_error(StatusCode::NOT_FOUND, "Không tìm thấy task")),
@@ -2421,6 +2455,7 @@ async fn post_task_handoff(
             reason: Some(format!("Gửi kết quả từ task #{id}")),
             level: body.level.trim().to_string(),
             after: None,
+            orig_index: None,
         };
 
         let map = crate::projects::load_map(&st.map_path)?;
@@ -2448,17 +2483,18 @@ async fn post_task_handoff(
             }
         };
 
+        let tx = conn.transaction()?;
         let intake_id = crate::db::insert_intake(
-            &conn,
+            &tx,
             "ui",
             Some(target_project_id),
             &body.request,
             &body.priority,
         )?;
-        conn.execute("UPDATE intake SET status = 'proposed' WHERE id = ?1", [intake_id])?;
+        tx.execute("UPDATE intake SET status = 'proposed' WHERE id = ?1", [intake_id])?;
 
         let proposal_id = crate::db::insert_proposal(
-            &conn,
+            &tx,
             &crate::db::NewProposal {
                 intake_id,
                 project_id: target_project_id,
@@ -2474,9 +2510,11 @@ async fn post_task_handoff(
 
         let doc_name = format!("phan-tich-{id}.md");
         let doc_source = format!("answer:{id}");
-        if let Err(e) = crate::inputs::add_to_proposal(&conn, proposal_id, &doc_name, &doc_source, &ans, &[]) {
+        let secrets = crate::inputs::collect_secrets(&st);
+        if let Err(e) = crate::inputs::add_to_proposal(&tx, proposal_id, &doc_name, &doc_source, &ans, &secrets) {
             return Ok(json_error(StatusCode::UNPROCESSABLE_ENTITY, &e));
         }
+        tx.commit()?;
 
         Ok((
             StatusCode::OK,

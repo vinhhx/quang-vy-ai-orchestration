@@ -5,6 +5,7 @@ use crate::db::IntakeRow;
 use crate::error::{BrainError, BrainResult};
 use crate::projects::Project;
 use crate::teams::LoadedTeams;
+use crate::tracing;
 use crate::workflows::LoadedWorkflows;
 
 pub const MAX_TITLE_CHARS: usize = 200;
@@ -24,6 +25,8 @@ pub struct ProposalDraft {
     pub reason: Option<String>,
     #[serde(default)]
     pub after: Option<usize>,
+    #[serde(default)]
+    pub orig_index: Option<usize>,
 }
 
 fn default_priority() -> String {
@@ -708,14 +711,16 @@ r#"Phân tích yêu cầu sau và trả về JSON đề xuất công việc:
     // 8. Validate từng mục
     let mut valid_proposals: Vec<ProposalDraft> = Vec::new();
     let mut warnings = Vec::new();
+    let mut valid_by_orig: std::collections::HashMap<usize, ProposalDraft> = std::collections::HashMap::new();
 
-    for (idx, mut draft) in tasks.into_iter().enumerate() {
+    for (orig_idx, mut draft) in tasks.into_iter().enumerate() {
+        draft.orig_index = Some(orig_idx);
         match validate(&draft, &projects, &teams_loaded, &workflows_loaded, &st.cfg.engines) {
             Ok(()) => {
-                if let Some(after_idx) = draft.after {
+                if let Some(after_orig) = draft.after {
                     let mut after_ok = false;
-                    if after_idx < idx {
-                        if let Some(prior) = valid_proposals.get(after_idx) {
+                    if after_orig < orig_idx {
+                        if let Some(prior) = valid_by_orig.get(&after_orig) {
                             if let Some(wf) = workflows_loaded.get(&prior.workflow) {
                                 if wf.kind == "analysis" {
                                     after_ok = true;
@@ -724,13 +729,16 @@ r#"Phân tích yêu cầu sau và trả về JSON đề xuất công việc:
                         }
                     }
                     if !after_ok {
-                        warnings.push(format!(
+                        let warn = format!(
                             "Bỏ 'after' của đề xuất '{}': việc trước không hợp lệ hoặc không phải quy trình phân tích",
                             draft.title
-                        ));
+                        );
+                        tracing::warn!("{warn}");
+                        warnings.push(warn);
                         draft.after = None;
                     }
                 }
+                valid_by_orig.insert(orig_idx, draft.clone());
                 valid_proposals.push(draft);
             }
             Err(reason) => {

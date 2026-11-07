@@ -332,6 +332,20 @@ pub fn project_row_id(conn: &Connection, slug: &str) -> BrainResult<i64> {
     Ok(id)
 }
 
+/// Dọn hàng task mồ côi nếu chưa có run nào được ghi nhận.
+pub fn cleanup_orphan_task(conn: &Connection, task_id: i64) -> BrainResult<bool> {
+    let has_run: bool = conn
+        .query_row("SELECT 1 FROM runs WHERE task_id = ?1", [task_id], |_| Ok(()))
+        .is_ok();
+    if !has_run {
+        let _ = conn.execute("DELETE FROM task_inputs WHERE task_id = ?1", [task_id]);
+        conn.execute("DELETE FROM tasks WHERE id = ?1", [task_id])?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TaskRow {
     pub id: i64,
@@ -381,9 +395,9 @@ pub fn upsert_task(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', ?7, ?7)
          ON CONFLICT(project_id, branch) DO UPDATE SET
            title = excluded.title,
-           base_branch = excluded.base_branch,
-           base_commit = excluded.base_commit,
-           status = 'open',
+           base_branch = CASE WHEN tasks.status = 'open' THEN excluded.base_branch ELSE tasks.base_branch END,
+           base_commit = CASE WHEN tasks.status = 'open' THEN excluded.base_commit ELSE tasks.base_commit END,
+           status = CASE WHEN tasks.status = 'open' THEN 'open' ELSE tasks.status END,
            updated_at = excluded.updated_at",
         params![project_id, slug, title, branch, base_branch, base_commit, now],
     )?;

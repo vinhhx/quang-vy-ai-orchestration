@@ -606,6 +606,7 @@ fn test_validate_rules() {
         workflow: "mac-dinh".to_string(),
         reason: Some("Ly do".to_string()),
         after: None,
+        orig_index: None,
     };
     assert!(validate(&valid_draft, &projects, &teams, &workflows, &st.cfg.engines).is_ok());
 
@@ -1099,6 +1100,90 @@ fn test_triage_prompt_marks_default_team() {
     assert!(
         !system_prompt2.contains("\"mac-dinh\", mô tả: \"Mọi vai trò chạy bằng claude theo profile của dự án.\" (mặc định)"),
         "mac-dinh should NOT be marked default when departments have members"
+    );
+}
+
+#[test]
+fn test_triage_chained_proposals_map_orig_index_when_draft_dropped() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true,
+            "max_parallel": 2
+        }
+    }));
+    std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
+    let _env_guard = EnvVarGuard("FAKE_CLAUDE_SCENARIO");
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
+    let projects = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+
+    let _intake_id = queued(&sb, "Làm 3 việc liên tiếp");
+
+    let fake_result = json!({
+        "tasks": [
+            {
+                "project": "du-an-khong-co",
+                "title": "Bản 0 Lỗi",
+                "request": "Yêu cầu 0",
+                "priority": "normal",
+                "level": "vua",
+                "team": "mac-dinh",
+                "workflow": "nhanh",
+                "reason": "Lỗi"
+            },
+            {
+                "project": "web-ban-hang",
+                "title": "Bản 1 Phân Tích",
+                "request": "Khảo sát hệ thống",
+                "priority": "normal",
+                "level": "vua",
+                "team": "mac-dinh",
+                "workflow": "phan-tich",
+                "reason": "Phân tích trước"
+            },
+            {
+                "project": "web-ban-hang",
+                "title": "Bản 2 Thực Thi",
+                "request": "Thực thi sau khảo sát",
+                "priority": "normal",
+                "level": "vua",
+                "team": "mac-dinh",
+                "workflow": "nhanh",
+                "reason": "Thực thi",
+                "after": 1
+            }
+        ]
+    })
+    .to_string();
+
+    sb.write_scenario(json!({
+        "events": [
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": fake_result
+            }
+        ]
+    }));
+
+    let st = app_state(&sb);
+    agent_brain::orchestrator::tick(&st).expect("tick");
+
+    let proposals = agent_brain::db::list_proposals(&conn, None).expect("list proposals");
+    assert_eq!(proposals.len(), 2, "Bản 0 bị loại, còn 2 proposals");
+    let p1 = proposals.iter().find(|p| p.title == "Bản 1 Phân Tích").expect("p1");
+    let p2 = proposals.iter().find(|p| p.title == "Bản 2 Thực Thi").expect("p2");
+
+    assert_eq!(p1.after_proposal_id, None);
+    assert_eq!(
+        p2.after_proposal_id,
+        Some(p1.id),
+        "Bản 2 có after=1 phải nối với proposal của Bản 1 dù Bản 0 bị loại"
     );
 }
 

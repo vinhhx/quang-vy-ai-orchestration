@@ -64,11 +64,7 @@ async fn list_intake(
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct InputItem {
-    pub name: String,
-    pub content: String,
-}
+pub use crate::inputs::InputItem;
 
 #[derive(Deserialize)]
 pub struct CreateIntakeBody {
@@ -94,11 +90,9 @@ async fn create_intake(
         );
     }
 
-    if body.inputs.len() > 3 {
-        return json_error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "Chỉ được gửi tối đa 3 tài liệu đầu vào",
-        );
+    let secrets = crate::inputs::collect_secrets(&st);
+    if let Err(err_msg) = crate::inputs::validate_inputs(&body.inputs, &secrets) {
+        return json_error(StatusCode::UNPROCESSABLE_ENTITY, &err_msg);
     }
 
     let priority = match body.priority.as_deref() {
@@ -119,7 +113,7 @@ async fn create_intake(
     let input_docs = body.inputs;
 
     let res = blocking(move || {
-        let conn = crate::db::open(&st.db_path)?;
+        let mut conn = crate::db::open(&st.db_path)?;
         let project_id = match proj_val {
             Some(serde_json::Value::Number(n)) => {
                 let id = n.as_i64().ok_or_else(|| {
@@ -180,11 +174,13 @@ async fn create_intake(
             _ => None,
         };
 
-        let id = crate::db::insert_intake(&conn, "ui", project_id, &req_text, &priority)?;
+        let tx = conn.transaction()?;
+        let id = crate::db::insert_intake(&tx, "ui", project_id, &req_text, &priority)?;
         for doc in &input_docs {
-            crate::inputs::add_to_intake(&conn, id, &doc.name, &doc.content, &[])
+            crate::inputs::add_to_intake(&tx, id, &doc.name, &doc.content, &secrets)
                 .map_err(crate::error::BrainError::error)?;
         }
+        tx.commit()?;
         Ok(id)
     })
     .await;
@@ -445,6 +441,7 @@ async fn post_proposal_approve(
             workflow: workflow.clone(),
             reason: prop.reason.clone(),
             after: None,
+            orig_index: None,
         };
 
         let map = crate::projects::load_map(&st.map_path)?;

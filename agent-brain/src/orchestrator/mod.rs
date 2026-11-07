@@ -4,6 +4,7 @@ pub mod triage;
 use crate::dashboard::AppState;
 use crate::db::IntakeRow;
 use crate::error::BrainResult;
+use crate::tracing;
 use rusqlite::Connection;
 use std::sync::Arc;
 
@@ -70,12 +71,19 @@ pub fn tick(st: &AppState) -> BrainResult<()> {
                     let _ = crate::db::sync_projects(&conn, &projs);
                 }
 
-                let mut created_proposal_ids = Vec::new();
-                for draft in &valid_proposals {
+                let mut orig_to_proposal_id: std::collections::HashMap<usize, i64> = std::collections::HashMap::new();
+                for (idx, draft) in valid_proposals.iter().enumerate() {
                     let proj_row_id = crate::db::project_row_id(&conn, &draft.project)?;
-                    let after_proposal_id = draft
-                        .after
-                        .and_then(|idx| created_proposal_ids.get(idx).copied());
+                    let after_proposal_id = draft.after.and_then(|orig_idx| {
+                        let pid = orig_to_proposal_id.get(&orig_idx).copied();
+                        if pid.is_none() {
+                            tracing::warn!(
+                                "Không tìm thấy đề xuất gốc #{orig_idx} cho 'after' của đề xuất '{}'",
+                                draft.title
+                            );
+                        }
+                        pid
+                    });
                     let new_p = crate::db::NewProposal {
                         intake_id: intake.id,
                         project_id: proj_row_id,
@@ -91,7 +99,8 @@ pub fn tick(st: &AppState) -> BrainResult<()> {
                     if let Some(after_id) = after_proposal_id {
                         crate::db::set_proposal_after_id(&conn, prop_id, Some(after_id))?;
                     }
-                    created_proposal_ids.push(prop_id);
+                    let key = draft.orig_index.unwrap_or(idx);
+                    orig_to_proposal_id.insert(key, prop_id);
 
                     // Sao chép tài liệu đầu vào từ intake_inputs sang task_inputs của proposal
                     let _ = crate::inputs::copy_intake_inputs_to_proposal(&conn, intake.id, prop_id);

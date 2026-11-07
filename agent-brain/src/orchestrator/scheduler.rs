@@ -8,6 +8,7 @@
 use crate::dashboard::api_tasks::{start_new_task, Origin, StartOutcome, StartRequest};
 use crate::dashboard::AppState;
 use crate::error::BrainResult;
+use crate::tracing;
 
 /// Tính số task đang chạy trong hệ thống: bao gồm các task có run hoặc auto_state đang 'running' trong CSDL,
 /// và các job đang chạy trong JobManager (không tính trùng).
@@ -72,6 +73,14 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
                         )?;
                         continue;
                     }
+                    if prior_p.status == "rejected" || prior_p.status == "failed" {
+                        crate::db::set_proposal_failed(
+                            &conn,
+                            prop.id,
+                            &format!("Việc trước (#{prior_id}) không có kết quả"),
+                        )?;
+                        continue;
+                    }
                     if prior_p.status != "started" {
                         // Việc trước chưa bắt đầu xong: bỏ qua lượt này
                         continue;
@@ -93,6 +102,14 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
 
                     match prior_task {
                         Some((status, t_slug, p_slug)) => {
+                            let latest_run_status: Option<String> = conn
+                                .query_row(
+                                    "SELECT status FROM runs WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
+                                    [prior_task_id],
+                                    |r| r.get(0),
+                                )
+                                .ok();
+
                             if status == "answered" {
                                 match crate::answers::read(&p_slug, prior_task_id, &t_slug) {
                                     Ok(Some(ans)) => {
@@ -103,7 +120,13 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
                                         continue;
                                     }
                                 }
-                            } else if status == "failed" || status == "killed" {
+                            } else if matches!(
+                                status.as_str(),
+                                "failed" | "killed" | "timed_out" | "lost" | "stopped" | "rejected"
+                            ) || matches!(
+                                latest_run_status.as_deref(),
+                                Some("failed" | "killed" | "timed_out" | "lost")
+                            ) {
                                 crate::db::set_proposal_failed(
                                     &conn,
                                     prop.id,
@@ -148,6 +171,25 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
             }
         };
 
+        if let Some((prior_tid, ref ans_content)) = prior_answer {
+            let doc_name = format!("phan-tich-{prior_tid}.md");
+            let doc_source = format!("answer:{prior_tid}");
+            let secrets = crate::inputs::collect_secrets(st);
+            if let Err(e) = crate::inputs::add_to_proposal(
+                &conn,
+                prop.id,
+                &doc_name,
+                &doc_source,
+                ans_content,
+                &secrets,
+            ) {
+                let err_msg = format!("Không chuyển được tài liệu {doc_name}: {e}");
+                tracing::warn!("{err_msg}");
+                crate::db::set_proposal_failed(&conn, prop.id, &err_msg)?;
+                continue;
+            }
+        }
+
         let title_slug = crate::routing::slugify(&prop.title);
         let name_opt = if title_slug.is_empty() {
             None
@@ -160,7 +202,9 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
             request: &prop.request,
             name: name_opt,
             workflow: Some(&prop.workflow),
+            level: Some(&prop.level),
             team: Some(&prop.team),
+            inputs: None,
             origin: Origin::Dashboard,
             dry_run: false,
         };
@@ -168,20 +212,9 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
         match start_new_task(st, &req)? {
             StartOutcome::Started { task_id, .. } => {
                 active += 1;
-                let _ = crate::db::set_task_level(&conn, task_id, &prop.level);
-                if let Some((prior_tid, ans_content)) = prior_answer {
-                    let doc_name = format!("phan-tich-{prior_tid}.md");
-                    let doc_source = format!("answer:{prior_tid}");
-                    let _ = crate::inputs::add_to_proposal(
-                        &conn,
-                        prop.id,
-                        &doc_name,
-                        &doc_source,
-                        &ans_content,
-                        &[],
-                    );
+                if let Err(e) = crate::inputs::move_proposal_inputs_to_task(&conn, prop.id, task_id) {
+                    tracing::warn!("Lỗi chuyển tài liệu từ proposal #{} sang task #{}: {}", prop.id, task_id, e);
                 }
-                let _ = crate::inputs::move_proposal_inputs_to_task(&conn, prop.id, task_id);
                 crate::db::set_proposal_started(&conn, prop.id, Some(task_id))?;
             }
             StartOutcome::PreflightRefused { reason, kind } => {

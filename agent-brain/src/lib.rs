@@ -39,3 +39,13 @@ pub mod teams;
 pub mod telegram;
 pub mod term;
 pub mod workflows;
+
+pub mod tracing {
+    #[macro_export]
+    macro_rules! tracing_warn {
+        ($($arg:tt)*) => {
+            eprintln!($($arg)*);
+        };
+    }
+    pub use tracing_warn as warn;
+}
