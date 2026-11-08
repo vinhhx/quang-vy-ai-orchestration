@@ -189,6 +189,7 @@ pub fn read_sources_prompt_block(
         };
         block.push_str(&format!("- {}: {}{}\n", id, path.display(), kn));
     }
+    block.push_str("Mọi vai của task (Lead, Dev, QA, Review) đều đọc được các thư mục này bằng đường dẫn tuyệt đối.\n");
     block.push_str("Đọc bằng đường dẫn tuyệt đối. Không ghi, không chạy lệnh trong các thư mục này, không đọc file .env*.");
     (block, warnings)
 }
@@ -230,6 +231,142 @@ pub fn timeouts_of(map: &serde_json::Value, project_id: &str) -> BTreeMap<String
         })
         .flatten()
         .collect()
+}
+
+/// C4: what a project pins for one role: a department member (`role_members`) or an engine
+/// (`role_engines`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RolePin {
+    Member(String),
+    Engine(String),
+}
+
+/// C4: the project's `role_members: {role: member id}` and `role_engines: {role: engine name}`.
+/// A project without them pins nothing and the team / department pick decides as before.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RolePins {
+    pub members: BTreeMap<String, String>,
+    pub engines: BTreeMap<String, String>,
+}
+
+impl RolePins {
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty() && self.engines.is_empty()
+    }
+
+    /// The pin of `role`; an error when the file pins both a member and an engine for it.
+    pub fn pin_for(&self, role: &str) -> Result<Option<RolePin>, String> {
+        match (self.members.get(role), self.engines.get(role)) {
+            (Some(_), Some(_)) => Err(format!(
+                "Dự án ghim cả thành viên (role_members) lẫn engine (role_engines) cho vai {role} — chỉ được ghim một trong hai."
+            )),
+            (Some(m), None) => Ok(Some(RolePin::Member(m.clone()))),
+            (None, Some(e)) => Ok(Some(RolePin::Engine(e.clone()))),
+            (None, None) => Ok(None),
+        }
+    }
+}
+
+fn parse_pin_object(
+    key: &str,
+    v: &serde_json::Value,
+    check: &dyn Fn(&str) -> bool,
+    errors: &mut Vec<String>,
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if v.is_null() {
+        return out;
+    }
+    let Some(obj) = v.as_object() else {
+        errors.push(format!(
+            "\"{key}\" phải là object {{vai: tên}} (vai: {})",
+            crate::teams::ROLES.join(", ")
+        ));
+        return out;
+    };
+    for (role, val) in obj {
+        if !crate::teams::ROLES.contains(&role.as_str()) {
+            errors.push(format!(
+                "\"{key}\": vai \"{role}\" không hợp lệ (dùng: {})",
+                crate::teams::ROLES.join(", ")
+            ));
+            continue;
+        }
+        match val.as_str().map(str::trim) {
+            Some(name) if check(name) => {
+                out.insert(role.clone(), name.to_string());
+            }
+            _ => errors.push(format!("\"{key}.{role}\" không phải tên hợp lệ.")),
+        }
+    }
+    out
+}
+
+fn pin_member_ok(name: &str) -> bool {
+    crate::staff::validate_id(name)
+}
+
+fn pin_engine_ok(name: &str) -> bool {
+    matches!(
+        crate::engine::Engine::parse(name),
+        Some(crate::engine::Engine::Claude) | Some(crate::engine::Engine::Named(_))
+    )
+}
+
+/// C4: `role_members` / `role_engines` as the dashboard sends them. Every role must be one of
+/// `teams::ROLES`, a name must be a valid id, and a role may be pinned in only one of the two.
+pub fn parse_role_pins(
+    members: &serde_json::Value,
+    engines: &serde_json::Value,
+) -> Result<RolePins, Vec<String>> {
+    let mut errors = Vec::new();
+    let pins = RolePins {
+        members: parse_pin_object("role_members", members, &pin_member_ok, &mut errors),
+        engines: parse_pin_object("role_engines", engines, &pin_engine_ok, &mut errors),
+    };
+    for role in pins.members.keys() {
+        if pins.engines.contains_key(role) {
+            errors.push(format!(
+                "Vai {role} chỉ được ghim thành viên hoặc engine, không cả hai."
+            ));
+        }
+    }
+    if errors.is_empty() {
+        Ok(pins)
+    } else {
+        Err(errors)
+    }
+}
+
+/// C4: the project's role pins as stored. Invalid entries are left out; a role pinned in both
+/// maps is kept so the run seam refuses it with a clear message (`RolePins::pin_for`).
+pub fn role_pins_of(map: &serde_json::Value, project_id: &str) -> RolePins {
+    let Some(obj) = map
+        .get("projects")
+        .and_then(|p| p.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(project_id))
+        })
+    else {
+        return RolePins::default();
+    };
+    let null = serde_json::Value::Null;
+    let mut ignored = Vec::new();
+    RolePins {
+        members: parse_pin_object(
+            "role_members",
+            obj.get("role_members").unwrap_or(&null),
+            &pin_member_ok,
+            &mut ignored,
+        ),
+        engines: parse_pin_object(
+            "role_engines",
+            obj.get("role_engines").unwrap_or(&null),
+            &pin_engine_ok,
+            &mut ignored,
+        ),
+    }
 }
 
 /// The project's environment preflight (C2): `preflight`, `preflight_roles`,
@@ -1075,6 +1212,29 @@ pub fn cmd_list() -> BrainResult<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn role_pins_parse_and_read() {
+        use serde_json::json;
+        let pins = parse_role_pins(&json!({"dev": "dev-a"}), &json!({"qa": "claude"})).unwrap();
+        assert_eq!(pins.pin_for("dev").unwrap(), Some(RolePin::Member("dev-a".into())));
+        assert_eq!(pins.pin_for("qa").unwrap(), Some(RolePin::Engine("claude".into())));
+        assert_eq!(pins.pin_for("lead").unwrap(), None);
+        assert!(parse_role_pins(&json!({"dev": "a"}), &json!({"dev": "b"})).is_err());
+        assert!(parse_role_pins(&json!({"khac": "a"}), &json!(null)).is_err());
+        assert!(parse_role_pins(&json!(null), &json!({"dev": "người:x"})).is_err());
+        assert!(parse_role_pins(&json!(null), &json!(null)).unwrap().is_empty());
+
+        let map = json!({"projects": [
+            {"id": "a", "role_members": {"dev": "dev-a", "khac": "x"}, "role_engines": {"dev": "e1"}},
+            {"id": "b"}
+        ]});
+        let a = role_pins_of(&map, "a");
+        assert_eq!(a.members.len(), 1);
+        assert!(a.pin_for("dev").is_err());
+        assert!(role_pins_of(&map, "b").is_empty());
+        assert!(role_pins_of(&map, "missing").is_empty());
+    }
 
     #[test]
     fn timeouts_of_reads_valid_entries_only() {

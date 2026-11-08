@@ -54,6 +54,9 @@
       timeoutDrafts: {},
       timeoutSaving: {},
       timeoutErrors: {},
+      pinDrafts: {},
+      pinSaving: {},
+      pinErrors: {},
       preflightDrafts: {},
       preflightSaving: {},
       preflightErrors: {},
@@ -882,6 +885,78 @@
             self.load();
           } else {
             self.timeoutErrors[p.id] = window.AB.errorText(res) || 'Không lưu được thời gian chạy';
+          }
+        });
+      },
+
+      // C4: the project's role pins, edited as "dev=member-id" (role_members) and
+      // "dev=engine-name" (role_engines). Role, name and existence checks stay on the server.
+      pinsText: function (obj) {
+        if (!obj || typeof obj !== 'object') return '';
+        return Object.keys(obj).map(function (k) { return k + '=' + obj[k]; }).join(', ');
+      },
+
+      parsePins: function (text) {
+        var out = {};
+        var parts = String(text || '').split(',');
+        for (var i = 0; i < parts.length; i++) {
+          var item = parts[i].trim();
+          if (item.length === 0) continue;
+          var m = /^([a-z-]+)\s*=\s*(\S+)$/.exec(item);
+          if (!m) return { ok: false, message: 'Viết dạng vai=tên, cách nhau bằng dấu phẩy (ví dụ dev=ten-thanh-vien).' };
+          out[m[1]] = m[2];
+        }
+        return { ok: true, value: out };
+      },
+
+      pinDraft: function (p, key) {
+        var d = this.pinDrafts[p.id];
+        if (d && Object.prototype.hasOwnProperty.call(d, key)) return d[key];
+        return this.pinsText(p[key]);
+      },
+
+      setPinDraft: function (p, key, value) {
+        var d = Object.assign({}, this.pinDrafts[p.id] || {});
+        d[key] = value;
+        this.pinDrafts[p.id] = d;
+        this.pinErrors[p.id] = '';
+      },
+
+      isPinSaving: function (p) {
+        return Boolean(this.pinSaving[p.id]);
+      },
+
+      pinError: function (p) {
+        return this.pinErrors[p.id] || '';
+      },
+
+      savePins: function (p) {
+        var self = this;
+        var members = this.parsePins(this.pinDraft(p, 'role_members'));
+        var engines = this.parsePins(this.pinDraft(p, 'role_engines'));
+        var bad = !members.ok ? members : (!engines.ok ? engines : null);
+        if (bad) {
+          this.pinErrors[p.id] = bad.message;
+          return Promise.resolve();
+        }
+        this.pinSaving[p.id] = true;
+        this.pinErrors[p.id] = '';
+        return window.AB.api('PUT', '/api/projects/' + encodeURIComponent(p.id) + '/role-pins', {
+          role_members: members.value,
+          role_engines: engines.value,
+          etag: this.etag
+        }).then(function (res) {
+          self.pinSaving[p.id] = false;
+          if (res && res.ok) {
+            p.role_members = members.value;
+            p.role_engines = engines.value;
+            delete self.pinDrafts[p.id];
+            if (res.data && res.data.etag) self.etag = res.data.etag;
+          } else if (res && res.status === 409) {
+            self.pinErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+            self.load();
+          } else {
+            self.pinErrors[p.id] = window.AB.errorText(res) || 'Không lưu được ghim theo vai';
           }
         });
       },

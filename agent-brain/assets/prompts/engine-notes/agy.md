@@ -1,0 +1,4 @@
+Lưu ý khi Dev chạy bằng agy:
+- agy chỉ đọc được file nằm trong thư mục làm việc của nó (gốc dự án) và các thư mục được thêm vào (các dự án nguồn). File ở ngoài, agy không mở được, kể cả khi đó là file mà một lệnh shell của Dev cần đọc.
+- Dev chỉ được đọc những gì plan cho phép. Plan phải khai trong mục `## Thư mục được đọc` mọi script, thư viện, file cấu hình hay dữ liệu trong dự án mà lệnh của Dev sẽ đọc hoặc chạy (đường dẫn tương đối so với gốc repo, dạng `thư-mục/**` hoặc tên file), không chỉ các file trong bảng "Thay đổi". Thiếu một mục là Dev bị chặn giữa chừng.
+- Nếu lệnh của Dev cần file nằm ngoài dự án (thư viện dùng chung, script ở repo khác), file đó phải thuộc một dự án nguồn đã khai cho dự án này; nếu không, ghi rõ trong plan là việc này chưa làm được thay vì để Dev tự tìm cách.

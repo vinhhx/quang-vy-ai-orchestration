@@ -93,6 +93,8 @@ fn project_json(
         "read_sources": p.read_sources,
         "workflow": crate::projects::workflow_of(map, &p.id),
         "timeouts": crate::projects::timeouts_of(map, &p.id),
+        "role_members": crate::projects::role_pins_of(map, &p.id).members,
+        "role_engines": crate::projects::role_pins_of(map, &p.id).engines,
         "preflight": preflight_json(map, &p.id),
         "runnable_issue": runnable_issue(p, profiles),
     })
@@ -280,6 +282,18 @@ pub struct UpdateTimeoutsBody {
 }
 
 #[derive(serde::Deserialize)]
+pub struct UpdateRolePinsBody {
+    /// `{role: member id}`; `{}` (or absent) removes the project's `role_members`.
+    #[serde(default)]
+    pub role_members: serde_json::Value,
+    /// `{role: engine name}`; `{}` (or absent) removes the project's `role_engines`.
+    #[serde(default)]
+    pub role_engines: serde_json::Value,
+    #[serde(default)]
+    pub etag: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 pub struct UpdateStackBody {
     pub stack: Vec<String>,
     #[serde(default)]
@@ -315,6 +329,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/projects/{id}/profile", put(update_profile))
         .route("/api/projects/{id}/stack", put(update_stack))
         .route("/api/projects/{id}/timeouts", put(update_timeouts))
+        .route("/api/projects/{id}/role-pins", put(update_role_pins))
         .route("/api/projects/{id}/preflight", put(update_preflight))
         .route("/api/projects/{id}/read-sources", post(update_read_sources).put(update_read_sources))
         .route("/api/projects/{id}/status", get(project_status))
@@ -720,6 +735,91 @@ async fn update_timeouts(
             project_obj.remove("timeouts");
         } else {
             project_obj.insert("timeouts".to_string(), serde_json::json!(timeouts));
+        }
+
+        save_and_respond(&st, &data, StatusCode::OK, None)
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+/// C4: the project's role pins `role_members` / `role_engines`, validated by
+/// `projects::parse_role_pins`. A pinned member must exist in departments.json and a pinned engine
+/// in config.json; whether it is ready is checked when a run starts. `{}` removes a key.
+async fn update_role_pins(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<UpdateRolePinsBody>,
+) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if let Some(ref req_etag) = body.etag {
+            if req_etag != &current_etag {
+                return conflict_response(&st, current_etag);
+            }
+        }
+
+        let pins = match crate::projects::parse_role_pins(&body.role_members, &body.role_engines) {
+            Ok(p) => p,
+            Err(errs) => {
+                return Ok(json_error(StatusCode::BAD_REQUEST, &errs.join(" ")));
+            }
+        };
+        let mut errors = Vec::new();
+        if !pins.members.is_empty() {
+            let departments =
+                crate::departments::load_path(&crate::departments::departments_path(), &st.cfg);
+            for (role, member) in &pins.members {
+                if departments.get(member).is_none() {
+                    errors.push(format!(
+                        "Vai {role}: thành viên '{member}' không có trong departments.json."
+                    ));
+                }
+            }
+        }
+        for (role, engine) in &pins.engines {
+            if let Some(crate::engine::Engine::Named(eid)) = crate::engine::Engine::parse(engine) {
+                if st.cfg.engines.get(&eid).is_none() {
+                    errors.push(format!(
+                        "Vai {role}: engine '{eid}' không có trong config.json (engines)."
+                    ));
+                }
+            }
+        }
+        if !errors.is_empty() {
+            return Ok(json_error(StatusCode::BAD_REQUEST, &errors.join(" ")));
+        }
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        let projects_arr = data
+            .get_mut("projects")
+            .and_then(|p| p.as_array_mut())
+            .ok_or_else(|| {
+                crate::error::BrainError::error("projects_map.json thiếu mảng 'projects'")
+            })?;
+        let Some(project_obj) = projects_arr
+            .iter_mut()
+            .find(|obj| obj.get("id").and_then(|v| v.as_str()) == Some(&id))
+            .and_then(|obj| obj.as_object_mut())
+        else {
+            return Ok(json_error(
+                StatusCode::NOT_FOUND,
+                &format!("Không tìm thấy dự án {id}"),
+            ));
+        };
+
+        for (key, values) in [("role_members", &pins.members), ("role_engines", &pins.engines)] {
+            if values.is_empty() {
+                project_obj.remove(key);
+            } else {
+                project_obj.insert(key.to_string(), serde_json::json!(values));
+            }
         }
 
         save_and_respond(&st, &data, StatusCode::OK, None)

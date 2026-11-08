@@ -6,7 +6,10 @@ Shape follows the S7 evidence (spikes/s7/raw/s7-stream.jsonl): every line is an 
 
 Environment:
   FAKE_AGY_RECORD    path; one JSON line is appended per call:
-                     {"argv": [...], "cwd": "...", "env_names": [sorted names], "permission": "..."}
+                     {"argv": [...], "cwd": "...", "add_dirs": [...], "env_names": [sorted names],
+                      "permission": "..."}
+  FAKE_AGY_CWD       when set, the default stream's init.cwd reports this path instead of the
+                     real working directory (to test the wrong-cwd guard)
   FAKE_AGY_SCENARIO  path to a JSON object with these optional keys:
     lines           list of objects, printed as JSON lines (replaces the default stream)
     raw_lines       list of strings, printed as-is (after `lines`)
@@ -53,7 +56,8 @@ VALUE_FLAGS = {
 
 
 def parse_argv(argv: list[str]) -> dict:
-    out: dict = {"prompt": None, "mode": None, "sandbox": False, "skip": False, "model": None}
+    out: dict = {"prompt": None, "mode": None, "sandbox": False, "skip": False, "model": None,
+                 "add_dirs": []}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -66,6 +70,10 @@ def parse_argv(argv: list[str]) -> dict:
             i += 2
         elif a == "--model":
             out["model"] = val
+            i += 2
+        elif a == "--add-dir":
+            if val is not None:
+                out["add_dirs"].append(val)
             i += 2
         elif a == "--sandbox":
             out["sandbox"] = True
@@ -138,6 +146,7 @@ def main() -> None:
         record = {
             "argv": argv,
             "cwd": os.getcwd(),
+            "add_dirs": opts["add_dirs"],
             "env_names": sorted(os.environ.keys()),
             "permission": perm,
         }
@@ -198,7 +207,8 @@ def main() -> None:
             "event": "init",
             "conversation_id": cid,
             "init": {
-                "cwd": os.getcwd(),
+                "cwd": os.environ.get("FAKE_AGY_CWD") or os.getcwd(),
+                "add_dirs": opts["add_dirs"],
                 "tools": ["run_command", "view_file", "write_to_file"],
                 "permission_mode": scenario.get("permission_mode", perm),
             },

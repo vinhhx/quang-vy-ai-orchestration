@@ -79,6 +79,44 @@ pub const UNTRUSTED_CLOSE: &str = "<<<HET_TIN_CHUYEN_TIEP ";
 
 /// INTAKE-06: the Lead gets the untrusted-data rules only for a Telegram-origin task
 /// whose request carries the forwarded block.
+/// C4: the Lead's block on the engine Dev is expected to run on (`engine::preview_for_role`,
+/// nothing written), followed by the engine kind's note (`prompts::engine_note`) when one exists.
+/// Empty for a task without a team (Dev runs on the default engine and nothing changes).
+pub fn dev_engine_block(
+    conn: &rusqlite::Connection,
+    cfg: &crate::config::Config,
+    task_id: i64,
+) -> String {
+    let resolved = match crate::engine::preview_for_role(conn, Some(task_id), "dev", cfg) {
+        Ok(r) => r,
+        Err(e) => {
+            return format!(
+                "## Engine của Dev\nChưa xác định được engine Dev sẽ chạy: {}",
+                e.message
+            )
+        }
+    };
+    if resolved.team.is_none() {
+        return String::new();
+    }
+    if let crate::engine::Engine::Human(staff_id) = &resolved.engine {
+        return format!("## Engine của Dev\nDev dự kiến do người làm ({staff_id}).");
+    }
+    let Some(kind) = crate::engine::kind_word(cfg, &resolved.engine) else {
+        return String::new();
+    };
+    let who = match &resolved.member {
+        Some(pick) => format!("{} · {}", pick.member.display_name, resolved.engine.as_db_str()),
+        None => resolved.engine.as_db_str().to_string(),
+    };
+    let mut block = format!("## Engine của Dev\nDev dự kiến chạy bằng engine {kind} ({who}).");
+    if let Some(note) = crate::prompts::engine_note(kind) {
+        block.push('\n');
+        block.push_str(note.trim_end());
+    }
+    block
+}
+
 pub fn wants_untrusted_prompt(origin: Option<&str>, request: &str) -> bool {
     origin == Some(crate::db::ORIGIN_TELEGRAM) && request.contains(UNTRUSTED_OPEN)
 }
@@ -568,6 +606,11 @@ pub fn cmd_lead(
         for w in warnings {
             crate::term::emit(&w);
         }
+        let mut argv = argv;
+        crate::engine::append_to_system_prompt(
+            &mut argv,
+            &dev_engine_block(&ctx.conn, &ctx.cfg, task_id),
+        );
 
         let plan = crate::roles::RunPlan {
             role: "lead".to_string(),

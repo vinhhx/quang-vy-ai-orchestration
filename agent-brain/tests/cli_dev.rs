@@ -1014,7 +1014,7 @@ fn agy_dev_gets_grants_without_claude_flags() {
                 {"op": "write", "path": "out/x.txt", "content": "ok\n"}
             ],
             "lines": [
-                {"event": "init", "conversation_id": "c1", "init": {"cwd": "/x", "tools": [], "permission_mode": "accept-edits"}},
+                {"event": "init", "conversation_id": "c1", "init": {"tools": [], "permission_mode": "accept-edits"}},
                 {"event": "step_update", "step_update": {"step_index": 2, "state": "ACTIVE", "step_type": "tool",
                     "tool_name": "run_command", "tool_info": {"name": "run_command",
                     "parameters": {"CommandLine": "python scripts/create.py --all"}}}},

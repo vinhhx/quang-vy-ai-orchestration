@@ -132,6 +132,29 @@ pub const BUILTIN_DEPARTMENT_NOTES: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// C4: built-in notes per engine kind (`EngineKind::as_str`), shown to the Lead when Dev is
+/// expected to run on that kind. The text lives in `assets/prompts/engine-notes/<kind>.md`.
+pub const BUILTIN_ENGINE_NOTES: &[(&str, &str)] =
+    &[("agy", include_str!("../assets/prompts/engine-notes/agy.md"))];
+
+/// The note for an engine kind: the user's `prompts/engine-notes/<kind>.md` next to config.json
+/// when present, otherwise the built-in asset; `None` when neither exists.
+pub fn engine_note(kind: &str) -> Option<String> {
+    if !valid_name(kind) {
+        return None;
+    }
+    let user = notes_dir().join("engine-notes").join(format!("{kind}.md"));
+    if let Ok(text) = std::fs::read_to_string(&user) {
+        if !text.trim().is_empty() {
+            return Some(text);
+        }
+    }
+    BUILTIN_ENGINE_NOTES
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, text)| text.to_string())
+}
+
 pub fn builtin_department_note(dept: &str, role: &str) -> Option<&'static str> {
     BUILTIN_DEPARTMENT_NOTES
         .iter()

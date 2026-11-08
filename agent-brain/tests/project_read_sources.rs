@@ -566,6 +566,9 @@ fn test_prompt_block_sources() {
     assert!(block_with.contains("## Dự án nguồn (chỉ đọc)"));
     assert!(block_with.contains("- src-lib:"));
     assert!(block_with.contains("— thư mục tri thức: .gsd"));
+    assert!(block_with.contains(
+        "Mọi vai của task (Lead, Dev, QA, Review) đều đọc được các thư mục này bằng đường dẫn tuyệt đối."
+    ));
     assert!(block_with.contains("Đọc bằng đường dẫn tuyệt đối. Không ghi, không chạy lệnh trong các thư mục này, không đọc file .env*."));
 
     let (block_without, _) = read_sources_prompt_block(&map, &p_without_src);

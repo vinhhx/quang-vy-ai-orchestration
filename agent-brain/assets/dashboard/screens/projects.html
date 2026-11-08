@@ -233,6 +233,19 @@
         </div>
 
         <div class="space-y-2">
+          <p class="text-sm font-semibold leading-normal">Ghim thành viên hoặc engine theo vai</p>
+          <p :id="'ab-proj-pins-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Ví dụ dev=ten-thanh-vien hoặc dev=ten-engine. Mỗi vai chỉ ghim một trong hai. Được dùng trước đội hình và phòng ban; nếu chưa sẵn sàng thì run báo lỗi, không tự chọn khác. Để trống rồi lưu để bỏ.</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <label :for="'ab-proj-pin-members-' + p.id" class="text-sm font-normal leading-normal">Thành viên</label>
+            <input :id="'ab-proj-pin-members-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="dev=ten-thanh-vien" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="pinDraft(p, 'role_members')" @input="setPinDraft(p, 'role_members', $event.target.value)" :disabled="isPinSaving(p)" :aria-describedby="'ab-proj-pins-help-' + p.id">
+            <label :for="'ab-proj-pin-engines-' + p.id" class="text-sm font-normal leading-normal">Engine</label>
+            <input :id="'ab-proj-pin-engines-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="dev=ten-engine" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="pinDraft(p, 'role_engines')" @input="setPinDraft(p, 'role_engines', $event.target.value)" :disabled="isPinSaving(p)" :aria-describedby="'ab-proj-pins-help-' + p.id">
+            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isPinSaving(p)" @click="savePins(p)">Lưu ghim</button>
+          </div>
+          <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="pinError(p)" x-text="pinError(p)" role="alert"></p>
+        </div>
+
+        <div class="space-y-2">
           <label :for="'ab-proj-preflight-' + p.id" class="text-sm font-semibold leading-normal">Kiểm môi trường đích trước khi chạy</label>
           <p :id="'ab-proj-preflight-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Tối đa 5 mục JSON, ví dụ [{"kind": "http", "url_env": "TEN_BIEN", "expect_status": [200, 302]}, {"kind": "tcp", "host": "db", "port": 5432}]. url_env đọc biến môi trường của tiến trình serve. Để trống rồi lưu để tắt.</p>
           <textarea :id="'ab-proj-preflight-' + p.id" rows="4" spellcheck="false" class="w-full rounded-xl bg-white p-3 font-mono text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="preflightDraft(p).checks" @input="setPreflightField(p, 'checks', $event.target.value)" :disabled="isPreflightSaving(p)" :aria-describedby="'ab-proj-preflight-help-' + p.id"></textarea>

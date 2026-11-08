@@ -87,7 +87,7 @@ fn usage() -> Value {
 fn agy_lines(response: &str, status: &str, permission_mode: &str) -> Vec<Value> {
     vec![
         json!({"event": "init", "conversation_id": "c1",
-               "init": {"cwd": "/x", "tools": ["write_to_file"], "permission_mode": permission_mode}}),
+               "init": {"tools": ["write_to_file"], "permission_mode": permission_mode}}),
         json!({"event": "step_update", "step_update": {
             "conversation_id": "c1", "step_index": 1, "state": "DONE",
             "step_type": "agent_response", "usage": usage()}}),
@@ -530,7 +530,10 @@ fn agy_dev_edits_in_scope() {
     let recs = env.records();
     assert_eq!(recs.len(), 1);
     let argv = argv_of(&recs[0]);
-    assert_eq!(&argv[argv.len() - 2..], ["--mode", "accept-edits"]);
+    assert!(
+        argv.windows(2).any(|w| w == ["--mode", "accept-edits"]),
+        "{argv:?}"
+    );
     assert_eq!(recs[0]["permission"], json!("accept-edits"));
 }
 
@@ -1501,4 +1504,254 @@ fn agy_dev_without_grants_still_allows_only_git() {
     )
     .unwrap();
     assert!(policy.get("bash_allow").is_none(), "{policy}");
+}
+
+// ---------------------------------------------------------------------------
+// C4: agy workspace root, wrong cwd guard, Dev engine preview for the Lead, project pins
+// ---------------------------------------------------------------------------
+
+fn canon(p: &str) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p))
+}
+
+/// `web` reads the source project `lib`; Lead and Dev on agy; the plan lists `src/a.txt`.
+fn plan_task_with_source(sb: &Sandbox) -> (PathBuf, PathBuf) {
+    agy_config(sb);
+    write_doi_agy(sb, dev_roles());
+    let repo = sb.make_repo(
+        "web",
+        &[("src/app.py", "def app():\n    return 1\n")],
+        None,
+        None,
+    );
+    let src = sb.make_repo("lib", &[("lib.py", "X = 1\n")], None, None);
+    let mut entry = sb.project_entry(&repo, "web", "work");
+    entry.as_object_mut().unwrap().remove("workflow");
+    entry["read_sources"] = json!(["lib"]);
+    let mut src_entry = sb.project_entry(&src, "lib", "work");
+    src_entry.as_object_mut().unwrap().remove("workflow");
+    sb.write_map(json!([entry, src_entry]), &[]);
+    let plan = protocol::plan_text(
+        "Kế hoạch",
+        &[("src/a.txt", "toàn file", "sửa", "demo")],
+        "python3 -m unittest",
+        "",
+    );
+    let env = AgyEnv::new(
+        sb,
+        json!({"lines": agy_lines(&plan, "SUCCESS", "request-review")}),
+    );
+    let res = run_lead(sb, &env);
+    assert_ok(&res, "run lead (agy, plan with source)");
+    (repo, src)
+}
+
+#[test]
+fn agy_dev_workspace_root_comes_before_sources_and_init_cwd_matches() {
+    let sb = Sandbox::new();
+    let (repo, src) = plan_task_with_source(&sb);
+
+    let (res, env) = run_dev(&sb, json!({"ops": [write_op("src/a.txt", "a\n")]}));
+    assert_ok(&res, "run dev (agy, with source)");
+
+    let recs = env.records();
+    assert_eq!(recs.len(), 1);
+    let add_dirs: Vec<PathBuf> = recs[0]["add_dirs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| canon(v.as_str().unwrap()))
+        .collect();
+    let repo_c = canon(repo.to_str().unwrap());
+    let src_c = canon(src.to_str().unwrap());
+    assert_eq!(add_dirs.first(), Some(&repo_c), "root is not first: {add_dirs:?}");
+    let src_at = add_dirs.iter().position(|d| d == &src_c);
+    assert!(src_at.is_some_and(|i| i > 0), "source missing or before root: {add_dirs:?}");
+    // the real working directory of agy is the project root, and so is init.cwd in the stream
+    assert_eq!(canon(recs[0]["cwd"].as_str().unwrap()), repo_c);
+    let row = run_row(&sb, "dev");
+    let stream =
+        std::fs::read_to_string(PathBuf::from(&row.run_dir).join("stream.jsonl")).unwrap();
+    let init: Value = stream
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| v["event"] == "init")
+        .expect("init event in stream");
+    assert_eq!(canon(init["init"]["cwd"].as_str().unwrap()), repo_c);
+    assert_eq!(row.status, "succeeded");
+    assert_ne!(row.outcome.as_deref(), Some("protocol_violation"));
+    assert!(row.metrics.get("violation").is_none(), "{}", row.metrics);
+}
+
+#[test]
+fn agy_dev_reporting_another_cwd_is_a_wrong_cwd_violation() {
+    let sb = Sandbox::new();
+    let repo = plan_task(&sb, dev_roles(), &["src/a.txt"]);
+    let elsewhere = sb.root.join("noi-khac");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+
+    let env = AgyEnv::new(&sb, json!({"ops": [write_op("src/a.txt", "a\n")]}));
+    let mut vars = env.vars();
+    vars.push(("FAKE_AGY_CWD", elsewhere.to_str().unwrap()));
+    let res = sb.run_env(&["run", "dev", "web"], None, &vars);
+    assert_eq!(res.code, 3, "stderr: {}\nstdout: {}", res.stderr, res.stdout);
+    assert!(
+        res.stderr.contains("không phải gốc dự án"),
+        "stderr: {}",
+        res.stderr
+    );
+    let row = run_row(&sb, "dev");
+    assert_eq!(row.outcome.as_deref(), Some("protocol_violation"));
+    assert_eq!(row.metrics["violation"]["kind"], json!("wrong_cwd"), "{}", row.metrics);
+    assert_eq!(
+        canon(row.metrics["violation"]["cwd"].as_str().unwrap()),
+        canon(elsewhere.to_str().unwrap())
+    );
+    let err = dev_error(&sb).unwrap_or_default();
+    assert!(err.contains("không phải gốc dự án"), "runs.error: {err}");
+    // the run was stopped before anything was committed
+    let subject = sb.git(&repo, &["log", "-1", "--format=%s"]);
+    assert_eq!(subject.trim(), "sua-app: plan");
+}
+
+fn lead_prompt(sb: &Sandbox) -> String {
+    let row = run_row(sb, "lead");
+    std::fs::read_to_string(PathBuf::from(&row.run_dir).join("prompt.md")).unwrap()
+}
+
+#[test]
+fn lead_prompt_names_the_dev_engine_and_its_note() {
+    let sb = Sandbox::new();
+    plan_task(&sb, dev_roles(), &["src/a.txt"]);
+    let prompt = lead_prompt(&sb);
+    assert!(
+        prompt.contains("Dev dự kiến chạy bằng engine agy (agy)."),
+        "{prompt}"
+    );
+    let note = std::fs::read_to_string(
+        common::repo_root().join("agent-brain/assets/prompts/engine-notes/agy.md"),
+    )
+    .unwrap();
+    assert!(prompt.contains(note.lines().next().unwrap()), "{prompt}");
+    // the preview wrote nothing: only the Lead run exists
+    let runs: i64 = sb
+        .db()
+        .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(runs, 1);
+}
+
+#[test]
+fn lead_prompt_without_engine_note_for_claude_dev() {
+    let sb = Sandbox::new();
+    plan_task(&sb, json!({"lead": "agy", "dev": "claude"}), &["src/a.txt"]);
+    let prompt = lead_prompt(&sb);
+    assert!(
+        prompt.contains("Dev dự kiến chạy bằng engine anthropic (claude)."),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("Lưu ý khi Dev chạy bằng agy"), "{prompt}");
+}
+
+/// Adds `role_engines` to project `web` of the map.
+fn pin_engine(sb: &Sandbox, role: &str, engine: &str) {
+    let path = sb.map_path();
+    let mut map: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for p in map["projects"].as_array_mut().unwrap() {
+        if p["id"] == "web" {
+            p["role_engines"] = json!({role: engine});
+        }
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&map).unwrap()).unwrap();
+}
+
+#[test]
+fn project_engine_pin_wins_over_the_team() {
+    let sb = Sandbox::new();
+    let repo = plan_task(&sb, json!({"lead": "agy", "dev": "claude"}), &["src/a.txt"]);
+    pin_engine(&sb, "dev", "agy");
+
+    let (res, env) = run_dev(&sb, json!({"ops": [write_op("src/a.txt", "a\n")]}));
+    assert_ok(&res, "run dev (pinned to agy)");
+    assert_eq!(run_row(&sb, "dev").engine, "agy");
+    assert_eq!(env.records().len(), 1);
+    assert!(repo.join("src/a.txt").is_file());
+}
+
+#[test]
+fn project_pin_not_ready_refuses_without_fallback() {
+    let sb = Sandbox::new();
+    plan_task(&sb, dev_roles(), &["src/a.txt"]);
+    sb.write_config(json!({"engines": [
+        {"id": "agy", "kind": "agy", "command": fake_agy().to_str().unwrap()},
+        {"id": "agy-hong", "kind": "agy", "command": "/khong/co/agy-hong"}
+    ]}));
+    pin_engine(&sb, "dev", "agy-hong");
+
+    let (res, env) = run_dev(&sb, json!({"ops": [write_op("src/a.txt", "a\n")]}));
+    assert_ne!(res.code, 0, "stdout: {}", res.stdout);
+    assert!(
+        res.stderr.contains("agy-hong") && res.stderr.contains("chưa sẵn sàng"),
+        "stderr: {}",
+        res.stderr
+    );
+    assert!(env.records().is_empty(), "agy ran anyway");
+    let dev_runs: i64 = sb
+        .db()
+        .query_row("SELECT COUNT(*) FROM runs WHERE role = 'dev'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(dev_runs, 0);
+}
+
+#[test]
+fn role_pins_api_saves_validates_and_checks_etag() {
+    let sb = Sandbox::new();
+    agy_config(&sb);
+    let _repo = setup_project(&sb, "work");
+    let srv = sb.serve(&[]);
+
+    let resp = srv.put_json(
+        "/api/projects/web/role-pins",
+        &json!({"role_engines": {"dev": "agy"}}),
+    );
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    let web = resp.json()["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "web")
+        .cloned()
+        .unwrap();
+    assert_eq!(web["role_engines"], json!({"dev": "agy"}));
+    assert_eq!(web["role_members"], json!({}));
+
+    for bad in [
+        json!({"role_engines": {"dev": "agy"}, "role_members": {"dev": "ai-do"}}),
+        json!({"role_engines": {"khac": "agy"}}),
+        json!({"role_engines": {"dev": "khong-co"}}),
+        json!({"role_members": {"dev": "khong-co"}}),
+    ] {
+        let resp = srv.put_json("/api/projects/web/role-pins", &bad);
+        assert_eq!(resp.status, 400, "{bad}: {}", resp.text());
+    }
+
+    let resp = srv.put_json(
+        "/api/projects/web/role-pins",
+        &json!({"role_engines": {}, "etag": "cu"}),
+    );
+    assert_eq!(resp.status, 409, "{}", resp.text());
+
+    let resp = srv.put_json("/api/projects/web/role-pins", &json!({"role_engines": {}}));
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    let map: Value = serde_json::from_str(
+        &std::fs::read_to_string(sb.map_path()).unwrap(),
+    )
+    .unwrap();
+    let web = map["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "web")
+        .unwrap();
+    assert!(web.get("role_engines").is_none(), "{web}");
 }

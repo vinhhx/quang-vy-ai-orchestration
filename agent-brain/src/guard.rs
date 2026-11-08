@@ -375,6 +375,25 @@ pub const AGY_ASK_TOOLS: &[&str] = &["ask_question", "ask_permission", "ask_cust
 /// The agy parameter that sets where `run_command` runs.
 const AGY_CWD_KEY: &str = "Cwd";
 
+/// C4: violation kind stored when agy runs in another directory than the project root.
+pub const VIOLATION_WRONG_CWD: &str = "wrong_cwd";
+
+/// C4: the `init.cwd` of an agy `init` event compared with the project root, both canonicalized
+/// (a path that cannot be canonicalized is compared as written). `Some(cwd)` when agy reports a
+/// different directory; `None` when it matches or the event carries no `cwd`.
+pub fn agy_init_cwd_mismatch(init_event: &serde_json::Value, root: &Path) -> Option<String> {
+    let cwd = init_event
+        .get("init")
+        .and_then(|i| i.get("cwd"))
+        .and_then(|v| v.as_str())?;
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if canon(Path::new(cwd)) == canon(root) {
+        None
+    } else {
+        Some(cwd.to_string())
+    }
+}
+
 /// The PreToolUse payload claude would send for one agy tool step, for `decide`. A mapped tool
 /// becomes its claude tool (`run_command` -> Bash with `command`, file tools -> Read/Write/Edit
 /// with `file_path`, listing/search -> Glob/Grep with `path`); a missing parameter stays missing
@@ -3126,6 +3145,26 @@ mod tests {
         assert!(v["read_files"][0].as_str().unwrap().ends_with("/a.md"));
         assert!(v["write_files"][0].as_str().unwrap().ends_with("/b.md"));
         assert!(v.get("read_dirs").is_none());
+    }
+
+    #[test]
+    fn agy_init_cwd_mismatch_compares_canonical_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("web");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let ev = |cwd: &str| serde_json::json!({"event": "init", "init": {"cwd": cwd}});
+        assert_eq!(agy_init_cwd_mismatch(&ev(root.to_str().unwrap()), &root), None);
+        let dotted = format!("{}/sub/..", root.display());
+        assert_eq!(agy_init_cwd_mismatch(&ev(&dotted), &root), None);
+        let sub = root.join("sub");
+        assert_eq!(
+            agy_init_cwd_mismatch(&ev(sub.to_str().unwrap()), &root),
+            Some(sub.to_string_lossy().to_string())
+        );
+        assert_eq!(
+            agy_init_cwd_mismatch(&serde_json::json!({"event": "init", "init": {}}), &root),
+            None
+        );
     }
 
     // ---- agy Dev tool steps ----

@@ -758,6 +758,13 @@ pub fn execute_role_staged(
         agy_policy: Option<crate::guard::Policy>,
         agy_checked_steps: std::collections::BTreeSet<i64>,
         violation: Option<String>,
+        /// Short reason shown when the observer stops the run for `violation`.
+        stop_reason: Option<String>,
+        /// `(kind, details)` stored through `record_violation` for a kind the run seam detects
+        /// itself (C4: `wrong_cwd`).
+        violation_record: Option<(&'static str, serde_json::Value)>,
+        /// The project root an agy run must report as `init.cwd` (C4).
+        agy_root: Option<PathBuf>,
         source_warnings: Vec<String>,
     }
 
@@ -796,6 +803,32 @@ pub fn execute_role_staged(
             );
             crate::term::emit(&msg);
             self.violation = Some(msg);
+            self.stop_reason = Some("agy Dev dùng công cụ ngoài quyền của plan".to_string());
+        }
+
+        /// C4: agy must run with the project root as its workspace. An `init.cwd` that differs
+        /// from the root (after canonicalize) stops the run as a `wrong_cwd` violation.
+        fn check_agy_init(&mut self, value: &serde_json::Value) {
+            if self.violation.is_some() {
+                return;
+            }
+            let Some(root) = self.agy_root.as_ref() else {
+                return;
+            };
+            let Some(cwd) = crate::guard::agy_init_cwd_mismatch(value, root) else {
+                return;
+            };
+            let msg = format!(
+                "agy chạy ở thư mục {cwd}, không phải gốc dự án {} — dừng run.",
+                root.display()
+            );
+            crate::term::emit(&msg);
+            self.violation = Some(msg);
+            self.stop_reason = Some("agy chạy sai thư mục làm việc".to_string());
+            self.violation_record = Some((
+                crate::guard::VIOLATION_WRONG_CWD,
+                serde_json::json!({"cwd": cwd, "root": root.to_string_lossy()}),
+            ));
         }
     }
 
@@ -890,6 +923,10 @@ pub fn execute_role_staged(
                     if let Some(value) = ev.value.as_ref() {
                         self.check_agy_tool(value);
                     }
+                } else if ev.kind == "agy/init" {
+                    if let Some(value) = ev.value.as_ref() {
+                        self.check_agy_init(value);
+                    }
                 }
                 self.seq += 1;
                 if let Some(run_id) = self.run_id {
@@ -916,9 +953,11 @@ pub fn execute_role_staged(
         }
 
         fn stop_requested(&self) -> Option<String> {
-            self.violation
-                .as_ref()
-                .map(|_| "agy Dev dùng công cụ ngoài quyền của plan".to_string())
+            self.violation.as_ref().map(|_| {
+                self.stop_reason
+                    .clone()
+                    .unwrap_or_else(|| "vi phạm giao thức".to_string())
+            })
         }
 
         fn kill_requested(&mut self) -> bool {
@@ -959,6 +998,9 @@ pub fn execute_role_staged(
         agy_policy,
         agy_checked_steps: std::collections::BTreeSet::new(),
         violation: None,
+        stop_reason: None,
+        violation_record: None,
+        agy_root: (ep.stream == crate::engine::StreamFormat::Agy).then(|| root.to_path_buf()),
         source_warnings: source_warnings.clone(),
     };
 
@@ -1160,6 +1202,15 @@ pub fn execute_role_staged(
     if let Some(msg) = violation {
         if let Some(run_id) = obs.run_id {
             crate::db::set_run_outcome(&ctx.conn, run_id, "protocol_violation")?;
+            if let Some((kind, details)) = obs.violation_record.take() {
+                record_violation(
+                    ctx,
+                    run_id,
+                    kind,
+                    &crate::secrets::redact_str(&msg, &ep.redact),
+                    details,
+                )?;
+            }
         }
         return Err(BrainError::new(
             crate::secrets::redact_str(

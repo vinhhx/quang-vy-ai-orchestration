@@ -458,6 +458,136 @@ pub fn resolve_for_run_with(
     role: &str,
     cfg: Option<&Config>,
 ) -> BrainResult<ResolvedEngine> {
+    resolve_inner(conn, task_id, role, cfg, false)
+}
+
+/// C4: the engine (and department member) a role of the task would run on now, decided by the
+/// same rules as `resolve_for_run_with` (team, project pin, department pick). Nothing is written
+/// and nothing is printed: the Lead prompt uses it to tell the plan which engine Dev runs on.
+pub fn preview_for_role(
+    conn: &rusqlite::Connection,
+    task_id: Option<i64>,
+    role: &str,
+    cfg: &Config,
+) -> BrainResult<ResolvedEngine> {
+    resolve_inner(conn, task_id, role, Some(cfg), true)
+}
+
+/// The engine kind word of `engine` (`EngineKind::as_str`; the built-in claude is an anthropic
+/// engine); `None` for a person or an id missing from config.json.
+pub fn kind_word(cfg: &Config, engine: &Engine) -> Option<&'static str> {
+    match engine {
+        Engine::Claude => Some(crate::config::EngineKind::Anthropic.as_str()),
+        Engine::Named(id) => cfg.engines.kind_of(id).map(|k| k.as_str()),
+        Engine::Human(_) => None,
+    }
+}
+
+/// C4: the project pin of `role` (`role_members` / `role_engines` in projects_map.json) checked
+/// for readiness now. `Ok(None)` when the project pins nothing for the role; an error when the
+/// pinned member or engine cannot run (never a silent fall back to the automatic pick).
+fn project_pin(
+    cfg: &Config,
+    pins: &crate::projects::RolePins,
+    project_id: &str,
+    project_profile: &str,
+    role: &str,
+    lookup_role: &str,
+) -> BrainResult<Option<(Engine, Option<crate::departments::Pick>)>> {
+    let pin = pins
+        .pin_for(lookup_role)
+        .map_err(|e| BrainError::error(format!("Dự án '{project_id}': {e}")))?;
+    let Some(pin) = pin else {
+        return Ok(None);
+    };
+    let env = crate::profile::current_env();
+    let statuses = readiness(cfg, &env, 0);
+    let status_reason = |name: &str| -> String {
+        match statuses.iter().find(|s| s.name == name) {
+            None => "chưa khai báo trong config.json".to_string(),
+            Some(st) => match st.reason.as_deref() {
+                Some(r) => format!("{} — {r}", st.word),
+                None => st.word.to_string(),
+            },
+        }
+    };
+    match pin {
+        crate::projects::RolePin::Member(member_id) => {
+            let loaded = crate::departments::load_path(&crate::departments::departments_path(), cfg);
+            let member = loaded.get(&member_id).ok_or_else(|| {
+                BrainError::error(format!(
+                    "Dự án '{project_id}' ghim thành viên '{member_id}' cho vai {lookup_role}, nhưng thành viên này không có trong departments.json — sửa ghim trên trang Dự án."
+                ))
+            })?;
+            if !crate::departments::member_usable(cfg, &statuses, member, role, project_profile) {
+                let name = member.engine.as_db_str().to_string();
+                let why = match &member.engine {
+                    Engine::Named(id) => cfg
+                        .engines
+                        .get(id)
+                        .and_then(|def| profile_refusal(def, project_id, project_profile, role))
+                        .unwrap_or_else(|| status_reason(&name)),
+                    _ => status_reason(&name),
+                };
+                return Err(BrainError::error(format!(
+                    "Thành viên '{}' được dự án '{project_id}' ghim cho vai {lookup_role} chưa sẵn sàng (engine '{name}': {why}). Không tự chọn người khác — sửa engine hoặc bỏ ghim trên trang Dự án.",
+                    member.display_name
+                )));
+            }
+            Ok(Some((
+                member.engine.clone(),
+                Some(crate::departments::Pick {
+                    member: member.clone(),
+                    reason: "ghim theo dự án".to_string(),
+                }),
+            )))
+        }
+        crate::projects::RolePin::Engine(name) => {
+            let engine = Engine::parse(&name)
+                .filter(|e| !e.is_human())
+                .ok_or_else(|| {
+                    BrainError::error(format!(
+                        "Dự án '{project_id}' ghim engine '{name}' không hợp lệ cho vai {lookup_role}."
+                    ))
+                })?;
+            if let Engine::Named(id) = &engine {
+                let def = cfg.engines.get(id).ok_or_else(|| {
+                    BrainError::error(format!(
+                        "Dự án '{project_id}' ghim engine '{id}' cho vai {lookup_role}, nhưng engine này không có trong config.json (engines)."
+                    ))
+                })?;
+                if let Some(msg) = profile_refusal(def, project_id, project_profile, role) {
+                    return Err(BrainError::error(msg));
+                }
+            }
+            let db_name = engine.as_db_str().to_string();
+            let ready = statuses
+                .iter()
+                .find(|s| s.name == db_name)
+                .is_some_and(|s| s.readiness == Readiness::SanSang.key());
+            if !ready {
+                return Err(BrainError::error(format!(
+                    "Engine '{db_name}' được dự án '{project_id}' ghim cho vai {lookup_role} chưa sẵn sàng ({}). Không tự chọn engine khác — sửa engine hoặc bỏ ghim trên trang Dự án.",
+                    status_reason(&db_name)
+                )));
+            }
+            Ok(Some((engine, None)))
+        }
+    }
+}
+
+fn resolve_inner(
+    conn: &rusqlite::Connection,
+    task_id: Option<i64>,
+    role: &str,
+    cfg: Option<&Config>,
+    quiet: bool,
+) -> BrainResult<ResolvedEngine> {
+    let warn = |msg: String| {
+        if !quiet {
+            crate::term::emit(&msg);
+        }
+    };
     let Some(task_id) = task_id else {
         return Ok(ResolvedEngine::claude());
     };
@@ -492,19 +622,36 @@ pub fn resolve_for_run_with(
     let mut resolved_engine = team.engine_for(lookup_role);
     let mut member_pick = None;
 
-    if task_team.name == crate::teams::TEAM_PHONG_BAN && task_team.wait.is_none() && !matches!(resolved_engine, Engine::Human(_)) {
-        let level_str = crate::db::task_level(conn, task_id).unwrap_or_else(|_| "vua".to_string());
-        let level = crate::departments::Level::parse(&level_str).unwrap_or(crate::departments::Level::Vua);
-        let project_profile: String = conn
-            .query_row(
-                "SELECT p.profile FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
-                rusqlite::params![task_id],
-                |r| r.get(0),
-            )
-            .unwrap_or_else(|_| "work".to_string());
+    // A person's step (or a task waiting for one) is never replaced by a pin or a pick.
+    let automatic = task_team.wait.is_none() && !matches!(resolved_engine, Engine::Human(_));
+    if !automatic {
+        return Ok(ResolvedEngine {
+            engine: resolved_engine,
+            team: Some(task_team.name.clone()),
+            wait: task_team.wait.clone(),
+            member: None,
+        });
+    }
 
-        let fallback_cfg;
-        let active_cfg = match cfg {
+    let (project_id, project_profile): (String, String) = conn
+        .query_row(
+            "SELECT p.slug, p.profile FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
+            rusqlite::params![task_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or_else(|_| (String::new(), "work".to_string()));
+    let pins = if project_id.is_empty() {
+        crate::projects::RolePins::default()
+    } else {
+        crate::projects::load_map(&crate::config::map_path())
+            .map(|m| crate::projects::role_pins_of(&m, &project_id))
+            .unwrap_or_default()
+    };
+    let is_phong_ban = task_team.name == crate::teams::TEAM_PHONG_BAN;
+
+    let fallback_cfg;
+    let active_cfg = if !pins.is_empty() || is_phong_ban {
+        match cfg {
             Some(c) => Some(c),
             None => match crate::config::load_config() {
                 Ok(c) => {
@@ -512,13 +659,39 @@ pub fn resolve_for_run_with(
                     fallback_cfg.as_ref()
                 }
                 Err(e) => {
-                    crate::term::emit(&format!(
+                    if !pins.is_empty() {
+                        return Err(BrainError::error(format!(
+                            "Không tải được cấu hình để kiểm engine ghim của dự án: {e}"
+                        )));
+                    }
+                    warn(format!(
                         "Cảnh báo: không tải được cấu hình để chọn thành viên phòng ban: {e}"
                     ));
                     None
                 }
             },
-        };
+        }
+    } else {
+        None
+    };
+
+    // C4: a project pin comes before the department pick.
+    if let Some(active_cfg) = active_cfg {
+        if let Some((engine, pick)) =
+            project_pin(active_cfg, &pins, &project_id, &project_profile, role, lookup_role)?
+        {
+            return Ok(ResolvedEngine {
+                engine,
+                team: Some(task_team.name.clone()),
+                wait: None,
+                member: pick,
+            });
+        }
+    }
+
+    if is_phong_ban {
+        let level_str = crate::db::task_level(conn, task_id).unwrap_or_else(|_| "vua".to_string());
+        let level = crate::departments::Level::parse(&level_str).unwrap_or(crate::departments::Level::Vua);
 
         if let Some(active_cfg) = active_cfg {
             match crate::departments::pick(
@@ -535,7 +708,7 @@ pub fn resolve_for_run_with(
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    crate::term::emit(&format!(
+                    warn(format!(
                         "Cảnh báo: không chọn được thành viên phòng ban: {e}"
                     ));
                 }
@@ -678,7 +851,7 @@ pub fn plan_for(
                     anthropic_plan(cfg, def, a, role, claude_argv, claude_model, base_env, member_model)
                 }
                 EngineSpec::Agy(a) => {
-                    agy_plan(cfg, &def.id, a, role, claude_argv, base_env, timeout, member_model)
+                    agy_plan(cfg, &def.id, a, role, claude_argv, base_env, timeout, member_model, cwd)
                 }
                 EngineSpec::Dsh(d) => {
                     crate::dsh::plan(cfg, &def.id, d, role, claude_argv, base_env, cwd)
@@ -863,6 +1036,7 @@ fn agy_plan(
     base_env: BTreeMap<String, String>,
     timeout: Duration,
     member_model: Option<&str>,
+    root: &Path,
 ) -> BrainResult<EnginePlan> {
     let (input, prompt) = claude_argv_parts(claude_argv)
         .ok_or_else(|| BrainError::error("Không dựng được lệnh agy từ lệnh claude"))?;
@@ -887,6 +1061,11 @@ fn agy_plan(
         "--print-timeout".to_string(),
         format!("{secs}s"),
     ];
+    // C4: the project root is the first workspace directory (agy reads only inside its
+    // workspace and the added directories), before every source directory; the process cwd is
+    // the root as well (`RunRequest::cwd`).
+    argv.push("--add-dir".to_string());
+    argv.push(root.to_string_lossy().to_string());
     let resolved_model = if let Some(m) = member_model {
         Some(m.to_string())
     } else {
@@ -1479,7 +1658,8 @@ mod tests {
             &p.argv[3..7],
             ["--output-format", "stream-json", "--print-timeout", "1770s"]
         );
-        assert_eq!(&p.argv[7..], ["--model", "gemini-x"]);
+        // C4: the project root (the run's cwd) is the first workspace directory
+        assert_eq!(&p.argv[7..], ["--add-dir", "/", "--model", "gemini-x"]);
         assert_eq!(p.model_label, "gemini-x");
         assert_eq!(p.db_engine, "agy");
         assert_eq!(p.stream, StreamFormat::Agy);
