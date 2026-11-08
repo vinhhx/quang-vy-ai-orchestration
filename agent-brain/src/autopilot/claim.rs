@@ -277,6 +277,12 @@ pub fn revert_approval(
         "UPDATE tasks SET approved_at = ?1, approved_commit = ?2 WHERE id = ?3 AND approved_commit = ?4",
         rusqlite::params![at, commit, task_id, written_commit],
     )?;
+    if changed == 1 {
+        let _ = conn.execute(
+            "DELETE FROM plan_approvals WHERE id = (SELECT id FROM plan_approvals WHERE task_id = ?1 AND \"commit\" = ?2 ORDER BY id DESC LIMIT 1)",
+            rusqlite::params![task_id, written_commit],
+        );
+    }
     Ok(changed == 1)
 }
 
@@ -405,9 +411,15 @@ pub fn approve_check(
 }
 
 /// Ghi duyệt plan cho commit hiện tại; trả thời điểm (ms) đã ghi.
-pub fn approve_record(conn: &Connection, task_id: i64, plan_commit: &str) -> BrainResult<i64> {
+pub fn approve_record(
+    conn: &Connection,
+    task_id: i64,
+    plan_commit: &str,
+    source: &str,
+) -> BrainResult<i64> {
     let now = crate::db::now_ms();
     crate::db::set_task_approval(conn, task_id, now, plan_commit)?;
+    crate::db::insert_plan_approval(conn, task_id, plan_commit, now, source)?;
     Ok(now)
 }
 

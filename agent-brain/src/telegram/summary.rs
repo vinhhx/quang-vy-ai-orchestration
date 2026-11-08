@@ -753,6 +753,7 @@ mod tests {
             team: None,
             teams,
             staff,
+            plan_diff_summary: None,
         }
     }
 

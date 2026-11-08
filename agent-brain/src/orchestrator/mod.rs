@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 /// Lấy MỘT intake `queued` cũ nhất (ưu tiên `urgent` > `normal` > `low`, rồi `created_at ASC, id ASC`).
 pub fn next_queued_intake(conn: &Connection) -> BrainResult<Option<IntakeRow>> {
-    let sql = "SELECT id, source, project_id, request, priority, status, error, created_at, updated_at
+    let sql = "SELECT id, source, project_id, request, priority, status, error, created_at, updated_at, split
                FROM intake
                WHERE status = 'queued'
                ORDER BY
@@ -36,6 +36,7 @@ pub fn next_queued_intake(conn: &Connection) -> BrainResult<Option<IntakeRow>> {
             error: r.get(6)?,
             created_at: r.get(7)?,
             updated_at: r.get(8)?,
+            split: r.get::<_, i64>(9)? != 0,
         }))
     } else {
         Ok(None)

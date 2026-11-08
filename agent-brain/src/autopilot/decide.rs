@@ -228,6 +228,8 @@ pub struct AutoJson {
     pub budget_extra_minutes: i64,
     #[serde(default)]
     pub budget_extra_usd: f64,
+    #[serde(default)]
+    pub skip_build_once: bool,
 }
 
 impl AutoJson {
@@ -316,7 +318,7 @@ pub enum StopRequest {
 }
 
 /// Toàn bộ dữ liệu ngữ cảnh để ra quyết định thuần.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Facts {
     pub runs: Vec<RunFact>,
     pub plan_commit: Option<String>,
@@ -329,6 +331,15 @@ pub struct Facts {
     pub replan: Option<Replan>,
     pub resume: bool,
     pub now_ms: i64,
+    pub skip_build_once: bool,
+    pub code_after_plan: bool,
+}
+
+impl Facts {
+    pub fn with_code_after_plan(mut self, code_after_plan: bool) -> Self {
+        self.code_after_plan = code_after_plan;
+        self
+    }
 }
 
 /// Trạng thái cổng duyệt plan (Bạn card).
@@ -409,6 +420,8 @@ pub fn build_facts(
         replan: aj.replan.clone(),
         resume,
         now_ms,
+        skip_build_once: aj.skip_build_once,
+        code_after_plan: false,
     }
 }
 
@@ -1057,7 +1070,7 @@ fn rule_d5_gate(wf: &Workflow, f: &Facts) -> Option<Decision> {
 }
 
 /// Quy tắc D6: Giai đoạn build (implement và code-review).
-fn rule_d6_build_phase(
+pub fn rule_d6_build_phase(
     wf: &Workflow,
     f: &Facts,
     current_cycle: i64,
@@ -1082,6 +1095,9 @@ fn rule_d6_build_phase(
 
     match last_ok_build_loop {
         None => {
+            if f.skip_build_once && f.code_after_plan {
+                return Ok(None);
+            }
             if wf.has("implement") {
                 let candidate = StageRun {
                     stage: Stage::Implement,
@@ -1914,6 +1930,7 @@ mod tests {
             last_error: None,
             budget_extra_minutes: 0,
             budget_extra_usd: 0.0,
+            skip_build_once: false,
         };
 
         let json = aj.to_json();

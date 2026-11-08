@@ -12,6 +12,16 @@ use std::sync::Arc;
 use agent_brain::dashboard::jobs::JobManager;
 use agent_brain::dashboard::AppState;
 
+fn insert_intake(
+    conn: &rusqlite::Connection,
+    source: &str,
+    project_id: Option<i64>,
+    request: &str,
+    priority: &str,
+) -> agent_brain::error::BrainResult<i64> {
+    agent_brain::db::insert_intake(conn, source, project_id, request, priority, true)
+}
+
 static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct EnvVarGuard(&'static str);
@@ -253,7 +263,7 @@ fn test_chained_proposals_triage_and_scheduler() {
     let _sc_guard = EnvVarGuard("FAKE_CLAUDE_SCENARIO");
 
     let conn = agent_brain::db::open(&sb.db_path).unwrap();
-    let _intake_id = agent_brain::db::insert_intake(
+    let _intake_id = insert_intake(
         &conn,
         "ui",
         None,
@@ -368,7 +378,7 @@ fn test_chained_proposal_fails_when_prior_fails() {
     let map = agent_brain::projects::load_map(&sb.map_path()).unwrap();
     agent_brain::db::sync_projects(&conn, &agent_brain::projects::projects_of(&map)).unwrap();
     let project_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
-    let intake_id = agent_brain::db::insert_intake(&conn, "ui", None, "Req", "normal").unwrap();
+    let intake_id = insert_intake(&conn, "ui", None, "Req", "normal").unwrap();
 
     let p0 = agent_brain::db::insert_proposal(
         &conn,
@@ -427,7 +437,7 @@ fn test_intake_inputs_copied_to_proposals() {
     let _sc_guard = EnvVarGuard("FAKE_CLAUDE_SCENARIO");
 
     let conn = agent_brain::db::open(&sb.db_path).unwrap();
-    let intake_id = agent_brain::db::insert_intake(
+    let intake_id = insert_intake(
         &conn,
         "ui",
         None,
@@ -686,7 +696,7 @@ fn test_duplicate_name_error_message() {
     )
     .unwrap();
 
-    let intake_id = agent_brain::db::insert_intake(&conn, "ui", Some(1), "req", "normal").unwrap();
+    let intake_id = insert_intake(&conn, "ui", Some(1), "req", "normal").unwrap();
     let prop_id = agent_brain::db::insert_proposal(
         &conn,
         &agent_brain::db::NewProposal {

@@ -78,6 +78,7 @@ pub struct CreateIntakeBody {
     pub request: String,
     pub project: Option<serde_json::Value>,
     pub priority: Option<String>,
+    pub split: Option<bool>,
     #[serde(default)]
     pub inputs: Vec<InputItem>,
 }
@@ -181,8 +182,30 @@ async fn create_intake(
             _ => None,
         };
 
+        let map = crate::projects::load_map(&st.map_path)?;
+        let split = match body.split {
+            Some(s) => s,
+            None => match project_id {
+                Some(pid) => {
+                    let slug: Option<String> = conn
+                        .query_row(
+                            "SELECT slug FROM projects WHERE id = ?1",
+                            rusqlite::params![pid],
+                            |r| r.get(0),
+                        )
+                        .ok();
+                    if let Some(ref sl) = slug {
+                        crate::projects::triage_split_of(&map, sl)
+                    } else {
+                        true
+                    }
+                }
+                None => true,
+            },
+        };
+
         let tx = conn.transaction()?;
-        let id = crate::db::insert_intake(&tx, "ui", project_id, &req_text, &priority)?;
+        let id = crate::db::insert_intake(&tx, "ui", project_id, &req_text, &priority, split)?;
         for doc in &input_docs {
             crate::inputs::add_to_intake(&tx, id, &doc.name, &doc.content, &secrets)
                 .map_err(crate::error::BrainError::error)?;

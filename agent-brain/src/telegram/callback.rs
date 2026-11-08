@@ -31,9 +31,15 @@ pub enum Op {
     RunDev,
     /// Gia hạn ngân sách (Phase A4).
     ExtendBudget,
+    /// Mở lại task đã xong (Phase B1).
+    Reopen,
+    /// Duyệt, không chạy (Phase B2).
+    ApproveNone,
+    /// Duyệt -> QA (Phase B2).
+    ApproveQa,
 }
 
-pub const ALL_OPS: [Op; 16] = [
+pub const ALL_OPS: [Op; 19] = [
     Op::Approve,
     Op::ApproveAsk,
     Op::ApproveConfirm,
@@ -50,6 +56,9 @@ pub const ALL_OPS: [Op; 16] = [
     Op::RetryLater,
     Op::RunDev,
     Op::ExtendBudget,
+    Op::Reopen,
+    Op::ApproveNone,
+    Op::ApproveQa,
 ];
 
 impl Op {
@@ -71,6 +80,9 @@ impl Op {
             Op::RetryLater => 'l',
             Op::RunDev => 'd',
             Op::ExtendBudget => 'b',
+            Op::Reopen => 'o',
+            Op::ApproveNone => '0',
+            Op::ApproveQa => 'Q',
         }
     }
 
@@ -653,7 +665,7 @@ mod tests {
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), n, "a callback code is used twice");
-        assert_eq!(ALL_OPS.len(), 16);
+        assert_eq!(ALL_OPS.len(), 19);
         for op in ALL_OPS {
             assert_eq!(Op::from_code(op.code()), Some(op));
         }

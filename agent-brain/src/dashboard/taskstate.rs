@@ -21,6 +21,7 @@ pub struct GitFacts {
     /// The dirty paths `run dev` would refuse, listed in Chạy Dev's reason. Empty when not
     /// computed; the reason then lists every dirty path.
     pub dirty_outside_plan: Vec<String>,
+    pub branch_exists: bool,
 }
 
 pub struct TaskFacts<'a> {
@@ -754,6 +755,37 @@ fn build_auto_end() -> ActionView {
     }
 }
 
+/// Dựng nút điều khiển Mở lại task đã xong (B1).
+pub fn build_reopen(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) -> ActionView {
+    let mut enabled = true;
+    let mut reason = None;
+
+    if !crate::tasks::is_success_status(&f.task.status) {
+        enabled = false;
+        reason = Some("Chỉ mở lại task đã hoàn thành.".to_string());
+    } else if running_run.is_some() {
+        enabled = false;
+        reason = Some("Đang có run chạy — chờ run xong hoặc bấm Kill".to_string());
+    } else if a.driver_alive {
+        enabled = false;
+        reason = Some("Autopilot đang chạy — không thể mở lại".to_string());
+    } else if !f.git.branch_exists {
+        enabled = false;
+        reason = Some(format!(
+            "Nhánh '{}' không còn tồn tại trên repo.",
+            f.task.branch
+        ));
+    }
+
+    ActionView {
+        id: "reopen".to_string(),
+        label: "Mở lại task".to_string(),
+        enabled,
+        reason,
+        run_id: None,
+    }
+}
+
 /// Xác định bước hiện tại của task (05.1 IN-05).
 pub fn current_step_of(f: &TaskFacts, running: Option<&RunRow>) -> String {
     if let Some(r) = running {
@@ -1010,6 +1042,10 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
             controls.push(build_auto_more_round(f, a, running_run));
             controls.push(build_auto_end());
         }
+    }
+
+    if crate::tasks::is_success_status(&f.task.status) {
+        controls.push(build_reopen(f, a, running_run));
     }
 
     if let Some(mode) = a.human_mode {
@@ -1369,6 +1405,7 @@ mod tests {
             code_after_plan: true,
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
+            branch_exists: true,
         };
 
         // planned -> [run_dev, relead]
@@ -1494,6 +1531,7 @@ mod tests {
             code_after_plan: true,
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
+            branch_exists: true,
         };
 
         let task = dummy_task("open");
@@ -1545,6 +1583,7 @@ mod tests {
             code_after_plan: true,
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
+            branch_exists: true,
         };
         let facts = TaskFacts {
             task: &task,
@@ -1688,6 +1727,7 @@ mod tests {
             code_after_plan: false,
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
+            branch_exists: true,
             ..git.clone()
         };
         let facts = TaskFacts {
@@ -1821,6 +1861,7 @@ mod tests {
             code_after_plan: false,
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
+            branch_exists: true,
         };
         let facts = TaskFacts {
             task: &task,
@@ -1868,6 +1909,7 @@ mod tests {
             code_after_plan: false,
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
+            branch_exists: true,
         }
     }
 
@@ -2188,6 +2230,7 @@ mod tests {
             code_after_plan: false,
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
+            branch_exists: true,
         };
 
         // 1. plan_dirty -> approve disabled

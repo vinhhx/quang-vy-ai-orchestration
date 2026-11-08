@@ -6,13 +6,23 @@ mod protocol;
 use agent_brain::dashboard::jobs::JobManager;
 use agent_brain::dashboard::AppState;
 use agent_brain::db::{
-    count_active_tasks, get_proposal, insert_intake, insert_proposal,
+    count_active_tasks, get_proposal, insert_proposal,
     list_quota_stops, set_proposal_status, NewProposal,
 };
 use agent_brain::orchestrator::scheduler::schedule_tick;
 use common::Sandbox;
 use serde_json::json;
 use std::path::PathBuf;
+
+fn insert_intake(
+    conn: &rusqlite::Connection,
+    source: &str,
+    project_id: Option<i64>,
+    request: &str,
+    priority: &str,
+) -> agent_brain::error::BrainResult<i64> {
+    agent_brain::db::insert_intake(conn, source, project_id, request, priority, true)
+}
 use std::sync::Arc;
 
 static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());

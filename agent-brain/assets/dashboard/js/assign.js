@@ -31,6 +31,10 @@
       output: [],
       jobFailed: false,
       orchestratorEnabled: false,
+      direct: false,
+      directSuccess: false,
+      directProposalId: null,
+      level: 'vua',
       intakeId: null,
       intakeSuccess: false,
       profile: window.AB.profile(),
@@ -575,7 +579,7 @@
         if (this.startDisabled) return;
         this.submitting = true;
 
-        if (this.orchestratorEnabled) {
+        if (this.orchestratorEnabled && !this.direct) {
           var inps = this.validInputs();
           const body = {
             request: this.request.trim(),
@@ -607,6 +611,21 @@
         }
 
         const res = await window.AB.api('POST', '/api/tasks', this.postBody);
+        if (res.status === 201 && res.data) {
+          this.accepted = true;
+          this.directSuccess = true;
+          this.directProposalId = res.data.proposal_id;
+          this.warning = '';
+          this.error = '';
+          this.candidates = [];
+          this.submitting = false;
+
+          window.dispatchEvent(new CustomEvent('ab:queue-changed'));
+          if (window.AB && window.AB.screenModal && window.AB.screenModal.isOpen()) {
+            window.AB.screenModal.close();
+          }
+          return;
+        }
         if (res.status === 202 && res.data) {
           this.accepted = true;
           this.jobId = res.data.job_id;
@@ -747,18 +766,26 @@
         return '';
       },
 
-      // `workflow` only when the list loaded; otherwise the server default applies.
+      // `workflow`, `team`, `level` only when orchestrator is disabled or `direct` is true (B4).
       get postBody() {
         var body = {
           project: this.selected ? this.selected.id : '',
           request: this.request,
           name: this.slug,
         };
-        if (this.workflowsLoaded && this.workflowName) {
-          body.workflow = this.workflowName;
+        if (this.direct) {
+          body.direct = true;
         }
-        if (this.teamsLoaded && this.teamName) {
-          body.team = this.teamName;
+        if (!this.orchestratorEnabled || this.direct) {
+          if (this.workflowsLoaded && this.workflowName) {
+            body.workflow = this.workflowName;
+          }
+          if (this.teamsLoaded && this.teamName) {
+            body.team = this.teamName;
+          }
+          if (this.level) {
+            body.level = this.level;
+          }
         }
         var inps = this.validInputs();
         if (inps.length > 0) {
@@ -977,7 +1004,10 @@
 
       get startLabel() {
         if (this.accepted) {
-          if (this.orchestratorEnabled) {
+          if (this.directSuccess) {
+            return 'Đã tạo đề xuất #' + (this.directProposalId || '');
+          }
+          if (this.orchestratorEnabled && !this.direct) {
             return 'Đã vào hàng chờ #' + (this.intakeId || '');
           }
           return 'Đã giao việc — đang mở task...';

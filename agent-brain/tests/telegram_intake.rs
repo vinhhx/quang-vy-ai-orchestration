@@ -513,7 +513,11 @@ fn gate_approve_button_follows_the_allowlist() {
     let (sb, _tg, mut srv, gate) = telegram_gate(true, gate_scenario());
     assert_eq!(
         labels(&gate),
-        vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()],
+        vec![
+            "Duyệt plan".to_string(),
+            "Duyệt, không chạy".to_string(),
+            "Trả về Lead".to_string(),
+        ],
         "{gate}"
     );
     assert!(
@@ -587,7 +591,11 @@ fn approve_cancel_restores_the_gate() {
     });
     assert_eq!(
         labels(&back),
-        vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()],
+        vec![
+            "Duyệt plan".to_string(),
+            "Duyệt, không chạy".to_string(),
+            "Trả về Lead".to_string(),
+        ],
         "{back}"
     );
     assert!(button_data(&back, "Duyệt plan").starts_with("p:1:"));
@@ -885,7 +893,11 @@ fn task_command_full_flow() {
     let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
     assert_eq!(
         labels(&gate),
-        vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()],
+        vec![
+            "Duyệt plan".to_string(),
+            "Duyệt, không chạy".to_string(),
+            "Trả về Lead".to_string(),
+        ],
         "{gate}"
     );
 
@@ -968,8 +980,8 @@ fn failed_telegram_intake_is_reported_with_reason() {
     wait_polling(&tg, &srv);
 
     let conn = agent_brain::db::open(&sb.db_path).unwrap();
-    let ui = agent_brain::db::insert_intake(&conn, "ui", None, "việc dashboard", "normal").unwrap();
-    let id = agent_brain::db::insert_intake(&conn, "telegram", None, "sửa app", "normal").unwrap();
+    let ui = agent_brain::db::insert_intake(&conn, "ui", None, "việc dashboard", "normal", true).unwrap();
+    let id = agent_brain::db::insert_intake(&conn, "telegram", None, "sửa app", "normal", true).unwrap();
     drop(conn);
 
     let msg = match tg.wait_call("sendMessage", Duration::from_secs(40), |r| {
@@ -2759,7 +2771,11 @@ fn untrusted_block_survives_return_lead() {
     let gate = wait_message(&tg, &srv, "Chờ duyệt plan · task 1");
     assert_eq!(
         labels(&gate),
-        vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()],
+        vec![
+            "Duyệt plan".to_string(),
+            "Duyệt, không chạy".to_string(),
+            "Trả về Lead".to_string(),
+        ],
         "{gate}"
     );
     let lines: Vec<&str> = text_of(&gate).lines().collect();

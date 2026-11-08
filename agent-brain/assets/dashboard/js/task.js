@@ -73,6 +73,11 @@
       handoffRequest: '',
       handoffError: '',
       handoffSuccess: false,
+      reopenNote: '',
+      approveNext: 'auto',
+      planDiff: null,
+      planDiffLoading: false,
+      planDiffOpen: false,
       handoffSubmitting: false,
       handoffCreatedPropId: null,
 
@@ -148,6 +153,10 @@
 
             if (self.isAnalysis() || self.task.status === 'answered') {
               self.loadAnswer();
+            }
+
+            if (self.approveShown) {
+              self.loadPlanDiff();
             }
 
             if (!self.pinned) {
@@ -1444,6 +1453,54 @@
         });
       },
 
+      loadPlanDiff: function () {
+        var self = this;
+        if (!this.id || this._left) return;
+        this.planDiffLoading = true;
+        window.AB.api('GET', '/api/tasks/' + this.id + '/plan-diff').then(function (res) {
+          self.planDiffLoading = false;
+          if (res && res.ok && res.data) {
+            self.planDiff = res.data;
+          } else {
+            self.planDiff = null;
+          }
+        }).catch(function () {
+          self.planDiffLoading = false;
+          self.planDiff = null;
+        });
+      },
+
+      get hasPlanDiff() {
+        return Boolean(this.planDiff && this.planDiff.previous_commit && this.planDiff.diff && this.planDiff.diff.trim());
+      },
+
+      get planDiffSummary() {
+        if (this.task && this.task.git && this.task.git.plan_diff_summary) {
+          return this.task.git.plan_diff_summary;
+        }
+        if (this.planDiff && this.planDiff.previous_commit) {
+          return 'Plan đổi so với lần duyệt ' + this.planDiff.previous_commit.substring(0, 7);
+        }
+        return 'Thay đổi trong plan';
+      },
+
+      get diffLines() {
+        if (!this.planDiff || !this.planDiff.diff) return [];
+        return this.planDiff.diff.split('\n').map(function (line) {
+          var kind = 'ctx';
+          if (line.indexOf('+') === 0 && line.indexOf('+++') !== 0) {
+            kind = 'add';
+          } else if (line.indexOf('-') === 0 && line.indexOf('---') !== 0) {
+            kind = 'del';
+          }
+          return { text: line, kind: kind };
+        });
+      },
+
+      get codeAfterPlan() {
+        return Boolean(this.task && this.task.git && this.task.git.code_after_plan);
+      },
+
       hasInputs: function () {
         return Array.isArray(this.taskInputs) && this.taskInputs.length > 0;
       },
@@ -1752,6 +1809,10 @@
           var rslug = (this.task && this.task.slug) ? this.task.slug : '';
           return 'Trả plan về Lead cho task ' + rslug + '?';
         }
+        if (this.dialog.id === 'reopen') {
+          var oslug = (this.task && this.task.slug) ? this.task.slug : '';
+          return 'Mở lại task ' + oslug + '?';
+        }
         return '';
       },
 
@@ -1772,6 +1833,9 @@
           }
           return body;
         }
+        if (this.dialog.id === 'reopen') {
+          return 'Task sẽ chuyển về trạng thái mở để bạn chạy Dev, Lead lại hoặc Bật autopilot tiếp tục.';
+        }
         return '';
       },
 
@@ -1779,11 +1843,16 @@
         return Boolean(this.dialog && this.dialog.id === 'return_lead');
       },
 
+      get dialogIsReopen() {
+        return Boolean(this.dialog && this.dialog.id === 'reopen');
+      },
+
       get dialogOkLabel() {
         if (!this.dialog) return '';
         if (this.dialog.id === 'kill') return 'Kill run';
         if (this.dialog.id === 'relead') return 'Chạy lại Lead';
         if (this.dialog.id === 'return_lead') return 'Trả về Lead';
+        if (this.dialog.id === 'reopen') return 'Mở lại task';
         return '';
       },
 
@@ -1791,6 +1860,7 @@
         if (!this.dialog) return '';
         if (this.dialog.id === 'kill') return 'Giữ chạy tiếp';
         if (this.dialog.id === 'relead' || this.dialog.id === 'return_lead') return 'Giữ plan hiện tại';
+        if (this.dialog.id === 'reopen') return 'Hủy';
         return '';
       },
 
@@ -1798,6 +1868,9 @@
         if (!this.dialog) return '';
         if (this.dialog.id === 'kill') {
           return 'bg-rose-600 text-white hover:bg-rose-700';
+        }
+        if (this.dialog.id === 'reopen') {
+          return 'bg-amber-600 text-white hover:bg-amber-700';
         }
         return 'bg-indigo-600 text-white hover:bg-indigo-700';
       },
@@ -2430,6 +2503,10 @@
         if (!this.gateInCard && !this.pipeLoading) {
           acts = this.gateControlList().concat(acts);
         }
+        var reopen = this.controlById('reopen');
+        if (reopen) {
+          acts = acts.concat([reopen]);
+        }
         return acts;
       },
 
@@ -2574,6 +2651,12 @@
           this.dialog = a;
           window.AB.lockScroll(true);
           window.AB.focusLater('ab-return-note');
+        } else if (a.id === 'reopen') {
+          this.lastFocusId = this.actionId(a);
+          this.reopenNote = '';
+          this.dialog = a;
+          window.AB.lockScroll(true);
+          window.AB.focusLater('ab-reopen-note');
         } else if (this.controlPaths[a.id]) {
           this.postControl(a);
         } else {
@@ -2584,6 +2667,7 @@
       controlPaths: {
         approve: '/approve',
         return_lead: '/return',
+        reopen: '/reopen',
         auto_start: '/auto',
         auto_stop: '/auto/stop',
         auto_more_round: '/auto/more-round',
@@ -2597,6 +2681,8 @@
             return 'Đã duyệt plan lúc ' + window.AB.fmtClock(data.approved_at) + '.';
           case 'return_lead':
             return 'Đã trả plan về Lead (job ' + data.job_id + ').';
+          case 'reopen':
+            return 'Đã mở lại task' + (data && data.new_status ? ' (trạng thái: ' + data.new_status + ').' : '.');
           case 'auto_start':
             return 'Đã bật autopilot.';
           case 'auto_stop':
@@ -2625,6 +2711,13 @@
         if (a.id === 'return_lead') {
           var note = (this.returnNote || '').trim();
           if (note) body.note = note;
+        }
+        if (a.id === 'reopen') {
+          var rnote = (this.reopenNote || '').trim();
+          if (rnote) body.note = rnote;
+        }
+        if (a.id === 'approve' && this.approveNext && this.approveNext !== 'auto') {
+          body.next = this.approveNext;
         }
         this.busyAction = a.id;
         return window.AB.api('POST', path, body).then(function (res) {
@@ -2659,7 +2752,7 @@
         var act = this.dialog;
         this.closeDialog();
         if (!act) return;
-        if (act.id === 'return_lead') {
+        if (act.id === 'return_lead' || act.id === 'reopen') {
           this.postControl(act);
         } else {
           this.runAction(act);

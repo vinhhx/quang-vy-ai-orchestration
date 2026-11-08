@@ -520,14 +520,14 @@ mod tests {
     fn failed_telegram_intake_is_reported_once_per_failure() {
         let dir = tempfile::tempdir().unwrap();
         let conn = crate::db::open(&dir.path().join("brain.db")).unwrap();
-        let old = crate::db::insert_intake(&conn, "telegram", None, "cũ", "normal").unwrap();
+        let old = crate::db::insert_intake(&conn, "telegram", None, "cũ", "normal", true).unwrap();
         crate::db::set_intake_status_error(&conn, old, "failed", Some("trước khi serve chạy"))
             .unwrap();
         let mut fails = IntakeFailures::seed(&conn).unwrap();
         assert!(fails.scan(&conn).unwrap().is_empty(), "seeded failures are not resent");
 
-        let tg = crate::db::insert_intake(&conn, "telegram", None, "việc", "normal").unwrap();
-        let ui = crate::db::insert_intake(&conn, "ui", None, "việc ui", "normal").unwrap();
+        let tg = crate::db::insert_intake(&conn, "telegram", None, "việc", "normal", true).unwrap();
+        let ui = crate::db::insert_intake(&conn, "ui", None, "việc ui", "normal", true).unwrap();
         crate::db::set_intake_status_error(&conn, ui, "failed", Some("x")).unwrap();
         crate::db::set_intake_status_error(&conn, tg, "failed", Some("Triage (claude) lỗi: hết hạn"))
             .unwrap();

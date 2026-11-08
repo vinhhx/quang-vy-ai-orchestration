@@ -101,7 +101,20 @@
       <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="profileNote"></p>
     </div>
 
-    <fieldset class="space-y-2 min-w-0">
+    <div class="space-y-2 rounded-xl border border-slate-200 dark:border-slate-700 p-4 bg-slate-50/50 dark:bg-slate-900/30" x-show="orchestratorEnabled">
+      <label class="flex items-center gap-2 cursor-pointer text-sm font-semibold text-slate-900 dark:text-slate-100">
+        <input type="checkbox" x-model="direct" class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+        <span>Giao thẳng, không qua phân loại</span>
+      </label>
+      <p class="text-xs font-normal text-slate-600 dark:text-slate-400" x-show="!direct">
+        Yêu cầu sẽ vào hàng chờ để agent điều phối phân tích và lập kế hoạch.
+      </p>
+      <p class="text-xs font-normal text-slate-600 dark:text-slate-400" x-show="direct">
+        Tạo ngay đề xuất đã duyệt với quy trình, đội hình và độ khó bạn chỉ định bên dưới.
+      </p>
+    </div>
+
+    <fieldset class="space-y-2 min-w-0" x-show="!orchestratorEnabled || direct">
       <legend class="text-sm font-semibold leading-normal">Quy trình</legend>
       <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Task giữ bản sao quy trình lúc bắt đầu; sửa workflows.json sau đó không ảnh hưởng.</p>
       <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="workflowsLoading">Đang tải quy trình...</p>
@@ -131,7 +144,7 @@
       <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" aria-live="polite" x-show="selectedHelp" x-text="selectedHelp"></p>
     </fieldset>
 
-    <fieldset class="space-y-2 min-w-0">
+    <fieldset class="space-y-2 min-w-0" x-show="!orchestratorEnabled || direct">
       <legend class="text-sm font-semibold leading-normal">Đội hình</legend>
       <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đội hình chọn engine chạy từng vai trò. Chọn ở đây chỉ đổi cho task này; đội hình mặc định của dự án nằm trong projects_map.json.</p>
       <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="teamsLoading">Đang tải đội hình...</p>
@@ -166,6 +179,25 @@
         <template x-for="(line, i) in teamHelpLines" :key="i">
           <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="line"></p>
         </template>
+      </div>
+    </fieldset>
+
+    <fieldset class="space-y-2 min-w-0" x-show="!orchestratorEnabled || direct">
+      <legend class="text-sm font-semibold leading-normal">Độ khó</legend>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Chọn độ khó để phân bổ thành viên phù hợp từ phòng ban.</p>
+      <div class="flex flex-wrap gap-4">
+        <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-900 dark:text-slate-100">
+          <input type="radio" name="level" value="de" x-model="level" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+          <span>Dễ</span>
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-900 dark:text-slate-100">
+          <input type="radio" name="level" value="vua" x-model="level" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+          <span>Vừa</span>
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-900 dark:text-slate-100">
+          <input type="radio" name="level" value="kho" x-model="level" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+          <span>Khó</span>
+        </label>
       </div>
     </fieldset>
 
@@ -205,6 +237,11 @@
     <div class="rounded-xl bg-emerald-50 p-4 ring-1 ring-emerald-300 text-emerald-900 dark:bg-emerald-900/20 dark:ring-emerald-700 dark:text-emerald-200 space-y-2" x-show="intakeSuccess">
       <p class="font-semibold leading-normal" x-text="'Đã chuyển yêu cầu vào hàng chờ #' + intakeId"></p>
       <p class="text-sm font-normal leading-normal">Agent điều phối sẽ phân tích và tạo đề xuất để bạn duyệt.</p>
+    </div>
+
+    <div class="rounded-xl bg-emerald-50 p-4 ring-1 ring-emerald-300 text-emerald-900 dark:bg-emerald-900/20 dark:ring-emerald-700 dark:text-emerald-200 space-y-2" x-show="directSuccess">
+      <p class="font-semibold leading-normal" x-text="'Đã tạo đề xuất trực tiếp #' + directProposalId + ' (đã duyệt)'"></p>
+      <p class="text-sm font-normal leading-normal">Đề xuất sẽ được điều phối tự động chạy theo thứ tự ưu tiên.</p>
     </div>
 
     <div class="space-y-2">

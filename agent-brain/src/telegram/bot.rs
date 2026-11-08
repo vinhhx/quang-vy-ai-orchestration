@@ -501,6 +501,9 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
         Op::KillAsk | Op::KillConfirm | Op::KillCancel => on_kill(ctx, &press, &cb),
         Op::TeamCancel | Op::RetryLater => on_quota_side(ctx, &press, &cb),
         Op::RunDev => act(ctx, &press, &cb, "Chạy Dev", "run_dev"),
+        Op::Reopen => act(ctx, &press, &cb, "Mở lại task", "reopen"),
+        Op::ApproveNone => act(ctx, &press, &cb, "Duyệt, không chạy", "approve_none"),
+        Op::ApproveQa => act(ctx, &press, &cb, "Duyệt → QA", "approve_qa"),
     }
 }
 
@@ -1506,6 +1509,10 @@ pub(crate) fn apply_outcome(
             let what =
                 "Đã dừng hẳn autopilot. Bật autopilot trên dashboard để chạy tiếp.".to_string();
             (what.clone(), what)
+        }
+        Ok(ControlOutcome::Reopened { new_status }) => {
+            let what = format!("Đã mở lại task (trạng thái: {new_status})");
+            ("Đã mở lại task".to_string(), what)
         }
         Ok(ControlOutcome::StopRequested) => {
             let what = "Đã gửi yêu cầu dừng".to_string();

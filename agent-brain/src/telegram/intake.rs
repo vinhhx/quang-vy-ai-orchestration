@@ -1249,12 +1249,14 @@ fn confirm(ctx: &Arc<BotCtx>, state: &PollState, f: &mut Intake, cq_id: &str, mi
             Err(e) => return refuse(ctx, cq_id, mid, &e.message, "nội bộ"),
         };
         let project_id_db = crate::db::project_row_id(&conn, &project_id).ok();
+        let split = crate::projects::triage_split_of(&map, &project_id);
         return match crate::db::insert_intake(
             &conn,
             "telegram",
             project_id_db,
             &request,
             "normal",
+            split,
         ) {
             Ok(id) => {
                 bot::edit(

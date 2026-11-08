@@ -342,6 +342,9 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
                 lines.push(TELEGRAM_ORIGIN_LINE.to_string());
             }
             plan_lines(s, &mut lines);
+            if let Some(ref diff_sum) = s.plan_diff_summary {
+                lines.push(diff_sum.clone());
+            }
             lines.push(plan_review_line(s));
             if let Some(r) = running_run(s) {
                 lines.push(format!("Đang có run {} ({}) chạy.", r.id, r.role));
@@ -488,6 +491,10 @@ pub fn buttons_for(ev: &Event, s: &TaskState) -> Vec<Vec<Button>> {
         EventKind::Gate => {
             if approve_offered(s) {
                 rows.push(approve_button(s));
+                rows.push(button("Duyệt, không chạy", Op::ApproveNone, s, None));
+                if s.git.code_after_plan {
+                    rows.push(button("Duyệt → QA", Op::ApproveQa, s, None));
+                }
             }
             if has_control(s, "return_lead") {
                 rows.push(button("Trả về Lead", Op::ReturnLead, s, None));
@@ -515,7 +522,12 @@ pub fn buttons_for(ev: &Event, s: &TaskState) -> Vec<Vec<Button>> {
                 rows.push(button("Trả về Lead", Op::ReturnLead, s, None));
             }
         }
-        EventKind::QaPass | EventKind::Answered => {}
+        EventKind::QaPass => {
+            if has_control(s, "reopen") {
+                rows.push(button("Mở lại task", Op::Reopen, s, None));
+            }
+        }
+        EventKind::Answered => {}
         EventKind::Quota => {
             let names = team_names(s);
             let ver = callback::team_list_ver(&names);
@@ -766,6 +778,7 @@ mod tests {
             team: None,
             teams: crate::teams::LoadedTeams::default(),
             staff: crate::staff::LoadedStaff::default(),
+            plan_diff_summary: None,
         };
 
         let ev = Event {

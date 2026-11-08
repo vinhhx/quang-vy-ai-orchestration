@@ -34,6 +34,10 @@ pub struct NewTask {
     /// Đội hình cho task mới (D-12); không có thì dùng đội hình của dự án rồi `mac-dinh`.
     #[serde(default)]
     pub team: Option<String>,
+    #[serde(default)]
+    pub level: Option<String>,
+    #[serde(default)]
+    pub direct: bool,
     /// Tài liệu đầu vào đính kèm (tối đa 3).
     #[serde(default)]
     pub inputs: Option<Vec<crate::dashboard::api_intake::InputItem>>,
@@ -455,6 +459,8 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         .route("/api/tasks/{id}/human/done", post(post_human_done))
         .route("/api/tasks/{id}/human/return", post(post_human_return))
         .route("/api/tasks/{id}/approve", post(post_approve))
+        .route("/api/tasks/{id}/reopen", post(post_reopen))
+        .route("/api/tasks/{id}/plan-diff", get(get_plan_diff))
         .route("/api/tasks/{id}/return", post(post_return))
         .route("/api/tasks/{id}/auto", post(post_auto))
         .route("/api/tasks/{id}/auto/stop", post(post_auto_stop))
@@ -979,21 +985,192 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
             );
         }
 
+        if !body.direct && (body.workflow.is_some() || body.team.is_some() || body.level.is_some()) {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({ "error": "workflow/team/level chỉ dùng với direct=true" }),
+            );
+        }
+
+        if body.direct {
+            let res = blocking(move || {
+                let mut conn = crate::db::open(&st.db_path)?;
+                let project_id = match crate::db::project_row_id(&conn, &body.project) {
+                    Ok(pid) => pid,
+                    Err(_) => {
+                        return Err(crate::error::BrainError::error(format!(
+                            "Không tìm thấy dự án '{}'",
+                            body.project
+                        )));
+                    }
+                };
+
+                let level = match body.level.as_deref().unwrap_or("vua") {
+                    l @ ("de" | "vua" | "kho") => l,
+                    _ => {
+                        return Err(crate::error::BrainError::error(
+                            "Độ khó ('level') chỉ nhận: 'de', 'vua', 'kho'".to_string(),
+                        ));
+                    }
+                };
+
+                let map = crate::projects::load_map(&st.map_path)?;
+                let loaded_wf = crate::workflows::load(&st.cfg);
+                let project_wf_default = crate::projects::workflow_of(&map, &body.project);
+                let wf_resolved = crate::workflows::resolve(
+                    &loaded_wf,
+                    body.workflow.as_deref(),
+                    project_wf_default.as_deref(),
+                )
+                .map_err(|e| crate::error::BrainError::error(e.message))?;
+
+                let (teams_loaded, _) = crate::teams::load();
+                let project_team_default = crate::projects::team_of(&map, &body.project);
+                let team_resolved = crate::teams::resolve(
+                    &teams_loaded,
+                    body.team.as_deref(),
+                    project_team_default.as_deref(),
+                )
+                .map_err(|e| crate::error::BrainError::error(e.message))?;
+
+                let project = crate::projects::select_project(&body.project, &map)
+                    .map_err(|e| crate::error::BrainError::error(e.message))?;
+
+                if let Some(msg) = crate::teams::team_profile_refusal(
+                    &team_resolved.team,
+                    &st.cfg.engines,
+                    &project.id,
+                    &project.profile,
+                ) {
+                    return Err(crate::error::BrainError::error(msg));
+                }
+
+                let title = match body.name.as_deref() {
+                    Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+                    _ => {
+                        let first_line = req_text.lines().next().unwrap_or(&req_text).trim();
+                        let char_count = first_line.chars().count();
+                        if char_count > 80 {
+                            first_line.chars().take(80).collect::<String>()
+                        } else {
+                            first_line.to_string()
+                        }
+                    }
+                };
+
+                let tx = conn.transaction()?;
+                let intake_id = crate::db::insert_intake(
+                    &tx,
+                    "ui",
+                    Some(project_id),
+                    &req_text,
+                    "normal",
+                    false,
+                )?;
+                tx.execute(
+                    "UPDATE intake SET status = 'proposed' WHERE id = ?1",
+                    [intake_id],
+                )?;
+
+                let new_prop = crate::db::NewProposal {
+                    intake_id,
+                    project_id,
+                    title: &title,
+                    request: &req_text,
+                    priority: "normal",
+                    team: &team_resolved.team.name,
+                    workflow: &wf_resolved.workflow.name,
+                    reason: Some("Giao việc trực tiếp"),
+                    level,
+                };
+                let proposal_id = crate::db::insert_proposal(&tx, &new_prop)?;
+                tx.execute(
+                    "UPDATE proposals SET status = 'approved' WHERE id = ?1",
+                    [proposal_id],
+                )?;
+
+                if let Some(ref inputs) = input_items {
+                    for inp in inputs {
+                        crate::inputs::add_to_intake(
+                            &tx,
+                            intake_id,
+                            &inp.name,
+                            &inp.content,
+                            &secrets,
+                        )
+                        .map_err(crate::error::BrainError::error)?;
+                    }
+                }
+                crate::inputs::copy_intake_inputs_to_proposal(&tx, intake_id, proposal_id)?;
+
+                tx.commit()?;
+                Ok::<_, crate::error::BrainError>((intake_id, proposal_id))
+            })
+            .await;
+
+            return match res {
+                Ok((intake_id, proposal_id)) => json_response(
+                    StatusCode::CREATED,
+                    serde_json::json!({
+                        "intake_id": intake_id,
+                        "proposal_id": proposal_id,
+                        "status": "approved",
+                    }),
+                ),
+                Err(e) => {
+                    if e.message.contains("Không tìm thấy dự án")
+                        || e.message.contains("Độ khó")
+                        || e.message.contains("tài liệu")
+                        || e.message.contains("bí mật")
+                        || e.message.contains("64 KiB")
+                        || e.message.contains("Tên tài liệu")
+                        || e.message.contains("Quy trình")
+                        || e.message.contains("Đội hình")
+                    {
+                        json_response(
+                            StatusCode::BAD_REQUEST,
+                            serde_json::json!({ "error": e.message }),
+                        )
+                    } else {
+                        internal_error("giao việc trực tiếp", &e)
+                    }
+                }
+            };
+        }
+
         let res = blocking(move || {
             let mut conn = crate::db::open(&st.db_path)?;
-            let project_id = crate::db::project_row_id(&conn, &body.project).ok();
+            let project_id = match crate::db::project_row_id(&conn, &body.project) {
+                Ok(pid) => pid,
+                Err(_) => {
+                    return Err(crate::error::BrainError::error(format!(
+                        "Không tìm thấy dự án '{}'",
+                        body.project
+                    )));
+                }
+            };
+            let map = crate::projects::load_map(&st.map_path)?;
+            let split = crate::projects::triage_split_of(&map, &body.project);
+
             let tx = conn.transaction()?;
             let intake_id = crate::db::insert_intake(
                 &tx,
                 "ui",
-                project_id,
+                Some(project_id),
                 &req_text,
                 "normal",
+                split,
             )?;
             if let Some(ref inputs) = input_items {
                 for inp in inputs {
-                    crate::inputs::add_to_intake(&tx, intake_id, &inp.name, &inp.content, &secrets)
-                        .map_err(crate::error::BrainError::error)?;
+                    crate::inputs::add_to_intake(
+                        &tx,
+                        intake_id,
+                        &inp.name,
+                        &inp.content,
+                        &secrets,
+                    )
+                    .map_err(crate::error::BrainError::error)?;
                 }
             }
             tx.commit()?;
@@ -1012,12 +1189,16 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
                 }),
             ),
             Err(e) => {
-                if e.message.contains("tài liệu")
+                if e.message.contains("Không tìm thấy dự án")
+                    || e.message.contains("tài liệu")
                     || e.message.contains("bí mật")
                     || e.message.contains("64 KiB")
                     || e.message.contains("Tên tài liệu")
                 {
-                    json_response(StatusCode::BAD_REQUEST, serde_json::json!({ "error": e.message }))
+                    json_response(
+                        StatusCode::BAD_REQUEST,
+                        serde_json::json!({ "error": e.message }),
+                    )
                 } else {
                     internal_error("giao việc", &e)
                 }
@@ -1033,7 +1214,7 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
                 request: &body.request,
                 name: body.name.as_deref(),
                 workflow: body.workflow.as_deref(),
-                level: None,
+                level: body.level.as_deref(),
                 team: body.team.as_deref(),
                 inputs: input_items.as_deref(),
                 origin: Origin::Dashboard,
@@ -1256,6 +1437,7 @@ pub struct TaskState {
     /// teams.json đang có (cộng đội hình có sẵn).
     pub teams: crate::teams::LoadedTeams,
     pub staff: crate::staff::LoadedStaff,
+    pub plan_diff_summary: Option<String>,
 }
 
 /// Token đổi khi trạng thái task, run mới nhất, autopilot, cờ dừng, duyệt, commit plan hoặc
@@ -1372,6 +1554,8 @@ pub fn load_task_state(
         (false, false, Vec::new(), Vec::new())
     };
 
+    let branch_exists = is_on_branch || crate::gitops::branch_exists(&root, &task.branch);
+
     let mut git = GitFacts {
         current_branch,
         dirty,
@@ -1383,6 +1567,7 @@ pub fn load_task_state(
         code_after_plan,
         continuation_ok: false,
         dirty_outside_plan: Vec::new(),
+        branch_exists,
     };
 
     let busy = busy_reason_for_task(conn, &st.jobs, &project, task.id, &task.branch)?;
@@ -1534,6 +1719,23 @@ pub fn load_task_state(
     let project_telegram_ok = origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
         && crate::telegram::intake::project_in_allowlist(&st.map_path, &project.id);
 
+    let plan_diff_summary: Option<String> = if let Some(ref cur) = git.plan_commit {
+        if let Ok(Some(prev)) = crate::db::latest_different_plan_approval(conn, task.id, cur) {
+            if let Ok(Some((added, deleted))) =
+                crate::gitops::diff_numstat_file(&root, &prev, cur, ".plan.md")
+            {
+                let sha7: String = prev.chars().take(7).collect();
+                Some(format!("Plan đổi +{added}/-{deleted} dòng so với lần duyệt {sha7}"))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     Ok(Ok(TaskState {
         task,
         project,
@@ -1557,6 +1759,7 @@ pub fn load_task_state(
         team,
         teams,
         staff,
+        plan_diff_summary,
     }))
 }
 
@@ -2350,6 +2553,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "qa": qa_obj,
             "runs": run_rows,
             "job": job_view,
+            "plan_diff_summary": state.plan_diff_summary,
         });
 
         Ok((
@@ -2526,6 +2730,7 @@ async fn post_task_handoff(
             Some(target_project_id),
             &body.request,
             &body.priority,
+            false,
         )?;
         tx.execute("UPDATE intake SET status = 'proposed' WHERE id = ?1", [intake_id])?;
 
@@ -2947,6 +3152,10 @@ fn absent_control(control: &str, state: &TaskState) -> (String, &'static str) {
         "auto_stop" if !legacy && !state.driver_alive => {
             ("Autopilot không chạy".to_string(), "duplicate")
         }
+        "reopen" => (
+            "Task chưa hoàn thành hoặc không có nhánh để mở lại.".to_string(),
+            "not_allowed",
+        ),
         _ => (NOT_ALLOWED_MSG.to_string(), "not_allowed"),
     }
 }
@@ -2955,6 +3164,8 @@ fn absent_control(control: &str, state: &TaskState) -> (String, &'static str) {
 /// (`control_response`) và bot Telegram cùng gọi một đường xử lý (05.3 D-02).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlOutcome {
+    /// Mở lại task đã xong (Phase B1).
+    Reopened { new_status: String },
     /// Duyệt plan: ghi nhận duyệt cho commit plan; `job_id` khi autopilot chạy tiếp.
     Approved {
         approved_at: i64,
@@ -3022,6 +3233,15 @@ pub enum ActionSource {
     Telegram,
 }
 
+impl ActionSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Dashboard => "ui",
+            Self::Telegram => "telegram",
+        }
+    }
+}
+
 /// Lý do từ chối duyệt plan của task do Telegram giao khi dự án không còn trong `telegram_projects`.
 pub const TELEGRAM_APPROVE_REFUSED: &str =
     "Dự án không còn trong danh sách Telegram — duyệt plan trên dashboard.";
@@ -3054,7 +3274,14 @@ pub fn run_control_as(
         }
     }
 
-    let ctl = match state.view.controls.iter().find(|c| c.id == control) {
+    let is_approve_variant =
+        matches!(control, "approve" | "approve_none" | "approve_qa" | "approve_dev");
+    let ctl = match state
+        .view
+        .controls
+        .iter()
+        .find(|c| c.id == control || (is_approve_variant && c.id == "approve"))
+    {
         Some(c) => c.clone(),
         None => {
             if control == "run_dev" {
@@ -3080,10 +3307,16 @@ pub fn run_control_as(
         };
         return Ok(ControlOutcome::Refused { reason, kind });
     }
+    if control == "approve_qa" && !state.git.code_after_plan {
+        return Ok(ControlOutcome::Refused {
+            reason: "Chưa có thay đổi code sau plan để chạy QA".to_string(),
+            kind: "not_allowed",
+        });
+    }
 
     let id_str = task_id.to_string();
     match control {
-        "approve" => {
+        "approve" | "approve_none" | "approve_qa" | "approve_dev" => {
             if source == ActionSource::Telegram
                 && state.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
                 && !state.project_telegram_ok
@@ -3110,23 +3343,83 @@ pub fn run_control_as(
                 (Some(at), Some(c)) => Some((at, c)),
                 _ => None,
             };
-            let approved_at = claim::approve_record(&conn, task_id, &plan_commit)?;
-            // Autopilot còn bật: chạy tiếp; đã tắt (`ended`) / quy trình tay: chỉ ghi nhận.
-            let job_id =
-                if taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)) {
-                    let spec = task_job(&state, "auto", vec!["auto".to_string(), id_str]);
+            let approved_at = claim::approve_record(&conn, task_id, &plan_commit, source.as_str())?;
+
+            let job_id = match control {
+                "approve_none" => {
+                    crate::db::set_auto_state(&conn, task_id, Some("stopped"))?;
+                    None
+                }
+                "approve_qa" => {
+                    let mut aj = state.aj.clone();
+                    aj.skip_build_once = true;
+                    crate::db::set_auto_json(&conn, task_id, Some(&aj.to_json()))?;
+                    if taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)) {
+                        let spec = task_job(&state, "auto", vec!["auto".to_string(), id_str]);
+                        match start_job_outcome(st, spec) {
+                            Ok(j) => Some(j),
+                            Err(outcome) => {
+                                claim::revert_approval(&conn, task_id, &plan_commit, prev)?;
+                                return Ok(outcome);
+                            }
+                        }
+                    } else {
+                        let spec = task_job(
+                            &state,
+                            "qa",
+                            vec![
+                                "run".to_string(),
+                                "qa".to_string(),
+                                "--".to_string(),
+                                state.project.id.clone(),
+                            ],
+                        );
+                        match start_job_outcome(st, spec) {
+                            Ok(j) => Some(j),
+                            Err(outcome) => {
+                                claim::revert_approval(&conn, task_id, &plan_commit, prev)?;
+                                return Ok(outcome);
+                            }
+                        }
+                    }
+                }
+                "approve_dev" => {
+                    let spec = task_job(
+                        &state,
+                        "dev",
+                        vec![
+                            "run".to_string(),
+                            "dev".to_string(),
+                            "--".to_string(),
+                            state.project.id.clone(),
+                        ],
+                    );
                     match start_job_outcome(st, spec) {
                         Ok(j) => Some(j),
                         Err(outcome) => {
-                            // Không để lại duyệt nửa chừng khi autopilot không bắt đầu được;
-                            // chỉ hoàn lại khi duyệt vẫn là của yêu cầu này (WR-04).
                             claim::revert_approval(&conn, task_id, &plan_commit, prev)?;
                             return Ok(outcome);
                         }
                     }
-                } else {
-                    None
-                };
+                }
+                _ => {
+                    // "approve" (auto)
+                    if taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)) {
+                        let spec = task_job(&state, "auto", vec!["auto".to_string(), id_str]);
+                        match start_job_outcome(st, spec) {
+                            Ok(j) => Some(j),
+                            Err(outcome) => {
+                                // Không để lại duyệt nửa chừng khi autopilot không bắt đầu được;
+                                // chỉ hoàn lại khi duyệt vẫn là của yêu cầu này (WR-04).
+                                claim::revert_approval(&conn, task_id, &plan_commit, prev)?;
+                                return Ok(outcome);
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                }
+            };
             Ok(ControlOutcome::Approved {
                 approved_at,
                 plan_commit,
@@ -3211,6 +3504,48 @@ pub fn run_control_as(
                 job_id,
             })
         }
+        "reopen" => {
+            if !crate::tasks::is_success_status(&state.task.status) {
+                return Ok(ControlOutcome::Refused {
+                    reason: "Chỉ mở lại task đã hoàn thành.".to_string(),
+                    kind: "not_allowed",
+                });
+            }
+            if running_of(&state.runs).is_some() || state.driver_alive {
+                return Ok(ControlOutcome::Refused {
+                    reason: "Đang có tiến trình chạy — không thể mở lại task.".to_string(),
+                    kind: "not_allowed",
+                });
+            }
+            if !state.git.branch_exists {
+                return Ok(ControlOutcome::Refused {
+                    reason: format!("Nhánh '{}' không còn tồn tại trên repo.", state.task.branch),
+                    kind: "not_allowed",
+                });
+            }
+            let is_analysis = state
+                .workflow
+                .as_ref()
+                .map(|w| w.kind == "analysis")
+                .unwrap_or(false);
+            let new_status = if is_analysis { "planned" } else { "qa_fix" };
+            let now = crate::db::now_ms();
+            conn.execute(
+                "UPDATE tasks SET status = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![new_status, now, task_id],
+            )?;
+            crate::db::set_auto_state(&conn, task_id, Some("stopped"))?;
+            let mut aj = state.aj.clone();
+            aj.stop = None;
+            crate::db::set_auto_json(&conn, task_id, Some(&aj.to_json()))?;
+            let note_str = note.map(|n| format!(" (ghi chú: {n})")).unwrap_or_default();
+            crate::term::emit(&format!(
+                "Task {task_id} đã mở lại, chuyển trạng thái '{new_status}'{note_str}"
+            ));
+            Ok(ControlOutcome::Reopened {
+                new_status: new_status.to_string(),
+            })
+        }
         "run_dev" => {
             if source == ActionSource::Telegram
                 && state.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
@@ -3242,6 +3577,13 @@ pub fn run_control_as(
 /// Đổi `ControlOutcome` thành phản hồi JSON của dashboard (mã và thân như trước 05.3).
 fn control_response(o: ControlOutcome) -> Response {
     match o {
+        ControlOutcome::Reopened { new_status } => json_resp(
+            StatusCode::OK,
+            serde_json::json!({
+                "status": new_status,
+                "reopened": true,
+            }),
+        ),
         ControlOutcome::Approved {
             approved_at,
             plan_commit,
@@ -3310,12 +3652,104 @@ async fn post_control(
     }
 }
 
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ApproveBody {
+    pub rev: Option<String>,
+    #[serde(default = "default_approve_next")]
+    pub next: String,
+}
+
+fn default_approve_next() -> String {
+    "auto".to_string()
+}
+
 async fn post_approve(
     State(st): State<Arc<AppState>>,
     AxumPath(task_id): AxumPath<i64>,
-    Json(body): Json<ControlBody>,
+    Json(body): Json<ApproveBody>,
 ) -> Response {
-    post_control(st, task_id, "approve", body.rev, None).await
+    let control = match body.next.as_str() {
+        "auto" => "approve",
+        "none" => "approve_none",
+        "qa" => "approve_qa",
+        "dev" => "approve_dev",
+        _ => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "Giá trị 'next' không hợp lệ (chấp nhận: 'auto', 'dev', 'qa', 'none')",
+            );
+        }
+    };
+    post_control(st, task_id, control, body.rev, None).await
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ReopenBody {
+    pub rev: Option<String>,
+    pub note: Option<String>,
+}
+
+async fn post_reopen(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<ReopenBody>,
+) -> Response {
+    post_control(st, task_id, "reopen", body.rev, body.note).await
+}
+
+async fn get_plan_diff(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+) -> Response {
+    let res = blocking(move || {
+        let conn = crate::db::open(&st.db_path)?;
+        let state = match load_task_state(&st, &conn, task_id)? {
+            Ok(s) => s,
+            Err(msg) => return Ok(json_error(StatusCode::NOT_FOUND, &msg)),
+        };
+
+        let cur_commit = match state.git.plan_commit {
+            Some(ref c) => c.clone(),
+            None => match crate::gitops::head_sha(&state.root) {
+                Ok(sha) => sha,
+                Err(_) => {
+                    return Ok(json_resp(
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "previous_commit": serde_json::Value::Null,
+                            "current_commit": serde_json::Value::Null,
+                            "diff": "",
+                        }),
+                    ));
+                }
+            },
+        };
+
+        let prev = crate::db::latest_different_plan_approval(&conn, task_id, &cur_commit)?;
+        let diff = if let Some(ref p) = prev {
+            crate::gitops::diff_file(&state.root, p, &cur_commit, ".plan.md", 64 * 1024)
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        Ok::<_, crate::error::BrainError>(json_resp(
+            StatusCode::OK,
+            serde_json::json!({
+                "previous_commit": prev,
+                "current_commit": cur_commit,
+                "diff": diff,
+            }),
+        ))
+    })
+    .await;
+
+    match res {
+        Ok(resp) => resp,
+        Err(e) => internal_error("tải diff plan", &e),
+    }
 }
 
 async fn post_return(

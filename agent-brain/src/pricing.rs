@@ -193,7 +193,7 @@ pub fn budget_usage(runs: &[RunRow], table: &BTreeMap<String, Price>, now_ms: i6
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct BudgetLimits {
     pub minutes: i64,
     pub usd: f64,

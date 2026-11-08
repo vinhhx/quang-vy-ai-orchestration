@@ -389,6 +389,47 @@ pub fn create_branch(root: &Path, name: &str) -> BrainResult<()> {
     Ok(())
 }
 
+/// Diff giữa 2 commit cho 1 file duy nhất, giới hạn tối đa `max_bytes`.
+pub fn diff_file(
+    root: &Path,
+    prev: &str,
+    cur: &str,
+    file: &str,
+    max_bytes: usize,
+) -> BrainResult<String> {
+    let out = git(root, &["diff", prev, cur, "--", file])?;
+    if out.len() > max_bytes {
+        let mut idx = max_bytes;
+        while idx > 0 && !out.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        let mut s = out[..idx].to_string();
+        s.push_str("\n... [cắt bớt do vượt quá giới hạn 64 KiB]");
+        Ok(s)
+    } else {
+        Ok(out)
+    }
+}
+
+/// Trả (số dòng thêm, số dòng bớt) giữa 2 commit cho 1 file duy nhất qua `git diff --numstat`.
+pub fn diff_numstat_file(
+    root: &Path,
+    prev: &str,
+    cur: &str,
+    file: &str,
+) -> BrainResult<Option<(u64, u64)>> {
+    let out = git(root, &["diff", "--numstat", prev, cur, "--", file])?;
+    for line in out.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let added: u64 = parts[0].parse().unwrap_or(0);
+            let deleted: u64 = parts[1].parse().unwrap_or(0);
+            return Ok(Some((added, deleted)));
+        }
+    }
+    Ok(None)
+}
+
 pub fn commit_paths(root: &Path, paths: &[&str], message: &str) -> BrainResult<String> {
     let mut add_args = vec!["add", "-f", "--"];
     add_args.extend_from_slice(paths);

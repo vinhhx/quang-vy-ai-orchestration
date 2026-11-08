@@ -11,6 +11,16 @@ use agent_brain::dashboard::jobs::JobManager;
 use agent_brain::dashboard::AppState;
 use agent_brain::orchestrator::triage::{validate, ProposalDraft};
 
+fn insert_intake(
+    conn: &rusqlite::Connection,
+    source: &str,
+    project_id: Option<i64>,
+    request: &str,
+    priority: &str,
+) -> agent_brain::error::BrainResult<i64> {
+    agent_brain::db::insert_intake(conn, source, project_id, request, priority, true)
+}
+
 static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct EnvVarGuard(&'static str);
@@ -52,7 +62,7 @@ fn test_triage_success_turns_intake_to_proposed() {
     std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
 
     let conn = agent_brain::db::open(&sb.db_path).expect("open db");
-    let intake_id = agent_brain::db::insert_intake(
+    let intake_id = insert_intake(
         &conn,
         "ui",
         None,
@@ -129,7 +139,7 @@ fn test_triage_malformed_json_fails_intake() {
     std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
 
     let conn = agent_brain::db::open(&sb.db_path).expect("open db");
-    let intake_id = agent_brain::db::insert_intake(
+    let intake_id = insert_intake(
         &conn,
         "ui",
         None,
@@ -172,7 +182,7 @@ fn test_triage_nonexistent_team_fails_intake() {
     std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
 
     let conn = agent_brain::db::open(&sb.db_path).expect("open db");
-    let intake_id = agent_brain::db::insert_intake(
+    let intake_id = insert_intake(
         &conn,
         "ui",
         None,
@@ -238,7 +248,7 @@ fn test_triage_partial_valid_keeps_valid_and_records_warning() {
     std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
 
     let conn = agent_brain::db::open(&sb.db_path).expect("open db");
-    let intake_id = agent_brain::db::insert_intake(
+    let intake_id = insert_intake(
         &conn,
         "ui",
         None,
@@ -315,7 +325,7 @@ fn test_triage_creates_no_rows_in_tasks_or_runs() {
     std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
 
     let conn = agent_brain::db::open(&sb.db_path).expect("open db");
-    let _intake_id = agent_brain::db::insert_intake(
+    let _intake_id = insert_intake(
         &conn,
         "ui",
         None,
@@ -384,7 +394,7 @@ fn test_triage_disabled_does_nothing() {
     }));
 
     let conn = agent_brain::db::open(&sb.db_path).expect("open db");
-    let intake_id = agent_brain::db::insert_intake(
+    let intake_id = insert_intake(
         &conn,
         "ui",
         None,
@@ -420,7 +430,7 @@ fn test_triage_follows_live_toggle() {
     std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
 
     let conn = agent_brain::db::open(&sb.db_path).expect("open db");
-    let intake_id = agent_brain::db::insert_intake(
+    let intake_id = insert_intake(
         &conn,
         "ui",
         None,
@@ -493,7 +503,7 @@ fn test_triage_priority_ordering_urgent_first() {
     std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
 
     let conn = agent_brain::db::open(&sb.db_path).expect("open db");
-    let intake_normal = agent_brain::db::insert_intake(
+    let intake_normal = insert_intake(
         &conn,
         "ui",
         None,
@@ -502,7 +512,7 @@ fn test_triage_priority_ordering_urgent_first() {
     )
     .expect("insert intake normal");
 
-    let intake_urgent = agent_brain::db::insert_intake(
+    let intake_urgent = insert_intake(
         &conn,
         "ui",
         None,
@@ -689,7 +699,7 @@ fn test_triage_engine_runs_with_disallowed_tools() {
     let _rec_guard = EnvVarGuard("FAKE_CLAUDE_RECORD");
 
     let conn = agent_brain::db::open(&sb.db_path).expect("open db");
-    let _intake_id = agent_brain::db::insert_intake(
+    let _intake_id = insert_intake(
         &conn,
         "ui",
         None,
@@ -784,7 +794,7 @@ fn valid_tasks_json() -> String {
 
 fn queued(sb: &Sandbox, request: &str) -> i64 {
     let conn = agent_brain::db::open(&sb.db_path).expect("open db");
-    agent_brain::db::insert_intake(&conn, "ui", None, request, "normal").expect("insert intake")
+    insert_intake(&conn, "ui", None, request, "normal").expect("insert intake")
 }
 
 fn intake_of(sb: &Sandbox, id: i64) -> agent_brain::db::IntakeRow {
@@ -861,7 +871,7 @@ fn test_triage_default_claude_auth_failed_names_profile_account() {
     let map = agent_brain::projects::load_map(&sb.map_path()).unwrap();
     agent_brain::db::sync_projects(&conn, &agent_brain::projects::projects_of(&map)).unwrap();
     let pid = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
-    let id = agent_brain::db::insert_intake(&conn, "telegram", Some(pid), "sửa app", "normal")
+    let id = insert_intake(&conn, "telegram", Some(pid), "sửa app", "normal")
         .unwrap();
 
     let st = app_state(&sb);
@@ -1186,5 +1196,88 @@ fn test_triage_chained_proposals_map_orig_index_when_draft_dropped() {
         "Bản 2 có after=1 phải nối với proposal của Bản 1 dù Bản 0 bị loại"
     );
 }
+
+#[test]
+fn test_triage_split_false_truncates_proposals_to_one() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true
+        }
+    }));
+    std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    // Tạo intake với split = false (B5)
+    let intake_id = agent_brain::db::insert_intake(
+        &conn,
+        "ui",
+        None,
+        "Làm việc không tách",
+        "normal",
+        false,
+    )
+    .expect("insert intake");
+
+    // Fake model trả về 3 tasks
+    let fake_result = json!({
+        "tasks": [
+            {
+                "project": "web-ban-hang",
+                "title": "Mục duy nhất được giữ",
+                "request": "Mô tả 1",
+                "priority": "normal",
+                "team": "mac-dinh",
+                "workflow": "mac-dinh",
+                "reason": "Lý do 1"
+            },
+            {
+                "project": "web-ban-hang",
+                "title": "Mục 2 bị cắt",
+                "request": "Mô tả 2",
+                "priority": "normal",
+                "team": "mac-dinh",
+                "workflow": "mac-dinh",
+                "reason": "Lý do 2"
+            },
+            {
+                "project": "web-ban-hang",
+                "title": "Mục 3 bị cắt",
+                "request": "Mô tả 3",
+                "priority": "normal",
+                "team": "mac-dinh",
+                "workflow": "mac-dinh",
+                "reason": "Lý do 3"
+            }
+        ]
+    })
+    .to_string();
+
+    sb.write_scenario(json!({
+        "events": [
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": fake_result
+            }
+        ]
+    }));
+
+    let st = app_state(&sb);
+    agent_brain::orchestrator::tick(&st).expect("tick");
+
+    let intake = agent_brain::db::get_intake(&conn, intake_id)
+        .expect("get intake")
+        .expect("some intake");
+    assert_eq!(intake.status, "proposed");
+
+    // Chỉ có 1 proposal được tạo vì split = false đã cắt tasks còn 1 mục
+    let proposals = agent_brain::db::list_proposals(&conn, None).expect("list proposals");
+    assert_eq!(proposals.len(), 1, "split=false phải cắt danh sách chỉ còn 1 proposal");
+    assert_eq!(proposals[0].title, "Mục duy nhất được giữ");
+}
+
 
 

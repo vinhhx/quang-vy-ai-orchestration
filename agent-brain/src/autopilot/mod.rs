@@ -434,7 +434,16 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
                 return Ok(stop_with(ctx, task_id, &task.slug, aj, info));
             }
         };
-        let facts = decide::build_facts(
+        let is_on_branch = crate::gitops::current_branch(&root).as_deref() == Some(task.branch.as_str());
+        let code_after_plan = match (is_on_branch, plan_commit.as_deref()) {
+            (true, Some(pc)) => match crate::gitops::diff_code_names(&root, pc, "HEAD") {
+                Ok(diff) => !diff.is_empty(),
+                Err(_) => false,
+            },
+            _ => false,
+        };
+        let had_skip_build = aj.skip_build_once;
+        let mut facts = decide::build_facts(
             &wf,
             &runs,
             &auto,
@@ -444,9 +453,16 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
             crate::db::now_ms(),
             resume,
         );
+        facts.code_after_plan = code_after_plan;
         resume = false;
 
-        match decide::decide(&wf, &facts) {
+        let decision = decide::decide(&wf, &facts);
+        if had_skip_build {
+            aj.skip_build_once = false;
+            crate::db::set_auto_json(&ctx.conn, task_id, Some(&aj.to_json()))?;
+        }
+
+        match decision {
             Decision::Run(sr) => {
                 // Trước mọi bước: đúng nhánh task, nếu không thì dừng, không đoán (CR-01).
                 if let Some(info) = branch_stop(&root, &task, &sr) {
@@ -826,7 +842,7 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
         }
     }
 
-    let at = claim::approve_record(&ctx.conn, task_id, &plan_commit)?;
+    let at = claim::approve_record(&ctx.conn, task_id, &plan_commit, "cli")?;
     let sha7: String = plan_commit.chars().take(7).collect();
     crate::term::emit(&format!(
         "Đã duyệt plan {sha7} lúc {} (task {task_id}).",

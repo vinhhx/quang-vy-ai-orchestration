@@ -292,21 +292,27 @@ fn gate_from_terminal_autopilot_notifies_once() {
     assert!(lines.contains(&"- src/app.py"), "{text}");
     assert!(lines.contains(&"Review plan: duyệt · vòng 1 / 3"), "{text}");
 
-    // Buttons: exactly Duyệt plan / Trả về Lead, carrying the task's current rev.
+    // Buttons: exactly Duyệt plan / Duyệt, không chạy / Trả về Lead, carrying the task's current rev.
     let btns = buttons(&msg);
     assert_eq!(
         labels(&msg),
-        vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()],
+        vec![
+            "Duyệt plan".to_string(),
+            "Duyệt, không chạy".to_string(),
+            "Trả về Lead".to_string(),
+        ],
         "{msg}"
     );
     assert!(is_rev_data(&btns[0].1, "a:1:"), "{btns:?}");
-    assert!(is_rev_data(&btns[1].1, "r:1:"), "{btns:?}");
+    assert!(is_rev_data(&btns[1].1, "0:1:"), "{btns:?}");
+    assert!(is_rev_data(&btns[2].1, "r:1:"), "{btns:?}");
     let rev = srv.get("/api/tasks/1").json()["rev"]
         .as_str()
         .expect("rev")
         .to_string();
     assert_eq!(btns[0].1, format!("a:1:{rev}"));
-    assert_eq!(btns[1].1, format!("r:1:{rev}"));
+    assert_eq!(btns[1].1, format!("0:1:{rev}"));
+    assert_eq!(btns[2].1, format!("r:1:{rev}"));
 
     // The plan document comes first and the text replies to it.
     let docs = tg.calls("sendDocument");
@@ -456,11 +462,9 @@ fn qa_pass_notifies_summary() {
         "{text}"
     );
     assert!(text.contains("Tổng: 5 run ·"), "{text}");
-    assert_eq!(
-        msg["json"]["reply_markup"]["inline_keyboard"],
-        json!([]),
-        "{msg}"
-    );
+    let btns = buttons(&msg);
+    assert_eq!(labels(&msg), vec!["Mở lại task".to_string()], "{msg}");
+    assert!(is_rev_data(&btns[0].1, "o:1:"), "{btns:?}");
 
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(messages_starting(&tg, "Chờ duyệt plan").len(), 1);
@@ -704,7 +708,11 @@ fn gate_message_shows_personal_profile() {
     );
     assert_eq!(
         labels(&msg),
-        vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()],
+        vec![
+            "Duyệt plan".to_string(),
+            "Duyệt, không chạy".to_string(),
+            "Trả về Lead".to_string(),
+        ],
         "{msg}"
     );
     assert_eq!(tg.calls("sendDocument").len(), 1);
@@ -1040,7 +1048,14 @@ fn gate_plan_commit_change_sends_plan_updated_message() {
     let m2 = msg2["response"]["result"]["message_id"].as_i64().unwrap();
     assert_ne!(m2, m1);
     assert_eq!(first_line(&msg2), "Plan đã cập nhật · task 1");
-    assert_eq!(labels(&msg2), vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()]);
+    assert_eq!(
+        labels(&msg2),
+        vec![
+            "Duyệt plan".to_string(),
+            "Duyệt, không chạy".to_string(),
+            "Trả về Lead".to_string(),
+        ]
+    );
 
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }

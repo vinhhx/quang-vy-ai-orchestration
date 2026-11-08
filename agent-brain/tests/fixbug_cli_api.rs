@@ -4,8 +4,18 @@ mod support_fixbug;
 use agent_brain::dashboard::jobs::JobManager;
 use agent_brain::dashboard::AppState;
 use agent_brain::db::{
-    fixbug_ref_by_key, insert_fixbug_ref, insert_intake, open, sync_projects,
+    fixbug_ref_by_key, insert_fixbug_ref, open, sync_projects,
 };
+
+fn insert_intake(
+    conn: &rusqlite::Connection,
+    source: &str,
+    project_id: Option<i64>,
+    request: &str,
+    priority: &str,
+) -> agent_brain::error::BrainResult<i64> {
+    agent_brain::db::insert_intake(conn, source, project_id, request, priority, true)
+}
 use agent_brain::fixbug::init::init;
 use agent_brain::fixbug::writeback::{deployed, reject};
 use agent_brain::fixbug::{cmd_check, cmd_deployed, cmd_init, cmd_list, cmd_pull, cmd_reject};

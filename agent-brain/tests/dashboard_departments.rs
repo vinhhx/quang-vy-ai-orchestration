@@ -374,7 +374,7 @@ fn setup_project_and_task(sb: &Sandbox, task_slug: &str, level: &str) -> (i64, i
 
 fn setup_proposal(sb: &Sandbox, p_id: i64, level: &str) -> i64 {
     let conn = agent_brain::db::open(&sb.db_path).expect("open db");
-    let intake_id = agent_brain::db::insert_intake(&conn, "ui", Some(p_id), "Yêu cầu", "normal").expect("insert_intake");
+    let intake_id = agent_brain::db::insert_intake(&conn, "ui", Some(p_id), "Yêu cầu", "normal", true).expect("insert_intake");
     let new_prop = agent_brain::db::NewProposal {
         intake_id,
         project_id: p_id,

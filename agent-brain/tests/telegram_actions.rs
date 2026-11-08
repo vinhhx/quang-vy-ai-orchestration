@@ -867,12 +867,17 @@ fn end_from_telegram() {
     assert!(gate_text.contains("Review plan: sửa lại"), "{gate_text}");
     assert_eq!(
         labels(&gate),
-        vec!["Duyệt plan".to_string(), "Trả về Lead".to_string()],
+        vec![
+            "Duyệt plan".to_string(),
+            "Duyệt, không chạy".to_string(),
+            "Trả về Lead".to_string(),
+        ],
         "{gate}"
     );
     let btns = buttons(&gate);
     assert!(is_rev_data(&btns[0].1, "a:1:"), "{btns:?}");
-    assert!(is_rev_data(&btns[1].1, "r:1:"), "{btns:?}");
+    assert!(is_rev_data(&btns[1].1, "0:1:"), "{btns:?}");
+    assert!(is_rev_data(&btns[2].1, "r:1:"), "{btns:?}");
 
     std::thread::sleep(Duration::from_secs(3));
     let gates: Vec<Value> = tg

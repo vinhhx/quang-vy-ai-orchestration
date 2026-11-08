@@ -180,9 +180,18 @@ CREATE TABLE intake_inputs (
   created_at INTEGER NOT NULL
 );
 ALTER TABLE proposals ADD COLUMN after_proposal_id INTEGER REFERENCES proposals(id);"#,
+    r#"CREATE TABLE plan_approvals (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  "commit" TEXT NOT NULL,
+  approved_at INTEGER NOT NULL,
+  source TEXT NOT NULL
+);
+CREATE INDEX plan_approvals_task ON plan_approvals(task_id);
+ALTER TABLE intake ADD COLUMN split INTEGER NOT NULL DEFAULT 1;"#,
 ];
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -1102,10 +1111,11 @@ pub struct IntakeRow {
     pub error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub split: bool,
 }
 
 const INTAKE_COLUMNS: &str =
-    "id, source, project_id, request, priority, status, error, created_at, updated_at";
+    "id, source, project_id, request, priority, status, error, created_at, updated_at, split";
 
 fn row_to_intake(r: &rusqlite::Row) -> rusqlite::Result<IntakeRow> {
     Ok(IntakeRow {
@@ -1118,6 +1128,7 @@ fn row_to_intake(r: &rusqlite::Row) -> rusqlite::Result<IntakeRow> {
         error: r.get(6)?,
         created_at: r.get(7)?,
         updated_at: r.get(8)?,
+        split: r.get::<_, i64>(9)? != 0,
     })
 }
 
@@ -1127,6 +1138,7 @@ pub fn insert_intake(
     project_id: Option<i64>,
     request: &str,
     priority: &str,
+    split: bool,
 ) -> BrainResult<i64> {
     let now = now_ms();
     let priority_val = if priority.is_empty() {
@@ -1135,11 +1147,45 @@ pub fn insert_intake(
         priority
     };
     conn.execute(
-        "INSERT INTO intake (source, project_id, request, priority, status, error, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 'queued', NULL, ?5, ?5)",
-        params![source, project_id, request, priority_val, now],
+        "INSERT INTO intake (source, project_id, request, priority, status, error, created_at, updated_at, split)
+         VALUES (?1, ?2, ?3, ?4, 'queued', NULL, ?5, ?5, ?6)",
+        params![source, project_id, request, priority_val, now, if split { 1 } else { 0 }],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+pub fn insert_plan_approval(
+    conn: &Connection,
+    task_id: i64,
+    commit: &str,
+    approved_at: i64,
+    source: &str,
+) -> BrainResult<()> {
+    conn.execute(
+        "INSERT INTO plan_approvals (task_id, \"commit\", approved_at, source)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![task_id, commit, approved_at, source],
+    )?;
+    Ok(())
+}
+
+pub fn latest_different_plan_approval(
+    conn: &Connection,
+    task_id: i64,
+    current_commit: &str,
+) -> BrainResult<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT \"commit\" FROM plan_approvals
+         WHERE task_id = ?1 AND \"commit\" != ?2
+         ORDER BY approved_at DESC, id DESC
+         LIMIT 1",
+    )?;
+    let mut rows = stmt.query(params![task_id, current_commit])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(r.get(0)?))
+    } else {
+        Ok(None)
+    }
 }
 
 pub fn get_intake(conn: &Connection, id: i64) -> BrainResult<Option<IntakeRow>> {

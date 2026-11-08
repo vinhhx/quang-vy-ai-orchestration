@@ -222,6 +222,19 @@ pub fn team_of(map: &serde_json::Value, project_id: &str) -> Option<String> {
     None
 }
 
+pub fn triage_split_of(map: &serde_json::Value, project_id: &str) -> bool {
+    let arr = match map.get("projects").and_then(|p| p.as_array()) {
+        Some(a) => a,
+        None => return true,
+    };
+    for p in arr {
+        if p.get("id").and_then(|v| v.as_str()) == Some(project_id) {
+            return p.get("triage_split").and_then(|v| v.as_bool()).unwrap_or(true);
+        }
+    }
+    true
+}
+
 pub fn load_map(path: &Path) -> BrainResult<serde_json::Value> {
     if !path.exists() {
         return Ok(serde_json::json!({"scan_roots": [], "projects": []}));

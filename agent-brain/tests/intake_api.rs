@@ -7,6 +7,16 @@ use common::Sandbox;
 use protocol::setup_project;
 use serde_json::json;
 
+fn insert_intake(
+    conn: &rusqlite::Connection,
+    source: &str,
+    project_id: Option<i64>,
+    request: &str,
+    priority: &str,
+) -> agent_brain::error::BrainResult<i64> {
+    agent_brain::db::insert_intake(conn, source, project_id, request, priority, true)
+}
+
 #[test]
 fn create_intake_ui_and_list() {
     let sb = Sandbox::new();
@@ -132,7 +142,7 @@ fn proposals_flow_priority_approve_reject() {
     // Insert an intake and proposal directly into db
     let conn = sb.db();
     let intake_id =
-        agent_brain::db::insert_intake(&conn, "ui", None, "yêu cầu tạo giao diện", "normal")
+        insert_intake(&conn, "ui", None, "yêu cầu tạo giao diện", "normal")
             .unwrap();
     let proj_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
 
@@ -236,7 +246,7 @@ fn reject_proposal_flow() {
 
     let conn = sb.db();
     let intake_id =
-        agent_brain::db::insert_intake(&conn, "ui", None, "yêu cầu tính năng", "normal").unwrap();
+        insert_intake(&conn, "ui", None, "yêu cầu tính năng", "normal").unwrap();
     let proj_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
 
     let prop_id = agent_brain::db::insert_proposal(
@@ -321,7 +331,7 @@ fn next_approved_proposal_ordering_and_count_active_tasks() {
     let proj_id = agent_brain::db::project_row_id(&conn, "proj").unwrap();
 
     let intake_id =
-        agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "req", "normal").unwrap();
+        insert_intake(&conn, "ui", Some(proj_id), "req", "normal").unwrap();
 
     // 1. Insert 3 proposals: low, normal, urgent
     let p_low = agent_brain::db::insert_proposal(
@@ -530,9 +540,9 @@ fn orchestrator_board_and_status() {
     let conn = sb.db();
     let proj_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
 
-    let intake_1 = agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "Việc 1", "low").unwrap();
-    let intake_2 = agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "Việc 2", "urgent").unwrap();
-    let intake_failed = agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "Việc lỗi", "normal").unwrap();
+    let intake_1 = insert_intake(&conn, "ui", Some(proj_id), "Việc 1", "low").unwrap();
+    let intake_2 = insert_intake(&conn, "ui", Some(proj_id), "Việc 2", "urgent").unwrap();
+    let intake_failed = insert_intake(&conn, "ui", Some(proj_id), "Việc lỗi", "normal").unwrap();
     agent_brain::db::set_intake_status_error(&conn, intake_failed, "failed", Some("Lỗi kết nối")).unwrap();
 
     let p_low = agent_brain::db::insert_proposal(
@@ -662,7 +672,7 @@ fn approve_proposal_with_edits_validation_and_idempotence() {
 
     let conn = sb.db();
     let proj_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
-    let intake_id = agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "yêu cầu", "normal").unwrap();
+    let intake_id = insert_intake(&conn, "ui", Some(proj_id), "yêu cầu", "normal").unwrap();
     let prop_id = agent_brain::db::insert_proposal(
         &conn,
         &agent_brain::db::NewProposal {
@@ -792,8 +802,8 @@ fn safe_cancel_intake() {
     let conn = sb.db();
     let proj_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
 
-    let intake_queued = agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "Việc chờ", "normal").unwrap();
-    let intake_proposed = agent_brain::db::insert_intake(&conn, "ui", Some(proj_id), "Việc đã propose", "normal").unwrap();
+    let intake_queued = insert_intake(&conn, "ui", Some(proj_id), "Việc chờ", "normal").unwrap();
+    let intake_proposed = insert_intake(&conn, "ui", Some(proj_id), "Việc đã propose", "normal").unwrap();
     agent_brain::db::set_intake_status(&conn, intake_proposed, "proposed").unwrap();
     drop(conn);
 
@@ -828,7 +838,7 @@ fn retry_failed_intake() {
     let srv = sb.serve(&[]);
 
     let conn = sb.db();
-    let failed = agent_brain::db::insert_intake(&conn, "ui", None, "Việc lỗi", "normal").unwrap();
+    let failed = insert_intake(&conn, "ui", None, "Việc lỗi", "normal").unwrap();
     agent_brain::db::set_intake_status_error(
         &conn,
         failed,
@@ -836,8 +846,8 @@ fn retry_failed_intake() {
         Some("Triage (claude) lỗi: Failed to authenticate"),
     )
     .unwrap();
-    let queued = agent_brain::db::insert_intake(&conn, "ui", None, "Việc chờ", "normal").unwrap();
-    let proposed = agent_brain::db::insert_intake(&conn, "ui", None, "Việc đề xuất", "normal").unwrap();
+    let queued = insert_intake(&conn, "ui", None, "Việc chờ", "normal").unwrap();
+    let proposed = insert_intake(&conn, "ui", None, "Việc đề xuất", "normal").unwrap();
     agent_brain::db::set_intake_status(&conn, proposed, "proposed").unwrap();
     drop(conn);
 

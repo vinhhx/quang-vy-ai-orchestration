@@ -316,6 +316,7 @@ pub fn pull(
             Some(project_id),
             &c.request,
             &c.priority,
+            true,
         )
         .map_err(|e| FixbugError::Other(e.to_string()))?;
 

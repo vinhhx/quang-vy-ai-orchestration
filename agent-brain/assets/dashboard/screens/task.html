@@ -203,6 +203,30 @@
               <div class="flex flex-col gap-2" x-show="hasGateControls">
                 <template x-for="a in gateControls" :key="a.id">
                   <div class="space-y-1">
+                    <template x-if="a.id === 'approve' && hasPlanDiff">
+                      <div class="mb-2 rounded-xl border border-slate-200 dark:border-slate-700 p-2 text-xs">
+                        <button type="button" @click="planDiffOpen = !planDiffOpen" class="flex w-full items-center justify-between font-semibold text-slate-700 dark:text-slate-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+                          <span x-text="planDiffSummary"></span>
+                          <span x-text="planDiffOpen ? '▲ Thu gọn' : '▼ Chi tiết'"></span>
+                        </button>
+                        <div x-show="planDiffOpen" class="mt-2 max-h-60 overflow-auto rounded bg-slate-900 p-2 font-mono text-xs text-slate-100">
+                          <template x-for="(line, idx) in diffLines" :key="idx">
+                            <div :class="line.kind === 'add' ? 'text-emerald-400 bg-emerald-950/30' : line.kind === 'del' ? 'text-rose-400 bg-rose-950/30' : 'text-slate-300'" x-text="line.text"></div>
+                          </template>
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="a.id === 'approve'">
+                      <div class="mb-2 space-y-1">
+                        <label for="ab-gate-approve-next" class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Sau khi duyệt:</label>
+                        <select id="ab-gate-approve-next" x-model="approveNext" class="w-full min-h-10 rounded-lg bg-white px-2 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+                          <option value="auto">Tự động (chạy tiếp theo quy trình)</option>
+                          <option value="dev">Chỉ Dev</option>
+                          <option value="qa" :disabled="!codeAfterPlan">Thẳng QA (cần có code sau plan)</option>
+                          <option value="none">Không chạy (dừng sau duyệt)</option>
+                        </select>
+                      </div>
+                    </template>
                     <button :id="actionId(a)" type="button" class="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl px-2 py-2 text-center text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
                     <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
                     <template x-if="a.id === 'approve' && hasPlanWarnings">
@@ -300,6 +324,30 @@
         <div class="flex flex-wrap gap-2">
           <template x-for="a in stripActions" :key="a.id">
             <div class="space-y-1">
+              <template x-if="a.id === 'approve' && hasPlanDiff">
+                <div class="mb-2 rounded-xl border border-slate-200 dark:border-slate-700 p-2 text-xs">
+                  <button type="button" @click="planDiffOpen = !planDiffOpen" class="flex w-full items-center justify-between font-semibold text-slate-700 dark:text-slate-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+                    <span x-text="planDiffSummary"></span>
+                    <span x-text="planDiffOpen ? '▲ Thu gọn' : '▼ Chi tiết'"></span>
+                  </button>
+                  <div x-show="planDiffOpen" class="mt-2 max-h-60 overflow-auto rounded bg-slate-900 p-2 font-mono text-xs text-slate-100">
+                    <template x-for="(line, idx) in diffLines" :key="idx">
+                      <div :class="line.kind === 'add' ? 'text-emerald-400 bg-emerald-950/30' : line.kind === 'del' ? 'text-rose-400 bg-rose-950/30' : 'text-slate-300'" x-text="line.text"></div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+              <template x-if="a.id === 'approve'">
+                <div class="mb-2 space-y-1">
+                  <label for="ab-strip-approve-next" class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Sau khi duyệt:</label>
+                  <select id="ab-strip-approve-next" x-model="approveNext" class="w-full min-h-10 rounded-lg bg-white px-2 py-1 text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+                    <option value="auto">Tự động (chạy tiếp theo quy trình)</option>
+                    <option value="dev">Chỉ Dev</option>
+                    <option value="qa" :disabled="!codeAfterPlan">Thẳng QA (cần có code sau plan)</option>
+                    <option value="none">Không chạy (dừng sau duyệt)</option>
+                  </select>
+                </div>
+              </template>
               <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :title="a.reason || ''" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
               <p :id="reasonId(a)" class="text-sm font-medium leading-normal text-amber-800 dark:text-amber-300 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
               <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="actionHelp(a)" x-text="actionHelp(a)"></p>
@@ -645,6 +693,11 @@
         <label for="ab-return-note" class="block text-sm font-semibold leading-normal">Ghi chú cho Lead (không bắt buộc)</label>
         <p id="ab-return-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Ví dụ: tách bước 2 thành hai commit nhỏ. Ghi chú được gửi cho Lead làm đầu vào thêm và lưu cùng run này.</p>
         <textarea id="ab-return-note" rows="3" maxlength="500" aria-describedby="ab-return-help" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 resize-y focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="returnNote"></textarea>
+      </div>
+      <div class="space-y-2" x-show="dialogIsReopen">
+        <label for="ab-reopen-note" class="block text-sm font-semibold leading-normal">Lý do mở lại (không bắt buộc)</label>
+        <p id="ab-reopen-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Ghi chú lưu vào lịch sử kiểm toán của task.</p>
+        <textarea id="ab-reopen-note" rows="3" maxlength="500" aria-describedby="ab-reopen-help" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 resize-y focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="reopenNote"></textarea>
       </div>
       <div class="flex flex-wrap justify-end gap-2">
         <button id="ab-dlg-cancel" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="dialogCancel" x-text="dialogCancelLabel"></button>
