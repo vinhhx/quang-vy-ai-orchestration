@@ -1,6 +1,6 @@
 //! Task summary file sent before the "QA đạt" message: what was asked, how it was done and
-//! the result. Deterministic (no LLM): built from `.plan.md`, the git history of the task
-//! branch, `.qa-report.md` and the runs. Never includes diff content.
+//! the result. Deterministic (no LLM): built from the plan file, the git history of the task
+//! branch, the QA report and the runs. Never includes diff content.
 
 use crate::dashboard::api_tasks::TaskState;
 use crate::{gitops, planfile, report};
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 /// Longest objective copied from the plan, in characters.
 pub const OBJECTIVE_MAX: usize = 3000;
-/// Longest QA conclusion copied from `.qa-report.md`, in characters.
+/// Longest QA conclusion copied from the QA report, in characters.
 pub const QA_MAX: usize = 8000;
 pub const COMMITS_MAX: usize = 50;
 pub const DIFF_FILES_MAX: usize = 100;
@@ -48,7 +48,7 @@ pub struct SummaryInput {
     /// `<hash7> <subject>`; `None` = could not be read.
     pub commits: Option<Vec<String>>,
     pub stat: Option<DiffStat>,
-    /// `.qa-report.md` already reduced to front matter line plus body.
+    /// The QA report already reduced to front matter line plus body.
     pub qa_report: Option<String>,
     pub total_line: String,
 }
@@ -214,8 +214,8 @@ pub fn parse_numstat(out: &str) -> DiffStat {
     st
 }
 
-fn qa_text(root: &Path) -> Option<String> {
-    let raw = std::fs::read_to_string(root.join(report::QA_REPORT_FILE)).ok()?;
+fn qa_text(root: &Path, protocol: &crate::protocol_paths::ProtocolPaths) -> Option<String> {
+    let raw = std::fs::read_to_string(root.join(&protocol.qa_report)).ok()?;
     let mut out = String::new();
     let mut body_from = 0;
     if let Some(fm) = report::front_matter(&raw) {
@@ -236,7 +236,7 @@ fn qa_text(root: &Path) -> Option<String> {
     Some(out)
 }
 
-/// Collects the facts of the task (git, `.plan.md`, `.qa-report.md`) and builds the file:
+/// Collects the facts of the task (git, plan file, QA report) and builds the file:
 /// `(file name, content)`. A missing or failing source only leaves its `(không có …)` line.
 pub fn document(s: &TaskState) -> (String, String) {
     let meta = s.plan_text.as_deref().and_then(planfile::read_meta);
@@ -300,7 +300,7 @@ pub fn document(s: &TaskState) -> (String, String) {
         runs,
         commits,
         stat,
-        qa_report: qa_text(&s.root),
+        qa_report: qa_text(&s.root, &s.protocol()),
         total_line: super::render::summary_line(s, now),
     };
     (file_name(&s.task.slug), build(&input))
@@ -329,13 +329,6 @@ pub fn report_documents(s: &TaskState) -> Vec<(String, Vec<u8>)> {
                 let diff_out = gitops::git(&s.root, &["diff", "--name-only", "--diff-filter=A", &range])
                     .unwrap_or_default();
                 let p_files = plan.as_ref().map(planfile::plan_files).unwrap_or_default();
-                const IGNORED: &[&str] = &[
-                    ".plan.md",
-                    ".qa-report.md",
-                    ".plan-review.md",
-                    ".code-review.md",
-                    ".handover.md",
-                ];
                 let mut list = Vec::new();
                 for line in diff_out.lines() {
                     let raw = line.trim();
@@ -348,7 +341,9 @@ pub fn report_documents(s: &TaskState) -> Vec<(String, Vec<u8>)> {
                         continue;
                     }
                     let base_name = norm.rsplit('/').next().unwrap_or(&norm);
-                    if IGNORED.contains(&norm.as_str()) || IGNORED.contains(&base_name) {
+                    if crate::protocol_paths::is_protocol_file(&norm)
+                        || base_name == crate::roles::dev::HANDOVER_FILE
+                    {
                         continue;
                     }
                     if p_files.contains(&norm) && !list.contains(&norm) {
@@ -460,7 +455,12 @@ pub fn product_files_for_send(s: &TaskState) -> Vec<ProductSend> {
     if let Some(a) = s.auto.approved_commit.as_deref() {
         commits.push(a);
     }
-    let files = crate::roles::qa::task_product_files(&s.root, &commits, s.plan_text.as_deref());
+    let files = crate::roles::qa::task_product_files(
+        &s.root,
+        &commits,
+        s.plan_text.as_deref(),
+        &s.protocol(),
+    );
     let root_real = s.root.canonicalize().ok();
     let mut out = Vec::new();
     for rel in files.iter().take(planfile::MAX_PRODUCT_FILES) {
@@ -708,6 +708,7 @@ mod tests {
             missing: false,
             stack: vec![],
             read_sources: vec![],
+            protocol_dir: String::new(),
         };
         let (teams, staff) = crate::teams::load();
         TaskState {

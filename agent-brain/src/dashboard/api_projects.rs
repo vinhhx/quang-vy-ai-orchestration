@@ -93,6 +93,7 @@ fn project_json(
         "read_sources": p.read_sources,
         "workflow": crate::projects::workflow_of(map, &p.id),
         "timeouts": crate::projects::timeouts_of(map, &p.id),
+        "protocol_dir": p.protocol_dir,
         "role_members": crate::projects::role_pins_of(map, &p.id).members,
         "role_engines": crate::projects::role_pins_of(map, &p.id).engines,
         "preflight": preflight_json(map, &p.id),
@@ -282,6 +283,14 @@ pub struct UpdateTimeoutsBody {
 }
 
 #[derive(serde::Deserialize)]
+pub struct UpdateProtocolDirBody {
+    /// Folder of the protocol files relative to the repo root; `""` removes the key (root).
+    pub protocol_dir: String,
+    #[serde(default)]
+    pub etag: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 pub struct UpdateRolePinsBody {
     /// `{role: member id}`; `{}` (or absent) removes the project's `role_members`.
     #[serde(default)]
@@ -329,6 +338,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/projects/{id}/profile", put(update_profile))
         .route("/api/projects/{id}/stack", put(update_stack))
         .route("/api/projects/{id}/timeouts", put(update_timeouts))
+        .route("/api/projects/{id}/protocol-dir", put(update_protocol_dir))
         .route("/api/projects/{id}/role-pins", put(update_role_pins))
         .route("/api/projects/{id}/preflight", put(update_preflight))
         .route("/api/projects/{id}/read-sources", post(update_read_sources).put(update_read_sources))
@@ -735,6 +745,65 @@ async fn update_timeouts(
             project_obj.remove("timeouts");
         } else {
             project_obj.insert("timeouts".to_string(), serde_json::json!(timeouts));
+        }
+
+        save_and_respond(&st, &data, StatusCode::OK, None)
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+/// D1: the project's `protocol_dir`, validated by `protocol_paths::validate_protocol_dir`
+/// (relative, no `..`, not inside `.git`, `{slug}` the only variable). `""` removes the key.
+async fn update_protocol_dir(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<UpdateProtocolDirBody>,
+) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if let Some(ref req_etag) = body.etag {
+            if req_etag != &current_etag {
+                return conflict_response(&st, current_etag);
+            }
+        }
+
+        let dir = match crate::protocol_paths::validate_protocol_dir(&body.protocol_dir) {
+            Ok(d) => d,
+            Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, &e)),
+        };
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        let projects_arr = data
+            .get_mut("projects")
+            .and_then(|p| p.as_array_mut())
+            .ok_or_else(|| {
+                crate::error::BrainError::error("projects_map.json thiếu mảng 'projects'")
+            })?;
+        let Some(project_obj) = projects_arr
+            .iter_mut()
+            .find(|obj| obj.get("id").and_then(|v| v.as_str()) == Some(&id))
+            .and_then(|obj| obj.as_object_mut())
+        else {
+            return Ok(json_error(
+                StatusCode::NOT_FOUND,
+                &format!("Không tìm thấy dự án {id}"),
+            ));
+        };
+
+        if dir.is_empty() {
+            project_obj.remove(crate::protocol_paths::CONFIG_KEY);
+        } else {
+            project_obj.insert(
+                crate::protocol_paths::CONFIG_KEY.to_string(),
+                serde_json::json!(dir),
+            );
         }
 
         save_and_respond(&st, &data, StatusCode::OK, None)

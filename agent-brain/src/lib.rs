@@ -1,4 +1,4 @@
-//! agent-brain: lõi điều phối Lead → .plan.md → Dev → QA (Phase 3).
+//! agent-brain: lõi điều phối Lead → plan → Dev → QA (Phase 3).
 
 pub mod answers;
 pub mod app;
@@ -24,6 +24,7 @@ pub mod pricing;
 pub mod procs;
 pub mod profile;
 pub mod projects;
+pub mod protocol_paths;
 pub mod prompts;
 pub mod quota;
 pub mod report;

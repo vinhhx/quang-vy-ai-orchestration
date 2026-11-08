@@ -357,7 +357,9 @@ fn p2_07_inspect_one_turn_no_session() {
         .position(|&x| x == "-p")
         .expect("-p present");
     let p_arg = argv_strs[p_idx + 1];
-    assert!(p_arg.starts_with(agent_brain::fastpath::INSPECT_PROMPT_HEADER));
+    let header = agent_brain::protocol_paths::ProtocolPaths::default()
+        .render(agent_brain::fastpath::INSPECT_PROMPT_HEADER);
+    assert!(p_arg.starts_with(&header));
     assert!(p_arg.contains("src/app.py"));
 
     let head_sha = sb.git(&repo, &["rev-parse", "HEAD"]).trim().to_string();

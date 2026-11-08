@@ -50,6 +50,7 @@ fn test_projects_read_sources_parsing_and_filtering() {
             "lib-missing-dir".to_string(), // dir not exist
             "lib-nested".to_string(),      // overlapping
         ],
+        protocol_dir: String::new(),
     };
 
     let map = json!({
@@ -531,6 +532,7 @@ fn test_prompt_block_sources() {
         missing: false,
         stack: vec![],
         read_sources: vec!["src-lib".to_string()],
+        protocol_dir: String::new(),
     };
 
     let p_without_src = Project {
@@ -544,6 +546,7 @@ fn test_prompt_block_sources() {
         missing: false,
         stack: vec![],
         read_sources: vec![],
+        protocol_dir: String::new(),
     };
 
     let map = json!({

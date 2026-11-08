@@ -9,10 +9,22 @@ pub fn is_success_status(status: &str) -> bool {
     SUCCESS_STATUSES.contains(&status)
 }
 
+/// The task of the branch checked out at `root`, for the default protocol layout.
 pub fn current_task(
     conn: &Connection,
     project_row_id: i64,
     root: &Path,
+) -> BrainResult<Option<TaskRow>> {
+    current_task_in(conn, project_row_id, root, "")
+}
+
+/// The task of the branch checked out at `root`; a branch without a task row is adopted from
+/// the plan file found under the project's `protocol_dir`.
+pub fn current_task_in(
+    conn: &Connection,
+    project_row_id: i64,
+    root: &Path,
+    protocol_dir: &str,
 ) -> BrainResult<Option<TaskRow>> {
     let branch = match crate::gitops::current_branch(root) {
         Some(b) if b.starts_with("task/") => b,
@@ -23,7 +35,8 @@ pub fn current_task(
         return Ok(Some(task));
     }
 
-    let plan_path = root.join(".plan.md");
+    let slug = branch.strip_prefix("task/").unwrap_or("");
+    let plan_path = root.join(crate::protocol_paths::paths_in(protocol_dir, slug).plan);
     if plan_path.is_file() {
         if let Ok(content) = std::fs::read_to_string(&plan_path) {
             if let Some(meta) = crate::planfile::read_meta(&content) {

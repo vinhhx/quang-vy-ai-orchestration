@@ -20,7 +20,7 @@ pub const AGY_EMPTY_MESSAGE: &str =
 pub const DSH_EMPTY_MESSAGE: &str = "dsh không sửa file nào trong lượt này — có thể container không ghi được vào dự án hoặc dsh chỉ trả lời. Xem log rồi chạy lại hoặc đổi đội hình.";
 
 /// Context file a previous engine may leave for the next one (Phase 4); read-only for Dev.
-const HANDOVER_FILE: &str = ".handover.md";
+pub const HANDOVER_FILE: &str = ".handover.md";
 
 /// Why `run dev` may continue on a dirty working tree: how the latest Dev run of the task ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,13 +66,17 @@ pub(crate) fn continuation_reason(
     Ok(None)
 }
 
-pub fn dev_allowed_tools(files: &[String], root: Option<&Path>) -> Vec<String> {
+pub fn dev_allowed_tools(
+    files: &[String],
+    root: Option<&Path>,
+    protocol: &crate::protocol_paths::ProtocolPaths,
+) -> Vec<String> {
     let mut all_files = files.to_vec();
     if !all_files
         .iter()
-        .any(|f| f.strip_prefix("./").unwrap_or(f) == ".plan.md")
+        .any(|f| f.strip_prefix("./").unwrap_or(f) == protocol.plan)
     {
-        all_files.push(".plan.md".to_string());
+        all_files.push(protocol.plan.clone());
     }
     let mut tools = Vec::new();
     for f in &all_files {
@@ -150,12 +154,13 @@ fn produce_note(produce: &[String], products: &[String]) -> String {
 fn resolve_dev_grants(
     conn: &rusqlite::Connection,
     cfg: &crate::config::Config,
-    project_slug: &str,
+    project: &crate::projects::Project,
     root: &Path,
     task: &str,
     fix: bool,
     announce: bool,
 ) -> BrainResult<Option<DevGrants>> {
+    let project_slug = project.id.as_str();
     let task_id = crate::db::project_row_id(conn, project_slug)
         .ok()
         .and_then(|pid| {
@@ -177,7 +182,8 @@ fn resolve_dev_grants(
     if !crate::gitops::is_hex_sha(&commit) {
         return Ok(None);
     }
-    let Ok(text) = crate::gitops::git(root, &["show", &format!("{commit}:.plan.md")]) else {
+    let protocol = crate::protocol_paths::paths(project, task);
+    let Ok(text) = crate::gitops::git(root, &["show", &protocol.plan_at(&commit)]) else {
         return Ok(None);
     };
     let approved_plan = crate::planfile::parse_plan(&text);
@@ -234,11 +240,11 @@ fn resolve_dev_grants(
 pub(crate) fn approved_write_prefixes(
     conn: &rusqlite::Connection,
     cfg: &crate::config::Config,
-    project_slug: &str,
+    project: &crate::projects::Project,
     root: &Path,
     task: &str,
 ) -> Vec<String> {
-    resolve_dev_grants(conn, cfg, project_slug, root, task, false, false)
+    resolve_dev_grants(conn, cfg, project, root, task, false, false)
         .ok()
         .flatten()
         .map(|d| grant_prefixes(&d.grants.write_dirs))
@@ -261,7 +267,7 @@ pub(crate) fn dirty_outside_continuation(
         .filter(|p| {
             let n: String = p.nfc().collect();
             !(plan_set.contains(&n)
-                || crate::stream::PROTOCOL_FILES.contains(&n.as_str())
+                || crate::protocol_paths::is_protocol_file(&n)
                 || n == HANDOVER_FILE
                 || in_write_dirs(&n, write_prefixes))
         })
@@ -314,9 +320,13 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     let proj = crate::projects::select_project(project, &ctx.map)?;
     let proj_path = crate::projects::require_runnable(&proj, &ctx.cfg)?;
 
-    let plan_path = proj_path.join(".plan.md");
+    let protocol = crate::protocol_paths::current(&proj, &proj_path);
+    let plan_path = proj_path.join(&protocol.plan);
     if !plan_path.is_file() {
-        return Err(BrainError::error("Không tìm thấy .plan.md ở gốc dự án"));
+        return Err(BrainError::error(format!(
+            "Không tìm thấy {} ở gốc dự án",
+            protocol.plan
+        )));
     }
 
     let text = std::fs::read_to_string(&plan_path)?;
@@ -327,7 +337,12 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         .and_then(|v| v.as_str())
     {
         Some(t) if !t.is_empty() => t.to_string(),
-        _ => return Err(BrainError::error("File .plan.md không có metadata hợp lệ")),
+        _ => {
+            return Err(BrainError::error(format!(
+                "File {} không có metadata hợp lệ",
+                protocol.plan
+            )))
+        }
     };
 
     let expected_branch = meta
@@ -374,7 +389,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     let dev_plan_grants = resolve_dev_grants(
         &ctx.conn,
         &ctx.cfg,
-        &proj.id,
+        &proj,
         &proj_path,
         &task,
         opts.fix.is_some(),
@@ -408,7 +423,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
                 .map(|e| format!("  - {e}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            format!("Kế hoạch trong .plan.md không hợp lệ:\n{err_list}")
+            format!("Kế hoạch trong {} không hợp lệ:\n{err_list}", protocol.plan)
         } else {
             "Kế hoạch không có file nào trong bảng Thay đổi".to_string()
         };
@@ -416,17 +431,18 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     }
 
     if crate::planfile::has_blockers(&plan) {
-        return Err(BrainError::error(
-            "Vướng mắc chưa xử lý trong .plan.md — hãy xử lý trước khi chạy dev",
-        ));
+        return Err(BrainError::error(format!(
+            "Vướng mắc chưa xử lý trong {} — hãy xử lý trước khi chạy dev",
+            protocol.plan
+        )));
     }
 
     let mut named_list: Vec<String> = Vec::new();
     let (active_files, mut allowed, mut user_input, prompt_path, is_fix) = if let Some(fix) =
         opts.fix
     {
-        let report_file = fix.report_file();
-        let report_path = proj_path.join(report_file);
+        let report_file = fix.report_file(&protocol);
+        let report_path = proj_path.join(&report_file);
         if !report_path.is_file() {
             let action = match fix {
                 crate::roles::FixInput::CodeReview => "review code",
@@ -443,12 +459,12 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
                 let r = crate::report::parse_review(&report_text, crate::report::ReviewKind::Code)
                     .map_err(|reason| {
                         BrainError::error(format!(
-                            "Báo cáo .code-review.md không đúng định dạng: {reason}"
+                            "Báo cáo {report_file} không đúng định dạng: {reason}"
                         ))
                     })?;
                 if r.verdict != "revise" {
                     return Err(BrainError::error(format!(
-                        "Báo cáo .code-review.md không yêu cầu sửa (verdict {}) — không chạy chế độ sửa",
+                        "Báo cáo {report_file} không yêu cầu sửa (verdict {}) — không chạy chế độ sửa",
                         r.verdict
                     )));
                 }
@@ -456,9 +472,9 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
             crate::roles::FixInput::Qa => {
                 let verdict = crate::planfile::parse_qa_verdict(&report_text);
                 if verdict != Some("Cần sửa") {
-                    return Err(BrainError::error(
-                        "Báo cáo .qa-report.md không kết luận Cần sửa — không chạy chế độ sửa",
-                    ));
+                    return Err(BrainError::error(format!(
+                        "Báo cáo {report_file} không kết luận Cần sửa — không chạy chế độ sửa"
+                    )));
                 }
             }
         }
@@ -495,11 +511,11 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
 
         named_list = named.files.clone();
 
-        let mut allowed = dev_allowed_tools(&fix_files, Some(&proj_path));
+        let mut allowed = dev_allowed_tools(&fix_files, Some(&proj_path), &protocol);
         allowed.push(format!("Read(./{report_file})"));
         allowed.extend(crate::roles::abs_rules(
             &proj_path,
-            &[report_file],
+            &[report_file.as_str()],
             &["Read"],
         ));
 
@@ -508,9 +524,10 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
             crate::roles::FixInput::Qa => "báo cáo QA",
         };
         let user_input = format!(
-            "Task: {task}\nChế độ sửa theo {report_desc} ({report_file}).\nĐọc .plan.md và {report_file}, sửa mọi mục chặn và lỗi được nêu, không làm thêm việc khác.\nFile được đọc và sửa: {}\nCommit với message: \"{task}: sửa theo {}\".",
+            "Task: {task}\nChế độ sửa theo {report_desc} ({report_file}).\nĐọc {plan} và {report_file}, sửa mọi mục chặn và lỗi được nêu, không làm thêm việc khác.\nFile được đọc và sửa: {}\nCommit với message: \"{task}: sửa theo {}\".",
             fix_files.join(", "),
-            fix.label()
+            fix.label(),
+            plan = protocol.plan
         );
 
         (
@@ -521,9 +538,10 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
             true,
         )
     } else {
-        let allowed = dev_allowed_tools(&files, Some(&proj_path));
+        let allowed = dev_allowed_tools(&files, Some(&proj_path), &protocol);
         let user_input = format!(
-            "Task: {task}\nĐọc .plan.md rồi sửa đúng các mục trong bảng Thay đổi.\nFile được đọc và sửa: {}\nCommit với message: \"{task}: <mô tả ngắn>\".",
+            "Task: {task}\nĐọc {} rồi sửa đúng các mục trong bảng Thay đổi.\nFile được đọc và sửa: {}\nCommit với message: \"{task}: <mô tả ngắn>\".",
+            protocol.plan,
             files.join(", ")
         );
         (
@@ -622,7 +640,8 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
             ""
         };
         user_input.push_str(&format!(
-            "\n\nTiếp tục việc dở của lượt trước (dừng vì hết quota): đọc .plan.md, xem thay đổi hiện có bằng git diff và git status{handover}; làm tiếp phần còn thiếu, không làm lại từ đầu và không hoàn tác thay đổi đã có."
+            "\n\nTiếp tục việc dở của lượt trước (dừng vì hết quota): đọc {plan}, xem thay đổi hiện có bằng git diff và git status{handover}; làm tiếp phần còn thiếu, không làm lại từ đầu và không hoàn tác thay đổi đã có.",
+            plan = protocol.plan
         ));
         allowed.push("Bash(git diff *)".to_string());
         allowed.push("Bash(git status *)".to_string());
@@ -718,7 +737,8 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     }
 
     let proj_row_id = crate::db::project_row_id(&ctx.conn, &proj.id)?;
-    let task_row = crate::tasks::current_task(&ctx.conn, proj_row_id, &proj_path)?;
+    let task_row =
+        crate::tasks::current_task_in(&ctx.conn, proj_row_id, &proj_path, &proj.protocol_dir)?;
     let task_id = task_row.as_ref().map(|t| t.id);
 
     if opts.fix.is_none() {
@@ -775,11 +795,11 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         for f in &active_files {
             allow_paths.push(proj_path.join(f));
         }
-        allow_paths.push(proj_path.join(".plan.md"));
+        allow_paths.push(proj_path.join(&protocol.plan));
 
         let mut read_allow = allow_paths.clone();
         if let Some(fix) = opts.fix {
-            read_allow.push(proj_path.join(fix.report_file()));
+            read_allow.push(proj_path.join(fix.report_file(&protocol)));
         }
         if handover_exists {
             read_allow.push(proj_path.join(HANDOVER_FILE));
@@ -1016,7 +1036,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
             norm.nfc().collect()
         })
         .collect();
-    allowed_nfc.insert(".plan.md".to_string());
+    allowed_nfc.insert(protocol.plan.clone());
 
     // D-05 / D-35: an agy Dev edits with `--mode accept-edits` and a dsh Dev writes through the
     // container, so their diffs get two extra checks. They key on the engine KIND of the run's
@@ -1153,7 +1173,10 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     if has_block {
         let vm_text = crate::planfile::section_text(&plan_curr_text, "Vướng mắc");
         crate::term::emit_out(&format!("Vướng mắc:\n{vm_text}"));
-        crate::term::emit_out("Bước tiếp theo: sửa .plan.md hoặc chạy lại agent-brain run lead");
+        crate::term::emit_out(&format!(
+            "Bước tiếp theo: sửa {} hoặc chạy lại agent-brain run lead",
+            protocol.plan
+        ));
         crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "dev:blocked")?;
         if let Some(tid) = task_id {
             crate::db::set_task_status(&ctx.conn, tid, "blocked")?;

@@ -1,15 +1,19 @@
 use crate::app::Ctx;
 use crate::error::{BrainError, BrainResult};
 
+/// Lead's tools without the plan-file rules; `lead_allowed_tools` adds them for the task's path.
 pub const LEAD_ALLOWED_TOOLS: &[&str] = crate::with_git_read_only_tools!(
     "Read",
     "Grep",
     "Glob",
-    "Write(./.plan.md)",
-    "Edit(./.plan.md)",
     "Bash(git fetch *)",
     "Bash(git fetch)",
 );
+
+/// Lead's `--allowedTools` list: `LEAD_ALLOWED_TOOLS` plus Write/Edit of the task's plan file.
+pub fn lead_allowed_tools(protocol: &crate::protocol_paths::ProtocolPaths) -> Vec<String> {
+    crate::roles::with_protocol_write_rules(LEAD_ALLOWED_TOOLS, &protocol.plan)
+}
 
 pub const LEAD_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
 pub const MAX_NOTE_CHARS: usize = 500;
@@ -186,6 +190,7 @@ pub fn cmd_lead(
         ));
     }
     let branch = format!("task/{task_slug}");
+    let protocol = crate::protocol_paths::paths(&proj, &task_slug);
 
     let loaded = crate::workflows::load(&ctx.cfg);
     for e in &loaded.errors {
@@ -231,7 +236,7 @@ pub fn cmd_lead(
                 "--review chỉ dùng khi đang ở nhánh {branch}"
             )));
         }
-        let review_file = proj_path.join(crate::report::PLAN_REVIEW_FILE);
+        let review_file = proj_path.join(&protocol.plan_review);
         let valid_revise = if review_file.is_file() {
             if let Ok(text) = std::fs::read_to_string(&review_file) {
                 crate::report::parse_review(&text, crate::report::ReviewKind::Plan)
@@ -244,13 +249,14 @@ pub fn cmd_lead(
             false
         };
         if !valid_revise {
-            return Err(BrainError::error(
-                "--review cần .plan-review.md có verdict revise (chạy agent-brain run plan-review trước)",
-            ));
+            return Err(BrainError::error(format!(
+                "--review cần {} có verdict revise (chạy agent-brain run plan-review trước)",
+                protocol.plan_review
+            )));
         }
     }
 
-    let plan_path = proj_path.join(".plan.md");
+    let plan_path = proj_path.join(&protocol.plan);
     let existing_blocker = if is_replan && plan_path.is_file() {
         std::fs::read_to_string(&plan_path)
             .ok()
@@ -264,11 +270,14 @@ pub fn cmd_lead(
 
     let mut user_input = if keep_plan {
         let mut s = format!(
-            "Yêu cầu: {}\nTask: {}\nFile .plan.md ở gốc dự án là bản plan hiện tại; sửa trực tiếp trên bản này, giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo).",
-            request, task_slug
+            "Yêu cầu: {}\nTask: {}\nFile {} ở gốc dự án là bản plan hiện tại; sửa trực tiếp trên bản này, giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo).",
+            request, task_slug, protocol.plan
         );
         if opts.review {
-            s.push_str("\nBáo cáo review plan: .plan-review.md (verdict revise). Sửa .plan.md để xử lý mọi mục chặn trong báo cáo.");
+            s.push_str(&format!(
+                "\nBáo cáo review plan: {} (verdict revise). Sửa {} để xử lý mọi mục chặn trong báo cáo.",
+                protocol.plan_review, protocol.plan
+            ));
         }
         if has_blockers {
             s.push_str("\nPlan có mục Vướng mắc do Dev ghi ở lần chạy trước: giải quyết từng điểm trong plan (bổ sung thông tin, file hoặc khai Thư mục được đọc / Lệnh được chạy), rồi xoá nội dung mục Vướng mắc, chỉ giữ tiêu đề.");
@@ -279,8 +288,10 @@ pub fn cmd_lead(
         s
     } else {
         let mut s = format!(
-            "Yêu cầu: {}\nTask: {}\nFile .plan.md ở gốc dự án đã có sẵn khung (skeleton). Giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo). Ghi kế hoạch vào .plan.md theo đúng mẫu.",
-            request, task_slug
+            "Yêu cầu: {}\nTask: {}\nFile {plan} ở gốc dự án đã có sẵn khung (skeleton). Giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo). Ghi kế hoạch vào {plan} theo đúng mẫu.",
+            request,
+            task_slug,
+            plan = protocol.plan
         );
         if let Some(n) = note {
             s.push_str(&format!("\nGhi chú của người dùng: {n}"));
@@ -336,11 +347,9 @@ pub fn cmd_lead(
         user_input.push_str(&skill_block);
     }
 
-    let abs_plan_rules = crate::roles::abs_rules(&proj_path, &[".plan.md"], &["Write", "Edit"]);
-    let mut allowed = LEAD_ALLOWED_TOOLS
-        .iter()
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>();
+    let abs_plan_rules =
+        crate::roles::abs_rules(&proj_path, &[protocol.plan.as_str()], &["Write", "Edit"]);
+    let mut allowed = lead_allowed_tools(&protocol);
     allowed.extend(abs_plan_rules);
 
     let disallowed = LEAD_DISALLOWED_TOOLS
@@ -414,7 +423,7 @@ pub fn cmd_lead(
 
     let mut dirty = crate::gitops::changed_paths(&proj_path)?;
     if crate::gitops::current_branch(&proj_path).as_deref() == Some(&branch) {
-        dirty.remove(".plan.md");
+        dirty.remove(&protocol.plan);
     }
     if !dirty.is_empty() {
         let mut list: Vec<String> = dirty.into_iter().collect();
@@ -495,6 +504,7 @@ pub fn cmd_lead(
             text
         }
     } else {
+        protocol.ensure_dir(&proj_path)?;
         std::fs::write(&plan_path, &skeleton)?;
         skeleton.clone()
     };
@@ -675,9 +685,12 @@ pub fn cmd_lead(
         }
 
         let mut extra = crate::gitops::changed_paths(&proj_path)?;
-        extra.remove(".plan.md");
+        extra.remove(&protocol.plan);
         if !extra.is_empty() {
-            crate::term::emit_out("Lead đã sửa file ngoài .plan.md — vi phạm giao thức (ROLE-01):");
+            crate::term::emit_out(&format!(
+                "Lead đã sửa file ngoài {} — vi phạm giao thức (ROLE-01):",
+                protocol.plan
+            ));
             let mut sorted_extra: Vec<String> = extra.into_iter().collect();
             sorted_extra.sort();
             for p in &sorted_extra {
@@ -695,7 +708,8 @@ pub fn cmd_lead(
                 files_50.join(", ")
             };
             let msg = format!(
-                "{total} file ngoài .plan.md: {preview} — Lead chỉ được sửa .plan.md"
+                "{total} file ngoài {plan}: {preview} — Lead chỉ được sửa {plan}",
+                plan = protocol.plan
             );
             crate::roles::record_violation(
                 ctx,
@@ -709,12 +723,12 @@ pub fn cmd_lead(
 
         if !plan_path.is_file() {
             crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
-            let msg = "Lead hoàn thành nhưng không tìm thấy file .plan.md";
+            let msg = format!("Lead hoàn thành nhưng không tìm thấy file {}", protocol.plan);
             crate::roles::record_violation(
                 ctx,
                 role_run.run_id,
                 "missing_plan",
-                msg,
+                &msg,
                 serde_json::json!({}),
             )?;
             return Err(BrainError::error(msg));
@@ -750,7 +764,8 @@ pub fn cmd_lead(
                     .collect::<Vec<_>>()
                     .join("\n");
                 let mut retry_input = format!(
-                    "Yêu cầu: {request}\nTask: {task_slug}\nFile .plan.md ở gốc dự án là bản plan hiện tại; sửa trực tiếp trên bản này, giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo).\nLần chạy trước viết .plan.md không hợp lệ. Lỗi:\n{err_lines}\nChỉ sửa .plan.md để hết các lỗi trên: bỏ hoặc thay lệnh không được phép bằng lệnh hợp lệ, giữ nguyên phần còn lại của plan."
+                    "Yêu cầu: {request}\nTask: {task_slug}\nFile {plan} ở gốc dự án là bản plan hiện tại; sửa trực tiếp trên bản này, giữ nguyên hai dòng đầu (# Plan: và <!-- brain-meta: ... -->). Mỗi dòng trong bảng Thay đổi chỉ ghi đúng một file (đường dẫn tương đối so với gốc repo).\nLần chạy trước viết {plan} không hợp lệ. Lỗi:\n{err_lines}\nChỉ sửa {plan} để hết các lỗi trên: bỏ hoặc thay lệnh không được phép bằng lệnh hợp lệ, giữ nguyên phần còn lại của plan.",
+                    plan = protocol.plan
                 );
                 if let Some(n) = note {
                     retry_input.push_str(&format!("\nGhi chú của người dùng: {n}"));
@@ -773,8 +788,9 @@ pub fn cmd_lead(
                     .collect::<Vec<_>>()
                     .join("\n");
                 let err_msg = format!(
-                    "Lead đã tự sửa 1 lần nhưng plan vẫn không hợp lệ. Kế hoạch trong .plan.md không hợp lệ:\n{err_lines}\nSửa tay .plan.md rồi: git -C {} commit -m \"{task_slug}: plan\" -- .plan.md",
-                    proj_path.display()
+                    "Lead đã tự sửa 1 lần nhưng plan vẫn không hợp lệ. Kế hoạch trong {plan} không hợp lệ:\n{err_lines}\nSửa tay {plan} rồi: git -C {} commit -m \"{task_slug}: plan\" -- {plan}",
+                    proj_path.display(),
+                    plan = protocol.plan
                 );
                 crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
                 let short_msg = format!(
@@ -796,13 +812,20 @@ pub fn cmd_lead(
     }
 
     let changed = crate::gitops::changed_paths(&proj_path)?;
-    if !changed.contains(".plan.md") {
-        crate::term::emit_out("Lead không sửa .plan.md — giữ nguyên commit plan hiện tại.");
+    if !changed.contains(&protocol.plan) {
+        crate::term::emit_out(&format!(
+            "Lead không sửa {} — giữ nguyên commit plan hiện tại.",
+            protocol.plan
+        ));
         crate::db::set_task_status(&ctx.conn, task_id, "planned")?;
         return Ok(crate::error::EXIT_OK);
     }
 
-    crate::gitops::commit_paths(&proj_path, &[".plan.md"], &format!("{task_slug}: plan"))?;
+    crate::gitops::commit_paths(
+        &proj_path,
+        &[protocol.plan.as_str()],
+        &format!("{task_slug}: plan"),
+    )?;
     crate::db::clear_task_approval(&ctx.conn, task_id)?;
     crate::db::set_task_status(&ctx.conn, task_id, "planned")?;
     crate::term::emit_out(&plan_path.to_string_lossy());

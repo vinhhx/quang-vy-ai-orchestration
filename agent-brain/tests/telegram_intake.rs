@@ -2300,7 +2300,7 @@ fn forward_burst_one_task() {
         assert!(block.contains(&want.as_str()), "{want:?} not in {block:#?}");
     }
     let sys = last_lead_system_prompt(&sb);
-    assert!(sys.starts_with(&agent_brain::roles::lead_untrusted_prompt()));
+    assert!(sys.starts_with(&agent_brain::protocol_paths::ProtocolPaths::default().render(&agent_brain::roles::lead_untrusted_prompt())));
     assert!(sys.contains("### Phòng: Phòng kế hoạch"));
 
     // Still exactly one selection message, seconds after the window closed.
@@ -2795,7 +2795,7 @@ fn untrusted_block_survives_return_lead() {
     let first = last_lead_prompt(&sb);
     let nonce = nonce_of(&first);
     let sys1 = last_lead_system_prompt(&sb);
-    assert!(sys1.starts_with(&agent_brain::roles::lead_untrusted_prompt()));
+    assert!(sys1.starts_with(&agent_brain::protocol_paths::ProtocolPaths::default().render(&agent_brain::roles::lead_untrusted_prompt())));
     assert!(sys1.contains("### Phòng: Phòng kế hoạch"));
     assert_eq!(lead_records(&sb), 1);
 
@@ -2824,7 +2824,7 @@ fn untrusted_block_survives_return_lead() {
         "{second}"
     );
     let sys2 = last_lead_system_prompt(&sb);
-    assert!(sys2.starts_with(&agent_brain::roles::lead_untrusted_prompt()));
+    assert!(sys2.starts_with(&agent_brain::protocol_paths::ProtocolPaths::default().render(&agent_brain::roles::lead_untrusted_prompt())));
     assert!(sys2.contains("### Phòng: Phòng kế hoạch"));
     assert_eq!(approved_commit(&sb, 1), None);
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));

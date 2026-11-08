@@ -148,15 +148,15 @@ fn push_finalize_args(a: &mut Vec<String>, sr: &StageRun) {
     }
 }
 
-/// True when uncommitted changes touch files of the plan in `.plan.md` (C1 closing turn).
-fn dirty_in_plan(root: &std::path::Path) -> bool {
+/// True when uncommitted changes touch files of the task's plan (C1 closing turn).
+fn dirty_in_plan(root: &std::path::Path, protocol: &crate::protocol_paths::ProtocolPaths) -> bool {
     let Ok(changed) = crate::gitops::changed_paths(root) else {
         return false;
     };
     if changed.is_empty() {
         return false;
     }
-    let Ok(text) = std::fs::read_to_string(root.join(crate::stream::PROTOCOL_FILES[0])) else {
+    let Ok(text) = std::fs::read_to_string(root.join(&protocol.plan)) else {
         return false;
     };
     let files = crate::planfile::plan_files(&crate::planfile::parse_plan(&text));
@@ -428,7 +428,13 @@ fn env_down_stop(outcome: &ChildOutcome, sr: &StageRun) -> StopInfo {
 }
 
 fn stop_with(ctx: &Ctx, task_id: i64, slug: &str, mut aj: AutoJson, info: StopInfo) -> i32 {
-    let line = view::terminal_line(&info, slug, task_id);
+    let plan_path = claim::task_project(&ctx.conn, task_id)
+        .ok()
+        .flatten()
+        .and_then(|(proj, _)| ctx.projects.iter().find(|p| p.id == proj).cloned())
+        .map(|p| crate::protocol_paths::paths(&p, slug).plan)
+        .unwrap_or_else(|| crate::protocol_paths::ProtocolPaths::default().plan);
+    let line = view::terminal_line(&info, slug, &plan_path, task_id);
     aj.stop = Some(info);
     if let Err(e) = claim::release(&ctx.conn, task_id, "stopped", &aj) {
         crate::term::emit(&e.message);
@@ -509,7 +515,8 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
         );
         facts.code_after_plan = code_after_plan;
         facts.dev_dirty_in_plan =
-            wf.finalize_on_timeout.enabled && is_on_branch && dirty_in_plan(&root);
+            wf.finalize_on_timeout.enabled && is_on_branch
+                && dirty_in_plan(&root, &crate::protocol_paths::paths(&project, &task.slug));
         resume = false;
 
         match decide::decide(&wf, &facts) {
@@ -925,7 +932,13 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
         })?;
     let root = crate::projects::require_runnable(&project, &ctx.cfg)?;
 
-    let plan_commit = claim::approve_check(&ctx.conn, &task, &root, &ctx.cfg.pricing)
+    let plan_commit = claim::approve_check(
+        &ctx.conn,
+        &task,
+        &root,
+        &ctx.cfg.pricing,
+        &crate::protocol_paths::paths(&project, &task.slug),
+    )
         .map_err(BrainError::error)?;
 
     let auto = crate::db::task_auto(&ctx.conn, task_id)?.unwrap_or_default();

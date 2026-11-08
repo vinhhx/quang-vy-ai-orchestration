@@ -250,6 +250,7 @@ fn test_g_prompt_show_cli() {
         missing: false,
         stack: vec!["rust".to_string()],
         read_sources: vec![],
+        protocol_dir: String::new(),
     };
     agent_brain::db::sync_projects(&conn, std::slice::from_ref(&p)).unwrap();
 

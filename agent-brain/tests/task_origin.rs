@@ -356,7 +356,7 @@ fn untrusted_block_selects_untrusted_prompt() {
     let first = run_lead_named(&sb, Some("telegram"), "tin-a", &request);
     assert_ok(&first, "run lead --origin telegram with forwarded block");
     let (system, p_arg) = lead_record(&sb);
-    assert!(system.starts_with(&agent_brain::roles::lead_untrusted_prompt()));
+    assert!(system.starts_with(&agent_brain::protocol_paths::ProtocolPaths::default().render(&agent_brain::roles::lead_untrusted_prompt())));
     assert!(system.contains("### Phòng: Phòng kế hoạch"));
     assert!(system.starts_with("Bạn là Lead"));
     assert!(p_arg.contains("<<<TIN_CHUYEN_TIEP 0123abcd>>>"), "{p_arg}");
@@ -365,7 +365,7 @@ fn untrusted_block_selects_untrusted_prompt() {
     let second = run_lead_named(&sb, None, "tin-a", &request);
     assert_ok(&second, "re-plan run lead without flag");
     let (system, _) = lead_record(&sb);
-    assert!(system.starts_with(&agent_brain::roles::lead_untrusted_prompt()));
+    assert!(system.starts_with(&agent_brain::protocol_paths::ProtocolPaths::default().render(&agent_brain::roles::lead_untrusted_prompt())));
     assert!(system.contains("### Phòng: Phòng kế hoạch"));
 }
 
@@ -389,7 +389,7 @@ fn untrusted_block_composed_request() {
     assert_ok(&res, "run lead with a composed request");
 
     let (system, p_arg) = lead_record(&sb);
-    assert!(system.starts_with(&agent_brain::roles::lead_untrusted_prompt()));
+    assert!(system.starts_with(&agent_brain::protocol_paths::ProtocolPaths::default().render(&agent_brain::roles::lead_untrusted_prompt())));
     assert!(system.contains("### Phòng: Phòng kế hoạch"));
     let closes: Vec<&str> = p_arg
         .lines()
@@ -417,7 +417,7 @@ fn normal_prompt_without_block_or_origin() {
     let res = run_lead_named(&sb, None, "tin-a", &forwarded_request());
     assert_ok(&res, "run lead without origin");
     let (system, _) = lead_record(&sb);
-    assert!(system.starts_with(agent_brain::roles::LEAD_PROMPT));
+    assert!(system.starts_with(&agent_brain::protocol_paths::ProtocolPaths::default().render(agent_brain::roles::LEAD_PROMPT)));
     assert!(system.contains("### Phòng: Phòng kế hoạch"));
 
     // Telegram origin but a plain typed request: normal prompt.
@@ -427,6 +427,6 @@ fn normal_prompt_without_block_or_origin() {
     assert_ok(&res, "run lead --origin telegram with a plain request");
     assert_eq!(task_origin_of(&sb2, 1).as_deref(), Some("telegram"));
     let (system, _) = lead_record(&sb2);
-    assert!(system.starts_with(agent_brain::roles::LEAD_PROMPT));
+    assert!(system.starts_with(&agent_brain::protocol_paths::ProtocolPaths::default().render(agent_brain::roles::LEAD_PROMPT)));
     assert!(system.contains("### Phòng: Phòng kế hoạch"));
 }

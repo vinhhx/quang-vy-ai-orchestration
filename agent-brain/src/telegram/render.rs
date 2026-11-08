@@ -276,7 +276,7 @@ fn plan_lines(s: &TaskState, lines: &mut Vec<String>) {
                 lines.push(format!("⚠️ {w}"));
             }
         }
-        None => lines.push("Plan: (không đọc được .plan.md)".to_string()),
+        None => lines.push(format!("Plan: (không đọc được {})", s.protocol().plan)),
     }
 }
 
@@ -368,7 +368,7 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
                 .auto
                 .stop_detail
                 .clone()
-                .or_else(|| stop.map(|i| crate::autopilot::view::stop_detail(i, &s.task.slug)));
+                .or_else(|| stop.map(|i| crate::autopilot::view::stop_detail(i, &s.task.slug, &s.protocol().plan)));
             if let Some(d) = detail {
                 lines.push(d);
             }
@@ -563,7 +563,7 @@ pub fn message_for(ev: &Event, s: &TaskState) -> Rendered {
     let document = match (ev.kind, &s.plan_text) {
         (EventKind::Gate, Some(text)) => {
             let name = if slug_ok(&s.task.slug) {
-                format!("{}.plan.md", s.task.slug)
+                format!("{}{}", s.task.slug, crate::protocol_paths::PLAN_FILE)
             } else {
                 "plan.md".to_string()
             };
@@ -705,6 +705,7 @@ mod tests {
             missing: false,
             stack: vec![],
             read_sources: vec![],
+            protocol_dir: String::new(),
         };
         let mut run = crate::db::RunRow {
             id: 10,

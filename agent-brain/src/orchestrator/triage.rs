@@ -640,7 +640,7 @@ pub fn triage_with_warnings(
     .map_err(|e| fail(&e.message))?;
     let agy = ep.stream == crate::engine::StreamFormat::Agy;
     if agy {
-        // agy chạy chỉ đọc như Lead (không cờ quyền), nhưng trả JSON đề xuất chứ không phải .plan.md.
+        // agy chạy chỉ đọc như Lead (không cờ quyền), nhưng trả JSON đề xuất chứ không phải file plan.
         let text = format!(
             "{system_prompt}\n\n---\nBạn đang chạy ở chế độ chỉ đọc: không sửa, không tạo file và không chạy lệnh shell. Trả lời bằng DUY NHẤT một JSON {{\"tasks\":[...]}} theo đúng định dạng ở trên, không thêm lời dẫn, không bọc trong khối mã.\n\n---\n{}",
             spec.user_input

@@ -112,10 +112,10 @@ fn print_done_hint(task_id: i64, name: &str) {
     ));
 }
 
-fn report_file_for(fix_for: &str) -> Option<&'static str> {
+fn report_file_for(fix_for: &str, protocol: &crate::protocol_paths::ProtocolPaths) -> Option<String> {
     match fix_for {
-        "qa" => Some(crate::report::QA_REPORT_FILE),
-        "code_review" => Some(crate::report::CODE_REVIEW_FILE),
+        "qa" => Some(protocol.qa_report.clone()),
+        "code_review" => Some(protocol.code_review.clone()),
         _ => None,
     }
 }
@@ -135,7 +135,7 @@ fn team_changed() -> BrainError {
 #[allow(clippy::too_many_arguments)]
 pub fn start_wait(
     ctx: &mut Ctx,
-    _project: &Project,
+    project: &Project,
     root: &Path,
     task: &TaskRow,
     staff_id: &str,
@@ -179,9 +179,10 @@ pub fn start_wait(
         return Ok(EXIT_WAITING);
     }
 
+    let protocol = crate::protocol_paths::paths(project, &task.slug);
     let report_paths: Vec<String> = fix_for
-        .and_then(report_file_for)
-        .map(|f| vec![f.to_string()])
+        .and_then(|f| report_file_for(f, &protocol))
+        .map(|f| vec![f])
         .unwrap_or_default();
     let mode = if fix_for.is_some() {
         MODE_REJECTED
@@ -227,6 +228,7 @@ struct Pending {
     profile: String,
     root: PathBuf,
     name: String,
+    protocol: crate::protocol_paths::ProtocolPaths,
 }
 
 fn load_pending(ctx: &Ctx, task_id: i64) -> BrainResult<Pending> {
@@ -249,7 +251,9 @@ fn load_pending(ctx: &Ctx, task_id: i64) -> BrainResult<Pending> {
         })?;
     let root = crate::projects::require_runnable(&project, &ctx.cfg)?;
     let name = crate::staff::load().display_name_of(&wait.staff);
+    let protocol = crate::protocol_paths::paths(&project, &task.slug);
     Ok(Pending {
+        protocol,
         task,
         team,
         raw,
@@ -260,18 +264,22 @@ fn load_pending(ctx: &Ctx, task_id: i64) -> BrainResult<Pending> {
     })
 }
 
-/// Các file cho phép đổi: file trong bảng Thay đổi của plan lúc bắt đầu bước (NFC) và `.plan.md`.
-fn allowed_paths(root: &Path, base: &str) -> BTreeSet<String> {
-    let plan_text = crate::gitops::git(root, &["show", &format!("{base}:.plan.md")])
+/// Các file cho phép đổi: file trong bảng Thay đổi của plan lúc bắt đầu bước (NFC) và file plan.
+fn allowed_paths(
+    root: &Path,
+    base: &str,
+    protocol: &crate::protocol_paths::ProtocolPaths,
+) -> BTreeSet<String> {
+    let plan_text = crate::gitops::git(root, &["show", &protocol.plan_at(base)])
         .ok()
-        .or_else(|| std::fs::read_to_string(root.join(".plan.md")).ok())
+        .or_else(|| std::fs::read_to_string(root.join(&protocol.plan)).ok())
         .unwrap_or_default();
     let plan = crate::planfile::parse_plan(&plan_text);
     let mut allowed: BTreeSet<String> = crate::planfile::plan_files(&plan)
         .iter()
         .map(|f| crate::planfile::normalize_plan_path(f).nfc().collect())
         .collect();
-    allowed.insert(".plan.md".to_string());
+    allowed.insert(protocol.plan.clone());
     allowed
 }
 
@@ -358,7 +366,7 @@ pub fn done(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
     let new_head = crate::gitops::head_sha(root)?;
 
     // D-20: cùng luật với diff của một Dev agent; không tự hoàn tác gì.
-    let allowed = allowed_paths(root, &p.wait.base);
+    let allowed = allowed_paths(root, &p.wait.base, &p.protocol);
     let changed: BTreeSet<String> = crate::gitops::diff_names(root, &p.wait.base, &new_head)?
         .into_iter()
         .map(|f| f.nfc().collect())

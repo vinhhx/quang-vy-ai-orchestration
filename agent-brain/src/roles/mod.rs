@@ -70,10 +70,10 @@ pub enum FixInput {
 }
 
 impl FixInput {
-    pub fn report_file(&self) -> &'static str {
+    pub fn report_file(&self, protocol: &crate::protocol_paths::ProtocolPaths) -> String {
         match self {
-            FixInput::Qa => crate::report::QA_REPORT_FILE,
-            FixInput::CodeReview => crate::report::CODE_REVIEW_FILE,
+            FixInput::Qa => protocol.qa_report.clone(),
+            FixInput::CodeReview => protocol.code_review.clone(),
         }
     }
 
@@ -135,6 +135,16 @@ pub struct RoleSpec {
     pub disallowed_tools: Vec<String>,
     pub extra_args: Vec<String>,
     pub source_paths: Vec<PathBuf>,
+}
+
+/// `base` with `Write(./<file>)` and `Edit(./<file>)` for the role's one protocol file put right
+/// after `Glob` (the read tools come first, as in the historical lists).
+pub fn with_protocol_write_rules(base: &[&str], file: &str) -> Vec<String> {
+    let mut out: Vec<String> = base.iter().map(|s| s.to_string()).collect();
+    let at = out.iter().position(|s| s == "Glob").map(|i| i + 1).unwrap_or(0);
+    out.insert(at, format!("Edit(./{file})"));
+    out.insert(at, format!("Write(./{file})"));
+    out
 }
 
 pub fn abs_rules(root: &Path, rel_files: &[&str], tools: &[&str]) -> Vec<String> {
@@ -622,6 +632,9 @@ pub fn execute_role_staged(
             }
         }
     }
+    // D1: every prompt text above may name the protocol files by placeholder.
+    let protocol = crate::protocol_paths::paths(project, &plan.task_slug);
+    crate::engine::render_protocol_paths(&mut plan.argv, &protocol);
     // ENG-10 / D-36 / D-42 backstop: an engine tied to a profile never runs on a project of
     // another one (SPK-10), whatever team the task row names — a hand-edited team included.
     if let crate::engine::Engine::Named(id) = &resolved.engine {
@@ -638,7 +651,7 @@ pub fn execute_role_staged(
         &ctx.cfg.profiles,
         &crate::profile::current_env(),
     )?;
-    let ep = crate::engine::plan_for(
+    let mut ep = crate::engine::plan_for(
         &ctx.cfg,
         &resolved,
         &plan.role,
@@ -648,6 +661,8 @@ pub fn execute_role_staged(
         plan.timeout,
         root,
     )?;
+    // An agy read-only role is told which protocol file to answer with by placeholder.
+    crate::engine::render_protocol_paths(&mut ep.argv, &protocol);
     let run_dir = match &plan.run_dir {
         Some(rd) => {
             std::fs::create_dir_all(rd)?;
@@ -1299,7 +1314,8 @@ pub fn execute_role_staged(
                 if !body.ends_with('\n') {
                     body.push('\n');
                 }
-                std::fs::write(root.join(file), body)?;
+                protocol.ensure_dir(root)?;
+                std::fs::write(root.join(protocol.get(file)), body)?;
             }
         }
     }
@@ -1447,7 +1463,7 @@ pub fn cmd_run(
             if let Some(r) = request {
                 if !r.trim().is_empty() {
                     crate::term::emit(
-                        "Bỏ qua <yêu cầu> cho vai trò dev: vai trò này chỉ đọc .plan.md / git diff",
+                        "Bỏ qua <yêu cầu> cho vai trò dev: vai trò này chỉ đọc file plan / git diff",
                     );
                 }
             }
@@ -1457,7 +1473,7 @@ pub fn cmd_run(
             if let Some(r) = request {
                 if !r.trim().is_empty() {
                     crate::term::emit(
-                        "Bỏ qua <yêu cầu> cho vai trò qa: vai trò này chỉ đọc .plan.md / git diff",
+                        "Bỏ qua <yêu cầu> cho vai trò qa: vai trò này chỉ đọc file plan / git diff",
                     );
                 }
             }
@@ -1467,7 +1483,7 @@ pub fn cmd_run(
             if let Some(r) = request {
                 if !r.trim().is_empty() {
                     crate::term::emit(&format!(
-                        "Bỏ qua <yêu cầu> cho vai trò {}: vai trò này chỉ đọc .plan.md / git diff",
+                        "Bỏ qua <yêu cầu> cho vai trò {}: vai trò này chỉ đọc file plan / git diff",
                         role.as_str()
                     ));
                 }
@@ -1478,7 +1494,7 @@ pub fn cmd_run(
             if let Some(r) = request {
                 if !r.trim().is_empty() {
                     crate::term::emit(&format!(
-                        "Bỏ qua <yêu cầu> cho vai trò {}: vai trò này chỉ đọc .plan.md / git diff",
+                        "Bỏ qua <yêu cầu> cho vai trò {}: vai trò này chỉ đọc file plan / git diff",
                         role.as_str()
                     ));
                 }
@@ -1598,6 +1614,7 @@ mod tests {
             missing: false,
             stack: vec![],
             read_sources: vec![],
+            protocol_dir: String::new(),
         };
         crate::db::sync_projects(&conn, &[project]).unwrap();
         let pid = crate::db::project_row_id(&conn, "p").unwrap();

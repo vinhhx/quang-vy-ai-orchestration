@@ -469,7 +469,7 @@ pub fn agy_tool_decision(
 ///   - inside (or exactly) a granted read or write directory, or a granted single file;
 ///   - exactly a plan file (read or write allowlist);
 ///   - for a name listing only (`list_dir`, `find_by_name`): the directory that holds a plan
-///     file from the Thay đổi table (protocol files such as `.plan.md` do not count). A content
+///     file from the Thay đổi table (protocol files such as the plan do not count). A content
 ///     search there would read the files beside it, so `grep_search` does not get this one.
 fn agy_listing_decision(policy: &Policy, tool_name: &str, raw_path: &str) -> Decision {
     let decision = |allow: bool, reason: String| Decision {
@@ -2556,7 +2556,7 @@ pub fn cmd_guard(policy: Option<&Path>) -> i32 {
             &decision.path
         };
         crate::term::emit(&format!(
-            "agent-brain guard: chặn {} {} — ngoài danh sách được phép của vai trò (xem .plan.md)",
+            "agent-brain guard: chặn {} {} — ngoài danh sách được phép của vai trò (xem file plan của task)",
             decision.tool, display_path
         ));
         2

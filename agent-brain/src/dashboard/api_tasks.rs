@@ -373,7 +373,7 @@ pub fn lead_preflight(
     let replan = current.as_deref() == Some(&branch);
     let mut dirty_set = crate::gitops::changed_paths(root)?;
     if replan {
-        dirty_set.remove(".plan.md");
+        dirty_set.remove(&crate::protocol_paths::paths(project, slug).plan);
     }
     let mut dirty: Vec<String> = dirty_set.into_iter().collect();
     dirty.sort();
@@ -1444,6 +1444,13 @@ pub struct TaskState {
     pub quota_teams: Vec<String>,
 }
 
+impl TaskState {
+    /// The task's protocol file paths (D1).
+    pub fn protocol(&self) -> crate::protocol_paths::ProtocolPaths {
+        crate::protocol_paths::paths(&self.project, &self.task.slug)
+    }
+}
+
 /// Token đổi khi trạng thái task, run mới nhất, autopilot, cờ dừng, duyệt, commit plan hoặc
 /// `team_json` đổi.
 pub fn task_rev(
@@ -1507,17 +1514,18 @@ pub fn load_task_state(
     let dirty_set = crate::gitops::changed_paths(&root).unwrap_or_default();
     let mut dirty: Vec<String> = dirty_set.into_iter().collect();
     dirty.sort();
-    let plan_dirty = is_on_branch && dirty.iter().any(|p| p == ".plan.md");
+    let protocol = crate::protocol_paths::paths(&project, &task.slug);
+    let plan_dirty = is_on_branch && dirty.contains(&protocol.plan);
 
     let (plan_text, plan_source) = if is_on_branch {
-        let p_path = root.join(".plan.md");
+        let p_path = root.join(&protocol.plan);
         if p_path.is_file() {
             (std::fs::read_to_string(&p_path).ok(), Some("worktree"))
         } else {
             (None, None)
         }
     } else {
-        let show_arg = format!("{}:.plan.md", task.branch);
+        let show_arg = protocol.plan_at(&task.branch);
         match crate::gitops::git(&root, &["show", &show_arg]) {
             Ok(text) => (Some(text), Some("branch")),
             Err(_) => (None, None),
@@ -1572,6 +1580,7 @@ pub fn load_task_state(
         continuation_ok: false,
         dirty_outside_plan: Vec::new(),
         branch_exists,
+        protocol: protocol.clone(),
     };
 
     let busy = busy_reason_for_task(conn, &st.jobs, &project, task.id, &task.branch)?;
@@ -1600,7 +1609,7 @@ pub fn load_task_state(
                 let prefixes = crate::roles::dev::approved_write_prefixes(
                     conn,
                     &st.cfg,
-                    &project_slug,
+                    &project,
                     &root,
                     &task.slug,
                 );
@@ -1731,7 +1740,7 @@ pub fn load_task_state(
     let plan_diff_summary: Option<String> = if let Some(ref cur) = git.plan_commit {
         if let Ok(Some(prev)) = crate::db::latest_different_plan_approval(conn, task.id, cur) {
             if let Ok(Some((added, deleted))) =
-                crate::gitops::diff_numstat_file(&root, &prev, cur, ".plan.md")
+                crate::gitops::diff_numstat_file(&root, &prev, cur, &protocol.plan)
             {
                 let sha7: String = prev.chars().take(7).collect();
                 Some(format!("Plan đổi +{added}/-{deleted} dòng so với lần duyệt {sha7}"))
@@ -2385,6 +2394,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
         let project = &state.project;
         let proj_root = &state.root;
         let is_on_branch = state.git.current_branch.as_deref() == Some(task.branch.as_str());
+        let protocol = crate::protocol_paths::paths(project, &task.slug);
 
         let plan_obj = if let Some(ref text) = state.plan_text {
             let plan = crate::planfile::parse_plan(text);
@@ -2412,7 +2422,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
 
             let warnings = crate::planfile::plan_warnings(&plan);
             let mut plan_json = serde_json::json!({
-                "path": ".plan.md",
+                "path": protocol.plan,
                 "source": state.plan_source.unwrap_or("worktree"),
                 "commit": state.git.plan_commit,
                 "dirty": state.plan_dirty,
@@ -2439,14 +2449,14 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
         };
 
         let (qa_text, qa_source) = if is_on_branch {
-            let q_path = proj_root.join(".qa-report.md");
+            let q_path = proj_root.join(&protocol.qa_report);
             if q_path.is_file() {
                 (std::fs::read_to_string(&q_path).ok(), Some("worktree"))
             } else {
                 (None, None)
             }
         } else {
-            let show_arg = format!("{}:.qa-report.md", task.branch);
+            let show_arg = format!("{}:{}", task.branch, protocol.qa_report);
             match crate::gitops::git(proj_root, &["show", &show_arg]) {
                 Ok(text) => (Some(text), Some("branch")),
                 Err(_) => (None, None),
@@ -2465,7 +2475,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
                 })
                 .collect();
             Some(serde_json::json!({
-                "path": ".qa-report.md",
+                "path": protocol.qa_report,
                 "source": qa_source.unwrap_or("worktree"),
                 "verdict": verdict,
                 "sections": sections,
@@ -3355,7 +3365,7 @@ pub fn run_control_as(
                     kind: "not_allowed",
                 });
             }
-            let plan_commit = match claim::approve_check(&conn, &state.task, &state.root, &st.cfg.pricing) {
+            let plan_commit = match claim::approve_check(&conn, &state.task, &state.root, &st.cfg.pricing, &state.protocol()) {
                 Ok(pc) => pc,
                 Err(reason) => {
                     return Ok(ControlOutcome::Refused {
@@ -3762,7 +3772,8 @@ async fn get_plan_diff(
 
         let prev = crate::db::latest_different_plan_approval(&conn, task_id, &cur_commit)?;
         let diff = if let Some(ref p) = prev {
-            crate::gitops::diff_file(&state.root, p, &cur_commit, ".plan.md", 64 * 1024)
+            let protocol = crate::protocol_paths::paths(&state.project, &state.task.slug);
+            crate::gitops::diff_file(&state.root, p, &cur_commit, &protocol.plan, 64 * 1024)
                 .unwrap_or_default()
         } else {
             String::new()

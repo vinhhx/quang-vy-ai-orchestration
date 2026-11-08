@@ -1,17 +1,17 @@
 use crate::app::Ctx;
 use crate::error::{BrainError, BrainResult};
 
-pub const QA_ALLOWED_TOOLS: &[&str] = crate::with_git_read_only_tools!(
-    "Read",
-    "Grep",
-    "Glob",
-    "Write(./.qa-report.md)",
-    "Edit(./.qa-report.md)",
-);
+/// QA's tools without the report-file rules; `qa_allowed_tools` adds them for the task's path.
+pub const QA_ALLOWED_TOOLS: &[&str] = crate::with_git_read_only_tools!("Read", "Grep", "Glob");
+
+/// QA's `--allowedTools` base: `QA_ALLOWED_TOOLS` plus Write/Edit of the task's QA report.
+pub fn qa_allowed_tools(protocol: &crate::protocol_paths::ProtocolPaths) -> Vec<String> {
+    crate::roles::with_protocol_write_rules(QA_ALLOWED_TOOLS, &protocol.qa_report)
+}
 
 pub const QA_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
 
-/// Heading of the section agent-brain appends to `.qa-report.md` after checking the products.
+/// Heading of the section agent-brain appends to the QA report after checking the products.
 pub const PRODUCT_CHECK_HEADING: &str = "## Kiểm tra sản phẩm (agent-brain)";
 
 /// One product file checked on disk: its path resolved through symlinks and its size.
@@ -62,13 +62,14 @@ pub fn task_product_files(
     root: &std::path::Path,
     commits: &[&str],
     head_plan_text: Option<&str>,
+    protocol: &crate::protocol_paths::ProtocolPaths,
 ) -> Vec<String> {
     let mut texts: Vec<String> = Vec::new();
     for c in commits {
         if !crate::gitops::is_hex_sha(c) {
             continue;
         }
-        if let Ok(t) = crate::gitops::git(root, &["show", &format!("{c}:.plan.md")]) {
+        if let Ok(t) = crate::gitops::git(root, &["show", &protocol.plan_at(c)]) {
             texts.push(t);
         }
     }
@@ -158,9 +159,13 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
     let proj = crate::projects::select_project(project, &ctx.map)?;
     let proj_path = crate::projects::require_runnable(&proj, &ctx.cfg)?;
 
-    let plan_path = proj_path.join(".plan.md");
+    let protocol = crate::protocol_paths::current(&proj, &proj_path);
+    let plan_path = proj_path.join(&protocol.plan);
     if !plan_path.is_file() {
-        return Err(BrainError::error("Không tìm thấy .plan.md ở gốc dự án"));
+        return Err(BrainError::error(format!(
+            "Không tìm thấy {} ở gốc dự án",
+            protocol.plan
+        )));
     }
 
     let text_plan = std::fs::read_to_string(&plan_path)?;
@@ -171,7 +176,12 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         .and_then(|v| v.as_str())
     {
         Some(t) if !t.is_empty() => t.to_string(),
-        _ => return Err(BrainError::error("File .plan.md không có metadata hợp lệ")),
+        _ => {
+            return Err(BrainError::error(format!(
+                "File {} không có metadata hợp lệ",
+                protocol.plan
+            )))
+        }
     };
 
     let expected_branch = meta
@@ -197,7 +207,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
     crate::roles::autopilot_task_guard(&ctx.conn, &proj.id, &proj_path)?;
 
     let mut dirty = crate::gitops::changed_paths(&proj_path)?;
-    dirty.remove(".qa-report.md");
+    dirty.remove(&protocol.qa_report);
     if !dirty.is_empty() {
         let mut sorted_dirty: Vec<String> = dirty.into_iter().collect();
         sorted_dirty.sort();
@@ -226,19 +236,19 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         return Err(BrainError::error("chưa có thay đổi code sau plan"));
     }
 
-    let diff_cmd = format!(
-        "git diff {plan_commit}..HEAD -- . ':(exclude).plan.md' ':(exclude).qa-report.md' ':(exclude).plan-review.md' ':(exclude).code-review.md'"
-    );
+    let diff_cmd = protocol.code_diff_command(&plan_commit);
 
-    let mut allowed = QA_ALLOWED_TOOLS
-        .iter()
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>();
+    let mut allowed = qa_allowed_tools(&protocol);
     allowed.extend(crate::roles::abs_rules(
         &proj_path,
-        &[".qa-report.md"],
+        &[protocol.qa_report.as_str()],
         &["Write", "Edit"],
     ));
+    let qa_input = format!(
+        "Task: {task}\nĐầu vào: {plan} và kết quả lệnh: {diff_cmd}\nGhi {qa} theo khung có sẵn; mục Kết luận ghi đúng một dòng: Đạt hoặc Cần sửa.\nỞ đầu {qa} (trước dòng \"# QA:\") thêm front matter: dòng ---, specs: <số kiểm tra đã chạy>, failing: <số kiểm tra lỗi>, not_automatable: <số mục không kiểm tự động được>, dòng ---. Bỏ dòng nào bạn không biết.",
+        plan = protocol.plan,
+        qa = protocol.qa_report
+    );
 
     let disallowed = QA_DISALLOWED_TOOLS
         .iter()
@@ -281,9 +291,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
             workflow,
             team,
         };
-        let mut user_input = format!(
-            "Task: {task}\nĐầu vào: .plan.md và kết quả lệnh: {diff_cmd}\nGhi .qa-report.md theo khung có sẵn; mục Kết luận ghi đúng một dòng: Đạt hoặc Cần sửa.\nỞ đầu .qa-report.md (trước dòng \"# QA:\") thêm front matter: dòng ---, specs: <số kiểm tra đã chạy>, failing: <số kiểm tra lỗi>, not_automatable: <số mục không kiểm tự động được>, dòng ---. Bỏ dòng nào bạn không biết."
-        );
+        let mut user_input = qa_input.clone();
         let skill_block = crate::skills::prompt_block(&crate::skills::discover(&proj_path));
         if !skill_block.is_empty() {
             user_input.push_str("\n\n");
@@ -318,7 +326,8 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
     }
 
     let proj_row_id = crate::db::project_row_id(&ctx.conn, &proj.id)?;
-    let task_row = crate::tasks::current_task(&ctx.conn, proj_row_id, &proj_path)?;
+    let task_row =
+        crate::tasks::current_task_in(&ctx.conn, proj_row_id, &proj_path, &proj.protocol_dir)?;
     let task_id = task_row.map(|t| t.id);
 
     // W-1: QA's Bash git calls go through the guard's git policy; its file
@@ -327,7 +336,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
     let exe = std::env::current_exe()?;
     let settings = crate::guard::write_bash_hook_settings(&run_dir, &proj_path, &exe)?;
 
-    let qa_path = proj_path.join(".qa-report.md");
+    let qa_path = proj_path.join(&protocol.qa_report);
     let qa_meta = serde_json::json!({
         "task": task,
         "plan_commit": plan_commit,
@@ -337,15 +346,18 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         .and_then(|m| m.get("request"))
         .and_then(|v| v.as_str())
         .unwrap_or(&task);
-    // WR-05: every failed exit from here on restores .qa-report.md.
-    let tracked = crate::gitops::git(&proj_path, &["cat-file", "-e", "HEAD:.qa-report.md"]).is_ok();
+    // WR-05: every failed exit from here on restores the QA report.
+    let tracked = crate::gitops::git(
+        &proj_path,
+        &["cat-file", "-e", &format!("HEAD:{}", protocol.qa_report)],
+    )
+    .is_ok();
     let mut restore =
-        crate::roles::review::ReportRestore::arm(&proj_path, ".qa-report.md", tracked);
+        crate::roles::review::ReportRestore::arm(&proj_path, &protocol.qa_report, tracked);
+    protocol.ensure_dir(&proj_path)?;
     std::fs::write(&qa_path, crate::planfile::render_qa_skeleton(req, &qa_meta))?;
 
-    let mut user_input = format!(
-        "Task: {task}\nĐầu vào: .plan.md và kết quả lệnh: {diff_cmd}\nGhi .qa-report.md theo khung có sẵn; mục Kết luận ghi đúng một dòng: Đạt hoặc Cần sửa.\nỞ đầu .qa-report.md (trước dòng \"# QA:\") thêm front matter: dòng ---, specs: <số kiểm tra đã chạy>, failing: <số kiểm tra lỗi>, not_automatable: <số mục không kiểm tự động được>, dòng ---. Bỏ dòng nào bạn không biết."
-    );
+    let mut user_input = qa_input;
     let skill_block = crate::skills::prompt_block(&crate::skills::discover(&proj_path));
     if !skill_block.is_empty() {
         user_input.push_str("\n\n");
@@ -453,7 +465,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
     }
 
     let mut extra = crate::gitops::changed_paths(&proj_path)?;
-    extra.remove(".qa-report.md");
+    extra.remove(&protocol.qa_report);
     if !extra.is_empty() {
         let approved = match task_id {
             Some(tid) => crate::db::task_auto(&ctx.conn, tid)?
@@ -461,7 +473,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
             None => None,
         };
         let plan_text_for_grants = match approved.as_deref() {
-            Some(c) => crate::gitops::git(&proj_path, &["show", &format!("{c}:.plan.md")]).ok(),
+            Some(c) => crate::gitops::git(&proj_path, &["show", &protocol.plan_at(c)]).ok(),
             None => Some(text_plan.clone()),
         };
         let write_dirs = plan_text_for_grants
@@ -484,7 +496,10 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         }
 
         if !violations.is_empty() {
-            crate::term::emit_out("QA đã sửa file ngoài .qa-report.md — vi phạm giao thức (ROLE-04):");
+            crate::term::emit_out(&format!(
+                "QA đã sửa file ngoài {} — vi phạm giao thức (ROLE-04):",
+                protocol.qa_report
+            ));
             violations.sort();
             for p in &violations {
                 crate::term::emit_out(&format!("  {p}"));
@@ -499,7 +514,8 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
                 files_50.join(", ")
             };
             let msg = format!(
-                "{total} file ngoài .qa-report.md và thư mục được ghi: {preview} — QA chỉ được sửa .qa-report.md hoặc thư mục được ghi trong plan"
+                "{total} file ngoài {qa} và thư mục được ghi: {preview} — QA chỉ được sửa {qa} hoặc thư mục được ghi trong plan",
+                qa = protocol.qa_report
             );
             crate::roles::record_violation(
                 ctx,
@@ -536,7 +552,10 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
     }
 
     if !qa_path.is_file() {
-        return Err(BrainError::error("QA không tạo file .qa-report.md"));
+        return Err(BrainError::error(format!(
+            "QA không tạo file {}",
+            protocol.qa_report
+        )));
     }
 
     let mut qa_text = std::fs::read_to_string(&qa_path)?;
@@ -561,7 +580,7 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         plan_commits.push(a);
     }
     plan_commits.push(&plan_commit);
-    let products = task_product_files(&proj_path, &plan_commits, Some(&text_plan));
+    let products = task_product_files(&proj_path, &plan_commits, Some(&text_plan), &protocol);
     if !products.is_empty() {
         let checked = check_products(&proj_path, &products);
         let missing = checked.iter().any(|(_, r)| r.is_err());
@@ -584,7 +603,11 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         std::fs::write(&qa_path, &qa_text)?;
     }
 
-    crate::gitops::commit_paths(&proj_path, &[".qa-report.md"], &format!("{task}: qa"))?;
+    crate::gitops::commit_paths(
+        &proj_path,
+        &[protocol.qa_report.as_str()],
+        &format!("{task}: qa"),
+    )?;
     restore.disarm();
     crate::term::emit_out(&format!("Kết luận QA: {verdict}"));
 
@@ -597,7 +620,8 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
     if verdict == "Cần sửa" {
         crate::term::emit_out("Bước tiếp theo:");
         crate::term::emit_out(&format!(
-            "- Sửa .plan.md (commit '{task}: plan') hoặc chạy lại agent-brain run lead \"{project}\" \"{req}\" --name {task}"
+            "- Sửa {} (commit '{task}: plan') hoặc chạy lại agent-brain run lead \"{project}\" \"{req}\" --name {task}",
+            protocol.plan
         ));
         crate::term::emit_out(&format!("- Rồi chạy agent-brain run dev \"{project}\""));
         crate::term::emit_out(&format!(

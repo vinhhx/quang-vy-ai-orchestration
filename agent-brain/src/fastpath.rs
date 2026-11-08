@@ -46,7 +46,8 @@ pub fn cmd_status(ctx: &mut Ctx, project_query: &str) -> BrainResult<i32> {
     }
 
     let project_row_id = crate::db::project_row_id(&ctx.conn, &project.id)?;
-    let task_opt = crate::tasks::current_task(&ctx.conn, project_row_id, &root)?;
+    let task_opt =
+        crate::tasks::current_task_in(&ctx.conn, project_row_id, &root, &project.protocol_dir)?;
 
     match task_opt {
         Some(task) => {
@@ -89,7 +90,7 @@ pub fn cmd_status(ctx: &mut Ctx, project_query: &str) -> BrainResult<i32> {
     Ok(0)
 }
 
-pub const INSPECT_PROMPT_HEADER: &str = "Review ngắn bản thay đổi dưới đây, trả lời bằng tiếng Việt, tối đa 15 dòng: (1) tóm tắt thay đổi; (2) rủi ro dễ thấy; (3) có khớp .plan.md không (nếu có .plan.md bên dưới). Không dùng công cụ nào.\n\n";
+pub const INSPECT_PROMPT_HEADER: &str = "Review ngắn bản thay đổi dưới đây, trả lời bằng tiếng Việt, tối đa 15 dòng: (1) tóm tắt thay đổi; (2) rủi ro dễ thấy; (3) có khớp {plan_path} không (nếu có {plan_path} bên dưới). Không dùng công cụ nào.\n\n";
 pub const INSPECT_HARD_CAP: usize = 120_000;
 
 pub fn build_inspect_prompt(
@@ -100,7 +101,7 @@ pub fn build_inspect_prompt(
 ) -> (String, Option<(usize, usize)>) {
     let mut header = String::from(INSPECT_PROMPT_HEADER);
     if let Some(p) = plan {
-        header.push_str("--- .plan.md ---\n");
+        header.push_str("--- {plan_path} ---\n");
         if p.len() <= 20_000 {
             header.push_str(p);
             if !p.ends_with('\n') {
@@ -231,7 +232,8 @@ pub fn cmd_inspect(ctx: &mut Ctx, project: &str, verbose: bool) -> BrainResult<i
     let project = crate::projects::select_project(project, &ctx.map)?;
     let root = crate::projects::require_runnable(&project, &ctx.cfg)?;
     let project_row_id = crate::db::project_row_id(&ctx.conn, &project.id)?;
-    let task = crate::tasks::current_task(&ctx.conn, project_row_id, &root)?;
+    let task =
+        crate::tasks::current_task_in(&ctx.conn, project_row_id, &root, &project.protocol_dir)?;
 
     let (base, task_id, task_slug) = match &task {
         Some(t) => (
@@ -242,23 +244,21 @@ pub fn cmd_inspect(ctx: &mut Ctx, project: &str, verbose: bool) -> BrainResult<i
         None => ("HEAD", None, "inspect".to_string()),
     };
 
-    let plan_path = root.join(".plan.md");
+    let protocol = crate::protocol_paths::paths(&project, &task_slug);
+    let plan_path = root.join(&protocol.plan);
     let plan_content = if plan_path.is_file() {
         std::fs::read_to_string(&plan_path).ok()
     } else {
         None
     };
 
+    let excludes = [
+        format!(":(exclude){}", protocol.plan),
+        format!(":(exclude){}", protocol.qa_report),
+    ];
     let diff = crate::gitops::git(
         &root,
-        &[
-            "diff",
-            base,
-            "--",
-            ".",
-            ":(exclude).plan.md",
-            ":(exclude).qa-report.md",
-        ],
+        &["diff", base, "--", ".", &excludes[0], &excludes[1]],
     )?;
 
     if diff.trim().is_empty() {

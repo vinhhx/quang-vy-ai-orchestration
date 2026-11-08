@@ -464,6 +464,7 @@ fn helpers_round_trip() {
         missing: false,
         stack: vec![],
         read_sources: vec![],
+        protocol_dir: String::new(),
     };
     agent_brain::db::sync_projects(&conn, &[p]).unwrap();
     let proj_id = agent_brain::db::project_row_id(&conn, "test-proj").unwrap();
@@ -519,6 +520,7 @@ fn merge_metrics_integers_and_nulls() {
         missing: false,
         stack: vec![],
         read_sources: vec![],
+        protocol_dir: String::new(),
     };
     agent_brain::db::sync_projects(&conn, &[p]).unwrap();
     let proj_id = agent_brain::db::project_row_id(&conn, "test-proj").unwrap();
@@ -600,6 +602,7 @@ fn task_auto_defaults_and_setters() {
         missing: false,
         stack: vec![],
         read_sources: vec![],
+        protocol_dir: String::new(),
     };
     agent_brain::db::sync_projects(&conn, &[p]).unwrap();
     let proj_id = agent_brain::db::project_row_id(&conn, "test-proj").unwrap();
@@ -689,6 +692,7 @@ fn latest_run_for_task_role_order() {
         missing: false,
         stack: vec![],
         read_sources: vec![],
+        protocol_dir: String::new(),
     };
     agent_brain::db::sync_projects(&conn, &[p]).unwrap();
     let proj_id = agent_brain::db::project_row_id(&conn, "test-proj").unwrap();
@@ -743,6 +747,7 @@ fn auto_driver_rows_lists_running_only() {
         missing: false,
         stack: vec![],
         read_sources: vec![],
+        protocol_dir: String::new(),
     };
     agent_brain::db::sync_projects(&conn, &[p]).unwrap();
     let proj_id = agent_brain::db::project_row_id(&conn, "proj-alpha").unwrap();
@@ -926,6 +931,7 @@ fn fresh_task_db() -> (tempfile::TempDir, rusqlite::Connection, i64, i64) {
         missing: false,
         stack: vec![],
         read_sources: vec![],
+        protocol_dir: String::new(),
     };
     agent_brain::db::sync_projects(&conn, &[p]).unwrap();
     let proj_id = agent_brain::db::project_row_id(&conn, "test-proj").unwrap();

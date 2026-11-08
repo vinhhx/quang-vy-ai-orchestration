@@ -18,6 +18,8 @@ pub struct Project {
     pub missing: bool,
     pub stack: Vec<String>,
     pub read_sources: Vec<String>,
+    /// Folder of the protocol files, relative to the repo root (`protocol_dir`, D1); `""` = root.
+    pub protocol_dir: String,
 }
 
 impl Project {
@@ -106,6 +108,7 @@ impl Project {
             missing,
             stack,
             read_sources,
+            protocol_dir: crate::protocol_paths::protocol_dir_of_value(v),
         })
     }
 
@@ -1308,6 +1311,7 @@ mod tests {
             missing: false,
             stack: vec![],
             read_sources: vec![],
+            protocol_dir: String::new(),
         }
     }
 

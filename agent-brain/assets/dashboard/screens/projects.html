@@ -233,6 +233,16 @@
         </div>
 
         <div class="space-y-2">
+          <label :for="'ab-proj-protocol-dir-' + p.id" class="text-sm font-semibold leading-normal">Thư mục file giao thức (plan, báo cáo QA, review)</label>
+          <p :id="'ab-proj-protocol-dir-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đường dẫn tương đối so với gốc repo, ví dụ .brain/{slug} ({slug} là tên task). Không dùng .., đường dẫn tuyệt đối hay .git. Để trống rồi lưu để ghi ở gốc repo như mặc định.</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <input :id="'ab-proj-protocol-dir-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder=".brain/{slug}" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="protocolDirDraft(p)" @input="setProtocolDirDraft(p, $event.target.value)" :disabled="isProtocolDirSaving(p)" :aria-describedby="'ab-proj-protocol-dir-help-' + p.id">
+            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isProtocolDirSaving(p)" @click="saveProtocolDir(p)">Lưu thư mục</button>
+          </div>
+          <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="protocolDirError(p)" x-text="protocolDirError(p)" role="alert"></p>
+        </div>
+
+        <div class="space-y-2">
           <p class="text-sm font-semibold leading-normal">Ghim thành viên hoặc engine theo vai</p>
           <p :id="'ab-proj-pins-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Ví dụ dev=ten-thanh-vien hoặc dev=ten-engine. Mỗi vai chỉ ghim một trong hai. Được dùng trước đội hình và phòng ban; nếu chưa sẵn sàng thì run báo lỗi, không tự chọn khác. Để trống rồi lưu để bỏ.</p>
           <div class="flex flex-wrap items-center gap-2">

@@ -48,7 +48,7 @@ enum Commands {
         /// Chế độ sửa theo báo cáo (qa | code-review)
         #[arg(long, value_enum)]
         fix: Option<roles::FixInput>,
-        /// Lead sửa plan theo .plan-review.md
+        /// Lead sửa plan theo báo cáo review plan
         #[arg(long)]
         review: bool,
         /// Ghi chú cho Lead (dùng --note=NỘI DUNG)

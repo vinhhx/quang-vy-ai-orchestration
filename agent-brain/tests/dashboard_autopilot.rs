@@ -133,6 +133,7 @@ fn seed_task(
         missing: false,
         stack: vec![],
         read_sources: vec![],
+        protocol_dir: String::new(),
     };
     agent_brain::db::sync_projects(&conn, &[project]).unwrap();
     let pid = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();

@@ -17,16 +17,16 @@ pub const REVIEW_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "Notebo
 /// the guard on every path that keeps the report).
 pub(crate) struct ReportRestore {
     root: PathBuf,
-    file: &'static str,
+    file: String,
     tracked: bool,
     armed: bool,
 }
 
 impl ReportRestore {
-    pub(crate) fn arm(root: &Path, file: &'static str, tracked: bool) -> ReportRestore {
+    pub(crate) fn arm(root: &Path, file: &str, tracked: bool) -> ReportRestore {
         ReportRestore {
             root: root.to_path_buf(),
-            file,
+            file: file.to_string(),
             tracked,
             armed: true,
         }
@@ -43,7 +43,7 @@ impl Drop for ReportRestore {
             return;
         }
         self.armed = false;
-        let file = self.file;
+        let file = self.file.as_str();
         let cleaned = if self.tracked {
             match crate::gitops::git(&self.root, &["checkout", "HEAD", "--", file]) {
                 Ok(_) => true,
@@ -102,9 +102,14 @@ pub fn cmd_review(
     let proj = crate::projects::select_project(project, &ctx.map)?;
     let proj_path = crate::projects::require_runnable(&proj, &ctx.cfg)?;
 
-    let plan_path = proj_path.join(".plan.md");
+    let protocol = crate::protocol_paths::current(&proj, &proj_path);
+    let report_file = protocol.review(kind).to_string();
+    let plan_path = proj_path.join(&protocol.plan);
     if !plan_path.is_file() {
-        return Err(BrainError::error("Không tìm thấy .plan.md ở gốc dự án"));
+        return Err(BrainError::error(format!(
+            "Không tìm thấy {} ở gốc dự án",
+            protocol.plan
+        )));
     }
 
     let text_plan = std::fs::read_to_string(&plan_path)?;
@@ -115,7 +120,12 @@ pub fn cmd_review(
         .and_then(|v| v.as_str())
     {
         Some(t) if !t.is_empty() => t.to_string(),
-        _ => return Err(BrainError::error("File .plan.md không có metadata hợp lệ")),
+        _ => {
+            return Err(BrainError::error(format!(
+                "File {} không có metadata hợp lệ",
+                protocol.plan
+            )))
+        }
     };
 
     let expected_branch = meta
@@ -141,7 +151,7 @@ pub fn cmd_review(
     crate::roles::autopilot_task_guard(&ctx.conn, &proj.id, &proj_path)?;
 
     let mut dirty = crate::gitops::changed_paths(&proj_path)?;
-    dirty.remove(kind.file());
+    dirty.remove(&report_file);
     if !dirty.is_empty() {
         let mut sorted_dirty: Vec<String> = dirty.into_iter().collect();
         sorted_dirty.sort();
@@ -172,11 +182,9 @@ pub fn cmd_review(
         }
     }
 
-    let diff_cmd = format!(
-        "git diff {plan_commit}..HEAD -- . ':(exclude).plan.md' ':(exclude).qa-report.md' ':(exclude).plan-review.md' ':(exclude).code-review.md'"
-    );
+    let diff_cmd = protocol.code_diff_command(&plan_commit);
 
-    let file = kind.file();
+    let file = report_file.as_str();
     let mut allowed = REVIEW_ALLOWED_BASE
         .iter()
         .map(|s| s.to_string())
@@ -204,10 +212,12 @@ pub fn cmd_review(
 
     let mut user_input = match kind {
         ReviewKind::Plan => format!(
-            "Task: {task}\nĐầu vào: .plan.md (commit {plan_commit})\n{prev_line}Ghi {file} theo khung có sẵn: điền front matter verdict / blocking / advisory / files ở đầu file; verdict là revise khi và chỉ khi có ít nhất một mục chặn."
+            "Task: {task}\nĐầu vào: {plan} (commit {plan_commit})\n{prev_line}Ghi {file} theo khung có sẵn: điền front matter verdict / blocking / advisory / files ở đầu file; verdict là revise khi và chỉ khi có ít nhất một mục chặn.",
+            plan = protocol.plan
         ),
         ReviewKind::Code => format!(
-            "Task: {task}\nĐầu vào: .plan.md và kết quả lệnh: {diff_cmd}\n{prev_line}Ghi {file} theo khung có sẵn: điền front matter verdict / blocking / advisory / files ở đầu file; verdict là revise khi và chỉ khi có ít nhất một mục chặn."
+            "Task: {task}\nĐầu vào: {plan} và kết quả lệnh: {diff_cmd}\n{prev_line}Ghi {file} theo khung có sẵn: điền front matter verdict / blocking / advisory / files ở đầu file; verdict là revise khi và chỉ khi có ít nhất một mục chặn.",
+            plan = protocol.plan
         ),
     };
     let skill_block = crate::skills::prompt_block(&crate::skills::discover(&proj_path));
@@ -288,7 +298,8 @@ pub fn cmd_review(
     }
 
     let proj_row_id = crate::db::project_row_id(&ctx.conn, &proj.id)?;
-    let task_row = crate::tasks::current_task(&ctx.conn, proj_row_id, &proj_path)?;
+    let task_row =
+        crate::tasks::current_task_in(&ctx.conn, proj_row_id, &proj_path, &proj.protocol_dir)?;
     let task_id = task_row.map(|t| t.id);
 
     let run_dir = crate::roles::new_run_dir(&ctx.cfg, &proj.id, &task, kind.role())?;
@@ -297,12 +308,12 @@ pub fn cmd_review(
         &run_dir,
         &proj_path,
         None,
-        &[proj_path.join(kind.file())],
+        &[proj_path.join(&report_file)],
         &exe,
         &source_paths,
     )?;
 
-    let report_path = proj_path.join(kind.file());
+    let report_path = proj_path.join(&report_file);
     let review_meta = serde_json::json!({
         "task": task,
         "plan_commit": plan_commit,
@@ -315,6 +326,7 @@ pub fn cmd_review(
         .unwrap_or(&task);
     // WR-05: every failed exit from here on restores the report.
     let mut restore = ReportRestore::arm(&proj_path, file, has_prev);
+    protocol.ensure_dir(&proj_path)?;
     std::fs::write(
         &report_path,
         render_review_skeleton(kind, req, &review_meta),
@@ -418,11 +430,11 @@ pub fn cmd_review(
     }
 
     let mut extra = crate::gitops::changed_paths(&proj_path)?;
-    extra.remove(kind.file());
+    extra.remove(&report_file);
     if !extra.is_empty() {
         crate::term::emit_out(&format!(
             "{title} đã sửa file ngoài {} — vi phạm giao thức:",
-            kind.file()
+            report_file
         ));
         let mut sorted_extra: Vec<String> = extra.into_iter().collect();
         sorted_extra.sort();
@@ -437,7 +449,7 @@ pub fn cmd_review(
     if !report_path.is_file() {
         return Err(BrainError::error(format!(
             "{title} không tạo file {}",
-            kind.file()
+            report_file
         )));
     }
 
@@ -447,7 +459,7 @@ pub fn cmd_review(
         Err(reason) => {
             crate::term::emit_out(&format!(
                 "Báo cáo {} không đúng định dạng: {reason}",
-                kind.file()
+                report_file
             ));
             restore.disarm();
             crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
@@ -455,17 +467,17 @@ pub fn cmd_review(
         }
     };
 
-    let report_changed = crate::gitops::changed_paths(&proj_path)?.contains(kind.file());
+    let report_changed = crate::gitops::changed_paths(&proj_path)?.contains(&report_file);
     if report_changed {
         crate::gitops::commit_paths(
             &proj_path,
-            &[kind.file()],
+            &[report_file.as_str()],
             &format!("{task}: {}", kind.role()),
         )?;
     } else {
         crate::term::emit_out(&format!(
             "Báo cáo {} giống bản đã commit — không tạo commit mới.",
-            kind.file()
+            report_file
         ));
     }
     restore.disarm();
@@ -483,7 +495,7 @@ pub fn cmd_review(
     if verdict == "revise" {
         crate::term::emit_out(&format!(
             "Bước tiếp theo: sửa theo {} rồi chạy lại review",
-            kind.file()
+            report_file
         ));
     }
 

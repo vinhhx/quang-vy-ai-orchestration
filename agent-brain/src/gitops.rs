@@ -455,9 +455,7 @@ pub fn diff_names(root: &Path, a: &str, b: &str) -> BrainResult<BTreeSet<String>
 
 pub fn diff_code_names(root: &Path, a: &str, b: &str) -> BrainResult<BTreeSet<String>> {
     let mut names = diff_names(root, a, b)?;
-    for proto in crate::stream::PROTOCOL_FILES {
-        names.remove(*proto);
-    }
+    names.retain(|n| !crate::protocol_paths::is_protocol_file(n));
     Ok(names)
 }
 

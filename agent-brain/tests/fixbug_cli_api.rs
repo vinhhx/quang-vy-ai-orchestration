@@ -42,6 +42,7 @@ fn setup_sandbox(root: &Path) -> (rusqlite::Connection, Project) {
         missing: false,
         stack: vec![],
         read_sources: vec![],
+        protocol_dir: String::new(),
     };
     sync_projects(&conn, std::slice::from_ref(&project)).expect("sync projects");
     (conn, project)

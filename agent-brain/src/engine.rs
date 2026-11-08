@@ -747,7 +747,9 @@ pub struct EnginePlan {
     pub stdout_file: bool,
     /// Secret values to scrub from anything written to disk.
     pub redact: Vec<String>,
-    pub response_file: Option<&'static str>,
+    /// The protocol file a read-only agy role answers with (D-05); its path comes from the
+    /// task's `ProtocolPaths`.
+    pub response_file: Option<crate::protocol_paths::ProtocolFile>,
     /// Runs on the project's profile with nothing injected: `claude` and an `anthropic` entry
     /// without `base_url`. Such a run keeps the cost claude reports.
     pub native: bool,
@@ -1004,11 +1006,12 @@ pub fn agy_print_timeout(timeout_secs: u64, margin: u64) -> u64 {
 
 /// The protocol file a read-only agy role answers with; agent-brain writes it from
 /// `result.response` (D-05). Dev and qa have none.
-pub fn response_file_for(role: &str) -> Option<&'static str> {
+pub fn response_file_for(role: &str) -> Option<crate::protocol_paths::ProtocolFile> {
+    use crate::protocol_paths::ProtocolFile;
     match role {
-        "lead" => Some(".plan.md"),
-        "plan-review" => Some(".plan-review.md"),
-        "code-review" => Some(".code-review.md"),
+        "lead" => Some(ProtocolFile::Plan),
+        "plan-review" => Some(ProtocolFile::PlanReview),
+        "code-review" => Some(ProtocolFile::CodeReview),
         _ => None,
     }
 }
@@ -1042,8 +1045,9 @@ fn agy_plan(
         .ok_or_else(|| BrainError::error("Không dựng được lệnh agy từ lệnh claude"))?;
     let response_file = response_file_for(role);
     let text = match response_file {
-        Some(file) if role != "dev" => format!(
-            "{prompt}\n\n---\nBạn đang chạy ở chế độ chỉ đọc: không sửa và không tạo file nào. Bạn không chạy được lệnh shell (bị từ chối quyền); dùng ngữ cảnh đã cho và công cụ đọc file. Nếu thiếu thông tin, vẫn phải trả file đầy đủ, không được trả rỗng. Trả lời bằng TOÀN BỘ nội dung file {file} theo đúng định dạng ở trên, không thêm lời dẫn, không bọc trong khối mã.\n\n---\n{input}"
+        Some(kind) if role != "dev" => format!(
+            "{prompt}\n\n---\nBạn đang chạy ở chế độ chỉ đọc: không sửa và không tạo file nào. Bạn không chạy được lệnh shell (bị từ chối quyền); dùng ngữ cảnh đã cho và công cụ đọc file. Nếu thiếu thông tin, vẫn phải trả file đầy đủ, không được trả rỗng. Trả lời bằng TOÀN BỘ nội dung file {file} theo đúng định dạng ở trên, không thêm lời dẫn, không bọc trong khối mã.\n\n---\n{input}",
+            file = kind.placeholder()
         ),
         _ if role == "analyst" || role == "analysis-review" => format!(
             "{prompt}\n\n---\nBạn đang chạy ở chế độ chỉ đọc: không sửa và không tạo file nào. Bạn không chạy được lệnh shell (bị từ chối quyền); dùng ngữ cảnh đã cho và công cụ đọc file. Trả lời bằng TOÀN BỘ nội dung phân tích theo đúng định dạng ở trên, không bọc trong khối mã.\n\n---\n{input}"
@@ -1131,6 +1135,19 @@ pub fn claude_argv_parts(argv: &[String]) -> Option<(String, String)> {
             .cloned()
     };
     Some((after("-p")?, after("--append-system-prompt")?))
+}
+
+/// Replaces the protocol-path placeholders (`{plan_path}`, …) in the `-p` input and the
+/// `--append-system-prompt` text of a claude-family argv (D1). Built-in prompts, user prompt
+/// notes and department texts are all rendered here, once, with the task's real paths.
+pub fn render_protocol_paths(argv: &mut [String], protocol: &crate::protocol_paths::ProtocolPaths) {
+    for flag in ["-p", "--append-system-prompt"] {
+        if let Some(pos) = argv.iter().position(|a| a == flag) {
+            if let Some(val) = argv.get_mut(pos + 1) {
+                *val = protocol.render(val);
+            }
+        }
+    }
 }
 
 /// Nối thêm nội dung vào giá trị của `--append-system-prompt` trong argv.
@@ -1603,9 +1620,10 @@ mod tests {
 
     #[test]
     fn response_files_by_role() {
-        assert_eq!(response_file_for("lead"), Some(".plan.md"));
-        assert_eq!(response_file_for("plan-review"), Some(".plan-review.md"));
-        assert_eq!(response_file_for("code-review"), Some(".code-review.md"));
+        use crate::protocol_paths::ProtocolFile;
+        assert_eq!(response_file_for("lead"), Some(ProtocolFile::Plan));
+        assert_eq!(response_file_for("plan-review"), Some(ProtocolFile::PlanReview));
+        assert_eq!(response_file_for("code-review"), Some(ProtocolFile::CodeReview));
         assert_eq!(response_file_for("dev"), None);
         assert_eq!(response_file_for("qa"), None);
     }
@@ -1652,7 +1670,7 @@ mod tests {
         assert_eq!(p.argv[0], "agy-bin");
         assert_eq!(p.argv[1], "-p");
         assert!(p.argv[2].starts_with("luật\n\n---\n"));
-        assert!(p.argv[2].contains(".plan.md"));
+        assert!(p.argv[2].contains("{plan_path}"));
         assert!(p.argv[2].ends_with("yêu cầu"));
         assert_eq!(
             &p.argv[3..7],
@@ -1664,7 +1682,7 @@ mod tests {
         assert_eq!(p.db_engine, "agy");
         assert_eq!(p.stream, StreamFormat::Agy);
         assert!(p.stdout_file);
-        assert_eq!(p.response_file, Some(".plan.md"));
+        assert_eq!(p.response_file, Some(crate::protocol_paths::ProtocolFile::Plan));
         let names: Vec<&str> = p.env.keys().map(String::as_str).collect();
         assert_eq!(names, ["HOME", "PATH"]);
 

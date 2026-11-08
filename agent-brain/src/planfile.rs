@@ -416,10 +416,7 @@ pub fn path_error(f: &str, root: Option<&std::path::Path>) -> Option<String> {
     } else if f == ".git" || f.starts_with(".git/") || f.contains("/.git/") || f.ends_with("/.git")
     {
         Some(format!("git_dir:{f}"))
-    } else if crate::stream::PROTOCOL_FILES
-        .iter()
-        .any(|proto| f == *proto || f.ends_with(&format!("/{proto}")))
-    {
+    } else if crate::protocol_paths::is_protocol_file(f) {
         Some(format!("protocol_file:{f}"))
     } else if normalize_plan_path(f) == "." {
         Some(format!("not_a_file:{f}"))

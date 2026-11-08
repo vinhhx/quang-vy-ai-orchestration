@@ -305,6 +305,7 @@ pub fn approve_check(
     task: &TaskRow,
     root: &Path,
     pricing: &BTreeMap<String, Price>,
+    protocol: &crate::protocol_paths::ProtocolPaths,
 ) -> Result<String, String> {
     let db_err = |e: BrainError| e.message;
     let auto = crate::db::task_auto(conn, task.id)
@@ -346,7 +347,7 @@ pub fn approve_check(
     };
     if crate::gitops::current_branch(root).as_deref() == Some(task.branch.as_str()) {
         let dirty = crate::gitops::changed_paths(root).map_err(db_err)?;
-        if dirty.contains(".plan.md") {
+        if dirty.contains(&protocol.plan) {
             return Err(format!(
                 "Plan có thay đổi chưa commit — commit với message '{}: plan' rồi duyệt",
                 task.slug
@@ -362,9 +363,14 @@ pub fn approve_check(
             "Plan hiện tại đã được duyệt lúc {at} — không duyệt lại"
         ));
     }
-    let plan_text = match crate::gitops::git(root, &["show", &format!("{plan_commit}:.plan.md")]) {
+    let plan_text = match crate::gitops::git(root, &["show", &protocol.plan_at(&plan_commit)]) {
         Ok(t) => t,
-        Err(_) => return Err("Không đọc được .plan.md từ commit của plan".to_string()),
+        Err(_) => {
+            return Err(format!(
+                "Không đọc được {} từ commit của plan",
+                protocol.plan
+            ))
+        }
     };
     let parsed_plan = crate::planfile::parse_plan(&plan_text);
     let grants = crate::planfile::run_grants(&parsed_plan);
@@ -456,6 +462,7 @@ mod tests {
             missing: false,
             stack: vec![],
             read_sources: vec![],
+            protocol_dir: String::new(),
         };
         sync_projects(&conn, &[project]).expect("sync projects");
         let project_id = project_row_id(&conn, "demo").expect("project id");
@@ -575,7 +582,7 @@ mod tests {
         let _ = std::process::Command::new("git").args(["commit", "-m", "t: plan"]).current_dir(root).output();
 
         let task = crate::db::get_task(&conn, id).unwrap().unwrap();
-        let err = approve_check(&conn, &task, root, &crate::config::default_pricing()).unwrap_err();
+        let err = approve_check(&conn, &task, root, &crate::config::default_pricing(), &Default::default()).unwrap_err();
         assert!(err.contains("Plan có quyền không hợp lệ"), "{err}");
         assert!(err.contains("git add foo/*"), "{err}");
     }
@@ -616,7 +623,7 @@ mod tests {
         let _ = std::process::Command::new("git").args(["commit", "-m", "t: plan"]).current_dir(root).output();
 
         let task = crate::db::get_task(&conn, id).unwrap().unwrap();
-        let err = approve_check(&conn, &task, root, &crate::config::default_pricing()).unwrap_err();
+        let err = approve_check(&conn, &task, root, &crate::config::default_pricing(), &Default::default()).unwrap_err();
         assert!(err.contains("vướng mắc chưa đánh dấu [x]"), "{err}");
 
         // 2. Resolve blocker with [x]
@@ -625,7 +632,7 @@ mod tests {
         let _ = std::process::Command::new("git").args(["add", ".plan.md"]).current_dir(root).output();
         let _ = std::process::Command::new("git").args(["commit", "-m", "t: plan"]).current_dir(root).output();
 
-        let res = approve_check(&conn, &task, root, &crate::config::default_pricing());
+        let res = approve_check(&conn, &task, root, &crate::config::default_pricing(), &Default::default());
         assert!(res.is_ok(), "Expected Ok but got: {:?}", res.err());
     }
 
@@ -697,7 +704,7 @@ mod tests {
 
         let task = crate::db::get_task(&conn, id).unwrap().unwrap();
         // Default pricing does not have custom-model, so custom pricing proves it's using configured pricing
-        let err = approve_check(&conn, &task, root, &custom_pricing).unwrap_err();
+        let err = approve_check(&conn, &task, root, &custom_pricing, &Default::default()).unwrap_err();
         assert!(err.contains("Hết ngân sách"), "{err}");
 
         // Now add budget extension
@@ -711,7 +718,7 @@ mod tests {
         )
         .unwrap();
 
-        let ok = approve_check(&conn, &task, root, &custom_pricing);
+        let ok = approve_check(&conn, &task, root, &custom_pricing, &Default::default());
         assert!(ok.is_ok(), "Expected Ok after budget extension: {:?}", ok.err());
     }
 

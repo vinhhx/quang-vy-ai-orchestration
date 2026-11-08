@@ -3,13 +3,7 @@ use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
-#[rustfmt::skip]
-pub const PROTOCOL_FILES: &[&str] = &[".plan.md", ".qa-report.md", ".plan-review.md", ".code-review.md"];
-
-pub fn is_protocol_file(p: &str) -> bool {
-    let basename = p.rsplit('/').next().unwrap_or(p);
-    PROTOCOL_FILES.contains(&p) || PROTOCOL_FILES.contains(&basename)
-}
+pub use crate::protocol_paths::is_protocol_file;
 
 fn posix_normpath(p: &str) -> String {
     if p.is_empty() {

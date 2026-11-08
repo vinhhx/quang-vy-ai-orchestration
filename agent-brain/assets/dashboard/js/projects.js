@@ -53,6 +53,9 @@
       readSourcesErrors: {},
       timeoutDrafts: {},
       timeoutSaving: {},
+      protocolDirDrafts: {},
+      protocolDirSaving: {},
+      protocolDirErrors: {},
       timeoutErrors: {},
       pinDrafts: {},
       pinSaving: {},
@@ -885,6 +888,49 @@
             self.load();
           } else {
             self.timeoutErrors[p.id] = window.AB.errorText(res) || 'Không lưu được thời gian chạy';
+          }
+        });
+      },
+
+      // D1: the project's `protocol_dir` (folder of the plan and reports; "" = repo root).
+      // Validation stays on the server.
+      protocolDirDraft: function (p) {
+        if (Object.prototype.hasOwnProperty.call(this.protocolDirDrafts, p.id)) return this.protocolDirDrafts[p.id];
+        return p.protocol_dir || '';
+      },
+
+      setProtocolDirDraft: function (p, value) {
+        this.protocolDirDrafts[p.id] = value;
+        this.protocolDirErrors[p.id] = '';
+      },
+
+      isProtocolDirSaving: function (p) {
+        return Boolean(this.protocolDirSaving[p.id]);
+      },
+
+      protocolDirError: function (p) {
+        return this.protocolDirErrors[p.id] || '';
+      },
+
+      saveProtocolDir: function (p) {
+        var self = this;
+        var value = String(this.protocolDirDraft(p) || '').trim();
+        this.protocolDirSaving[p.id] = true;
+        this.protocolDirErrors[p.id] = '';
+        return window.AB.api('PUT', '/api/projects/' + encodeURIComponent(p.id) + '/protocol-dir', {
+          protocol_dir: value,
+          etag: this.etag
+        }).then(function (res) {
+          self.protocolDirSaving[p.id] = false;
+          if (res && res.ok) {
+            p.protocol_dir = value;
+            delete self.protocolDirDrafts[p.id];
+            if (res.data && res.data.etag) self.etag = res.data.etag;
+          } else if (res && res.status === 409) {
+            self.protocolDirErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+            self.load();
+          } else {
+            self.protocolDirErrors[p.id] = window.AB.errorText(res) || 'Không lưu được thư mục file giao thức';
           }
         });
       },

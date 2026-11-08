@@ -396,6 +396,13 @@ async fn preview_prompt(
             composed.push('\n');
         }
 
+        // D1: protocol paths as a run would see them; the task slug stays `{slug}`.
+        let protocol = match proj_opt.as_ref() {
+            Some(p) => crate::protocol_paths::paths(p, crate::protocol_paths::SLUG_VAR),
+            None => crate::protocol_paths::ProtocolPaths::default(),
+        };
+        composed = protocol.render(&composed);
+
         if let (Some(proj), Some(map)) = (proj_opt, map_opt) {
             let (sources_block, source_warns) = crate::projects::read_sources_prompt_block(&map, &proj);
             warnings.extend(source_warns);

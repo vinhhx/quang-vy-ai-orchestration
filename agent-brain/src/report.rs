@@ -1,6 +1,3 @@
-pub const PLAN_REVIEW_FILE: &str = ".plan-review.md";
-pub const CODE_REVIEW_FILE: &str = ".code-review.md";
-pub const QA_REPORT_FILE: &str = ".qa-report.md";
 pub const MAX_NAMED_FILES: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,13 +7,6 @@ pub enum ReviewKind {
 }
 
 impl ReviewKind {
-    pub fn file(&self) -> &'static str {
-        match self {
-            ReviewKind::Plan => PLAN_REVIEW_FILE,
-            ReviewKind::Code => CODE_REVIEW_FILE,
-        }
-    }
-
     pub fn role(&self) -> &'static str {
         match self {
             ReviewKind::Plan => "plan-review",
@@ -568,8 +558,6 @@ mod tests {
 
     #[test]
     fn review_kind_helpers() {
-        assert_eq!(ReviewKind::Plan.file(), PLAN_REVIEW_FILE);
-        assert_eq!(ReviewKind::Code.file(), CODE_REVIEW_FILE);
         assert_eq!(ReviewKind::Plan.role(), "plan-review");
         assert_eq!(ReviewKind::Code.role(), "code-review");
         assert_eq!(ReviewKind::Plan.ok_verdict(), "approve");

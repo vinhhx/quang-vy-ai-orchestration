@@ -22,6 +22,8 @@ pub struct GitFacts {
     /// computed; the reason then lists every dirty path.
     pub dirty_outside_plan: Vec<String>,
     pub branch_exists: bool,
+    /// The task's protocol file paths (D1); the default layout when not set.
+    pub protocol: crate::protocol_paths::ProtocolPaths,
 }
 
 pub struct TaskFacts<'a> {
@@ -177,6 +179,14 @@ fn make_step(role: &str, run: Option<&RunRow>, now_ms: i64) -> StepView {
     }
 }
 
+/// Chạy Dev refused while the plan still has open blockers.
+fn blocker_reason(f: &TaskFacts) -> String {
+    format!(
+        "Vướng mắc chưa xử lý trong {} — hãy xử lý trước khi chạy dev",
+        f.git.protocol.plan
+    )
+}
+
 fn build_run_dev(f: &TaskFacts) -> ActionView {
     let mut enabled = true;
     let mut reason = None;
@@ -201,7 +211,7 @@ fn build_run_dev(f: &TaskFacts) -> ActionView {
         reason = Some(crate::roles::dev::dirty_outside_plan_message(refused));
     } else if !f.git.plan_exists {
         enabled = false;
-        reason = Some("Không tìm thấy .plan.md ở gốc dự án".to_string());
+        reason = Some(format!("Không tìm thấy {} ở gốc dự án", f.git.protocol.plan));
     } else if !f.git.plan_errors.is_empty() {
         enabled = false;
         let err_list = f
@@ -211,11 +221,13 @@ fn build_run_dev(f: &TaskFacts) -> ActionView {
             .map(|e| format!("  - {e}"))
             .collect::<Vec<_>>()
             .join("\n");
-        reason = Some(format!("Kế hoạch trong .plan.md không hợp lệ:\n{err_list}"));
+        reason = Some(format!(
+            "Kế hoạch trong {} không hợp lệ:\n{err_list}",
+            f.git.protocol.plan
+        ));
     } else if f.git.plan_blockers {
         enabled = false;
-        reason =
-            Some("Vướng mắc chưa xử lý trong .plan.md — hãy xử lý trước khi chạy dev".to_string());
+        reason = Some(blocker_reason(f));
     }
 
     ActionView {
@@ -246,7 +258,7 @@ fn build_run_qa(f: &TaskFacts) -> ActionView {
             .git
             .dirty
             .iter()
-            .filter(|p| *p != ".qa-report.md")
+            .filter(|p| **p != f.git.protocol.qa_report)
             .cloned()
             .collect();
         if !dirty.is_empty() {
@@ -297,7 +309,7 @@ fn build_relead(f: &TaskFacts) -> ActionView {
             .git
             .dirty
             .iter()
-            .filter(|p| *p != ".plan.md")
+            .filter(|p| **p != f.git.protocol.plan)
             .cloned()
             .collect();
         if !dirty.is_empty() {
@@ -615,7 +627,7 @@ fn build_return_lead(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>)
             .git
             .dirty
             .iter()
-            .filter(|p| *p != ".plan.md")
+            .filter(|p| **p != f.git.protocol.plan)
             .cloned()
             .collect();
         if !dirty.is_empty() {
@@ -721,8 +733,7 @@ fn build_auto_more_round(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunR
 
     if is_vuong_mac && f.git.plan_blockers {
         enabled = false;
-        reason =
-            Some("Vướng mắc chưa xử lý trong .plan.md — hãy xử lý trước khi chạy dev".to_string());
+        reason = Some(blocker_reason(f));
     } else if running_run.is_some() {
         enabled = false;
         reason = Some("Đang có run chạy — chờ run xong hoặc bấm Kill".to_string());
@@ -850,7 +861,7 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
             (
                 Some(stop.reason.as_str().to_string()),
                 Some(crate::autopilot::view::reason_word(stop.reason).to_string()),
-                Some(crate::autopilot::view::stop_detail(stop, &f.task.slug)),
+                Some(crate::autopilot::view::stop_detail(stop, &f.task.slug, &f.git.protocol.plan)),
                 stop.loop_name.map(|l| l.as_str().to_string()),
             )
         } else {
@@ -1409,6 +1420,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            protocol: Default::default(),
         };
 
         // planned -> [run_dev, relead]
@@ -1535,6 +1547,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            protocol: Default::default(),
         };
 
         let task = dummy_task("open");
@@ -1587,6 +1600,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            protocol: Default::default(),
         };
         let facts = TaskFacts {
             task: &task,
@@ -1731,6 +1745,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            protocol: Default::default(),
             ..git.clone()
         };
         let facts = TaskFacts {
@@ -1865,6 +1880,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            protocol: Default::default(),
         };
         let facts = TaskFacts {
             task: &task,
@@ -1913,6 +1929,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            protocol: Default::default(),
         }
     }
 
@@ -2234,6 +2251,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            protocol: Default::default(),
         };
 
         // 1. plan_dirty -> approve disabled

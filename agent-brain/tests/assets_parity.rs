@@ -56,8 +56,10 @@ fn prompts_equal_phase2() {
             "role '{role}' has {rule_lines} git-rule lines (at most one allowed)"
         );
 
+        // D1: the Rust prompts name protocol files by placeholder; rendered with the default
+        // layout they match the Python prompts byte for byte.
         assert_eq!(
-            without_git_rule(&rust_asset).into_bytes(),
+            without_git_rule(&agent_brain::protocol_paths::ProtocolPaths::default().render(&rust_asset)).into_bytes(),
             python_prompt_bytes,
             "Prompt file bytes mismatch for role '{role}' (git-rule line excluded)"
         );

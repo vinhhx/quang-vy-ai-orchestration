@@ -115,7 +115,8 @@ fn p2_01_run_lead_prints_steps_and_records_run() {
     assert_eq!(records.len(), 1, "Expected 1 record");
     let rec = &records[0];
 
-    let prompt_bytes = include_str!("../assets/prompts/lead.md");
+    let prompt_rendered = agent_brain::protocol_paths::ProtocolPaths::default().render(include_str!("../assets/prompts/lead.md"));
+    let prompt_bytes = prompt_rendered.as_str();
     let argv = rec["argv"].as_array().expect("argv array");
     let argv_strs: Vec<&str> = argv.iter().map(|v| v.as_str().unwrap()).collect();
 
@@ -131,10 +132,9 @@ fn p2_01_run_lead_prints_steps_and_records_run() {
     assert!(argv_strs.contains(&"--strict-mcp-config"));
 
     let abs_plan_str = repo.join(".plan.md").to_str().unwrap().to_string();
-    let mut expected_allowed: Vec<String> = agent_brain::roles::lead::LEAD_ALLOWED_TOOLS
-        .iter()
-        .map(|&s| s.to_string())
-        .collect();
+    let mut expected_allowed: Vec<String> = agent_brain::roles::lead::lead_allowed_tools(
+        &agent_brain::protocol_paths::ProtocolPaths::default(),
+    );
     expected_allowed.push(format!("Write(/{})", abs_plan_str));
     expected_allowed.push(format!("Edit(/{})", abs_plan_str));
     let expected_allowed_refs: Vec<&str> = expected_allowed.iter().map(|s| s.as_str()).collect();

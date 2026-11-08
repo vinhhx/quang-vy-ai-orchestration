@@ -49,7 +49,8 @@ pub fn error_excerpt(err: &str, max_lines: usize, max_chars: usize) -> String {
 }
 
 /// Dựng chuỗi chi tiết khi autopilot dừng từ StopInfo và slug của task.
-pub fn stop_detail(info: &StopInfo, slug: &str) -> String {
+/// `plan_path`: the task's plan file (`ProtocolPaths::plan`), named in the blocker hint.
+pub fn stop_detail(info: &StopInfo, slug: &str, plan_path: &str) -> String {
     match info.reason {
         StopReason::HetVong => {
             if let Some(ref detail) = info.detail_line {
@@ -119,7 +120,7 @@ pub fn stop_detail(info: &StopInfo, slug: &str) -> String {
         }
         StopReason::VuongMac => {
             format!(
-                "Dev dừng vì vướng mắc. Sửa .plan.md trong editor của bạn rồi commit với message '{}: plan', hoặc chạy lại Lead.",
+                "Dev dừng vì vướng mắc. Sửa {plan_path} trong editor của bạn rồi commit với message '{}: plan', hoặc chạy lại Lead.",
                 slug
             )
         }
@@ -164,11 +165,11 @@ pub fn stop_detail(info: &StopInfo, slug: &str) -> String {
 }
 
 /// Dòng thông báo dừng hiển thị ở terminal (D-20).
-pub fn terminal_line(info: &StopInfo, slug: &str, task_id: i64) -> String {
+pub fn terminal_line(info: &StopInfo, slug: &str, plan_path: &str, task_id: i64) -> String {
     format!(
         "Autopilot dừng · {}: {} (task {})",
         reason_word(info.reason),
-        stop_detail(info, slug),
+        stop_detail(info, slug, plan_path),
         task_id
     )
 }
@@ -228,15 +229,15 @@ mod tests {
             limit_usd: None,
         };
         assert_eq!(
-            stop_detail(&info, "demo"),
+            stop_detail(&info, "demo", ".plan.md"),
             "Run 7 (dev) trên engine deepseek dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine."
         );
         info.detail_line = None;
         assert_eq!(
-            stop_detail(&info, "demo"),
+            stop_detail(&info, "demo", ".plan.md"),
             "Run dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine."
         );
-        assert!(terminal_line(&info, "demo", 3).starts_with("Autopilot dừng · hết quota: "));
+        assert!(terminal_line(&info, "demo", ".plan.md", 3).starts_with("Autopilot dừng · hết quota: "));
     }
 
     #[test]
@@ -258,7 +259,7 @@ mod tests {
             limit_usd: None,
         };
         assert_eq!(
-            stop_detail(&p_stop, "demo"),
+            stop_detail(&p_stop, "demo", ".plan.md"),
             "Review plan vẫn yêu cầu sửa lại sau 3 / 3 vòng."
         );
 
@@ -279,7 +280,7 @@ mod tests {
             limit_usd: None,
         };
         assert_eq!(
-            stop_detail(&b_stop, "demo"),
+            stop_detail(&b_stop, "demo", ".plan.md"),
             "Review code vẫn yêu cầu sửa lại sau 4 / 3 vòng."
         );
 
@@ -300,7 +301,7 @@ mod tests {
             limit_usd: None,
         };
         assert_eq!(
-            stop_detail(&q_stop, "demo"),
+            stop_detail(&q_stop, "demo", ".plan.md"),
             "QA vẫn kết luận Cần sửa sau 1 / 1 vòng. Xem báo cáo QA bên dưới."
         );
     }
@@ -329,13 +330,13 @@ mod tests {
             "autopilot không bắt đầu bước nào nữa."
         );
         assert_eq!(
-            stop_detail(&stop, "demo"),
+            stop_detail(&stop, "demo", ".plan.md"),
             format!("Đã dùng 61 / 60 phút · $20.40 / $20.00. {suffix}")
         );
 
         stop.estimated = Some(true);
         assert_eq!(
-            stop_detail(&stop, "demo"),
+            stop_detail(&stop, "demo", ".plan.md"),
             format!("Đã dùng 61 / 60 phút · ≈ $20.40 / $20.00. {suffix}")
         );
     }
@@ -360,7 +361,7 @@ mod tests {
             limit_usd: None,
         };
         assert_eq!(
-            stop_detail(&stop_proto, "demo"),
+            stop_detail(&stop_proto, "demo", ".plan.md"),
             "Run 12 (plan-review) vi phạm giao thức — xem log của run này."
         );
 
@@ -382,7 +383,7 @@ mod tests {
             limit_usd: None,
         };
         assert_eq!(
-            stop_detail(&stop_blocked, "sua-app"),
+            stop_detail(&stop_blocked, "sua-app", ".plan.md"),
             "Dev dừng vì vướng mắc. Sửa .plan.md trong editor của bạn rồi commit với message 'sua-app: plan', hoặc chạy lại Lead."
         );
 
@@ -395,7 +396,7 @@ mod tests {
             ..stop_blocked.clone()
         };
         assert_eq!(
-            stop_detail(&stop_agy_empty, "sua-app"),
+            stop_detail(&stop_agy_empty, "sua-app", ".plan.md"),
             "agy không sửa file nào — có thể bị từ chối quyền (xem stderr.txt của run)."
         );
 
@@ -405,7 +406,7 @@ mod tests {
             ..stop_blocked.clone()
         };
         assert_eq!(
-            stop_detail(&stop_dsh_empty, "sua-app"),
+            stop_detail(&stop_dsh_empty, "sua-app", ".plan.md"),
             crate::roles::dev::DSH_EMPTY_MESSAGE
         );
 
@@ -429,7 +430,7 @@ mod tests {
         };
         let expected_hhmm = fmt_hhmm(t);
         assert_eq!(
-            stop_detail(&stop_user, "demo"),
+            stop_detail(&stop_user, "demo", ".plan.md"),
             format!("Bạn đã dừng autopilot lúc {}.", expected_hhmm)
         );
 
@@ -451,7 +452,7 @@ mod tests {
             limit_usd: None,
         };
         assert_eq!(
-            stop_detail(&stop_err_run, "demo"),
+            stop_detail(&stop_err_run, "demo", ".plan.md"),
             "Run 7 (dev) lỗi hoặc quá thời gian — xem log của run này."
         );
 
@@ -473,7 +474,7 @@ mod tests {
             limit_usd: None,
         };
         assert_eq!(
-            stop_detail(&stop_err_detail, "demo"),
+            stop_detail(&stop_err_detail, "demo", ".plan.md"),
             "Working tree có thay đổi chưa commit:"
         );
 
@@ -495,7 +496,7 @@ mod tests {
             limit_usd: None,
         };
         assert_eq!(
-            stop_detail(&stop_err_none, "demo"),
+            stop_detail(&stop_err_none, "demo", ".plan.md"),
             "Autopilot không bắt đầu được bước tiếp theo."
         );
     }
@@ -519,7 +520,7 @@ mod tests {
             limit_usd: None,
         };
         assert_eq!(
-            terminal_line(&info, "demo", 5),
+            terminal_line(&info, "demo", ".plan.md", 5),
             "Autopilot dừng · hết vòng: Review code vẫn yêu cầu sửa lại sau 3 / 3 vòng. (task 5)"
         );
 

@@ -13,6 +13,7 @@ fn make_proj(id: &str, name_vi: &str, aliases: Vec<&str>) -> Project {
         missing: false,
         stack: vec![],
         read_sources: vec![],
+        protocol_dir: String::new(),
     }
 }
 
