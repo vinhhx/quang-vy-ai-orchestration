@@ -214,6 +214,12 @@ pub fn busy_reason(
     if let Some(reason) = claim::live_driver_reason(conn, &project.id, &project.profile, None)? {
         return Ok(Some(reason));
     }
+    // D2.3a: a task waiting at the plan gate keeps the project (`hold_project_at_gate`).
+    if project.workspace.hold_project_at_gate {
+        if let Some(reason) = claim::gate_hold_reason(conn, &project.id, None)? {
+            return Ok(Some(reason));
+        }
+    }
 
     let reserved = jobs.reserved();
     if reserved.iter().any(|(p, _)| p == &project.id) {
@@ -299,6 +305,13 @@ pub fn busy_reason_for_task(
     {
         return Ok(Some(reason));
     }
+    // D2.3a: another task waiting at the plan gate keeps the project; the gated task itself is
+    // never held by its own gate.
+    if project.workspace.hold_project_at_gate {
+        if let Some(reason) = claim::gate_hold_reason(conn, &project.id, Some(task_id))? {
+            return Ok(Some(reason));
+        }
+    }
 
     let active_jobs = jobs.list();
     let this_task_job = active_jobs.iter().find(|j| {
@@ -380,8 +393,17 @@ pub fn lead_preflight(
 
     let branch_exists = !replan && crate::gitops::branch_exists(root, &branch);
 
+    // D2.1: a new task starts from the project's `base_branch` when set, else the current branch.
+    let start = project.workspace.base_branch.clone().or_else(|| current.clone());
+    let base_missing = !replan
+        && project
+            .workspace
+            .base_branch
+            .as_deref()
+            .is_some_and(|b| !crate::gitops::branch_exists(root, b));
+
     let warning = if !replan {
-        if let Some(ref cb) = current {
+        if let Some(ref cb) = start {
             if cb.starts_with("task/") {
                 Some(format!(
                     "Cảnh báo: Nhánh mới '{branch}' được tạo từ nhánh task '{cb}' (stacking)"
@@ -411,6 +433,14 @@ pub fn lead_preflight(
             "Nhánh '{branch}' đã tồn tại nhưng chưa được checkout — hãy checkout nhánh đó hoặc dùng cờ --name khác"
         );
         (false, Some(r), Some("branch_exists".to_string()))
+    } else if base_missing {
+        (
+            false,
+            Some(crate::projects::base_branch_missing_text(
+                project.workspace.base_branch.as_deref().unwrap_or(""),
+            )),
+            Some("base_missing".to_string()),
+        )
     } else {
         (true, None, None)
     };
@@ -837,15 +867,27 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
         crate::db::project_row_id(&conn, &info.project.id)
     })?;
     let title = req.name.unwrap_or(trimmed_req);
-    let base_branch_opt = if is_analysis { None } else { Some("main") };
-    let is_new_task = crate::db::find_task_by_branch(&conn, pid, &info.branch)?.is_none();
+    let existing_task = crate::db::find_task_by_branch(&conn, pid, &info.branch)?;
+    let is_new_task = existing_task.is_none();
+    // D2.1: the project's `base_branch`, else the repo's current branch now; a re-plan keeps
+    // the base the task already has.
+    let base_branch_opt = if is_analysis {
+        None
+    } else if info.replan {
+        existing_task
+            .as_ref()
+            .and_then(|t| t.base_branch.clone())
+            .or_else(|| info.project.workspace.base_branch_at(&proj_root))
+    } else {
+        info.project.workspace.base_branch_at(&proj_root)
+    };
     let task_id = crate::db::upsert_task(
         &conn,
         pid,
         &info.slug,
         title,
         &info.branch,
-        base_branch_opt,
+        base_branch_opt.as_deref(),
         None,
     )?;
 
@@ -1581,6 +1623,7 @@ pub fn load_task_state(
         dirty_outside_plan: Vec::new(),
         branch_exists,
         protocol: protocol.clone(),
+        checkout_on_approve: project.workspace.auto_checkout_on_approve,
     };
 
     let busy = busy_reason_for_task(conn, &st.jobs, &project, task.id, &task.branch)?;
@@ -3374,6 +3417,23 @@ pub fn run_control_as(
                     })
                 }
             };
+            // D2.3b: off the task branch with a clean tree and no other task holding the
+            // project, check the task branch out before approving (`auto_checkout_on_approve`).
+            // An approval that runs on needs the branch; one that only records does not.
+            let runs_on = control != "approve_none"
+                && taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto));
+            if let Err(reason) = claim::checkout_for_approve(
+                &state.root,
+                &state.task.branch,
+                state.project.workspace.auto_checkout_on_approve,
+                state.busy.as_deref(),
+                runs_on,
+            ) {
+                return Ok(ControlOutcome::Refused {
+                    reason,
+                    kind: "not_allowed",
+                });
+            }
             // Duyệt trước khi ghi, để hoàn lại khi autopilot không bắt đầu được.
             let prev = match (
                 state.auto.approved_at,

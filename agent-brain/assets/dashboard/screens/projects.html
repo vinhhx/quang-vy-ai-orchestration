@@ -243,6 +243,26 @@
         </div>
 
         <div class="space-y-2">
+          <label :for="'ab-proj-base-branch-' + p.id" class="text-sm font-semibold leading-normal">Nhánh gốc của task mới</label>
+          <p :id="'ab-proj-base-branch-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Task mới tạo nhánh từ nhánh này. Để trống thì dùng nhánh repo đang ở lúc tạo task.</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <input :id="'ab-proj-base-branch-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="nhánh hiện tại" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).base_branch" @input="setWorkspaceDraft(p, 'base_branch', $event.target.value)" :disabled="isWorkspaceSaving(p)" :aria-describedby="'ab-proj-base-branch-help-' + p.id">
+          </div>
+          <label class="inline-flex min-h-12 items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100">
+            <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="workspaceDraft(p).hold_project_at_gate" :disabled="isWorkspaceSaving(p)" @change="setWorkspaceDraft(p, 'hold_project_at_gate', $event.target.checked)">
+            <span>Giữ dự án khi task chờ duyệt plan (task khác chờ)</span>
+          </label>
+          <label class="inline-flex min-h-12 items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100">
+            <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="workspaceDraft(p).auto_checkout_on_approve" :disabled="isWorkspaceSaving(p)" @change="setWorkspaceDraft(p, 'auto_checkout_on_approve', $event.target.checked)">
+            <span>Tự checkout nhánh task khi duyệt (working tree sạch)</span>
+          </label>
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isWorkspaceSaving(p)" @click="saveWorkspace(p)">Lưu nhánh và cách duyệt</button>
+          </div>
+          <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="workspaceError(p)" x-text="workspaceError(p)" role="alert"></p>
+        </div>
+
+        <div class="space-y-2">
           <p class="text-sm font-semibold leading-normal">Ghim thành viên hoặc engine theo vai</p>
           <p :id="'ab-proj-pins-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Ví dụ dev=ten-thanh-vien hoặc dev=ten-engine. Mỗi vai chỉ ghim một trong hai. Được dùng trước đội hình và phòng ban; nếu chưa sẵn sàng thì run báo lỗi, không tự chọn khác. Để trống rồi lưu để bỏ.</p>
           <div class="flex flex-wrap items-center gap-2">

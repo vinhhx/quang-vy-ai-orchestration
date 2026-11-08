@@ -251,6 +251,10 @@ fn approve_continue_needs_branch() {
     let sb = Sandbox::new();
     let repo = flow_to_gate(&sb);
     second_task_checked_out(&sb, &repo);
+    // D2.3b: the old refusal is the `auto_checkout_on_approve: false` behaviour.
+    let mut map = sb.read_map();
+    map["projects"][0]["auto_checkout_on_approve"] = json!(false);
+    sb.write_map(map["projects"].clone(), &[]);
     let before = runs(&sb).len();
 
     let res = sb.run(&["approve", "1"], Some(by_role(build_ok_roles())));

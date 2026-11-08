@@ -707,7 +707,8 @@ fn drive(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32> {
 fn claim_task(ctx: &mut Ctx, task_id: i64, opts: &ClaimOpts) -> BrainResult<AutoJson> {
     let (slug, profile) = claim::task_project(&ctx.conn, task_id)?
         .ok_or_else(|| BrainError::error(format!("Không tìm thấy task {task_id}")))?;
-    claim::claim(&mut ctx.conn, task_id, &slug, &profile, opts)
+    let hold = crate::projects::workspace_of(&ctx.map, &slug).hold_project_at_gate;
+    claim::claim(&mut ctx.conn, task_id, &slug, &profile, opts, hold)
 }
 
 /// `agent-brain auto` — `--start` tạo task bằng bước Lead đầu tiên, còn lại tiếp tục task có sẵn.
@@ -780,7 +781,13 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
             ));
         }
         if let Some(reason) =
-            claim::project_busy_reason(&ctx.conn, &project.id, &project.profile, None)?
+            claim::project_busy_reason(
+                &ctx.conn,
+                &project.id,
+                &project.profile,
+                None,
+                project.workspace.hold_project_at_gate,
+            )?
         {
             return Err(BrainError::error(reason));
         }
@@ -953,18 +960,35 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
     let cont = wf_auto && !no_continue && !ended;
     if cont {
         // Kiểm tra bận và nhánh trước khi ghi, để một lần từ chối không để lại nửa chừng.
-        if let Some(reason) =
-            claim::project_busy_reason(&ctx.conn, &proj_slug, &profile, Some(task_id))?
-        {
+        if let Some(reason) = claim::project_busy_reason(
+            &ctx.conn,
+            &proj_slug,
+            &profile,
+            Some(task_id),
+            project.workspace.hold_project_at_gate,
+        )? {
             return Err(BrainError::error(reason));
         }
-        let cur = crate::gitops::current_branch(&root);
-        if cur.as_deref() != Some(task.branch.as_str()) {
-            return Err(BrainError::error(format!(
-                "{}. Duyệt mà không chạy tiếp: agent-brain approve {task_id} --no-continue",
-                branch_mismatch_text(&task.branch, cur.as_deref())
-            )));
-        }
+    }
+    // D2.3b: off the task branch with a clean tree, check it out (`auto_checkout_on_approve`);
+    // otherwise an approval that runs on is refused as before, with the dirty files.
+    let busy = claim::project_busy_reason(
+        &ctx.conn,
+        &proj_slug,
+        &profile,
+        Some(task_id),
+        project.workspace.hold_project_at_gate,
+    )?;
+    if let Err(reason) = claim::checkout_for_approve(
+        &root,
+        &task.branch,
+        project.workspace.auto_checkout_on_approve,
+        busy.as_deref(),
+        cont,
+    ) {
+        return Err(BrainError::error(format!(
+            "{reason}. Duyệt mà không chạy tiếp: agent-brain approve {task_id} --no-continue"
+        )));
     }
 
     let at = claim::approve_record(&ctx.conn, task_id, &plan_commit, "cli", false)?;
@@ -989,6 +1013,7 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
         &proj_slug,
         &profile,
         &ClaimOpts::default(),
+        project.workspace.hold_project_at_gate,
     )?;
     drive(ctx, task_id, true)
 }

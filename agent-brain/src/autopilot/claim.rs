@@ -78,12 +78,54 @@ pub fn live_driver_reason(
     Ok(None)
 }
 
-/// Dự án (hoặc profile personal) đang có run của task khác hoặc driver khác.
+/// Tasks of a project waiting at the plan gate (D2.3a): `auto_state = 'gate'` and the plan not
+/// approved since the latest Lead run started (an approval recorded without running on leaves
+/// `gate` in place, and must not hold the project).
+pub fn gate_waiting_tasks(conn: &Connection, project_slug: &str) -> BrainResult<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT tasks.id FROM tasks JOIN projects ON tasks.project_id = projects.id
+         WHERE projects.slug = ?1 AND tasks.auto_state = 'gate'
+           AND (tasks.approved_at IS NULL OR tasks.approved_at < COALESCE(
+                (SELECT MAX(runs.started_at) FROM runs WHERE runs.task_id = tasks.id AND runs.role = 'lead'), 0))
+         ORDER BY tasks.id",
+    )?;
+    let ids = stmt
+        .query_map(rusqlite::params![project_slug], |r| r.get(0))?
+        .collect::<Result<Vec<i64>, _>>()?;
+    Ok(ids)
+}
+
+/// D2.3a (`hold_project_at_gate`): another task of the project waits at the plan gate, so the
+/// project stays with it. `exclude_task` is the task asking: its own gate never holds it, and a
+/// task that itself waits at the gate is not held by another gated task (whichever is approved
+/// first runs; the other then waits for its run).
+pub fn gate_hold_reason(
+    conn: &Connection,
+    project_slug: &str,
+    exclude_task: Option<i64>,
+) -> BrainResult<Option<String>> {
+    let waiting = gate_waiting_tasks(conn, project_slug)?;
+    if let Some(own) = exclude_task {
+        if waiting.contains(&own) {
+            return Ok(None);
+        }
+    }
+    Ok(waiting.into_iter().find(|t| Some(*t) != exclude_task).map(|t| {
+        format!(
+            "Dự án {project_slug} đang giữ cho task {t} chờ duyệt plan ({}) — duyệt plan hoặc dừng autopilot task {t} trước",
+            crate::projects::HOLD_AT_GATE_KEY
+        )
+    }))
+}
+
+/// Dự án (hoặc profile personal) đang có run của task khác hoặc driver khác; với
+/// `hold_at_gate` (`hold_project_at_gate` của dự án) thêm task khác đang chờ duyệt plan.
 pub fn project_busy_reason(
     conn: &Connection,
     project_slug: &str,
     profile: &str,
     exclude_task: Option<i64>,
+    hold_at_gate: bool,
 ) -> BrainResult<Option<String>> {
     let running = crate::db::running_runs(conn)?;
     for r in &running {
@@ -129,7 +171,93 @@ pub fn project_busy_reason(
             )));
         }
     }
-    live_driver_reason(conn, project_slug, profile, exclude_task)
+    if let Some(reason) = live_driver_reason(conn, project_slug, profile, exclude_task)? {
+        return Ok(Some(reason));
+    }
+    if hold_at_gate {
+        return gate_hold_reason(conn, project_slug, exclude_task);
+    }
+    Ok(None)
+}
+
+/// What approving does about the branch (D2.3b, `auto_checkout_on_approve`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApproveBranch {
+    /// The repo is on the task branch already.
+    OnBranch,
+    /// Not on the task branch, and agent-brain checks it out before approving.
+    Checkout,
+    /// Not on the task branch and no checkout: the reason (the dirty files when that is why).
+    Refuse(String),
+}
+
+/// Decides `ApproveBranch` from the repo facts. Checkout only when the option is on, the task
+/// branch exists, the working tree is clean and no other task's run / driver holds the project
+/// (`busy`).
+pub fn approve_branch(
+    auto_checkout: bool,
+    branch: &str,
+    current: Option<&str>,
+    branch_exists: bool,
+    dirty: &[String],
+    busy: Option<&str>,
+) -> ApproveBranch {
+    if current == Some(branch) {
+        return ApproveBranch::OnBranch;
+    }
+    let mismatch = format!(
+        "Không ở nhánh task '{branch}' (nhánh hiện tại: '{}') — không đoán",
+        current.unwrap_or("None")
+    );
+    if !auto_checkout || !branch_exists {
+        return ApproveBranch::Refuse(mismatch);
+    }
+    if let Some(b) = busy {
+        return ApproveBranch::Refuse(format!("{mismatch}. {b}"));
+    }
+    if !dirty.is_empty() {
+        let mut list = dirty.to_vec();
+        list.sort();
+        return ApproveBranch::Refuse(format!(
+            "{mismatch}. Không tự checkout vì working tree có thay đổi chưa commit:\n{}",
+            list.join("\n")
+        ));
+    }
+    ApproveBranch::Checkout
+}
+
+/// Reads the repo at `root` live and, when `approve_branch` says so, checks out the task branch.
+/// `Ok(true)` = on the task branch now (already or after the checkout); `Ok(false)` = left as
+/// is, with `Err(reason)` only when `required` (approving would run on and needs the branch).
+pub fn checkout_for_approve(
+    root: &Path,
+    branch: &str,
+    auto_checkout: bool,
+    busy: Option<&str>,
+    required: bool,
+) -> Result<bool, String> {
+    let current = crate::gitops::current_branch(root);
+    let dirty: Vec<String> = crate::gitops::changed_paths(root)
+        .map_err(|e| e.message)?
+        .into_iter()
+        .collect();
+    let exists = crate::gitops::branch_exists(root, branch);
+    match approve_branch(auto_checkout, branch, current.as_deref(), exists, &dirty, busy) {
+        ApproveBranch::OnBranch => Ok(true),
+        ApproveBranch::Checkout => match crate::gitops::checkout_branch(root, branch) {
+            Ok(()) => {
+                crate::term::emit(&format!(
+                    "Đã checkout nhánh task '{branch}' (từ '{}') để duyệt plan",
+                    current.as_deref().unwrap_or("None")
+                ));
+                Ok(true)
+            }
+            Err(e) if required => Err(format!("Không checkout được nhánh '{branch}': {}", e.message)),
+            Err(_) => Ok(false),
+        },
+        ApproveBranch::Refuse(reason) if required => Err(reason),
+        ApproveBranch::Refuse(_) => Ok(false),
+    }
 }
 
 /// Tùy chọn khi nhận task: `Chạy thêm 1 vòng` và yêu cầu lập lại plan.
@@ -155,6 +283,7 @@ pub fn claim(
     project_slug: &str,
     profile: &str,
     opts: &ClaimOpts,
+    hold_at_gate: bool,
 ) -> BrainResult<AutoJson> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
@@ -181,7 +310,9 @@ pub fn claim(
             )));
         }
     }
-    if let Some(reason) = project_busy_reason(&tx, project_slug, profile, Some(task_id))? {
+    if let Some(reason) =
+        project_busy_reason(&tx, project_slug, profile, Some(task_id), hold_at_gate)?
+    {
         return Err(BrainError::error(reason));
     }
 
@@ -463,6 +594,7 @@ mod tests {
             stack: vec![],
             read_sources: vec![],
             protocol_dir: String::new(),
+            workspace: Default::default(),
         };
         sync_projects(&conn, &[project]).expect("sync projects");
         let project_id = project_row_id(&conn, "demo").expect("project id");
@@ -500,6 +632,69 @@ mod tests {
         assert_eq!(a.auto_state.as_deref(), Some("running"));
         assert_eq!(a.auto_pid, Some(1));
         assert_eq!(a.auto_pid_start, Some(7));
+    }
+
+    #[test]
+    fn gate_hold_counts_only_waiting_gate_of_other_tasks() {
+        let (_dir, conn, a) = fresh_task();
+        let pid = project_row_id(&conn, "demo").expect("project id");
+        let b = upsert_task(&conn, pid, "b", "B", "task/b", None, None).expect("task b");
+        // Nothing at the gate: free, whatever the option says.
+        assert_eq!(project_busy_reason(&conn, "demo", "default", Some(b), true).unwrap(), None);
+        conn.execute("UPDATE tasks SET auto_state = 'gate' WHERE id = ?1", [a]).unwrap();
+        // Task a waits at the gate: b (and a new task) are held, a itself is not.
+        let held = project_busy_reason(&conn, "demo", "default", Some(b), true)
+            .unwrap()
+            .expect("held");
+        assert!(held.contains(&format!("task {a}")), "{held}");
+        assert!(held.contains(crate::projects::HOLD_AT_GATE_KEY), "{held}");
+        assert!(project_busy_reason(&conn, "demo", "default", None, true).unwrap().is_some());
+        assert_eq!(project_busy_reason(&conn, "demo", "default", Some(a), true).unwrap(), None);
+        // Option off: the old behaviour.
+        assert_eq!(project_busy_reason(&conn, "demo", "default", Some(b), false).unwrap(), None);
+        // Another project is never held.
+        assert_eq!(gate_hold_reason(&conn, "other", None).unwrap(), None);
+        // Two gated tasks do not hold each other.
+        conn.execute("UPDATE tasks SET auto_state = 'gate' WHERE id = ?1", [b]).unwrap();
+        assert_eq!(project_busy_reason(&conn, "demo", "default", Some(b), true).unwrap(), None);
+        conn.execute("UPDATE tasks SET auto_state = NULL WHERE id = ?1", [b]).unwrap();
+        // An approval recorded without running on leaves `gate`, and frees the project.
+        crate::db::set_task_approval(&conn, a, crate::db::now_ms(), "c1").unwrap();
+        assert_eq!(project_busy_reason(&conn, "demo", "default", Some(b), true).unwrap(), None);
+    }
+
+    #[test]
+    fn approve_branch_decisions() {
+        let none: Vec<String> = vec![];
+        let dirty = vec!["b.txt".to_string(), "a.txt".to_string()];
+        assert_eq!(
+            approve_branch(true, "task/x", Some("task/x"), true, &dirty, Some("busy")),
+            ApproveBranch::OnBranch
+        );
+        assert_eq!(
+            approve_branch(true, "task/x", Some("main"), true, &none, None),
+            ApproveBranch::Checkout
+        );
+        let mismatch = "Không ở nhánh task 'task/x' (nhánh hiện tại: 'main') — không đoán";
+        assert_eq!(
+            approve_branch(false, "task/x", Some("main"), true, &none, None),
+            ApproveBranch::Refuse(mismatch.to_string())
+        );
+        assert_eq!(
+            approve_branch(true, "task/x", Some("main"), false, &none, None),
+            ApproveBranch::Refuse(mismatch.to_string())
+        );
+        match approve_branch(true, "task/x", Some("main"), true, &dirty, None) {
+            ApproveBranch::Refuse(r) => {
+                assert!(r.starts_with(mismatch), "{r}");
+                assert!(r.ends_with("a.txt\nb.txt"), "{r}");
+            }
+            other => panic!("{other:?}"),
+        }
+        match approve_branch(true, "task/x", Some("main"), true, &none, Some("Dự án bận")) {
+            ApproveBranch::Refuse(r) => assert!(r.ends_with("Dự án bận"), "{r}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     fn approval_of(conn: &Connection, task_id: i64) -> (Option<i64>, Option<String>) {

@@ -56,6 +56,9 @@
       protocolDirDrafts: {},
       protocolDirSaving: {},
       protocolDirErrors: {},
+      workspaceDrafts: {},
+      workspaceSaving: {},
+      workspaceErrors: {},
       timeoutErrors: {},
       pinDrafts: {},
       pinSaving: {},
@@ -931,6 +934,60 @@
             self.load();
           } else {
             self.protocolDirErrors[p.id] = window.AB.errorText(res) || 'Không lưu được thư mục file giao thức';
+          }
+        });
+      },
+
+      // D2: the project's workspace options (`base_branch`, `hold_project_at_gate`,
+      // `auto_checkout_on_approve`). Validation stays on the server.
+      workspaceDraft: function (p) {
+        if (Object.prototype.hasOwnProperty.call(this.workspaceDrafts, p.id)) return this.workspaceDrafts[p.id];
+        return {
+          base_branch: p.base_branch || '',
+          hold_project_at_gate: p.hold_project_at_gate !== false,
+          auto_checkout_on_approve: p.auto_checkout_on_approve !== false
+        };
+      },
+
+      setWorkspaceDraft: function (p, key, value) {
+        var d = Object.assign({}, this.workspaceDraft(p));
+        d[key] = value;
+        this.workspaceDrafts[p.id] = d;
+        this.workspaceErrors[p.id] = '';
+      },
+
+      isWorkspaceSaving: function (p) {
+        return Boolean(this.workspaceSaving[p.id]);
+      },
+
+      workspaceError: function (p) {
+        return this.workspaceErrors[p.id] || '';
+      },
+
+      saveWorkspace: function (p) {
+        var self = this;
+        var d = this.workspaceDraft(p);
+        var base = String(d.base_branch || '').trim();
+        this.workspaceSaving[p.id] = true;
+        this.workspaceErrors[p.id] = '';
+        return window.AB.api('PUT', '/api/projects/' + encodeURIComponent(p.id) + '/workspace', {
+          base_branch: base,
+          hold_project_at_gate: Boolean(d.hold_project_at_gate),
+          auto_checkout_on_approve: Boolean(d.auto_checkout_on_approve),
+          etag: this.etag
+        }).then(function (res) {
+          self.workspaceSaving[p.id] = false;
+          if (res && res.ok) {
+            p.base_branch = base || null;
+            p.hold_project_at_gate = Boolean(d.hold_project_at_gate);
+            p.auto_checkout_on_approve = Boolean(d.auto_checkout_on_approve);
+            delete self.workspaceDrafts[p.id];
+            if (res.data && res.data.etag) self.etag = res.data.etag;
+          } else if (res && res.status === 409) {
+            self.workspaceErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+            self.load();
+          } else {
+            self.workspaceErrors[p.id] = window.AB.errorText(res) || 'Không lưu được nhánh gốc và cách duyệt';
           }
         });
       },

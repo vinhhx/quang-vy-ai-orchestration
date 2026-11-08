@@ -20,6 +20,119 @@ pub struct Project {
     pub read_sources: Vec<String>,
     /// Folder of the protocol files, relative to the repo root (`protocol_dir`, D1); `""` = root.
     pub protocol_dir: String,
+    /// How tasks share the repo (D2): base branch, gate hold, checkout on approve.
+    pub workspace: WorkspaceOpts,
+}
+
+/// Key of the project's base branch for new tasks (D2.1).
+pub const BASE_BRANCH_KEY: &str = "base_branch";
+/// Key of the gate hold option (D2.3a).
+pub const HOLD_AT_GATE_KEY: &str = "hold_project_at_gate";
+/// Key of the checkout-on-approve option (D2.3b).
+pub const AUTO_CHECKOUT_KEY: &str = "auto_checkout_on_approve";
+/// Longest accepted `base_branch` (characters).
+pub const BASE_BRANCH_MAX_CHARS: usize = 120;
+
+/// The project's workspace options (D2). A project without the keys gets `Default`: new tasks
+/// branch from the repo's current branch, a task waiting at the plan gate holds the project,
+/// and approving checks out the task branch when the tree is clean.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceOpts {
+    /// `base_branch`: the branch new tasks start from; `None` = the current branch at creation.
+    pub base_branch: Option<String>,
+    /// `hold_project_at_gate`: a task waiting at the plan gate counts as busy for other tasks.
+    pub hold_project_at_gate: bool,
+    /// `auto_checkout_on_approve`: approving off the task branch with a clean tree checks it out.
+    pub auto_checkout_on_approve: bool,
+}
+
+impl Default for WorkspaceOpts {
+    fn default() -> Self {
+        WorkspaceOpts {
+            base_branch: None,
+            hold_project_at_gate: true,
+            auto_checkout_on_approve: true,
+        }
+    }
+}
+
+impl WorkspaceOpts {
+    /// Reads the options from a projects_map.json entry. Missing or invalid values keep the
+    /// default (the dashboard validates before storing).
+    pub fn from_value(entry: &serde_json::Value) -> WorkspaceOpts {
+        let d = WorkspaceOpts::default();
+        WorkspaceOpts {
+            base_branch: entry
+                .get(BASE_BRANCH_KEY)
+                .and_then(|v| v.as_str())
+                .and_then(|s| validate_base_branch(s).ok())
+                .filter(|s| !s.is_empty()),
+            hold_project_at_gate: entry
+                .get(HOLD_AT_GATE_KEY)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(d.hold_project_at_gate),
+            auto_checkout_on_approve: entry
+                .get(AUTO_CHECKOUT_KEY)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(d.auto_checkout_on_approve),
+        }
+    }
+
+    /// The branch a new task starts from: the configured `base_branch`, else the repo's
+    /// current branch at `root`.
+    pub fn base_branch_at(&self, root: &Path) -> Option<String> {
+        self.base_branch
+            .clone()
+            .or_else(|| crate::gitops::current_branch(root))
+    }
+}
+
+/// Checks a `base_branch` value and returns it trimmed; `""` = not set. Refuses what git would
+/// refuse as a branch name (spaces, control characters, `..`, `~^:?*[\\`, a leading `-` or
+/// `/`, a trailing `/`, `.` or `.lock`, `@{`).
+pub fn validate_base_branch(raw: &str) -> Result<String, String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Ok(String::new());
+    }
+    let bad = || Err(format!("\"{BASE_BRANCH_KEY}\" không phải tên nhánh git hợp lệ."));
+    if t.chars().count() > BASE_BRANCH_MAX_CHARS {
+        return Err(format!(
+            "\"{BASE_BRANCH_KEY}\" dài quá {BASE_BRANCH_MAX_CHARS} ký tự."
+        ));
+    }
+    if t.chars().any(|c| c.is_control() || c.is_whitespace() || "~^:?*[\\".contains(c)) {
+        return bad();
+    }
+    if t.contains("..") || t.contains("@{") || t.contains("//") || t == "@" {
+        return bad();
+    }
+    if t.starts_with('-') || t.starts_with('/') || t.ends_with('/') || t.ends_with('.') {
+        return bad();
+    }
+    if t.split('/').any(|seg| seg.starts_with('.') || seg.ends_with(".lock")) {
+        return bad();
+    }
+    Ok(t.to_string())
+}
+
+/// Refusal when the project's `base_branch` (D2.1) is not a local branch of the repo.
+pub fn base_branch_missing_text(base: &str) -> String {
+    format!(
+        "Nhánh gốc '{base}' ({BASE_BRANCH_KEY}) của dự án không có trong repo — sửa cấu hình dự án hoặc tạo nhánh đó"
+    )
+}
+
+/// The workspace options of a project in the map; `Default` when it is not there.
+pub fn workspace_of(map: &serde_json::Value, project_id: &str) -> WorkspaceOpts {
+    map.get("projects")
+        .and_then(|p| p.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(project_id))
+        })
+        .map(WorkspaceOpts::from_value)
+        .unwrap_or_default()
 }
 
 impl Project {
@@ -109,6 +222,7 @@ impl Project {
             stack,
             read_sources,
             protocol_dir: crate::protocol_paths::protocol_dir_of_value(v),
+            workspace: WorkspaceOpts::from_value(v),
         })
     }
 
@@ -1217,6 +1331,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn workspace_options_default_and_parse() {
+        let d = WorkspaceOpts::default();
+        assert_eq!(d.base_branch, None);
+        assert!(d.hold_project_at_gate);
+        assert!(d.auto_checkout_on_approve);
+        assert_eq!(WorkspaceOpts::from_value(&serde_json::json!({"id": "x"})), d);
+        let set = WorkspaceOpts::from_value(&serde_json::json!({
+            "id": "x", "base_branch": " develop ", "hold_project_at_gate": false,
+            "auto_checkout_on_approve": false
+        }));
+        assert_eq!(set.base_branch.as_deref(), Some("develop"));
+        assert!(!set.hold_project_at_gate);
+        assert!(!set.auto_checkout_on_approve);
+        // Invalid values keep the defaults.
+        let bad = WorkspaceOpts::from_value(&serde_json::json!({
+            "id": "x", "base_branch": "a..b", "hold_project_at_gate": "no"
+        }));
+        assert_eq!(bad, d);
+        let map = serde_json::json!({"projects": [{"id": "x", "base_branch": "rel/1"}]});
+        assert_eq!(workspace_of(&map, "x").base_branch.as_deref(), Some("rel/1"));
+        assert_eq!(workspace_of(&map, "y"), d);
+    }
+
+    #[test]
+    fn base_branch_validation() {
+        assert_eq!(validate_base_branch("  ").unwrap(), "");
+        assert_eq!(validate_base_branch("feature/x-1").unwrap(), "feature/x-1");
+        for bad in ["a b", "-x", "/x", "x/", "x.", "a..b", "x.lock", "a/.b", "a~1", "a:b", "x@{1}", "a//b"] {
+            assert!(validate_base_branch(bad).is_err(), "{bad}");
+        }
+        assert!(validate_base_branch(&"a".repeat(BASE_BRANCH_MAX_CHARS + 1)).is_err());
+    }
+
+    #[test]
     fn role_pins_parse_and_read() {
         use serde_json::json;
         let pins = parse_role_pins(&json!({"dev": "dev-a"}), &json!({"qa": "claude"})).unwrap();
@@ -1312,6 +1460,7 @@ mod tests {
             stack: vec![],
             read_sources: vec![],
             protocol_dir: String::new(),
+            workspace: Default::default(),
         }
     }
 

@@ -24,6 +24,9 @@ pub struct GitFacts {
     pub branch_exists: bool,
     /// The task's protocol file paths (D1); the default layout when not set.
     pub protocol: crate::protocol_paths::ProtocolPaths,
+    /// The project's `auto_checkout_on_approve` (D2.3b): approving off the task branch with a
+    /// clean tree checks the branch out. False when not computed (the old refusal).
+    pub checkout_on_approve: bool,
 }
 
 pub struct TaskFacts<'a> {
@@ -553,13 +556,21 @@ fn build_approve(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) -> 
     } else if continues && f.busy.is_some() {
         enabled = false;
         reason = f.busy.clone();
-    } else if continues && f.git.current_branch.as_deref() != Some(&f.task.branch) {
+    } else if let (true, crate::autopilot::claim::ApproveBranch::Refuse(r)) = (
+        continues,
+        crate::autopilot::claim::approve_branch(
+            f.git.checkout_on_approve,
+            &f.task.branch,
+            f.git.current_branch.as_deref(),
+            f.git.branch_exists,
+            &f.git.dirty,
+            f.busy.as_deref(),
+        ),
+    ) {
+        // D2.3b: off the task branch, Duyệt checks it out when the tree is clean; otherwise
+        // the refusal names the branch (and the dirty files when that is why).
         enabled = false;
-        let cur = f.git.current_branch.as_deref().unwrap_or("None");
-        reason = Some(format!(
-            "Không ở nhánh task '{}' (nhánh hiện tại: '{cur}') — không đoán",
-            f.task.branch
-        ));
+        reason = Some(r);
     } else if continues && f.git.plan_blockers {
         enabled = false;
         let count = f.git.plan_unhandled_blockers.len();
@@ -1420,6 +1431,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            checkout_on_approve: false,
             protocol: Default::default(),
         };
 
@@ -1547,6 +1559,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            checkout_on_approve: false,
             protocol: Default::default(),
         };
 
@@ -1600,6 +1613,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            checkout_on_approve: false,
             protocol: Default::default(),
         };
         let facts = TaskFacts {
@@ -1880,6 +1894,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            checkout_on_approve: false,
             protocol: Default::default(),
         };
         let facts = TaskFacts {
@@ -1929,6 +1944,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            checkout_on_approve: false,
             protocol: Default::default(),
         }
     }
@@ -2251,6 +2267,7 @@ mod tests {
             continuation_ok: false,
             dirty_outside_plan: Vec::new(),
             branch_exists: true,
+            checkout_on_approve: false,
             protocol: Default::default(),
         };
 

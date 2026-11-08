@@ -466,10 +466,24 @@ pub fn cmd_lead(
             "Nhánh '{branch}' đã tồn tại nhưng chưa được checkout — hãy checkout nhánh đó hoặc dùng cờ --name khác"
         )));
     } else {
-        let bb = curr_branch.clone();
-        let bc = crate::gitops::head_sha(&proj_path)?;
+        // D2.1: the project's `base_branch` when set (it must exist), else the current branch.
+        let (bb, bc) = match proj.workspace.base_branch.as_deref() {
+            Some(base) => {
+                if !crate::gitops::branch_exists(&proj_path, base) {
+                    return Err(BrainError::error(crate::projects::base_branch_missing_text(
+                        base,
+                    )));
+                }
+                let head_ref = format!("refs/heads/{base}");
+                let sha = crate::gitops::git(&proj_path, &["rev-parse", "--verify", &head_ref])?
+                    .trim()
+                    .to_string();
+                (Some(base.to_string()), sha)
+            }
+            None => (curr_branch.clone(), crate::gitops::head_sha(&proj_path)?),
+        };
         let ca = chrono::Utc::now().to_rfc3339();
-        if let Some(ref cb) = curr_branch {
+        if let Some(ref cb) = bb {
             if cb.starts_with("task/") {
                 crate::term::emit(&format!(
                     "Cảnh báo: Nhánh mới '{branch}' được tạo từ nhánh task '{cb}' (stacking)"
@@ -489,7 +503,11 @@ pub fn cmd_lead(
     });
 
     if !is_replan {
-        crate::gitops::create_branch(&proj_path, &branch)?;
+        // A configured base branch is the start point; otherwise HEAD (the current branch).
+        match proj.workspace.base_branch.as_deref() {
+            Some(base) => crate::gitops::create_branch_from(&proj_path, &branch, base)?,
+            None => crate::gitops::create_branch(&proj_path, &branch)?,
+        }
     }
 
     let skeleton = crate::planfile::render_plan_skeleton(request, &meta);

@@ -1615,6 +1615,7 @@ mod tests {
             stack: vec![],
             read_sources: vec![],
             protocol_dir: String::new(),
+            workspace: Default::default(),
         };
         crate::db::sync_projects(&conn, &[project]).unwrap();
         let pid = crate::db::project_row_id(&conn, "p").unwrap();

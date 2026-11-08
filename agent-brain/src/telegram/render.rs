@@ -706,6 +706,7 @@ mod tests {
             stack: vec![],
             read_sources: vec![],
             protocol_dir: String::new(),
+            workspace: Default::default(),
         };
         let mut run = crate::db::RunRow {
             id: 10,

@@ -486,7 +486,10 @@ pub fn handle_env_stops(
         if running {
             continue;
         }
-        if crate::autopilot::claim::project_busy_reason(conn, &slug, &profile, None)?.is_some() {
+        let hold = crate::projects::workspace_of(map, &slug).hold_project_at_gate;
+        if crate::autopilot::claim::project_busy_reason(conn, &slug, &profile, None, hold)?
+            .is_some()
+        {
             continue;
         }
         checks.insert(task_id, now);

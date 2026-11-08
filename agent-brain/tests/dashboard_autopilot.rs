@@ -134,6 +134,7 @@ fn seed_task(
         stack: vec![],
         read_sources: vec![],
         protocol_dir: String::new(),
+        workspace: Default::default(),
     };
     agent_brain::db::sync_projects(&conn, &[project]).unwrap();
     let pid = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
@@ -1637,6 +1638,10 @@ fn approve_on_other_branch_refused() {
     let sb = Sandbox::new();
     let repo = auto_to_gate(&sb);
     sb.git(&repo, &["checkout", "main"]);
+    // D2.3b: the old refusal is the `auto_checkout_on_approve: false` behaviour.
+    let mut map = sb.read_map();
+    map["projects"][0]["auto_checkout_on_approve"] = json!(false);
+    sb.write_map(map["projects"].clone(), &[]);
     let srv = sb.serve(&[]);
 
     let reason = "Không ở nhánh task 'task/sua-app' (nhánh hiện tại: 'main') — không đoán";

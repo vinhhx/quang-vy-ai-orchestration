@@ -709,6 +709,7 @@ mod tests {
             stack: vec![],
             read_sources: vec![],
             protocol_dir: String::new(),
+            workspace: Default::default(),
         };
         let (teams, staff) = crate::teams::load();
         TaskState {

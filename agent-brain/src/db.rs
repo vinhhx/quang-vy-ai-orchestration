@@ -2000,6 +2000,7 @@ mod tests {
             stack: vec![],
             read_sources: vec![],
             protocol_dir: String::new(),
+            workspace: Default::default(),
         };
         sync_projects(&conn, &[project]).expect("sync projects");
         let project_id = project_row_id(&conn, "demo").expect("project id");

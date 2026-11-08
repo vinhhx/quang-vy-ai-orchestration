@@ -94,6 +94,9 @@ fn project_json(
         "workflow": crate::projects::workflow_of(map, &p.id),
         "timeouts": crate::projects::timeouts_of(map, &p.id),
         "protocol_dir": p.protocol_dir,
+        "base_branch": p.workspace.base_branch,
+        "hold_project_at_gate": p.workspace.hold_project_at_gate,
+        "auto_checkout_on_approve": p.workspace.auto_checkout_on_approve,
         "role_members": crate::projects::role_pins_of(map, &p.id).members,
         "role_engines": crate::projects::role_pins_of(map, &p.id).engines,
         "preflight": preflight_json(map, &p.id),
@@ -291,6 +294,22 @@ pub struct UpdateProtocolDirBody {
 }
 
 #[derive(serde::Deserialize)]
+pub struct UpdateWorkspaceBody {
+    /// Branch new tasks start from; `""` removes the key (the current branch at creation),
+    /// absent keeps the stored value.
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    /// `hold_project_at_gate`; absent keeps the stored value.
+    #[serde(default)]
+    pub hold_project_at_gate: Option<bool>,
+    /// `auto_checkout_on_approve`; absent keeps the stored value.
+    #[serde(default)]
+    pub auto_checkout_on_approve: Option<bool>,
+    #[serde(default)]
+    pub etag: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 pub struct UpdateRolePinsBody {
     /// `{role: member id}`; `{}` (or absent) removes the project's `role_members`.
     #[serde(default)]
@@ -339,6 +358,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/projects/{id}/stack", put(update_stack))
         .route("/api/projects/{id}/timeouts", put(update_timeouts))
         .route("/api/projects/{id}/protocol-dir", put(update_protocol_dir))
+        .route("/api/projects/{id}/workspace", put(update_workspace))
         .route("/api/projects/{id}/role-pins", put(update_role_pins))
         .route("/api/projects/{id}/preflight", put(update_preflight))
         .route("/api/projects/{id}/read-sources", post(update_read_sources).put(update_read_sources))
@@ -804,6 +824,98 @@ async fn update_protocol_dir(
                 crate::protocol_paths::CONFIG_KEY.to_string(),
                 serde_json::json!(dir),
             );
+        }
+
+        save_and_respond(&st, &data, StatusCode::OK, None)
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+/// D2: the project's workspace options. `base_branch` is validated by
+/// `projects::validate_base_branch` (`""` removes it); a boolean equal to its default removes
+/// the key, so a project left at the defaults keeps no extra keys.
+async fn update_workspace(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<UpdateWorkspaceBody>,
+) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if let Some(ref req_etag) = body.etag {
+            if req_etag != &current_etag {
+                return conflict_response(&st, current_etag);
+            }
+        }
+
+        let base = match body
+            .base_branch
+            .as_deref()
+            .map(crate::projects::validate_base_branch)
+            .transpose()
+        {
+            Ok(b) => b,
+            Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, &e)),
+        };
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        let projects_arr = data
+            .get_mut("projects")
+            .and_then(|p| p.as_array_mut())
+            .ok_or_else(|| {
+                crate::error::BrainError::error("projects_map.json thiếu mảng 'projects'")
+            })?;
+        let Some(project_obj) = projects_arr
+            .iter_mut()
+            .find(|obj| obj.get("id").and_then(|v| v.as_str()) == Some(&id))
+            .and_then(|obj| obj.as_object_mut())
+        else {
+            return Ok(json_error(
+                StatusCode::NOT_FOUND,
+                &format!("Không tìm thấy dự án {id}"),
+            ));
+        };
+
+        match base.as_deref() {
+            Some("") => {
+                project_obj.remove(crate::projects::BASE_BRANCH_KEY);
+            }
+            Some(b) => {
+                project_obj.insert(
+                    crate::projects::BASE_BRANCH_KEY.to_string(),
+                    serde_json::json!(b),
+                );
+            }
+            None => {}
+        }
+        let defaults = crate::projects::WorkspaceOpts::default();
+        for (key, value, default) in [
+            (
+                crate::projects::HOLD_AT_GATE_KEY,
+                body.hold_project_at_gate,
+                defaults.hold_project_at_gate,
+            ),
+            (
+                crate::projects::AUTO_CHECKOUT_KEY,
+                body.auto_checkout_on_approve,
+                defaults.auto_checkout_on_approve,
+            ),
+        ] {
+            match value {
+                Some(v) if v == default => {
+                    project_obj.remove(key);
+                }
+                Some(v) => {
+                    project_obj.insert(key.to_string(), serde_json::json!(v));
+                }
+                None => {}
+            }
         }
 
         save_and_respond(&st, &data, StatusCode::OK, None)

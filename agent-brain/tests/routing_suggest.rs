@@ -14,6 +14,7 @@ fn make_proj(id: &str, name_vi: &str, aliases: Vec<&str>) -> Project {
         stack: vec![],
         read_sources: vec![],
         protocol_dir: String::new(),
+        workspace: Default::default(),
     }
 }
 

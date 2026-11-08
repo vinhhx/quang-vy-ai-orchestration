@@ -385,7 +385,24 @@ pub fn branch_exists(root: &Path, name: &str) -> bool {
 }
 
 pub fn create_branch(root: &Path, name: &str) -> BrainResult<()> {
-    git(root, &["checkout", "-b", name, "HEAD"])?;
+    create_branch_from(root, name, "HEAD")
+}
+
+/// `git checkout -b <name> <start>`: a new branch from `start` (a branch name or `HEAD`).
+pub fn create_branch_from(root: &Path, name: &str, start: &str) -> BrainResult<()> {
+    git(root, &["checkout", "-b", name, start, "--"])?;
+    Ok(())
+}
+
+/// `git checkout <name>` of an existing local branch. Refused (nothing run) when the branch does
+/// not exist; git itself refuses when a local change would be overwritten.
+pub fn checkout_branch(root: &Path, name: &str) -> BrainResult<()> {
+    if name.starts_with('-') || !branch_exists(root, name) {
+        return Err(BrainError::error(format!(
+            "Không có nhánh '{name}' để checkout"
+        )));
+    }
+    git(root, &["checkout", name, "--"])?;
     Ok(())
 }
 
