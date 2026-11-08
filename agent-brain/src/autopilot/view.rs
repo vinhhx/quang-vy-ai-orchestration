@@ -527,4 +527,18 @@ mod tests {
         assert_eq!(fmt_usd(20.0), "$20.00");
         assert_eq!(fmt_usd(0.0594874), "$0.06");
     }
+
+    #[test]
+    fn test_error_excerpt_truncation() {
+        let short = "Line 1\nLine 2";
+        assert_eq!(error_excerpt(short, 3, 500), "Line 1\nLine 2");
+
+        let four_lines = "1\n2\n3\n4\n5";
+        assert_eq!(error_excerpt(four_lines, 3, 500), "1\n2\n3");
+
+        let long = "x".repeat(600);
+        let excerpt = error_excerpt(&long, 3, 500);
+        assert_eq!(excerpt.chars().count(), 501);
+        assert!(excerpt.ends_with('…'));
+    }
 }

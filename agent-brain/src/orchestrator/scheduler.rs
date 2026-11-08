@@ -127,8 +127,6 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
                                             continue;
                                         }
                                     }
-                                } else {
-                                    prior_answer = Some((prior_task_id, String::new()));
                                 }
                             } else {
                                 let is_ended = auto_state.as_deref() == Some("ended")

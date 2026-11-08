@@ -245,6 +245,19 @@ fn dev_backstop_exit_3_when_hooks_ignored() {
         )
         .unwrap();
     assert_eq!(outcome, "protocol_violation");
+
+    let (err, metrics_str): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT error, metrics_json FROM runs WHERE role = 'dev' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(err.is_some(), "expected runs.error to be Some");
+    assert!(err.unwrap().contains("outside.py"));
+    let metrics: serde_json::Value = serde_json::from_str(&metrics_str.unwrap()).unwrap();
+    assert_eq!(metrics["violation"]["kind"], "files_outside_plan");
+    assert_eq!(metrics["violation"]["total"], 1);
 }
 
 #[test]
@@ -1237,6 +1250,18 @@ fn dev_ending_on_wrong_branch_is_protocol_violation() {
         )
         .unwrap();
     assert_eq!(outcome, "protocol_violation");
+
+    let (err, metrics_str): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT error, metrics_json FROM runs WHERE role = 'dev' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(err.is_some(), "expected runs.error to be Some");
+    assert!(err.unwrap().contains("không phải nhánh task"));
+    let metrics: serde_json::Value = serde_json::from_str(&metrics_str.unwrap()).unwrap();
+    assert_eq!(metrics["violation"]["kind"], "wrong_branch");
 }
 
 #[test]

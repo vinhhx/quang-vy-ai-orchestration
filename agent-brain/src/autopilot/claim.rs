@@ -4,10 +4,12 @@
 //! `procs::alive`, nên một driver đã chết để lại hàng `running` vẫn nhận lại được.
 
 use crate::autopilot::decide::{AutoJson, Replan, StopReason};
+use crate::config::Price;
 use crate::db::{DriverRow, RunRow, TaskAuto, TaskRow};
 use crate::error::{BrainError, BrainResult};
 use crate::procs::ProcId;
 use rusqlite::Connection;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 fn proc_of(pid: Option<i64>, start: Option<i64>) -> Option<ProcId> {
@@ -292,7 +294,12 @@ pub fn task_project(conn: &Connection, task_id: i64) -> BrainResult<Option<(Stri
 }
 
 /// Kiểm tra trước khi ghi duyệt plan; Ok = sha của commit plan hiện tại.
-pub fn approve_check(conn: &Connection, task: &TaskRow, root: &Path) -> Result<String, String> {
+pub fn approve_check(
+    conn: &Connection,
+    task: &TaskRow,
+    root: &Path,
+    pricing: &BTreeMap<String, Price>,
+) -> Result<String, String> {
     let db_err = |e: BrainError| e.message;
     let auto = crate::db::task_auto(conn, task.id)
         .map_err(db_err)?
@@ -386,22 +393,10 @@ pub fn approve_check(conn: &Connection, task: &TaskRow, root: &Path) -> Result<S
         }
         if let Some(ref w) = wf {
             let aj = crate::autopilot::decide::AutoJson::parse(auto.auto_json.as_deref());
-            if aj.bypass_stages <= 0 {
-                let runs = crate::db::runs_for_task(conn, task.id).map_err(db_err)?;
-                let pricing = crate::config::default_pricing();
-                let now_ms = chrono::Utc::now().timestamp_millis();
-                let budget_usage = crate::pricing::budget_usage(&runs, &pricing, now_ms);
-                let budget_limits = crate::pricing::BudgetLimits::from_workflow(w)
-                    .with_extra(aj.budget_extra_minutes, aj.budget_extra_usd);
-                if crate::pricing::exhausted(&budget_usage, &budget_limits) {
-                    let used_minutes = (budget_usage.used_ms as f64 / 60_000.0).round() as i64;
-                    let used_usd = format!("{:.2}", budget_usage.used_usd);
-                    let limit_usd = format!("{:.2}", budget_limits.usd);
-                    return Err(format!(
-                        "Hết ngân sách quy trình (đã dùng {}/{} phút, ${}/${}) — gia hạn rồi duyệt lại",
-                        used_minutes, budget_limits.minutes, used_usd, limit_usd
-                    ));
-                }
+            let runs = crate::db::runs_for_task(conn, task.id).map_err(db_err)?;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            if let Some(reason) = crate::pricing::budget_exhausted_reason(&runs, pricing, w, &aj, now_ms) {
+                return Err(reason);
             }
         }
     }
@@ -555,8 +550,139 @@ mod tests {
         let _ = std::process::Command::new("git").args(["commit", "-m", "t: plan"]).current_dir(root).output();
 
         let task = crate::db::get_task(&conn, id).unwrap().unwrap();
-        let err = approve_check(&conn, &task, root).unwrap_err();
+        let err = approve_check(&conn, &task, root, &crate::config::default_pricing()).unwrap_err();
         assert!(err.contains("Plan có quyền không hợp lệ"), "{err}");
         assert!(err.contains("git add foo/*"), "{err}");
+    }
+
+    #[test]
+    fn approve_check_blocker_checkboxes() {
+        let (dir, conn, id) = fresh_task();
+        let root = dir.path();
+        let wf = crate::workflows::Workflow {
+            name: "mac-dinh".to_string(),
+            kind: "code".to_string(),
+            stages: vec!["plan".to_string(), "gate".to_string(), "dev".to_string()],
+            loops: vec![],
+            max_rounds: 3,
+            budget_minutes: 60,
+            budget_usd: 10.0,
+            auto: true,
+            review: false,
+            source: "builtin".to_string(),
+        };
+        conn.execute(
+            "UPDATE tasks SET workflow_json = ?1 WHERE id = ?2",
+            rusqlite::params![wf.to_snapshot(), id],
+        )
+        .unwrap();
+
+        let _ = std::process::Command::new("git").args(["init"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["config", "user.name", "Test"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["config", "user.email", "test@example.com"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["checkout", "-b", "t"]).current_dir(root).output();
+
+        // 1. Plan with unhandled blocker
+        let plan_with_blocker = "# Plan: t\n\n## Vướng mắc\n- [ ] Cần token staging\n";
+        std::fs::write(root.join(".plan.md"), plan_with_blocker).unwrap();
+        let _ = std::process::Command::new("git").args(["add", ".plan.md"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["commit", "-m", "t: plan"]).current_dir(root).output();
+
+        let task = crate::db::get_task(&conn, id).unwrap().unwrap();
+        let err = approve_check(&conn, &task, root, &crate::config::default_pricing()).unwrap_err();
+        assert!(err.contains("vướng mắc chưa đánh dấu [x]"), "{err}");
+
+        // 2. Resolve blocker with [x]
+        let plan_resolved = "# Plan: t\n\n## Vướng mắc\n- [x] Cần token staging\n";
+        std::fs::write(root.join(".plan.md"), plan_resolved).unwrap();
+        let _ = std::process::Command::new("git").args(["add", ".plan.md"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["commit", "-m", "t: plan"]).current_dir(root).output();
+
+        let res = approve_check(&conn, &task, root, &crate::config::default_pricing());
+        assert!(res.is_ok(), "Expected Ok but got: {:?}", res.err());
+    }
+
+    #[test]
+    fn approve_check_budget_with_configured_pricing() {
+        let (dir, conn, id) = fresh_task();
+        let root = dir.path();
+        let wf = crate::workflows::Workflow {
+            name: "mac-dinh".to_string(),
+            kind: "code".to_string(),
+            stages: vec!["plan".to_string(), "gate".to_string(), "dev".to_string()],
+            loops: vec![],
+            max_rounds: 3,
+            budget_minutes: 60,
+            budget_usd: 10.0,
+            auto: true,
+            review: false,
+            source: "builtin".to_string(),
+        };
+        conn.execute(
+            "UPDATE tasks SET workflow_json = ?1 WHERE id = ?2",
+            rusqlite::params![wf.to_snapshot(), id],
+        )
+        .unwrap();
+
+        let _ = std::process::Command::new("git").args(["init"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["config", "user.name", "Test"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["config", "user.email", "test@example.com"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["checkout", "-b", "t"]).current_dir(root).output();
+
+        let plan_content = "# Plan: t\n\n## Thay đổi\n| Thao tác | Đường dẫn | Mô tả |\n|---|---|---|\n| sửa | a.txt | mô tả |\n";
+        std::fs::write(root.join(".plan.md"), plan_content).unwrap();
+        let _ = std::process::Command::new("git").args(["add", ".plan.md"]).current_dir(root).output();
+        let _ = std::process::Command::new("git").args(["commit", "-m", "t: plan"]).current_dir(root).output();
+
+        let pid = crate::db::project_row_id(&conn, "demo").unwrap();
+        let new_run = crate::db::NewRun {
+            task_id: Some(id),
+            project_id: pid,
+            role: "lead".to_string(),
+            profile: "default".to_string(),
+            model: Some("custom-model".to_string()),
+            pid: 1,
+            pgid: 1,
+            pid_start: 1,
+            base_commit: None,
+            run_dir: None,
+        };
+        let run_id = crate::db::insert_run(&conn, &new_run).unwrap();
+        // Set run ended and 100_000 output tokens
+        conn.execute(
+            "UPDATE runs SET status = 'succeeded', started_at = 1000, ended_at = 2000, output_tokens = 100000, usage_source = 'partial' WHERE id = ?1",
+            rusqlite::params![run_id],
+        ).unwrap();
+
+        // Custom pricing where custom-model costs $200 per 1M output tokens (so 100k tokens = $20.0 > $10.0 limit)
+        let mut custom_pricing = std::collections::BTreeMap::new();
+        custom_pricing.insert(
+            "custom-model".to_string(),
+            Price {
+                input: 10.0,
+                output: 200.0,
+                cache_read: 1.0,
+                cache_write: 5.0,
+            },
+        );
+
+        let task = crate::db::get_task(&conn, id).unwrap().unwrap();
+        // Default pricing does not have custom-model, so custom pricing proves it's using configured pricing
+        let err = approve_check(&conn, &task, root, &custom_pricing).unwrap_err();
+        assert!(err.contains("Hết ngân sách"), "{err}");
+
+        // Now add budget extension
+        let aj = AutoJson {
+            budget_extra_usd: 50.0,
+            ..Default::default()
+        };
+        conn.execute(
+            "UPDATE tasks SET auto_json = ?1 WHERE id = ?2",
+            rusqlite::params![aj.to_json(), id],
+        )
+        .unwrap();
+
+        let ok = approve_check(&conn, &task, root, &custom_pricing);
+        assert!(ok.is_ok(), "Expected Ok after budget extension: {:?}", ok.err());
     }
 }

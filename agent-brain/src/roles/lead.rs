@@ -637,18 +637,22 @@ pub fn cmd_lead(
                 "Gợi ý: agent-brain không tự revert thay đổi; bạn hãy kiểm tra và xử lý bằng tay.",
             );
             crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
+            let total = sorted_extra.len();
             let files_50: Vec<String> = sorted_extra.into_iter().take(50).collect();
-            let msg = format!(
-                "{} file ngoài .plan.md: {} — Lead chỉ được sửa .plan.md",
-                files_50.len(),
+            let preview = if total > files_50.len() {
+                format!("{}, … (và {} file khác)", files_50.join(", "), total - files_50.len())
+            } else {
                 files_50.join(", ")
+            };
+            let msg = format!(
+                "{total} file ngoài .plan.md: {preview} — Lead chỉ được sửa .plan.md"
             );
             crate::roles::record_violation(
                 ctx,
                 role_run.run_id,
                 "files_outside_plan",
                 &msg,
-                serde_json::json!({ "files": files_50 }),
+                serde_json::json!({ "files": files_50, "total": total }),
             )?;
             return Ok(crate::error::EXIT_PROTOCOL);
         }

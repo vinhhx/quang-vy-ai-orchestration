@@ -1987,3 +1987,84 @@ fn dashboard_kill_stops_autopilot() {
     assert!(gone, "alive after kill: {:?}", alive_of(&guard));
     assert!(srv.stop(libc::SIGINT, Duration::from_secs(10)).is_some());
 }
+
+#[test]
+fn test_api_extend_budget_limits_and_success() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "web-ban-hang");
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let map = agent_brain::projects::load_map(&sb.map_path()).unwrap();
+    agent_brain::db::sync_projects(&conn, &agent_brain::projects::projects_of(&map)).unwrap();
+    let pid = agent_brain::db::project_row_id(&conn, "web-ban-hang").unwrap();
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "task-extend",
+        "Sửa app",
+        "task/extend",
+        Some("main"),
+        None,
+    )
+    .unwrap();
+
+    let new_run = agent_brain::db::NewRun {
+        task_id: Some(task_id),
+        project_id: pid,
+        role: "dev".to_string(),
+        profile: "default".to_string(),
+        model: None,
+        pid: 1,
+        pgid: 1,
+        pid_start: 1,
+        base_commit: None,
+        run_dir: None,
+    };
+    let run_id = agent_brain::db::insert_run(&conn, &new_run).unwrap();
+    conn.execute(
+        "UPDATE runs SET status = 'failed', error = 'test failure', metrics_json = ?1 WHERE id = ?2",
+        rusqlite::params![serde_json::json!({"warnings": ["w1", "w2"]}).to_string(), run_id],
+    )
+    .unwrap();
+
+    let mut srv = sb.serve(&[]);
+
+    // 1. Exceeds max minutes (300 > 240) -> 400 Bad Request
+    let resp_too_long = srv.post_json(
+        &format!("/api/tasks/{task_id}/auto/extend-budget"),
+        &json!({ "minutes": 300 }),
+    );
+    assert_eq!(resp_too_long.status, 400, "{}", resp_too_long.text());
+    assert!(resp_too_long.text().contains("vượt quá giới hạn"));
+
+    // 2. Exceeds max usd (50.0 > 20.0) -> 400 Bad Request
+    let resp_too_much_usd = srv.post_json(
+        &format!("/api/tasks/{task_id}/auto/extend-budget"),
+        &json!({ "usd": 50.0 }),
+    );
+    assert_eq!(resp_too_much_usd.status, 400, "{}", resp_too_much_usd.text());
+    assert!(resp_too_much_usd.text().contains("vượt quá giới hạn"));
+
+    // 3. Valid extension (60 min, 10.0 usd) -> 200 OK
+    let resp_ok = srv.post_json(
+        &format!("/api/tasks/{task_id}/auto/extend-budget"),
+        &json!({ "minutes": 60, "usd": 10.0 }),
+    );
+    assert_eq!(resp_ok.status, 200, "{}", resp_ok.text());
+    let j = resp_ok.json();
+    assert_eq!(j["ok"], true);
+    assert_eq!(j["added_minutes"], 60);
+    assert_eq!(j["budget_extra_minutes"], 60);
+    assert_eq!(j["added_usd"], 10.0);
+    assert_eq!(j["budget_extra_usd"], 10.0);
+
+    // 4. Verify task detail JSON runs has error and warnings
+    let task_resp = srv.get(&format!("/api/tasks/{task_id}"));
+    assert_eq!(task_resp.status, 200);
+    let task_json = task_resp.json();
+    let runs = task_json["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["error"], "test failure");
+    assert_eq!(runs[0]["warnings"], json!(["w1", "w2"]));
+
+    assert!(srv.stop(libc::SIGINT, Duration::from_secs(10)).is_some());
+}

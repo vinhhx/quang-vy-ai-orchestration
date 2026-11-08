@@ -797,7 +797,8 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
         })?;
     let root = crate::projects::require_runnable(&project, &ctx.cfg)?;
 
-    let plan_commit = claim::approve_check(&ctx.conn, &task, &root).map_err(BrainError::error)?;
+    let plan_commit = claim::approve_check(&ctx.conn, &task, &root, &ctx.cfg.pricing)
+        .map_err(BrainError::error)?;
 
     let auto = crate::db::task_auto(&ctx.conn, task_id)?.unwrap_or_default();
     let wf_auto = auto

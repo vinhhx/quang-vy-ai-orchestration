@@ -248,6 +248,31 @@ pub fn exhausted(u: &BudgetUsage, l: &BudgetLimits) -> bool {
     budget_level(u, l) == BudgetLevel::Over
 }
 
+pub fn budget_exhausted_reason(
+    runs: &[RunRow],
+    pricing: &std::collections::BTreeMap<String, Price>,
+    wf: &crate::workflows::Workflow,
+    aj: &crate::autopilot::decide::AutoJson,
+    now_ms: i64,
+) -> Option<String> {
+    if aj.bypass_stages > 0 {
+        return None;
+    }
+    let usage = budget_usage(runs, pricing, now_ms);
+    let limits = BudgetLimits::from_workflow(wf).with_extra(aj.budget_extra_minutes, aj.budget_extra_usd);
+    if exhausted(&usage, &limits) {
+        let used_minutes = (usage.used_ms as f64 / 60_000.0).round() as i64;
+        let used_usd = format!("{:.2}", usage.used_usd);
+        let limit_usd = format!("{:.2}", limits.usd);
+        Some(format!(
+            "Hết ngân sách quy trình (đã dùng {}/{} phút, ${}/${}) — gia hạn rồi duyệt lại",
+            used_minutes, limits.minutes, used_usd, limit_usd
+        ))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

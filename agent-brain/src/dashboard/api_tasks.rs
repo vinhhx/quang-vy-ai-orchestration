@@ -1456,28 +1456,9 @@ pub fn load_task_state(
         .and_then(|t| t.wait.as_ref())
         .map(|w| (w.mode.clone(), staff.display_name_of(&w.staff)));
 
-    let budget_exhausted_reason = if let Some(ref wf) = workflow {
-        if aj.bypass_stages <= 0 {
-            let budget_usage = crate::pricing::budget_usage(&runs, &st.cfg.pricing, now);
-            let budget_limits = crate::pricing::BudgetLimits::from_workflow(wf)
-                .with_extra(aj.budget_extra_minutes, aj.budget_extra_usd);
-            if crate::pricing::exhausted(&budget_usage, &budget_limits) {
-                let used_minutes = (budget_usage.used_ms as f64 / 60_000.0).round() as i64;
-                let used_usd = format!("{:.2}", budget_usage.used_usd);
-                let limit_usd = format!("{:.2}", budget_limits.usd);
-                Some(format!(
-                    "Hết ngân sách quy trình (đã dùng {}/{} phút, ${}/${}) — gia hạn rồi duyệt lại",
-                    used_minutes, budget_limits.minutes, used_usd, limit_usd
-                ))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let budget_exhausted_reason = workflow.as_ref().and_then(|wf| {
+        crate::pricing::budget_exhausted_reason(&runs, &st.cfg.pricing, wf, &aj, now)
+    });
 
     let mut view = {
         let facts = TaskFacts {
@@ -3112,7 +3093,7 @@ pub fn run_control_as(
                     kind: "not_allowed",
                 });
             }
-            let plan_commit = match claim::approve_check(&conn, &state.task, &state.root) {
+            let plan_commit = match claim::approve_check(&conn, &state.task, &state.root, &st.cfg.pricing) {
                 Ok(pc) => pc,
                 Err(reason) => {
                     return Ok(ControlOutcome::Refused {

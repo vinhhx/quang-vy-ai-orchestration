@@ -356,4 +356,55 @@ mod tests {
         assert_eq!(v["kind"], "system");
         assert_eq!(v["ev"], "system/thinking_tokens");
     }
+
+    #[test]
+    fn test_status_json_includes_error_and_warnings() {
+        let run = crate::db::RunRow {
+            id: 42,
+            task_id: Some(7),
+            project_id: 1,
+            role: "qa".to_string(),
+            engine: "claude".to_string(),
+            profile: "default".to_string(),
+            model: None,
+            session_id: None,
+            pid: None,
+            pgid: None,
+            pid_start: None,
+            status: "failed".to_string(),
+            outcome: Some("protocol_violation".to_string()),
+            exit_code: Some(1),
+            kill_requested_at: None,
+            started_at: 1000,
+            ended_at: Some(2000),
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost_usd: 0.05,
+            num_turns: None,
+            assistant_turns: None,
+            turns_before_first_edit: None,
+            reads_outside_plan: None,
+            permission_denials: 0,
+            usage_source: "result".to_string(),
+            base_commit: None,
+            run_dir: None,
+            error: Some("violation error msg".to_string()),
+            stage: Some("qa".to_string()),
+            round: Some(1),
+            metrics_json: Some(
+                serde_json::json!({
+                    "warnings": ["warning 1", "warning 2"]
+                })
+                .to_string(),
+            ),
+            member_id: None,
+        };
+
+        let val = status_json(&run);
+        assert_eq!(val["run_id"], 42);
+        assert_eq!(val["error"], "violation error msg");
+        assert_eq!(val["warnings"], serde_json::json!(["warning 1", "warning 2"]));
+    }
 }

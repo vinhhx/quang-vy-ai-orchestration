@@ -660,6 +660,139 @@ mod tests {
             "{b}"
         );
     }
+
+    #[test]
+    fn run_failed_renders_error_excerpt() {
+        let task = crate::db::TaskRow {
+            id: 1,
+            project_id: 1,
+            slug: "sua-loi".to_string(),
+            title: "Sửa lỗi".to_string(),
+            branch: "task/sua-loi".to_string(),
+            base_branch: Some("main".to_string()),
+            base_commit: None,
+            status: "open".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            level: "vua".to_string(),
+        };
+        let project = crate::projects::Project {
+            id: "proj".to_string(),
+            path: "/tmp".to_string(),
+            name_vi: "Dự án".to_string(),
+            aliases: Vec::new(),
+            kind: "code".to_string(),
+            profile: "default".to_string(),
+            repo: None,
+            missing: false,
+            stack: vec![],
+            read_sources: vec![],
+        };
+        let mut run = crate::db::RunRow {
+            id: 10,
+            task_id: Some(1),
+            project_id: 1,
+            role: "dev".to_string(),
+            engine: "claude".to_string(),
+            profile: "default".to_string(),
+            model: None,
+            session_id: None,
+            pid: None,
+            pgid: None,
+            pid_start: None,
+            status: "failed".to_string(),
+            outcome: None,
+            exit_code: Some(1),
+            kill_requested_at: None,
+            started_at: 1000,
+            ended_at: Some(2000),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost_usd: 0.0,
+            num_turns: None,
+            assistant_turns: None,
+            turns_before_first_edit: None,
+            reads_outside_plan: None,
+            permission_denials: 0,
+            usage_source: "result".to_string(),
+            base_commit: None,
+            run_dir: None,
+            error: Some("SyntaxError: unexpected EOF".to_string()),
+            stage: Some("implement".to_string()),
+            round: Some(1),
+            metrics_json: None,
+            member_id: None,
+        };
+
+        let make_state = |r: RunRow| TaskState {
+            task: task.clone(),
+            project: project.clone(),
+            root: std::path::PathBuf::from("/tmp"),
+            git: crate::dashboard::taskstate::GitFacts::default(),
+            plan_text: None,
+            plan_source: None,
+            plan_dirty: false,
+            busy: None,
+            auto: crate::db::TaskAuto::default(),
+            aj: crate::autopilot::decide::AutoJson::default(),
+            workflow: None,
+            driver_alive: false,
+            runs: vec![r],
+            gate: None,
+            view: crate::dashboard::taskstate::TaskView {
+                steps: Vec::new(),
+                banner: None,
+                group: String::new(),
+                current_step: String::new(),
+                actions: Vec::new(),
+                controls: Vec::new(),
+                auto: crate::dashboard::taskstate::AutoView {
+                    state: String::new(),
+                    legacy: false,
+                    workflow_auto: false,
+                    stop_reason: None,
+                    stop_word: None,
+                    stop_detail: None,
+                    stopped_in: None,
+                    stop_requested: false,
+                },
+            },
+            rev: "1".to_string(),
+            origin: None,
+            project_telegram_ok: false,
+            team_json: None,
+            team: None,
+            teams: crate::teams::LoadedTeams::default(),
+            staff: crate::staff::LoadedStaff::default(),
+        };
+
+        let ev = Event {
+            task_id: 1,
+            kind: EventKind::RunFailed,
+            key: "fail:10".to_string(),
+            is_update: false,
+        };
+
+        // 1. With error excerpt
+        let st1 = make_state(run.clone());
+        let msg1 = text_for(&ev, &st1, 3000);
+        assert!(msg1.contains("SyntaxError: unexpected EOF"), "{msg1}");
+        assert!(!msg1.contains("xem log của run này"), "{msg1}");
+
+        // 2. Long error string (> 500 chars) is truncated with …
+        run.error = Some("e".repeat(600));
+        let st2 = make_state(run.clone());
+        let msg2 = text_for(&ev, &st2, 3000);
+        assert!(msg2.contains(&format!("{}…", "e".repeat(500))), "{msg2}");
+
+        // 3. Without error
+        run.error = None;
+        let st3 = make_state(run);
+        let msg3 = text_for(&ev, &st3, 3000);
+        assert!(msg3.contains("xem log của run này"), "{msg3}");
+    }
 }
 
 #[cfg(test)]

@@ -490,18 +490,22 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
             }
             restore.disarm();
             crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
+            let total = violations.len();
             let files_50: Vec<String> = violations.iter().take(50).cloned().collect();
-            let msg = format!(
-                "{} file ngoài .qa-report.md và thư mục được ghi: {} — QA chỉ được sửa .qa-report.md hoặc thư mục được ghi trong plan",
-                files_50.len(),
+            let preview = if total > files_50.len() {
+                format!("{}, … (và {} file khác)", files_50.join(", "), total - files_50.len())
+            } else {
                 files_50.join(", ")
+            };
+            let msg = format!(
+                "{total} file ngoài .qa-report.md và thư mục được ghi: {preview} — QA chỉ được sửa .qa-report.md hoặc thư mục được ghi trong plan"
             );
             crate::roles::record_violation(
                 ctx,
                 role_run.run_id,
                 "qa_extra_files",
                 &msg,
-                serde_json::json!({ "files": files_50 }),
+                serde_json::json!({ "files": files_50, "total": total }),
             )?;
             return Ok(crate::error::EXIT_PROTOCOL);
         }

@@ -1032,3 +1032,381 @@ fn test_chained_proposal_waits_when_prior_stopped() {
 
     st.jobs.kill_all_now();
 }
+
+#[test]
+fn test_chained_proposal_fails_when_prior_ended_qa_fix() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repos = setup_projects(&sb, &["proj1"]);
+    let fake_job = setup_fake_job(&sb);
+
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true,
+            "max_parallel": 2
+        }
+    }));
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
+    let projects = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+
+    let intake_id = insert_intake(&conn, "ui", None, "chuỗi việc", "normal").expect("intake");
+    let pid = agent_brain::db::project_row_id(&conn, "proj1").unwrap();
+
+    let p0 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid,
+            title: "Build",
+            request: "Build app",
+            priority: "normal",
+            level: "vua",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("p0");
+
+    let p1 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid,
+            title: "Tiếp theo",
+            request: "Làm tiếp",
+            priority: "normal",
+            level: "vua",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("p1");
+    agent_brain::db::set_proposal_after_id(&conn, p1, Some(p0)).unwrap();
+
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "build-app",
+        "Build",
+        "task/build-app",
+        None,
+        None,
+    )
+    .unwrap();
+    agent_brain::db::set_proposal_status(&conn, p0, "started").unwrap();
+    conn.execute("UPDATE proposals SET task_id = ?1 WHERE id = ?2", rusqlite::params![task_id, p0]).unwrap();
+    conn.execute("UPDATE tasks SET status = 'qa_fix', auto_state = 'ended' WHERE id = ?1", [task_id]).unwrap();
+
+    set_proposal_status(&conn, p1, "approved").expect("approve p1");
+
+    let st = app_state(&sb, fake_job);
+    schedule_tick(&st).expect("schedule_tick");
+
+    let p1_after = get_proposal(&conn, p1).unwrap().unwrap();
+    assert_eq!(p1_after.status, "failed");
+    assert!(p1_after.error.unwrap().contains(&format!("Việc trước (#{p0}) không có kết quả")));
+
+    st.jobs.kill_all_now();
+}
+
+#[test]
+fn test_chained_proposal_proceeds_on_answered_with_document() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repos = setup_projects(&sb, &["proj1"]);
+    let fake_job = setup_fake_job(&sb);
+
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true,
+            "max_parallel": 2
+        }
+    }));
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
+    let projects = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+
+    let intake_id = insert_intake(&conn, "ui", None, "chuỗi việc", "normal").expect("intake");
+    let pid = agent_brain::db::project_row_id(&conn, "proj1").unwrap();
+
+    let p0 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid,
+            title: "Khảo sát",
+            request: "Khảo sát hệ thống",
+            priority: "normal",
+            level: "vua",
+            team: "mac-dinh",
+            workflow: "phan-tich",
+            reason: None,
+        },
+    )
+    .expect("p0");
+
+    let p1 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid,
+            title: "Thực thi",
+            request: "Thực thi theo khảo sát",
+            priority: "normal",
+            level: "vua",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("p1");
+    agent_brain::db::set_proposal_after_id(&conn, p1, Some(p0)).unwrap();
+
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "khao-sat",
+        "Khảo sát",
+        "analysis/khao-sat",
+        None,
+        None,
+    )
+    .unwrap();
+    agent_brain::db::set_proposal_status(&conn, p0, "started").unwrap();
+    conn.execute("UPDATE proposals SET task_id = ?1 WHERE id = ?2", rusqlite::params![task_id, p0]).unwrap();
+    conn.execute("UPDATE tasks SET status = 'answered' WHERE id = ?1", [task_id]).unwrap();
+
+    agent_brain::answers::save("proj1", task_id, "khao-sat", "# Kết quả phân tích\n\nNội dung khảo sát.").unwrap();
+
+    set_proposal_status(&conn, p1, "approved").expect("approve p1");
+
+    let st = app_state(&sb, fake_job);
+    schedule_tick(&st).expect("schedule_tick");
+
+    let p1_after = get_proposal(&conn, p1).unwrap().unwrap();
+    assert_eq!(p1_after.status, "started");
+
+    let task1_id = p1_after.task_id.expect("task_id");
+    let inputs = agent_brain::inputs::list_for_task(&conn, task1_id).unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].name, format!("phan-tich-{task_id}.md"));
+    assert_eq!(inputs[0].source, format!("answer:{task_id}"));
+    assert_eq!(inputs[0].content, "# Kết quả phân tích\n\nNội dung khảo sát.");
+
+    st.jobs.kill_all_now();
+}
+
+#[test]
+fn test_chained_proposal_proceeds_on_qa_pass_without_document() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repos = setup_projects(&sb, &["proj1"]);
+    let fake_job = setup_fake_job(&sb);
+
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true,
+            "max_parallel": 2
+        }
+    }));
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
+    let projects = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+
+    let intake_id = insert_intake(&conn, "ui", None, "chuỗi việc", "normal").expect("intake");
+    let pid = agent_brain::db::project_row_id(&conn, "proj1").unwrap();
+
+    let p0 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid,
+            title: "Build 1",
+            request: "Build feature 1",
+            priority: "normal",
+            level: "vua",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("p0");
+
+    let p1 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid,
+            title: "Build 2",
+            request: "Build feature 2",
+            priority: "normal",
+            level: "vua",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("p1");
+    agent_brain::db::set_proposal_after_id(&conn, p1, Some(p0)).unwrap();
+
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "build-1",
+        "Build 1",
+        "task/build-1",
+        None,
+        None,
+    )
+    .unwrap();
+    agent_brain::db::set_proposal_status(&conn, p0, "started").unwrap();
+    conn.execute("UPDATE proposals SET task_id = ?1 WHERE id = ?2", rusqlite::params![task_id, p0]).unwrap();
+    conn.execute("UPDATE tasks SET status = 'qa_pass' WHERE id = ?1", [task_id]).unwrap();
+
+    set_proposal_status(&conn, p1, "approved").expect("approve p1");
+
+    let st = app_state(&sb, fake_job);
+    schedule_tick(&st).expect("schedule_tick");
+
+    let p1_after = get_proposal(&conn, p1).unwrap().unwrap();
+    assert_eq!(p1_after.status, "started");
+
+    // No document should be attached when prior task is qa_pass
+    let inputs = agent_brain::inputs::list_for_proposal(&conn, p1).unwrap();
+    assert!(inputs.is_empty(), "expected no inputs, got: {:?}", inputs);
+
+    st.jobs.kill_all_now();
+}
+
+#[test]
+fn test_chained_proposal_waits_when_last_run_timed_out_but_task_stopped() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repos = setup_projects(&sb, &["proj1"]);
+    let fake_job = setup_fake_job(&sb);
+
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true,
+            "max_parallel": 2
+        }
+    }));
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
+    let projects = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+
+    let intake_id = insert_intake(&conn, "ui", None, "chuỗi việc", "normal").expect("intake");
+    let pid = agent_brain::db::project_row_id(&conn, "proj1").unwrap();
+
+    let p0 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid,
+            title: "Khảo sát",
+            request: "Khảo sát hệ thống",
+            priority: "normal",
+            level: "vua",
+            team: "mac-dinh",
+            workflow: "phan-tich",
+            reason: None,
+        },
+    )
+    .expect("p0");
+
+    let p1 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid,
+            title: "Thực thi",
+            request: "Thực thi theo khảo sát",
+            priority: "normal",
+            level: "vua",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("p1");
+    agent_brain::db::set_proposal_after_id(&conn, p1, Some(p0)).unwrap();
+
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "khao-sat",
+        "Khảo sát",
+        "analysis/khao-sat",
+        None,
+        None,
+    )
+    .unwrap();
+    agent_brain::db::set_proposal_status(&conn, p0, "started").unwrap();
+    conn.execute("UPDATE proposals SET task_id = ?1 WHERE id = ?2", rusqlite::params![task_id, p0]).unwrap();
+    
+    // Seed a timed_out run
+    let new_run = agent_brain::db::NewRun {
+        task_id: Some(task_id),
+        project_id: pid,
+        role: "dev".to_string(),
+        profile: "default".to_string(),
+        model: None,
+        pid: 1,
+        pgid: 1,
+        pid_start: 1,
+        base_commit: None,
+        run_dir: None,
+    };
+    let run_id = agent_brain::db::insert_run(&conn, &new_run).unwrap();
+    conn.execute("UPDATE runs SET status = 'timed_out' WHERE id = ?1", [run_id]).unwrap();
+
+    // But task is stopped, NOT ended
+    let stop = agent_brain::autopilot::decide::StopInfo {
+        reason: agent_brain::autopilot::decide::StopReason::RunLoi,
+        loop_name: None,
+        stage: None,
+        round: None,
+        cap: None,
+        run_id: Some(run_id),
+        role: Some("dev".to_string()),
+        at_ms: 1000,
+        detail_line: None,
+        used_ms: None,
+        used_usd: None,
+        estimated: None,
+        limit_minutes: None,
+        limit_usd: None,
+    };
+    let aj = agent_brain::autopilot::decide::AutoJson {
+        stop: Some(stop),
+        ..Default::default()
+    };
+    conn.execute(
+        "UPDATE tasks SET status = 'open', auto_state = 'stopped', auto_json = ?1 WHERE id = ?2",
+        rusqlite::params![aj.to_json(), task_id],
+    )
+    .unwrap();
+
+    set_proposal_status(&conn, p1, "approved").expect("approve p1");
+
+    let st = app_state(&sb, fake_job);
+    schedule_tick(&st).expect("schedule_tick");
+
+    let p1_after = get_proposal(&conn, p1).unwrap().unwrap();
+    // p1 should still be approved, waiting on task, NOT failed
+    assert_eq!(p1_after.status, "approved");
+    assert!(p1_after.error.unwrap().contains(&format!("Chờ task #{task_id} (đang dừng: run lỗi)")));
+
+    st.jobs.kill_all_now();
+}
