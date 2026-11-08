@@ -683,6 +683,7 @@ pub fn triage_with_warnings(
         finish_after_result: agy.then(|| {
             std::time::Duration::from_secs(crate::roles::AGY_AFTER_RESULT_GRACE_SECS)
         }),
+        env_watch: None,
     };
 
     let mut obs = TriageObserver::default();

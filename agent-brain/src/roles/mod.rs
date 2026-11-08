@@ -6,7 +6,7 @@ pub mod review;
 
 use crate::app::Ctx;
 use crate::config::Config;
-use crate::error::{BrainError, BrainResult, EXIT_PROTOCOL, EXIT_QUOTA};
+use crate::error::{BrainError, BrainResult, EXIT_ENV_DOWN, EXIT_PROTOCOL, EXIT_QUOTA};
 use crate::projects::Project;
 use crate::runner::RunOutcome;
 use crate::stream::Summary;
@@ -415,6 +415,14 @@ pub fn deadline_prompt_block(
     block
 }
 
+/// Error text of a run stopped because its environment went down (C2).
+fn env_down_message(reason: &str) -> String {
+    format!(
+        "Môi trường không còn sẵn sàng trong lúc chạy ({} lần kiểm liên tiếp lỗi) — {reason}",
+        crate::preflight::FAILS_TO_STOP
+    )
+}
+
 /// The workflow snapshot stored on a task, if any.
 pub fn task_workflow(
     conn: &rusqlite::Connection,
@@ -549,6 +557,25 @@ pub fn execute_role_staged(
     let resolved =
         crate::engine::resolve_for_run_with(&ctx.conn, plan.task_id, &plan.role, Some(&ctx.cfg))?;
 
+    // C2: the project's target environment, for the roles in `preflight_roles`, before any run
+    // row exists. A project without `preflight` skips this entirely.
+    let map = crate::projects::load_map(&crate::config::map_path()).unwrap_or_default();
+    let preflight = crate::projects::preflight_of(&map, &project.id);
+    let env_watch = if preflight.applies_to(&plan.role) {
+        if let Err(reason) = crate::preflight::run_checks(&preflight.checks) {
+            return Err(BrainError::new(
+                crate::preflight::refusal_message(&reason),
+                EXIT_ENV_DOWN,
+            ));
+        }
+        (preflight.interval_seconds > 0).then(|| crate::runner::EnvWatch {
+            interval: Duration::from_secs(preflight.interval_seconds),
+            checks: preflight.checks.clone(),
+        })
+    } else {
+        None
+    };
+
     let (dept_extra, dept_warns) = crate::departments::prompt_append_for_member(
         &plan.role,
         resolved.member.as_ref().map(|p| &p.member),
@@ -558,7 +585,6 @@ pub fn execute_role_staged(
     }
     crate::engine::append_to_system_prompt(&mut plan.argv, &dept_extra);
 
-    let map = crate::projects::load_map(&crate::config::map_path()).unwrap_or_default();
     let (sources_block, source_warnings) =
         crate::projects::read_sources_prompt_block(&map, project);
     for w in &source_warnings {
@@ -693,6 +719,7 @@ pub fn execute_role_staged(
         container_stop: ep.dsh.clone(),
         finish_after_result: (ep.stream == crate::engine::StreamFormat::Agy)
             .then(|| Duration::from_secs(AGY_AFTER_RESULT_GRACE_SECS)),
+        env_watch,
     };
 
     // An agy Dev is not behind claude's PreToolUse hook: every tool step it starts is checked
@@ -938,6 +965,12 @@ pub fn execute_role_staged(
     let mut outcome = crate::runner::supervise(&req, &mut obs)?;
     obs.summary.finish();
 
+    // C2: the environment went down while the run ran (`preflight_interval_seconds`).
+    let env_down = outcome
+        .env_down
+        .clone()
+        .filter(|_| outcome.stopped_by == Some(crate::runner::RunStop::EnvDown));
+
     // An agy Dev tool step outside the plan's permissions: the run was stopped for it (or ended
     // before the stop). Like every other protocol violation the run is a finished run with outcome
     // `protocol_violation` (what the autopilot stops on), not a kill by the user. A signal or a
@@ -995,7 +1028,7 @@ pub fn execute_role_staged(
 
     // ENG-02 / D-15: one detector decides quota for every claude-format run (claude, deepseek)
     // that was not killed or timed out. A hit only stops the step (D-16).
-    let quota_hit = if violation.is_some() {
+    let quota_hit = if violation.is_some() || env_down.is_some() {
         None
     } else if ep.stream == crate::engine::StreamFormat::Claude
         && !matches!(
@@ -1072,7 +1105,9 @@ pub fn execute_role_staged(
                     &format!("quota: {}", h.detail),
                     &ep.redact,
                 )),
-                (None, None) => None,
+                (None, None) => env_down
+                    .as_ref()
+                    .map(|r| crate::secrets::redact_str(&env_down_message(r), &ep.redact)),
             },
         };
         crate::db::finish_run(&ctx.conn, run_id, &finish)?;
@@ -1134,6 +1169,17 @@ pub fn execute_role_staged(
                 &ep.redact,
             ),
             EXIT_PROTOCOL,
+        ));
+    }
+
+    // C2: like a quota stop, the role code never runs after an environment stop.
+    if let Some(reason) = env_down {
+        if let Some(run_id) = obs.run_id {
+            crate::db::set_run_outcome(&ctx.conn, run_id, crate::preflight::OUTCOME_ENV_DOWN)?;
+        }
+        return Err(BrainError::new(
+            crate::secrets::redact_str(&env_down_message(&reason), &ep.redact),
+            EXIT_ENV_DOWN,
         ));
     }
 

@@ -217,6 +217,56 @@ pub struct RunRequest {
     /// itself (`RunStop::AfterResult`), because an MCP server agy started can keep it alive.
     /// `None` = wait for the child (or the timeout) as before.
     pub finish_after_result: Option<Duration>,
+    /// C2: re-check the project's environment every `interval` while the run runs;
+    /// `preflight::FAILS_TO_STOP` failures in a row stop it (`RunStop::EnvDown`). `None` = off.
+    pub env_watch: Option<EnvWatch>,
+}
+
+/// Periodic environment check during a run (project `preflight_interval_seconds`).
+#[derive(Debug, Clone)]
+pub struct EnvWatch {
+    pub interval: Duration,
+    pub checks: Vec<crate::preflight::Check>,
+}
+
+/// Starts the watcher thread: it sends the reason once after `FAILS_TO_STOP` failed checks in a
+/// row, and ends when `done` is set (checked between short sleeps).
+fn spawn_env_watch(
+    watch: EnvWatch,
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> tokio::sync::mpsc::UnboundedReceiver<String> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let _ = std::thread::Builder::new()
+        .name("ab-env-watch".to_string())
+        .spawn(move || {
+            let slice = Duration::from_millis(200);
+            let mut fails = 0u32;
+            loop {
+                let mut waited = Duration::ZERO;
+                while waited < watch.interval {
+                    if done.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    let step = slice.min(watch.interval - waited);
+                    std::thread::sleep(step);
+                    waited += step;
+                }
+                if done.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                match crate::preflight::run_checks(&watch.checks) {
+                    Ok(()) => fails = 0,
+                    Err(reason) => {
+                        fails += 1;
+                        if fails >= crate::preflight::FAILS_TO_STOP {
+                            let _ = tx.send(reason);
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+    rx
 }
 
 /// Why the runner itself stopped a run. `None` in `RunOutcome::stopped_by` = the child exited
@@ -231,6 +281,8 @@ pub enum RunStop {
     AfterResult,
     /// The observer asked for the stop (`RunObserver::stop_requested`).
     Observer,
+    /// The environment watcher (`RunRequest::env_watch`) saw the environment down.
+    EnvDown,
 }
 
 /// What one stop of a run did: the container part (dsh only) and the host process tree.
@@ -261,6 +313,8 @@ pub struct RunOutcome {
     pub elapsed: Duration,
     /// What made the runner stop the child, if the runner stopped it.
     pub stopped_by: Option<RunStop>,
+    /// `RunStop::EnvDown`: why (no URL path or query in it).
+    pub env_down: Option<String>,
 }
 
 pub trait RunObserver {
@@ -501,9 +555,34 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
     let force = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut kill_task: Option<tokio::task::JoinHandle<StopResult>> = None;
     let mut child_exit = None;
+    let env_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut env_rx = req
+        .env_watch
+        .clone()
+        .map(|w| spawn_env_watch(w, env_done.clone()));
+    let mut env_down: Option<String> = None;
 
     loop {
         tokio::select! {
+            reason = async {
+                match env_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if env_rx.is_some() && stopping.is_none() => {
+                env_rx = None;
+                if let Some(reason) = reason {
+                    stopping = Some(RunStop::EnvDown);
+                    obs.on_notice(&format!("Dừng run: môi trường không còn sẵn sàng — {reason}"));
+                    env_down = Some(reason);
+                    kill_task = Some(spawn_stop(
+                        root,
+                        req.kill_grace,
+                        force.clone(),
+                        req.container_stop.clone(),
+                    ));
+                }
+            }
             line = rx.recv() => {
                 match line {
                     Some(line) => {
@@ -625,6 +704,7 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         }
     }
 
+    env_done.store(true, std::sync::atomic::Ordering::Relaxed);
     if child_exit.is_none() {
         child_exit = Some(child.wait().await?);
     }
@@ -725,6 +805,8 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         }
         // The observer decides what its stop means; the runner reports a stopped run.
         Some(RunStop::Observer) => RunStatus::Killed,
+        // C2: not a kill by the user; the outcome `env:down` says why.
+        Some(RunStop::EnvDown) => RunStatus::Failed,
         None => {
             if obs.kill_requested() {
                 RunStatus::Killed
@@ -741,5 +823,6 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         exit_code,
         elapsed,
         stopped_by: stopping,
+        env_down,
     })
 }

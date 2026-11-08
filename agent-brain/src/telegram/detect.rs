@@ -390,6 +390,59 @@ impl IntakeFailures {
     }
 }
 
+/// `Môi trường đã sẵn sàng · task N slug — autopilot chạy lại lúc HH:MM` (C2).
+pub fn env_rerun_text(task_id: i64, slug: &str, project: &str, at_ms: i64) -> String {
+    format!(
+        "Môi trường đã sẵn sàng · task {task_id} {slug} · dự án {project} — autopilot chạy lại lúc {}",
+        crate::autopilot::view::fmt_hhmm(at_ms)
+    )
+}
+
+/// C2: autopilot reruns the scheduler started after an environment stop
+/// (`auto_json.env_rerun_at`): one message per rerun. Seeded at start-up so a serve restart
+/// never resends.
+#[derive(Debug, Default)]
+pub struct EnvReruns {
+    seen: HashSet<(i64, i64)>,
+}
+
+fn env_rerun_rows(conn: &Connection) -> BrainResult<Vec<(i64, String, String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.slug, p.slug, json_extract(t.auto_json, '$.env_rerun_at')
+         FROM tasks t JOIN projects p ON p.id = t.project_id
+         WHERE json_extract(t.auto_json, '$.env_rerun_at') IS NOT NULL ORDER BY t.id",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+impl EnvReruns {
+    pub fn seed(conn: &Connection) -> BrainResult<EnvReruns> {
+        let seen = env_rerun_rows(conn)?
+            .into_iter()
+            .map(|(id, _, _, at)| (id, at))
+            .collect();
+        Ok(EnvReruns { seen })
+    }
+
+    pub fn scan(&mut self, conn: &Connection) -> BrainResult<Vec<Outgoing>> {
+        let mut out = Vec::new();
+        let mut now_seen = HashSet::new();
+        for (id, slug, project, at) in env_rerun_rows(conn)? {
+            if !self.seen.contains(&(id, at)) {
+                out.push(Outgoing::Message {
+                    text: env_rerun_text(id, &slug, &project, at),
+                });
+            }
+            now_seen.insert((id, at));
+        }
+        self.seen = now_seen;
+        Ok(out)
+    }
+}
+
 fn open_db(ctx: &BotCtx) -> Option<Connection> {
     let mut reported = false;
     loop {
@@ -423,13 +476,16 @@ fn run(ctx: Arc<BotCtx>) {
     let mut det = Detector::new();
     let mut last_err: Option<String> = None;
     let mut fails;
+    let mut reruns;
     loop {
         match det
             .seed(&ctx.st, &conn)
             .and_then(|()| IntakeFailures::seed(&conn))
+            .and_then(|f| EnvReruns::seed(&conn).map(|r| (f, r)))
         {
-            Ok(f) => {
+            Ok((f, r)) => {
                 fails = f;
+                reruns = r;
                 break;
             }
             Err(e) => {
@@ -470,6 +526,7 @@ fn run(ctx: Arc<BotCtx>) {
         let results = [
             det.scan(&ctx.st, &conn, full, &ctx.registry),
             fails.scan(&conn),
+            reruns.scan(&conn),
         ];
         let mut failed = false;
         for res in results {
@@ -546,6 +603,34 @@ mod tests {
             texts(&fails.scan(&conn).unwrap()),
             vec![format!("Hàng chờ #{tg} lỗi: lần 2")]
         );
+    }
+
+    #[test]
+    fn env_rerun_is_reported_once_per_rerun() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::open(&dir.path().join("brain.db")).unwrap();
+        conn.execute(
+            "INSERT INTO projects (slug, path, profile) VALUES ('p1', '/tmp/p1', 'work')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (project_id, slug, title, branch, created_at, updated_at) VALUES (1, 's1', 't', 'task/s1', 0, 0)",
+            [],
+        )
+        .unwrap();
+        let mut reruns = EnvReruns::seed(&conn).unwrap();
+        assert!(reruns.scan(&conn).unwrap().is_empty());
+        crate::db::set_auto_json(&conn, 1, Some(r#"{"env_rerun_at": 1000}"#)).unwrap();
+        let got = texts(&reruns.scan(&conn).unwrap());
+        assert_eq!(got.len(), 1);
+        assert!(got[0].starts_with("Môi trường đã sẵn sàng · task 1 s1 · dự án p1"), "{got:?}");
+        assert!(reruns.scan(&conn).unwrap().is_empty());
+        crate::db::set_auto_json(&conn, 1, Some(r#"{"env_rerun_at": 2000}"#)).unwrap();
+        assert_eq!(reruns.scan(&conn).unwrap().len(), 1);
+        // Seeded at start-up: not resent.
+        let mut fresh = EnvReruns::seed(&conn).unwrap();
+        assert!(fresh.scan(&conn).unwrap().is_empty());
     }
 
     #[test]

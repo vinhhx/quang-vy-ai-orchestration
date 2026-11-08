@@ -12,7 +12,8 @@ use crate::autopilot::decide::{
     AutoJson, Decision, Loop, Replan, Stage, StageRun, StopInfo, StopReason,
 };
 use crate::error::{
-    BrainError, BrainResult, EXIT_BLOCKED, EXIT_INTERRUPTED, EXIT_OK, EXIT_PROTOCOL, EXIT_QUOTA,
+    BrainError, BrainResult, EXIT_BLOCKED, EXIT_ENV_DOWN, EXIT_INTERRUPTED, EXIT_OK, EXIT_PROTOCOL,
+    EXIT_QUOTA,
     EXIT_WAITING,
 };
 use crate::workflows::Workflow;
@@ -355,7 +356,8 @@ fn max_run_id(ctx: &Ctx, task_id: i64) -> BrainResult<i64> {
         .unwrap_or(0))
 }
 
-/// Mã thoát của con không phải lỗi của vai trò: 0, 3, 4, 5 (hết quota), 6 (chờ nhân sự), 130.
+/// Mã thoát của con không phải lỗi của vai trò: 0, 3, 4, 5 (hết quota), 6 (chờ nhân sự),
+/// 7 (môi trường chưa sẵn sàng), 130.
 pub(crate) fn child_exit_is_neutral(code: i32) -> bool {
     [
         EXIT_OK,
@@ -363,6 +365,7 @@ pub(crate) fn child_exit_is_neutral(code: i32) -> bool {
         EXIT_BLOCKED,
         EXIT_QUOTA,
         EXIT_WAITING,
+        EXIT_ENV_DOWN,
         EXIT_INTERRUPTED,
     ]
     .contains(&code)
@@ -396,6 +399,32 @@ fn child_error_stop(
     info.run_id = Some(run.id);
     info.role = Some(run.role);
     Ok(Some(info))
+}
+
+/// C2: stop `môi trường chưa sẵn sàng` for a step the preflight check refused (no run). The
+/// reason is the child's error line; the step keeps its round (nothing ran).
+fn env_down_stop(outcome: &ChildOutcome, sr: &StageRun) -> StopInfo {
+    let detail = outcome
+        .first_err_line
+        .clone()
+        .or_else(|| outcome.last_err_line.clone())
+        .unwrap_or_else(|| "Môi trường chưa sẵn sàng".to_string());
+    StopInfo {
+        reason: StopReason::MoiTruongChuaSan,
+        loop_name: None,
+        stage: Some(sr.stage),
+        round: Some(sr.round),
+        cap: None,
+        run_id: None,
+        role: None,
+        at_ms: crate::db::now_ms(),
+        detail_line: Some(detail),
+        used_ms: None,
+        used_usd: None,
+        estimated: None,
+        limit_minutes: None,
+        limit_usd: None,
+    }
 }
 
 fn stop_with(ctx: &Ctx, task_id: i64, slug: &str, mut aj: AutoJson, info: StopInfo) -> i32 {
@@ -528,6 +557,11 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
                     return Ok(EXIT_OK);
                 }
                 let after = max_run_id(ctx, task_id)?;
+                // C2: the environment check refused the step before any run was created.
+                if outcome.exit_code == Some(EXIT_ENV_DOWN) && after <= before {
+                    let info = env_down_stop(&outcome, &sr);
+                    return Ok(stop_with(ctx, task_id, &task.slug, aj, info));
+                }
                 if after <= before {
                     let detail = outcome
                         .first_err_line
@@ -902,12 +936,13 @@ mod tests {
             EXIT_BLOCKED,
             EXIT_QUOTA,
             EXIT_WAITING,
+            EXIT_ENV_DOWN,
             EXIT_INTERRUPTED,
         ] {
             assert!(child_exit_is_neutral(code), "{code}");
         }
         assert_eq!(EXIT_WAITING, 6);
-        for code in [1, 2, 7, 137] {
+        for code in [1, 2, 8, 137] {
             assert!(!child_exit_is_neutral(code), "{code}");
         }
     }

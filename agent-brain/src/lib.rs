@@ -19,6 +19,7 @@ pub mod inputs;
 pub mod knowledge;
 pub mod orchestrator;
 pub mod planfile;
+pub mod preflight;
 pub mod pricing;
 pub mod procs;
 pub mod profile;

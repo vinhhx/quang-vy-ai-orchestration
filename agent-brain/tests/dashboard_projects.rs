@@ -1104,3 +1104,76 @@ fn update_project_stack() {
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
 }
+
+#[test]
+fn update_project_preflight() {
+    let sb = Sandbox::new();
+    let r_ok = sb.make_repo("proj-pf", &[], None, None);
+    let entry = sb.project_entry(&r_ok, "proj-pf", "work");
+    sb.write_map(serde_json::json!([entry]), &[]);
+    let mut srv = sb.serve(&[]);
+
+    // Missing config: defaults (no check, roles dev+qa, no retry, no interval).
+    let j = srv.get("/api/projects").json();
+    let etag = j["etag"].as_str().unwrap().to_string();
+    let p = &j["projects"][0];
+    assert_eq!(
+        p["preflight"],
+        serde_json::json!({"checks": [], "roles": ["dev", "qa"], "retry_minutes": 0, "interval_seconds": 0})
+    );
+
+    let r = srv.put_json(
+        "/api/projects/proj-pf/preflight",
+        &serde_json::json!({
+            "preflight": [
+                {"kind": "http", "url_env": "AB_TARGET_URL", "expect_status": [200, 302]},
+                {"kind": "tcp", "host": "127.0.0.1", "port": 5432, "timeout_seconds": 3}
+            ],
+            "preflight_roles": ["qa"],
+            "preflight_retry_minutes": 15,
+            "preflight_interval_seconds": 120,
+            "etag": etag
+        }),
+    );
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    let map: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(sb.map_path()).unwrap()).unwrap();
+    let stored = &map["projects"][0];
+    assert_eq!(stored["preflight"][0]["url_env"], "AB_TARGET_URL");
+    assert_eq!(stored["preflight"][1]["port"], 5432);
+    assert_eq!(stored["preflight_roles"], serde_json::json!(["qa"]));
+    assert_eq!(stored["preflight_retry_minutes"], 15);
+    assert_eq!(stored["preflight_interval_seconds"], 120);
+
+    // Server-side limits.
+    for bad in [
+        serde_json::json!({"preflight": (0..6).map(|_| serde_json::json!({"kind": "tcp", "host": "h", "port": 1})).collect::<Vec<_>>()}),
+        serde_json::json!({"preflight": [{"kind": "http", "url": "ftp://x"}]}),
+        serde_json::json!({"preflight": [{"kind": "tcp", "host": "h", "port": 70000}]}),
+        serde_json::json!({"preflight_retry_minutes": 5000}),
+        serde_json::json!({"preflight_interval_seconds": 5}),
+    ] {
+        let r = srv.put_json("/api/projects/proj-pf/preflight", &bad);
+        assert_eq!(r.status, 400, "{bad}");
+    }
+    let r = srv.put_json(
+        "/api/projects/proj-pf/preflight",
+        &serde_json::json!({"preflight": [], "etag": "wrong"}),
+    );
+    assert_eq!(r.status, 409);
+    let r = srv.put_json("/api/projects/nope/preflight", &serde_json::json!({"preflight": []}));
+    assert_eq!(r.status, 404);
+
+    // Empty list: every key goes, the project is back to no check.
+    let r = srv.put_json("/api/projects/proj-pf/preflight", &serde_json::json!({"preflight": []}));
+    assert_eq!(r.status, 200);
+    let map: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(sb.map_path()).unwrap()).unwrap();
+    let stored = map["projects"][0].as_object().unwrap();
+    for k in ["preflight", "preflight_roles", "preflight_retry_minutes", "preflight_interval_seconds"] {
+        assert!(!stored.contains_key(k), "{k}");
+    }
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}

@@ -116,6 +116,9 @@ pub fn step_state(run: Option<&RunRow>) -> (&'static str, &'static str) {
         Some("review:revise") => return ("sua_lai", "sửa lại"),
         Some("review:pass") => return ("dat", "đạt"),
         Some(crate::quota::OUTCOME_QUOTA) => return ("het_quota", "hết quota"),
+        Some(crate::preflight::OUTCOME_ENV_DOWN) => {
+            return ("moi_truong", "môi trường chưa sẵn sàng")
+        }
         Some("agy:empty") => return ("vuong_mac", "agy không sửa file"),
         Some("dsh:empty") => return ("vuong_mac", "dsh không sửa file"),
         _ => {}

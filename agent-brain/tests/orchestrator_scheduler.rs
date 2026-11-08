@@ -1420,3 +1420,93 @@ fn test_chained_proposal_waits_when_last_run_timed_out_but_task_stopped() {
 
     st.jobs.kill_all_now();
 }
+
+/// C2: a task stopped with `moi_truong_chua_san` on a project with `preflight_retry_minutes` is
+/// re-checked when due and restarted with `auto <task>` once the environment answers; the
+/// orchestrator does not need to be on. While the target is down nothing starts.
+#[test]
+fn test_env_stop_rerun_when_environment_is_back() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let repos = setup_projects(&sb, &["p1"]);
+    let fake_job = setup_fake_job(&sb);
+    sb.write_config(json!({"orchestrator": {"enabled": false}}));
+
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let write_map = |port: u16| {
+        let mut entry = sb.project_entry(&repos[0], "p1", "work");
+        entry["preflight"] = json!([{"kind": "tcp", "host": "127.0.0.1", "port": port, "timeout_seconds": 1}]);
+        entry["preflight_retry_minutes"] = json!(5);
+        sb.write_map(json!([entry]), &[]);
+    };
+    write_map(dead);
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
+    agent_brain::db::sync_projects(&conn, &agent_brain::projects::projects_of(&map)).unwrap();
+    let pid1 = agent_brain::db::project_row_id(&conn, "p1").unwrap();
+    let t1 = agent_brain::db::upsert_task(&conn, pid1, "env-task", "Env", "env-task", Some("task/env-task"), None)
+        .unwrap();
+    let now = agent_brain::db::now_ms();
+    let stopped_at = now - 6 * 60 * 1000;
+    let aj = json!({"stop": {"reason": "moi_truong_chua_san", "at_ms": stopped_at, "detail_line": "x"}});
+    conn.execute(
+        "UPDATE tasks SET auto_state = 'stopped', auto_json = ?1 WHERE id = ?2",
+        rusqlite::params![aj.to_string(), t1],
+    )
+    .unwrap();
+
+    let st = app_state(&sb, fake_job);
+    schedule_tick(&st).expect("tick down");
+    assert!(st.jobs.list().is_empty(), "target down: nothing starts");
+
+    // Back up: the next check is due 5 minutes after the last one.
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    write_map(l.local_addr().unwrap().port());
+    let map = agent_brain::projects::load_map(&sb.map_path()).unwrap();
+    let started =
+        agent_brain::orchestrator::scheduler::handle_env_stops(&st, &conn, &map, now + 60_000).unwrap();
+    assert!(started.is_empty(), "not due yet");
+    let started =
+        agent_brain::orchestrator::scheduler::handle_env_stops(&st, &conn, &map, now + 6 * 60_000).unwrap();
+    assert_eq!(started, vec![t1]);
+    let jobs = st.jobs.list();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].role, "auto");
+    assert_eq!(jobs[0].task_id, Some(t1));
+    let aj_after: String = conn
+        .query_row("SELECT auto_json FROM tasks WHERE id = ?1", [t1], |r| r.get(0))
+        .unwrap();
+    let aj_after: serde_json::Value = serde_json::from_str(&aj_after).unwrap();
+    assert_eq!(aj_after["env_rerun_at"], json!(now + 6 * 60_000));
+    drop(l);
+    st.jobs.kill_all_now();
+}
+
+/// C2: without `preflight_retry_minutes` an env stop stays stopped (no job, nothing opened).
+#[test]
+fn test_env_stop_without_retry_stays_stopped() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repos = setup_projects(&sb, &["p1"]);
+    let fake_job = setup_fake_job(&sb);
+    sb.write_config(json!({"orchestrator": {"enabled": false}}));
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).unwrap();
+    agent_brain::db::sync_projects(&conn, &agent_brain::projects::projects_of(&map)).unwrap();
+    let pid1 = agent_brain::db::project_row_id(&conn, "p1").unwrap();
+    let t1 = agent_brain::db::upsert_task(&conn, pid1, "env-task", "Env", "env-task", Some("task/env-task"), None)
+        .unwrap();
+    let aj = json!({"stop": {"reason": "moi_truong_chua_san", "at_ms": 1, "detail_line": "x"}});
+    conn.execute(
+        "UPDATE tasks SET auto_state = 'stopped', auto_json = ?1 WHERE id = ?2",
+        rusqlite::params![aj.to_string(), t1],
+    )
+    .unwrap();
+    let st = app_state(&sb, fake_job);
+    schedule_tick(&st).expect("tick");
+    assert!(st.jobs.list().is_empty());
+}

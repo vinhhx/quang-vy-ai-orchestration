@@ -232,6 +232,23 @@ pub fn timeouts_of(map: &serde_json::Value, project_id: &str) -> BTreeMap<String
         .collect()
 }
 
+/// The project's environment preflight (C2): `preflight`, `preflight_roles`,
+/// `preflight_retry_minutes`, `preflight_interval_seconds`. A project without them (or not in
+/// the map) gets `Preflight::default()`: no check anywhere.
+pub fn preflight_of(map: &serde_json::Value, project_id: &str) -> crate::preflight::Preflight {
+    let Some(obj) = map
+        .get("projects")
+        .and_then(|p| p.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(project_id))
+        })
+    else {
+        return crate::preflight::Preflight::default();
+    };
+    crate::preflight::read_lenient(obj)
+}
+
 /// The project's default team name (D-12), trimmed; None when missing or blank.
 pub fn team_of(map: &serde_json::Value, project_id: &str) -> Option<String> {
     let arr = map.get("projects").and_then(|p| p.as_array())?;
@@ -1070,6 +1087,21 @@ mod tests {
         assert_eq!(a.get("dev"), Some(&3600));
         assert!(timeouts_of(&map, "b").is_empty());
         assert!(timeouts_of(&map, "missing").is_empty());
+    }
+
+    #[test]
+    fn preflight_of_missing_is_default() {
+        let map = serde_json::json!({"projects": [
+            {"id": "a", "preflight": [{"kind": "tcp", "host": "127.0.0.1", "port": 9}],
+             "preflight_retry_minutes": 5},
+            {"id": "b"}
+        ]});
+        let a = preflight_of(&map, "a");
+        assert_eq!(a.checks.len(), 1);
+        assert_eq!(a.retry_minutes, 5);
+        assert!(a.applies_to("dev"));
+        assert_eq!(preflight_of(&map, "b"), crate::preflight::Preflight::default());
+        assert_eq!(preflight_of(&map, "zz"), crate::preflight::Preflight::default());
     }
 
     #[test]

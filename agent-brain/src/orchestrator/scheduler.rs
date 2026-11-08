@@ -40,6 +40,14 @@ pub(crate) fn active_task_count(st: &AppState, conn: &rusqlite::Connection) -> B
 
 /// Nhịp xử lý của bộ lập lịch: gọi định kỳ bởi orchestrator loop
 pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
+    // C2: environment reruns follow the project's own `preflight_retry_minutes`, with or without
+    // the orchestrator. Nothing is opened unless some project sets it.
+    let map = crate::projects::load_map(&st.map_path).unwrap_or_default();
+    if any_env_retry(&map) {
+        let conn = crate::db::open(&st.db_path)?;
+        handle_env_stops(st, &conn, &map, crate::db::now_ms())?;
+    }
+
     let orch = st.orch();
     if !orch.enabled {
         return Ok(());
@@ -409,4 +417,113 @@ fn handle_quota_stops(st: &AppState, conn: &rusqlite::Connection) -> BrainResult
     }
 
     Ok(())
+}
+
+/// Some project in the map asks for automatic reruns after an environment stop.
+fn any_env_retry(map: &serde_json::Value) -> bool {
+    map.get("projects")
+        .and_then(|p| p.as_array())
+        .is_some_and(|arr| {
+            arr.iter().any(|p| {
+                p.get("preflight_retry_minutes")
+                    .and_then(|v| v.as_u64())
+                    .is_some_and(|n| n > 0)
+            })
+        })
+}
+
+/// When each env-stopped task was last re-checked (in memory: a serve restart re-checks at the
+/// next due time counted from the stop).
+fn env_checks() -> &'static std::sync::Mutex<std::collections::HashMap<i64, i64>> {
+    static CHECKS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<i64, i64>>> =
+        std::sync::OnceLock::new();
+    CHECKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// C2, the same path as `handle_quota_stops`' auto resume: every task the autopilot stopped with
+/// `moi_truong_chua_san` on a project with `preflight_retry_minutes > 0` is re-checked once per
+/// that period; when the environment answers again, `auto <task>` starts as a dashboard job and
+/// `auto_json.env_rerun_at` records it (Telegram reports it). Returns the tasks restarted.
+pub fn handle_env_stops(
+    st: &AppState,
+    conn: &rusqlite::Connection,
+    map: &serde_json::Value,
+    now: i64,
+) -> BrainResult<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, p.slug, p.profile, t.branch, t.auto_json
+         FROM tasks t JOIN projects p ON p.id = t.project_id
+         WHERE t.auto_state = 'stopped'
+           AND json_extract(t.auto_json, '$.stop.reason') = 'moi_truong_chua_san'",
+    )?;
+    let rows: Vec<(i64, String, String, String, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut checks = env_checks().lock().unwrap_or_else(|e| e.into_inner());
+    let stopped: std::collections::HashSet<i64> = rows.iter().map(|r| r.0).collect();
+    checks.retain(|id, _| stopped.contains(id));
+
+    let mut restarted = Vec::new();
+    for (task_id, slug, profile, branch, auto_json) in rows {
+        let pf = crate::projects::preflight_of(map, &slug);
+        if pf.retry_minutes == 0 || pf.checks.is_empty() {
+            continue;
+        }
+        let mut aj = crate::autopilot::decide::AutoJson::parse(auto_json.as_deref());
+        let stopped_at = aj.stop.as_ref().map(|s| s.at_ms).unwrap_or(now);
+        let last = checks.get(&task_id).copied().unwrap_or(stopped_at);
+        if now < last + pf.retry_minutes as i64 * 60_000 {
+            continue;
+        }
+        let running = st
+            .jobs
+            .list()
+            .iter()
+            .any(|j| j.task_id == Some(task_id) && j.state == "running");
+        if running {
+            continue;
+        }
+        if crate::autopilot::claim::project_busy_reason(conn, &slug, &profile, None)?.is_some() {
+            continue;
+        }
+        checks.insert(task_id, now);
+        if let Err(reason) = crate::preflight::run_checks(&pf.checks) {
+            crate::term::emit(&format!(
+                "Task {task_id}: môi trường vẫn chưa sẵn sàng — {reason}; kiểm lại sau {} phút",
+                pf.retry_minutes
+            ));
+            continue;
+        }
+        // Written before the job starts: the new driver's claim keeps it (and must not be
+        // overwritten afterwards). Put back if the job does not start.
+        let previous = auto_json.clone();
+        aj.env_rerun_at = Some(now);
+        crate::db::set_auto_json(conn, task_id, Some(&aj.to_json()))?;
+        let spec = crate::dashboard::jobs::JobSpec {
+            role: "auto".to_string(),
+            project: slug,
+            profile,
+            branch: Some(branch),
+            task_id: Some(task_id),
+            args: vec!["auto".to_string(), task_id.to_string()],
+        };
+        match st.jobs.start(spec) {
+            Ok(_) => {
+                checks.remove(&task_id);
+                crate::term::emit(&format!(
+                    "Task {task_id}: môi trường đã sẵn sàng — chạy lại autopilot"
+                ));
+                restarted.push(task_id);
+            }
+            Err(e) => {
+                let _ = crate::db::set_auto_json(conn, task_id, previous.as_deref());
+                crate::term::emit(&format!(
+                    "Lỗi chạy lại task {task_id} sau khi môi trường sẵn sàng: {}",
+                    e.message
+                ));
+            }
+        }
+    }
+    Ok(restarted)
 }

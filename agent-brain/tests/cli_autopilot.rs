@@ -1227,3 +1227,110 @@ fn personal_driver_blocks_cli_run() {
     assert_ok(&res, "run lead B as the driver's own child");
     assert_eq!(runs(&sb).len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// C2: environment preflight
+// ---------------------------------------------------------------------------
+
+/// A local HTTP server answering every request with `200 OK` (never stops; the test process ends).
+fn alive_http_server() -> u16 {
+    use std::io::{Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { continue };
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        }
+    });
+    port
+}
+
+fn dead_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let p = l.local_addr().unwrap().port();
+    drop(l);
+    p
+}
+
+fn set_project_keys(sb: &Sandbox, keys: Value) {
+    let path = sb.map_path();
+    let mut map: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let obj = map["projects"][0].as_object_mut().unwrap();
+    for (k, v) in keys.as_object().unwrap() {
+        obj.insert(k.clone(), v.clone());
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&map).unwrap()).unwrap();
+}
+
+#[test]
+fn c2_env_down_stops_before_dev_without_a_run_then_continues() {
+    let sb = Sandbox::new();
+    let _repo = flow_to_gate(&sb);
+    let before = runs(&sb).len();
+
+    let port = dead_port();
+    set_project_keys(
+        &sb,
+        json!({"preflight": [{"kind": "http", "url_env": "AB_TEST_TARGET", "timeout_seconds": 2}]}),
+    );
+    let secret_url = format!("http://127.0.0.1:{port}/private/health?token=topsecret");
+    let res = sb.run_env(
+        &["approve", "1"],
+        Some(by_role(build_ok_roles())),
+        &[("AB_TEST_TARGET", secret_url.as_str())],
+    );
+    assert_eq!(runs(&sb).len(), before, "no run row: {:?}", runs(&sb));
+    let aj = auto_json(&sb, 1);
+    assert_eq!(aj["stop"]["reason"], "moi_truong_chua_san", "aj: {aj}");
+    assert_eq!(aj["stop"]["stage"], "implement", "aj: {aj}");
+    assert_eq!(aj["stop"]["round"], 1, "aj: {aj}");
+    let detail = aj["stop"]["detail_line"].as_str().unwrap();
+    assert!(detail.contains(&format!("http://127.0.0.1:{port}")), "{detail}");
+    for out in [res.stderr.as_str(), res.stdout.as_str(), detail] {
+        assert!(!out.contains("topsecret") && !out.contains("/private"), "url leaked: {out}");
+    }
+    assert!(res.stderr.contains("môi trường chưa sẵn sàng"), "stderr: {}", res.stderr);
+    let (state, pid, _) = auto_state(&sb, 1);
+    assert_eq!(state.as_deref(), Some("stopped"));
+    assert_eq!(pid, None);
+
+    // The environment is back: `auto 1` runs the same step with the same round, as before.
+    let port = alive_http_server();
+    let alive_url = format!("http://127.0.0.1:{port}/private/health?token=topsecret");
+    let res = sb.run_env(
+        &["auto", "1"],
+        Some(by_role(build_ok_roles())),
+        &[("AB_TEST_TARGET", alive_url.as_str())],
+    );
+    assert_ok(&res, "auto 1");
+    assert_eq!(
+        runs(&sb)[before..].to_vec(),
+        vec![
+            rt("dev", "implement", 1, None),
+            rt("code-review", "code-review", 1, Some("review:pass")),
+            rt("qa", "qa", 1, Some("qa:pass")),
+        ]
+    );
+    assert!(!res.stderr.contains("topsecret"), "stderr: {}", res.stderr);
+    assert_eq!(task_status(&sb, 1), "qa_pass");
+}
+
+#[test]
+fn c2_preflight_only_for_listed_roles() {
+    // A dead target, but preflight_roles names no role of the build: nothing changes.
+    let sb = Sandbox::new();
+    let _repo = flow_to_gate(&sb);
+    set_project_keys(
+        &sb,
+        json!({
+            "preflight": [{"kind": "tcp", "host": "127.0.0.1", "port": dead_port(), "timeout_seconds": 1}],
+            "preflight_roles": ["analyst"]
+        }),
+    );
+    let res = sb.run(&["approve", "1"], Some(by_role(build_ok_roles())));
+    assert_ok(&res, "approve 1");
+    assert_eq!(task_status(&sb, 1), "qa_pass");
+}

@@ -54,6 +54,9 @@
       timeoutDrafts: {},
       timeoutSaving: {},
       timeoutErrors: {},
+      preflightDrafts: {},
+      preflightSaving: {},
+      preflightErrors: {},
       promptModalOpen: false,
       promptProject: null,
       promptRoles: ['lead', 'dev', 'qa', 'plan-review', 'code-review'],
@@ -881,6 +884,87 @@
             self.timeoutErrors[p.id] = window.AB.errorText(res) || 'Không lưu được thời gian chạy';
           }
         });
+      },
+
+      // C2: the project's environment preflight. The checks are edited as JSON; every limit is
+      // checked on the server (PUT /api/projects/{id}/preflight).
+      preflightDraft: function (p) {
+        if (Object.prototype.hasOwnProperty.call(this.preflightDrafts, p.id)) return this.preflightDrafts[p.id];
+        var pf = p.preflight || {};
+        var checks = Array.isArray(pf.checks) ? pf.checks : [];
+        return {
+          checks: checks.length > 0 ? JSON.stringify(checks, null, 2) : '',
+          roles: (Array.isArray(pf.roles) ? pf.roles : ['dev', 'qa']).join(', '),
+          retry: String(pf.retry_minutes || 0),
+          interval: String(pf.interval_seconds || 0)
+        };
+      },
+
+      setPreflightField: function (p, field, value) {
+        var d = this.preflightDraft(p);
+        var next = { checks: d.checks, roles: d.roles, retry: d.retry, interval: d.interval };
+        next[field] = value;
+        this.preflightDrafts[p.id] = next;
+        this.preflightErrors[p.id] = '';
+      },
+
+      isPreflightSaving: function (p) {
+        return Boolean(this.preflightSaving[p.id]);
+      },
+
+      preflightError: function (p) {
+        return this.preflightErrors[p.id] || '';
+      },
+
+      savePreflight: function (p) {
+        var self = this;
+        var d = this.preflightDraft(p);
+        var checks = [];
+        var text = String(d.checks || '').trim();
+        if (text.length > 0) {
+          try {
+            checks = JSON.parse(text);
+          } catch (e) {
+            this.preflightErrors[p.id] = 'Danh sách kiểm phải là JSON hợp lệ (một mảng các mục http hoặc tcp).';
+            return Promise.resolve();
+          }
+        }
+        var roles = String(d.roles || '').split(',').map(function (r) { return r.trim(); })
+          .filter(function (r) { return r.length > 0; });
+        var retry = Number(String(d.retry || '0').trim() || '0');
+        var interval = Number(String(d.interval || '0').trim() || '0');
+        if (!Number.isInteger(retry) || !Number.isInteger(interval)) {
+          this.preflightErrors[p.id] = 'Số phút và số giây phải là số nguyên.';
+          return Promise.resolve();
+        }
+        var body = {
+          preflight: checks,
+          preflight_roles: roles,
+          preflight_retry_minutes: retry,
+          preflight_interval_seconds: interval,
+          etag: this.etag
+        };
+        this.preflightSaving[p.id] = true;
+        this.preflightErrors[p.id] = '';
+        return window.AB.api('PUT', '/api/projects/' + encodeURIComponent(p.id) + '/preflight', body)
+          .then(function (res) {
+            self.preflightSaving[p.id] = false;
+            if (res && res.ok) {
+              p.preflight = {
+                checks: Array.isArray(checks) ? checks : [],
+                roles: roles.length > 0 ? roles : ['dev', 'qa'],
+                retry_minutes: retry,
+                interval_seconds: interval
+              };
+              delete self.preflightDrafts[p.id];
+              if (res.data && res.data.etag) self.etag = res.data.etag;
+            } else if (res && res.status === 409) {
+              self.preflightErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+              self.load();
+            } else {
+              self.preflightErrors[p.id] = window.AB.errorText(res) || 'Không lưu được kiểm môi trường';
+            }
+          });
       },
 
       saveReadSources: function (p, list) {

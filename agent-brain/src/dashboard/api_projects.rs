@@ -93,6 +93,7 @@ fn project_json(
         "read_sources": p.read_sources,
         "workflow": crate::projects::workflow_of(map, &p.id),
         "timeouts": crate::projects::timeouts_of(map, &p.id),
+        "preflight": preflight_json(map, &p.id),
         "runnable_issue": runnable_issue(p, profiles),
     })
 }
@@ -314,6 +315,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/projects/{id}/profile", put(update_profile))
         .route("/api/projects/{id}/stack", put(update_stack))
         .route("/api/projects/{id}/timeouts", put(update_timeouts))
+        .route("/api/projects/{id}/preflight", put(update_preflight))
         .route("/api/projects/{id}/read-sources", post(update_read_sources).put(update_read_sources))
         .route("/api/projects/{id}/status", get(project_status))
 }
@@ -718,6 +720,86 @@ async fn update_timeouts(
             project_obj.remove("timeouts");
         } else {
             project_obj.insert("timeouts".to_string(), serde_json::json!(timeouts));
+        }
+
+        save_and_respond(&st, &data, StatusCode::OK, None)
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+/// C2: the project's preflight settings as the dashboard edits them (defaults filled in).
+fn preflight_json(map: &serde_json::Value, project_id: &str) -> serde_json::Value {
+    let pf = crate::projects::preflight_of(map, project_id);
+    let stored = crate::preflight::to_json_fields(&pf);
+    serde_json::json!({
+        "checks": stored.get("preflight").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "roles": pf.roles,
+        "retry_minutes": pf.retry_minutes,
+        "interval_seconds": pf.interval_seconds,
+    })
+}
+
+/// The project keys `update_preflight` owns.
+const PREFLIGHT_KEYS: [&str; 4] = [
+    "preflight",
+    "preflight_roles",
+    "preflight_retry_minutes",
+    "preflight_interval_seconds",
+];
+
+/// C2: `{preflight, preflight_roles, preflight_retry_minutes, preflight_interval_seconds, etag}`,
+/// validated by `preflight::parse_settings`. Keys at their default are removed, so an empty
+/// `preflight` list puts the project back to no check at all.
+async fn update_preflight(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if let Some(req_etag) = body.get("etag").and_then(|e| e.as_str()) {
+            if req_etag != current_etag {
+                return conflict_response(&st, current_etag);
+            }
+        }
+
+        let settings = match crate::preflight::parse_settings(&body) {
+            Ok(p) => p,
+            Err(errs) => {
+                return Ok(json_error(StatusCode::BAD_REQUEST, &errs.join(" ")));
+            }
+        };
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        let projects_arr = data
+            .get_mut("projects")
+            .and_then(|p| p.as_array_mut())
+            .ok_or_else(|| {
+                crate::error::BrainError::error("projects_map.json thiếu mảng 'projects'")
+            })?;
+        let Some(project_obj) = projects_arr
+            .iter_mut()
+            .find(|obj| obj.get("id").and_then(|v| v.as_str()) == Some(&id))
+            .and_then(|obj| obj.as_object_mut())
+        else {
+            return Ok(json_error(
+                StatusCode::NOT_FOUND,
+                &format!("Không tìm thấy dự án {id}"),
+            ));
+        };
+
+        for k in PREFLIGHT_KEYS {
+            project_obj.remove(k);
+        }
+        for (k, v) in crate::preflight::to_json_fields(&settings) {
+            project_obj.insert(k, v);
         }
 
         save_and_respond(&st, &data, StatusCode::OK, None)

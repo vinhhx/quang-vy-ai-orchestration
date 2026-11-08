@@ -121,6 +121,9 @@ pub enum StopReason {
     RunLoi,
     /// The engine hit its quota or rate limit (ENG-02, D-15); autopilot never switches engine.
     HetQuota,
+    /// C2: the project's target environment failed its preflight check (before a run, or while
+    /// it ran: outcome `env:down`). Not a round, not budget.
+    MoiTruongChuaSan,
 }
 
 impl StopReason {
@@ -133,6 +136,7 @@ impl StopReason {
             StopReason::DungBoiBan => "dung_boi_ban",
             StopReason::RunLoi => "run_loi",
             StopReason::HetQuota => "het_quota",
+            StopReason::MoiTruongChuaSan => "moi_truong_chua_san",
         }
     }
 }
@@ -235,6 +239,10 @@ pub struct AutoJson {
     pub budget_extra_usd: f64,
     #[serde(default)]
     pub skip_build_once: bool,
+    /// C2: when the scheduler last restarted the autopilot after the environment came back
+    /// (Telegram reports each value once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_rerun_at: Option<i64>,
 }
 
 impl AutoJson {
@@ -305,6 +313,16 @@ impl RunFact {
         self.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA)
     }
 
+    /// The run was stopped because its environment went down (outcome `env:down`, C2).
+    pub fn is_env_down(&self) -> bool {
+        self.outcome.as_deref() == Some(crate::preflight::OUTCOME_ENV_DOWN)
+    }
+
+    /// A stop that is nobody's fault and consumes no round: quota or environment down.
+    pub fn is_pause(&self) -> bool {
+        self.is_quota() || self.is_env_down()
+    }
+
     pub fn is_ok(&self) -> bool {
         if self.status != "succeeded" {
             return false;
@@ -315,6 +333,7 @@ impl RunFact {
                 || oc == "agy:empty"
                 || oc == "dsh:empty"
                 || oc == crate::quota::OUTCOME_QUOTA
+                || oc == crate::preflight::OUTCOME_ENV_DOWN
             {
                 return false;
             }
@@ -401,7 +420,7 @@ pub fn build_facts(
     filtered_runs.retain(|r| {
         let i = index;
         index += 1;
-        !r.is_quota() || (!resume && i == last_index)
+        !r.is_pause() || (!resume && i == last_index)
     });
 
     // D-28: approved chỉ đúng khi approved_commit bằng với plan_commit hiện tại
@@ -535,7 +554,7 @@ pub fn effective_rounds(runs: &[RunFact]) -> Vec<i64> {
                 .enumerate()
                 .filter(|(j, prev)| {
                     cycs[*j] == run_cycle
-                        && !prev.is_quota()
+                        && !prev.is_pause()
                         && (prev.stage == Some(Stage::Plan)
                             || (prev.stage.is_none() && prev.role == "lead"))
                 })
@@ -560,7 +579,7 @@ pub fn effective_rounds(runs: &[RunFact]) -> Vec<i64> {
                 .enumerate()
                 .filter(|(j, prev)| {
                     cycs[*j] == run_cycle
-                        && !prev.is_quota()
+                        && !prev.is_pause()
                         && !prev.finalize
                         && (prev.stage == Some(Stage::Implement)
                             || (prev.stage.is_none() && prev.role == "dev"))
@@ -588,7 +607,7 @@ pub fn effective_rounds(runs: &[RunFact]) -> Vec<i64> {
                 .enumerate()
                 .filter(|(j, prev)| {
                     cycs[*j] == run_cycle
-                        && !prev.is_quota()
+                        && !prev.is_pause()
                         && !prev.finalize
                         && (prev.stage == Some(Stage::Implement)
                             || (prev.stage.is_none() && prev.role == "dev")
@@ -603,7 +622,7 @@ pub fn effective_rounds(runs: &[RunFact]) -> Vec<i64> {
                 .enumerate()
                 .filter(|(j, prev)| {
                     cycs[*j] == run_cycle
-                        && !prev.is_quota()
+                        && !prev.is_pause()
                         && (prev.stage == Some(Stage::Qa)
                             || (prev.stage.is_none() && prev.role == "qa"))
                 })
@@ -914,6 +933,25 @@ fn rule_d2_last_run_failures(f: &Facts, eff_rounds: &[i64]) -> Option<Decision> 
             limit_usd: None,
         }));
     }
+    // C2: the environment went down during the run; like quota, its own reason and no round.
+    if last_run.is_env_down() {
+        return Some(Decision::Stop(StopInfo {
+            reason: StopReason::MoiTruongChuaSan,
+            loop_name,
+            stage,
+            round,
+            cap: None,
+            run_id: Some(last_run.id),
+            role: Some(last_run.role.clone()),
+            at_ms: f.now_ms,
+            detail_line: last_run.error.clone(),
+            used_ms: None,
+            used_usd: None,
+            estimated: None,
+            limit_minutes: None,
+            limit_usd: None,
+        }));
+    }
     if last_run.status == "killed" {
         return Some(Decision::Stop(StopInfo {
             reason: StopReason::DungBoiBan,
@@ -1049,7 +1087,7 @@ fn rule_finalize_on_timeout(
     }
     let last = f.runs.last()?;
     let last_idx = f.runs.len() - 1;
-    if last.role != "dev" || last.status != "timed_out" || last.is_quota() || last.kill_requested
+    if last.role != "dev" || last.status != "timed_out" || last.is_pause() || last.kill_requested
     {
         return None;
     }
@@ -1793,6 +1831,60 @@ mod tests {
     }
 
     #[test]
+    fn c2_env_down_stops_moi_truong_and_counts_no_round() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let mut rows = quota_dev_rows();
+        rows[2].outcome = Some("env:down".to_string());
+        rows[2].error = Some("Môi trường không còn sẵn sàng — http://127.0.0.1:1: bị từ chối kết nối".to_string());
+        let facts = build_facts(
+            wf,
+            &rows,
+            &approved_auto(),
+            &AutoJson::default(),
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        assert!(!facts.runs[2].is_ok());
+        match decide(wf, &facts) {
+            Decision::Stop(info) => {
+                assert_eq!(info.reason, StopReason::MoiTruongChuaSan);
+                assert_eq!(info.reason.as_str(), "moi_truong_chua_san");
+                assert_eq!(info.run_id, Some(3));
+                assert_eq!(info.round, Some(1));
+                assert!(info.detail_line.unwrap().contains("bị từ chối"));
+            }
+            other => panic!("expected Stop(MoiTruongChuaSan), got {other:?}"),
+        }
+        // Resumed: the env-down run is dropped and the step runs again with the same round.
+        let facts = build_facts(
+            wf,
+            &rows,
+            &approved_auto(),
+            &AutoJson::default(),
+            Some("p1"),
+            &pricing,
+            5000,
+            true,
+        );
+        match decide(wf, &facts) {
+            Decision::Run(sr) => {
+                assert_eq!(sr.stage, Stage::Implement);
+                assert_eq!(sr.round, 1);
+            }
+            other => panic!("expected Run(Implement r1), got {other:?}"),
+        }
+        // Rounds: an env-down run counts like a quota run (not at all).
+        rows.push(dummy_run(4, "dev", Some("implement"), None, "succeeded", None, None));
+        let facts: Vec<RunFact> = rows.iter().map(RunFact::from_row).collect();
+        assert_eq!(effective_rounds(&facts)[3], 1);
+    }
+
+    #[test]
     fn effective_rounds_skip_quota() {
         let mut rows = quota_dev_rows();
         rows[2].round = None;
@@ -2027,6 +2119,7 @@ mod tests {
             budget_extra_minutes: 0,
             budget_extra_usd: 0.0,
             skip_build_once: false,
+            env_rerun_at: None,
         };
 
         let json = aj.to_json();

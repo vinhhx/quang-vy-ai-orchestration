@@ -263,6 +263,7 @@ pub fn state_word(state: &str) -> &'static str {
         "duyet" => "duyệt",
         "sua_lai" => "sửa lại",
         "het_quota" => "hết quota",
+        "moi_truong" => "môi trường chưa sẵn sàng",
         "cho_nguoi" => "chờ người",
         _ => "lỗi",
     }

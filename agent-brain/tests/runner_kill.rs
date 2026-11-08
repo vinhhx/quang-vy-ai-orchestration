@@ -811,6 +811,7 @@ fn hanging_after_result_request(
         redact: Vec::new(),
         container_stop: None,
         finish_after_result,
+        env_watch: None,
     }
 }
 
@@ -883,4 +884,64 @@ fn without_finish_after_result_a_hung_tree_times_out() {
     for p in &obs.procs {
         assert!(!agent_brain::procs::alive(*p), "process {p:?} survived");
     }
+}
+
+/// C2: the environment watcher stops a run after two failed checks in a row; the run is a
+/// failed run stopped by `RunStop::EnvDown`, not a kill.
+#[test]
+fn env_watch_stops_the_run_when_the_environment_goes_down() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut req = hanging_after_result_request(tmp.path(), Duration::from_secs(60), None);
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    req.env_watch = Some(agent_brain::runner::EnvWatch {
+        interval: Duration::from_millis(300),
+        checks: vec![agent_brain::preflight::Check::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: dead,
+            timeout_seconds: 1,
+        }],
+    });
+    let mut obs = result_observer(tmp.path());
+
+    let t0 = Instant::now();
+    let outcome = agent_brain::runner::supervise(&req, &mut obs).expect("supervise");
+    let _guard = TestTreeGuard {
+        procs: obs.procs.clone(),
+    };
+    assert!(t0.elapsed() < Duration::from_secs(20), "run took {:?}", t0.elapsed());
+    assert_eq!(outcome.stopped_by, Some(agent_brain::runner::RunStop::EnvDown));
+    assert_eq!(outcome.status, agent_brain::runner::RunStatus::Failed);
+    let reason = outcome.env_down.expect("reason");
+    assert!(reason.contains(&format!("tcp 127.0.0.1:{dead}")), "{reason}");
+    for p in &obs.procs {
+        assert!(!agent_brain::procs::alive(*p), "process {p:?} survived");
+    }
+}
+
+/// An environment that stays up never stops the run (the same hung tree times out).
+#[test]
+fn env_watch_alive_target_does_not_stop_the_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut req = hanging_after_result_request(tmp.path(), Duration::from_secs(2), None);
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    req.env_watch = Some(agent_brain::runner::EnvWatch {
+        interval: Duration::from_millis(200),
+        checks: vec![agent_brain::preflight::Check::Tcp {
+            host: "127.0.0.1".to_string(),
+            port,
+            timeout_seconds: 1,
+        }],
+    });
+    let mut obs = result_observer(tmp.path());
+    let outcome = agent_brain::runner::supervise(&req, &mut obs).expect("supervise");
+    let _guard = TestTreeGuard {
+        procs: obs.procs.clone(),
+    };
+    drop(l);
+    assert_eq!(outcome.stopped_by, Some(agent_brain::runner::RunStop::Timeout));
+    assert_eq!(outcome.env_down, None);
 }

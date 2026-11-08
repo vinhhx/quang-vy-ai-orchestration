@@ -12,6 +12,7 @@ pub fn reason_word(r: StopReason) -> &'static str {
         StopReason::DungBoiBan => "dừng bởi bạn",
         StopReason::RunLoi => "run lỗi",
         StopReason::HetQuota => "hết quota",
+        StopReason::MoiTruongChuaSan => "môi trường chưa sẵn sàng",
     }
 }
 
@@ -149,6 +150,16 @@ pub fn stop_detail(info: &StopInfo, slug: &str) -> String {
             "Run dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine."
                 .to_string()
         }),
+        StopReason::MoiTruongChuaSan => {
+            let reason = info
+                .detail_line
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .map(|d| error_excerpt(d, 3, 500))
+                .unwrap_or_else(|| "Kiểm môi trường đích không đạt.".to_string());
+            format!("{reason} Autopilot không tính vòng và không tính ngân sách cho lần dừng này; chạy tiếp khi môi trường sẵn sàng.")
+        }
     }
 }
 
