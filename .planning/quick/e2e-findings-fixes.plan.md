@@ -38,6 +38,9 @@ Ngoài phạm vi code: mục 6, 11 (phần điều phối viên), 14, 16. Đây 
 
 Có 4 phase. Mỗi phase là **một lần agy riêng** và có commit riêng. Claude review xong phase trước mới giao phase sau.
 - Thứ tự A → B → C → D.
+- Ngay trước mỗi phase, điều phối viên chạy `scripts/agy-quota.sh "Gemini Models"`. Nhóm này là nhóm model mà nhân viên agy của agent-brain dùng.
+  - Còn ≥ 0.5 (lấy mức thấp hơn của tuần và 5 giờ) ⇒ giao phase cho agy.
+  - Dưới 0.5 ⇒ Claude tự viết code phase đó, để dành quota agy cho nhân viên agent-brain. Vẫn áp đủ checklist review và các lệnh kiểm tra.
 - Phase D lớn nhất, có thể tách tiếp nếu review A–C thấy cần.
 
 Chỉ sửa trong:
