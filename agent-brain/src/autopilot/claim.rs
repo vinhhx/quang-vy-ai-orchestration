@@ -595,6 +595,8 @@ mod tests {
             auto: true,
             review: false,
             source: "builtin".to_string(),
+            timeouts: Default::default(),
+            finalize_on_timeout: Default::default(),
         };
         conn.execute(
             "UPDATE tasks SET workflow_json = ?1 WHERE id = ?2",
@@ -642,6 +644,8 @@ mod tests {
             auto: true,
             review: false,
             source: "builtin".to_string(),
+            timeouts: Default::default(),
+            finalize_on_timeout: Default::default(),
         };
         conn.execute(
             "UPDATE tasks SET workflow_json = ?1 WHERE id = ?2",

@@ -197,6 +197,9 @@ pub struct EngineDef {
     pub label: Option<String>,
     pub allowed_profiles: Option<Vec<String>>,
     pub pricing: Option<Price>,
+    /// How long the engine lets one shell command run before cutting it, when known. No default
+    /// in code: it comes from config.json only, and without it the prompt names no shell limit.
+    pub tool_timeout_seconds: Option<u64>,
     pub spec: EngineSpec,
 }
 
@@ -266,6 +269,7 @@ impl EnginesCfg {
                     label: None,
                     allowed_profiles: None,
                     pricing: None,
+                    tool_timeout_seconds: None,
                     spec: EngineSpec::Anthropic(AnthropicDef {
                         command: claude_bin.to_string(),
                         base_url: Some(DEFAULT_DEEPSEEK_BASE_URL.to_string()),
@@ -282,6 +286,7 @@ impl EnginesCfg {
                     label: None,
                     allowed_profiles: None,
                     pricing: None,
+                    tool_timeout_seconds: None,
                     spec: EngineSpec::Agy(AgyDef {
                         command: DEFAULT_AGY_COMMAND.to_string(),
                         print_timeout_margin_secs: DEFAULT_AGY_PRINT_TIMEOUT_MARGIN_SECS,
@@ -548,6 +553,8 @@ fn parse_engines_object(
         if let Some(v) = d.get("verified").filter(|v| !v.is_null()) {
             ds.verified = Some(parse_verified(v, "engines.deepseek")?);
         }
+        let label = format!("engines.{}", cfg.list[0].id);
+        cfg.list[0].tool_timeout_seconds = parse_tool_timeout(d, &label)?;
     }
 
     if let Some(a) = engines.get("agy").filter(|a| !a.is_null()) {
@@ -558,12 +565,41 @@ fn parse_engines_object(
             unreachable!("defaults() lists agy second");
         };
         apply_agy_fields(a, "engines.agy", agy)?;
+        let label = format!("engines.{}", cfg.list[1].id);
+        cfg.list[1].tool_timeout_seconds = parse_tool_timeout(a, &label)?;
     }
 
     Ok(cfg)
 }
 
-const COMMON_ENGINE_KEYS: [&str; 5] = ["id", "kind", "label", "allowed_profiles", "pricing"];
+const COMMON_ENGINE_KEYS: [&str; 6] = [
+    "id",
+    "kind",
+    "label",
+    "allowed_profiles",
+    "pricing",
+    "tool_timeout_seconds",
+];
+
+/// Bounds of an engine's `tool_timeout_seconds` (one shell command).
+pub const TOOL_TIMEOUT_MIN_SECS: u64 = 1;
+pub const TOOL_TIMEOUT_MAX_SECS: u64 = 86_400;
+
+/// `tool_timeout_seconds` of one engine entry: absent/null → `None`.
+fn parse_tool_timeout(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    label: &str,
+) -> BrainResult<Option<u64>> {
+    match obj.get("tool_timeout_seconds").filter(|v| !v.is_null()) {
+        None => Ok(None),
+        Some(v) => match v.as_u64() {
+            Some(n) if (TOOL_TIMEOUT_MIN_SECS..=TOOL_TIMEOUT_MAX_SECS).contains(&n) => Ok(Some(n)),
+            _ => Err(BrainError::error(format!(
+                "Cấu hình {label}.tool_timeout_seconds phải là số nguyên từ {TOOL_TIMEOUT_MIN_SECS} đến {TOOL_TIMEOUT_MAX_SECS}"
+            ))),
+        },
+    }
+}
 const ANTHROPIC_ENGINE_KEYS: [&str; 8] = [
     "command",
     "base_url",
@@ -735,11 +771,14 @@ fn parse_engine_entry(
         EngineKind::Dsh => EngineSpec::Dsh(parse_dsh_entry(obj, &label)?),
     };
 
+    let tool_timeout_seconds = parse_tool_timeout(obj, &label)?;
+
     Ok(EngineDef {
         id,
         label: label_text,
         allowed_profiles,
         pricing,
+        tool_timeout_seconds,
         spec,
     })
 }
@@ -943,6 +982,55 @@ fn parse_dsh_entry(
     })
 }
 
+/// Bounds of a per-role run limit set on a project or a workflow (`timeouts`).
+pub const TASK_TIMEOUT_MIN_SECS: u64 = 60;
+pub const TASK_TIMEOUT_MAX_SECS: u64 = 14_400;
+
+/// The config role a run role reads its settings from.
+pub fn config_role_key(role: &str) -> &str {
+    match role {
+        "analyst" => "lead",
+        "analysis-review" => "plan-review",
+        other => other,
+    }
+}
+
+/// `timeouts: {role: seconds}` of a project or a workflow. Keys are the config roles
+/// (`crate::teams::ROLES`), values whole seconds from `TASK_TIMEOUT_MIN_SECS` to
+/// `TASK_TIMEOUT_MAX_SECS`. `Err` carries one message per bad entry.
+pub fn parse_role_timeouts(v: &serde_json::Value) -> Result<BTreeMap<String, u64>, Vec<String>> {
+    let Some(obj) = v.as_object() else {
+        return Err(vec![format!(
+            "\"timeouts\" phải là object {{vai: số giây}} (vai: {})",
+            crate::teams::ROLES.join(", ")
+        )]);
+    };
+    let mut out = BTreeMap::new();
+    let mut errors = Vec::new();
+    for (role, secs) in obj {
+        if !crate::teams::ROLES.contains(&role.as_str()) {
+            errors.push(format!(
+                "\"timeouts\": vai \"{role}\" không hợp lệ (dùng: {})",
+                crate::teams::ROLES.join(", ")
+            ));
+            continue;
+        }
+        match secs.as_u64() {
+            Some(n) if (TASK_TIMEOUT_MIN_SECS..=TASK_TIMEOUT_MAX_SECS).contains(&n) => {
+                out.insert(role.clone(), n);
+            }
+            _ => errors.push(format!(
+                "\"timeouts.{role}\" phải là số nguyên từ {TASK_TIMEOUT_MIN_SECS} đến {TASK_TIMEOUT_MAX_SECS} (giây)."
+            )),
+        }
+    }
+    if errors.is_empty() {
+        Ok(out)
+    } else {
+        Err(errors)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub claude_bin: String,
@@ -983,6 +1071,24 @@ impl Config {
                     Duration::from_secs(1800)
                 }
             })
+    }
+
+    /// The run limit of a role on a task: the project's `timeouts` first, then the workflow's,
+    /// then `config.timeout_seconds`, then the built-in default of `timeout_for`. Both maps are
+    /// keyed by config role (`analyst` reads `lead`, `analysis-review` reads `plan-review`).
+    pub fn timeout_for_task(
+        &self,
+        project: &BTreeMap<String, u64>,
+        workflow: &BTreeMap<String, u64>,
+        role: &str,
+    ) -> Duration {
+        let key = config_role_key(role);
+        project
+            .get(key)
+            .or_else(|| workflow.get(key))
+            .copied()
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| self.timeout_for(role))
     }
 
     pub fn model_for(&self, role: &str) -> BrainResult<String> {
@@ -1436,6 +1542,98 @@ pub fn load_config() -> BrainResult<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn default_cfg() -> Config {
+        config_from_value(&serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn timeout_for_task_precedence() {
+        let cfg = default_cfg();
+        let none = BTreeMap::new();
+        let wf: BTreeMap<String, u64> = [("dev".to_string(), 2400), ("qa".to_string(), 900)].into();
+        let proj: BTreeMap<String, u64> = [("dev".to_string(), 3600)].into();
+        // project > workflow
+        assert_eq!(cfg.timeout_for_task(&proj, &wf, "dev"), Duration::from_secs(3600));
+        // workflow > config
+        assert_eq!(cfg.timeout_for_task(&proj, &wf, "qa"), Duration::from_secs(900));
+        // config > built-in default
+        assert_eq!(cfg.timeout_for_task(&proj, &wf, "code-review"), Duration::from_secs(1500));
+        // analyst reads the lead key, analysis-review the plan-review key
+        let lead: BTreeMap<String, u64> = [("lead".to_string(), 600), ("plan-review".to_string(), 700)].into();
+        assert_eq!(cfg.timeout_for_task(&none, &lead, "analyst"), Duration::from_secs(600));
+        assert_eq!(cfg.timeout_for_task(&lead, &none, "analysis-review"), Duration::from_secs(700));
+    }
+
+    #[test]
+    fn timeout_for_task_without_options_is_timeout_for() {
+        let cfg = default_cfg();
+        let none = BTreeMap::new();
+        for role in ["lead", "dev", "qa", "plan-review", "code-review", "analyst", "analysis-review"] {
+            assert_eq!(cfg.timeout_for_task(&none, &none, role), cfg.timeout_for(role), "{role}");
+        }
+        let default_val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        let bare = config_from_value(&serde_json::json!({
+            "models": {"lead": "opus", "dev": "sonnet", "qa": "sonnet"},
+            "profiles": default_val["profiles"]
+        }))
+        .unwrap();
+        assert_eq!(bare.timeout_for_task(&none, &none, "dev"), Duration::from_secs(1800));
+    }
+
+    #[test]
+    fn role_timeouts_are_bounded() {
+        let ok = parse_role_timeouts(&serde_json::json!({"dev": 60, "qa": 14400})).unwrap();
+        assert_eq!(ok.len(), 2);
+        assert!(parse_role_timeouts(&serde_json::json!({"dev": 59})).is_err());
+        assert!(parse_role_timeouts(&serde_json::json!({"dev": 14401})).is_err());
+        assert!(parse_role_timeouts(&serde_json::json!({"dev": "600"})).is_err());
+        assert!(parse_role_timeouts(&serde_json::json!({"analyst": 600})).is_err());
+        assert!(parse_role_timeouts(&serde_json::json!([600])).is_err());
+        assert!(parse_role_timeouts(&serde_json::json!({})).unwrap().is_empty());
+    }
+
+    #[test]
+    fn engine_tool_timeout_is_optional() {
+        let base = |extra: serde_json::Value| {
+            let mut entry = serde_json::json!({"id": "may-a", "kind": "agy"});
+            for (k, v) in extra.as_object().unwrap() {
+                entry[k] = v.clone();
+            }
+            let default_val: serde_json::Value =
+                serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+            config_from_value(&serde_json::json!({
+                "models": {"lead": "opus", "dev": "sonnet", "qa": "sonnet"},
+                "profiles": default_val["profiles"],
+                "engines": [entry]
+            }))
+        };
+        let none = base(serde_json::json!({})).unwrap();
+        assert_eq!(none.engines.get("may-a").unwrap().tool_timeout_seconds, None);
+        let set = base(serde_json::json!({"tool_timeout_seconds": 300})).unwrap();
+        assert_eq!(set.engines.get("may-a").unwrap().tool_timeout_seconds, Some(300));
+        let err = base(serde_json::json!({"tool_timeout_seconds": 0})).unwrap_err();
+        assert!(err.message.contains("engines.may-a.tool_timeout_seconds"));
+        // Built-in defaults carry no value.
+        assert!(EnginesCfg::defaults("claude")
+            .list
+            .iter()
+            .all(|e| e.tool_timeout_seconds.is_none()));
+        // The shipped default config sets none: no shell line unless the user configures one.
+        assert!(default_cfg()
+            .engines
+            .list
+            .iter()
+            .all(|e| e.tool_timeout_seconds.is_none()));
+        // The legacy object shape reads it too.
+        let legacy = config_from_value(&serde_json::json!({
+            "models": {"lead": "opus", "dev": "sonnet", "qa": "sonnet"},
+            "profiles": serde_json::from_str::<serde_json::Value>(DEFAULT_CONFIG_JSON).unwrap()["profiles"],
+            "engines": {"agy": {"tool_timeout_seconds": 600}}
+        }))
+        .unwrap();
+        assert_eq!(legacy.engines.get("agy").unwrap().tool_timeout_seconds, Some(600));
+    }
 
     fn triage_cfg(orchestrator: serde_json::Value) -> BrainResult<Config> {
         let default_val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();

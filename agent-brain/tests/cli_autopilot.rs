@@ -287,6 +287,7 @@ fn stage_args_shapes() {
             review_input: false,
             note: None,
             fresh_plan: false,
+            finalize: false,
         }
     }
     fn v(a: &[&str]) -> Vec<String> {
@@ -355,6 +356,34 @@ fn stage_args_shapes() {
     assert_eq!(
         stage_args(&fix_qa, "sua-app", p, t),
         v(&["run", "dev", "--fix", "qa", "--round", "1", "--", p])
+    );
+}
+
+#[test]
+fn stage_args_finalize_turn() {
+    let sr = StageRun {
+        stage: Stage::Implement,
+        round: 2,
+        fix_for: None,
+        review_input: false,
+        note: Some(agent_brain::autopilot::decide::FINALIZE_NOTE.to_string()),
+        fresh_plan: false,
+        finalize: true,
+    };
+    let args = stage_args(&sr, "sua-app", "web-ban-hang", "sửa app");
+    let note = format!("--note={}", agent_brain::autopilot::decide::FINALIZE_NOTE);
+    assert_eq!(
+        args,
+        vec![
+            "run".to_string(),
+            "dev".to_string(),
+            "--round".to_string(),
+            "2".to_string(),
+            "--finalize".to_string(),
+            note,
+            "--".to_string(),
+            "web-ban-hang".to_string(),
+        ]
     );
 }
 

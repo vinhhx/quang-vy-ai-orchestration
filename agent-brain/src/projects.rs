@@ -207,6 +207,31 @@ pub fn workflow_of(map: &serde_json::Value, project_id: &str) -> Option<String> 
     None
 }
 
+/// The project's `timeouts: {role: seconds}` (C1). Missing, malformed or out-of-range entries
+/// are left out, so a project without the key keeps the workflow / config limits.
+pub fn timeouts_of(map: &serde_json::Value, project_id: &str) -> BTreeMap<String, u64> {
+    let Some(arr) = map.get("projects").and_then(|p| p.as_array()) else {
+        return BTreeMap::new();
+    };
+    let Some(v) = arr
+        .iter()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(project_id))
+        .and_then(|p| p.get("timeouts"))
+    else {
+        return BTreeMap::new();
+    };
+    let Some(obj) = v.as_object() else {
+        return BTreeMap::new();
+    };
+    obj.iter()
+        .filter_map(|(role, secs)| {
+            let one = serde_json::json!({ role.clone(): secs.clone() });
+            crate::config::parse_role_timeouts(&one).ok()
+        })
+        .flatten()
+        .collect()
+}
+
 /// The project's default team name (D-12), trimmed; None when missing or blank.
 pub fn team_of(map: &serde_json::Value, project_id: &str) -> Option<String> {
     let arr = map.get("projects").and_then(|p| p.as_array())?;
@@ -1033,6 +1058,19 @@ pub fn cmd_list() -> BrainResult<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timeouts_of_reads_valid_entries_only() {
+        let map = serde_json::json!({"projects": [
+            {"id": "a", "timeouts": {"dev": 3600, "qa": 30, "khac": 600, "lead": "x"}},
+            {"id": "b"}
+        ]});
+        let a = timeouts_of(&map, "a");
+        assert_eq!(a.len(), 1);
+        assert_eq!(a.get("dev"), Some(&3600));
+        assert!(timeouts_of(&map, "b").is_empty());
+        assert!(timeouts_of(&map, "missing").is_empty());
+    }
 
     #[test]
     fn test_workflow_of() {

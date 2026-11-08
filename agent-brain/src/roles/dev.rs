@@ -358,6 +358,15 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     let continuation_reason = continuation_reason(&ctx.conn, &proj.id, &proj_path)?;
     let continuation = continuation_reason.is_some();
     let quota_continuation = continuation_reason == Some(ContinuationReason::Quota);
+    // C1: the closing turn after a Dev timeout runs only right after that timeout.
+    if opts.finalize
+        && continuation_reason
+            != Some(ContinuationReason::PreviousRunFailed("timed_out".to_string()))
+    {
+        return Err(BrainError::error(
+            "--finalize chỉ dùng ngay sau một lần chạy Dev bị quá thời gian (timeout)",
+        ));
+    }
     let plan = crate::planfile::parse_plan(&text);
 
     // Skill mode (D-49): the rights the approved plan declares; a fix run gets them only when
@@ -599,6 +608,12 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         ));
         allowed.push("Bash(git diff *)".to_string());
         allowed.push("Bash(git status *)".to_string());
+    }
+    if opts.finalize {
+        if let Some(note) = opts.note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            user_input.push_str("\n\n");
+            user_input.push_str(note);
+        }
     }
     if quota_continuation {
         let handover = if handover_exists {
@@ -857,7 +872,19 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         crate::term::emit(&w);
     }
     let model = ctx.cfg.model_for("dev")?;
-    let timeout = ctx.cfg.timeout_for("dev");
+    let task_wf = crate::roles::task_workflow(&ctx.conn, task_id);
+    let timeout = if opts.finalize {
+        task_wf
+            .as_ref()
+            .and_then(|w| w.finalize_on_timeout.limit())
+            .ok_or_else(|| {
+                BrainError::error(
+                    "Quy trình của task không bật finalize_on_timeout — không chạy lượt chốt",
+                )
+            })?
+    } else {
+        crate::roles::task_timeout(ctx, &proj.id, task_wf.as_ref(), "dev")
+    };
 
     let run_plan = crate::roles::RunPlan {
         role: "dev".to_string(),
@@ -880,6 +907,9 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         if continuation {
             metrics["continuation"] = serde_json::Value::Bool(true);
         }
+        if opts.finalize {
+            metrics["finalize"] = serde_json::Value::Bool(true);
+        }
         crate::roles::RunStage {
             stage: Some("fix".to_string()),
             round: opts.round,
@@ -889,7 +919,11 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         crate::roles::RunStage {
             stage: Some("implement".to_string()),
             round: opts.round,
-            metrics: continuation.then(|| serde_json::json!({ "continuation": true })),
+            metrics: match (continuation, opts.finalize) {
+                (_, true) => Some(serde_json::json!({ "continuation": true, "finalize": true })),
+                (true, false) => Some(serde_json::json!({ "continuation": true })),
+                (false, false) => None,
+            },
         }
     };
 

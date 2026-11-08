@@ -177,7 +177,12 @@ pub struct StageRun {
     pub review_input: bool,
     pub note: Option<String>,
     pub fresh_plan: bool,
+    /// The closing Dev turn after a Dev timeout (`finalize_on_timeout`); not a new round.
+    pub finalize: bool,
 }
+
+/// `StageRun.note` of the closing Dev turn after a Dev timeout.
+pub const FINALIZE_NOTE: &str = "Lượt chốt: không làm việc mới. Ghi kết quả đang có, cập nhật file kết quả theo plan, commit.";
 
 impl StageRun {
     pub fn card_key(&self) -> &'static str {
@@ -258,20 +263,27 @@ pub struct RunFact {
     pub kill_requested: bool,
     pub started_at: i64,
     pub error: Option<String>,
+    /// The run was a closing Dev turn (`metrics_json.finalize`).
+    pub finalize: bool,
 }
 
 impl RunFact {
     pub fn from_row(row: &RunRow) -> Self {
         let stage = row.stage.as_deref().and_then(Stage::parse);
-        let fix_for = row.metrics_json.as_deref().and_then(|m| {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(m) {
-                v.get("fix_for")
-                    .and_then(|f| f.as_str())
-                    .and_then(FixFor::parse)
-            } else {
-                None
-            }
+        let metrics = row
+            .metrics_json
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
+        let fix_for = metrics.as_ref().and_then(|v| {
+            v.get("fix_for")
+                .and_then(|f| f.as_str())
+                .and_then(FixFor::parse)
         });
+        let finalize = metrics
+            .as_ref()
+            .and_then(|v| v.get("finalize"))
+            .and_then(|f| f.as_bool())
+            .unwrap_or(false);
         RunFact {
             id: row.id,
             role: row.role.clone(),
@@ -284,6 +296,7 @@ impl RunFact {
             kill_requested: row.kill_requested_at.is_some(),
             started_at: row.started_at,
             error: row.error.clone(),
+            finalize,
         }
     }
 
@@ -333,6 +346,8 @@ pub struct Facts {
     pub now_ms: i64,
     pub skip_build_once: bool,
     pub code_after_plan: bool,
+    /// The working tree has uncommitted changes to files of the plan (set by the driver).
+    pub dev_dirty_in_plan: bool,
 }
 
 impl Facts {
@@ -422,6 +437,7 @@ pub fn build_facts(
         now_ms,
         skip_build_once: aj.skip_build_once,
         code_after_plan: false,
+        dev_dirty_in_plan: false,
     }
 }
 
@@ -488,6 +504,19 @@ pub fn effective_rounds(runs: &[RunFact]) -> Vec<i64> {
         }
 
         let run_cycle = cycs[i];
+        // C1: a closing Dev turn keeps the round of the step it closes.
+        if r.finalize {
+            let closed = (0..i).rev().find(|&j| {
+                cycs[j] == run_cycle
+                    && runs[j].role == r.role
+                    && runs[j].stage == r.stage
+                    && runs[j].fix_for == r.fix_for
+            });
+            if let Some(j) = closed {
+                res.push(res[j]);
+                continue;
+            }
+        }
         let is_plan = r.stage == Some(Stage::Plan) || (r.stage.is_none() && r.role == "lead");
         let is_plan_review =
             r.stage == Some(Stage::PlanReview) || (r.stage.is_none() && r.role == "plan-review");
@@ -532,6 +561,7 @@ pub fn effective_rounds(runs: &[RunFact]) -> Vec<i64> {
                 .filter(|(j, prev)| {
                     cycs[*j] == run_cycle
                         && !prev.is_quota()
+                        && !prev.finalize
                         && (prev.stage == Some(Stage::Implement)
                             || (prev.stage.is_none() && prev.role == "dev"))
                 })
@@ -559,6 +589,7 @@ pub fn effective_rounds(runs: &[RunFact]) -> Vec<i64> {
                 .filter(|(j, prev)| {
                     cycs[*j] == run_cycle
                         && !prev.is_quota()
+                        && !prev.finalize
                         && (prev.stage == Some(Stage::Implement)
                             || (prev.stage.is_none() && prev.role == "dev")
                             || (prev.stage == Some(Stage::Fix)
@@ -664,6 +695,7 @@ pub fn plan_phase(wf: &Workflow, f: &Facts) -> PlanPhase {
             review_input: false,
             note: None,
             fresh_plan: true,
+            finalize: false,
         });
     }
 
@@ -683,6 +715,7 @@ pub fn plan_phase(wf: &Workflow, f: &Facts) -> PlanPhase {
                     review_input: false,
                     note: None,
                     fresh_plan: false,
+                    finalize: false,
                 });
             }
             Some(&(idx, x)) => {
@@ -697,6 +730,7 @@ pub fn plan_phase(wf: &Workflow, f: &Facts) -> PlanPhase {
                         review_input: false,
                         note: None,
                         fresh_plan: false,
+                        finalize: false,
                     });
                 }
                 // X là PlanReview
@@ -731,6 +765,7 @@ pub fn plan_phase(wf: &Workflow, f: &Facts) -> PlanPhase {
                                 review_input: true,
                                 note: None,
                                 fresh_plan: false,
+                                finalize: false,
                             });
                         }
                     } else {
@@ -999,6 +1034,51 @@ fn rule_d2_last_run_failures(f: &Facts, eff_rounds: &[i64]) -> Option<Decision> 
     None
 }
 
+/// C1 `finalize_on_timeout`: the last run is a Dev run (implement or fix) that timed out, the
+/// workflow enables the option, files of the plan are still changed, and no closing turn ran for
+/// this step and round yet → one more Dev run of the same step and round, with `FINALIZE_NOTE`.
+/// Off (the default) → `None`, and D2 stops on the timeout as before.
+fn rule_finalize_on_timeout(
+    wf: &Workflow,
+    f: &Facts,
+    cycs: &[i64],
+    eff_rounds: &[i64],
+) -> Option<StageRun> {
+    if f.resume || !wf.finalize_on_timeout.enabled || !f.dev_dirty_in_plan {
+        return None;
+    }
+    let last = f.runs.last()?;
+    let last_idx = f.runs.len() - 1;
+    if last.role != "dev" || last.status != "timed_out" || last.is_quota() || last.kill_requested
+    {
+        return None;
+    }
+    let stage = match last.stage {
+        Some(s @ (Stage::Implement | Stage::Fix)) => s,
+        _ => return None,
+    };
+    let round = eff_rounds[last_idx];
+    let already = f.runs.iter().enumerate().any(|(i, r)| {
+        r.finalize
+            && cycs[i] == cycs[last_idx]
+            && eff_rounds[i] == round
+            && r.stage == last.stage
+            && r.fix_for == last.fix_for
+    });
+    if already {
+        return None;
+    }
+    Some(StageRun {
+        stage,
+        round,
+        fix_for: last.fix_for,
+        review_input: false,
+        note: Some(FINALIZE_NOTE.to_string()),
+        fresh_plan: false,
+        finalize: true,
+    })
+}
+
 /// Quy tắc D3: Replan từ người dùng (Trả về Lead / Chạy lại Lead).
 fn rule_d3_replan(
     f: &Facts,
@@ -1037,6 +1117,7 @@ fn rule_d3_replan(
         review_input: false,
         note: rp.note.clone(),
         fresh_plan: rp.note.is_none(),
+        finalize: false,
     })
 }
 
@@ -1106,6 +1187,7 @@ pub fn rule_d6_build_phase(
                     review_input: false,
                     note: None,
                     fresh_plan: false,
+                    finalize: false,
                 };
                 Ok(Some(rule_d9_budget(candidate, f)))
             } else if wf.has("code-review") {
@@ -1116,6 +1198,7 @@ pub fn rule_d6_build_phase(
                     review_input: false,
                     note: None,
                     fresh_plan: false,
+                    finalize: false,
                 };
                 Ok(Some(rule_d9_budget(candidate, f)))
             } else {
@@ -1136,6 +1219,7 @@ pub fn rule_d6_build_phase(
                         review_input: false,
                         note: None,
                         fresh_plan: false,
+                        finalize: false,
                     };
                     return Ok(Some(rule_d9_budget(candidate, f)));
                 }
@@ -1173,6 +1257,7 @@ pub fn rule_d6_build_phase(
                                 review_input: false,
                                 note: None,
                                 fresh_plan: false,
+                                finalize: false,
                             };
                             return Ok(Some(rule_d9_budget(candidate, f)));
                         }
@@ -1253,6 +1338,7 @@ fn rule_d7_qa_phase(
                 review_input: false,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             };
             Some(rule_d9_budget(candidate, f))
         }
@@ -1291,6 +1377,7 @@ fn rule_d7_qa_phase(
                                 review_input: false,
                                 note: None,
                                 fresh_plan: false,
+                                finalize: false,
                             };
                             return Some(rule_d9_budget(candidate, f));
                         }
@@ -1343,6 +1430,7 @@ fn rule_d7_qa_phase(
                     review_input: false,
                     note: None,
                     fresh_plan: false,
+                    finalize: false,
                 };
                 Some(rule_d9_budget(candidate, f))
             }
@@ -1426,6 +1514,11 @@ pub fn decide(wf: &Workflow, f: &Facts) -> Decision {
     // Quy tắc D1: Stop request từ bên ngoài có độ ưu tiên cao nhất
     if let Some(dec) = rule_d1_stop_request(f, &eff_rounds) {
         return dec;
+    }
+
+    // C1: one closing Dev turn after a Dev timeout, when the workflow asks for it.
+    if let Some(candidate) = rule_finalize_on_timeout(wf, f, &cycs, &eff_rounds) {
+        return rule_d9_budget(candidate, f);
     }
 
     // Quy tắc D2: Kiểm tra lỗi của run cuối cùng (trừ khi đang resume)
@@ -1549,6 +1642,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: true,
+                finalize: false,
             })
         );
     }
@@ -1765,6 +1859,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
     }
@@ -1798,6 +1893,7 @@ mod tests {
                 review_input: true,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
     }
@@ -1997,6 +2093,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
 
@@ -2029,6 +2126,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
 
@@ -2067,6 +2165,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
 
@@ -2099,6 +2198,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
     }
@@ -2173,6 +2273,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
 
@@ -2212,6 +2313,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
 
@@ -2342,6 +2444,7 @@ mod tests {
                 review_input: true,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
 
@@ -2482,6 +2585,7 @@ mod tests {
                 review_input: true,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
         assert!(matches!(
@@ -2526,6 +2630,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
 
@@ -2558,6 +2663,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
 
@@ -2638,6 +2744,8 @@ mod tests {
             auto: false,
             review: false,
             source: "test".to_string(),
+            timeouts: Default::default(),
+            finalize_on_timeout: Default::default(),
         };
         let f_o4_1 = build_facts(
             &o4_wf,
@@ -2658,6 +2766,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
 
@@ -2718,6 +2827,8 @@ mod tests {
             auto: false,
             review: false,
             source: "test".to_string(),
+            timeouts: Default::default(),
+            finalize_on_timeout: Default::default(),
         };
         let pricing = crate::config::default_pricing();
         let auto = TaskAuto::default();
@@ -2782,6 +2893,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
     }
@@ -3204,6 +3316,7 @@ mod tests {
                 review_input: true,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
     }
@@ -3256,6 +3369,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: true,
+                finalize: false,
             })
         );
 
@@ -3357,6 +3471,7 @@ mod tests {
                 review_input: false,
                 note: Some("tách bước 2".to_string()),
                 fresh_plan: false,
+                finalize: false,
             })
         );
 
@@ -3384,6 +3499,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: true,
+                finalize: false,
             })
         );
     }
@@ -3493,6 +3609,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: true,
+                finalize: false,
             })
         );
     }
@@ -3539,6 +3656,7 @@ mod tests {
                 review_input: true,
                 note: None,
                 fresh_plan: false,
+                finalize: false,
             })
         );
     }
@@ -3615,6 +3733,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: true,
+                finalize: false,
             })
         );
     }
@@ -3654,6 +3773,7 @@ mod tests {
                 review_input: false,
                 note: Some("x".to_string()),
                 fresh_plan: false,
+                finalize: false,
             })
         );
     }
@@ -3719,6 +3839,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: true,
+                finalize: false,
             })
         );
     }
@@ -3742,6 +3863,7 @@ mod tests {
                 review_input: false,
                 note: None,
                 fresh_plan: true,
+                finalize: false,
             })
         );
     }
@@ -4010,6 +4132,7 @@ mod tests {
             kill_requested: false,
             started_at: 5000,
             error: None,
+            finalize: false,
         };
         runs_pr.push(pr_after_q);
         assert_eq!(cycles(&runs_pr).last().copied(), Some(1));
@@ -4165,5 +4288,135 @@ mod tests {
             Decision::Run(sr) => assert_eq!(sr.stage, Stage::Implement),
             other => panic!("expected Run(Implement), got {other:?}"),
         }
+    }
+
+    // ---- C1: finalize_on_timeout ----
+
+    fn timed_out_dev_rows(extra_finalize: bool) -> Vec<RunRow> {
+        let r1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+        let r2 = dummy_run(
+            2,
+            "plan-review",
+            Some("plan-review"),
+            Some(1),
+            "succeeded",
+            Some("review:approve"),
+            None,
+        );
+        let r3 = dummy_run(3, "dev", Some("implement"), Some(1), "timed_out", None, None);
+        let mut rows = vec![r1, r2, r3];
+        if extra_finalize {
+            rows.push(dummy_run(
+                4,
+                "dev",
+                Some("implement"),
+                Some(1),
+                "timed_out",
+                None,
+                Some(r#"{"continuation": true, "finalize": true}"#),
+            ));
+        }
+        rows
+    }
+
+    fn finalize_wf(enabled: bool) -> Workflow {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let mut wf = loaded.get("mac-dinh").unwrap().clone();
+        wf.finalize_on_timeout = crate::workflows::FinalizeOnTimeout {
+            enabled,
+            minutes: 10,
+        };
+        wf
+    }
+
+    fn timed_out_facts(wf: &Workflow, rows: &[RunRow], dirty: bool) -> Facts {
+        let pricing = crate::config::default_pricing();
+        let mut facts = build_facts(
+            wf,
+            rows,
+            &approved_auto(),
+            &AutoJson::default(),
+            Some("p1"),
+            &pricing,
+            5000,
+            false,
+        );
+        facts.dev_dirty_in_plan = dirty;
+        facts
+    }
+
+    #[test]
+    fn finalize_on_dev_timeout_runs_one_closing_turn() {
+        let wf = finalize_wf(true);
+        let facts = timed_out_facts(&wf, &timed_out_dev_rows(false), true);
+        assert_eq!(
+            decide(&wf, &facts),
+            Decision::Run(StageRun {
+                stage: Stage::Implement,
+                round: 1,
+                fix_for: None,
+                review_input: false,
+                note: Some(FINALIZE_NOTE.to_string()),
+                fresh_plan: false,
+                finalize: true,
+            })
+        );
+    }
+
+    #[test]
+    fn finalize_runs_once_per_round() {
+        let wf = finalize_wf(true);
+        let facts = timed_out_facts(&wf, &timed_out_dev_rows(true), true);
+        assert!(facts.runs[3].finalize);
+        match decide(&wf, &facts) {
+            Decision::Stop(info) => {
+                assert_eq!(info.reason, StopReason::RunLoi);
+                assert_eq!(info.run_id, Some(4));
+            }
+            other => panic!("expected Stop(RunLoi), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finalize_needs_changed_plan_files() {
+        let wf = finalize_wf(true);
+        let facts = timed_out_facts(&wf, &timed_out_dev_rows(false), false);
+        match decide(&wf, &facts) {
+            Decision::Stop(info) => assert_eq!(info.reason, StopReason::RunLoi),
+            other => panic!("expected Stop(RunLoi), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finalize_off_keeps_the_timeout_stop() {
+        // Option missing (the built-in workflow) and option present but disabled: same stop.
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let builtin = loaded.get("mac-dinh").unwrap().clone();
+        assert!(!builtin.finalize_on_timeout.enabled);
+        for wf in [builtin, finalize_wf(false)] {
+            let facts = timed_out_facts(&wf, &timed_out_dev_rows(false), true);
+            match decide(&wf, &facts) {
+                Decision::Stop(info) => {
+                    assert_eq!(info.reason, StopReason::RunLoi);
+                    assert_eq!(info.run_id, Some(3));
+                    assert_eq!(info.stage, Some(Stage::Implement));
+                }
+                other => panic!("expected Stop(RunLoi), got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn finalize_turn_does_not_count_as_a_round() {
+        // Without stored rounds, a closing turn after a timed-out implement keeps round 1.
+        let mut rows = timed_out_dev_rows(true);
+        for r in rows.iter_mut() {
+            r.round = None;
+        }
+        rows[3].status = "succeeded".to_string();
+        let facts: Vec<RunFact> = rows.iter().map(RunFact::from_row).collect();
+        assert_eq!(effective_rounds(&facts), vec![1, 1, 1, 1]);
     }
 }

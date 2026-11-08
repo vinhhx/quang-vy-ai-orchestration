@@ -134,6 +134,8 @@
       max_rounds: 'ab-set-wf-rounds',
       budget_minutes: 'ab-set-wf-minutes',
       budget_usd: 'ab-set-wf-usd',
+      timeouts: 'ab-set-wf-timeouts',
+      finalize_on_timeout: 'ab-set-wf-finalize-minutes',
     },
     staff: { id: 'ab-set-staff-id', display_name: 'ab-set-staff-name' },
   };
@@ -293,6 +295,9 @@
       wMaxRounds: '3',
       wBudgetMinutes: '60',
       wBudgetUsd: '20',
+      wTimeouts: '',
+      wFinalizeOn: false,
+      wFinalizeMinutes: '',
       wFieldErrors: {},
       wRefusal: [],
       wConflict: false,
@@ -1043,6 +1048,13 @@
               out.push({ field: 'name', message: "Đã có quy trình tên '" + name + "'." });
             }
           }
+          var tw = window.AB.parseTimeouts(this.wTimeouts);
+          if (!tw.ok) {
+            out.push({ field: 'timeouts', message: tw.message });
+          }
+          if (this.wFinalizeOn && !isInt(String(this.wFinalizeMinutes).trim())) {
+            out.push({ field: 'finalize_on_timeout', message: 'Nhập số phút cho lượt chốt.' });
+          }
           if (!this.isAnalysisWorkflow()) {
             for (var i = 0; i < STAGES.length; i++) {
               if (this.wStageOn[STAGES[i].key]) n += 1;
@@ -1434,6 +1446,9 @@
         this.wMaxRounds = '3';
         this.wBudgetMinutes = '60';
         this.wBudgetUsd = '20';
+        this.wTimeouts = '';
+        this.wFinalizeOn = false;
+        this.wFinalizeMinutes = '';
       },
 
       fillWorkflow: function (w) {
@@ -1456,6 +1471,26 @@
         this.wMaxRounds = String(edit.max_rounds !== undefined ? edit.max_rounds : (w.max_rounds || 3));
         this.wBudgetMinutes = String(edit.budget_minutes !== undefined ? edit.budget_minutes : (w.budget_minutes || 60));
         this.wBudgetUsd = String(edit.budget_usd !== undefined ? edit.budget_usd : (w.budget_usd || 20));
+        this.wTimeouts = window.AB.timeoutsText(edit.timeouts);
+        var fin = edit.finalize_on_timeout || {};
+        this.wFinalizeOn = Boolean(fin.enabled);
+        this.wFinalizeMinutes = fin.minutes ? String(fin.minutes) : '';
+      },
+
+      toggleFinalize: function () {
+        this.wFinalizeOn = !this.wFinalizeOn;
+      },
+
+      // C1: run options shared by both workflow kinds; omitted when unset.
+      workflowRunOptions: function (entry) {
+        var t = window.AB.parseTimeouts(this.wTimeouts);
+        if (t.ok && Object.keys(t.value).length > 0) entry.timeouts = t.value;
+        var mins = String(this.wFinalizeMinutes).trim();
+        if (this.wFinalizeOn || mins.length > 0) {
+          entry.finalize_on_timeout = { enabled: Boolean(this.wFinalizeOn) };
+          if (isInt(mins)) entry.finalize_on_timeout.minutes = Number(mins);
+        }
+        return entry;
       },
 
       isAnalysisWorkflow: function () {
@@ -1743,12 +1778,12 @@
         }
         if (kind === 'workflow') {
           if (this.wKind === 'analysis') {
-            return {
+            return this.workflowRunOptions({
               name: this.wName,
               kind: 'analysis',
               review: Boolean(this.wReview),
               auto: false,
-            };
+            });
           }
           var stages = [];
           for (i = 0; i < STAGES.length; i++) {
@@ -1770,7 +1805,7 @@
           if (isInt(rounds) && Number(rounds) >= 1 && Number(rounds) <= 10) {
             entry.max_rounds = Number(rounds);
           }
-          return entry;
+          return this.workflowRunOptions(entry);
         }
         return { id: this.sId, display_name: this.sName.trim(), notes: this.sNotes.trim() };
       },

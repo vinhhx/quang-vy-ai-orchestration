@@ -92,6 +92,7 @@ fn project_json(
         "stack": p.stack,
         "read_sources": p.read_sources,
         "workflow": crate::projects::workflow_of(map, &p.id),
+        "timeouts": crate::projects::timeouts_of(map, &p.id),
         "runnable_issue": runnable_issue(p, profiles),
     })
 }
@@ -270,6 +271,14 @@ pub struct UpdateProfileBody {
 }
 
 #[derive(serde::Deserialize)]
+pub struct UpdateTimeoutsBody {
+    /// `{role: seconds}`; an empty object removes the project's `timeouts`.
+    pub timeouts: serde_json::Value,
+    #[serde(default)]
+    pub etag: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 pub struct UpdateStackBody {
     pub stack: Vec<String>,
     #[serde(default)]
@@ -304,6 +313,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/projects/{id}/telegram", put(update_telegram))
         .route("/api/projects/{id}/profile", put(update_profile))
         .route("/api/projects/{id}/stack", put(update_stack))
+        .route("/api/projects/{id}/timeouts", put(update_timeouts))
         .route("/api/projects/{id}/read-sources", post(update_read_sources).put(update_read_sources))
         .route("/api/projects/{id}/status", get(project_status))
 }
@@ -651,6 +661,64 @@ async fn update_stack(
                 .map(serde_json::Value::String)
                 .collect(),
         );
+
+        save_and_respond(&st, &data, StatusCode::OK, None)
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+/// C1: the project's `timeouts: {role: seconds}`, validated like workflows.json
+/// (`config::parse_role_timeouts`). `{}` removes the key.
+async fn update_timeouts(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<UpdateTimeoutsBody>,
+) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if let Some(ref req_etag) = body.etag {
+            if req_etag != &current_etag {
+                return conflict_response(&st, current_etag);
+            }
+        }
+
+        let timeouts = match crate::config::parse_role_timeouts(&body.timeouts) {
+            Ok(t) => t,
+            Err(errs) => {
+                return Ok(json_error(StatusCode::BAD_REQUEST, &errs.join(" ")));
+            }
+        };
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        let projects_arr = data
+            .get_mut("projects")
+            .and_then(|p| p.as_array_mut())
+            .ok_or_else(|| {
+                crate::error::BrainError::error("projects_map.json thiếu mảng 'projects'")
+            })?;
+        let Some(project_obj) = projects_arr
+            .iter_mut()
+            .find(|obj| obj.get("id").and_then(|v| v.as_str()) == Some(&id))
+            .and_then(|obj| obj.as_object_mut())
+        else {
+            return Ok(json_error(
+                StatusCode::NOT_FOUND,
+                &format!("Không tìm thấy dự án {id}"),
+            ));
+        };
+
+        if timeouts.is_empty() {
+            project_obj.remove("timeouts");
+        } else {
+            project_obj.insert("timeouts".to_string(), serde_json::json!(timeouts));
+        }
 
         save_and_respond(&st, &data, StatusCode::OK, None)
     })

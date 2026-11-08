@@ -223,6 +223,16 @@
         </div>
 
         <div class="space-y-2">
+          <label :for="'ab-proj-timeouts-' + p.id" class="text-sm font-semibold leading-normal">Thời gian tối đa mỗi lần chạy theo vai (giây)</label>
+          <p :id="'ab-proj-timeouts-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Ví dụ dev=3600, qa=1200. Được ưu tiên hơn quy trình và cấu hình chung; để trống rồi lưu để bỏ.</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <input :id="'ab-proj-timeouts-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="dev=3600, qa=1200" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="timeoutDraft(p)" @input="setTimeoutDraft(p, $event.target.value)" :disabled="isTimeoutSaving(p)" :aria-describedby="'ab-proj-timeouts-help-' + p.id">
+            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isTimeoutSaving(p)" @click="saveTimeouts(p)">Lưu thời gian</button>
+          </div>
+          <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="timeoutError(p)" x-text="timeoutError(p)" role="alert"></p>
+        </div>
+
+        <div class="space-y-2">
           <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="openPromptPanel(p)">Ghi chú prompt</button>
         </div>
       </div>

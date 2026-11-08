@@ -2819,6 +2819,8 @@ mod tests {
             auto: true,
             review: false,
             source: "builtin".to_string(),
+            timeouts: Default::default(),
+            finalize_on_timeout: Default::default(),
         }
     }
 
@@ -2839,6 +2841,8 @@ mod tests {
             auto: false,
             review: false,
             source: "builtin".to_string(),
+            timeouts: Default::default(),
+            finalize_on_timeout: Default::default(),
         }
     }
 

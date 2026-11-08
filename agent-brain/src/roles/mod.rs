@@ -375,6 +375,73 @@ pub fn plan_commit_for(
     crate::gitops::find_commit_by_subject(root, &format!("{task_slug}: plan"))
 }
 
+/// File in the run dir holding the run's deadline (epoch ms).
+pub const DEADLINE_FILE: &str = "deadline";
+
+/// `N phút` for whole minutes, else `N phút S giây` / `S giây`.
+fn duration_text(secs: u64) -> String {
+    let (m, s) = (secs / 60, secs % 60);
+    match (m, s) {
+        (0, s) => format!("{s} giây"),
+        (m, 0) => format!("{m} phút"),
+        (m, s) => format!("{m} phút {s} giây"),
+    }
+}
+
+/// `HH:MM` local time of an epoch-ms instant.
+pub fn local_hhmm(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .unwrap_or_default()
+}
+
+/// The deadline notice added to every role prompt (C1). Every number comes from the run's limit
+/// and the engine's `tool_timeout_seconds`; without the latter there is no shell line.
+pub fn deadline_prompt_block(
+    timeout: Duration,
+    end_hhmm: &str,
+    tool_timeout_secs: Option<u64>,
+) -> String {
+    let mut block = format!(
+        "## Thời hạn\nBạn có {} cho lần chạy này (hết lúc {end_hhmm}). Hãy commit hoặc ghi kết quả trước khi hết giờ.",
+        duration_text(timeout.as_secs())
+    );
+    if let Some(t) = tool_timeout_secs {
+        block.push_str(&format!(
+            "\nMỗi lệnh shell bị cắt sau {}. Lệnh dài hơn phải chia nhỏ, không chạy nền.",
+            duration_text(t)
+        ));
+    }
+    block
+}
+
+/// The workflow snapshot stored on a task, if any.
+pub fn task_workflow(
+    conn: &rusqlite::Connection,
+    task_id: Option<i64>,
+) -> Option<crate::workflows::Workflow> {
+    let tid = task_id?;
+    crate::db::task_auto(conn, tid)
+        .ok()
+        .flatten()
+        .and_then(|a| a.workflow_json)
+        .and_then(|j| crate::workflows::Workflow::from_snapshot(&j))
+}
+
+/// C1: a role's run limit on a task: project `timeouts` > workflow `timeouts` >
+/// `config.timeout_seconds` > built-in default.
+pub fn task_timeout(
+    ctx: &Ctx,
+    project_id: &str,
+    workflow: Option<&crate::workflows::Workflow>,
+    role: &str,
+) -> Duration {
+    let project = crate::projects::timeouts_of(&ctx.map, project_id);
+    let empty = std::collections::BTreeMap::new();
+    let wf = workflow.map(|w| &w.timeouts).unwrap_or(&empty);
+    ctx.cfg.timeout_for_task(&project, wf, role)
+}
+
 pub struct RunPlan {
     pub role: String,
     pub model: String,
@@ -416,6 +483,8 @@ pub struct RunOpts {
     pub origin: Option<String>,
     pub team: Option<String>,
     pub level: Option<String>,
+    /// Dev only: the closing turn after a Dev timeout (workflow `finalize_on_timeout`).
+    pub finalize: bool,
 }
 
 pub fn execute_role(
@@ -497,6 +566,21 @@ pub fn execute_role_staged(
     }
     crate::engine::append_to_system_prompt(&mut plan.argv, &sources_block);
 
+    // C1: the run's real limit and end time, and the engine's shell limit when configured.
+    let deadline_ms = crate::db::now_ms() + plan.timeout.as_millis() as i64;
+    if plan.role != "inspect" {
+        let tool_timeout = match &resolved.engine {
+            crate::engine::Engine::Named(id) => ctx
+                .cfg
+                .engines
+                .get(id)
+                .and_then(|d| d.tool_timeout_seconds),
+            _ => None,
+        };
+        let block = deadline_prompt_block(plan.timeout, &local_hhmm(deadline_ms), tool_timeout);
+        crate::engine::append_to_system_prompt(&mut plan.argv, &block);
+    }
+
     let mut input_warnings = Vec::new();
     let mut task_inputs = Vec::new();
     if let Some(task_id) = plan.task_id {
@@ -550,6 +634,10 @@ pub fn execute_role_staged(
         }
         None => new_run_dir(&ctx.cfg, &project.id, &plan.task_slug, &plan.role)?,
     };
+
+    if plan.role != "inspect" {
+        let _ = std::fs::write(run_dir.join(DEADLINE_FILE), deadline_ms.to_string());
+    }
 
     if let Some((_, prompt)) = crate::engine::claude_argv_parts(&plan.argv) {
         let prompt_path = run_dir.join("prompt.md");
@@ -1220,8 +1308,12 @@ pub fn cmd_run(
         return Err(BrainError::error("--fix chỉ dùng với vai trò dev"));
     }
 
+    if opts.finalize && role != Role::Dev {
+        return Err(BrainError::error("--finalize chỉ dùng với vai trò dev"));
+    }
+
     if (opts.review
-        || opts.note.is_some()
+        || (opts.note.is_some() && !(role == Role::Dev && opts.finalize))
         || (opts.workflow.is_some() && role != Role::Analyst))
         && role != Role::Lead
     {
@@ -1318,6 +1410,34 @@ pub fn cmd_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deadline_block_uses_the_real_numbers() {
+        let b = deadline_prompt_block(Duration::from_secs(2700), "14:05", Some(120));
+        assert!(b.contains(
+            "Bạn có 45 phút cho lần chạy này (hết lúc 14:05). Hãy commit hoặc ghi kết quả trước khi hết giờ."
+        ));
+        assert!(b.contains(
+            "Mỗi lệnh shell bị cắt sau 2 phút. Lệnh dài hơn phải chia nhỏ, không chạy nền."
+        ));
+        let odd = deadline_prompt_block(Duration::from_secs(90), "09:00", Some(45));
+        assert!(odd.contains("Bạn có 1 phút 30 giây"));
+        assert!(odd.contains("bị cắt sau 45 giây"));
+    }
+
+    #[test]
+    fn deadline_block_has_no_shell_line_without_tool_timeout() {
+        let b = deadline_prompt_block(Duration::from_secs(1800), "10:30", None);
+        assert!(b.contains("Bạn có 30 phút cho lần chạy này (hết lúc 10:30)."));
+        assert!(!b.contains("lệnh shell"));
+    }
+
+    #[test]
+    fn local_hhmm_is_hours_and_minutes() {
+        let t = local_hhmm(1_700_000_000_000);
+        assert_eq!(t.len(), 5);
+        assert_eq!(&t[2..3], ":");
+    }
 
     #[test]
     fn agy_print_timeout_line_detected() {

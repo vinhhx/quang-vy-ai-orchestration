@@ -51,6 +51,9 @@
       stackErrors: {},
       readSourcesSaving: {},
       readSourcesErrors: {},
+      timeoutDrafts: {},
+      timeoutSaving: {},
+      timeoutErrors: {},
       promptModalOpen: false,
       promptProject: null,
       promptRoles: ['lead', 'dev', 'qa', 'plan-review', 'code-review'],
@@ -832,6 +835,52 @@
           return s !== srcId;
         });
         this.saveReadSources(p, cur);
+      },
+
+      // C1: the project's `timeouts: {role: seconds}`, edited as "dev=3600, qa=1200".
+      timeoutDraft: function (p) {
+        if (Object.prototype.hasOwnProperty.call(this.timeoutDrafts, p.id)) return this.timeoutDrafts[p.id];
+        return window.AB.timeoutsText(p.timeouts);
+      },
+
+      setTimeoutDraft: function (p, value) {
+        this.timeoutDrafts[p.id] = value;
+        this.timeoutErrors[p.id] = '';
+      },
+
+      isTimeoutSaving: function (p) {
+        return Boolean(this.timeoutSaving[p.id]);
+      },
+
+      timeoutError: function (p) {
+        return this.timeoutErrors[p.id] || '';
+      },
+
+      saveTimeouts: function (p) {
+        var self = this;
+        var parsed = window.AB.parseTimeouts(this.timeoutDraft(p));
+        if (!parsed.ok) {
+          this.timeoutErrors[p.id] = parsed.message;
+          return Promise.resolve();
+        }
+        this.timeoutSaving[p.id] = true;
+        this.timeoutErrors[p.id] = '';
+        return window.AB.api('PUT', '/api/projects/' + encodeURIComponent(p.id) + '/timeouts', {
+          timeouts: parsed.value,
+          etag: this.etag
+        }).then(function (res) {
+          self.timeoutSaving[p.id] = false;
+          if (res && res.ok) {
+            p.timeouts = parsed.value;
+            delete self.timeoutDrafts[p.id];
+            if (res.data && res.data.etag) self.etag = res.data.etag;
+          } else if (res && res.status === 409) {
+            self.timeoutErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+            self.load();
+          } else {
+            self.timeoutErrors[p.id] = window.AB.errorText(res) || 'Không lưu được thời gian chạy';
+          }
+        });
       },
 
       saveReadSources: function (p, list) {

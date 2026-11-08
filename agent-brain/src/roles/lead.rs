@@ -108,6 +108,7 @@ fn manual_round(conn: &rusqlite::Connection, task_id: i64) -> BrainResult<i64> {
         kill_requested: false,
         started_at: crate::db::now_ms(),
         error: None,
+        finalize: false,
     });
     Ok(effective_rounds(&facts).last().copied().unwrap_or(1))
 }
@@ -518,7 +519,13 @@ pub fn cmd_lead(
         None => manual_round(&ctx.conn, task_id)?,
     };
     let model = ctx.cfg.model_for("lead")?;
-    let timeout = ctx.cfg.timeout_for("lead");
+    let task_wf = crate::roles::task_workflow(&ctx.conn, Some(task_id));
+    let timeout = crate::roles::task_timeout(
+        ctx,
+        &proj.id,
+        Some(task_wf.as_ref().unwrap_or(&resolved.workflow)),
+        "lead",
+    );
     let exe = std::env::current_exe()?;
 
     let mut current_input = user_input;

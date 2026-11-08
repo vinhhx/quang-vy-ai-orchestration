@@ -143,6 +143,25 @@
       window.dispatchEvent(new CustomEvent('ab:profile', { detail: { profile: p } }));
     },
 
+    // `timeouts: {role: seconds}` <-> "dev=3600, qa=1200" (C1). Range and role checks stay on the server.
+    timeoutsText: function (obj) {
+      if (!obj || typeof obj !== 'object') return '';
+      return Object.keys(obj).map(function (k) { return k + '=' + obj[k]; }).join(', ');
+    },
+
+    parseTimeouts: function (text) {
+      var out = {};
+      var parts = String(text || '').split(',');
+      for (var i = 0; i < parts.length; i++) {
+        var item = parts[i].trim();
+        if (item.length === 0) continue;
+        var m = /^([a-z-]+)\s*=\s*(\d+)$/.exec(item);
+        if (!m) return { ok: false, message: 'Viết dạng vai=số giây, cách nhau bằng dấu phẩy (ví dụ dev=3600, qa=1200).' };
+        out[m[1]] = Number(m[2]);
+      }
+      return { ok: true, value: out };
+    },
+
     profileQuery: function () {
       var p = window.AB.profile();
       return (p && p !== 'all') ? 'profile=' + encodeURIComponent(p) : '';

@@ -289,7 +289,14 @@ pub fn cmd_analyst(
     }
 
     let model = ctx.cfg.model_for(crate::roles::Role::Analyst.config_role().as_str())?;
-    let timeout = ctx.cfg.timeout_for(crate::roles::Role::Analyst.config_role().as_str());
+    let task_wf = crate::roles::task_workflow(&ctx.conn, Some(task_id));
+    let task_wf = task_wf.as_ref().unwrap_or(&resolved_wf.workflow);
+    let timeout = crate::roles::task_timeout(
+        ctx,
+        &proj.id,
+        Some(task_wf),
+        crate::roles::Role::Analyst.config_role().as_str(),
+    );
     let run_plan = crate::roles::RunPlan {
         role: "analyst".to_string(),
         model: model.to_string(),
@@ -398,7 +405,12 @@ pub fn cmd_analyst(
         }
 
         let rev_model = ctx.cfg.model_for(crate::roles::Role::AnalysisReview.config_role().as_str())?;
-        let rev_timeout = ctx.cfg.timeout_for(crate::roles::Role::AnalysisReview.config_role().as_str());
+        let rev_timeout = crate::roles::task_timeout(
+            ctx,
+            &proj.id,
+            Some(task_wf),
+            crate::roles::Role::AnalysisReview.config_role().as_str(),
+        );
         let rev_plan = crate::roles::RunPlan {
             role: "analysis-review".to_string(),
             model: rev_model.to_string(),

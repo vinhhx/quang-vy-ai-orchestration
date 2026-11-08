@@ -395,7 +395,8 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         crate::term::emit(&w);
     }
     let model = ctx.cfg.model_for("qa")?;
-    let timeout = ctx.cfg.timeout_for("qa");
+    let task_wf = crate::roles::task_workflow(&ctx.conn, task_id);
+    let timeout = crate::roles::task_timeout(ctx, &proj.id, task_wf.as_ref(), "qa");
 
     let run_plan = crate::roles::RunPlan {
         role: "qa".to_string(),

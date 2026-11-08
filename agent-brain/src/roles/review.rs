@@ -363,7 +363,8 @@ pub fn cmd_review(
         crate::term::emit(&w);
     }
     let model = ctx.cfg.model_for(kind.role())?;
-    let timeout = ctx.cfg.timeout_for(kind.role());
+    let task_wf = crate::roles::task_workflow(&ctx.conn, task_id);
+    let timeout = crate::roles::task_timeout(ctx, &proj.id, task_wf.as_ref(), kind.role());
 
     let run_plan = crate::roles::RunPlan {
         role: kind.role().to_string(),

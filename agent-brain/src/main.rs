@@ -66,6 +66,9 @@ enum Commands {
         /// Nguồn của task (nội bộ: bot Telegram)
         #[arg(long, hide = true, value_parser = ["telegram"])]
         origin: Option<String>,
+        /// Lượt chốt của Dev sau khi hết giờ (nội bộ: autopilot)
+        #[arg(long, hide = true)]
+        finalize: bool,
     },
     /// Trạng thái nhanh của dự án
     Status {
@@ -444,6 +447,7 @@ fn main() {
             team,
             level,
             origin,
+            finalize,
         } => {
             let opts = roles::RunOpts {
                 name,
@@ -457,6 +461,7 @@ fn main() {
                 origin,
                 team,
                 level,
+                finalize,
             };
             roles::cmd_run(&mut ctx, role, &project, request.as_deref(), &opts)
         }

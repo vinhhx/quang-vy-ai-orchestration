@@ -117,7 +117,9 @@ pub fn stage_args(sr: &StageRun, slug: &str, project: &str, title: &str) -> Vec<
             a.extend(["run", "plan-review", "--round", &round, "--", project].map(String::from));
         }
         Stage::Implement => {
-            a.extend(["run", "dev", "--round", &round, "--", project].map(String::from));
+            a.extend(["run", "dev", "--round", &round].map(String::from));
+            push_finalize_args(&mut a, sr);
+            a.extend(["--", project].map(String::from));
         }
         Stage::CodeReview => {
             a.extend(["run", "code-review", "--round", &round, "--", project].map(String::from));
@@ -127,15 +129,39 @@ pub fn stage_args(sr: &StageRun, slug: &str, project: &str, title: &str) -> Vec<
         }
         Stage::Fix => {
             let fix_for = sr.fix_for.map(|f| f.cli_arg()).unwrap_or("code-review");
-            a.extend(
-                [
-                    "run", "dev", "--fix", fix_for, "--round", &round, "--", project,
-                ]
-                .map(String::from),
-            );
+            a.extend(["run", "dev", "--fix", fix_for, "--round", &round].map(String::from));
+            push_finalize_args(&mut a, sr);
+            a.extend(["--", project].map(String::from));
         }
     }
     a
+}
+
+/// The closing Dev turn (C1) carries `--finalize` and its note.
+fn push_finalize_args(a: &mut Vec<String>, sr: &StageRun) {
+    if sr.finalize {
+        a.push("--finalize".to_string());
+        if let Some(note) = sr.note.as_deref() {
+            a.push(format!("--note={note}"));
+        }
+    }
+}
+
+/// True when uncommitted changes touch files of the plan in `.plan.md` (C1 closing turn).
+fn dirty_in_plan(root: &std::path::Path) -> bool {
+    let Ok(changed) = crate::gitops::changed_paths(root) else {
+        return false;
+    };
+    if changed.is_empty() {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(root.join(crate::stream::PROTOCOL_FILES[0])) else {
+        return false;
+    };
+    let files = crate::planfile::plan_files(&crate::planfile::parse_plan(&text));
+    files
+        .iter()
+        .any(|f| changed.contains(f.strip_prefix("./").unwrap_or(f)))
 }
 
 fn loop_of_stage(sr_stage: Stage, fix_qa: bool) -> Loop {
@@ -453,6 +479,8 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
             resume,
         );
         facts.code_after_plan = code_after_plan;
+        facts.dev_dirty_in_plan =
+            wf.finalize_on_timeout.enabled && is_on_branch && dirty_in_plan(&root);
         resume = false;
 
         match decide::decide(&wf, &facts) {
@@ -721,6 +749,7 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
             review_input: false,
             note: None,
             fresh_plan: true,
+            finalize: false,
         };
         let after = max_run_id(ctx, task.id)?;
         if after <= before {

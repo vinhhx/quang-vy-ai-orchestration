@@ -652,6 +652,8 @@ fn list_tasks_auto_fields() {
         auto: true,
         review: false,
         source: "test".to_string(),
+        timeouts: Default::default(),
+        finalize_on_timeout: Default::default(),
     };
     sb.db()
         .execute(

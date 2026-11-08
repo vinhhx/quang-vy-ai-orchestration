@@ -296,6 +296,22 @@
           <p id="ab-set-wf-usd-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('workflow', 'budget_usd')" x-text="fieldMsg('workflow', 'budget_usd')"></p>
         </div>
       </div>
+      <div class="space-y-2">
+        <label class="flex min-h-12 items-center gap-2 rounded-xl px-4 ring-1 ring-slate-300 dark:ring-slate-600 cursor-pointer">
+          <input id="ab-set-wf-finalize" type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="wFinalizeOn" @change="toggleFinalize" aria-describedby="ab-set-wf-finalize-minutes-help">
+          <span class="text-base font-normal leading-normal">Lượt chốt khi Dev hết giờ</span>
+        </label>
+        <label for="ab-set-wf-finalize-minutes" class="text-sm font-semibold leading-normal">Thời gian lượt chốt (phút)</label>
+        <input id="ab-set-wf-finalize-minutes" type="number" inputmode="numeric" min="1" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="fieldClass('workflow', 'finalize_on_timeout')" x-model="wFinalizeMinutes" @input="onField('workflow', 'finalize_on_timeout')" @blur="onField('workflow', 'finalize_on_timeout')" :aria-invalid="invalidAttr('workflow', 'finalize_on_timeout')" :aria-describedby="describedBy('workflow', 'finalize_on_timeout', 'ab-set-wf-finalize-minutes')">
+        <p id="ab-set-wf-finalize-minutes-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Bật: khi Dev chạy quá thời gian mà còn file đổi trong phạm vi plan, autopilot chạy thêm một lượt Dev ngắn để ghi kết quả và commit. Lượt này không tính vào số vòng.</p>
+        <p id="ab-set-wf-finalize-minutes-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('workflow', 'finalize_on_timeout')" x-text="fieldMsg('workflow', 'finalize_on_timeout')"></p>
+      </div>
+      </div>
+      <div class="space-y-2">
+        <label for="ab-set-wf-timeouts" class="text-sm font-semibold leading-normal">Thời gian tối đa mỗi lần chạy theo vai (giây)</label>
+        <input id="ab-set-wf-timeouts" type="text" autocomplete="off" spellcheck="false" placeholder="dev=3600, qa=1200" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="fieldClass('workflow', 'timeouts')" x-model="wTimeouts" @input="onField('workflow', 'timeouts')" @blur="onField('workflow', 'timeouts')" :aria-invalid="invalidAttr('workflow', 'timeouts')" :aria-describedby="describedBy('workflow', 'timeouts', 'ab-set-wf-timeouts')">
+        <p id="ab-set-wf-timeouts-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Để trống để dùng cấu hình chung. Vai: lead, dev, qa, plan-review, code-review. Cấu hình của dự án được ưu tiên hơn.</p>
+        <p id="ab-set-wf-timeouts-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="fieldInvalid('workflow', 'timeouts')" x-text="fieldMsg('workflow', 'timeouts')"></p>
       </div>
         <div id="ab-set-workflow-refusal" role="alert" tabindex="-1" class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-show="hasRefusal('workflow')">
           <p class="font-semibold leading-normal" x-text="refusalHeading('workflow')"></p>

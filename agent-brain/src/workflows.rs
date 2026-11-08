@@ -34,6 +34,42 @@ pub struct Workflow {
     #[serde(default)]
     pub review: bool,
     pub source: String,
+    /// Per-role run limit in seconds (`timeouts: {role: seconds}`); empty = none set here.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub timeouts: BTreeMap<String, u64>,
+    /// One closing Dev turn after a Dev run times out (off by default).
+    #[serde(default, skip_serializing_if = "FinalizeOnTimeout::is_default")]
+    pub finalize_on_timeout: FinalizeOnTimeout,
+}
+
+/// Bounds of `finalize_on_timeout.minutes`.
+pub const FINALIZE_MIN_MINUTES: u32 = 1;
+pub const FINALIZE_MAX_MINUTES: u32 = 240;
+
+/// `finalize_on_timeout: {enabled, minutes}` of a workflow. Off, autopilot stops on a Dev
+/// timeout as before; on, it first runs one closing Dev turn limited to `minutes`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FinalizeOnTimeout {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub minutes: u32,
+}
+
+impl FinalizeOnTimeout {
+    pub fn is_default(&self) -> bool {
+        *self == FinalizeOnTimeout::default()
+    }
+
+    /// The closing turn's run limit, when the option is on.
+    pub fn limit(&self) -> Option<std::time::Duration> {
+        (self.enabled && self.minutes > 0)
+            .then(|| std::time::Duration::from_secs(u64::from(self.minutes) * 60))
+    }
+
+    fn to_value(self) -> serde_json::Value {
+        serde_json::json!({ "enabled": self.enabled, "minutes": self.minutes })
+    }
 }
 
 impl Workflow {
@@ -148,6 +184,7 @@ impl Workflow {
             entry.insert("kind".to_string(), serde_json::Value::String(self.kind.clone()));
             entry.insert("review".to_string(), serde_json::Value::Bool(self.review));
             entry.insert("auto".to_string(), serde_json::Value::Bool(self.auto));
+            self.insert_run_options(&mut entry);
             return serde_json::Value::Object(entry);
         }
 
@@ -173,7 +210,22 @@ impl Workflow {
         entry.insert("max_rounds".to_string(), self.max_rounds.into());
         entry.insert("budget_minutes".to_string(), self.budget_minutes.into());
         entry.insert("budget_usd".to_string(), budget_usd);
+        self.insert_run_options(&mut entry);
         serde_json::Value::Object(entry)
+    }
+
+    /// `timeouts` and `finalize_on_timeout`, written only when set, so a workflow without them
+    /// keeps the same file entry as before.
+    fn insert_run_options(&self, entry: &mut serde_json::Map<String, serde_json::Value>) {
+        if !self.timeouts.is_empty() {
+            entry.insert("timeouts".to_string(), serde_json::json!(self.timeouts));
+        }
+        if !self.finalize_on_timeout.is_default() {
+            entry.insert(
+                "finalize_on_timeout".to_string(),
+                self.finalize_on_timeout.to_value(),
+            );
+        }
     }
 
     pub fn to_snapshot(&self) -> String {
@@ -554,6 +606,8 @@ pub fn validate_entry(
             && k != "budget_minutes"
             && k != "budget_usd"
             && k != "auto"
+            && k != "timeouts"
+            && k != "finalize_on_timeout"
         {
             let l = lines
                 .get(&format!("{name}/{k}"))
@@ -905,6 +959,42 @@ pub fn validate_entry(
         false
     };
 
+    let timeouts = match obj.get("timeouts") {
+        None => BTreeMap::new(),
+        Some(v) => {
+            let l = lines
+                .get(&format!("{name}/timeouts"))
+                .copied()
+                .unwrap_or(entry_line);
+            match crate::config::parse_role_timeouts(v) {
+                Ok(m) => m,
+                Err(errs) => {
+                    for e in errs {
+                        entry_errors.push(format!("Dòng {l}: quy trình \"{name}\": {e}"));
+                    }
+                    BTreeMap::new()
+                }
+            }
+        }
+    };
+
+    let finalize_on_timeout = match obj.get("finalize_on_timeout") {
+        None => FinalizeOnTimeout::default(),
+        Some(v) => {
+            let l = lines
+                .get(&format!("{name}/finalize_on_timeout"))
+                .copied()
+                .unwrap_or(entry_line);
+            match parse_finalize(v) {
+                Ok(f) => f,
+                Err(e) => {
+                    entry_errors.push(format!("Dòng {l}: quy trình \"{name}\": {e}"));
+                    FinalizeOnTimeout::default()
+                }
+            }
+        }
+    };
+
     if !entry_errors.is_empty() {
         return Err(entry_errors);
     }
@@ -920,7 +1010,40 @@ pub fn validate_entry(
         auto,
         review,
         source: source.to_string(),
+        timeouts,
+        finalize_on_timeout,
     })
+}
+
+/// `finalize_on_timeout: {enabled: bool, minutes: int}`; `minutes` is required when enabled.
+fn parse_finalize(v: &serde_json::Value) -> Result<FinalizeOnTimeout, String> {
+    let shape = || {
+        format!(
+            "\"finalize_on_timeout\" phải là {{\"enabled\": true/false, \"minutes\": số nguyên từ {FINALIZE_MIN_MINUTES} đến {FINALIZE_MAX_MINUTES}}}."
+        )
+    };
+    let obj = v.as_object().ok_or_else(shape)?;
+    if obj.keys().any(|k| k != "enabled" && k != "minutes") {
+        return Err(shape());
+    }
+    let enabled = match obj.get("enabled") {
+        None => false,
+        Some(b) => b.as_bool().ok_or_else(shape)?,
+    };
+    let minutes = match obj.get("minutes").filter(|m| !m.is_null()) {
+        None if enabled => return Err(shape()),
+        None => 0,
+        Some(m) => match m.as_u64() {
+            Some(n)
+                if (u64::from(FINALIZE_MIN_MINUTES)..=u64::from(FINALIZE_MAX_MINUTES))
+                    .contains(&n) =>
+            {
+                n as u32
+            }
+            _ => return Err(shape()),
+        },
+    };
+    Ok(FinalizeOnTimeout { enabled, minutes })
 }
 
 fn load_builtins(cfg: &Config) -> Vec<Workflow> {
@@ -1046,6 +1169,81 @@ mod tests {
     }
 
     #[test]
+    fn run_options_parse_and_round_trip() {
+        let cfg = test_cfg();
+        let text = r#"{"chay-lau": {
+            "stages": ["plan", "gate:you", "implement"],
+            "timeouts": {"dev": 3600, "lead": 900},
+            "finalize_on_timeout": {"enabled": true, "minutes": 10}
+        }}"#;
+        let loaded = load_from(Some(text), &cfg);
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        let wf = loaded.get("chay-lau").unwrap();
+        assert_eq!(wf.timeouts.get("dev"), Some(&3600));
+        assert_eq!(
+            wf.finalize_on_timeout,
+            FinalizeOnTimeout {
+                enabled: true,
+                minutes: 10
+            }
+        );
+        assert_eq!(
+            wf.finalize_on_timeout.limit(),
+            Some(std::time::Duration::from_secs(600))
+        );
+        // Snapshot and file entry keep both options.
+        let back = Workflow::from_snapshot(&wf.to_snapshot()).unwrap();
+        assert_eq!(&back, wf);
+        let entry = wf.to_file_entry();
+        assert_eq!(entry["timeouts"]["dev"], serde_json::json!(3600));
+        assert_eq!(entry["finalize_on_timeout"]["minutes"], serde_json::json!(10));
+        let again = validate_entry(&wf.name, &entry, &BTreeMap::new(), &cfg, &wf.source).unwrap();
+        assert_eq!(&again, wf);
+    }
+
+    #[test]
+    fn run_options_missing_keep_old_behaviour() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        for wf in &loaded.workflows {
+            assert!(wf.timeouts.is_empty());
+            assert!(wf.finalize_on_timeout.is_default());
+            assert_eq!(wf.finalize_on_timeout.limit(), None);
+            let snap = wf.to_snapshot();
+            assert!(!snap.contains("timeouts") && !snap.contains("finalize_on_timeout"));
+        }
+        // A snapshot written before C1 still reads back.
+        let old = r#"{"name":"x","kind":"code","stages":["plan"],"loops":[],"max_rounds":3,"budget_minutes":60,"budget_usd":20.0,"auto":true,"review":false,"source":"file"}"#;
+        let wf = Workflow::from_snapshot(old).unwrap();
+        assert!(wf.timeouts.is_empty());
+        assert!(!wf.finalize_on_timeout.enabled);
+    }
+
+    #[test]
+    fn run_options_invalid_values_are_errors() {
+        let cfg = test_cfg();
+        for bad in [
+            r#"{"x": {"stages": ["plan"], "timeouts": {"dev": 30}}}"#,
+            r#"{"x": {"stages": ["plan"], "timeouts": {"khac": 600}}}"#,
+            r#"{"x": {"stages": ["plan"], "timeouts": 600}}"#,
+            r#"{"x": {"stages": ["plan"], "finalize_on_timeout": {"enabled": true}}}"#,
+            r#"{"x": {"stages": ["plan"], "finalize_on_timeout": {"enabled": true, "minutes": 0}}}"#,
+            r#"{"x": {"stages": ["plan"], "finalize_on_timeout": {"enabled": "yes", "minutes": 5}}}"#,
+            r#"{"x": {"stages": ["plan"], "finalize_on_timeout": {"enabled": true, "minutes": 5, "y": 1}}}"#,
+        ] {
+            let loaded = load_from(Some(bad), &cfg);
+            assert!(!loaded.errors.is_empty(), "{bad}");
+            assert!(loaded.get("x").is_none(), "{bad}");
+        }
+        let off = load_from(
+            Some(r#"{"x": {"stages": ["plan"], "finalize_on_timeout": {"enabled": false}}}"#),
+            &cfg,
+        );
+        assert!(off.errors.is_empty(), "{:?}", off.errors);
+        assert!(off.get("x").unwrap().finalize_on_timeout.is_default());
+    }
+
+    #[test]
     fn to_file_entry_round_trips() {
         let cfg = test_cfg();
         let loaded = load_from(None, &cfg);
@@ -1102,6 +1300,8 @@ mod tests {
             auto: true,
             review: false,
             source: "file".to_string(),
+            timeouts: Default::default(),
+            finalize_on_timeout: Default::default(),
         };
         let entry = wf.to_file_entry();
         assert_eq!(entry["budget_usd"], serde_json::json!(7.5));
@@ -1198,6 +1398,8 @@ mod tests {
             auto: false,
             review: false,
             source: "builtin".to_string(),
+            timeouts: Default::default(),
+            finalize_on_timeout: Default::default(),
         };
         assert_eq!(lone.summary(), "review code");
 
@@ -1216,6 +1418,8 @@ mod tests {
             auto: false,
             review: false,
             source: "builtin".to_string(),
+            timeouts: Default::default(),
+            finalize_on_timeout: Default::default(),
         };
         assert_eq!(custom.summary(), "plan → review plan → Bạn");
     }

@@ -767,6 +767,27 @@ struct WorkflowEntryBody {
     budget_minutes: Option<Value>,
     #[serde(default)]
     budget_usd: Option<Value>,
+    #[serde(default)]
+    timeouts: Option<Value>,
+    #[serde(default)]
+    finalize_on_timeout: Option<Value>,
+}
+
+/// `timeouts` / `finalize_on_timeout` of a workflow entry, kept only when set (C1).
+fn insert_run_options(m: &mut serde_json::Map<String, Value>, entry: &WorkflowEntryBody) {
+    match &entry.timeouts {
+        Some(Value::Object(o)) if o.is_empty() => {}
+        Some(Value::Null) | None => {}
+        Some(v) => {
+            m.insert("timeouts".to_string(), v.clone());
+        }
+    }
+    match &entry.finalize_on_timeout {
+        Some(Value::Null) | None => {}
+        Some(v) => {
+            m.insert("finalize_on_timeout".to_string(), v.clone());
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -820,6 +841,7 @@ fn workflow_file_entry(entry: &WorkflowEntryBody) -> Value {
             m.insert("review".to_string(), json!(r));
         }
         m.insert("auto".to_string(), json!(entry.auto));
+        insert_run_options(&mut m, entry);
         return Value::Object(m);
     }
     let mut m = serde_json::Map::new();
@@ -841,6 +863,7 @@ fn workflow_file_entry(entry: &WorkflowEntryBody) -> Value {
             m.insert(key.to_string(), v.clone());
         }
     }
+    insert_run_options(&mut m, entry);
     Value::Object(m)
 }
 
