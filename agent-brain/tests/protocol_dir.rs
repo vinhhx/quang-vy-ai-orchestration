@@ -1,5 +1,6 @@
 //! D1: protocol files under a configured `protocol_dir` (`.brain/{slug}`).
 mod common;
+#[allow(dead_code)]
 #[path = "support/protocol.rs"]
 mod protocol;
 
