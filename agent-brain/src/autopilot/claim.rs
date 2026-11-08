@@ -8,7 +8,7 @@ use crate::config::Price;
 use crate::db::{DriverRow, RunRow, TaskAuto, TaskRow};
 use crate::error::{BrainError, BrainResult};
 use crate::procs::ProcId;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -411,15 +411,28 @@ pub fn approve_check(
 }
 
 /// Ghi duyệt plan cho commit hiện tại; trả thời điểm (ms) đã ghi.
+///
+/// `skip_build` ghi `auto_json.skip_build_once`: duyệt "thẳng QA" bật cờ, mọi lần duyệt khác
+/// tắt cờ. Cờ giữ nguyên tới lần duyệt sau, để sau khi QA chạy autopilot không quay lại implement.
 pub fn approve_record(
     conn: &Connection,
     task_id: i64,
     plan_commit: &str,
     source: &str,
+    skip_build: bool,
 ) -> BrainResult<i64> {
     let now = crate::db::now_ms();
     crate::db::set_task_approval(conn, task_id, now, plan_commit)?;
     crate::db::insert_plan_approval(conn, task_id, plan_commit, now, source)?;
+    let raw: Option<String> = conn
+        .query_row("SELECT auto_json FROM tasks WHERE id = ?1", [task_id], |r| r.get(0))
+        .optional()?
+        .flatten();
+    let mut aj = AutoJson::parse(raw.as_deref());
+    if aj.skip_build_once != skip_build {
+        aj.skip_build_once = skip_build;
+        crate::db::set_auto_json(conn, task_id, Some(&aj.to_json()))?;
+    }
     Ok(now)
 }
 
@@ -696,5 +709,35 @@ mod tests {
 
         let ok = approve_check(&conn, &task, root, &custom_pricing);
         assert!(ok.is_ok(), "Expected Ok after budget extension: {:?}", ok.err());
+    }
+
+    /// Duyệt "thẳng QA" bật `skip_build_once`; lần duyệt sau (bất kỳ kiểu khác) tắt cờ.
+    /// Mỗi lần duyệt thêm một dòng `plan_approvals`; hoàn duyệt xoá dòng của lần đó (B2, B3).
+    #[test]
+    fn approve_record_sets_skip_build_and_history() {
+        let (_dir, conn, task_id) = fresh_task();
+        let skip = |conn: &Connection| {
+            AutoJson::parse(task_auto(conn, task_id).unwrap().unwrap().auto_json.as_deref()).skip_build_once
+        };
+        let count = |conn: &Connection| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM plan_approvals WHERE task_id = ?1",
+                [task_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        approve_record(&conn, task_id, "c1", "ui", true).unwrap();
+        assert!(skip(&conn));
+        assert_eq!(count(&conn), 1);
+
+        approve_record(&conn, task_id, "c2", "cli", false).unwrap();
+        assert!(!skip(&conn));
+        assert_eq!(count(&conn), 2);
+        assert_eq!(
+            crate::db::latest_different_plan_approval(&conn, task_id, "c2").unwrap().as_deref(),
+            Some("c1")
+        );
     }
 }

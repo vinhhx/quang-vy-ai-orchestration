@@ -4129,4 +4129,41 @@ mod tests {
         );
         assert_eq!(gate_state(nhanh_wf, &f_nhanh), GateState::Waiting);
     }
+
+    /// Duyệt "thẳng QA": cờ skip_build_once giữ tới lần duyệt sau, nên sau khi QA chạy
+    /// autopilot không quay lại implement (B2).
+    #[test]
+    fn skip_build_once_stays_after_qa() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("nhanh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let auto_app = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let aj = AutoJson {
+            skip_build_once: true,
+            ..Default::default()
+        };
+        let p1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+        let facts = |runs: &[RunRow], code: bool| {
+            build_facts(wf, runs, &auto_app, &aj, Some("p1"), &pricing, 2000, false)
+                .with_code_after_plan(code)
+        };
+
+        // Có code sau plan: bỏ implement, chạy QA.
+        match decide(wf, &facts(std::slice::from_ref(&p1), true)) {
+            Decision::Run(sr) => assert_eq!(sr.stage, Stage::Qa),
+            other => panic!("expected Run(Qa), got {other:?}"),
+        }
+        // QA đạt: xong, không quay lại implement.
+        let q_pass = dummy_run(2, "qa", Some("qa"), Some(1), "succeeded", Some("qa:pass"), None);
+        assert_eq!(decide(wf, &facts(&[p1.clone(), q_pass], true)), Decision::Done);
+        // Chưa có code sau plan: cờ không có tác dụng, chạy implement như thường.
+        match decide(wf, &facts(&[p1], false)) {
+            Decision::Run(sr) => assert_eq!(sr.stage, Stage::Implement),
+            other => panic!("expected Run(Implement), got {other:?}"),
+        }
+    }
 }

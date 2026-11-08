@@ -3343,7 +3343,13 @@ pub fn run_control_as(
                 (Some(at), Some(c)) => Some((at, c)),
                 _ => None,
             };
-            let approved_at = claim::approve_record(&conn, task_id, &plan_commit, source.as_str())?;
+            let approved_at = claim::approve_record(
+                &conn,
+                task_id,
+                &plan_commit,
+                source.as_str(),
+                control == "approve_qa",
+            )?;
 
             let job_id = match control {
                 "approve_none" => {
@@ -3351,9 +3357,6 @@ pub fn run_control_as(
                     None
                 }
                 "approve_qa" => {
-                    let mut aj = state.aj.clone();
-                    aj.skip_build_once = true;
-                    crate::db::set_auto_json(&conn, task_id, Some(&aj.to_json()))?;
                     if taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto)) {
                         let spec = task_job(&state, "auto", vec!["auto".to_string(), id_str]);
                         match start_job_outcome(st, spec) {
@@ -3537,6 +3540,7 @@ pub fn run_control_as(
             crate::db::set_auto_state(&conn, task_id, Some("stopped"))?;
             let mut aj = state.aj.clone();
             aj.stop = None;
+            aj.skip_build_once = false;
             crate::db::set_auto_json(&conn, task_id, Some(&aj.to_json()))?;
             let note_str = note.map(|n| format!(" (ghi chú: {n})")).unwrap_or_default();
             crate::term::emit(&format!(

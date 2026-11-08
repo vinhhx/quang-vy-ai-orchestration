@@ -429,4 +429,8 @@ fn test_b5_no_split_intake_and_project_in_prompt() {
         system_prompt.contains("Người gửi đã chọn dự án 'web-ban-hang': giữ nguyên project là 'web-ban-hang'"),
         "Prompt phải giữ nguyên dự án khi người gửi đã chọn: {system_prompt}"
     );
+
+    // JSON mẫu trong prompt là JSON hợp lệ (một cặp ngoặc), không phải `{{{"tasks"`.
+    assert!(system_prompt.contains("\n{\"tasks\":[{\"project\""), "{system_prompt}");
+    assert!(!system_prompt.contains("{{"), "{system_prompt}");
 }

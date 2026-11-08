@@ -457,12 +457,12 @@ pub fn build_triage_prompt(st: &AppState, intake: &IntakeRow) -> BrainResult<(St
 
     let task_split_rule = if intake.split {
         r#"9. Trả về DUY NHẤT một JSON hợp lệ dạng:
-{{{"tasks":[{"project":"...","title":"...","request":"...","priority":"...","level":"...","team":"...","workflow":"...","reason":"...","after":null}]}}}
+{"tasks":[{"project":"...","title":"...","request":"...","priority":"...","level":"...","team":"...","workflow":"...","reason":"...","after":null}]}
 Tối đa 5 mục trong 'tasks'. Không viết thêm bất kỳ văn bản giải thích nào ngoài JSON.
 10. Nếu yêu cầu cần kết quả phân tích ở dự án A làm đầu vào cho việc ở dự án B (ví dụ viết test case từ code A rồi chạy e2e ở B), trả về hai việc: việc phân tích ở A, rồi việc ở B có "after": <chỉ số việc A>. Việc B sẽ tự nhận kết quả của việc A làm tài liệu đầu vào. Chỉ dùng after khi việc trước là quy trình loại phân tích."#
     } else {
         r#"9. Trả về DUY NHẤT một JSON hợp lệ dạng:
-{{{"tasks":[{"project":"...","title":"...","request":"...","priority":"...","level":"...","team":"...","workflow":"...","reason":"...","after":null}]}}}
+{"tasks":[{"project":"...","title":"...","request":"...","priority":"...","level":"...","team":"...","workflow":"...","reason":"...","after":null}]}
 Trả đúng 1 mục trong 'tasks', không dùng 'after'. Không viết thêm bất kỳ văn bản giải thích nào ngoài JSON."#
     };
 
