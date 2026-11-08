@@ -1438,6 +1438,10 @@ pub struct TaskState {
     pub teams: crate::teams::LoadedTeams,
     pub staff: crate::staff::LoadedStaff,
     pub plan_diff_summary: Option<String>,
+    /// C3: when the latest run stopped on quota, the teams (in teams.json order) whose engine for
+    /// that run's role is ready now (`teams::TeamReadiness`); empty otherwise. The Telegram
+    /// buttons, their callback decoding and the dashboard re-run dialog all read this one list.
+    pub quota_teams: Vec<String>,
 }
 
 /// Token đổi khi trạng thái task, run mới nhất, autopilot, cờ dừng, duyệt, commit plan hoặc
@@ -1708,6 +1712,11 @@ pub fn load_task_state(
     }
     view.actions.push(quota_rerun);
 
+    let quota_teams = match latest.filter(|r| r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA)) {
+        Some(r) => team_readiness(st, &task, &project).ready_names(&st.cfg, &teams, &r.role),
+        None => Vec::new(),
+    };
+
     let rev = task_rev(
         &task,
         &auto,
@@ -1760,7 +1769,15 @@ pub fn load_task_state(
         teams,
         staff,
         plan_diff_summary,
+        quota_teams,
     }))
+}
+
+/// C3: the readiness check for a team switch of this task (project profile, task level).
+fn team_readiness(st: &AppState, task: &TaskRow, project: &Project) -> crate::teams::TeamReadiness {
+    let level = crate::departments::Level::parse(&task.level)
+        .unwrap_or(crate::departments::Level::Vua);
+    crate::teams::TeamReadiness::current(&st.cfg, &project.id, &project.profile, level)
 }
 
 /// Tên đội hình hiện tại của task: tên đã lưu, hoặc `mac-dinh` cho task cũ (không có
@@ -1811,6 +1828,7 @@ fn write_team_change(
     state: &TaskState,
     to: &str,
     source: ActionSource,
+    quota: Option<Option<i64>>,
 ) -> BrainResult<Option<String>> {
     let from = current_team_name(state);
     let mut new_team = state
@@ -1823,6 +1841,8 @@ fn write_team_change(
         by: source_label(source).to_string(),
         from: from.clone(),
         to: to.to_string(),
+        reason: quota.map(|_| crate::teams::CHANGE_REASON_QUOTA.to_string()),
+        reset_at: quota.flatten(),
     });
     let wrote = crate::db::set_task_team_cas(
         conn,
@@ -1875,7 +1895,7 @@ pub fn change_team(
             kind: "not_allowed",
         });
     }
-    match write_team_change(&conn, &state, team, source)? {
+    match write_team_change(&conn, &state, team, source, None)? {
         Some(from) => Ok(TeamOutcome::Changed {
             from,
             to: team.to_string(),
@@ -1989,6 +2009,7 @@ pub fn quota_view(state: &TaskState) -> Option<serde_json::Value> {
         "engine": run.engine,
         "detail": crate::quota::stop_detail(run.id, &run.role, &run.engine),
         "retry_label": quota_retry_label(state, run),
+        "ready_teams": state.quota_teams,
     }))
 }
 
@@ -2220,6 +2241,13 @@ pub fn quota_rerun(
     else {
         return Ok(refusal(taskstate::QUOTA_RERUN_NOT_QUOTA.to_string()));
     };
+    // C3: the picked team's engine for the stopped role must be ready now (same check as the
+    // Telegram buttons and the dashboard dialog), before anything is written.
+    if let Some(msg) =
+        team_readiness(st, &state.task, &state.project).refusal(&st.cfg, picked, &run.role)
+    {
+        return Ok(ControlOutcome::Invalid(msg));
+    }
     let Some((role, args)) = quota_rerun_job(&state, run) else {
         return Ok(ControlOutcome::Refused {
             reason: NOT_ALLOWED_MSG.to_string(),
@@ -2251,7 +2279,8 @@ pub fn quota_rerun(
         }
     }
 
-    if write_team_change(&conn, &state, team, source)?.is_none() {
+    let reset_at = crate::quota::run_reset_at(run.metrics_json.as_deref());
+    if write_team_change(&conn, &state, team, source, Some(reset_at))?.is_none() {
         return Ok(ControlOutcome::Stale);
     }
     match start_job_outcome(st, task_job(&state, role, args)) {

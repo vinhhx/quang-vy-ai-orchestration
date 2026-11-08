@@ -15,6 +15,34 @@ pub const OUTCOME_QUOTA: &str = "quota";
 
 const DETAIL_MAX_CHARS: usize = 200;
 
+/// A reset time below this is taken as Unix seconds (a value in ms is 13 digits until 2286).
+const SECONDS_BELOW: i64 = 10_000_000_000;
+
+/// A reset time in Unix ms, whether it was written in seconds or ms; `None` for 0 or negative.
+pub fn reset_at_ms(raw: i64) -> Option<i64> {
+    match raw {
+        r if r <= 0 => None,
+        r if r < SECONDS_BELOW => Some(r.saturating_mul(1000)),
+        r => Some(r),
+    }
+}
+
+/// `metrics_json.quota.reset_at` of a quota run (written by the run seam in ms), in ms.
+pub fn run_reset_at(metrics_json: Option<&str>) -> Option<i64> {
+    let v: serde_json::Value = serde_json::from_str(metrics_json?).ok()?;
+    reset_at_ms(v.get("quota")?.get("reset_at")?.as_i64()?)
+}
+
+/// C3: when an auto resume of a quota stop is due (ms): `stopped_at + resume_after_ms`, or the
+/// engine's reported reset time when that is later. Without a reset time the old rule holds.
+pub fn resume_due_ms(stopped_at_ms: i64, resume_after_ms: i64, reset_at: Option<i64>) -> i64 {
+    let base = stopped_at_ms.saturating_add(resume_after_ms);
+    match reset_at.and_then(reset_at_ms) {
+        Some(r) => base.max(r),
+        None => base,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuotaHit {
     /// Which rule fired, e.g. `rate_limit_event.rejected`; stored in `metrics_json.quota.signal`.
@@ -588,5 +616,31 @@ mod tests {
         ] {
             assert_eq!(step_name(stage, role), want, "{stage:?} {role}");
         }
+    }
+
+    #[test]
+    fn c3_reset_at_seconds_or_ms_and_resume_due() {
+        assert_eq!(reset_at_ms(1_792_310_400), Some(1_792_310_400_000));
+        assert_eq!(reset_at_ms(1_792_310_400_000), Some(1_792_310_400_000));
+        assert_eq!(reset_at_ms(0), None);
+        assert_eq!(
+            run_reset_at(Some(r#"{"quota":{"engine":"x","reset_at":1792310400000}}"#)),
+            Some(1_792_310_400_000)
+        );
+        assert_eq!(run_reset_at(Some(r#"{"quota":{"reset_at":null}}"#)), None);
+        assert_eq!(run_reset_at(Some("{}")), None);
+        assert_eq!(run_reset_at(None), None);
+        let hour = 3_600_000;
+        let stop = 1_792_000_000_000i64;
+        // No reset time: unchanged rule.
+        assert_eq!(resume_due_ms(stop, hour, None), stop + hour);
+        // A later reset wins; an earlier one does not shorten the wait.
+        assert_eq!(resume_due_ms(stop, hour, Some(stop + 5 * hour)), stop + 5 * hour);
+        assert_eq!(resume_due_ms(stop, hour, Some(stop - hour)), stop + hour);
+        // A reset written in seconds is read as such.
+        assert_eq!(
+            resume_due_ms(stop, hour, Some((stop + 5 * hour) / 1000)),
+            stop + 5 * hour
+        );
     }
 }

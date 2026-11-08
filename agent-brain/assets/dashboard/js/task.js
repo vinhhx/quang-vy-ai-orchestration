@@ -1077,7 +1077,14 @@
         this.teamDlgFailed = false;
         var teams = window.AB.api('GET', '/api/teams').then(function (res) {
           if (res && res.ok && res.data && Array.isArray(res.data.teams)) {
-            self.teamDlgTeams = res.data.teams;
+            var list = res.data.teams;
+            // Re-run after quota: only the teams whose engine for the stopped step is ready
+            // (the same list the server checks in quota_rerun and Telegram shows as buttons).
+            var q = self.quotaView;
+            if (self.teamDlgMode === 'rerun' && q && Array.isArray(q.ready_teams)) {
+              list = list.filter(function (t) { return t && q.ready_teams.indexOf(t.name) !== -1; });
+            }
+            self.teamDlgTeams = list;
             self.teamDlgFailed = false;
           } else {
             self.teamDlgTeams = [];

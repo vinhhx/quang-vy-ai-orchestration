@@ -45,6 +45,14 @@
     "dev": "sonnet",
     "qa": "sonnet"
   },
+  "orchestrator": {
+    "enabled": false,
+    "max_parallel": 3,
+    "auto_resume_quota": false,
+    "resume_after_minutes": 60,
+    "triage_engine": "claude",
+    "restore_team_after_quota": false
+  },
   "pricing": {
     "opus": {
       "input": 4.0,

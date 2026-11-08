@@ -487,16 +487,12 @@ pub fn resolve_for_run_with(
         }
     }
 
-    let lookup_role = match role {
-        "analyst" => "lead",
-        "analysis-review" => "plan-review",
-        other => other,
-    };
+    let lookup_role = crate::teams::team_role_of(role);
 
     let mut resolved_engine = team.engine_for(lookup_role);
     let mut member_pick = None;
 
-    if task_team.name == "phong-ban" && task_team.wait.is_none() && !matches!(resolved_engine, Engine::Human(_)) {
+    if task_team.name == crate::teams::TEAM_PHONG_BAN && task_team.wait.is_none() && !matches!(resolved_engine, Engine::Human(_)) {
         let level_str = crate::db::task_level(conn, task_id).unwrap_or_else(|_| "vua".to_string());
         let level = crate::departments::Level::parse(&level_str).unwrap_or(crate::departments::Level::Vua);
         let project_profile: String = conn

@@ -316,13 +316,14 @@ pub fn rerun_done_text(team: &str, step: &str, job_id: u64) -> String {
 pub const RETRY_LATER_LINE: &str =
     "Đã hoãn — khi quota hồi phục, chạy lại bước này trên dashboard.";
 
-/// The team names a quota message offers: the first `MAX_TEAM_BUTTONS` of the list the server
-/// holds now. A button carries an index into this list and the version of it.
+/// The team names a quota message offers: the first `MAX_TEAM_BUTTONS` of the teams that are
+/// ready for the stopped run's role now (`TaskState.quota_teams`, C3). A button carries an index
+/// into this filtered list and the version of it; the callback decodes against the same list.
 pub fn team_names(s: &TaskState) -> Vec<String> {
-    s.teams
-        .names()
-        .into_iter()
+    s.quota_teams
+        .iter()
         .take(callback::MAX_TEAM_BUTTONS)
+        .cloned()
         .collect()
 }
 
@@ -399,12 +400,17 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
                 lines.push(format!("Hết quota · task {id} {}", s.task.slug));
             }
             let hidden = s
-                .teams
-                .teams
+                .quota_teams
                 .len()
                 .saturating_sub(callback::MAX_TEAM_BUTTONS);
             if hidden > 0 {
                 lines.push(format!("Còn {hidden} đội hình khác — chọn trên dashboard."));
+            }
+            let not_ready = s.teams.teams.len().saturating_sub(s.quota_teams.len());
+            if not_ready > 0 {
+                lines.push(format!(
+                    "{not_ready} đội hình chưa sẵn sàng cho bước này (engine thiếu key, thiếu lệnh hoặc chưa kiểm) — không hiện."
+                ));
             }
         }
         EventKind::RunFailed => {
@@ -779,6 +785,7 @@ mod tests {
             teams: crate::teams::LoadedTeams::default(),
             staff: crate::staff::LoadedStaff::default(),
             plan_diff_summary: None,
+            quota_teams: Vec::new(),
         };
 
         let ev = Event {

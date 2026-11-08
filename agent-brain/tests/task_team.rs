@@ -757,7 +757,9 @@ fn quota_payload_and_rerun_manual() {
             "step_name": "Code",
             "engine": "claude",
             "detail": format!("Run {dev_id} (dev) trên engine claude dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine."),
-            "retry_label": "Chạy Dev"
+            "retry_label": "Chạy Dev",
+            // C3: tiet-kiem (Dev on deepseek, no key in the sandbox) is not offered.
+            "ready_teams": ["mac-dinh", "phong-ban", "doi-a", "doi-b"]
         }),
         "task: {task}"
     );

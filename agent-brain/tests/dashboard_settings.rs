@@ -1336,7 +1336,7 @@ fn orchestrator_settings_get_save_live() {
     // A body without `triage_engine` keeps the live value (`claude`), written with the block.
     assert_eq!(
         after["orchestrator"],
-        json!({"enabled": true, "max_parallel": 5, "auto_resume_quota": true, "resume_after_minutes": 90, "triage_engine": "claude"})
+        json!({"enabled": true, "max_parallel": 5, "auto_resume_quota": true, "resume_after_minutes": 90, "triage_engine": "claude", "restore_team_after_quota": false})
     );
     assert_eq!(without_orchestrator(after), without_orchestrator(before));
     let mode = std::fs::metadata(&sb.config_path).unwrap().permissions().mode() & 0o777;
@@ -1557,4 +1557,40 @@ fn orchestrator_toggle_routes_create_task_live() {
     assert_eq!(count("SELECT COUNT(*) FROM tasks"), 1);
 
     stop(srv);
+}
+
+/// C3: `orchestrator.restore_team_after_quota` defaults to off, is saved and read back through the
+/// orchestrator settings route, keeps its value when a body omits it, and must be a boolean.
+#[test]
+fn orchestrator_restore_team_after_quota_setting() {
+    let sb = Sandbox::new();
+    sb.write_config(json!({}));
+    let srv = sb.serve(&[]);
+    let j = srv.get("/api/orchestrator/settings").json();
+    assert_eq!(j["restore_team_after_quota"], false, "{j}");
+    let v1 = j["version"].as_str().unwrap().to_string();
+
+    let mut body = orch_body(false, 3, false, 60, &v1);
+    body["restore_team_after_quota"] = json!(true);
+    let r = srv.post_json("/api/orchestrator/settings", &body);
+    assert_eq!(r.status, 200, "{}", r.text());
+    let j = r.json();
+    assert_eq!(j["restore_team_after_quota"], true);
+    let v2 = j["version"].as_str().unwrap().to_string();
+    let file: Value =
+        serde_json::from_str(&std::fs::read_to_string(&sb.config_path).unwrap()).unwrap();
+    assert_eq!(file["orchestrator"]["restore_team_after_quota"], true);
+
+    // An older client without the key keeps the saved value.
+    let r = srv.post_json("/api/orchestrator/settings", &orch_body(false, 4, false, 60, &v2));
+    assert_eq!(r.status, 200, "{}", r.text());
+    let j = r.json();
+    assert_eq!(j["restore_team_after_quota"], true);
+    let v3 = j["version"].as_str().unwrap().to_string();
+
+    let mut bad = orch_body(false, 3, false, 60, &v3);
+    bad["restore_team_after_quota"] = json!("yes");
+    let r = srv.post_json("/api/orchestrator/settings", &bad);
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert_eq!(error_fields(&r.json()), ["restore_team_after_quota"]);
 }

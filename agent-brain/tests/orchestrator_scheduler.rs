@@ -524,6 +524,100 @@ fn test_scheduler_auto_resume_quota_once() {
     st.jobs.kill_all_now();
 }
 
+/// C3: a quota run that reported `metrics.quota.reset_at` is resumed at
+/// `max(reset_at, stop + resume_after_minutes)`: not before the reset time, then once.
+#[test]
+fn test_scheduler_auto_resume_waits_for_reset_at() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repos = setup_projects(&sb, &["p1"]);
+    let fake_job = setup_fake_job(&sb);
+
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true,
+            "max_parallel": 3,
+            "auto_resume_quota": true,
+            "resume_after_minutes": 5
+        }
+    }));
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
+    let projects = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+
+    let pid1 = agent_brain::db::project_row_id(&conn, "p1").expect("pid");
+    let t1 = agent_brain::db::upsert_task(
+        &conn,
+        pid1,
+        "task-reset",
+        "Task Reset",
+        "task-reset",
+        Some("task/task-reset"),
+        None,
+    )
+    .expect("upsert task");
+
+    let now = agent_brain::db::now_ms();
+    // Stopped 6 minutes ago (> resume_after_minutes = 5), but the quota resets in an hour.
+    let stopped_at = now - (6 * 60 * 1000);
+    conn.execute(
+        "UPDATE tasks SET auto_state = 'stopped', auto_stop_at = ?1, auto_stop_kind = 'het_quota' WHERE id = ?2",
+        rusqlite::params![stopped_at, t1],
+    )
+    .expect("update task quota stop");
+    let later = json!({"quota": {"engine": "claude", "signal": "x", "reset_at": now + 3_600_000}});
+    conn.execute(
+        "INSERT INTO runs (task_id, project_id, role, engine, profile, status, outcome, started_at, ended_at, metrics_json)
+         VALUES (?1, ?2, 'dev', 'claude', 'default', 'succeeded', 'quota', ?3, ?4, ?5)",
+        rusqlite::params![t1, pid1, stopped_at - 1000, stopped_at, later.to_string()],
+    )
+    .expect("insert quota run");
+    assert_eq!(
+        agent_brain::db::latest_quota_reset_at(&conn, t1),
+        Some(now + 3_600_000)
+    );
+
+    let intake_1 = insert_intake(&conn, "ui", None, "Intake reset", "normal").expect("insert intake");
+    let prop = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id: intake_1,
+            project_id: pid1,
+            title: "Task Reset",
+            request: "Do task reset",
+            priority: "normal",
+            level: "vua",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("prop");
+    agent_brain::db::set_proposal_started(&conn, prop, Some(t1)).expect("start prop");
+
+    let st = app_state(&sb, fake_job);
+
+    schedule_tick(&st).expect("tick 1");
+    assert_eq!(st.jobs.list().len(), 0, "not resumed before reset_at");
+    assert_eq!(list_quota_stops(&conn).expect("list").len(), 1);
+
+    // The reset time passes (written in seconds, as some streams report it): resumed once.
+    let passed = json!({"quota": {"engine": "claude", "signal": "x", "reset_at": (now - 60_000) / 1000}});
+    conn.execute(
+        "UPDATE runs SET metrics_json = ?1 WHERE task_id = ?2",
+        rusqlite::params![passed.to_string(), t1],
+    )
+    .expect("update metrics");
+    schedule_tick(&st).expect("tick 2");
+    let jobs = st.jobs.list();
+    assert_eq!(jobs.len(), 1, "resumed after reset_at");
+    assert_eq!(jobs[0].task_id, Some(t1));
+
+    st.jobs.kill_all_now();
+}
+
 /// Acceptance 5: enabled = false: không có task nào được bắt đầu bởi bộ lập lịch.
 #[test]
 fn test_scheduler_disabled_starts_nothing() {

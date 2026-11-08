@@ -1190,12 +1190,13 @@ fn save_engine_models_blocking(st: &AppState, body: EngineModelsSaveBody) -> Res
 
 const ORCH_HEADING: &str = "Không lưu được cài đặt hàng đợi";
 const ORCH_CONFLICT: &str = "config.json vừa bị sửa ở nơi khác";
-const ORCH_FIELDS: [&str; 6] = [
+const ORCH_FIELDS: [&str; 7] = [
     "enabled",
     "max_parallel",
     "auto_resume_quota",
     "resume_after_minutes",
     "triage_engine",
+    "restore_team_after_quota",
     "version",
 ];
 
@@ -1206,6 +1207,7 @@ fn orchestrator_json(o: &crate::config::OrchestratorConfig, version: &str) -> Va
         "auto_resume_quota": o.auto_resume_quota,
         "resume_after_minutes": o.resume_after_minutes,
         "triage_engine": o.triage_engine,
+        "restore_team_after_quota": o.restore_team_after_quota,
         "version": version,
     })
 }
@@ -1246,7 +1248,8 @@ fn int_field(
 }
 
 /// Same rules as `config::config_from_value` for the `orchestrator` block, every field
-/// required except `triage_engine` (absent = keep `current`'s, so an older client still saves).
+/// required except `triage_engine` and `restore_team_after_quota` (absent = keep `current`'s, so an
+/// older client still saves).
 /// Returns the new settings and the version the client read.
 fn parse_orchestrator_body(
     body: &Value,
@@ -1299,6 +1302,17 @@ fn parse_orchestrator_body(
             "triage_engine",
             "Engine phân tích (triage) phải là chuỗi.",
         )),
+    }
+    match obj.get("restore_team_after_quota") {
+        None => out.restore_team_after_quota = current.restore_team_after_quota,
+        Some(_) => match bool_field(
+            obj,
+            "restore_team_after_quota",
+            "Trả lại đội hình cũ sau khi quota hồi phục",
+        ) {
+            Ok(b) => out.restore_team_after_quota = b,
+            Err(e) => errors.push(e),
+        },
     }
     if errors.is_empty() {
         Ok((out, version))
@@ -1366,6 +1380,10 @@ fn save_orchestrator_blocking(st: &AppState, body: Value) -> Response {
             block.insert(
                 "triage_engine".to_string(),
                 json!(new_orch.triage_engine),
+            );
+            block.insert(
+                "restore_team_after_quota".to_string(),
+                json!(new_orch.restore_team_after_quota),
             );
         }
         if let Err(e) = crate::config::config_from_value(&Value::Object(root.clone())) {

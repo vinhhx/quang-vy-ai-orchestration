@@ -754,6 +754,7 @@ mod tests {
             teams,
             staff,
             plan_diff_summary: None,
+            quota_teams: Vec::new(),
         }
     }
 

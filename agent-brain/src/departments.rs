@@ -546,6 +546,54 @@ pub fn pick(
     pick_from(conn, cfg, &loaded, task_id, role, level, project_profile)
 }
 
+/// A member's engine is `san_sang` in `statuses` and `profile_refusal` does not refuse it for
+/// `role` on a project of `project_profile` (people are never picked from a department).
+pub fn member_usable(
+    cfg: &Config,
+    statuses: &[crate::engine::EngineStatus],
+    member: &Member,
+    role: &str,
+    project_profile: &str,
+) -> bool {
+    let name = member.engine.as_db_str();
+    let ready = statuses
+        .iter()
+        .find(|s| s.name == name)
+        .map(|s| s.readiness == crate::engine::Readiness::SanSang.key())
+        .unwrap_or(false);
+    let not_refused = match &member.engine {
+        Engine::Claude => true,
+        Engine::Named(id) => match cfg.engines.get(id) {
+            Some(def) => profile_refusal(def, "", project_profile, role).is_none(),
+            None => false,
+        },
+        Engine::Human(_) => false,
+    };
+    ready && not_refused
+}
+
+/// The members `pick_from` chooses among: those of `dept_members` with `level` (every member when
+/// none has it) whose engine is usable (`member_usable`).
+pub fn ready_candidates<'a>(
+    cfg: &Config,
+    statuses: &[crate::engine::EngineStatus],
+    dept_members: &[&'a Member],
+    role: &str,
+    level: Level,
+    project_profile: &str,
+) -> Vec<&'a Member> {
+    let mut candidates: Vec<&Member> = dept_members
+        .iter()
+        .copied()
+        .filter(|m| m.levels.contains(&level))
+        .collect();
+    if candidates.is_empty() {
+        candidates = dept_members.to_vec();
+    }
+    candidates.retain(|m| member_usable(cfg, statuses, m, role, project_profile));
+    candidates
+}
+
 /// Chọn thành viên phòng ban từ LoadedDepartments đã nạp sẵn.
 pub fn pick_from(
     conn: &Connection,
@@ -569,32 +617,13 @@ pub fn pick_from(
 
     let env = crate::profile::current_env();
     let statuses = readiness(cfg, &env, 0);
-
-    let is_engine_ready = |member: &Member| -> bool {
-        let name = member.engine.as_db_str();
-        statuses
-            .iter()
-            .find(|s| s.name == name)
-            .map(|s| s.readiness == "san_sang")
-            .unwrap_or(false)
-    };
-
-    let is_not_refused = |member: &Member| -> bool {
-        match &member.engine {
-            Engine::Claude => true,
-            Engine::Named(id) => match cfg.engines.get(id) {
-                Some(def) => profile_refusal(def, "", project_profile, role).is_none(),
-                None => false,
-            },
-            Engine::Human(_) => false,
-        }
-    };
+    let usable = |member: &Member| member_usable(cfg, &statuses, member, role, project_profile);
 
     // 2. Giữ người cũ: task đã có run cùng vai với member_id còn trong file,
     // engine sẵn sàng và có mức độ khó tương ứng -> chọn lại thành viên đó.
     if let Ok(Some(prev_member_id)) = crate::db::last_member_for(conn, task_id, role) {
         if let Some(prev) = dept_members.iter().find(|m| m.id == prev_member_id) {
-            if prev.levels.contains(&level) && is_engine_ready(prev) && is_not_refused(prev) {
+            if prev.levels.contains(&level) && usable(prev) {
                 return Ok(Some(Pick {
                     member: (*prev).clone(),
                     reason: format!("{} · giữ người cũ", dept_name.to_lowercase()),
@@ -603,20 +632,10 @@ pub fn pick_from(
         }
     }
 
-    // 3. Ứng viên là thành viên của phòng có level của task.
-    // Không có ai thì lấy mọi thành viên của phòng.
-    let mut candidates: Vec<&Member> = dept_members
-        .iter()
-        .copied()
-        .filter(|m| m.levels.contains(&level))
-        .collect();
-
-    if candidates.is_empty() {
-        candidates = dept_members.clone();
-    }
-
-    // Bỏ người có engine không sẵn sàng hoặc bị profile_refusal từ chối
-    candidates.retain(|m| is_engine_ready(m) && is_not_refused(m));
+    // 3. Ứng viên là thành viên của phòng có level của task (không có ai thì mọi thành viên
+    // của phòng), bỏ người có engine không sẵn sàng hoặc bị profile_refusal từ chối.
+    let mut candidates =
+        ready_candidates(cfg, &statuses, &dept_members, role, level, project_profile);
 
     if candidates.is_empty() {
         return Ok(None);

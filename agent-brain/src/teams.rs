@@ -280,6 +280,121 @@ pub fn team_profile_refusal(
     })
 }
 
+/// The team role whose engine a run role uses (`analyst` runs on the Lead's engine,
+/// `analysis-review` on the plan reviewer's).
+pub fn team_role_of(role: &str) -> &str {
+    match role {
+        "analyst" => "lead",
+        "analysis-review" => "plan-review",
+        other => other,
+    }
+}
+
+/// C3: whether a team can run one role of a task now. One check shared by the quota message
+/// buttons (Telegram), the dashboard re-run dialog, `quota_rerun` and the autopilot's team
+/// restore: `team_profile_refusal`, then the engine of the role must be `san_sang` in
+/// `engine::readiness`; on the department team, a department with members needs one usable member
+/// for the role and level (`departments::ready_candidates`, the filter of `pick_from`).
+pub struct TeamReadiness {
+    pub statuses: Vec<crate::engine::EngineStatus>,
+    pub departments: crate::departments::LoadedDepartments,
+    pub project_id: String,
+    pub project_profile: String,
+    pub level: crate::departments::Level,
+}
+
+impl TeamReadiness {
+    /// Readiness read now (local checks only, `engine::readiness`) and departments.json.
+    pub fn current(
+        cfg: &crate::config::Config,
+        project_id: &str,
+        project_profile: &str,
+        level: crate::departments::Level,
+    ) -> TeamReadiness {
+        let env = crate::profile::current_env();
+        TeamReadiness {
+            statuses: crate::engine::readiness(cfg, &env, 0),
+            departments: crate::departments::load_path(&crate::departments::departments_path(), cfg),
+            project_id: project_id.to_string(),
+            project_profile: project_profile.to_string(),
+            level,
+        }
+    }
+
+    /// `Some(reason)` when `team` cannot run `role` now; the reason names the engine and what
+    /// readiness says is missing (an env var name, never its value).
+    pub fn refusal(
+        &self,
+        cfg: &crate::config::Config,
+        team: &Team,
+        role: &str,
+    ) -> Option<String> {
+        if let Some(msg) =
+            team_profile_refusal(team, &cfg.engines, &self.project_id, &self.project_profile)
+        {
+            return Some(msg);
+        }
+        let engine = team.engine_for(team_role_of(role));
+        if team.name == TEAM_PHONG_BAN && !engine.is_human() {
+            if let Some(dept) = crate::departments::dept_of_role(role) {
+                let members = self.departments.members_of(dept);
+                if !members.is_empty() {
+                    let ready = crate::departments::ready_candidates(
+                        cfg,
+                        &self.statuses,
+                        &members,
+                        role,
+                        self.level,
+                        &self.project_profile,
+                    );
+                    if ready.is_empty() {
+                        return Some(format!(
+                            "Đội hình {}: không có thành viên phòng ban nào sẵn sàng cho vai {role} (độ khó {}).",
+                            team.name,
+                            self.level.display_vi()
+                        ));
+                    }
+                    return None;
+                }
+            }
+        }
+        let name = engine.as_db_str();
+        match self.statuses.iter().find(|s| s.name == name) {
+            None => Some(format!(
+                "Đội hình {}: engine '{name}' của vai {role} chưa khai báo trong config.json.",
+                team.name
+            )),
+            Some(st) if st.readiness != crate::engine::Readiness::SanSang.key() => {
+                let why = st
+                    .reason
+                    .as_deref()
+                    .map(|r| format!(" — {r}"))
+                    .unwrap_or_default();
+                Some(format!(
+                    "Đội hình {}: engine '{name}' của vai {role} chưa sẵn sàng ({}){why}",
+                    team.name, st.word
+                ))
+            }
+            Some(_) => None,
+        }
+    }
+
+    /// Names of the teams of `teams`, in list order, that can run `role` now.
+    pub fn ready_names(
+        &self,
+        cfg: &crate::config::Config,
+        teams: &LoadedTeams,
+        role: &str,
+    ) -> Vec<String> {
+        teams
+            .teams
+            .iter()
+            .filter(|t| self.refusal(cfg, t, role).is_none())
+            .map(|t| t.name.clone())
+            .collect()
+    }
+}
+
 /// D-37 / D-43: rules between a team and the engine list in config.json.
 ///
 /// - a non-dev role on a `dsh`-kind id is an error (dsh has no read-only mode);
@@ -538,11 +653,21 @@ pub fn resolve(
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TeamChange {
     pub at: i64,
-    /// dashboard | telegram | cli
+    /// dashboard | telegram | cli | autopilot (C3 restore)
     pub by: String,
     pub from: String,
     pub to: String,
+    /// `quota` when a quota re-run switched the team, `quota_restore` when the autopilot gave the
+    /// team back after the quota reset (C3); absent for an ordinary change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// For `reason: quota`: when the stopped engine's quota resets (ms), if the run reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_at: Option<i64>,
 }
+
+pub const CHANGE_REASON_QUOTA: &str = "quota";
+pub const CHANGE_REASON_QUOTA_RESTORE: &str = "quota_restore";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PushResult {
@@ -599,6 +724,36 @@ impl TaskTeam {
 
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// C3: the quota switch to undo at `now_ms`: the last history entry when it is a
+    /// `reason: quota` change whose `reset_at` has passed, the task still has that entry's team
+    /// and no person's step is pending. An entry without a reset time is never undone.
+    pub fn quota_restore_target(&self, now_ms: i64) -> Option<&TeamChange> {
+        if self.wait.is_some() {
+            return None;
+        }
+        let last = self.history.last()?;
+        let due = last.reason.as_deref() == Some(CHANGE_REASON_QUOTA)
+            && last.reset_at.is_some_and(|r| now_ms >= r)
+            && last.to == self.name
+            && last.from != self.name;
+        due.then_some(last)
+    }
+
+    /// The document after giving the team back to `entry.from` (a `quota_restore` entry by `by`).
+    pub fn restored(&self, entry: &TeamChange, by: &str, now_ms: i64) -> TaskTeam {
+        let mut next = self.clone();
+        next.name = entry.from.clone();
+        next.history.push(TeamChange {
+            at: now_ms,
+            by: by.to_string(),
+            from: entry.to.clone(),
+            to: entry.from.clone(),
+            reason: Some(CHANGE_REASON_QUOTA_RESTORE.to_string()),
+            reset_at: None,
+        });
+        next
     }
 }
 
@@ -1010,6 +1165,8 @@ mod tests {
             by: "dashboard".to_string(),
             from: "mac-dinh".to_string(),
             to: "doi-b".to_string(),
+            reason: None,
+            reset_at: None,
         });
         full.wait = Some(HumanWait {
             mode: "waiting".to_string(),
@@ -1037,5 +1194,135 @@ mod tests {
         assert!(w.report_paths.is_empty());
         assert!(w.push.is_none());
         assert!(!w.autopilot);
+    }
+
+    // ---- C3: readiness of a team for one role ----
+
+    fn c3_cfg() -> crate::config::Config {
+        let mut v: serde_json::Value =
+            serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap();
+        v["engines"] = serde_json::json!([
+            {"id": "gw", "kind": "anthropic", "command": "claude",
+             "base_url": "https://gw.invalid/anthropic", "key_env": "GW_TEST_KEY",
+             "verified": "e09 ok", "models": {"dev": "m"}},
+            {"id": "pinned", "kind": "anthropic", "command": "claude", "pin_profile": "personal",
+             "models": {"dev": "m"}}
+        ]);
+        v["claude_bin"] = serde_json::json!("claude");
+        crate::config::config_from_value(&v).unwrap()
+    }
+
+    fn c3_readiness(
+        cfg: &crate::config::Config,
+        key_set: bool,
+        departments: &str,
+    ) -> (TeamReadiness, tempfile::TempDir) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("claude");
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut env = BTreeMap::new();
+        env.insert("PATH".to_string(), dir.path().to_str().unwrap().to_string());
+        if key_set {
+            env.insert("GW_TEST_KEY".to_string(), "planted-secret-value".to_string());
+        }
+        let statuses = crate::engine::readiness_with(cfg, &env, 0, &|_, _| None);
+        (
+            TeamReadiness {
+                statuses,
+                departments: crate::departments::load_from(departments, cfg),
+                project_id: "p".to_string(),
+                project_profile: "work".to_string(),
+                level: crate::departments::Level::Vua,
+            },
+            dir,
+        )
+    }
+
+    fn c3_teams() -> LoadedTeams {
+        let text = r#"{
+            "doi-gw": {"description": "Dev trên gw", "roles": {"dev": "gw"}},
+            "doi-lap": {"description": "Dev trên engine không khai báo", "roles": {"dev": "khong-co"}},
+            "doi-pin": {"description": "Dev trên engine personal", "roles": {"dev": "pinned"}}
+        }"#;
+        load_from(Some(text), &no_staff())
+    }
+
+    #[test]
+    fn c3_team_with_engine_missing_key_is_not_ready() {
+        let cfg = c3_cfg();
+        let teams = c3_teams();
+        let (r, _dir) = c3_readiness(&cfg, false, "{}");
+
+        let why = r.refusal(&cfg, teams.get("doi-gw").unwrap(), "dev").unwrap();
+        assert!(why.contains("doi-gw") && why.contains("'gw'"), "{why}");
+        assert!(why.contains("Chưa đặt biến môi trường GW_TEST_KEY."), "{why}");
+        assert!(!why.contains("planted"), "{why}");
+        let why = r.refusal(&cfg, teams.get("doi-lap").unwrap(), "dev").unwrap();
+        assert!(why.contains("chưa khai báo trong config.json"), "{why}");
+        // ENG-10 comes first: a personal-only engine on a work project.
+        let why = r.refusal(&cfg, teams.get("doi-pin").unwrap(), "dev").unwrap();
+        assert!(why.contains("SPK-10"), "{why}");
+
+        // Only the role of the stopped run counts: QA of every team runs on claude.
+        // The third built-in team names an engine this engine list does not declare.
+        assert_eq!(r.ready_names(&cfg, &teams, "dev"), vec!["mac-dinh", "phong-ban"]);
+        assert!(r.ready_names(&cfg, &teams, "qa").contains(&"doi-gw".to_string()));
+
+        // With the key set the gateway team is offered.
+        let (r, _dir) = c3_readiness(&cfg, true, "{}");
+        assert!(r.ready_names(&cfg, &teams, "dev").contains(&"doi-gw".to_string()));
+        assert_eq!(team_role_of("analyst"), "lead");
+        assert_eq!(team_role_of("analysis-review"), "plan-review");
+    }
+
+    #[test]
+    fn c3_department_team_needs_a_ready_member() {
+        let cfg = c3_cfg();
+        let teams = c3_teams();
+        let phong_ban = teams.get(TEAM_PHONG_BAN).unwrap();
+        let only_gw = r#"{"thi-cong": {"members": {"m1": {"display_name": "M1", "engine": "gw", "model": "x", "levels": ["vua"]}}}}"#;
+        let (r, _dir) = c3_readiness(&cfg, false, only_gw);
+        assert_eq!(r.departments.members.len(), 1, "{:?}", r.departments.errors);
+        let why = r.refusal(&cfg, phong_ban, "dev").unwrap();
+        assert!(why.contains("không có thành viên phòng ban"), "{why}");
+        // A role whose department has no member falls back to the team's own engine.
+        assert_eq!(r.refusal(&cfg, phong_ban, "qa"), None);
+        let (r, _dir) = c3_readiness(&cfg, true, only_gw);
+        assert_eq!(r.refusal(&cfg, phong_ban, "dev"), None);
+    }
+
+    #[test]
+    fn c3_quota_restore_target() {
+        let switched = TaskTeam::parse(Some(
+            r#"{"name":"doi-b","history":[{"at":1,"by":"telegram","from":"mac-dinh","to":"doi-b","reason":"quota","reset_at":1000}]}"#,
+        ))
+        .unwrap();
+        assert_eq!(switched.quota_restore_target(999), None, "before reset_at");
+        let entry = switched.quota_restore_target(1000).unwrap().clone();
+        assert_eq!(entry.from, "mac-dinh");
+        let back = switched.restored(&entry, "autopilot", 2000);
+        assert_eq!(back.name, "mac-dinh");
+        let last = back.history.last().unwrap();
+        assert_eq!(last.reason.as_deref(), Some(CHANGE_REASON_QUOTA_RESTORE));
+        assert_eq!((last.from.as_str(), last.to.as_str()), ("doi-b", "mac-dinh"));
+        // Restored once: the last entry is no longer a quota switch.
+        assert_eq!(back.quota_restore_target(5000), None);
+
+        // An ordinary change, a quota switch without reset time, or a team changed since: nothing.
+        for raw in [
+            r#"{"name":"doi-b","history":[{"at":1,"by":"dashboard","from":"mac-dinh","to":"doi-b"}]}"#,
+            r#"{"name":"doi-b","history":[{"at":1,"by":"telegram","from":"mac-dinh","to":"doi-b","reason":"quota"}]}"#,
+            r#"{"name":"doi-c","history":[{"at":1,"by":"telegram","from":"mac-dinh","to":"doi-b","reason":"quota","reset_at":1}]}"#,
+        ] {
+            assert_eq!(TaskTeam::parse(Some(raw)).unwrap().quota_restore_target(9999), None, "{raw}");
+        }
+        // Old documents without the new keys still parse and serialize without them.
+        let old = TaskTeam::parse(Some(
+            r#"{"name":"doi-b","history":[{"at":1,"by":"cli","from":"mac-dinh","to":"doi-b"}]}"#,
+        ))
+        .unwrap();
+        assert!(!old.to_json().contains("reason"), "{}", old.to_json());
     }
 }

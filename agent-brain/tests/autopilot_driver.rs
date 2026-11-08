@@ -595,3 +595,50 @@ fn spawn_failure_detail_skips_banner() {
     assert!(!detail.starts_with("[agent-brain]"), "stop: {stop}");
     assert!(!detail.starts_with("Cảnh báo"), "stop: {stop}");
 }
+
+/// C3: task 1 after the gate, switched by a quota re-run from mac-dinh to doi-b with a reset time
+/// already passed; the autopilot then runs the remaining steps.
+fn quota_switched_then_auto(sb: &Sandbox, restore: bool) -> Value {
+    approved_gate(sb);
+    sb.write_teams(json!({
+        "doi-b": {"description": "Toàn claude, đội B", "roles": {}}
+    }));
+    sb.write_config(json!({"orchestrator": {"restore_team_after_quota": restore}}));
+    let switched = r#"{"name":"doi-b","history":[{"at":1,"by":"telegram","from":"mac-dinh","to":"doi-b","reason":"quota","reset_at":1000}]}"#;
+    sb.db()
+        .execute("UPDATE tasks SET team_json = ?1 WHERE id = 1", [switched])
+        .unwrap();
+    let res = sb.run(&["auto", "1"], Some(by_role(build_ok_roles())));
+    assert_ok(&res, "auto 1");
+    let raw: String = sb
+        .db()
+        .query_row("SELECT team_json FROM tasks WHERE id = 1", [], |r| r.get(0))
+        .unwrap();
+    let mut team: Value = serde_json::from_str(&raw).unwrap();
+    team["stderr"] = json!(res.stderr);
+    team
+}
+
+#[test]
+fn quota_team_restored_after_reset_when_enabled() {
+    let sb = Sandbox::new();
+    let team = quota_switched_then_auto(&sb, true);
+    assert_eq!(team["name"], "mac-dinh", "{team}");
+    let last = team["history"].as_array().unwrap().last().cloned().unwrap();
+    assert_eq!(last["reason"], "quota_restore", "{team}");
+    assert_eq!(last["by"], "autopilot", "{team}");
+    assert_eq!((last["from"].as_str(), last["to"].as_str()), (Some("doi-b"), Some("mac-dinh")));
+    assert_eq!(team["history"].as_array().unwrap().len(), 2, "restored once: {team}");
+    assert!(
+        team["stderr"].as_str().unwrap().contains("trả lại đội hình mac-dinh"),
+        "{team}"
+    );
+}
+
+#[test]
+fn quota_team_kept_when_restore_disabled() {
+    let sb = Sandbox::new();
+    let team = quota_switched_then_auto(&sb, false);
+    assert_eq!(team["name"], "doi-b", "{team}");
+    assert_eq!(team["history"].as_array().unwrap().len(), 1, "{team}");
+}

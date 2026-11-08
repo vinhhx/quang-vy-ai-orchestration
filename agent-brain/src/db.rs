@@ -1526,6 +1526,23 @@ pub fn delete_quota_stop(conn: &Connection, task_id: i64) -> BrainResult<bool> {
     Ok(changes > 0)
 }
 
+/// C3: `metrics_json.quota.reset_at` (ms) of the task's latest run when that run stopped on
+/// quota; `None` when it did not, or reported no reset time.
+pub fn latest_quota_reset_at(conn: &Connection, task_id: i64) -> Option<i64> {
+    let (outcome, metrics): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT outcome, metrics_json FROM runs WHERE task_id = ?1
+             ORDER BY started_at DESC, id DESC LIMIT 1",
+            params![task_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()?;
+    if outcome.as_deref() != Some(crate::quota::OUTCOME_QUOTA) {
+        return None;
+    }
+    crate::quota::run_reset_at(metrics.as_deref())
+}
+
 pub fn list_quota_stops(conn: &Connection) -> BrainResult<Vec<QuotaStopRow>> {
     let mut stmt = conn.prepare(
         "SELECT task_id, stopped_at, engine, notified FROM quota_stops ORDER BY stopped_at ASC",

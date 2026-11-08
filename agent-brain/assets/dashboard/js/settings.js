@@ -250,11 +250,13 @@
       oAutoResume: false,
       oResumeMinutes: 60,
       oTriageEngine: 'claude',
+      oRestoreTeam: false,
       oVersion: '',
       oDraftMax: '3',
       oDraftAuto: false,
       oDraftMinutes: '60',
       oDraftTriage: 'claude',
+      oDraftRestore: false,
       oTriageErr: '',
       oToggling: false,
       oSaving: false,
@@ -504,6 +506,7 @@
         this.oAutoResume = data.auto_resume_quota === true;
         this.oResumeMinutes = Number(data.resume_after_minutes) || 60;
         this.oTriageEngine = String(data.triage_engine || 'claude');
+        this.oRestoreTeam = data.restore_team_after_quota === true;
         this.oVersion = String(data.version || '');
         this.oLoaded = true;
         this.oLoadFail = '';
@@ -514,6 +517,7 @@
         this.oDraftAuto = this.oAutoResume;
         this.oDraftMinutes = String(this.oResumeMinutes);
         this.oDraftTriage = this.oTriageEngine;
+        this.oDraftRestore = this.oRestoreTeam;
         this.oMaxErr = '';
         this.oMinutesErr = '';
         this.oTriageErr = '';
@@ -554,6 +558,7 @@
           auto_resume_quota: this.oAutoResume,
           resume_after_minutes: this.oResumeMinutes,
           triage_engine: this.oTriageEngine,
+          restore_team_after_quota: this.oRestoreTeam,
         }).then(function (res) {
           self.oToggling = false;
           var data = res ? res.data : null;
@@ -574,6 +579,12 @@
         if (this.orchFormDisabled) return;
         this.oDraftAuto = !this.oDraftAuto;
         this.oMinutesErr = '';
+      },
+
+      toggleOrchRestore: function () {
+        if (this.orchFormDisabled) return;
+        this.oDraftRestore = !this.oDraftRestore;
+        this.oNotice = '';
       },
 
       clearOrchMax: function () {
@@ -655,6 +666,7 @@
           auto_resume_quota: this.oDraftAuto,
           resume_after_minutes: minOk ? Number(this.oDraftMinutes) : this.oResumeMinutes,
           triage_engine: this.oDraftTriage || 'claude',
+          restore_team_after_quota: this.oDraftRestore,
         }).then(function (res) {
           self.oSaving = false;
           var data = res ? res.data : null;
@@ -749,6 +761,22 @@
 
       get orchAutoKnobClass() {
         return this.oDraftAuto ? KNOB_ON : KNOB_OFF;
+      },
+
+      get orchRestoreAttr() {
+        return this.oDraftRestore ? 'true' : 'false';
+      },
+
+      get orchRestoreWord() {
+        return this.oDraftRestore ? 'Bật' : 'Tắt';
+      },
+
+      get orchRestoreTrackClass() {
+        return this.oDraftRestore ? TRACK_ON : TRACK_OFF;
+      },
+
+      get orchRestoreKnobClass() {
+        return this.oDraftRestore ? KNOB_ON : KNOB_OFF;
       },
 
       get orchMinutesDisabled() {

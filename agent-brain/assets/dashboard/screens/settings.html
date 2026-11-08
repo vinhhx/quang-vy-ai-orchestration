@@ -68,6 +68,18 @@
         <p id="ab-set-orch-minutes-err" class="text-sm font-normal leading-normal text-rose-700 dark:text-rose-300 break-words" x-show="orchMinutesInvalid" x-text="oMinutesErr"></p>
       </div>
       <div class="space-y-2">
+        <div class="flex flex-wrap items-center gap-4">
+          <span id="ab-set-orch-restore-label" class="text-sm font-semibold leading-normal">Trả lại đội hình cũ sau khi quota hồi phục</span>
+          <button id="ab-set-orch-restore" type="button" role="switch" class="inline-flex min-h-12 items-center gap-3 rounded-xl px-2 py-2 text-base font-semibold text-slate-900 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" aria-labelledby="ab-set-orch-restore-label" aria-describedby="ab-set-orch-restore-help" :aria-checked="orchRestoreAttr" :disabled="orchFormDisabled" @click="toggleOrchRestore">
+            <span class="relative inline-flex h-7 w-12 shrink-0 items-center rounded-full motion-safe:transition-colors" :class="orchRestoreTrackClass" aria-hidden="true">
+              <span class="inline-block h-5 w-5 rounded-full bg-white shadow-sm motion-safe:transition-transform" :class="orchRestoreKnobClass"></span>
+            </span>
+            <span x-text="orchRestoreWord"></span>
+          </button>
+        </div>
+        <p id="ab-set-orch-restore-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Khi đã đổi đội hình vì hết quota: autopilot trả task về đội hình cũ ở bước kế tiếp sau thời điểm quota hồi phục, nếu đội hình cũ đã sẵn sàng.</p>
+      </div>
+      <div class="space-y-2">
         <label for="ab-set-orch-triage" class="block text-sm font-semibold leading-normal">Engine phân tích (triage)</label>
         <select id="ab-set-orch-triage" class="w-full max-w-md min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 dark:bg-slate-900 dark:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-50" :class="orchTriageClass" x-model="oDraftTriage" :disabled="orchFormDisabled" @change="clearOrchTriage" :aria-invalid="orchTriageInvalidAttr" aria-describedby="ab-set-orch-triage-help ab-set-orch-triage-err">
           <template x-for="o in triageOptions" :key="o.value">

@@ -518,6 +518,8 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
                 if let Some(info) = branch_stop(&root, &task, &sr) {
                     return Ok(stop_with(ctx, task_id, &task.slug, aj, info));
                 }
+                // C3: at a step boundary after the quota reset, the earlier team comes back.
+                restore_team_after_quota(ctx, task_id, &task, &project, sr.stage.role())?;
                 if crate::pricing::exhausted(&facts.budget_usage, &facts.budget_limits)
                     && aj.bypass_stages > 0
                 {
@@ -601,6 +603,60 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
         None,
     );
     Ok(stop_with(ctx, task_id, &task.slug, aj, info))
+}
+
+/// Label of a team-history entry the autopilot writes.
+const TEAM_CHANGE_BY_AUTOPILOT: &str = "autopilot";
+
+/// C3 (`orchestrator.restore_team_after_quota`, default off): when a quota re-run switched the
+/// task's team and the stopped engine's reset time has passed, give the task its earlier team back
+/// before the next step, if that team can run the step's role now (`teams::TeamReadiness`). A
+/// team that is not ready yet is retried at the next step boundary. Off ⇒ nothing changes.
+fn restore_team_after_quota(
+    ctx: &Ctx,
+    task_id: i64,
+    task: &crate::db::TaskRow,
+    project: &crate::projects::Project,
+    role: &str,
+) -> BrainResult<()> {
+    if !ctx.cfg.orchestrator.restore_team_after_quota {
+        return Ok(());
+    }
+    let raw = crate::db::task_team_json(&ctx.conn, task_id)?;
+    let Some(doc) = crate::teams::TaskTeam::parse(raw.as_deref()) else {
+        return Ok(());
+    };
+    let now = crate::db::now_ms();
+    let Some(entry) = doc.quota_restore_target(now) else {
+        return Ok(());
+    };
+    let (loaded, _) = crate::teams::load();
+    let Some(old) = loaded.get(&entry.from) else {
+        crate::term::emit(&format!(
+            "Autopilot · task {task_id} · không trả lại đội hình {}: không còn trong teams.json",
+            entry.from
+        ));
+        return Ok(());
+    };
+    let level = crate::departments::Level::parse(&task.level)
+        .unwrap_or(crate::departments::Level::Vua);
+    let readiness =
+        crate::teams::TeamReadiness::current(&ctx.cfg, &project.id, &project.profile, level);
+    if let Some(why) = readiness.refusal(&ctx.cfg, old, role) {
+        crate::term::emit(&format!(
+            "Autopilot · task {task_id} · chưa trả lại đội hình {}: {why}",
+            entry.from
+        ));
+        return Ok(());
+    }
+    let next = doc.restored(entry, TEAM_CHANGE_BY_AUTOPILOT, now);
+    if crate::db::set_task_team_cas(&ctx.conn, task_id, raw.as_deref(), &next.to_json())? {
+        crate::term::emit(&format!(
+            "Autopilot · task {task_id} · quota đã hồi phục — trả lại đội hình {} (thay {})",
+            entry.from, entry.to
+        ));
+    }
+    Ok(())
 }
 
 /// Driver bị ngắt: ghi `interrupted`, xóa pid, trả 130.

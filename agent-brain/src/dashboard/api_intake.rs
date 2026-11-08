@@ -664,7 +664,12 @@ async fn get_orchestrator_board(State(st): State<Arc<AppState>>) -> Response {
                     if qs.stopped_at < 10_000_000_000 {
                         Some(qs.stopped_at + resume_mins * 60)
                     } else {
-                        Some(qs.stopped_at + resume_mins * 60 * 1000)
+                        // C3: the same due time the scheduler uses (reset time when later).
+                        Some(crate::quota::resume_due_ms(
+                            qs.stopped_at,
+                            resume_mins * 60 * 1000,
+                            crate::db::latest_quota_reset_at(&conn, qs.task_id),
+                        ))
                     }
                 } else {
                     None

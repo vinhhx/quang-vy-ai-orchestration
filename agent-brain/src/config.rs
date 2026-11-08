@@ -40,6 +40,10 @@ pub struct OrchestratorConfig {
     /// Engine the queue's triage step runs on: `claude`, or the id of an `anthropic` or `agy`
     /// entry of `engines` (checked by `validate_triage_engine`).
     pub triage_engine: String,
+    /// C3: after a quota re-run switched the team, the autopilot gives the task its earlier team
+    /// back at the next step once the quota reset time has passed and that team is ready.
+    #[serde(default)]
+    pub restore_team_after_quota: bool,
 }
 
 /// `orchestrator.triage_engine` when config.json has none.
@@ -53,6 +57,7 @@ impl Default for OrchestratorConfig {
             auto_resume_quota: false,
             resume_after_minutes: 60,
             triage_engine: DEFAULT_TRIAGE_ENGINE.to_string(),
+            restore_team_after_quota: false,
         }
     }
 }
@@ -1431,6 +1436,16 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
                     }
                 }
             }
+            if let Some(rt) = orch_obj.get("restore_team_after_quota") {
+                match rt.as_bool() {
+                    Some(b) => orchestrator.restore_team_after_quota = b,
+                    None => {
+                        return Err(BrainError::error(
+                            "Cấu hình orchestrator.restore_team_after_quota phải là boolean",
+                        ))
+                    }
+                }
+            }
             if let Some(te) = orch_obj.get("triage_engine") {
                 let raw = te.as_str().ok_or_else(|| {
                     BrainError::error("Cấu hình orchestrator.triage_engine phải là chuỗi")
@@ -2684,5 +2699,20 @@ mod tests {
             )),
             "Cấu hình engines.a.claude_config_dir không dùng cùng pin_profile"
         );
+    }
+
+    #[test]
+    fn c3_restore_team_after_quota_option() {
+        let base: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        assert!(!config_from_value(&base).unwrap().orchestrator.restore_team_after_quota);
+        let mut none = base.clone();
+        none.as_object_mut().unwrap().remove("orchestrator");
+        assert!(!config_from_value(&none).unwrap().orchestrator.restore_team_after_quota);
+        let mut on = base.clone();
+        on["orchestrator"]["restore_team_after_quota"] = serde_json::json!(true);
+        assert!(config_from_value(&on).unwrap().orchestrator.restore_team_after_quota);
+        let mut bad = base;
+        bad["orchestrator"]["restore_team_after_quota"] = serde_json::json!("yes");
+        assert!(config_from_value(&bad).is_err());
     }
 }

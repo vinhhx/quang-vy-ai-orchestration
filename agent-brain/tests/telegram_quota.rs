@@ -352,25 +352,27 @@ fn quota_message_with_team_buttons() {
         "{text}"
     );
     assert!(text.contains("bước Code"), "{text}");
+    // C3: the built-in tiet-kiem sends Dev to deepseek, whose key is not set in the sandbox: it
+    // is not offered, and the message says one team is hidden.
+    assert!(text.contains("1 đội hình chưa sẵn sàng cho bước này"), "{text}");
 
     assert_eq!(
         labels(&env.quota),
         vec![
             "Đội hình mac-dinh",
             "Đội hình phong-ban",
-            "Đội hình tiet-kiem",
             "Đội hình doi-b",
             "Thử lại sau"
         ]
     );
-    let pick = Regex::new(r"^t:1:[0-3]:[0-9a-f]{4}:[0-9a-f]{16}$").unwrap();
+    let pick = Regex::new(r"^t:1:[0-2]:[0-9a-f]{4}:[0-9a-f]{16}$").unwrap();
     let later = Regex::new(r"^l:1:[0-9a-f]{16}$").unwrap();
     let data = buttons(&env.quota);
-    for (label, d) in &data[..4] {
+    for (label, d) in &data[..3] {
         assert!(pick.is_match(d), "{label}: {d}");
         assert!(d.len() <= 64, "{d}");
     }
-    assert!(later.is_match(&data[4].1), "{data:?}");
+    assert!(later.is_match(&data[3].1), "{data:?}");
     // No Xong or Trả lại button on Telegram (D-20).
     assert!(
         !labels(&env.quota)
@@ -390,6 +392,11 @@ fn quota_two_tap_rerun() {
     let team_before = team_json_of(&env.sb, 1);
     let runs_before = run_count(&env.sb);
 
+    // C3: the index is into the filtered list (tiet-kiem hidden), so doi-b is index 2.
+    assert_eq!(
+        button_data(&env.quota, "Đội hình doi-b").split(':').nth(2),
+        Some("2")
+    );
     // First tap: only the confirmation, nothing runs and nothing changes (D-28).
     let cb = press(&env.tg, &env.quota, "Đội hình doi-b");
     let ans = wait_answer(&env.tg, &env.srv, &cb);
@@ -449,6 +456,9 @@ fn quota_two_tap_rerun() {
     let last = team["history"].as_array().unwrap().last().cloned().unwrap();
     assert_eq!(last["by"], "telegram", "{team}");
     assert_eq!(last["to"], "doi-b", "{team}");
+    // C3: a quota switch records why and when the stopped engine's quota resets (ms).
+    assert_eq!(last["reason"], "quota", "{team}");
+    assert_eq!(last["reset_at"], json!(1_792_310_400_000i64), "{team}");
     assert_eq!(env.srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
 }
 
@@ -530,7 +540,6 @@ fn quota_stale_team_list() {
         vec![
             "Đội hình mac-dinh",
             "Đội hình phong-ban",
-            "Đội hình tiet-kiem",
             "Đội hình doi-b",
             "Đội hình doi-c",
             "Thử lại sau"
@@ -597,13 +606,13 @@ fn quota_cancel_restores() {
     let team_before = team_json_of(&env.sb, 1);
     let runs_before = run_count(&env.sb);
 
-    let cb = press(&env.tg, &env.quota, "Đội hình tiet-kiem");
+    let cb = press(&env.tg, &env.quota, "Đội hình mac-dinh");
     wait_answer(&env.tg, &env.srv, &cb);
     let confirm = wait_edit(&env.tg, &env.srv, m, |r| {
-        text_of(r).starts_with("Chạy lại bước Code bằng đội hình tiet-kiem?")
+        text_of(r).starts_with("Chạy lại bước Code bằng đội hình mac-dinh?")
     });
     assert!(
-        text_of(&confirm).contains("Bước Code sẽ chạy bằng: deepseek"),
+        text_of(&confirm).contains("Bước Code sẽ chạy bằng: claude"),
         "{confirm}"
     );
 
@@ -617,7 +626,6 @@ fn quota_cancel_restores() {
         vec![
             "Đội hình mac-dinh",
             "Đội hình phong-ban",
-            "Đội hình tiet-kiem",
             "Đội hình doi-b",
             "Thử lại sau"
         ]
@@ -740,5 +748,33 @@ fn quota_stranger_ignored() {
     assert!(env.tg.calls("editMessageText").is_empty());
     assert_eq!(run_count(&env.sb), runs_before);
     assert_eq!(team_json_of(&env.sb, 1), team_before);
+    stop(env);
+}
+
+/// C3: `quota_rerun` (the function the dashboard dialog and the Telegram confirm share) refuses a
+/// team whose engine for the stopped step is not ready, with readiness's reason (the env var
+/// name, never a value), before anything is written or queued. The dashboard view lists only the
+/// ready teams.
+#[test]
+fn quota_rerun_refuses_team_not_ready() {
+    let env = setup_quota(None);
+    let team_before = team_json_of(&env.sb, 1);
+    let runs_before = run_count(&env.sb);
+
+    let task = env.srv.get("/api/tasks/1").json();
+    let ready = task["quota"]["ready_teams"].clone();
+    assert_eq!(ready, json!(["mac-dinh", "phong-ban", "doi-b"]), "{task}");
+
+    let resp = env.srv.post_json(
+        "/api/tasks/1/quota-rerun",
+        &json!({"team": "tiet-kiem", "rev": task["rev"]}),
+    );
+    assert_eq!(resp.status, 422, "body: {}", resp.text());
+    let err = resp.json()["error"].as_str().unwrap_or("").to_string();
+    assert!(err.contains("tiet-kiem"), "{err}");
+    assert!(err.contains("deepseek"), "{err}");
+    assert!(err.contains("DEEPSEEK_API_KEY") || err.contains("Không tìm thấy lệnh"), "{err}");
+    assert_eq!(team_json_of(&env.sb, 1), team_before, "team_json is untouched");
+    assert_eq!(run_count(&env.sb), runs_before, "no new run row");
     stop(env);
 }

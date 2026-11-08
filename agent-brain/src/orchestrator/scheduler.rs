@@ -342,7 +342,9 @@ fn handle_quota_stops(st: &AppState, conn: &rusqlite::Connection) -> BrainResult
         let quota_stops = crate::db::list_quota_stops(conn)?;
 
         for qs in quota_stops {
-            if now >= qs.stopped_at + resume_after_ms {
+            // C3: never before the engine's own reset time when the run reported one.
+            let reset_at = crate::db::latest_quota_reset_at(conn, qs.task_id);
+            if now >= crate::quota::resume_due_ms(qs.stopped_at, resume_after_ms, reset_at) {
                 // Giới hạn auto_resume chỉ cho task có trong proposals (proposals.task_id = tasks.id và proposals.status = started)
                 let has_started_proposal: bool = conn
                     .query_row(
