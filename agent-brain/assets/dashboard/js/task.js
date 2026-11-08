@@ -1639,6 +1639,14 @@
         return this.planErrors.length > 0;
       },
 
+      get hasPlanWarnings() {
+        return Boolean(this.task && this.task.plan && this.task.plan.warnings && this.task.plan.warnings.length > 0);
+      },
+
+      get planWarnings() {
+        return (this.task && this.task.plan && this.task.plan.warnings) ? this.task.plan.warnings : [];
+      },
+
       get planHead() {
         if (!this.task || !this.task.plan || !this.task.plan.sections) return [];
         return this.task.plan.sections.filter(function (s) {
@@ -2302,6 +2310,8 @@
         }
         if (!this.showAutoStop) return [];
         var out = [];
+        var ext = this.controlById('auto_extend_budget');
+        if (ext) out.push(ext);
         var more = this.controlById('auto_more_round');
         if (more) out.push(more);
         var acts = this.actionList;
@@ -2323,6 +2333,13 @@
       moreRoundHelp: function (a) {
         if (a && a.id === 'auto_more_round' && this.bannerIsBudget) {
           return 'Chạy vượt ngân sách một lần, chỉ cho vòng này.';
+        }
+        return '';
+      },
+
+      extendBudgetHelp: function (a) {
+        if (a && a.id === 'auto_extend_budget') {
+          return 'Gia hạn thêm thời gian và chi phí cho quy trình.';
         }
         return '';
       },
@@ -2478,7 +2495,7 @@
         if (this.approveShown) return secondary;
         if (a.id === 'quota_rerun') return primary;
         if (this.quotaRerunShown) return secondary;
-        if (a.id === 'auto_more_round') return primary;
+        if (a.id === 'auto_more_round' || a.id === 'auto_extend_budget') return primary;
         if (this.controlById('auto_more_round') && this.showAutoStop) return secondary;
         // Xong / Trả lại: one at a time, below the three above and above the strip.
         if (a.id === 'human_done' || a.id === 'human_return') return primary;
@@ -2504,6 +2521,7 @@
           if (a.id === 'auto_start') return 'Đang bật...';
           if (a.id === 'approve') return 'Đang duyệt...';
           if (a.id === 'kill' || a.id === 'auto_stop' || a.id === 'auto_end') return 'Đang dừng...';
+          if (a.id === 'auto_extend_budget') return 'Đang gia hạn...';
           if (a.id === 'change_team') return 'Đang đổi...';
           if (a.id === 'human_done') return 'Đang lấy nhánh...';
           if (a.id === 'human_return') return 'Đang trả...';
@@ -2569,6 +2587,7 @@
         auto_start: '/auto',
         auto_stop: '/auto/stop',
         auto_more_round: '/auto/more-round',
+        auto_extend_budget: '/auto/extend-budget',
         auto_end: '/auto/end',
       },
 
@@ -2846,6 +2865,22 @@
 
       showMoreRuns: function () {
         this.ledgerVisible += 20;
+      },
+
+      hasRunError: function (r) {
+        return Boolean(r && r.error && r.error.trim().length > 0);
+      },
+
+      runErrorText: function (r) {
+        return (r && r.error) ? r.error : '';
+      },
+
+      hasRunWarnings: function (r) {
+        return Boolean(r && r.warnings && r.warnings.length > 0);
+      },
+
+      runWarnings: function (r) {
+        return (r && r.warnings) ? r.warnings : [];
       },
 
       get taskLevel() {

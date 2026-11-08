@@ -61,6 +61,12 @@ pub fn row_json(seq: i64, ts: i64, ev_kind: &str, raw: &str) -> serde_json::Valu
 }
 
 pub fn status_json(run: &crate::db::RunRow) -> serde_json::Value {
+    let warnings: Vec<String> = run
+        .metrics_json
+        .as_deref()
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| v.get("warnings").and_then(|w| serde_json::from_value(w.clone()).ok()))
+        .unwrap_or_default();
     serde_json::json!({
         "run_id": run.id,
         "task_id": run.task_id,
@@ -75,6 +81,8 @@ pub fn status_json(run: &crate::db::RunRow) -> serde_json::Value {
         "cost_usd": run.cost_usd,
         "started_at": run.started_at,
         "ended_at": run.ended_at,
+        "error": run.error,
+        "warnings": warnings,
     })
 }
 

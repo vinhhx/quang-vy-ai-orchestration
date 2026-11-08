@@ -3,6 +3,12 @@ use crate::error::BrainResult;
 use rusqlite::Connection;
 use std::path::Path;
 
+pub const SUCCESS_STATUSES: &[&str] = &["answered", "qa_pass"];
+
+pub fn is_success_status(status: &str) -> bool {
+    SUCCESS_STATUSES.contains(&status)
+}
+
 pub fn current_task(
     conn: &Connection,
     project_row_id: i64,

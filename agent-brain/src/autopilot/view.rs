@@ -36,32 +36,49 @@ pub fn fmt_hhmm(at_ms: i64) -> String {
         .unwrap_or_else(|| "--:--".to_string())
 }
 
+pub fn error_excerpt(err: &str, max_lines: usize, max_chars: usize) -> String {
+    let lines: Vec<&str> = err.lines().take(max_lines).collect();
+    let combined = lines.join("\n");
+    if combined.chars().count() > max_chars {
+        let truncated: String = combined.chars().take(max_chars).collect();
+        format!("{truncated}…")
+    } else {
+        combined
+    }
+}
+
 /// Dựng chuỗi chi tiết khi autopilot dừng từ StopInfo và slug của task.
 pub fn stop_detail(info: &StopInfo, slug: &str) -> String {
     match info.reason {
-        StopReason::HetVong => match info.loop_name {
-            Some(Loop::Plan) => {
-                format!(
-                    "Review plan vẫn yêu cầu sửa lại sau {} / {} vòng.",
-                    info.round.unwrap_or(1),
-                    info.cap.unwrap_or(1)
-                )
+        StopReason::HetVong => {
+            if let Some(ref detail) = info.detail_line {
+                detail.clone()
+            } else {
+                match info.loop_name {
+                    Some(Loop::Plan) => {
+                        format!(
+                            "Review plan vẫn yêu cầu sửa lại sau {} / {} vòng.",
+                            info.round.unwrap_or(1),
+                            info.cap.unwrap_or(1)
+                        )
+                    }
+                    Some(Loop::Build) => {
+                        format!(
+                            "Review code vẫn yêu cầu sửa lại sau {} / {} vòng.",
+                            info.round.unwrap_or(1),
+                            info.cap.unwrap_or(1)
+                        )
+                    }
+                    Some(Loop::Qa) | None => {
+                        format!(
+                            "QA vẫn kết luận Cần sửa sau {} / {} vòng. Xem báo cáo QA bên dưới.",
+                            info.round.unwrap_or(1),
+                            info.cap.unwrap_or(1)
+                        )
+                    }
+                }
             }
-            Some(Loop::Build) => {
-                format!(
-                    "Review code vẫn yêu cầu sửa lại sau {} / {} vòng.",
-                    info.round.unwrap_or(1),
-                    info.cap.unwrap_or(1)
-                )
-            }
-            Some(Loop::Qa) | None => {
-                format!(
-                    "QA vẫn kết luận Cần sửa sau {} / {} vòng. Xem báo cáo QA bên dưới.",
-                    info.round.unwrap_or(1),
-                    info.cap.unwrap_or(1)
-                )
-            }
-        },
+        }
         StopReason::HetNganSach => {
             let used_ms = info.used_ms.unwrap_or(0);
             let minutes = (used_ms as f64 / 60_000.0).round() as i64;
@@ -84,6 +101,13 @@ pub fn stop_detail(info: &StopInfo, slug: &str) -> String {
         StopReason::ViPhamGiaoThuc => {
             let run_id = info.run_id.unwrap_or(0);
             let role = info.role.as_deref().unwrap_or("run");
+            if let Some(ref detail) = info.detail_line {
+                let trimmed = detail.trim();
+                if !trimmed.is_empty() {
+                    let excerpt = error_excerpt(trimmed, 3, 500);
+                    return format!("Run {run_id} ({role}) vi phạm giao thức — {excerpt}");
+                }
+            }
             format!(
                 "Run {} ({}) vi phạm giao thức — xem log của run này.",
                 run_id, role
@@ -104,6 +128,13 @@ pub fn stop_detail(info: &StopInfo, slug: &str) -> String {
         StopReason::RunLoi => {
             if let Some(id) = info.run_id {
                 let role = info.role.as_deref().unwrap_or("run");
+                if let Some(ref detail) = info.detail_line {
+                    let trimmed = detail.trim();
+                    if !trimmed.is_empty() {
+                        let excerpt = error_excerpt(trimmed, 3, 500);
+                        return format!("Run {id} ({role}) lỗi hoặc quá thời gian — {excerpt}");
+                    }
+                }
                 format!(
                     "Run {} ({}) lỗi hoặc quá thời gian — xem log của run này.",
                     id, role

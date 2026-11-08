@@ -160,6 +160,9 @@ pub fn budget_usage(runs: &[RunRow], table: &BTreeMap<String, Price>, now_ms: i6
         if r.role == "inspect" {
             continue;
         }
+        if r.outcome.as_deref() == Some("quota") || r.outcome.as_deref() == Some("env:down") {
+            continue;
+        }
 
         let dur = if r.status == "running" {
             now_ms - r.started_at
@@ -201,6 +204,13 @@ impl BudgetLimits {
         Self {
             minutes: wf.budget_minutes as i64,
             usd: wf.budget_usd,
+        }
+    }
+
+    pub fn with_extra(self, extra_minutes: i64, extra_usd: f64) -> Self {
+        Self {
+            minutes: self.minutes + extra_minutes.max(0),
+            usd: self.usd + extra_usd.max(0.0),
         }
     }
 
@@ -507,6 +517,67 @@ mod tests {
         assert!((usage.used_usd - expected_usd).abs() < 1e-9);
         assert_eq!(usage.used_cents, (expected_usd * 100.0).round() as i64);
         assert_eq!(usage.estimated_runs, 1);
+    }
+
+    #[test]
+    fn test_budget_usage_skips_quota_and_env_down() {
+        let table = crate::config::default_pricing();
+        let mut r_quota = dummy_run(
+            "dev",
+            "failed",
+            Some("claude-sonnet-5-5"),
+            "result",
+            5.0,
+            0,
+            Some(60_000),
+            100,
+            100,
+            0,
+            0,
+        );
+        r_quota.outcome = Some("quota".to_string());
+
+        let mut r_down = dummy_run(
+            "dev",
+            "failed",
+            Some("claude-sonnet-5-5"),
+            "result",
+            5.0,
+            0,
+            Some(60_000),
+            100,
+            100,
+            0,
+            0,
+        );
+        r_down.outcome = Some("env:down".to_string());
+
+        let r_ok = dummy_run(
+            "lead",
+            "succeeded",
+            Some("claude-sonnet-5-5"),
+            "result",
+            1.5,
+            0,
+            Some(30_000),
+            100,
+            100,
+            0,
+            0,
+        );
+
+        let runs = vec![r_quota, r_down, r_ok];
+        let usage = budget_usage(&runs, &table, 100_000);
+        assert_eq!(usage.used_ms, 30_000);
+        assert!((usage.used_usd - 1.5).abs() < 1e-9);
+
+        let limits = BudgetLimits {
+            minutes: 60,
+            usd: 10.0,
+        };
+        let extended = limits.with_extra(30, 5.0);
+        assert_eq!(extended.minutes, 90);
+        assert_eq!(extended.usd, 15.0);
     }
 
     #[test]

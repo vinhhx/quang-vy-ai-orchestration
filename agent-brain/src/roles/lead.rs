@@ -107,6 +107,7 @@ fn manual_round(conn: &rusqlite::Connection, task_id: i64) -> BrainResult<i64> {
         outcome: None,
         kill_requested: false,
         started_at: crate::db::now_ms(),
+        error: None,
     });
     Ok(effective_rounds(&facts).last().copied().unwrap_or(1))
 }
@@ -636,14 +637,33 @@ pub fn cmd_lead(
                 "Gợi ý: agent-brain không tự revert thay đổi; bạn hãy kiểm tra và xử lý bằng tay.",
             );
             crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
+            let files_50: Vec<String> = sorted_extra.into_iter().take(50).collect();
+            let msg = format!(
+                "{} file ngoài .plan.md: {} — Lead chỉ được sửa .plan.md",
+                files_50.len(),
+                files_50.join(", ")
+            );
+            crate::roles::record_violation(
+                ctx,
+                role_run.run_id,
+                "files_outside_plan",
+                &msg,
+                serde_json::json!({ "files": files_50 }),
+            )?;
             return Ok(crate::error::EXIT_PROTOCOL);
         }
 
         if !plan_path.is_file() {
             crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
-            return Err(BrainError::error(
-                "Lead hoàn thành nhưng không tìm thấy file .plan.md",
-            ));
+            let msg = "Lead hoàn thành nhưng không tìm thấy file .plan.md";
+            crate::roles::record_violation(
+                ctx,
+                role_run.run_id,
+                "missing_plan",
+                msg,
+                serde_json::json!({}),
+            )?;
+            return Err(BrainError::error(msg));
         }
 
         let mut text = std::fs::read_to_string(&plan_path)?;
@@ -658,6 +678,14 @@ pub fn cmd_lead(
         if !errors.is_empty() {
             if attempt == 1 {
                 crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "plan_invalid")?;
+                let msg = format!("Plan không hợp lệ (lần 1/2): {}", errors.join("; "));
+                crate::roles::record_violation(
+                    ctx,
+                    role_run.run_id,
+                    "plan_invalid",
+                    &msg,
+                    serde_json::json!({ "attempt": 1, "errors": errors }),
+                )?;
                 crate::term::emit_out("Plan không hợp lệ — Lead tự sửa lại (lần 2/2):");
                 for e in &errors {
                     crate::term::emit_out(&format!("  - {e}"));
@@ -695,6 +723,17 @@ pub fn cmd_lead(
                     proj_path.display()
                 );
                 crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
+                let short_msg = format!(
+                    "Plan không hợp lệ sau khi Lead tự sửa (lần 2/2): {}",
+                    errors.join("; ")
+                );
+                crate::roles::record_violation(
+                    ctx,
+                    role_run.run_id,
+                    "plan_invalid",
+                    &short_msg,
+                    serde_json::json!({ "attempt": 2, "errors": errors }),
+                )?;
                 return Err(BrainError::error(err_msg));
             }
         }

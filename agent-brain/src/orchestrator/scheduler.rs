@@ -73,14 +73,6 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
                         )?;
                         continue;
                     }
-                    if prior_p.status == "rejected" || prior_p.status == "failed" {
-                        crate::db::set_proposal_failed(
-                            &conn,
-                            prop.id,
-                            &format!("Việc trước (#{prior_id}) không có kết quả"),
-                        )?;
-                        continue;
-                    }
                     if prior_p.status != "started" {
                         // Việc trước chưa bắt đầu xong: bỏ qua lượt này
                         continue;
@@ -90,51 +82,75 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
                         Some(tid) => tid,
                         None => continue,
                     };
-                    let prior_task: Option<(String, String, String)> = conn
+                    struct PriorTaskInfo {
+                        status: String,
+                        task_slug: String,
+                        project_slug: String,
+                        auto_state: Option<String>,
+                        auto_json_str: Option<String>,
+                    }
+                    let prior_task: Option<PriorTaskInfo> = conn
                         .query_row(
-                            "SELECT t.status, t.slug, p.slug FROM tasks t
+                            "SELECT t.status, t.slug, p.slug, t.auto_state, t.auto_json FROM tasks t
                              JOIN projects p ON p.id = t.project_id
                              WHERE t.id = ?1",
                             [prior_task_id],
-                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                            |r| {
+                                Ok(PriorTaskInfo {
+                                    status: r.get(0)?,
+                                    task_slug: r.get(1)?,
+                                    project_slug: r.get(2)?,
+                                    auto_state: r.get(3)?,
+                                    auto_json_str: r.get(4)?,
+                                })
+                            },
                         )
                         .ok();
 
                     match prior_task {
-                        Some((status, t_slug, p_slug)) => {
-                            let latest_run_status: Option<String> = conn
-                                .query_row(
-                                    "SELECT status FROM runs WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
-                                    [prior_task_id],
-                                    |r| r.get(0),
-                                )
-                                .ok();
-
-                            if status == "answered" {
-                                match crate::answers::read(&p_slug, prior_task_id, &t_slug) {
-                                    Ok(Some(ans)) => {
-                                        prior_answer = Some((prior_task_id, ans));
+                        Some(PriorTaskInfo {
+                            status,
+                            task_slug: t_slug,
+                            project_slug: p_slug,
+                            auto_state,
+                            auto_json_str,
+                        }) => {
+                            let is_success = crate::tasks::is_success_status(&status);
+                            if is_success {
+                                if status == "answered" {
+                                    match crate::answers::read(&p_slug, prior_task_id, &t_slug) {
+                                        Ok(Some(ans)) => {
+                                            prior_answer = Some((prior_task_id, ans));
+                                        }
+                                        _ => {
+                                            // Chưa đọc được câu trả lời: bỏ qua chờ
+                                            continue;
+                                        }
                                     }
-                                    _ => {
-                                        // Chưa đọc được câu trả lời: bỏ qua chờ
-                                        continue;
-                                    }
+                                } else {
+                                    prior_answer = Some((prior_task_id, String::new()));
                                 }
-                            } else if matches!(
-                                status.as_str(),
-                                "failed" | "killed" | "timed_out" | "lost" | "stopped" | "rejected"
-                            ) || matches!(
-                                latest_run_status.as_deref(),
-                                Some("failed" | "killed" | "timed_out" | "lost")
-                            ) {
-                                crate::db::set_proposal_failed(
-                                    &conn,
-                                    prop.id,
-                                    &format!("Việc trước (#{prior_id}) không có kết quả"),
-                                )?;
-                                continue;
                             } else {
-                                // Task trước đang chạy/chưa có câu trả lời: bỏ qua
+                                let is_ended = auto_state.as_deref() == Some("ended")
+                                    || (auto_state.is_none() && matches!(status.as_str(), "failed" | "killed" | "timed_out" | "lost" | "rejected"));
+                                if is_ended {
+                                    crate::db::set_proposal_failed(
+                                        &conn,
+                                        prop.id,
+                                        &format!("Việc trước (#{prior_id}) không có kết quả"),
+                                    )?;
+                                    continue;
+                                }
+                                if auto_state.as_deref() == Some("stopped") {
+                                    let aj = crate::autopilot::decide::AutoJson::parse(auto_json_str.as_deref());
+                                    let reason_str = aj
+                                        .stop
+                                        .as_ref()
+                                        .map(|s| crate::autopilot::view::reason_word(s.reason))
+                                        .unwrap_or("dừng");
+                                    let wait_msg = format!("Chờ task #{prior_task_id} (đang dừng: {reason_str})");
+                                    crate::db::set_proposal_error(&conn, prop.id, &wait_msg)?;
+                                }
                                 continue;
                             }
                         }

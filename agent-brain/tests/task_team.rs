@@ -367,6 +367,7 @@ fn rev_changes_with_team_json() {
 // Task 2: change the task's team
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn rev_of(srv: &Serve, id: i64) -> String {
     srv.get(&format!("/api/tasks/{id}")).json()["rev"]
         .as_str()

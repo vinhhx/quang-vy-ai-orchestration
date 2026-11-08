@@ -271,6 +271,10 @@ fn plan_lines(s: &TaskState, lines: &mut Vec<String>) {
                 &crate::planfile::run_grants(&plan),
                 GATE_GRANT_LINES,
             ));
+            let warnings = crate::planfile::plan_warnings(&plan);
+            for w in warnings {
+                lines.push(format!("⚠️ {w}"));
+            }
         }
         None => lines.push("Plan: (không đọc được .plan.md)".to_string()),
     }
@@ -405,10 +409,18 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
             lines.push(title_line(s));
             lines.push(project_line(s));
             if let Some(r) = failed_run(ev, s) {
-                lines.push(format!(
-                    "Run {} ({}) lỗi hoặc quá thời gian — xem log của run này.",
-                    r.id, r.role
-                ));
+                if let Some(err) = r.error.as_deref().filter(|e| !e.trim().is_empty()) {
+                    let excerpt = crate::autopilot::view::error_excerpt(err, 3, 500);
+                    lines.push(format!(
+                        "Run {} ({}) lỗi hoặc quá thời gian — {}",
+                        r.id, r.role, excerpt
+                    ));
+                } else {
+                    lines.push(format!(
+                        "Run {} ({}) lỗi hoặc quá thời gian — xem log của run này.",
+                        r.id, r.role
+                    ));
+                }
             }
             lines.push(summary_line(s, now_ms));
         }
@@ -482,6 +494,9 @@ pub fn buttons_for(ev: &Event, s: &TaskState) -> Vec<Vec<Button>> {
             }
         }
         EventKind::Stop => {
+            if has_control(s, "auto_extend_budget") {
+                rows.push(button("Gia hạn ngân sách", Op::ExtendBudget, s, None));
+            }
             if has_control(s, "auto_more_round") {
                 rows.push(button("Chạy thêm 1 vòng", Op::MoreRound, s, None));
             }

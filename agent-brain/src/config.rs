@@ -15,6 +15,8 @@ pub struct AutopilotDefaults {
     pub max_rounds: u32,
     pub budget_minutes: u32,
     pub budget_usd: f64,
+    pub max_budget_extension_minutes: u32,
+    pub max_budget_extension_usd: f64,
 }
 
 impl Default for AutopilotDefaults {
@@ -23,6 +25,8 @@ impl Default for AutopilotDefaults {
             max_rounds: 3,
             budget_minutes: 60,
             budget_usd: 20.0,
+            max_budget_extension_minutes: 240,
+            max_budget_extension_usd: 20.0,
         }
     }
 }
@@ -1249,6 +1253,30 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
                     }
                 }
             }
+            if let Some(mbem) = ap_obj.get("max_budget_extension_minutes") {
+                match mbem.as_u64() {
+                    Some(n) if (1..=1440).contains(&n) => {
+                        autopilot.max_budget_extension_minutes = n as u32
+                    }
+                    _ => {
+                        return Err(BrainError::error(
+                            "Cấu hình autopilot.max_budget_extension_minutes phải là số nguyên từ 1 đến 1440",
+                        ))
+                    }
+                }
+            }
+            if let Some(mbeu) = ap_obj.get("max_budget_extension_usd") {
+                match mbeu.as_f64() {
+                    Some(f) if f.is_finite() && f > 0.0 && f <= 1000.0 => {
+                        autopilot.max_budget_extension_usd = f
+                    }
+                    _ => {
+                        return Err(BrainError::error(
+                            "Cấu hình autopilot.max_budget_extension_usd phải là số lớn hơn 0 và không quá 1000",
+                        ))
+                    }
+                }
+            }
         }
     }
 
@@ -1468,6 +1496,8 @@ mod tests {
                 max_rounds: 3,
                 budget_minutes: 60,
                 budget_usd: 20.0,
+                max_budget_extension_minutes: 240,
+                max_budget_extension_usd: 20.0,
             }
         );
         assert_eq!(

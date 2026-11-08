@@ -147,24 +147,34 @@ fn project_display_name(p: &crate::projects::Project) -> String {
 // ---- teams payload ----
 
 fn open_task_count(conn: &Connection, team: &str) -> i64 {
-    conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE status != 'qa_pass' AND status != 'answered' \
-         AND CASE WHEN json_valid(team_json) THEN json_extract(team_json, '$.name') END = ?1",
-        [team],
-        |r| r.get::<_, i64>(0),
-    )
-    .unwrap_or(0)
+    let cond = crate::tasks::SUCCESS_STATUSES
+        .iter()
+        .map(|s| format!("status != '{s}'"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let query = format!(
+        "SELECT COUNT(*) FROM tasks WHERE {cond} \
+         AND CASE WHEN json_valid(team_json) THEN json_extract(team_json, '$.name') END = ?1"
+    );
+    conn.query_row(&query, [team], |r| r.get::<_, i64>(0))
+        .unwrap_or(0)
 }
 
-/// Open tasks (any status other than `qa_pass` and `answered`) whose team is `team`, grouped by the profile of
+/// Open tasks (any status other than `SUCCESS_STATUSES`) whose team is `team`, grouped by the profile of
 /// their project (D-42).
 fn open_tasks_by_profile(conn: &Connection, team: &str) -> Vec<(String, i64)> {
-    let Ok(mut stmt) = conn.prepare(
+    let cond = crate::tasks::SUCCESS_STATUSES
+        .iter()
+        .map(|s| format!("t.status != '{s}'"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let query = format!(
         "SELECT p.profile, COUNT(*) FROM tasks t JOIN projects p ON p.id = t.project_id \
-         WHERE t.status != 'qa_pass' AND t.status != 'answered' \
+         WHERE {cond} \
          AND CASE WHEN json_valid(t.team_json) THEN json_extract(t.team_json, '$.name') END = ?1 \
-         GROUP BY p.profile ORDER BY p.profile",
-    ) else {
+         GROUP BY p.profile ORDER BY p.profile"
+    );
+    let Ok(mut stmt) = conn.prepare(&query) else {
         return Vec::new();
     };
     let rows = stmt.query_map([team], |r| {

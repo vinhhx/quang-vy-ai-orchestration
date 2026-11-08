@@ -234,6 +234,8 @@ pub struct LedgerRow {
     pub kind: String,
     pub outcome: Option<String>,
     pub counts: Option<Counts>,
+    pub error: Option<String>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -372,6 +374,8 @@ pub fn apply_human_wait(
         kind: kind.to_string(),
         outcome: None,
         counts: None,
+        error: None,
+        warnings: Vec::new(),
     };
     let extends_last = ledger.groups.last().is_some_and(|g| g.kind == loop_name);
     if extends_last {
@@ -534,6 +538,12 @@ fn derive_inner(f: &PipelineFacts, staged: bool) -> PipelineView {
         let label = format!("Vòng {round} · {kind}");
 
         let counts = Counts::from_metrics_json(run.metrics_json.as_deref());
+        let warnings: Vec<String> = run
+            .metrics_json
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .and_then(|v| v.get("warnings").and_then(|w| serde_json::from_value(w.clone()).ok()))
+            .unwrap_or_default();
 
         ledger_rows.push(LedgerRow {
             run_id: run.id,
@@ -559,6 +569,8 @@ fn derive_inner(f: &PipelineFacts, staged: bool) -> PipelineView {
             kind: kind.to_string(),
             outcome: run.outcome.clone(),
             counts,
+            error: run.error.clone(),
+            warnings,
         });
     }
 
@@ -1358,7 +1370,11 @@ pub fn derive_response(f: &PipelineFacts, x: &FlowFacts) -> PipelineResponse {
     let current_card = derive_current_card(&valid_runs, x, &gate.state);
 
     let budget = if let (Some(wf), Some(u)) = (x.workflow, x.budget.as_ref()) {
-        let limits = BudgetLimits::from_workflow(wf);
+        let (extra_min, extra_usd) = x
+            .auto_json
+            .map(|aj| (aj.budget_extra_minutes, aj.budget_extra_usd))
+            .unwrap_or((0, 0.0));
+        let limits = BudgetLimits::from_workflow(wf).with_extra(extra_min, extra_usd);
         let level = match pricing::budget_level(u, &limits) {
             pricing::BudgetLevel::Ok => "ok",
             pricing::BudgetLevel::Near => "near",

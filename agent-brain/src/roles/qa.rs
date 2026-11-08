@@ -490,6 +490,19 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
             }
             restore.disarm();
             crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
+            let files_50: Vec<String> = violations.iter().take(50).cloned().collect();
+            let msg = format!(
+                "{} file ngoài .qa-report.md và thư mục được ghi: {} — QA chỉ được sửa .qa-report.md hoặc thư mục được ghi trong plan",
+                files_50.len(),
+                files_50.join(", ")
+            );
+            crate::roles::record_violation(
+                ctx,
+                role_run.run_id,
+                "qa_extra_files",
+                &msg,
+                serde_json::json!({ "files": files_50 }),
+            )?;
             return Ok(crate::error::EXIT_PROTOCOL);
         }
 
@@ -507,6 +520,13 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
             let warn = format!("File '{p}' dưới thư mục được ghi bị đổi trong lúc QA — đã khôi phục");
             crate::term::emit_out(&format!("QA cảnh báo: {warn}"));
             role_run.warnings.push(warn);
+        }
+        if !role_run.warnings.is_empty() {
+            let _ = crate::db::merge_run_metrics(
+                &ctx.conn,
+                role_run.run_id,
+                &serde_json::json!({ "warnings": role_run.warnings }),
+            );
         }
     }
 

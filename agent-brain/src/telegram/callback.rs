@@ -29,9 +29,11 @@ pub enum Op {
     RetryLater,
     /// `Chạy Dev` for manual workflows after plan approval.
     RunDev,
+    /// Gia hạn ngân sách (Phase A4).
+    ExtendBudget,
 }
 
-pub const ALL_OPS: [Op; 15] = [
+pub const ALL_OPS: [Op; 16] = [
     Op::Approve,
     Op::ApproveAsk,
     Op::ApproveConfirm,
@@ -47,6 +49,7 @@ pub const ALL_OPS: [Op; 15] = [
     Op::TeamCancel,
     Op::RetryLater,
     Op::RunDev,
+    Op::ExtendBudget,
 ];
 
 impl Op {
@@ -67,6 +70,7 @@ impl Op {
             Op::TeamCancel => 'v',
             Op::RetryLater => 'l',
             Op::RunDev => 'd',
+            Op::ExtendBudget => 'b',
         }
     }
 
@@ -649,7 +653,7 @@ mod tests {
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), n, "a callback code is used twice");
-        assert_eq!(ALL_OPS.len(), 15);
+        assert_eq!(ALL_OPS.len(), 16);
         for op in ALL_OPS {
             assert_eq!(Op::from_code(op.code()), Some(op));
         }

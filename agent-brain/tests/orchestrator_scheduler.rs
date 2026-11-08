@@ -924,3 +924,111 @@ fn test_chained_proposal_fails_when_prior_timed_out() {
 
     st.jobs.kill_all_now();
 }
+
+#[test]
+fn test_chained_proposal_waits_when_prior_stopped() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let _repos = setup_projects(&sb, &["proj1"]);
+    let fake_job = setup_fake_job(&sb);
+
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true,
+            "max_parallel": 2
+        }
+    }));
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
+    let projects = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+
+    let intake_id = insert_intake(&conn, "ui", None, "chuỗi việc", "normal").expect("intake");
+    let pid = agent_brain::db::project_row_id(&conn, "proj1").unwrap();
+
+    let p0 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid,
+            title: "Khảo sát",
+            request: "Khảo sát hệ thống",
+            priority: "normal",
+            level: "vua",
+            team: "mac-dinh",
+            workflow: "phan-tich",
+            reason: None,
+        },
+    )
+    .expect("p0");
+
+    let p1 = insert_proposal(
+        &conn,
+        &NewProposal {
+            intake_id,
+            project_id: pid,
+            title: "Thực thi",
+            request: "Thực thi theo khảo sát",
+            priority: "normal",
+            level: "vua",
+            team: "mac-dinh",
+            workflow: "mac-dinh",
+            reason: None,
+        },
+    )
+    .expect("p1");
+    agent_brain::db::set_proposal_after_id(&conn, p1, Some(p0)).unwrap();
+
+    let task_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "khao-sat",
+        "Khảo sát",
+        "analysis/khao-sat",
+        None,
+        None,
+    )
+    .unwrap();
+    agent_brain::db::set_proposal_status(&conn, p0, "started").unwrap();
+    conn.execute("UPDATE proposals SET task_id = ?1 WHERE id = ?2", rusqlite::params![task_id, p0]).unwrap();
+    
+    // Set task to stopped with vuong_mac
+    let stop = agent_brain::autopilot::decide::StopInfo {
+        reason: agent_brain::autopilot::decide::StopReason::VuongMac,
+        loop_name: None,
+        stage: None,
+        round: None,
+        cap: None,
+        run_id: None,
+        role: None,
+        at_ms: 1000,
+        detail_line: None,
+        used_ms: None,
+        used_usd: None,
+        estimated: None,
+        limit_minutes: None,
+        limit_usd: None,
+    };
+    let aj = agent_brain::autopilot::decide::AutoJson {
+        stop: Some(stop),
+        ..Default::default()
+    };
+    conn.execute(
+        "UPDATE tasks SET status = 'open', auto_state = 'stopped', auto_json = ?1 WHERE id = ?2",
+        rusqlite::params![aj.to_json(), task_id],
+    )
+    .unwrap();
+
+    set_proposal_status(&conn, p1, "approved").expect("approve p1");
+
+    let st = app_state(&sb, fake_job);
+    schedule_tick(&st).expect("schedule_tick");
+
+    let p1_after = get_proposal(&conn, p1).unwrap().unwrap();
+    // p1 should still be approved, not failed, and waiting on task
+    assert_eq!(p1_after.status, "approved");
+    assert!(p1_after.error.unwrap().contains(&format!("Chờ task #{task_id} (đang dừng: vướng mắc)")));
+
+    st.jobs.kill_all_now();
+}

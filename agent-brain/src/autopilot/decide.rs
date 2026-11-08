@@ -224,6 +224,10 @@ pub struct AutoJson {
     pub stop: Option<StopInfo>,
     #[serde(default)]
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub budget_extra_minutes: i64,
+    #[serde(default)]
+    pub budget_extra_usd: f64,
 }
 
 impl AutoJson {
@@ -251,6 +255,7 @@ pub struct RunFact {
     pub outcome: Option<String>,
     pub kill_requested: bool,
     pub started_at: i64,
+    pub error: Option<String>,
 }
 
 impl RunFact {
@@ -276,6 +281,7 @@ impl RunFact {
             outcome: row.outcome.clone(),
             kill_requested: row.kill_requested_at.is_some(),
             started_at: row.started_at,
+            error: row.error.clone(),
         }
     }
 
@@ -389,7 +395,7 @@ pub fn build_facts(
     };
 
     let budget_usage = crate::pricing::budget_usage(runs, pricing, now_ms);
-    let budget_limits = BudgetLimits::from_workflow(wf);
+    let budget_limits = BudgetLimits::from_workflow(wf).with_extra(aj.budget_extra_minutes, aj.budget_extra_usd);
 
     Facts {
         runs: filtered_runs,
@@ -888,7 +894,7 @@ fn rule_d2_last_run_failures(f: &Facts, eff_rounds: &[i64]) -> Option<Decision> 
             run_id: Some(last_run.id),
             role: Some(last_run.role.clone()),
             at_ms: f.now_ms,
-            detail_line: None,
+            detail_line: last_run.error.clone(),
             used_ms: None,
             used_usd: None,
             estimated: None,
@@ -906,7 +912,7 @@ fn rule_d2_last_run_failures(f: &Facts, eff_rounds: &[i64]) -> Option<Decision> 
             run_id: Some(last_run.id),
             role: Some(last_run.role.clone()),
             at_ms: f.now_ms,
-            detail_line: None,
+            detail_line: last_run.error.clone(),
             used_ms: None,
             used_usd: None,
             estimated: None,
@@ -1273,6 +1279,10 @@ fn rule_d7_qa_phase(
                             return Some(rule_d9_budget(candidate, f));
                         }
                     } else {
+                        let detail_line = Some(format!(
+                            "QA kết luận Cần sửa. Quy trình {} không có vòng sửa tự động (thiếu bước fix / vòng qa)",
+                            wf.name
+                        ));
                         return Some(Decision::Stop(StopInfo {
                             reason: StopReason::HetVong,
                             loop_name: Some(Loop::Qa),
@@ -1282,7 +1292,7 @@ fn rule_d7_qa_phase(
                             run_id: Some(x.id),
                             role: Some(x.role.clone()),
                             at_ms: f.now_ms,
-                            detail_line: None,
+                            detail_line,
                             used_ms: None,
                             used_usd: None,
                             estimated: None,
@@ -1902,6 +1912,8 @@ mod tests {
             }),
             stop: Some(stop),
             last_error: None,
+            budget_extra_minutes: 0,
+            budget_extra_usd: 0.0,
         };
 
         let json = aj.to_json();
@@ -2563,7 +2575,10 @@ mod tests {
                 run_id: Some(3),
                 role: Some("qa".to_string()),
                 at_ms: 3000,
-                detail_line: None,
+                detail_line: Some(
+                    "QA kết luận Cần sửa. Quy trình nhanh không có vòng sửa tự động (thiếu bước fix / vòng qa)"
+                        .to_string(),
+                ),
                 used_ms: None,
                 used_usd: None,
                 estimated: None,
@@ -3977,6 +3992,7 @@ mod tests {
             outcome: None,
             kill_requested: false,
             started_at: 5000,
+            error: None,
         };
         runs_pr.push(pr_after_q);
         assert_eq!(cycles(&runs_pr).last().copied(), Some(1));

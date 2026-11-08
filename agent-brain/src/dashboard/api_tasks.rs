@@ -9,7 +9,7 @@ use crate::dashboard::pipeline;
 use crate::dashboard::taskstate::{self, AutoFacts, GitFacts, TaskFacts, TaskView};
 use crate::dashboard::{blocking, json_error, AppState};
 use crate::db::{RunRow, TaskAuto, TaskRow};
-use crate::error::BrainResult;
+use crate::error::{BrainError, BrainResult};
 use crate::projects::Project;
 use crate::workflows::Workflow;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -462,6 +462,7 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
             "/api/tasks/{id}/auto/more-round",
             post(post_auto_more_round),
         )
+        .route("/api/tasks/{id}/auto/extend-budget", post(post_auto_extend_budget))
         .route("/api/tasks/{id}/auto/end", post(post_auto_end))
         .route("/api/preflight", get(get_preflight))
         .route("/api/slug", get(get_slug))
@@ -1141,6 +1142,7 @@ async fn list_tasks(
                 latest_run: latest_run.as_ref(),
                 human_mode: human.as_ref().map(|(m, _)| m.as_str()),
                 human_name: human.as_ref().map(|(_, n)| n.as_str()),
+                budget_exhausted_reason: None,
             };
             let view = taskstate::derive_with(&facts, &auto_facts);
             // Tổng quan shows the reason line of a quota stop for manual tasks (UI-SPEC).
@@ -1355,13 +1357,19 @@ pub fn load_task_state(
         _ => false,
     };
 
-    let (plan_exists, plan_blockers, plan_errors) = if let Some(ref text) = plan_text {
+    let (plan_exists, plan_blockers, plan_unhandled_blockers, plan_errors) = if let Some(ref text) = plan_text {
         let plan = crate::planfile::parse_plan(text);
-        let blockers = crate::planfile::has_blockers(&plan);
+        let unhandled = plan
+            .sections
+            .iter()
+            .find(|(k, _)| k.starts_with("Vướng mắc"))
+            .map(|(_, v)| crate::planfile::unhandled_blocker_lines(v))
+            .unwrap_or_default();
+        let blockers = !unhandled.is_empty();
         let errors = crate::planfile::validate_plan(&plan, Some(&root));
-        (true, blockers, errors)
+        (true, blockers, unhandled, errors)
     } else {
-        (false, false, Vec::new())
+        (false, false, Vec::new(), Vec::new())
     };
 
     let mut git = GitFacts {
@@ -1369,6 +1377,7 @@ pub fn load_task_state(
         dirty,
         plan_exists,
         plan_blockers,
+        plan_unhandled_blockers,
         plan_errors,
         plan_commit,
         code_after_plan,
@@ -1447,6 +1456,29 @@ pub fn load_task_state(
         .and_then(|t| t.wait.as_ref())
         .map(|w| (w.mode.clone(), staff.display_name_of(&w.staff)));
 
+    let budget_exhausted_reason = if let Some(ref wf) = workflow {
+        if aj.bypass_stages <= 0 {
+            let budget_usage = crate::pricing::budget_usage(&runs, &st.cfg.pricing, now);
+            let budget_limits = crate::pricing::BudgetLimits::from_workflow(wf)
+                .with_extra(aj.budget_extra_minutes, aj.budget_extra_usd);
+            if crate::pricing::exhausted(&budget_usage, &budget_limits) {
+                let used_minutes = (budget_usage.used_ms as f64 / 60_000.0).round() as i64;
+                let used_usd = format!("{:.2}", budget_usage.used_usd);
+                let limit_usd = format!("{:.2}", budget_limits.usd);
+                Some(format!(
+                    "Hết ngân sách quy trình (đã dùng {}/{} phút, ${}/${}) — gia hạn rồi duyệt lại",
+                    used_minutes, budget_limits.minutes, used_usd, limit_usd
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let mut view = {
         let facts = TaskFacts {
             task: &task,
@@ -1468,6 +1500,7 @@ pub fn load_task_state(
             latest_run: runs.iter().max_by_key(|r| (r.started_at, r.id)),
             human_mode: human_wait.as_ref().map(|(m, _)| m.as_str()),
             human_name: human_wait.as_ref().map(|(_, n)| n.as_str()),
+            budget_exhausted_reason,
         };
         taskstate::derive_with(&facts, &auto_facts)
     };
@@ -2164,6 +2197,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
                 })
                 .collect();
 
+            let warnings = crate::planfile::plan_warnings(&plan);
             let mut plan_json = serde_json::json!({
                 "path": ".plan.md",
                 "source": state.plan_source.unwrap_or("worktree"),
@@ -2174,6 +2208,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
                 "changes": changes,
                 "blockers": state.git.plan_blockers,
                 "errors": state.git.plan_errors,
+                "warnings": warnings,
             });
             // Skill mode: shown before Duyệt plan; the key is absent for a plan without grants.
             let grants = crate::planfile::run_grants(&plan);
@@ -2232,7 +2267,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
         let mut runs_stmt = conn.prepare(
             "SELECT r.id, r.role, r.status, r.outcome, r.input_tokens, r.output_tokens,
                     r.cache_read_tokens, r.cache_write_tokens, r.cost_usd, r.started_at, r.ended_at,
-                    r.stage, r.round, r.member_id, ms.score, ms.note
+                    r.stage, r.round, r.member_id, ms.score, ms.note, r.error, r.metrics_json
              FROM runs r
              LEFT JOIN member_scores ms ON ms.run_id = r.id
              WHERE r.task_id = ?1 ORDER BY r.started_at ASC, r.id ASC",
@@ -2245,6 +2280,13 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
                 });
                 let score: Option<i64> = r.get(14)?;
                 let score_note: Option<String> = r.get(15)?;
+                let run_error: Option<String> = r.get(16)?;
+                let metrics_json_str: Option<String> = r.get(17)?;
+                let warnings: Vec<String> = metrics_json_str
+                    .as_deref()
+                    .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                    .and_then(|v| v.get("warnings").and_then(|w| serde_json::from_value(w.clone()).ok()))
+                    .unwrap_or_default();
                 Ok(serde_json::json!({
                     "id": r.get::<_, i64>(0)?,
                     "role": r.get::<_, String>(1)?,
@@ -2263,6 +2305,8 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
                     "member_name": member_name,
                     "score": score,
                     "score_note": score_note,
+                    "error": run_error,
+                    "warnings": warnings,
                 }))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -2952,6 +2996,12 @@ pub enum ControlOutcome {
     NotFound(String),
     /// Đầu vào không hợp lệ (ghi chú quá dài).
     Invalid(String),
+    /// Đã gia hạn ngân sách cho task.
+    Extended {
+        minutes: u32,
+        usd: f64,
+        job_id: Option<u64>,
+    },
 }
 
 /// Ghi chú cho Lead (05.2 D-17): cắt khoảng trắng, rỗng = không có ghi chú;
@@ -3151,6 +3201,35 @@ pub fn run_control_as(
             }
             Ok(ControlOutcome::Ended { at_gate: false })
         }
+        "auto_extend_budget" => {
+            let max_min = st.cfg.autopilot.max_budget_extension_minutes;
+            let max_usd = st.cfg.autopilot.max_budget_extension_usd;
+            let ext_min = 60.min(max_min);
+            let ext_usd = (20.0f64).min(max_usd);
+            let mut aj = state.aj.clone();
+            aj.budget_extra_minutes += ext_min as i64;
+            aj.budget_extra_usd += ext_usd;
+            let stopped_on_budget = aj
+                .stop
+                .as_ref()
+                .map(|s| s.reason)
+                == Some(crate::autopilot::decide::StopReason::HetNganSach);
+            if stopped_on_budget {
+                aj.stop = None;
+            }
+            crate::db::set_auto_json(&conn, task_id, Some(&aj.to_json()))?;
+            let job_id = if state.auto.auto_state.as_deref() == Some("stopped") && stopped_on_budget {
+                let spec = task_job(&state, "auto", vec!["auto".to_string(), id_str]);
+                start_job_outcome(st, spec).ok()
+            } else {
+                None
+            };
+            Ok(ControlOutcome::Extended {
+                minutes: ext_min,
+                usd: ext_usd,
+                job_id,
+            })
+        }
         "run_dev" => {
             if source == ActionSource::Telegram
                 && state.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
@@ -3208,6 +3287,19 @@ fn control_response(o: ControlOutcome) -> Response {
         ControlOutcome::Ended { at_gate: false } => {
             json_resp(StatusCode::OK, serde_json::json!({ "ok": true }))
         }
+        ControlOutcome::Extended {
+            minutes,
+            usd,
+            job_id,
+        } => json_resp(
+            StatusCode::OK,
+            serde_json::json!({
+                "ok": true,
+                "extra_minutes": minutes,
+                "extra_usd": usd,
+                "job_id": job_id,
+            }),
+        ),
         ControlOutcome::Stale => conflict(STALE_MSG, "stale"),
         ControlOutcome::Refused { reason, kind } => conflict(&reason, kind),
         ControlOutcome::Unavailable => json_resp(
@@ -3275,6 +3367,72 @@ async fn post_auto_more_round(
     Json(body): Json<ControlBody>,
 ) -> Response {
     post_control(st, task_id, "auto_more_round", body.rev, None).await
+}
+
+#[derive(serde::Deserialize)]
+pub struct ExtendBudgetBody {
+    pub minutes: Option<u32>,
+    pub usd: Option<f64>,
+    pub rev: Option<String>,
+}
+
+async fn post_auto_extend_budget(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<ExtendBudgetBody>,
+) -> Response {
+    let max_min = st.cfg.autopilot.max_budget_extension_minutes;
+    let max_usd = st.cfg.autopilot.max_budget_extension_usd;
+    if let Some(m) = body.minutes {
+        if m > max_min {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                &format!("Số phút gia hạn ({m}) vượt quá giới hạn cấu hình ({max_min})"),
+            );
+        }
+    }
+    if let Some(u) = body.usd {
+        if u > max_usd {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                &format!("Số tiền gia hạn (${u:.2}) vượt quá giới hạn cấu hình (${max_usd:.2})"),
+            );
+        }
+    }
+    let ext_min = body.minutes.unwrap_or_else(|| 60.min(max_min));
+    let ext_usd = body.usd.unwrap_or_else(|| (20.0f64).min(max_usd));
+
+    let res = blocking(move || {
+        let conn = crate::db::open(&st.db_path)?;
+        let _task = crate::db::get_task(&conn, task_id)?
+            .ok_or_else(|| BrainError::error("Không tìm thấy task"))?;
+        let auto = crate::db::task_auto(&conn, task_id)?
+            .unwrap_or_default();
+        let mut aj = crate::autopilot::decide::AutoJson::parse(auto.auto_json.as_deref());
+        aj.budget_extra_minutes += ext_min as i64;
+        aj.budget_extra_usd += ext_usd;
+        if aj.stop.as_ref().map(|s| s.reason) == Some(crate::autopilot::decide::StopReason::HetNganSach) {
+            aj.stop = None;
+        }
+        crate::db::set_auto_json(&conn, task_id, Some(&aj.to_json()))?;
+        Ok((ext_min, ext_usd, aj.budget_extra_minutes, aj.budget_extra_usd))
+    })
+    .await;
+
+    match res {
+        Ok((added_min, added_usd, total_min, total_usd)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "added_minutes": added_min,
+                "added_usd": added_usd,
+                "budget_extra_minutes": total_min,
+                "budget_extra_usd": total_usd,
+            })),
+        )
+            .into_response(),
+        Err(e) => internal_error("gia hạn ngân sách", &e),
+    }
 }
 
 async fn post_auto_end(

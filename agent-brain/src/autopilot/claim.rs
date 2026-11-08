@@ -364,6 +364,48 @@ pub fn approve_check(conn: &Connection, task: &TaskRow, root: &Path) -> Result<S
             .join("\n");
         return Err(format!("Plan có quyền không hợp lệ:\n{list}"));
     }
+
+    let wf: Option<crate::workflows::Workflow> = auto
+        .workflow_json
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok());
+    let continues = wf.as_ref().is_some_and(|w| w.auto)
+        && auto.auto_state.as_deref() != Some("ended");
+
+    if continues {
+        let unhandled = parsed_plan
+            .sections
+            .iter()
+            .find(|(k, _)| k.starts_with("Vướng mắc"))
+            .map(|(_, v)| crate::planfile::unhandled_blocker_lines(v))
+            .unwrap_or_default();
+        if !unhandled.is_empty() {
+            let n = unhandled.len();
+            let preview = unhandled.join("; ");
+            return Err(format!("Plan còn {n} vướng mắc chưa đánh dấu [x]: {preview}"));
+        }
+        if let Some(ref w) = wf {
+            let aj = crate::autopilot::decide::AutoJson::parse(auto.auto_json.as_deref());
+            if aj.bypass_stages <= 0 {
+                let runs = crate::db::runs_for_task(conn, task.id).map_err(db_err)?;
+                let pricing = crate::config::default_pricing();
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let budget_usage = crate::pricing::budget_usage(&runs, &pricing, now_ms);
+                let budget_limits = crate::pricing::BudgetLimits::from_workflow(w)
+                    .with_extra(aj.budget_extra_minutes, aj.budget_extra_usd);
+                if crate::pricing::exhausted(&budget_usage, &budget_limits) {
+                    let used_minutes = (budget_usage.used_ms as f64 / 60_000.0).round() as i64;
+                    let used_usd = format!("{:.2}", budget_usage.used_usd);
+                    let limit_usd = format!("{:.2}", budget_limits.usd);
+                    return Err(format!(
+                        "Hết ngân sách quy trình (đã dùng {}/{} phút, ${}/${}) — gia hạn rồi duyệt lại",
+                        used_minutes, budget_limits.minutes, used_usd, limit_usd
+                    ));
+                }
+            }
+        }
+    }
+
     Ok(plan_commit)
 }
 

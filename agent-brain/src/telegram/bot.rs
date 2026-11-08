@@ -496,6 +496,7 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
         Op::ApproveAsk | Op::ApproveConfirm | Op::ApproveCancel => on_approve(ctx, &press, &cb),
         Op::MoreRound => act(ctx, &press, &cb, "Chạy thêm 1 vòng", "auto_more_round"),
         Op::End => act(ctx, &press, &cb, "Dừng hẳn", "auto_end"),
+        Op::ExtendBudget => act(ctx, &press, &cb, "Gia hạn ngân sách", "auto_extend_budget"),
         Op::ReturnLead | Op::NoNote | Op::CancelNote => on_return_lead(ctx, state, &press, &cb),
         Op::KillAsk | Op::KillConfirm | Op::KillCancel => on_kill(ctx, &press, &cb),
         Op::TeamCancel | Op::RetryLater => on_quota_side(ctx, &press, &cb),
@@ -1486,6 +1487,18 @@ pub(crate) fn apply_outcome(
                 "Đã giao thêm 1 vòng".to_string()
             } else {
                 format!("Đã bắt đầu job {job_id}")
+            };
+            (what.clone(), what)
+        }
+        Ok(ControlOutcome::Extended {
+            minutes,
+            usd,
+            job_id,
+        }) => {
+            let what = if job_id.is_some() {
+                format!("Đã gia hạn +{minutes}p, +${usd:.2} · autopilot chạy tiếp")
+            } else {
+                format!("Đã gia hạn +{minutes}p, +${usd:.2}")
             };
             (what.clone(), what)
         }

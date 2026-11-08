@@ -610,6 +610,23 @@ pub fn set_run_outcome(conn: &Connection, run_id: i64, outcome: &str) -> BrainRe
     Ok(())
 }
 
+pub fn set_run_error(conn: &Connection, run_id: i64, error: &str) -> BrainResult<()> {
+    let truncated = if error.len() > 4000 {
+        let mut end = 4000;
+        while end > 0 && !error.is_char_boundary(end) {
+            end -= 1;
+        }
+        &error[..end]
+    } else {
+        error
+    };
+    conn.execute(
+        "UPDATE runs SET error = ?1 WHERE id = ?2",
+        params![truncated, run_id],
+    )?;
+    Ok(())
+}
+
 pub fn mark_kill_requested(conn: &Connection, run_id: i64) -> BrainResult<()> {
     let now = now_ms();
     conn.execute(
@@ -1406,6 +1423,15 @@ pub fn set_proposal_failed(conn: &Connection, id: i64, error: &str) -> BrainResu
     let now = now_ms();
     let changes = conn.execute(
         "UPDATE proposals SET status = 'failed', error = ?1, updated_at = ?2 WHERE id = ?3",
+        params![error, now, id],
+    )?;
+    Ok(changes > 0)
+}
+
+pub fn set_proposal_error(conn: &Connection, id: i64, error: &str) -> BrainResult<bool> {
+    let now = now_ms();
+    let changes = conn.execute(
+        "UPDATE proposals SET error = ?1, updated_at = ?2 WHERE id = ?3",
         params![error, now, id],
     )?;
     Ok(changes > 0)

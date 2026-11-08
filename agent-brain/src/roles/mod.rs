@@ -1077,21 +1077,29 @@ pub fn execute_role_staged(
         let paths: Vec<String> = paths.into_iter().collect();
         let leaked = crate::secrets::scan_for_secrets(root, &paths, &ep.redact);
         if !leaked.is_empty() {
-            if let Some(run_id) = obs.run_id {
-                crate::db::set_run_outcome(&ctx.conn, run_id, "protocol_violation")?;
-                crate::db::merge_run_metrics(
-                    &ctx.conn,
-                    run_id,
-                    &serde_json::json!({ "secret_leak": leaked }),
-                )?;
-            }
             let msg = format!(
                 "Phát hiện key của engine {} trong file: {} — không commit. Xóa key khỏi file (và khỏi lịch sử git nếu đã commit) rồi chạy lại.",
                 ep.db_engine,
                 leaked.join(", ")
             );
+            let redacted_msg = crate::secrets::redact_str(&msg, &ep.redact);
+            if let Some(run_id) = obs.run_id {
+                crate::db::set_run_outcome(&ctx.conn, run_id, "protocol_violation")?;
+                crate::db::set_run_error(&ctx.conn, run_id, &redacted_msg)?;
+                crate::db::merge_run_metrics(
+                    &ctx.conn,
+                    run_id,
+                    &serde_json::json!({
+                        "secret_leak": leaked,
+                        "violation": {
+                            "kind": "secret_leak",
+                            "files": leaked
+                        }
+                    }),
+                )?;
+            }
             return Err(BrainError::new(
-                crate::secrets::redact_str(&msg, &ep.redact),
+                redacted_msg,
                 EXIT_PROTOCOL,
             ));
         }
@@ -1120,6 +1128,13 @@ pub fn execute_role_staged(
     let run_id = obs.run_id.unwrap_or(0);
     let mut all_warnings = source_warnings;
     all_warnings.extend(input_warnings);
+    if run_id > 0 && !all_warnings.is_empty() {
+        let _ = crate::db::merge_run_metrics(
+            &ctx.conn,
+            run_id,
+            &serde_json::json!({ "warnings": all_warnings }),
+        );
+    }
     Ok(RoleRun {
         run_id,
         outcome,
@@ -1127,6 +1142,42 @@ pub fn execute_role_staged(
         run_dir,
         warnings: all_warnings,
     })
+}
+
+pub fn record_violation(
+    ctx: &crate::app::Ctx,
+    run_id: i64,
+    kind: &str,
+    message: &str,
+    details: serde_json::Value,
+) -> BrainResult<()> {
+    let mut secrets = crate::inputs::env_secrets();
+    for key_env in ctx.cfg.engines.all_key_envs() {
+        if let Ok(v) = std::env::var(key_env) {
+            if v.len() >= crate::secrets::MIN_SECRET_BYTES {
+                secrets.push(v);
+            }
+        }
+    }
+    let redacted = crate::secrets::redact_str(message, &secrets);
+    crate::db::set_run_error(&ctx.conn, run_id, &redacted)?;
+
+    let mut violation_obj = match details {
+        serde_json::Value::Object(m) => m,
+        other => {
+            let mut m = serde_json::Map::new();
+            m.insert("details".to_string(), other);
+            m
+        }
+    };
+    violation_obj.insert("kind".to_string(), serde_json::json!(kind));
+
+    crate::db::merge_run_metrics(
+        &ctx.conn,
+        run_id,
+        &serde_json::json!({ "violation": serde_json::Value::Object(violation_obj) }),
+    )?;
+    Ok(())
 }
 
 /// True when agy's stderr tail carries the `--print-timeout` expiry line:
@@ -1313,5 +1364,66 @@ mod tests {
         let disp = display_argv(&argv, "assets/prompts/lead.md");
         assert!(disp.contains("<assets/prompts/lead.md>"));
         assert!(!disp.contains("very long prompt"));
+    }
+
+    #[test]
+    fn test_record_violation_stores_error_and_metrics() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::open(&dir.path().join("brain.db")).unwrap();
+        let project = crate::projects::Project {
+            id: "p".to_string(),
+            path: dir.path().to_string_lossy().to_string(),
+            name_vi: "P".to_string(),
+            aliases: vec![],
+            kind: "code".to_string(),
+            profile: "default".to_string(),
+            repo: None,
+            missing: false,
+            stack: vec![],
+            read_sources: vec![],
+        };
+        crate::db::sync_projects(&conn, &[project]).unwrap();
+        let pid = crate::db::project_row_id(&conn, "p").unwrap();
+        let tid = crate::db::upsert_task(&conn, pid, "t", "req", "branch", None, None).unwrap();
+        let new_run = crate::db::NewRun {
+            task_id: Some(tid),
+            project_id: pid,
+            role: "lead".to_string(),
+            profile: "default".to_string(),
+            model: None,
+            pid: 1,
+            pgid: 1,
+            pid_start: 1,
+            base_commit: None,
+            run_dir: None,
+        };
+        let run_id = crate::db::insert_run(&conn, &new_run).unwrap();
+
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let ctx = crate::app::Ctx {
+            conn,
+            cfg,
+            map: serde_json::json!({}),
+            projects: Vec::new(),
+        };
+
+        record_violation(
+            &ctx,
+            run_id,
+            "missing_plan",
+            "Không tìm thấy file .plan.md",
+            serde_json::json!({ "checked_paths": [".plan.md"] }),
+        )
+        .unwrap();
+
+        let row = crate::db::get_run(&ctx.conn, run_id).unwrap().unwrap();
+        assert_eq!(row.error.as_deref(), Some("Không tìm thấy file .plan.md"));
+        let metrics: serde_json::Value =
+            serde_json::from_str(row.metrics_json.as_deref().unwrap()).unwrap();
+        assert_eq!(metrics["violation"]["kind"], "missing_plan");
+        assert_eq!(metrics["violation"]["checked_paths"][0], ".plan.md");
     }
 }

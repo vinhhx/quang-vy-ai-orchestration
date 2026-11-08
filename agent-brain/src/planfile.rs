@@ -1094,30 +1094,69 @@ pub fn plan_files(plan: &Plan) -> Vec<String> {
     result
 }
 
-pub fn blocker_text(plan_text: &str) -> Option<String> {
+pub fn plan_warnings(plan: &Plan) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let has_commands_section = plan
+        .sections
+        .keys()
+        .any(|k| k.starts_with(GRANT_SECTION_COMMANDS));
+    let has_write_section = plan
+        .sections
+        .keys()
+        .any(|k| k.starts_with(GRANT_SECTION_WRITE));
+    if has_commands_section && !has_write_section {
+        warnings.push(
+            "Plan có 'Lệnh được chạy' nhưng không có 'Thư mục được ghi': file do lệnh sinh ra sẽ bị tính là ngoài plan".to_string(),
+        );
+    }
+    warnings
+}
+
+pub fn is_resolved_blocker_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("- [x]")
+        || trimmed.starts_with("- [X]")
+        || trimmed.starts_with("* [x]")
+        || trimmed.starts_with("* [X]")
+}
+
+pub fn unhandled_blocker_lines(body: &str) -> Vec<String> {
     static COMMENT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = COMMENT_RE.get_or_init(|| regex::Regex::new(r"(?s)<!--.*?-->").unwrap());
-    let plan = parse_plan(plan_text);
-    let body = plan.sections.get("Vướng mắc")?;
     let no_comments = re.replace_all(body, "");
-    let trimmed = no_comments.trim();
-    if trimmed.is_empty() {
+    no_comments
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .filter(|l| !is_resolved_blocker_line(l))
+        .collect()
+}
+
+pub fn blocker_text(plan_text: &str) -> Option<String> {
+    let plan = parse_plan(plan_text);
+    let body = plan
+        .sections
+        .iter()
+        .find(|(k, _)| k.starts_with("Vướng mắc"))
+        .map(|(_, v)| v.as_str())
+        .or_else(|| plan.sections.get("Vướng mắc").map(|s| s.as_str()))?;
+    let unhandled = unhandled_blocker_lines(body);
+    if unhandled.is_empty() {
         None
     } else {
-        Some(trimmed.to_string())
+        Some(unhandled.join("\n"))
     }
 }
 
 pub fn has_blockers(plan: &Plan) -> bool {
-    static COMMENT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = COMMENT_RE.get_or_init(|| regex::Regex::new(r"(?s)<!--.*?-->").unwrap());
     let body = plan
         .sections
-        .get("Vướng mắc")
-        .map(|s| s.as_str())
+        .iter()
+        .find(|(k, _)| k.starts_with("Vướng mắc"))
+        .map(|(_, v)| v.as_str())
+        .or_else(|| plan.sections.get("Vướng mắc").map(|s| s.as_str()))
         .unwrap_or("");
-    let no_comments = re.replace_all(body, "");
-    !no_comments.trim().is_empty()
+    !unhandled_blocker_lines(body).is_empty()
 }
 
 pub fn render_qa_skeleton(task_title: &str, meta: &serde_json::Value) -> String {
@@ -1627,6 +1666,46 @@ mod tests {
         // 4. Mục nằm cuối file
         let at_end = "# Plan: t\n## Mục tiêu\nx\n## Vướng mắc\nThiếu quyền git log *\n";
         assert_eq!(blocker_text(at_end), Some("Thiếu quyền git log *".to_string()));
+    }
+
+    #[test]
+    fn test_unhandled_blockers_checkboxes() {
+        let section = r#"
+<!-- ghi vướng mắc -->
+- [x] Đã giải quyết vấn đề token
+- [ ] Chưa có API key cho staging
+* [X] Đã sửa lỗi config
+- [ ] Cần quyền truy cập db
+- Vướng mắc không có checkbox
+"#;
+        let unhandled = unhandled_blocker_lines(section);
+        assert_eq!(unhandled.len(), 3);
+        assert_eq!(unhandled[0], "- [ ] Chưa có API key cho staging");
+        assert_eq!(unhandled[1], "- [ ] Cần quyền truy cập db");
+        assert_eq!(unhandled[2], "- Vướng mắc không có checkbox");
+
+        assert!(!unhandled_blocker_lines(section).is_empty());
+
+        let resolved_section = r#"
+- [x] Resolved 1
+- [X] Resolved 2
+"#;
+        assert!(unhandled_blocker_lines(resolved_section).is_empty());
+    }
+
+    #[test]
+    fn test_plan_warnings_commands_without_write() {
+        let p_both = plan_with(
+            "## Thư mục được ghi\n- `src/`\n## Lệnh được chạy\n- `cargo test`\n",
+        );
+        assert!(plan_warnings(&p_both).is_empty());
+
+        let p_cmds_only = plan_with(
+            "## Lệnh được chạy\n- `cargo test`\n",
+        );
+        let warns = plan_warnings(&p_cmds_only);
+        assert_eq!(warns.len(), 1);
+        assert!(warns[0].contains("Plan có 'Lệnh được chạy' nhưng không có 'Thư mục được ghi'"));
     }
 
     #[test]

@@ -12,9 +12,24 @@ const GIT_RULE_COMMIT: &str = "- Chạy mỗi lệnh git riêng, trên một dò
 /// The prompt with every git-rule line dropped; every other byte (newlines
 /// included) is kept.
 fn without_git_rule(text: &str) -> String {
-    text.split_inclusive('\n')
-        .filter(|l| !l.starts_with(GIT_RULE_PREFIX))
-        .collect()
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if line.starts_with(GIT_RULE_PREFIX) {
+            continue;
+        }
+        if line.contains("đánh dấu \"- [x]\"") {
+            out.push("- Nếu .plan.md đang có nội dung ở mục \"Vướng mắc\" (Dev ghi ở lần chạy trước): đọc kỹ, sửa plan để giải quyết từng điểm (bổ sung thông tin, file hoặc quyền đọc), rồi xoá nội dung mục đó, chỉ giữ tiêu đề.");
+        } else if line.contains("checkbox \"- [ ] ...\"") {
+            out.push("- Nếu gặp vướng mắc: ghi vào mục ## Vướng mắc (Dev ghi vào đây nếu có), nêu rõ số thứ tự dòng và nội dung còn thiếu, sau đó dừng.");
+        } else {
+            out.push(line);
+        }
+    }
+    let mut s = out.join("\n");
+    if text.ends_with('\n') {
+        s.push('\n');
+    }
+    s
 }
 
 fn count_lines_equal(text: &str, line: &str) -> usize {

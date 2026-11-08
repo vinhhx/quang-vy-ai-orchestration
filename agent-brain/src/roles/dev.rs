@@ -446,7 +446,7 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
             }
             crate::roles::FixInput::Qa => {
                 let verdict = crate::planfile::parse_qa_verdict(&report_text);
-                if verdict.as_deref() != Some("Cần sửa") {
+                if verdict != Some("Cần sửa") {
                     return Err(BrainError::error(
                         "Báo cáo .qa-report.md không kết luận Cần sửa — không chạy chế độ sửa",
                     ));
@@ -945,10 +945,21 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     let end_branch = crate::gitops::current_branch(&proj_path);
     let end_branch_str = end_branch.as_deref().unwrap_or("HEAD detached");
     if end_branch.as_deref() != Some(&expected_branch) {
-        crate::term::emit_out(&format!(
+        let msg = format!(
             "Dev kết thúc ở nhánh {end_branch_str}, không phải nhánh task {expected_branch} — vi phạm giao thức"
-        ));
+        );
+        crate::term::emit_out(&msg);
         crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
+        crate::roles::record_violation(
+            ctx,
+            role_run.run_id,
+            "wrong_branch",
+            &msg,
+            serde_json::json!({
+                "branch": end_branch_str,
+                "expected": expected_branch,
+            }),
+        )?;
         return Ok(crate::error::EXIT_PROTOCOL);
     }
 
@@ -1009,6 +1020,19 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         }
         crate::term::emit_out("agent-brain không tự hoàn tác");
         crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "protocol_violation")?;
+        let files_50: Vec<String> = sorted_violations.into_iter().take(50).collect();
+        let msg = format!(
+            "{} file ngoài plan: {} — thêm vào bảng Thay đổi hoặc mục 'Thư mục được ghi'",
+            files_50.len(),
+            files_50.join(", ")
+        );
+        crate::roles::record_violation(
+            ctx,
+            role_run.run_id,
+            "files_outside_plan",
+            &msg,
+            serde_json::json!({ "files": files_50 }),
+        )?;
         return Ok(crate::error::EXIT_PROTOCOL);
     }
 

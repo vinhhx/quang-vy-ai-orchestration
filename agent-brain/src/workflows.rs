@@ -45,6 +45,17 @@ impl Workflow {
         self.loops.iter().any(|x| x == l)
     }
 
+    pub fn workflow_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.max_rounds > 1 && (!self.has("fix") || !self.has_loop("qa")) {
+            warnings.push(format!(
+                "max_rounds = {} không có tác dụng vì quy trình không có bước fix / vòng qa",
+                self.max_rounds
+            ));
+        }
+        warnings
+    }
+
     pub fn summary(&self) -> String {
         if self.kind == "analysis" {
             return if self.review {
@@ -1482,6 +1493,27 @@ mod tests {
             loaded.errors[0],
             "Dòng 7: quy trình \"w\": \"fix\" cần có \"qa\"."
         );
+    }
+
+    #[test]
+    fn test_workflow_warnings_no_fix_loop() {
+        let cfg = test_cfg();
+        // Workflow with max_rounds = 2 but no fix stage or qa loop
+        let text = r#"{
+  "no-fix": {
+    "stages": ["plan", "gate:you", "implement", "qa"],
+    "max_rounds": 3
+  }
+}"#;
+        let loaded = load_from(Some(text), &cfg);
+        let wf = loaded.get("no-fix").unwrap();
+        let warns = wf.workflow_warnings();
+        assert_eq!(warns.len(), 1);
+        assert!(warns[0].contains("max_rounds = 3 không có tác dụng"));
+
+        // Builtin mac-dinh has fix and qa loop -> no warning
+        let mac_dinh = loaded.get("mac-dinh").unwrap();
+        assert!(mac_dinh.workflow_warnings().is_empty());
     }
 
     #[test]

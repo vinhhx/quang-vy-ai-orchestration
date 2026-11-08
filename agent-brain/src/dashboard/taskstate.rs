@@ -8,6 +8,7 @@ pub struct GitFacts {
     pub dirty: Vec<String>,
     pub plan_exists: bool,
     pub plan_blockers: bool,
+    pub plan_unhandled_blockers: Vec<String>,
     pub plan_errors: Vec<String>,
     pub plan_commit: Option<String>,
     pub code_after_plan: bool,
@@ -71,6 +72,7 @@ pub struct AutoFacts<'a> {
     pub human_mode: Option<&'a str>,
     /// Display name of the person the marker waits for.
     pub human_name: Option<&'a str>,
+    pub budget_exhausted_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -542,11 +544,42 @@ fn build_approve(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) -> 
             "Không ở nhánh task '{}' (nhánh hiện tại: '{cur}') — không đoán",
             f.task.branch
         ));
+    } else if continues && f.git.plan_blockers {
+        enabled = false;
+        let count = f.git.plan_unhandled_blockers.len();
+        if count > 0 {
+            let preview = f.git.plan_unhandled_blockers.join("; ");
+            reason = Some(format!("Plan còn {count} vướng mắc chưa đánh dấu [x]: {preview}"));
+        } else {
+            reason = Some("Plan còn vướng mắc chưa đánh dấu [x]".to_string());
+        }
+    } else if continues && a.budget_exhausted_reason.is_some() {
+        enabled = false;
+        reason = a.budget_exhausted_reason.clone();
     }
 
     ActionView {
         id: "approve".to_string(),
         label: "Duyệt plan".to_string(),
+        enabled,
+        reason,
+        run_id: None,
+    }
+}
+
+fn build_auto_extend_budget(a: &AutoFacts, running_run: Option<&RunRow>) -> ActionView {
+    let mut enabled = true;
+    let mut reason = None;
+    if running_run.is_some() {
+        enabled = false;
+        reason = Some("Đang có run chạy — chờ run xong hoặc bấm Kill".to_string());
+    } else if a.driver_alive {
+        enabled = false;
+        reason = Some("Autopilot đang chạy task này — chờ autopilot dừng".to_string());
+    }
+    ActionView {
+        id: "auto_extend_budget".to_string(),
+        label: "Gia hạn ngân sách".to_string(),
         enabled,
         reason,
         run_id: None,
@@ -951,6 +984,9 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
         if a.gate == Some(GateState::Waiting) {
             controls.push(build_approve(f, a, running_run));
             controls.push(build_return_lead(f, a, running_run));
+            if a.budget_exhausted_reason.is_some() {
+                controls.push(build_auto_extend_budget(a, running_run));
+            }
         }
         if auto_state == "gate" {
             // Autopilot đang chờ ở cổng duyệt plan: Dừng autopilot tắt autopilot
@@ -963,6 +999,14 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
             controls.push(build_auto_stop(stop_requested));
         }
         if auto_state == "stopped" {
+            let is_het_ngan_sach = a
+                .auto_json
+                .and_then(|aj| aj.stop.as_ref())
+                .map(|s| s.reason == StopReason::HetNganSach)
+                .unwrap_or(false);
+            if is_het_ngan_sach {
+                controls.push(build_auto_extend_budget(a, running_run));
+            }
             controls.push(build_auto_more_round(f, a, running_run));
             controls.push(build_auto_end());
         }
@@ -1319,6 +1363,7 @@ mod tests {
             dirty: vec![],
             plan_exists: true,
             plan_blockers: false,
+            plan_unhandled_blockers: vec![],
             plan_errors: vec![],
             plan_commit: Some("abc".to_string()),
             code_after_plan: true,
@@ -1443,6 +1488,7 @@ mod tests {
             dirty: vec![],
             plan_exists: true,
             plan_blockers: false,
+            plan_unhandled_blockers: vec![],
             plan_errors: vec![],
             plan_commit: Some("abc".to_string()),
             code_after_plan: true,
@@ -1493,6 +1539,7 @@ mod tests {
             dirty: vec![],
             plan_exists: true,
             plan_blockers: false,
+            plan_unhandled_blockers: vec![],
             plan_errors: vec![],
             plan_commit: Some("abc".to_string()),
             code_after_plan: true,
@@ -1768,6 +1815,7 @@ mod tests {
             dirty: vec![],
             plan_exists: true,
             plan_blockers: false,
+            plan_unhandled_blockers: vec![],
             plan_errors: vec![],
             plan_commit: Some("abc".to_string()),
             code_after_plan: false,
@@ -1814,6 +1862,7 @@ mod tests {
             dirty: vec![],
             plan_exists: true,
             plan_blockers: false,
+            plan_unhandled_blockers: vec![],
             plan_errors: vec![],
             plan_commit: Some("abc".to_string()),
             code_after_plan: false,
@@ -2133,6 +2182,7 @@ mod tests {
             dirty: vec![],
             plan_exists: true,
             plan_blockers: false,
+            plan_unhandled_blockers: vec![],
             plan_errors: vec![],
             plan_commit: Some("abc".to_string()),
             code_after_plan: false,
@@ -2214,6 +2264,44 @@ mod tests {
         assert_eq!(
             view_lead_running.controls[0].reason.as_deref(),
             Some("Đang có run chạy — chờ run xong hoặc bấm Kill")
+        );
+
+        // 5. plan_blockers -> approve disabled
+        let git_blockers = GitFacts {
+            plan_blockers: true,
+            plan_unhandled_blockers: vec!["- [ ] Cần key API".to_string()],
+            ..git.clone()
+        };
+        let facts_blockers = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git_blockers,
+            busy: None,
+            now_ms: 2000,
+        };
+        let view_blockers = derive_with(&facts_blockers, &auto_facts_macdinh);
+        assert_eq!(view_blockers.controls[0].id, "approve");
+        assert!(!view_blockers.controls[0].enabled);
+        assert_eq!(
+            view_blockers.controls[0].reason.as_deref(),
+            Some("Plan còn 1 vướng mắc chưa đánh dấu [x]: - [ ] Cần key API")
+        );
+
+        // 6. budget exhausted -> approve disabled
+        let auto_facts_budget = AutoFacts {
+            workflow: Some(mac_dinh),
+            gate: Some(GateState::Waiting),
+            budget_exhausted_reason: Some("Task đã dùng hết ngân sách (100% phút, 100% USD)".to_string()),
+            ..Default::default()
+        };
+        let view_budget = derive_with(&facts, &auto_facts_budget);
+        assert_eq!(view_budget.controls[0].id, "approve");
+        assert!(!view_budget.controls[0].enabled);
+        assert_eq!(
+            view_budget.controls[0].reason.as_deref(),
+            Some("Task đã dùng hết ngân sách (100% phút, 100% USD)")
         );
     }
 

@@ -2,7 +2,9 @@
   "autopilot": {
     "max_rounds": 3,
     "budget_minutes": 60,
-    "budget_usd": 20
+    "budget_usd": 20,
+    "max_budget_extension_minutes": 240,
+    "max_budget_extension_usd": 20
   },
   "claude_bin": "claude",
   "common_args": [

@@ -15,7 +15,7 @@ Quy tắc kế hoạch:
   + File hay thư mục trong worktree: mục `## Thư mục được đọc`, mỗi dòng một mục trong backtick, ví dụ dòng: - `app/Http/Controllers/**` hoặc - `composer.lock`.
   + Nội dung ở commit hay nhánh khác, hoặc lịch sử git: mục `## Lệnh được chạy` với các lệnh git chỉ đọc cần dùng, ví dụ các dòng: - `git show *`, - `git diff *`, - `git log *`, - `git branch -a --no-merged *`, - `git fetch --all --prune`. Không khai lệnh git ghi (commit, checkout, merge, push…).
   + Task review, phân tích hay viết báo cáo (chỉ ghi file báo cáo) gần như luôn cần các mục này: hãy khai đúng những gì Dev phải đọc.
-- Nếu .plan.md đang có nội dung ở mục "Vướng mắc" (Dev ghi ở lần chạy trước): đọc kỹ, sửa plan để giải quyết từng điểm (bổ sung thông tin, file hoặc quyền đọc), rồi xoá nội dung mục đó, chỉ giữ tiêu đề.
+- Nếu .plan.md đang có nội dung ở mục "Vướng mắc" (Dev ghi ở lần chạy trước): đọc kỹ, sửa plan để giải quyết từng điểm (bổ sung thông tin, file hoặc quyền đọc), đánh dấu "- [x]" cho các điểm đã xử lý hoặc xoá nội dung mục đó, chỉ giữ tiêu đề.
 - Khi viết plan mới, để trống mục "Vướng mắc" (Dev sẽ ghi vào đây nếu gặp khó khăn trong quá trình thực thi).
 - Tuyệt đối KHÔNG sửa code và KHÔNG chạy test.
 - Khi khảo sát: đọc file bằng Read, tìm file bằng Glob/Grep; không dùng cat, ls, head hay ghép nhiều lệnh. Lệnh git được phép: chỉ đọc (log, show, diff, status, branch, tag, remote -v, for-each-ref, rev-list, rev-parse, merge-base, merge-tree, ls-tree, ls-files, cat-file, blame, describe, shortlog, reflog, grep) và git fetch (ví dụ `git fetch --all --prune`, `git fetch origin`; không refspec có dấu `:`, không URL). Thư mục làm việc đã là gốc dự án: gọi thẳng `git <lệnh>`, không dùng `git -C <thư mục>` hay tùy chọn toàn cục nào khác.

@@ -77,10 +77,13 @@ pub fn workflows_json(
         );
     }
 
+    let mut all_warnings = Vec::new();
     let workflows_list: Vec<serde_json::Value> = loaded
         .workflows
         .iter()
         .map(|wf| {
+            let warns = wf.workflow_warnings();
+            all_warnings.extend(warns.clone());
             let mut default_for = Vec::new();
             for p in &projects {
                 let raw_wf = crate::projects::workflow_of(map, &p.id);
@@ -112,12 +115,14 @@ pub fn workflows_json(
                 "limits": wf.limits_text(),
                 "default_for": default_for,
                 "edit": wf.to_file_entry(),
+                "warnings": warns,
             })
         })
         .collect();
 
     serde_json::json!({
         "workflows": workflows_list,
+        "warnings": all_warnings,
         "errors": loaded.errors,
         "project_defaults": serde_json::Value::Object(project_defaults),
         "version": version,
