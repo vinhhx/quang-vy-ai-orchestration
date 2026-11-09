@@ -65,16 +65,14 @@ pub fn pull_guard_with(
     if skip_legacy_check {
         return Ok(());
     }
-    let states = legacy_state_files(project_root);
-    if states.is_empty() {
-        return Ok(());
-    }
-    let imported = crate::db::count_legacy_fixbug_refs(conn, project_id)
-        .map_err(|e| FixbugError::Other(e.to_string()))?;
-    if imported == 0 {
+    let missing = legacy::unimported_keys(conn, project_root, project_id)?;
+    if !missing.is_empty() {
+        let shown: Vec<&str> = missing.iter().take(5).map(String::as_str).collect();
+        let more = if missing.len() > shown.len() { ", …" } else { "" };
         return Err(FixbugError::Other(format!(
-            "Dự án còn {} bug của skill /fix-bugs cũ chưa nhập — chạy 'agent-brain fixbug import-legacy <dự án>' trước",
-            states.len()
+            "Dự án còn {} bug của skill /fix-bugs cũ chưa nhập ({}{more}) — chạy 'agent-brain fixbug import-legacy <dự án>' trước",
+            missing.len(),
+            shown.join(", ")
         )));
     }
     Ok(())

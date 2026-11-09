@@ -421,13 +421,25 @@ fn pull_guard_branches() {
     write_state(root, "T-1-a", &legacy_state("T-1", "c1", "done"));
     write_state(root, "T-2-b", &legacy_state("T-2", "c2", "plan_ready"));
     let err = pull_guard(root, &conn, 1).unwrap_err().to_string();
-    assert!(err.contains("còn 2 bug của skill /fix-bugs cũ chưa nhập"), "{err}");
+    // Chỉ T-1 (done) chặn; T-2 plan_ready có thể được để pull kéo (--open take).
+    assert!(err.contains("còn 1 bug của skill /fix-bugs cũ chưa nhập (T-1)"), "{err}");
     assert!(err.contains("agent-brain fixbug import-legacy"), "{err}");
     pull_guard_with(root, &conn, 1, true).expect("skip legacy check");
 
     // Đã nhập ⇒ cho pull.
-    import_legacy(&mut conn, root, 1, OpenMode::Skip, false).unwrap();
-    pull_guard(root, &conn, 1).expect("đã nhập");
+    import_legacy(&mut conn, root, 1, OpenMode::Take, false).unwrap();
+    pull_guard(root, &conn, 1).expect("đã nhập (take)");
+
+    // deployed/reject ghi đè note của ref ⇒ vẫn coi là đã nhập.
+    conn.execute("UPDATE fixbug_refs SET note = 'đã deploy' WHERE key = 'T-1'", []).unwrap();
+    pull_guard(root, &conn, 1).expect("note bị ghi đè vẫn cho pull");
+
+    // Skill cũ tạo thêm bug mới đã xong sau lần nhập ⇒ chặn lại.
+    write_state(root, "T-7-g", &legacy_state("T-7", "c7", "done"));
+    let err = pull_guard(root, &conn, 1).unwrap_err().to_string();
+    assert!(err.contains("(T-7)"), "{err}");
+    import_legacy(&mut conn, root, 1, OpenMode::Take, false).unwrap();
+    pull_guard(root, &conn, 1).expect("đã nhập T-7");
 
     // .lock ⇒ chặn, kể cả khi bỏ qua kiểm tra legacy.
     std::fs::create_dir_all(fixbug_dir(root).join(".lock")).unwrap();

@@ -97,7 +97,18 @@ pub fn tick(st: &AppState) -> BrainResult<()> {
             if is_fixbug_intake(&intake) && valid_proposals.len() == 1 {
                 let fref = crate::db::fixbug_ref_by_intake(&conn, intake.id).ok().flatten();
                 let draft = valid_proposals.remove(0);
-                valid_proposals.push(apply_fixbug_override(draft, &intake, fref.as_ref()));
+                let mut draft = apply_fixbug_override(draft, &intake, fref.as_ref());
+                // A bug belongs to the project it was pulled for, whatever triage picked.
+                if let Some(pid) = intake.project_id {
+                    if let Ok(slug) = conn.query_row(
+                        "SELECT slug FROM projects WHERE id = ?1",
+                        [pid],
+                        |r| r.get::<_, String>(0),
+                    ) {
+                        draft.project = slug;
+                    }
+                }
+                valid_proposals.push(draft);
             }
             if valid_proposals.is_empty() {
                 let err_msg = if !warnings.is_empty() {

@@ -253,3 +253,41 @@ pub fn report_lines(report: &LegacyReport, dry_run: bool) -> Vec<String> {
     }
     out
 }
+
+/// KEY của các bug skill cũ mà `import-legacy` luôn ghi ref (mọi state trừ `need_info` /
+/// `plan_ready`) nhưng chưa có ref theo `trello_card_id`. Rỗng = đã nhập đủ, cho pull.
+/// Kiểm theo card, không theo `note`, vì `deployed` / `reject` ghi đè `note` của ref.
+/// `need_info` / `plan_ready` không chặn: với `--open take` chúng cố ý không có ref.
+pub fn unimported_keys(
+    conn: &Connection,
+    project_root: &Path,
+    project_id: i64,
+) -> Result<Vec<String>, FixbugError> {
+    let mut out = Vec::new();
+    for path in legacy_state_files(project_root) {
+        let Ok(parsed) = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| serde_json::from_str::<LegacyState>(&t).map_err(|e| e.to_string()))
+        else {
+            continue;
+        };
+        let card_id = parsed.trello_card_id.as_deref().map(str::trim).unwrap_or("");
+        let key = parsed.key.trim();
+        if card_id.is_empty() || key.is_empty() {
+            continue;
+        }
+        let always_written = matches!(
+            map_state(parsed.state.trim(), OpenMode::Take),
+            Ok((Some(_), _))
+        );
+        if !always_written {
+            continue;
+        }
+        let exists = fixbug_ref_exists(conn, project_id, "trello", card_id)
+            .map_err(|e| FixbugError::Other(e.to_string()))?;
+        if !exists {
+            out.push(key.to_string());
+        }
+    }
+    Ok(out)
+}

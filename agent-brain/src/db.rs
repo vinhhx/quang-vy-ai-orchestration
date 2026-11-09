@@ -1941,16 +1941,6 @@ pub fn insert_fixbug_ref_with_state(
     Ok(conn.last_insert_rowid())
 }
 
-/// Số ref của dự án có `note` bắt đầu bằng `legacy:` (đã nhập trạng thái skill cũ).
-pub fn count_legacy_fixbug_refs(conn: &Connection, project_id: i64) -> BrainResult<i64> {
-    let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM fixbug_refs WHERE project_id = ?1 AND note LIKE 'legacy:%'",
-        params![project_id],
-        |r| r.get(0),
-    )?;
-    Ok(n)
-}
-
 /// Ref gắn với intake `intake_id` (bug Trello/Sheet), nếu có.
 pub fn fixbug_ref_by_intake(conn: &Connection, intake_id: i64) -> BrainResult<Option<FixbugRefRow>> {
     let sql = format!(
