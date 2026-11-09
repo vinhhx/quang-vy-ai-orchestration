@@ -1552,6 +1552,24 @@ pub fn delete_quota_stop(conn: &Connection, task_id: i64) -> BrainResult<bool> {
     Ok(changes > 0)
 }
 
+/// True when a task's `quota_stops` row no longer stands for a quota stop: the task is gone, or
+/// its latest run did not end on quota and the task is not marked `auto_stop_kind = 'het_quota'`
+/// (it was run again by hand, from the dashboard or Telegram).
+pub fn quota_stop_is_stale(conn: &Connection, task_id: i64) -> BrainResult<bool> {
+    let stale: bool = conn.query_row(
+        "SELECT NOT EXISTS (
+             SELECT 1 FROM tasks t
+             WHERE t.id = ?1
+               AND (COALESCE(t.auto_stop_kind, '') = 'het_quota'
+                    OR COALESCE((SELECT r.outcome FROM runs r WHERE r.task_id = t.id
+                                 ORDER BY r.started_at DESC, r.id DESC LIMIT 1), '') = 'quota')
+         )",
+        params![task_id],
+        |r| r.get(0),
+    )?;
+    Ok(stale)
+}
+
 /// C3: `metrics_json.quota.reset_at` (ms) of the task's latest run when that run stopped on
 /// quota; `None` when it did not, or reported no reset time.
 pub fn latest_quota_reset_at(conn: &Connection, task_id: i64) -> Option<i64> {
@@ -2181,6 +2199,50 @@ mod tests {
             },
         )
         .expect("insert run")
+    }
+
+    /// A finished run of `task_id` with `status`/`outcome`, started at `started_at`.
+    fn task_run(
+        conn: &Connection,
+        project_id: i64,
+        task_id: i64,
+        started_at: i64,
+        status: &str,
+        outcome: Option<&str>,
+    ) -> i64 {
+        let id = new_run(conn, project_id);
+        conn.execute(
+            "UPDATE runs SET task_id = ?1, started_at = ?2, status = ?3, outcome = ?4 WHERE id = ?5",
+            params![task_id, started_at, status, outcome, id],
+        )
+        .expect("update run");
+        id
+    }
+
+    #[test]
+    fn quota_stop_is_stale_follows_the_latest_run() {
+        let (_dir, conn, project_id) = fresh_db();
+        let tid = upsert_task(&conn, project_id, "t1", "T1", "task/t1", None, None).unwrap();
+        insert_quota_stop(&conn, tid, 1_000, "claude").unwrap();
+
+        // 1. the latest run stopped on quota: kept
+        task_run(&conn, project_id, tid, 1_000, "failed", Some("quota"));
+        assert!(!quota_stop_is_stale(&conn, tid).unwrap());
+
+        // 2. run again by hand and it finished: stale
+        task_run(&conn, project_id, tid, 2_000, "succeeded", Some("qa:fix"));
+        assert!(quota_stop_is_stale(&conn, tid).unwrap());
+
+        // 3. still marked het_quota by the autopilot: kept
+        conn.execute(
+            "UPDATE tasks SET auto_stop_kind = 'het_quota' WHERE id = ?1",
+            params![tid],
+        )
+        .unwrap();
+        assert!(!quota_stop_is_stale(&conn, tid).unwrap());
+
+        // a task that is gone
+        assert!(quota_stop_is_stale(&conn, tid + 1000).unwrap());
     }
 
     #[test]

@@ -364,6 +364,23 @@ fn code_prior_wait(
     ))
 }
 
+/// Deletes the `quota_stops` rows of tasks no longer stopped on quota (`db::quota_stop_is_stale`),
+/// except the tasks in `keep` (the ones the current scan found stopped). Returns how many went.
+fn prune_stale_quota_stops(conn: &rusqlite::Connection, keep: &[i64]) -> BrainResult<usize> {
+    let mut removed = 0;
+    for qs in crate::db::list_quota_stops(conn)? {
+        if keep.contains(&qs.task_id) {
+            continue;
+        }
+        if crate::db::quota_stop_is_stale(conn, qs.task_id)?
+            && crate::db::delete_quota_stop(conn, qs.task_id)?
+        {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 fn handle_quota_stops(st: &AppState, conn: &rusqlite::Connection) -> BrainResult<()> {
     let now = crate::db::now_ms();
 
@@ -426,6 +443,11 @@ fn handle_quota_stops(st: &AppState, conn: &rusqlite::Connection) -> BrainResult
     for cand in &candidates {
         crate::db::insert_quota_stop(conn, cand.task_id, cand.stopped_at, &cand.engine)?;
     }
+
+    // (b2) Dọn dòng quota_stops cũ của task đã được chạy lại (bằng tay, dashboard, Telegram),
+    // không phụ thuộc auto_resume_quota.
+    let keep: Vec<i64> = candidates.iter().map(|c| c.task_id).collect();
+    prune_stale_quota_stops(conn, &keep)?;
 
     // (c) auto_resume chỉ khi auto_resume_quota = true và đã qua resume_after_minutes
     let orch = st.orch();
@@ -629,4 +651,96 @@ pub fn handle_env_stops(
         }
     }
     Ok(restarted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_db() -> (tempfile::TempDir, rusqlite::Connection, i64) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = crate::db::open(&dir.path().join("brain.db")).expect("open db");
+        let project = crate::projects::Project {
+            id: "demo".to_string(),
+            path: dir.path().to_string_lossy().to_string(),
+            name_vi: "Demo".to_string(),
+            aliases: vec![],
+            kind: "code".to_string(),
+            profile: "default".to_string(),
+            repo: None,
+            missing: false,
+            stack: vec![],
+            read_sources: vec![],
+            protocol_dir: String::new(),
+            workspace: Default::default(),
+        };
+        crate::db::sync_projects(&conn, &[project]).expect("sync projects");
+        let project_id = crate::db::project_row_id(&conn, "demo").expect("project id");
+        (dir, conn, project_id)
+    }
+
+    fn task_run(
+        conn: &rusqlite::Connection,
+        project_id: i64,
+        task_id: i64,
+        started_at: i64,
+        outcome: &str,
+    ) {
+        let id = crate::db::insert_run(
+            conn,
+            &crate::db::NewRun {
+                task_id: Some(task_id),
+                project_id,
+                role: "qa".to_string(),
+                profile: "default".to_string(),
+                model: None,
+                pid: 1,
+                pgid: 1,
+                pid_start: 1,
+                base_commit: None,
+                run_dir: None,
+            },
+        )
+        .expect("insert run");
+        conn.execute(
+            "UPDATE runs SET started_at = ?1, status = 'succeeded', outcome = ?2 WHERE id = ?3",
+            rusqlite::params![started_at, outcome, id],
+        )
+        .expect("update run");
+    }
+
+    #[test]
+    fn prune_drops_quota_stops_of_tasks_run_again() {
+        let (_dir, conn, pid) = fresh_db();
+        let quota = crate::db::upsert_task(&conn, pid, "a", "A", "task/a", None, None).unwrap();
+        let rerun = crate::db::upsert_task(&conn, pid, "b", "B", "task/b", None, None).unwrap();
+        let marked = crate::db::upsert_task(&conn, pid, "c", "C", "task/c", None, None).unwrap();
+        let kept = crate::db::upsert_task(&conn, pid, "d", "D", "task/d", None, None).unwrap();
+        for t in [quota, rerun, marked, kept] {
+            crate::db::insert_quota_stop(&conn, t, 1_000, "claude").unwrap();
+            task_run(&conn, pid, t, 1_000, "quota");
+        }
+        // run again by hand and finished
+        task_run(&conn, pid, rerun, 2_000, "qa:fix");
+        // the autopilot still marks it het_quota
+        task_run(&conn, pid, marked, 2_000, "qa:fix");
+        conn.execute(
+            "UPDATE tasks SET auto_stop_kind = 'het_quota' WHERE id = ?1",
+            rusqlite::params![marked],
+        )
+        .unwrap();
+        // in the current scan's candidates: never pruned here
+        task_run(&conn, pid, kept, 2_000, "qa:fix");
+
+        assert_eq!(prune_stale_quota_stops(&conn, &[kept]).unwrap(), 1);
+        let left: Vec<i64> = crate::db::list_quota_stops(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|q| q.task_id)
+            .collect();
+        assert!(left.contains(&quota));
+        assert!(!left.contains(&rerun));
+        assert!(left.contains(&marked));
+        assert!(left.contains(&kept));
+    }
 }
