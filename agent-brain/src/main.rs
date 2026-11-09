@@ -178,6 +178,11 @@ enum Commands {
         #[command(subcommand)]
         subcommand: DeptCommands,
     },
+    /// Xem container docker đang chạy mà lệnh php/composer của dự án được chuyển vào
+    Container {
+        /// Tên, id hoặc alias dự án
+        project: String,
+    },
     /// Worktree và nhánh của task (dự án ở chế độ worktree)
     Task {
         #[command(subcommand)]
@@ -395,6 +400,21 @@ fn main() {
         });
     }
 
+    if let Commands::Container { project } = &cmd {
+        let code = match agent_brain::container::cmd_container(project) {
+            Ok(code) => code,
+            Err(e) => {
+                if e.code == EXIT_ROUTING {
+                    term::emit_out(&e.message);
+                } else {
+                    term::emit(&e.message);
+                }
+                e.code
+            }
+        };
+        std::process::exit(code);
+    }
+
     let mut ctx = match app::open_ctx() {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -411,6 +431,7 @@ fn main() {
         Commands::Guard { .. } => unreachable!(),
         Commands::Serve { .. } => unreachable!(),
         Commands::Telegram { .. } => unreachable!(),
+        Commands::Container { .. } => unreachable!(),
         Commands::Human { action } => match action {
             HumanCommands::Done { task_id } => agent_brain::human::cmd_human(
                 &mut ctx,

@@ -133,7 +133,7 @@ pub fn same_path_bind_covers(mounts_json: &str, cwd: &Path) -> bool {
 
 /// The process env with every name that could carry a key or pick an account removed. Used for
 /// docker calls that have no run env of their own (a kill from another process).
-fn scrubbed_current_env() -> BTreeMap<String, String> {
+pub(crate) fn scrubbed_current_env() -> BTreeMap<String, String> {
     std::env::vars()
         .filter(|(k, _)| {
             !(k.starts_with("ANTHROPIC_")
@@ -148,7 +148,7 @@ fn scrubbed_current_env() -> BTreeMap<String, String> {
 /// Runs the docker client with `args`, stdin from `/dev/null`, at most `cap`. `Some((success,
 /// stdout))` once it exited; `None` when it could not start or ran over the cap (then only that
 /// client process, which agent-brain started, is ended).
-fn docker_capture(
+pub(crate) fn docker_capture(
     docker: &str,
     args: &[String],
     env: &BTreeMap<String, String>,

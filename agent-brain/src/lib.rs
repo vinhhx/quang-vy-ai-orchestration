@@ -4,6 +4,7 @@ pub mod answers;
 pub mod app;
 pub mod autopilot;
 pub mod config;
+pub mod container;
 pub mod dashboard;
 pub mod departments;
 pub mod db;

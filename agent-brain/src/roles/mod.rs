@@ -615,6 +615,33 @@ pub fn execute_role_staged(
     }
     crate::engine::append_to_system_prompt(&mut plan.argv, &sources_block);
 
+    // project-container: `php` / `composer` of the project run inside the running docker
+    // container that mounts the repo (a shim in `<run_dir>/bin`, first on PATH). Not for a dsh
+    // engine (already in a container) or a human step.
+    let in_container_engine = match &resolved.engine {
+        crate::engine::Engine::Named(id) => ctx
+            .cfg
+            .engines
+            .get(id)
+            .is_some_and(|d| matches!(d.spec, crate::config::EngineSpec::Dsh(_))),
+        crate::engine::Engine::Human(_) => true,
+        crate::engine::Engine::Claude => false,
+    };
+    let run_container = if in_container_engine || plan.role == "inspect" {
+        crate::container::RunContainer::default()
+    } else {
+        crate::container::for_run(&map, project, root)
+    };
+    for w in &run_container.warnings {
+        crate::term::emit(&format!("Cảnh báo: {w}"));
+    }
+    if let Some((info, cmds)) = &run_container.active {
+        crate::engine::append_to_system_prompt(
+            &mut plan.argv,
+            &crate::container::prompt_block(info, cmds),
+        );
+    }
+
     // C1: the run's real limit and end time, and the engine's shell limit when configured.
     let deadline_ms = crate::db::now_ms() + plan.timeout.as_millis() as i64;
     if plan.role != "inspect" {
@@ -691,6 +718,19 @@ pub fn execute_role_staged(
 
     if plan.role != "inspect" {
         let _ = std::fs::write(run_dir.join(DEADLINE_FILE), deadline_ms.to_string());
+    }
+
+    if let Some((info, cmds)) = &run_container.active {
+        let bin = crate::container::write_shims(&run_dir, info, cmds).map_err(|e| {
+            BrainError::error(format!("Không tạo được shim container {}: {e}", info.name))
+        })?;
+        crate::container::prepend_path(&mut ep.env, &bin);
+        crate::term::emit(&format!(
+            "[agent-brain] lệnh {} chạy trong container {} ({})",
+            cmds.join(", "),
+            info.name,
+            info.dest
+        ));
     }
 
     if let Some((_, prompt)) = crate::engine::claude_argv_parts(&plan.argv) {
@@ -794,6 +834,8 @@ pub fn execute_role_staged(
         /// The project root an agy run must report as `init.cwd` (C4).
         agy_root: Option<PathBuf>,
         source_warnings: Vec<String>,
+        /// project-container: `{"name", "dest", "commands"}` for `metrics_json.container`.
+        container: Option<serde_json::Value>,
     }
 
     impl Observer<'_> {
@@ -909,6 +951,9 @@ pub fn execute_role_staged(
                     "source_warnings".to_string(),
                     serde_json::to_value(&self.source_warnings).unwrap_or(serde_json::Value::Null),
                 );
+            }
+            if let Some(c) = &self.container {
+                patch.insert("container".to_string(), c.clone());
             }
             // ENG-09: what a kill from another process needs to find the container-side
             // processes of this run. Written here, before any kill can arrive.
@@ -1030,6 +1075,7 @@ pub fn execute_role_staged(
         violation_record: None,
         agy_root: (ep.stream == crate::engine::StreamFormat::Agy).then(|| root.to_path_buf()),
         source_warnings: source_warnings.clone(),
+        container: run_container.metrics(),
     };
 
     let mut outcome = crate::runner::supervise(&req, &mut obs)?;
@@ -1342,6 +1388,7 @@ pub fn execute_role_staged(
     let run_id = obs.run_id.unwrap_or(0);
     let mut all_warnings = source_warnings;
     all_warnings.extend(input_warnings);
+    all_warnings.extend(run_container.warnings.iter().cloned());
     if run_id > 0 && !all_warnings.is_empty() {
         let _ = crate::db::merge_run_metrics(
             &ctx.conn,

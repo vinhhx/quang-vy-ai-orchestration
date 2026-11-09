@@ -564,6 +564,146 @@ pub fn preflight_of(map: &serde_json::Value, project_id: &str) -> crate::preflig
     crate::preflight::read_lenient(obj)
 }
 
+/// Key of the per-machine container override (`"auto"` | `false` | `{"name", "commands"}`).
+pub const CONTAINER_KEY: &str = "container";
+/// Commands run inside the project's container when `commands` is not given.
+pub const CONTAINER_DEFAULT_COMMANDS: [&str; 2] = ["php", "composer"];
+
+/// How a project's commands use a running docker container (`container` key).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainerMode {
+    /// Detect the container that mounts the repo (default).
+    Auto,
+    /// Never use a container: commands run on this machine.
+    Off,
+    /// Only this container (still checked: running and mounting the repo).
+    Named(String),
+}
+
+/// The project's `container` setting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerSetting {
+    pub mode: ContainerMode,
+    /// Command names routed into the container.
+    pub commands: Vec<String>,
+}
+
+impl Default for ContainerSetting {
+    fn default() -> Self {
+        ContainerSetting {
+            mode: ContainerMode::Auto,
+            commands: CONTAINER_DEFAULT_COMMANDS.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
+/// True for a docker container name (`[A-Za-z0-9][A-Za-z0-9_.-]*`, at most 128 characters).
+pub fn valid_container_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric())
+        && name.len() <= 128
+        && chars.all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c))
+}
+
+/// Checks one command name of `container.commands`: `[a-z0-9._-]{1,32}`, not a shell, not
+/// `docker`, not on the plan denylist.
+pub fn validate_container_command(cmd: &str) -> Result<(), String> {
+    let ok_chars = !cmd.is_empty()
+        && cmd.len() <= 32
+        && cmd
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._-".contains(c))
+        && cmd != "."
+        && cmd != "..";
+    if !ok_chars {
+        return Err(format!(
+            "\"{CONTAINER_KEY}.commands\": '{cmd}' không hợp lệ (chỉ a-z 0-9 . _ -, tối đa 32 ký tự)."
+        ));
+    }
+    if ["docker", "sh", "bash"].contains(&cmd)
+        || crate::planfile::is_forbidden_program(cmd, &[]).is_some()
+    {
+        return Err(format!(
+            "\"{CONTAINER_KEY}.commands\": không được chuyển lệnh '{cmd}' vào container."
+        ));
+    }
+    Ok(())
+}
+
+/// Parses the `container` value of a project entry (`None` = key absent → default).
+pub fn parse_container_setting(v: Option<&serde_json::Value>) -> Result<ContainerSetting, String> {
+    let mut out = ContainerSetting::default();
+    let Some(v) = v else {
+        return Ok(out);
+    };
+    match v {
+        serde_json::Value::Null => Ok(out),
+        serde_json::Value::String(s) if s.trim() == "auto" => Ok(out),
+        serde_json::Value::Bool(false) => {
+            out.mode = ContainerMode::Off;
+            Ok(out)
+        }
+        serde_json::Value::Object(obj) => {
+            for key in obj.keys() {
+                if key != "name" && key != "commands" {
+                    return Err(format!("\"{CONTAINER_KEY}\": khoá '{key}' không được hỗ trợ."));
+                }
+            }
+            match obj.get("name") {
+                None | Some(serde_json::Value::Null) => {}
+                Some(serde_json::Value::String(n)) if valid_container_name(n.trim()) => {
+                    out.mode = ContainerMode::Named(n.trim().to_string());
+                }
+                Some(_) => {
+                    return Err(format!(
+                        "\"{CONTAINER_KEY}.name\" phải là tên container docker hợp lệ."
+                    ))
+                }
+            }
+            if let Some(c) = obj.get("commands") {
+                let arr = c.as_array().ok_or_else(|| {
+                    format!("\"{CONTAINER_KEY}.commands\" phải là danh sách tên lệnh.")
+                })?;
+                let mut cmds: Vec<String> = Vec::new();
+                for item in arr {
+                    let s = item.as_str().ok_or_else(|| {
+                        format!("\"{CONTAINER_KEY}.commands\" phải là danh sách tên lệnh.")
+                    })?;
+                    let s = s.trim();
+                    validate_container_command(s)?;
+                    if !cmds.iter().any(|x| x == s) {
+                        cmds.push(s.to_string());
+                    }
+                }
+                if cmds.is_empty() {
+                    return Err(format!("\"{CONTAINER_KEY}.commands\" không được rỗng."));
+                }
+                out.commands = cmds;
+            }
+            Ok(out)
+        }
+        _ => Err(format!(
+            "\"{CONTAINER_KEY}\" chỉ nhận \"auto\", false hoặc {{\"name\": …, \"commands\": […]}}."
+        )),
+    }
+}
+
+/// The project's container setting. A project not in the map gets the default (auto); an invalid
+/// value is returned as `Err` so the caller can warn and run on the machine.
+pub fn container_of(map: &serde_json::Value, project_id: &str) -> Result<ContainerSetting, String> {
+    let entry = map
+        .get("projects")
+        .and_then(|p| p.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(project_id))
+        });
+    match entry {
+        Some(e) => parse_container_setting(e.get(CONTAINER_KEY)),
+        None => Ok(ContainerSetting::default()),
+    }
+}
+
 /// The project's default team name (D-12), trimmed; None when missing or blank.
 pub fn team_of(map: &serde_json::Value, project_id: &str) -> Option<String> {
     let arr = map.get("projects").and_then(|p| p.as_array())?;
