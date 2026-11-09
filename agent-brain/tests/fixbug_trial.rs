@@ -530,3 +530,12 @@ fn progress_joins_refs_proposals_tasks() {
     assert!(text.contains(&format!("T-3 · pulled · task #{task_id} qa_pass")), "{text}");
     assert!(text.contains("T-9 · pulled · skill cũ"), "{text}");
 }
+
+#[test]
+fn image_file_name_adds_extension_from_mime() {
+    use agent_brain::fixbug::pull::image_file_name;
+    assert_eq!(image_file_name(2, "Ảnh tk", "image/png"), "2-nh-tk.png");
+    assert_eq!(image_file_name(1, "image.png", "image/png"), "1-image.png");
+    assert_eq!(image_file_name(3, "Chụp màn hình", "image/jpeg"), "3-ch-p-m-n-h-nh.jpg");
+    assert_eq!(image_file_name(4, "anh", "application/octet-stream"), "4-anh");
+}

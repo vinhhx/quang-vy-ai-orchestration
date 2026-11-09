@@ -44,6 +44,8 @@ pub struct PendingImage {
     pub name: String,
     pub url: String,
     pub bytes: Option<u64>,
+    /// `mimeType` của attachment (vd `image/png`), dùng để thêm đuôi khi tên không có.
+    pub mime: String,
 }
 
 pub struct BugCandidate {
@@ -118,6 +120,25 @@ pub fn sanitize_image_name(name: &str) -> String {
     }
 }
 
+/// Tên file ảnh `<thứ tự>-<tên đã làm sạch>`, thêm đuôi theo `mime` khi tên không có đuôi
+/// ảnh (vd "Ảnh tk" + `image/png` ⇒ `2-nh-tk.png`), để công cụ đọc nhận ra là ảnh.
+pub fn image_file_name(index: usize, name: &str, mime: &str) -> String {
+    let base = sanitize_image_name(name);
+    let known = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"];
+    if known.iter().any(|e| base.ends_with(e)) {
+        return format!("{index}-{base}");
+    }
+    let ext = match mime.trim().to_ascii_lowercase().as_str() {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        _ => return format!("{index}-{base}"),
+    };
+    format!("{index}-{base}.{ext}")
+}
+
 /// `true` khi `rel` (đường dẫn tương đối từ gốc repo) bị git bỏ qua.
 fn git_ignored(project_root: &Path, rel: &str) -> bool {
     std::process::Command::new("git")
@@ -145,7 +166,7 @@ fn download_images(
     let dir: PathBuf = home.dir.join("fix-bugs").join("images").join(&key_dir);
     let mut out = Vec::new();
     for (i, img) in images.iter().enumerate() {
-        let file = format!("{}-{}", i + 1, sanitize_image_name(&img.name));
+        let file = image_file_name(i + 1, &img.name, &img.mime);
         let dest = dir.join(&file);
         if let Err(e) = std::fs::create_dir_all(&dir) {
             warnings.push(format!("{key}: không tạo được thư mục ảnh ({e})"));
@@ -350,6 +371,7 @@ pub fn pull(
                                 name: att.name.clone(),
                                 url: att.url.clone(),
                                 bytes: att.bytes,
+                                mime: att.mime_type.clone().unwrap_or_default(),
                             });
                         } else {
                             attachments.push((att.name.clone(), att.url.clone()));
