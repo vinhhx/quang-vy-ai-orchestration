@@ -398,6 +398,20 @@ Máy có container docker đang chạy mount repo dự án (ví dụ `bizsurvey_
 - **Ghi đè từng máy** (`projects_map.json`, khóa `container` của dự án): không có hoặc `"auto"` = tự dò; `false` = tắt; `{"name": "<tên>"}` = chỉ dùng container này (vẫn phải đang chạy và mount repo, không đạt thì chạy trên máy kèm cảnh báo); `"commands": [...]` trong object = danh sách lệnh chuyển vào container (mặc định `["php", "composer"]`, chỉ nhận `[a-z0-9._-]{1,32}`, không nhận `docker`, `sh`, `bash` hay chương trình bị cấm). Giá trị không hợp lệ: run chạy trên máy kèm cảnh báo.
 - Kiểm tra: `agent-brain container PROJECT`.
 
+### Lệnh kiểm tra của dự án (`test_commands`)
+
+Khóa `test_commands` của dự án trong `projects_map.json` là danh sách mẫu lệnh mà run QA và run Dev (kể cả `--fix`, `--finalize`, chạy tiếp sau quota) được chạy để kiểm tra, ví dụ cho Laravel:
+
+```json
+{"id": "cms", "test_commands": ["php artisan test", "php artisan test *"]}
+```
+
+- **Luật kiểm** giống mục "Lệnh được chạy" của plan: mỗi mục một lệnh đơn, không ký tự shell (`;`, `|`, `&&`, `$(…)`, chuyển hướng…), `*` chỉ đứng riêng làm từ cuối, không đường dẫn tuyệt đối hay `..`, không chương trình bị cấm (`docker`, `bash`, `sh`, `curl`, `rm -rf`…). Tối đa 10 mục; mục rỗng và trùng bị bỏ. Một mục không hợp lệ thì cả danh sách bị bỏ: run vẫn chạy, không có lệnh kiểm tra, kèm dòng `Cảnh báo: …`.
+- **QA (engine claude)**: mỗi mẫu thành một quyền `Bash(<mẫu>)` trong `--allowedTools`, và đầu vào của QA liệt kê các lệnh được chạy. QA engine agy/dsh không đổi.
+- **Dev**: engine claude nhận `Bash(<mẫu>)` như QA; engine agy nhận các mẫu trong `bash_allow` của guard (`policy.json`), cộng với lệnh plan khai. Dev dsh và bước của nhân sự không đổi.
+- Dự án không khai khóa: QA và Dev chạy như trước.
+- Kết hợp với `container`: lệnh `php`, `composer` trong `test_commands` vẫn chạy trong container của dự án nhờ shim (mục trên).
+
 ---
 
 ## 6. Hồ sơ tài khoản (Profiles) & Ràng buộc an toàn

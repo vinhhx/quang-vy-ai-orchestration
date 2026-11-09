@@ -234,6 +234,58 @@ fn resolve_dev_grants(
     }
 }
 
+/// The note added to a Dev run's input listing the project's test commands; empty when none.
+fn dev_test_commands_note(cmds: &[String]) -> String {
+    if cmds.is_empty() {
+        return String::new();
+    }
+    let list = cmds
+        .iter()
+        .map(|c| format!("`{c}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "\n\nLệnh kiểm tra được chạy (cấu hình của dự án): {list}. Chạy chúng để tự kiểm trước khi commit."
+    )
+}
+
+/// The project's test commands (`test_commands`) a Dev run may execute: only for an engine whose
+/// commands agent-brain limits (claude by `--allowedTools`, agy by the guard policy); none for a
+/// dsh engine or a person. An invalid value warns and gives none.
+fn dev_test_commands(
+    conn: &rusqlite::Connection,
+    cfg: &crate::config::Config,
+    map: &serde_json::Value,
+    project: &crate::projects::Project,
+    root: &Path,
+) -> Vec<String> {
+    let task_id = crate::db::project_row_id(conn, &project.id)
+        .ok()
+        .and_then(|pid| {
+            crate::gitops::current_branch(root)
+                .and_then(|b| crate::db::find_task_by_branch(conn, pid, &b).ok().flatten())
+        })
+        .map(|t| t.id);
+    let Ok(resolved) = crate::engine::resolve_for_run(conn, task_id, "dev") else {
+        return Vec::new();
+    };
+    let kind = match &resolved.engine {
+        crate::engine::Engine::Claude => Some(crate::config::EngineKind::Anthropic),
+        crate::engine::Engine::Named(id) => cfg.engines.kind_of(id),
+        crate::engine::Engine::Human(_) => None,
+    };
+    if !matches!(
+        kind,
+        Some(crate::config::EngineKind::Anthropic) | Some(crate::config::EngineKind::Agy)
+    ) {
+        return Vec::new();
+    }
+    crate::projects::test_commands_of(map, &project.id).unwrap_or_else(|e| {
+        crate::term::emit(&format!("Cảnh báo: {e} — Dev chạy không có lệnh kiểm tra"));
+        Vec::new()
+    })
+}
+
 /// Write-dir prefixes a (non-fix) `run dev` of `task` would get from the approved plan — the
 /// same lookup `cmd_dev` makes, without printing. Empty when there are none or the approved
 /// grants are invalid (the run itself refuses those).
@@ -620,6 +672,16 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         user_input.push_str(&produce_note(&d.produce, &d.products));
     }
 
+    // The project's test commands (`test_commands`), also in fix, finalize and quota runs.
+    let test_cmds = dev_test_commands(&ctx.conn, &ctx.cfg, &ctx.map, &proj, &proj_path);
+    for c in &test_cmds {
+        let rule = format!("Bash({c})");
+        if !allowed.contains(&rule) {
+            allowed.push(rule);
+        }
+    }
+    user_input.push_str(&dev_test_commands_note(&test_cmds));
+
     // `.handover.md` (Phase 4) is included only when the file exists.
     let handover_exists = quota_continuation && proj_path.join(HANDOVER_FILE).is_file();
     if let Some(ContinuationReason::PreviousRunFailed(status)) = &continuation_reason {
@@ -807,12 +869,26 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
             read_allow.push(proj_path.join(HANDOVER_FILE));
         }
         match dev_grants {
-            None => crate::guard::write_hook_settings(
+            None if test_cmds.is_empty() => crate::guard::write_hook_settings(
                 &run_dir,
                 &proj_path,
                 Some(&read_allow),
                 &allow_paths,
                 &exe,
+                &source_paths,
+            )?,
+            // No plan grants but project test commands: the policy's command list is exactly
+            // those (an agy Dev otherwise gets only git).
+            None => crate::guard::write_hook_settings_grants(
+                &run_dir,
+                &proj_path,
+                Some(&read_allow),
+                &allow_paths,
+                &exe,
+                &crate::guard::GuardGrants {
+                    bash_allow: Some(test_cmds.clone()),
+                    ..Default::default()
+                },
                 &source_paths,
             )?,
             Some(g) => {
@@ -830,7 +906,15 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
                     write_dirs: dirs(&g.write_dirs, false),
                     read_files: dirs(&g.read_dirs, true),
                     write_files: dirs(&g.write_dirs, true),
-                    bash_allow: Some(g.commands.clone()),
+                    bash_allow: Some({
+                        let mut cmds = g.commands.clone();
+                        for c in &test_cmds {
+                            if !cmds.contains(c) {
+                                cmds.push(c.clone());
+                            }
+                        }
+                        cmds
+                    }),
                     source_roots: source_paths.clone(),
                 };
                 crate::guard::write_hook_settings_grants(

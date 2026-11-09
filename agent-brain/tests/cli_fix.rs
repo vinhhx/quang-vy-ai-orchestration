@@ -754,6 +754,93 @@ Cần sửa
 }
 
 #[test]
+fn fix_gets_project_test_commands() {
+    let sb = Sandbox::new();
+    let (_repo, _task, _plan_sha, _dev_sha) = setup_lead_and_dev(&sb);
+
+    let mut map = sb.read_map();
+    map["projects"][0]["test_commands"] =
+        serde_json::json!(["php artisan test", "php artisan test *", "docker ps"]);
+    sb.write_map(map["projects"].clone(), &[]);
+    // `docker ps` is refused: the whole list is dropped with a warning
+    let qa_report = "\
+# QA: sửa app
+## Thay đổi có khớp plan không (từng mục)
+- lỗi logic
+## Sửa ngoài plan (nếu có)
+## Rủi ro
+## Kết luận
+Cần sửa
+";
+    let sc_qa = serde_json::json!({
+        "ops": [{"op": "write", "path": ".qa-report.md", "content": qa_report}]
+    });
+    let res_qa = sb.run(&["run", "qa", "web-ban-hang"], Some(sc_qa));
+    assert_eq!(res_qa.code, 0);
+    let qa_rec = sb.records().pop().unwrap();
+    let qa_argv = qa_rec["argv"].as_array().unwrap();
+    assert!(!qa_argv
+        .iter()
+        .any(|a| a.as_str().unwrap().starts_with("Bash(docker")));
+    assert!(!qa_argv
+        .iter()
+        .any(|a| a.as_str().unwrap().starts_with("Bash(php")));
+
+    map["projects"][0]["test_commands"] =
+        serde_json::json!(["php artisan test", "php artisan test *"]);
+    sb.write_map(map["projects"].clone(), &[]);
+
+    let sc_fix = serde_json::json!({
+        "ops": [
+            {"op": "read", "path": ".plan.md"},
+            {"op": "read", "path": ".qa-report.md"},
+            {"op": "write", "path": "src/app.py", "content": "def app(): return 10\n"},
+            {"op": "git", "args": ["add", "src/app.py"]},
+            {"op": "git", "args": ["commit", "-m", "sua-app: sửa theo QA"]}
+        ]
+    });
+    let res_fix = sb.run(
+        &["run", "dev", "web-ban-hang", "--fix", "qa", "--round", "1"],
+        Some(sc_fix),
+    );
+    assert_eq!(
+        res_fix.code, 0,
+        "fix failed: stderr: {}\nstdout: {}",
+        res_fix.stderr, res_fix.stdout
+    );
+
+    let rec = sb.records().pop().unwrap();
+    let argv: Vec<String> = rec["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert!(argv.contains(&"Bash(php artisan test)".to_string()), "{argv:?}");
+    assert!(argv.contains(&"Bash(php artisan test *)".to_string()), "{argv:?}");
+    let p_idx = argv.iter().position(|x| x == "-p").unwrap();
+    assert!(argv[p_idx + 1].contains("Lệnh kiểm tra được chạy (cấu hình của dự án)"));
+
+    // the guard policy lists the same commands (what limits an agy Dev)
+    let conn = sb.db();
+    let run_dir: String = conn
+        .query_row(
+            "SELECT run_dir FROM runs WHERE role = 'dev' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let policy: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(PathBuf::from(run_dir).join("policy.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        policy["bash_allow"],
+        serde_json::json!(["php artisan test", "php artisan test *"])
+    );
+}
+
+#[test]
 fn fix_policy_snapshot() {
     let sb = Sandbox::new();
     let (_repo, _task, _plan_sha, _dev_sha) = setup_lead_and_dev(&sb);
