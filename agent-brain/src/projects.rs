@@ -704,6 +704,67 @@ pub fn container_of(map: &serde_json::Value, project_id: &str) -> Result<Contain
     }
 }
 
+/// Key of the project's test commands: command patterns QA and Dev runs may execute.
+pub const TEST_COMMANDS_KEY: &str = "test_commands";
+/// Most patterns accepted in `test_commands`.
+pub const MAX_TEST_COMMANDS: usize = 10;
+
+/// Parses the `test_commands` value of a project entry: absent / `null` → empty; otherwise an
+/// array of command patterns, trimmed, blanks and duplicates dropped, each checked with the same
+/// rules as the plan's granted commands (`planfile::grant_command_error`).
+pub fn parse_test_commands(v: Option<&serde_json::Value>) -> Result<Vec<String>, String> {
+    let arr = match v {
+        None | Some(serde_json::Value::Null) => return Ok(Vec::new()),
+        Some(serde_json::Value::Array(a)) => a,
+        Some(_) => {
+            return Err(format!(
+                "\"{TEST_COMMANDS_KEY}\" phải là danh sách lệnh (mảng chuỗi)."
+            ))
+        }
+    };
+    let mut out: Vec<String> = Vec::new();
+    for item in arr {
+        let s = item.as_str().ok_or_else(|| {
+            format!("\"{TEST_COMMANDS_KEY}\" phải là danh sách lệnh (mảng chuỗi).")
+        })?;
+        let s = s.trim();
+        if s.is_empty() {
+            continue;
+        }
+        if let Some(reason) = crate::planfile::grant_command_error(s) {
+            return Err(format!(
+                "\"{TEST_COMMANDS_KEY}\": lệnh '{s}' không được chấp nhận ({reason})."
+            ));
+        }
+        if !out.iter().any(|x| x == s) {
+            out.push(s.to_string());
+        }
+    }
+    if out.len() > MAX_TEST_COMMANDS {
+        return Err(format!(
+            "\"{TEST_COMMANDS_KEY}\": tối đa {MAX_TEST_COMMANDS} lệnh (đang có {}).",
+            out.len()
+        ));
+    }
+    Ok(out)
+}
+
+/// The project's test commands. A project not in the map has none; an invalid value is returned
+/// as `Err` so the caller can warn and run without them.
+pub fn test_commands_of(map: &serde_json::Value, project_id: &str) -> Result<Vec<String>, String> {
+    let entry = map
+        .get("projects")
+        .and_then(|p| p.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(project_id))
+        });
+    match entry {
+        Some(e) => parse_test_commands(e.get(TEST_COMMANDS_KEY)),
+        None => Ok(Vec::new()),
+    }
+}
+
 /// The project's default team name (D-12), trimmed; None when missing or blank.
 pub fn team_of(map: &serde_json::Value, project_id: &str) -> Option<String> {
     let arr = map.get("projects").and_then(|p| p.as_array())?;
@@ -1603,6 +1664,45 @@ mod tests {
         assert!(a.pin_for("dev").is_err());
         assert!(role_pins_of(&map, "b").is_empty());
         assert!(role_pins_of(&map, "missing").is_empty());
+    }
+
+    #[test]
+    fn test_commands_parse_and_read() {
+        use serde_json::json;
+        assert_eq!(parse_test_commands(None).unwrap(), Vec::<String>::new());
+        assert_eq!(parse_test_commands(Some(&json!(null))).unwrap(), Vec::<String>::new());
+        assert_eq!(
+            parse_test_commands(Some(&json!(["php artisan test", " php artisan test * "])))
+                .unwrap(),
+            vec!["php artisan test".to_string(), "php artisan test *".to_string()]
+        );
+        // Blanks and duplicates are dropped.
+        assert_eq!(
+            parse_test_commands(Some(&json!(["npm test", "", "  ", "npm test", " npm test"])))
+                .unwrap(),
+            vec!["npm test".to_string()]
+        );
+        assert!(parse_test_commands(Some(&json!("php artisan test"))).is_err());
+        assert!(parse_test_commands(Some(&json!({"a": 1}))).is_err());
+        assert!(parse_test_commands(Some(&json!(["php artisan test", 3]))).is_err());
+        for bad in ["rm -rf *", "bash -c x", "docker ps", "php artisan test; rm x"] {
+            let err = parse_test_commands(Some(&json!([bad]))).unwrap_err();
+            assert!(err.contains(bad), "{bad}: {err}");
+        }
+        let many: Vec<String> = (0..=MAX_TEST_COMMANDS).map(|i| format!("make t{i}")).collect();
+        assert!(parse_test_commands(Some(&json!(many))).is_err());
+        let ten: Vec<String> = (0..MAX_TEST_COMMANDS).map(|i| format!("make t{i}")).collect();
+        assert_eq!(parse_test_commands(Some(&json!(ten))).unwrap().len(), MAX_TEST_COMMANDS);
+
+        let map = json!({"projects": [
+            {"id": "a", "test_commands": ["php artisan test"]},
+            {"id": "b"},
+            {"id": "c", "test_commands": ["docker ps"]}
+        ]});
+        assert_eq!(test_commands_of(&map, "a").unwrap(), vec!["php artisan test".to_string()]);
+        assert!(test_commands_of(&map, "b").unwrap().is_empty());
+        assert!(test_commands_of(&map, "missing").unwrap().is_empty());
+        assert!(test_commands_of(&map, "c").is_err());
     }
 
     #[test]
