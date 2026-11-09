@@ -1,6 +1,6 @@
 // js/queue.js — Màn hình Điều phối (Orchestrator Console)
 (function () {
-  var SIDE_GROUPS = ['intake', 'approval', 'slot', 'running', 'stopped'];
+  var SIDE_GROUPS = ['intake', 'approval', 'slot', 'running', 'stopped', 'done'];
 
   window.AB.onReady('queue', function () {
     return {
@@ -648,6 +648,7 @@
         if (g === 'slot') return this.countSlot;
         if (g === 'running') return this.countRunning;
         if (g === 'stopped') return this.countStopped;
+        if (g === 'done') return this.countDone;
         return 0;
       },
 
@@ -684,6 +685,10 @@
 
       get countStopped() {
         return this.stoppedTasks.length;
+      },
+
+      get countDone() {
+        return this.allDoneTasks.length;
       },
 
       toggleOffice: function () {
@@ -1032,13 +1037,17 @@
         return (this.board && this.board.recent) || [];
       },
 
-      // 10 latest done tasks
-      get doneTasks() {
+      // All done tasks among the loaded ones (sidebar group Đã xong)
+      get allDoneTasks() {
         var self = this;
-        var list = (this.tasks || []).filter(function (t) {
+        return (this.tasks || []).filter(function (t) {
           return self.classifyTask(t) === 'done';
         });
-        return list.slice(0, 10);
+      },
+
+      // 10 latest done tasks
+      get doneTasks() {
+        return this.allDoneTasks.slice(0, 10);
       },
     };
   });

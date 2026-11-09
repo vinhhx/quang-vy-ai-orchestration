@@ -194,7 +194,7 @@
                   <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 truncate" x-text="t.project_name"></p>
                   <div class="flex flex-wrap items-center gap-2" x-show="t.current_step || t.banner">
                     <span class="inline-flex items-center rounded-full px-2 py-1 text-sm font-semibold bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-show="t.current_step" x-text="t.current_step"></span>
-                    <span class="text-sm font-semibold leading-normal text-slate-700 dark:text-slate-300" x-show="t.banner" x-text="t.banner"></span>
+                    <span class="min-w-0 text-sm font-semibold leading-normal text-slate-700 dark:text-slate-300 line-clamp-2 break-words" x-show="t.banner" :title="t.banner" x-text="t.banner"></span>
                   </div>
                 </a>
               </li>

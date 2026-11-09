@@ -1,6 +1,6 @@
-<section data-screen="queue" x-data="queue" :data-loaded="loadedAttr" class="flex flex-col gap-4 lg:-my-8 lg:-mr-6 lg:h-screen lg:flex-row lg:gap-0">
+<section data-screen="queue" x-data="queue" :data-loaded="loadedAttr" class="flex flex-col gap-4 lg:-my-8 lg:-ml-6 lg:h-screen lg:flex-row lg:gap-0">
   <!-- Cột chính: < lg là "contents" để sắp xếp 3D → nhóm việc → phần còn lại; ≥ lg tự cuộn bên trong, trang không cuộn -->
-  <div data-queue-main class="contents lg:flex lg:min-w-0 lg:flex-1 lg:flex-col lg:gap-4 lg:overflow-y-auto lg:py-4 lg:pr-4">
+  <div data-queue-main class="contents lg:flex lg:min-w-0 lg:flex-1 lg:flex-col lg:gap-4 lg:overflow-y-auto lg:py-4 lg:pl-4">
   <!-- Vùng sơ đồ visual U2: Văn phòng ảo 3D -->
   <section data-queue-visual class="order-1 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-3">
     <!-- Thanh điều khiển văn phòng -->
@@ -314,12 +314,12 @@
                     x-text="r.status === 'rejected' ? 'Bị từ chối' : (r.status === 'cancelled' ? 'Đã huỷ' : 'Thất bại')"
                   ></span>
                 </div>
-                <div class="font-medium text-slate-900 dark:text-slate-100" x-text="r.title || r.request"></div>
+                <div class="font-medium text-slate-900 dark:text-slate-100 line-clamp-2 break-words" x-text="r.title || r.request"></div>
                 <div class="text-slate-500 dark:text-slate-400 flex items-center justify-between">
                   <span x-text="r.project_name || r.project || '—'"></span>
                   <span x-text="fmtTime(r.updated_at)"></span>
                 </div>
-                <div x-show="r.reason || r.error" class="text-slate-600 dark:text-slate-400 italic" x-text="r.reason ? 'Lý do: ' + r.reason : 'Lỗi: ' + r.error"></div>
+                <div x-show="r.reason || r.error" class="line-clamp-2 break-words text-slate-600 dark:text-slate-400 italic" :title="r.reason || r.error" x-text="r.reason ? 'Lý do: ' + r.reason : 'Lỗi: ' + r.error"></div>
               </div>
             </template>
           </div>
@@ -355,8 +355,8 @@
   </div>
   </div>
 
-  <!-- Sidebar phải: năm nhóm việc dạng accordion, mỗi lúc mở một nhóm -->
-  <aside data-queue-side aria-label="Nhóm việc" class="order-2 flex max-h-[80vh] flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 lg:order-none lg:sticky lg:top-0 lg:h-full lg:max-h-none lg:w-80 lg:shrink-0 2xl:w-96 lg:rounded-none lg:shadow-none lg:ring-0 lg:border-l lg:border-slate-200 dark:lg:border-slate-700">
+  <!-- Sidebar trái (ngay sau thanh icon): sáu nhóm việc dạng accordion, mỗi lúc mở một nhóm -->
+  <aside data-queue-side aria-label="Nhóm việc" class="order-2 flex max-h-[80vh] flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 lg:order-first lg:sticky lg:top-0 lg:h-full lg:max-h-none lg:w-80 lg:shrink-0 2xl:w-96 lg:rounded-none lg:shadow-none lg:ring-0 lg:border-r lg:border-slate-200 dark:lg:border-slate-700">
     <!-- Nhóm: Hàng chờ -->
     <div data-side-group="intake" class="flex flex-col border-b border-slate-200 last:border-b-0 dark:border-slate-700" :class="sideGroupClass('intake')">
       <h2 class="text-base font-semibold">
@@ -411,7 +411,7 @@
 
               <!-- Lỗi rút gọn / đầy đủ nếu failed -->
               <div x-show="it.status === 'failed' && it.error" class="rounded-lg bg-rose-50 p-2 text-xs text-rose-900 dark:bg-rose-900/20 dark:text-rose-200 space-y-1">
-                <p x-show="!isErrorExpanded(it.id)" x-text="(it.error || '').slice(0, 90) + ((it.error || '').length > 90 ? '...' : '')"></p>
+                <p x-show="!isErrorExpanded(it.id)" class="line-clamp-2 break-words" :title="it.error" x-text="it.error"></p>
                 <p x-show="isErrorExpanded(it.id)" class="whitespace-pre-wrap" x-text="it.error"></p>
                 <button
                   type="button"
@@ -492,7 +492,7 @@
                     <span class="inline-flex items-center rounded-md bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">Chờ duyệt plan</span>
                     <span class="text-xs text-slate-500 dark:text-slate-400" x-text="item.data.project_name || item.data.project"></span>
                   </div>
-                  <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="item.data.title"></h3>
+                  <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug line-clamp-2 break-words" x-text="item.data.title"></h3>
                   <div class="text-xs text-slate-600 dark:text-slate-400" x-text="'Bước: ' + (item.data.current_step || '—')"></div>
                   <div class="pt-1 flex items-center justify-between gap-2">
                     <button
@@ -539,7 +539,7 @@
                     <span class="text-xs text-slate-500 dark:text-slate-400" x-text="item.data.project_name || item.data.project"></span>
                   </div>
 
-                  <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="item.data.title"></h3>
+                  <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug line-clamp-2 break-words" x-text="item.data.title"></h3>
 
                   <div class="text-xs text-slate-600 dark:text-slate-400 space-y-0.5">
                     <div x-text="'Đội hình: ' + item.data.team"></div>
@@ -786,7 +786,7 @@
                 ></span>
               </div>
 
-              <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="entry.item.title"></h3>
+              <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug line-clamp-2 break-words" x-text="entry.item.title"></h3>
               <div class="text-xs text-slate-500 dark:text-slate-400" x-text="entry.item.project_name || entry.item.project"></div>
 
               <div class="text-xs text-slate-600 dark:text-slate-400 space-y-0.5">
@@ -877,7 +877,7 @@
                 <span class="text-xs text-slate-500 dark:text-slate-400" x-text="t.project_name || t.project"></span>
               </div>
 
-              <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="t.title"></h3>
+              <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug line-clamp-2 break-words" x-text="t.title"></h3>
               <div class="text-xs text-slate-600 dark:text-slate-400" x-text="'Bước: ' + (t.current_step || '—')"></div>
 
               <!-- Thanh tiến độ -->
@@ -946,7 +946,7 @@
                 <span class="text-xs text-slate-500 dark:text-slate-400" x-text="st.task.project_name || st.task.project"></span>
               </div>
 
-              <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug" x-text="st.task.title"></h3>
+              <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug line-clamp-2 break-words" x-text="st.task.title"></h3>
 
               <!-- Chi tiết Quota -->
               <div x-show="st.isQuota" class="rounded-lg bg-rose-50/70 p-2 text-xs text-rose-900 dark:bg-rose-900/20 dark:text-rose-200 space-y-1">
@@ -957,7 +957,7 @@
 
               <!-- Chi tiết không phải Quota -->
               <div x-show="!st.isQuota" class="rounded-lg bg-amber-50/70 p-2 text-xs text-amber-900 dark:bg-amber-900/20 dark:text-amber-200 space-y-1">
-                <p x-text="st.task.stop_reason || st.task.banner || st.task.stop_detail || 'Dừng xử lý'"></p>
+                <p class="line-clamp-2 break-words" :title="st.task.stop_reason || st.task.banner || st.task.stop_detail || 'Dừng xử lý'" x-text="st.task.stop_reason || st.task.banner || st.task.stop_detail || 'Dừng xử lý'"></p>
               </div>
 
               <div class="pt-1 flex items-center justify-between gap-2">
@@ -968,6 +968,57 @@
                 >Xem trong VP</button>
                 <a
                   :href="'#/task/' + st.task.id"
+                  class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                >Mở task →</a>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+    <!-- Nhóm: Đã xong -->
+    <div data-side-group="done" class="flex flex-col border-b border-slate-200 last:border-b-0 dark:border-slate-700" :class="sideGroupClass('done')">
+      <h2 class="text-base font-semibold">
+        <button
+          type="button"
+          id="ab-side-h-done"
+          aria-controls="ab-side-p-done"
+          :aria-expanded="sideExpanded('done')"
+          @click="setSide('done')"
+          class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-base font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 focus-visible:-outline-offset-2"
+          :class="sideHeaderClass('done')"
+        >
+          <span class="flex items-center gap-2">
+            <svg class="h-4 w-4 shrink-0 transition-transform" :class="sideChevronClass('done')" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+            <span>Đã xong</span>
+          </span>
+          <span class="rounded-full px-2.5 py-0.5 text-sm font-bold tabular-nums" :class="countBadgeClass('done')" x-text="countDone"></span>
+        </button>
+      </h2>
+      <div id="ab-side-p-done" role="region" aria-labelledby="ab-side-h-done" x-show="sideOpen('done')" class="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-100/70 p-3 space-y-3 dark:bg-slate-900/40">
+        <div x-show="allDoneTasks.length === 0" class="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
+          Trống
+        </div>
+
+        <div class="space-y-3">
+          <template x-for="dt in allDoneTasks" :key="'side-done-' + dt.id">
+            <div class="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-2">
+              <div class="flex items-center justify-between gap-1">
+                <span class="inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">Đã xong</span>
+                <span class="text-xs text-slate-500 dark:text-slate-400" x-text="dt.project_name || dt.project"></span>
+              </div>
+
+              <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug line-clamp-2 break-words" x-text="dt.title"></h3>
+              <div class="text-xs text-slate-600 dark:text-slate-400" x-text="'Xong lúc: ' + fmtTime(dt.updated_at)"></div>
+
+              <div class="pt-1 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  @click="focusOfficeTask(dt.id)"
+                  class="inline-flex min-h-8 items-center text-xs font-semibold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
+                >Xem trong VP</button>
+                <a
+                  :href="'#/task/' + dt.id"
                   class="inline-flex min-h-8 items-center justify-center rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400"
                 >Mở task →</a>
               </div>
