@@ -459,7 +459,10 @@ pub fn build_triage_prompt(st: &AppState, intake: &IntakeRow) -> BrainResult<(St
         r#"9. Trả về DUY NHẤT một JSON hợp lệ dạng:
 {"tasks":[{"project":"...","title":"...","request":"...","priority":"...","level":"...","team":"...","workflow":"...","reason":"...","after":null}]}
 Tối đa 5 mục trong 'tasks'. Không viết thêm bất kỳ văn bản giải thích nào ngoài JSON.
-10. Nếu yêu cầu cần kết quả phân tích ở dự án A làm đầu vào cho việc ở dự án B (ví dụ viết test case từ code A rồi chạy e2e ở B), trả về hai việc: việc phân tích ở A, rồi việc ở B có "after": <chỉ số việc A>. Việc B sẽ tự nhận kết quả của việc A làm tài liệu đầu vào. Chỉ dùng after khi việc trước là quy trình loại phân tích."#
+10. Chỉ dùng "after": <chỉ số việc trước> trong hai trường hợp:
+- Việc sau cần kết quả phân tích của việc trước làm đầu vào (ví dụ viết test case từ code dự án A rồi chạy e2e ở dự án B): việc trước là quy trình loại phân tích; việc sau tự nhận kết quả của việc trước làm tài liệu đầu vào.
+- Các việc code mà việc sau cần code của việc trước (ví dụ sửa model rồi sửa màn hình dùng model đó, migration rồi code dùng cột mới): việc sau chỉ chạy khi nhánh của việc trước đã merge vào nhánh gốc.
+Các việc độc lập thì KHÔNG dùng "after" để chạy song song. Không dùng "after" cho yêu cầu là bug (mỗi bug là một việc)."#
     } else {
         r#"9. Trả về DUY NHẤT một JSON hợp lệ dạng:
 {"tasks":[{"project":"...","title":"...","request":"...","priority":"...","level":"...","team":"...","workflow":"...","reason":"...","after":null}]}
@@ -759,26 +762,19 @@ pub fn triage_with_warnings(
     // 8. Validate từng mục
     let mut valid_proposals: Vec<ProposalDraft> = Vec::new();
     let mut warnings = Vec::new();
-    let mut valid_by_orig: std::collections::HashMap<usize, ProposalDraft> = std::collections::HashMap::new();
+    let mut valid_by_orig: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     for (orig_idx, mut draft) in tasks.into_iter().enumerate() {
         draft.orig_index = Some(orig_idx);
         match validate(&draft, &projects, &teams_loaded, &workflows_loaded, &st.cfg.engines) {
             Ok(()) => {
                 if let Some(after_orig) = draft.after {
-                    let mut after_ok = false;
-                    if after_orig < orig_idx {
-                        if let Some(prior) = valid_by_orig.get(&after_orig) {
-                            if let Some(wf) = workflows_loaded.get(&prior.workflow) {
-                                if wf.kind == "analysis" {
-                                    after_ok = true;
-                                }
-                            }
-                        }
-                    }
+                    // B1: the earlier item may be an analysis (its answer becomes a document)
+                    // or a code item (the scheduler waits until its branch is merged).
+                    let after_ok = after_orig < orig_idx && valid_by_orig.contains(&after_orig);
                     if !after_ok {
                         let warn = format!(
-                            "Bỏ 'after' của đề xuất '{}': việc trước không hợp lệ hoặc không phải quy trình phân tích",
+                            "Bỏ 'after' của đề xuất '{}': việc trước không hợp lệ",
                             draft.title
                         );
                         tracing::warn!("{warn}");
@@ -786,7 +782,7 @@ pub fn triage_with_warnings(
                         draft.after = None;
                     }
                 }
-                valid_by_orig.insert(orig_idx, draft.clone());
+                valid_by_orig.insert(orig_idx);
                 valid_proposals.push(draft);
             }
             Err(reason) => {

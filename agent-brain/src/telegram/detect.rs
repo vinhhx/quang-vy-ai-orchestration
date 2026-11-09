@@ -443,6 +443,66 @@ impl EnvReruns {
     }
 }
 
+/// `Đề xuất #M «tiêu đề» đang chờ task #N được merge vào <base>.` (B3).
+pub fn chain_wait_text(proposal_id: i64, title: &str, error: &str) -> String {
+    let wait = error
+        .strip_prefix(crate::orchestrator::scheduler::CHAIN_WAIT_PREFIX)
+        .map(|rest| format!("chờ task #{rest}"))
+        .unwrap_or_else(|| error.to_string());
+    let title: String = title.chars().take(120).collect();
+    format!("Đề xuất #{proposal_id} «{title}» đang {wait}.")
+}
+
+/// B3: approved proposals the scheduler holds until the earlier code task is merged
+/// (`proposals.error` = "Chờ task #N được merge vào …"): one message per `(proposal, error)`, so
+/// the 5-second scheduler tick never repeats it and a changed wait is reported again. Seeded at
+/// start-up so a serve restart never resends.
+#[derive(Debug, Default)]
+pub struct ChainWaits {
+    seen: HashSet<(i64, String)>,
+}
+
+fn chain_wait_rows(conn: &Connection) -> BrainResult<Vec<(i64, String, String)>> {
+    let pattern = format!(
+        "{}% được merge vào %",
+        crate::orchestrator::scheduler::CHAIN_WAIT_PREFIX
+    );
+    let mut stmt = conn.prepare(
+        "SELECT id, title, error FROM proposals
+         WHERE status = 'approved' AND error LIKE ?1 ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([pattern], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+impl ChainWaits {
+    pub fn seed(conn: &Connection) -> BrainResult<ChainWaits> {
+        let seen = chain_wait_rows(conn)?
+            .into_iter()
+            .map(|(id, _, error)| (id, error))
+            .collect();
+        Ok(ChainWaits { seen })
+    }
+
+    pub fn scan(&mut self, conn: &Connection) -> BrainResult<Vec<Outgoing>> {
+        let mut out = Vec::new();
+        let mut now_seen = HashSet::new();
+        for (id, title, error) in chain_wait_rows(conn)? {
+            let key = (id, error);
+            if !self.seen.contains(&key) {
+                out.push(Outgoing::Message {
+                    text: chain_wait_text(id, &title, &key.1),
+                });
+            }
+            now_seen.insert(key);
+        }
+        self.seen = now_seen;
+        Ok(out)
+    }
+}
+
 fn open_db(ctx: &BotCtx) -> Option<Connection> {
     let mut reported = false;
     loop {
@@ -477,15 +537,18 @@ fn run(ctx: Arc<BotCtx>) {
     let mut last_err: Option<String> = None;
     let mut fails;
     let mut reruns;
+    let mut waits;
     loop {
         match det
             .seed(&ctx.st, &conn)
             .and_then(|()| IntakeFailures::seed(&conn))
             .and_then(|f| EnvReruns::seed(&conn).map(|r| (f, r)))
+            .and_then(|(f, r)| ChainWaits::seed(&conn).map(|w| (f, r, w)))
         {
-            Ok((f, r)) => {
+            Ok((f, r, w)) => {
                 fails = f;
                 reruns = r;
+                waits = w;
                 break;
             }
             Err(e) => {
@@ -527,6 +590,7 @@ fn run(ctx: Arc<BotCtx>) {
             det.scan(&ctx.st, &conn, full, &ctx.registry),
             fails.scan(&conn),
             reruns.scan(&conn),
+            waits.scan(&conn),
         ];
         let mut failed = false;
         for res in results {

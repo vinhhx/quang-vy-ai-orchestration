@@ -1113,6 +1113,59 @@ fn test_triage_prompt_marks_default_team() {
     );
 }
 
+/// B1: a code item may follow another code item ("after"), the scheduler then waits for the merge.
+#[test]
+fn test_triage_keeps_after_between_code_items() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    sb.write_config(json!({
+        "orchestrator": {
+            "enabled": true,
+            "max_parallel": 2
+        }
+    }));
+    std::env::set_var("FAKE_CLAUDE_SCENARIO", &sb.scenario_file);
+    let _env_guard = EnvVarGuard("FAKE_CLAUDE_SCENARIO");
+
+    let conn = agent_brain::db::open(&sb.db_path).expect("open db");
+    let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
+    let projects = agent_brain::projects::projects_of(&map);
+    agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
+
+    let _intake_id = queued(&sb, "Thêm cột rồi hiện cột trên màn hình");
+    let item = |title: &str, after: serde_json::Value| {
+        json!({
+            "project": "web-ban-hang",
+            "title": title,
+            "request": title,
+            "priority": "normal",
+            "level": "vua",
+            "team": "mac-dinh",
+            "workflow": "nhanh",
+            "reason": "code",
+            "after": after
+        })
+    };
+    let fake_result = json!({
+        "tasks": [item("Migration cột mới", json!(null)), item("Màn hình dùng cột mới", json!(0))]
+    })
+    .to_string();
+    sb.write_scenario(json!({
+        "events": [{ "type": "result", "subtype": "success", "result": fake_result }]
+    }));
+
+    let st = app_state(&sb);
+    agent_brain::orchestrator::tick(&st).expect("tick");
+
+    let proposals = agent_brain::db::list_proposals(&conn, None).expect("list proposals");
+    assert_eq!(proposals.len(), 2);
+    let p0 = proposals.iter().find(|p| p.title == "Migration cột mới").expect("p0");
+    let p1 = proposals.iter().find(|p| p.title == "Màn hình dùng cột mới").expect("p1");
+    assert_eq!(p0.after_proposal_id, None);
+    assert_eq!(p1.after_proposal_id, Some(p0.id), "after between code items is kept");
+}
+
 #[test]
 fn test_triage_chained_proposals_map_orig_index_when_draft_dropped() {
     let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());

@@ -62,6 +62,7 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
     // (a): Bắt đầu các proposal approved theo thứ tự ưu tiên
     let mut active = active_task_count(st, &conn)?;
     let approved_props = crate::db::list_approved_proposals(&conn)?;
+    let workflows = crate::workflows::load(&st.cfg);
 
     for prop in approved_props {
         if active >= max_parallel {
@@ -125,16 +126,33 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
                         }) => {
                             let is_success = crate::tasks::is_success_status(&status);
                             if is_success {
-                                if status == "answered" {
-                                    match crate::answers::read(&p_slug, prior_task_id, &t_slug) {
-                                        Ok(Some(ans)) => {
-                                            prior_answer = Some((prior_task_id, ans));
-                                        }
-                                        _ => {
-                                            // Chưa đọc được câu trả lời: bỏ qua chờ
-                                            continue;
+                                // B2: an analysis hands its answer on as a document; code must
+                                // first be merged into its base branch.
+                                let prior_kind = workflows
+                                    .get(&prior_p.workflow)
+                                    .map(|w| w.kind.as_str())
+                                    .unwrap_or("code");
+                                if prior_kind == "analysis" || status == "answered" {
+                                    if status == "answered" {
+                                        match crate::answers::read(&p_slug, prior_task_id, &t_slug) {
+                                            Ok(Some(ans)) => {
+                                                prior_answer = Some((prior_task_id, ans));
+                                            }
+                                            _ => {
+                                                // Chưa đọc được câu trả lời: bỏ qua chờ
+                                                continue;
+                                            }
                                         }
                                     }
+                                } else if let Some(wait) =
+                                    code_prior_wait(&conn, &map, &p_slug, prior_task_id)?
+                                {
+                                    if prop.error.as_deref() != Some(wait.as_str()) {
+                                        crate::db::set_proposal_error(&conn, prop.id, &wait)?;
+                                        // Wakes the Telegram detector so the wait is reported now.
+                                        let _ = st.hints.send(0);
+                                    }
+                                    continue;
                                 }
                             } else {
                                 let is_ended = auto_state.as_deref() == Some("ended")
@@ -238,6 +256,13 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
                     tracing::warn!("Lỗi chuyển tài liệu từ proposal #{} sang task #{}: {}", prop.id, task_id, e);
                 }
                 crate::db::set_proposal_started(&conn, prop.id, Some(task_id))?;
+                if prop.error.is_some() {
+                    // The wait that held it back ("Chờ task #N …") no longer applies.
+                    conn.execute(
+                        "UPDATE proposals SET error = NULL WHERE id = ?1",
+                        rusqlite::params![prop.id],
+                    )?;
+                }
             }
             StartOutcome::PreflightRefused { reason, kind } => {
                 if kind == "busy" {
@@ -270,6 +295,73 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
     }
 
     Ok(())
+}
+
+/// Prefix of the proposal error written while a chained proposal waits for the merge of the
+/// earlier code task (B2); `telegram::detect::ChainWaits` reports it once (B3).
+pub const CHAIN_WAIT_PREFIX: &str = "Chờ task #";
+
+/// B2: why a proposal chained after a finished code task must still wait, `None` = it may run.
+/// `base` is the earlier task's merge base, `branch_exists` / `merged` its branch's state in
+/// the project repo.
+pub fn code_wait_reason(
+    prior_task_id: i64,
+    branch: &str,
+    base: Option<&str>,
+    branch_exists: bool,
+    merged: bool,
+) -> Option<String> {
+    let Some(base) = base else {
+        return Some(format!(
+            "Task #{prior_task_id} không có nhánh gốc — merge tay rồi duyệt lại"
+        ));
+    };
+    if !branch_exists {
+        return Some(format!(
+            "{CHAIN_WAIT_PREFIX}{prior_task_id} được merge vào {base} (nhánh {branch} không còn — coi như chưa merge)"
+        ));
+    }
+    if !merged {
+        return Some(format!(
+            "{CHAIN_WAIT_PREFIX}{prior_task_id} được merge vào {base}"
+        ));
+    }
+    None
+}
+
+/// Reads the earlier code task and its project, then applies [`code_wait_reason`].
+fn code_prior_wait(
+    conn: &rusqlite::Connection,
+    map: &serde_json::Value,
+    project_slug: &str,
+    prior_task_id: i64,
+) -> BrainResult<Option<String>> {
+    let Some(task) = crate::db::get_task(conn, prior_task_id)? else {
+        return Ok(Some(format!(
+            "Task #{prior_task_id} không có nhánh gốc — merge tay rồi duyệt lại"
+        )));
+    };
+    let Some(project) = crate::projects::projects_of(map)
+        .into_iter()
+        .find(|p| p.id == project_slug)
+    else {
+        return Ok(Some(format!(
+            "Task #{prior_task_id}: dự án {project_slug} không còn trong danh sách dự án"
+        )));
+    };
+    let base = crate::workspace::merge_base_of(&project, &task);
+    let root = project.root();
+    let exists = crate::gitops::branch_exists(&root, &task.branch);
+    let merged = base
+        .as_deref()
+        .is_some_and(|b| crate::gitops::is_merged_into(&root, &task.branch, b));
+    Ok(code_wait_reason(
+        prior_task_id,
+        &task.branch,
+        base.as_deref(),
+        exists,
+        merged,
+    ))
 }
 
 fn handle_quota_stops(st: &AppState, conn: &rusqlite::Connection) -> BrainResult<()> {

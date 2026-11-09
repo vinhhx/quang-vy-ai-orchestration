@@ -9,7 +9,9 @@ use agent_brain::db::{
     count_active_tasks, get_proposal, insert_proposal,
     list_quota_stops, set_proposal_status, NewProposal,
 };
-use agent_brain::orchestrator::scheduler::schedule_tick;
+use agent_brain::orchestrator::scheduler::{code_wait_reason, schedule_tick};
+use agent_brain::telegram::detect::ChainWaits;
+use agent_brain::telegram::outbox::Outgoing;
 use common::Sandbox;
 use serde_json::json;
 use std::path::PathBuf;
@@ -1307,59 +1309,50 @@ fn test_chained_proposal_proceeds_on_answered_with_document() {
     st.jobs.kill_all_now();
 }
 
-#[test]
-fn test_chained_proposal_proceeds_on_qa_pass_without_document() {
-    let _guard = TEST_MUTEX.lock().unwrap();
-    let sb = Sandbox::new();
-    let _repos = setup_projects(&sb, &["proj1"]);
-    let fake_job = setup_fake_job(&sb);
-
+/// B2: an approved proposal chained after a code proposal whose task finished (`qa_pass`).
+/// Returns (repo, earlier task id, later proposal id, state).
+fn code_chain(
+    sb: &Sandbox,
+    base: Option<&str>,
+    make_branch: bool,
+) -> (PathBuf, i64, i64, Arc<AppState>, rusqlite::Connection) {
+    let repos = setup_projects(sb, &["proj1"]);
+    let repo = repos[0].clone();
+    let fake_job = setup_fake_job(sb);
     sb.write_config(json!({
         "orchestrator": {
             "enabled": true,
             "max_parallel": 2
         }
     }));
+    if make_branch {
+        sb.git(&repo, &["checkout", "-q", "-b", "task/build-1"]);
+        std::fs::write(repo.join("model.txt"), "cột mới\n").unwrap();
+        sb.git(&repo, &["add", "model.txt"]);
+        sb.git(&repo, &["commit", "-q", "-m", "build 1"]);
+        sb.git(&repo, &["checkout", "-q", "main"]);
+    }
 
     let conn = agent_brain::db::open(&sb.db_path).expect("open db");
     let map = agent_brain::projects::load_map(&sb.map_path()).expect("load map");
     let projects = agent_brain::projects::projects_of(&map);
     agent_brain::db::sync_projects(&conn, &projects).expect("sync projects");
 
-    let intake_id = insert_intake(&conn, "ui", None, "chuỗi việc", "normal").expect("intake");
+    let intake_id = insert_intake(&conn, "ui", None, "chuỗi việc code", "normal").expect("intake");
     let pid = agent_brain::db::project_row_id(&conn, "proj1").unwrap();
-
-    let p0 = insert_proposal(
-        &conn,
-        &NewProposal {
-            intake_id,
-            project_id: pid,
-            title: "Build 1",
-            request: "Build feature 1",
-            priority: "normal",
-            level: "vua",
-            team: "mac-dinh",
-            workflow: "mac-dinh",
-            reason: None,
-        },
-    )
-    .expect("p0");
-
-    let p1 = insert_proposal(
-        &conn,
-        &NewProposal {
-            intake_id,
-            project_id: pid,
-            title: "Build 2",
-            request: "Build feature 2",
-            priority: "normal",
-            level: "vua",
-            team: "mac-dinh",
-            workflow: "mac-dinh",
-            reason: None,
-        },
-    )
-    .expect("p1");
+    let new = |title: &'static str, request: &'static str| NewProposal {
+        intake_id,
+        project_id: pid,
+        title,
+        request,
+        priority: "normal",
+        level: "vua",
+        team: "mac-dinh",
+        workflow: "mac-dinh",
+        reason: None,
+    };
+    let p0 = insert_proposal(&conn, &new("Build 1", "Sửa model")).expect("p0");
+    let p1 = insert_proposal(&conn, &new("Build 2", "Sửa màn hình dùng model")).expect("p1");
     agent_brain::db::set_proposal_after_id(&conn, p1, Some(p0)).unwrap();
 
     let task_id = agent_brain::db::upsert_task(
@@ -1368,27 +1361,120 @@ fn test_chained_proposal_proceeds_on_qa_pass_without_document() {
         "build-1",
         "Build 1",
         "task/build-1",
-        None,
+        base,
         None,
     )
     .unwrap();
-    agent_brain::db::set_proposal_status(&conn, p0, "started").unwrap();
+    set_proposal_status(&conn, p0, "started").unwrap();
     conn.execute("UPDATE proposals SET task_id = ?1 WHERE id = ?2", rusqlite::params![task_id, p0]).unwrap();
     conn.execute("UPDATE tasks SET status = 'qa_pass' WHERE id = ?1", [task_id]).unwrap();
-
     set_proposal_status(&conn, p1, "approved").expect("approve p1");
 
-    let st = app_state(&sb, fake_job);
-    schedule_tick(&st).expect("schedule_tick");
+    let st = app_state(sb, fake_job);
+    (repo, task_id, p1, st, conn)
+}
 
-    let p1_after = get_proposal(&conn, p1).unwrap().unwrap();
-    assert_eq!(p1_after.status, "started");
+#[test]
+fn test_chained_code_waits_until_prior_branch_merged() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let (repo, task_id, p1, st, conn) = code_chain(&sb, Some("main"), true);
+    let mut waits = ChainWaits::seed(&conn).unwrap();
 
-    // No document should be attached when prior task is qa_pass
-    let inputs = agent_brain::inputs::list_for_proposal(&conn, p1).unwrap();
-    assert!(inputs.is_empty(), "expected no inputs, got: {:?}", inputs);
+    // Not merged yet: the later proposal stays approved and says why.
+    schedule_tick(&st).expect("tick 1");
+    let after1 = get_proposal(&conn, p1).unwrap().unwrap();
+    assert_eq!(after1.status, "approved");
+    assert_eq!(after1.task_id, None);
+    let wait = format!("Chờ task #{task_id} được merge vào main");
+    assert_eq!(after1.error.as_deref(), Some(wait.as_str()));
+    let sent = waits.scan(&conn).unwrap();
+    assert_eq!(
+        sent,
+        vec![Outgoing::Message {
+            text: format!("Đề xuất #{p1} «Build 2» đang chờ task #{task_id} được merge vào main.")
+        }]
+    );
+
+    // B3: a second tick neither rewrites the error nor sends again.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    schedule_tick(&st).expect("tick 2");
+    let after2 = get_proposal(&conn, p1).unwrap().unwrap();
+    assert_eq!(after2.status, "approved");
+    assert_eq!(after2.updated_at, after1.updated_at, "same wait is not written again");
+    assert!(waits.scan(&conn).unwrap().is_empty(), "the wait is reported once");
+
+    // Merged into main: the next tick starts it and clears the wait.
+    sb.git(&repo, &["merge", "-q", "--ff-only", "task/build-1"]);
+    schedule_tick(&st).expect("tick 3");
+    let after3 = get_proposal(&conn, p1).unwrap().unwrap();
+    assert_eq!(after3.status, "started");
+    assert!(after3.task_id.is_some());
+    assert_eq!(after3.error, None);
+    let inputs = agent_brain::inputs::list_for_task(&conn, after3.task_id.unwrap()).unwrap();
+    assert!(inputs.is_empty(), "a code task hands on no document: {inputs:?}");
+    assert!(waits.scan(&conn).unwrap().is_empty());
 
     st.jobs.kill_all_now();
+}
+
+#[test]
+fn test_chained_code_prior_without_base_does_not_run() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let (_repo, task_id, p1, st, conn) = code_chain(&sb, None, true);
+
+    schedule_tick(&st).expect("tick");
+    let after = get_proposal(&conn, p1).unwrap().unwrap();
+    assert_eq!(after.status, "approved");
+    assert_eq!(after.task_id, None);
+    assert_eq!(
+        after.error.as_deref(),
+        Some(format!("Task #{task_id} không có nhánh gốc — merge tay rồi duyệt lại").as_str())
+    );
+    // Not a merge wait: nothing for Telegram.
+    let mut waits = ChainWaits::default();
+    assert!(waits.scan(&conn).unwrap().is_empty());
+
+    st.jobs.kill_all_now();
+}
+
+#[test]
+fn test_chained_code_prior_branch_deleted_counts_as_not_merged() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let sb = Sandbox::new();
+    let (_repo, task_id, p1, st, conn) = code_chain(&sb, Some("main"), false);
+
+    schedule_tick(&st).expect("tick");
+    let after = get_proposal(&conn, p1).unwrap().unwrap();
+    assert_eq!(after.status, "approved");
+    assert_eq!(
+        after.error.as_deref(),
+        Some(
+            format!(
+                "Chờ task #{task_id} được merge vào main (nhánh task/build-1 không còn — coi như chưa merge)"
+            )
+            .as_str()
+        )
+    );
+
+    st.jobs.kill_all_now();
+}
+
+#[test]
+fn test_code_wait_reason_cases() {
+    assert_eq!(code_wait_reason(3, "task/a", Some("main"), true, true), None);
+    assert_eq!(
+        code_wait_reason(3, "task/a", Some("dev"), true, false).as_deref(),
+        Some("Chờ task #3 được merge vào dev")
+    );
+    assert_eq!(
+        code_wait_reason(3, "task/a", None, true, true).as_deref(),
+        Some("Task #3 không có nhánh gốc — merge tay rồi duyệt lại")
+    );
+    assert!(code_wait_reason(3, "task/a", Some("main"), false, false)
+        .unwrap()
+        .contains("không còn"));
 }
 
 #[test]
