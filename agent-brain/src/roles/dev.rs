@@ -319,6 +319,8 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
     let verbose = opts.verbose;
     let proj = crate::projects::select_project(project, &ctx.map)?;
     let proj_path = crate::projects::require_runnable(&proj, &ctx.cfg)?;
+    // D2.2: the task's worktree in worktree mode (`workspace::role_root`), else the repo.
+    let proj_path = crate::workspace::role_root(&ctx.conn, &proj, &proj_path)?;
 
     let protocol = crate::protocol_paths::current(&proj, &proj_path);
     let plan_path = proj_path.join(&protocol.plan);

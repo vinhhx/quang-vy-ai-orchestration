@@ -249,7 +249,9 @@ fn load_pending(ctx: &Ctx, task_id: i64) -> BrainResult<Pending> {
         .ok_or_else(|| {
             BrainError::error(format!("Dự án '{slug}' không còn trong projects_map.json"))
         })?;
-    let root = crate::projects::require_runnable(&project, &ctx.cfg)?;
+    let proj_root = crate::projects::require_runnable(&project, &ctx.cfg)?;
+    // D2.2: the task's root (its worktree in worktree mode).
+    let root = crate::workspace::ensure_task_root(&ctx.conn, &project, &proj_root, &task)?;
     let name = crate::staff::load().display_name_of(&wait.staff);
     let protocol = crate::protocol_paths::paths(&project, &task.slug);
     Ok(Pending {

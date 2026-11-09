@@ -41,6 +41,7 @@ pub mod teams;
 pub mod telegram;
 pub mod term;
 pub mod workflows;
+pub mod workspace;
 
 pub mod tracing {
     #[macro_export]

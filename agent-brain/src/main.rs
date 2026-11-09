@@ -178,6 +178,31 @@ enum Commands {
         #[command(subcommand)]
         subcommand: DeptCommands,
     },
+    /// Worktree và nhánh của task (dự án ở chế độ worktree)
+    Task {
+        #[command(subcommand)]
+        subcommand: TaskCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TaskCommands {
+    /// Dọn worktree của task đã xong (git worktree remove, không --force, không xoá nhánh)
+    Cleanup {
+        /// ID của task
+        task_id: Option<i64>,
+        /// Dọn mọi worktree có nhánh đã merge vào nhánh gốc
+        #[arg(long)]
+        merged: bool,
+        /// Xác nhận dọn dù nhánh chưa merge
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Merge nhánh task (đã qua QA) vào nhánh gốc trên repo chính (git merge --no-ff, không push)
+    Merge {
+        /// ID của task
+        task_id: i64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -425,6 +450,14 @@ fn main() {
                 agent_brain::fixbug::cmd_init(&ctx, &project, dry_run)
             }
         }),
+        Commands::Task { subcommand } => match subcommand {
+            TaskCommands::Cleanup {
+                task_id,
+                merged,
+                yes,
+            } => agent_brain::workspace::cmd_cleanup(&mut ctx, task_id, merged, yes),
+            TaskCommands::Merge { task_id } => agent_brain::workspace::cmd_merge(&mut ctx, task_id),
+        },
         Commands::Dept { subcommand } => match subcommand {
             DeptCommands::List => agent_brain::departments::cmd_list(&ctx),
             DeptCommands::Check => agent_brain::departments::cmd_check(&ctx),

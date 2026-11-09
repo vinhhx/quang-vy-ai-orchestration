@@ -180,6 +180,97 @@ pub fn project_busy_reason(
     Ok(None)
 }
 
+/// D2.2 (`workspace: "worktree"`): the project is busy only when `max_parallel` tasks other
+/// than `exclude_task` already have a live run or a live autopilot driver (`extra_tasks` adds
+/// tasks the caller knows to be starting, e.g. dashboard jobs; a run without a task counts as one
+/// slot). The plan-gate hold does not apply here: tasks do not share a working tree, so a task
+/// waiting at the gate leaves nothing for another task's Lead to disturb. The personal-profile
+/// rule (E-06: one config dir, no parallel runs) still applies.
+pub fn worktree_busy_reason(
+    conn: &Connection,
+    project_slug: &str,
+    profile: &str,
+    exclude_task: Option<i64>,
+    max_parallel: usize,
+    extra_tasks: &[i64],
+) -> BrainResult<Option<String>> {
+    let running = crate::db::running_runs(conn)?;
+    let mut active: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    for r in &running {
+        if r.task_id.is_some() && r.task_id == exclude_task {
+            continue;
+        }
+        if !run_alive(r) {
+            continue;
+        }
+        if profile == "personal" && r.profile == "personal" {
+            let tid = r
+                .task_id
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            return Ok(Some(format!(
+                "Profile personal đang có run {} chạy (task {tid}) — không chạy song song trên cùng thư mục cấu hình (E-06)",
+                r.id
+            )));
+        }
+        let slug: Option<String> = conn
+            .query_row(
+                "SELECT slug FROM projects WHERE id = ?1",
+                rusqlite::params![r.project_id],
+                |row| row.get(0),
+            )
+            .ok();
+        if slug.as_deref() == Some(project_slug) {
+            // A run without a task holds a slot of its own (negative key, never a task id).
+            active.insert(r.task_id.unwrap_or(-r.id));
+        }
+    }
+    for d in crate::db::auto_driver_rows(conn)? {
+        if Some(d.task_id) == exclude_task || !row_alive(&d) {
+            continue;
+        }
+        if profile == "personal" && d.profile == "personal" {
+            return Ok(Some(format!(
+                "Profile personal đang chạy autopilot cho task {} — không chạy song song trên cùng thư mục cấu hình (E-06)",
+                d.task_id
+            )));
+        }
+        if d.project_slug == project_slug {
+            active.insert(d.task_id);
+        }
+    }
+    active.extend(extra_tasks.iter().copied().filter(|t| Some(*t) != exclude_task));
+    if active.len() >= max_parallel.max(1) {
+        let list: Vec<String> = active
+            .iter()
+            .map(|t| if *t < 0 { "-".to_string() } else { t.to_string() })
+            .collect();
+        return Ok(Some(format!(
+            "Dự án {project_slug} đang chạy {} task song song (tối đa {max_parallel}, {}): task {} — chờ một task xong",
+            active.len(),
+            crate::projects::MAX_PARALLEL_KEY,
+            list.join(", ")
+        )));
+    }
+    Ok(None)
+}
+
+/// The busy check for the project's workspace mode: `worktree_busy_reason` in worktree mode,
+/// `project_busy_reason` (with the gate hold option) in shared mode.
+pub fn busy_reason_ws(
+    conn: &Connection,
+    project_slug: &str,
+    profile: &str,
+    exclude_task: Option<i64>,
+    ws: &crate::projects::WorkspaceOpts,
+) -> BrainResult<Option<String>> {
+    if ws.is_worktree() {
+        worktree_busy_reason(conn, project_slug, profile, exclude_task, ws.max_parallel_tasks, &[])
+    } else {
+        project_busy_reason(conn, project_slug, profile, exclude_task, ws.hold_project_at_gate)
+    }
+}
+
 /// What approving does about the branch (D2.3b, `auto_checkout_on_approve`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApproveBranch {
@@ -283,7 +374,7 @@ pub fn claim(
     project_slug: &str,
     profile: &str,
     opts: &ClaimOpts,
-    hold_at_gate: bool,
+    ws: &crate::projects::WorkspaceOpts,
 ) -> BrainResult<AutoJson> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
@@ -310,9 +401,7 @@ pub fn claim(
             )));
         }
     }
-    if let Some(reason) =
-        project_busy_reason(&tx, project_slug, profile, Some(task_id), hold_at_gate)?
-    {
+    if let Some(reason) = busy_reason_ws(&tx, project_slug, profile, Some(task_id), ws)? {
         return Err(BrainError::error(reason));
     }
 

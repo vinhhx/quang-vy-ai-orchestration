@@ -32,6 +32,39 @@ pub const HOLD_AT_GATE_KEY: &str = "hold_project_at_gate";
 pub const AUTO_CHECKOUT_KEY: &str = "auto_checkout_on_approve";
 /// Longest accepted `base_branch` (characters).
 pub const BASE_BRANCH_MAX_CHARS: usize = 120;
+/// Key of the workspace mode (D2.1): `"shared"` (default) or `"worktree"`.
+pub const WORKSPACE_KEY: &str = "workspace";
+/// Key of the parallel task limit in worktree mode (D2.1).
+pub const MAX_PARALLEL_KEY: &str = "max_parallel_tasks";
+/// Accepted range of `max_parallel_tasks`.
+pub const MAX_PARALLEL_RANGE: std::ops::RangeInclusive<usize> = 1..=10;
+
+/// How the tasks of a project use the repo (D2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkspaceMode {
+    /// Every task works in the project repo itself, one at a time (the old behaviour).
+    #[default]
+    Shared,
+    /// Each task works in its own git worktree under the data dir; tasks may run in parallel.
+    Worktree,
+}
+
+impl WorkspaceMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WorkspaceMode::Shared => "shared",
+            WorkspaceMode::Worktree => "worktree",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<WorkspaceMode> {
+        match s.trim() {
+            "shared" => Some(WorkspaceMode::Shared),
+            "worktree" => Some(WorkspaceMode::Worktree),
+            _ => None,
+        }
+    }
+}
 
 /// The project's workspace options (D2). A project without the keys gets `Default`: new tasks
 /// branch from the repo's current branch, a task waiting at the plan gate holds the project,
@@ -44,6 +77,10 @@ pub struct WorkspaceOpts {
     pub hold_project_at_gate: bool,
     /// `auto_checkout_on_approve`: approving off the task branch with a clean tree checks it out.
     pub auto_checkout_on_approve: bool,
+    /// `workspace`: shared repo (default) or one git worktree per task.
+    pub mode: WorkspaceMode,
+    /// `max_parallel_tasks`: tasks with a live run / driver at once in worktree mode.
+    pub max_parallel_tasks: usize,
 }
 
 impl Default for WorkspaceOpts {
@@ -52,6 +89,8 @@ impl Default for WorkspaceOpts {
             base_branch: None,
             hold_project_at_gate: true,
             auto_checkout_on_approve: true,
+            mode: WorkspaceMode::Shared,
+            max_parallel_tasks: 1,
         }
     }
 }
@@ -75,7 +114,29 @@ impl WorkspaceOpts {
                 .get(AUTO_CHECKOUT_KEY)
                 .and_then(|v| v.as_bool())
                 .unwrap_or(d.auto_checkout_on_approve),
+            mode: entry
+                .get(WORKSPACE_KEY)
+                .and_then(|v| v.as_str())
+                .and_then(WorkspaceMode::parse)
+                .unwrap_or(d.mode),
+            max_parallel_tasks: entry
+                .get(MAX_PARALLEL_KEY)
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .filter(|n| MAX_PARALLEL_RANGE.contains(n))
+                .unwrap_or(d.max_parallel_tasks),
         }
+    }
+
+    /// True in worktree mode (each task in its own git worktree).
+    pub fn is_worktree(&self) -> bool {
+        self.mode == WorkspaceMode::Worktree
+    }
+
+    /// Dashboard job slots of the project: `Some(max_parallel_tasks)` in worktree mode, `None`
+    /// (one job per project) in shared mode.
+    pub fn max_parallel_job_slots(&self) -> Option<usize> {
+        self.is_worktree().then_some(self.max_parallel_tasks)
     }
 
     /// The branch a new task starts from: the configured `base_branch`, else the repo's
@@ -1336,7 +1397,24 @@ mod tests {
         assert_eq!(d.base_branch, None);
         assert!(d.hold_project_at_gate);
         assert!(d.auto_checkout_on_approve);
+        assert_eq!(d.mode, WorkspaceMode::Shared);
+        assert_eq!(d.max_parallel_tasks, 1);
+        assert!(!d.is_worktree());
         assert_eq!(WorkspaceOpts::from_value(&serde_json::json!({"id": "x"})), d);
+        let wt = WorkspaceOpts::from_value(&serde_json::json!({
+            "id": "x", "workspace": "worktree", "max_parallel_tasks": 3
+        }));
+        assert!(wt.is_worktree());
+        assert_eq!(wt.max_parallel_tasks, 3);
+        let bad_wt = WorkspaceOpts::from_value(&serde_json::json!({
+            "id": "x", "workspace": "pool", "max_parallel_tasks": 0
+        }));
+        assert_eq!(bad_wt, d);
+        assert_eq!(
+            WorkspaceOpts::from_value(&serde_json::json!({"id": "x", "max_parallel_tasks": 11}))
+                .max_parallel_tasks,
+            1
+        );
         let set = WorkspaceOpts::from_value(&serde_json::json!({
             "id": "x", "base_branch": " develop ", "hold_project_at_gate": false,
             "auto_checkout_on_approve": false

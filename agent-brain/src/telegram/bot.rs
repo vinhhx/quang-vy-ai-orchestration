@@ -1514,6 +1514,7 @@ pub(crate) fn apply_outcome(
             let what = format!("Đã mở lại task (trạng thái: {new_status})");
             ("Đã mở lại task".to_string(), what)
         }
+        Ok(ControlOutcome::CleanedUp { message }) => ("Đã dọn worktree".to_string(), message),
         Ok(ControlOutcome::StopRequested) => {
             let what = "Đã gửi yêu cầu dừng".to_string();
             (what.clone(), what)

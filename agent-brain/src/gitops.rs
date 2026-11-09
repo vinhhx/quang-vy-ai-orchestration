@@ -406,6 +406,57 @@ pub fn checkout_branch(root: &Path, name: &str) -> BrainResult<()> {
     Ok(())
 }
 
+/// `git branch <name> <start>`: a new branch from `start` without checking it out (D2.2: the
+/// main repo stays where it is; the task works in its own worktree).
+pub fn branch_from(root: &Path, name: &str, start: &str) -> BrainResult<()> {
+    if name.starts_with('-') || start.starts_with('-') {
+        return Err(BrainError::error(format!("Tên nhánh không hợp lệ: '{name}'")));
+    }
+    git(root, &["branch", "--no-track", name, start])?;
+    Ok(())
+}
+
+/// `git worktree add <path> <branch>` of an existing local branch (D2.2). The parent folder is
+/// created first; an existing `path` is refused by git itself.
+pub fn worktree_add(root: &Path, path: &Path, branch: &str) -> BrainResult<()> {
+    if branch.starts_with('-') || !branch_exists(root, branch) {
+        return Err(BrainError::error(format!(
+            "Không có nhánh '{branch}' để tạo worktree"
+        )));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let p = path.to_string_lossy();
+    git(root, &["worktree", "add", "--", &p, branch])?;
+    Ok(())
+}
+
+/// `git worktree remove <path>` WITHOUT `--force` (D2.4): git refuses a worktree with local
+/// changes or untracked files. The branch is never deleted.
+pub fn worktree_remove(root: &Path, path: &Path) -> BrainResult<()> {
+    let p = path.to_string_lossy();
+    git(root, &["worktree", "remove", "--", &p])?;
+    Ok(())
+}
+
+/// True when `branch` is fully merged into `base` (every commit of `branch` is reachable from
+/// `base`). False when either does not exist.
+pub fn is_merged_into(root: &Path, branch: &str, base: &str) -> bool {
+    if !branch_exists(root, branch) || !branch_exists(root, base) {
+        return false;
+    }
+    let sha = |b: &str| {
+        git(root, &["rev-parse", "--verify", &format!("refs/heads/{b}")])
+            .map(|s| s.trim().to_string())
+            .ok()
+    };
+    match (sha(branch), sha(base)) {
+        (Some(a), Some(b)) => is_ancestor(root, &a, &b),
+        _ => false,
+    }
+}
+
 /// Diff giữa 2 commit cho 1 file duy nhất, giới hạn tối đa `max_bytes`.
 pub fn diff_file(
     root: &Path,

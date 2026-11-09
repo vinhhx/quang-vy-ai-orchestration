@@ -811,6 +811,25 @@ pub fn build_reopen(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) 
     }
 }
 
+/// D2.4: Dọn worktree of a task that has one. Enabled for a done (`SUCCESS_STATUSES`) or ended
+/// task with nothing running; an unmerged branch is removed only after the user confirms (the
+/// dashboard asks, then sends `confirm`), so the check here assumes the confirmation.
+pub fn build_cleanup_worktree(
+    task: &TaskRow,
+    auto_state: Option<&str>,
+    busy: bool,
+    merged: bool,
+) -> ActionView {
+    let reason = crate::workspace::cleanup_refusal(task, auto_state, busy, merged, true);
+    ActionView {
+        id: "cleanup_worktree".to_string(),
+        label: "Dọn worktree".to_string(),
+        enabled: reason.is_none(),
+        reason,
+        run_id: None,
+    }
+}
+
 /// Xác định bước hiện tại của task (05.1 IN-05).
 pub fn current_step_of(f: &TaskFacts, running: Option<&RunRow>) -> String {
     if let Some(r) = running {
@@ -1112,6 +1131,7 @@ mod tests {
             created_at: 1000,
             updated_at: 1000,
             level: "vua".to_string(),
+            workdir: None,
         }
     }
 

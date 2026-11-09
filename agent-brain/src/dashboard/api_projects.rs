@@ -97,6 +97,8 @@ fn project_json(
         "base_branch": p.workspace.base_branch,
         "hold_project_at_gate": p.workspace.hold_project_at_gate,
         "auto_checkout_on_approve": p.workspace.auto_checkout_on_approve,
+        "workspace": p.workspace.mode.as_str(),
+        "max_parallel_tasks": p.workspace.max_parallel_tasks,
         "role_members": crate::projects::role_pins_of(map, &p.id).members,
         "role_engines": crate::projects::role_pins_of(map, &p.id).engines,
         "preflight": preflight_json(map, &p.id),
@@ -305,6 +307,12 @@ pub struct UpdateWorkspaceBody {
     /// `auto_checkout_on_approve`; absent keeps the stored value.
     #[serde(default)]
     pub auto_checkout_on_approve: Option<bool>,
+    /// `workspace`: `"shared"` or `"worktree"`; absent keeps the stored value.
+    #[serde(default)]
+    pub workspace: Option<String>,
+    /// `max_parallel_tasks` (`projects::MAX_PARALLEL_RANGE`); absent keeps the stored value.
+    #[serde(default)]
+    pub max_parallel_tasks: Option<i64>,
     #[serde(default)]
     pub etag: Option<String>,
 }
@@ -864,6 +872,39 @@ async fn update_workspace(
             Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, &e)),
         };
 
+        let mode = match body.workspace.as_deref() {
+            None => None,
+            Some(raw) => match crate::projects::WorkspaceMode::parse(raw) {
+                Some(m) => Some(m),
+                None => {
+                    return Ok(json_error(
+                        StatusCode::BAD_REQUEST,
+                        &format!(
+                            "\"{}\" chỉ nhận \"shared\" hoặc \"worktree\".",
+                            crate::projects::WORKSPACE_KEY
+                        ),
+                    ))
+                }
+            },
+        };
+        let max_parallel = match body.max_parallel_tasks {
+            None => None,
+            Some(n) if n >= 0 && crate::projects::MAX_PARALLEL_RANGE.contains(&(n as usize)) => {
+                Some(n as usize)
+            }
+            Some(_) => {
+                return Ok(json_error(
+                    StatusCode::BAD_REQUEST,
+                    &format!(
+                        "\"{}\" phải từ {} đến {}.",
+                        crate::projects::MAX_PARALLEL_KEY,
+                        crate::projects::MAX_PARALLEL_RANGE.start(),
+                        crate::projects::MAX_PARALLEL_RANGE.end()
+                    ),
+                ))
+            }
+        };
+
         let mut data = crate::projects::load_map(&st.map_path)?;
         let projects_arr = data
             .get_mut("projects")
@@ -882,6 +923,33 @@ async fn update_workspace(
             ));
         };
 
+        // A value equal to its default removes the key, as for the booleans below.
+        let defaults = crate::projects::WorkspaceOpts::default();
+        match mode {
+            Some(m) if m == defaults.mode => {
+                project_obj.remove(crate::projects::WORKSPACE_KEY);
+            }
+            Some(m) => {
+                project_obj.insert(
+                    crate::projects::WORKSPACE_KEY.to_string(),
+                    serde_json::json!(m.as_str()),
+                );
+            }
+            None => {}
+        }
+        match max_parallel {
+            Some(n) if n == defaults.max_parallel_tasks => {
+                project_obj.remove(crate::projects::MAX_PARALLEL_KEY);
+            }
+            Some(n) => {
+                project_obj.insert(
+                    crate::projects::MAX_PARALLEL_KEY.to_string(),
+                    serde_json::json!(n),
+                );
+            }
+            None => {}
+        }
+
         match base.as_deref() {
             Some("") => {
                 project_obj.remove(crate::projects::BASE_BRANCH_KEY);
@@ -894,7 +962,6 @@ async fn update_workspace(
             }
             None => {}
         }
-        let defaults = crate::projects::WorkspaceOpts::default();
         for (key, value, default) in [
             (
                 crate::projects::HOLD_AT_GATE_KEY,

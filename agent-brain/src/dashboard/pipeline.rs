@@ -1678,6 +1678,7 @@ mod tests {
             created_at: 1000,
             updated_at: 1000,
             level: "vua".to_string(),
+            workdir: None,
         }
     }
 

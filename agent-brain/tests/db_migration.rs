@@ -973,7 +973,7 @@ fn v3_db_gains_team_json() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
-    assert_eq!(agent_brain::db::SCHEMA_VERSION, 10);
+    assert_eq!(agent_brain::db::SCHEMA_VERSION, 11);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 
     let n: i64 = conn
@@ -1026,7 +1026,7 @@ fn fresh_db_has_team_json_at_current_version() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
-    assert_eq!(user_ver, 10);
+    assert_eq!(user_ver, 11);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 }
 
@@ -1062,7 +1062,7 @@ fn v4_db_upgrades_to_v5_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 10);
+    assert_eq!(user_ver, 11);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Verify existing data preserved
@@ -1140,7 +1140,7 @@ fn v5_db_upgrades_to_v6_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 10);
+    assert_eq!(user_ver, 11);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong intake phải được giữ nguyên
@@ -1241,7 +1241,7 @@ fn v6_db_upgrades_to_v7_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 10);
+    assert_eq!(user_ver, 11);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong runs phải được giữ nguyên
@@ -1327,7 +1327,7 @@ fn v7_db_upgrades_to_v8_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 10);
+    assert_eq!(user_ver, 11);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong tasks phải được giữ nguyên và cột level mặc định là 'vua'
@@ -1420,7 +1420,7 @@ fn v8_db_upgrades_to_v9_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 10);
+    assert_eq!(user_ver, 11);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong proposals phải có after_proposal_id = None
@@ -1489,7 +1489,7 @@ fn v9_db_upgrades_to_v10_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 10);
+    assert_eq!(user_ver, 11);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Existing intake row has default split = true (1)

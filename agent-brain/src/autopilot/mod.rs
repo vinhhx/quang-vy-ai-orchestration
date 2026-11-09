@@ -238,8 +238,10 @@ fn spawn_stage(ctx: &mut Ctx, task_id: Option<i64>, args: &[String]) -> BrainRes
     cmd.args(args);
     if let Some(tid) = task_id {
         cmd.env(AUTOPILOT_TASK_ENV, tid.to_string());
+        cmd.env(crate::workspace::TASK_ENV, tid.to_string());
     } else {
         cmd.env_remove(AUTOPILOT_TASK_ENV);
+        cmd.env_remove(crate::workspace::TASK_ENV);
     }
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::inherit());
@@ -459,7 +461,9 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
                 "Dự án '{proj_slug}' không còn trong projects_map.json"
             ))
         })?;
-    let root = crate::projects::require_runnable(&project, &ctx.cfg)?;
+    // D2.2: every step of the task works in its root (its worktree in worktree mode).
+    let proj_root = crate::projects::require_runnable(&project, &ctx.cfg)?;
+    let root = crate::workspace::ensure_task_root(&ctx.conn, &project, &proj_root, &task)?;
     let auto0 = crate::db::task_auto(&ctx.conn, task_id)?.unwrap_or_default();
     let wf = auto0
         .workflow_json
@@ -707,8 +711,8 @@ fn drive(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32> {
 fn claim_task(ctx: &mut Ctx, task_id: i64, opts: &ClaimOpts) -> BrainResult<AutoJson> {
     let (slug, profile) = claim::task_project(&ctx.conn, task_id)?
         .ok_or_else(|| BrainError::error(format!("Không tìm thấy task {task_id}")))?;
-    let hold = crate::projects::workspace_of(&ctx.map, &slug).hold_project_at_gate;
-    claim::claim(&mut ctx.conn, task_id, &slug, &profile, opts, hold)
+    let ws = crate::projects::workspace_of(&ctx.map, &slug);
+    claim::claim(&mut ctx.conn, task_id, &slug, &profile, opts, &ws)
 }
 
 /// `agent-brain auto` — `--start` tạo task bằng bước Lead đầu tiên, còn lại tiếp tục task có sẵn.
@@ -780,15 +784,13 @@ pub fn cmd_auto(ctx: &mut Ctx, opts: &AutoOpts) -> BrainResult<i32> {
                 "Không thể tạo tên task từ yêu cầu — hãy truyền cờ --name <slug>",
             ));
         }
-        if let Some(reason) =
-            claim::project_busy_reason(
-                &ctx.conn,
-                &project.id,
-                &project.profile,
-                None,
-                project.workspace.hold_project_at_gate,
-            )?
-        {
+        if let Some(reason) = claim::busy_reason_ws(
+            &ctx.conn,
+            &project.id,
+            &project.profile,
+            None,
+            &project.workspace,
+        )? {
             return Err(BrainError::error(reason));
         }
 
@@ -937,7 +939,12 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
                 "Dự án '{proj_slug}' không còn trong projects_map.json"
             ))
         })?;
-    let root = crate::projects::require_runnable(&project, &ctx.cfg)?;
+    // D2.2: the task's root (its worktree in worktree mode, where the branch is always checked
+    // out, so approving never checks anything out in the main repo).
+    let proj_root = crate::projects::require_runnable(&project, &ctx.cfg)?;
+    let root = crate::workspace::ensure_task_root(&ctx.conn, &project, &proj_root, &task)?;
+    let auto_checkout =
+        project.workspace.auto_checkout_on_approve && !project.workspace.is_worktree();
 
     let plan_commit = claim::approve_check(
         &ctx.conn,
@@ -960,29 +967,29 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
     let cont = wf_auto && !no_continue && !ended;
     if cont {
         // Kiểm tra bận và nhánh trước khi ghi, để một lần từ chối không để lại nửa chừng.
-        if let Some(reason) = claim::project_busy_reason(
+        if let Some(reason) = claim::busy_reason_ws(
             &ctx.conn,
             &proj_slug,
             &profile,
             Some(task_id),
-            project.workspace.hold_project_at_gate,
+            &project.workspace,
         )? {
             return Err(BrainError::error(reason));
         }
     }
     // D2.3b: off the task branch with a clean tree, check it out (`auto_checkout_on_approve`);
     // otherwise an approval that runs on is refused as before, with the dirty files.
-    let busy = claim::project_busy_reason(
+    let busy = claim::busy_reason_ws(
         &ctx.conn,
         &proj_slug,
         &profile,
         Some(task_id),
-        project.workspace.hold_project_at_gate,
+        &project.workspace,
     )?;
     if let Err(reason) = claim::checkout_for_approve(
         &root,
         &task.branch,
-        project.workspace.auto_checkout_on_approve,
+        auto_checkout,
         busy.as_deref(),
         cont,
     ) {
@@ -1013,7 +1020,7 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
         &proj_slug,
         &profile,
         &ClaimOpts::default(),
-        project.workspace.hold_project_at_gate,
+        &project.workspace,
     )?;
     drive(ctx, task_id, true)
 }

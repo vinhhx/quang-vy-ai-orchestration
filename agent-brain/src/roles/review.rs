@@ -101,6 +101,8 @@ pub fn cmd_review(
 ) -> BrainResult<i32> {
     let proj = crate::projects::select_project(project, &ctx.map)?;
     let proj_path = crate::projects::require_runnable(&proj, &ctx.cfg)?;
+    // D2.2: the task's worktree in worktree mode (`workspace::role_root`), else the repo.
+    let proj_path = crate::workspace::role_root(&ctx.conn, &proj, &proj_path)?;
 
     let protocol = crate::protocol_paths::current(&proj, &proj_path);
     let report_file = protocol.review(kind).to_string();

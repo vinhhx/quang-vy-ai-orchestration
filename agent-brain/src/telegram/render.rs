@@ -693,6 +693,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             level: "vua".to_string(),
+            workdir: None,
         };
         let project = crate::projects::Project {
             id: "proj".to_string(),

@@ -256,6 +256,16 @@
             <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="workspaceDraft(p).auto_checkout_on_approve" :disabled="isWorkspaceSaving(p)" @change="setWorkspaceDraft(p, 'auto_checkout_on_approve', $event.target.checked)">
             <span>Tự checkout nhánh task khi duyệt (working tree sạch)</span>
           </label>
+          <label :for="'ab-proj-workspace-' + p.id" class="text-sm font-semibold leading-normal">Không gian làm việc của task</label>
+          <p :id="'ab-proj-workspace-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Dùng chung: mọi task làm trong repo dự án, lần lượt từng task. Worktree riêng: mỗi task có một git worktree riêng, chạy song song tối đa số task bên dưới; repo chính không đổi nhánh.</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <select :id="'ab-proj-workspace-' + p.id" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).workspace" @change="setWorkspaceDraft(p, 'workspace', $event.target.value)" :disabled="isWorkspaceSaving(p)" :aria-describedby="'ab-proj-workspace-help-' + p.id">
+              <option value="shared">Dùng chung repo</option>
+              <option value="worktree">Worktree riêng cho mỗi task</option>
+            </select>
+            <label :for="'ab-proj-max-parallel-' + p.id" class="text-sm font-semibold leading-normal">Số task song song</label>
+            <input :id="'ab-proj-max-parallel-' + p.id" type="number" inputmode="numeric" min="1" max="10" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).max_parallel_tasks" @input="setWorkspaceDraft(p, 'max_parallel_tasks', $event.target.value)" :disabled="isWorkspaceSaving(p)">
+          </div>
           <div class="flex flex-wrap items-center gap-2">
             <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isWorkspaceSaving(p)" @click="saveWorkspace(p)">Lưu nhánh và cách duyệt</button>
           </div>

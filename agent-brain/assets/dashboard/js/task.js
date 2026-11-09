@@ -1820,6 +1820,9 @@
           var oslug = (this.task && this.task.slug) ? this.task.slug : '';
           return 'Mở lại task ' + oslug + '?';
         }
+        if (this.dialog.id === 'cleanup_worktree') {
+          return 'Dọn worktree của task ' + ((this.task && this.task.slug) ? this.task.slug : '') + '?';
+        }
         return '';
       },
 
@@ -1843,6 +1846,14 @@
         if (this.dialog.id === 'reopen') {
           return 'Task sẽ chuyển về trạng thái mở để bạn chạy Dev, Lead lại hoặc Bật autopilot tiếp tục.';
         }
+        if (this.dialog.id === 'cleanup_worktree') {
+          var wbranch = (this.task && this.task.branch) ? this.task.branch : '';
+          var wbody = 'Thư mục worktree ' + ((this.task && this.task.workdir) ? this.task.workdir : '') + ' sẽ bị xoá (git worktree remove, worktree có thay đổi chưa commit thì bị từ chối). Nhánh ' + wbranch + ' vẫn giữ.';
+          if (!(this.task && this.task.workdir_merged)) {
+            wbody += ' Nhánh này CHƯA merge vào nhánh gốc.';
+          }
+          return wbody;
+        }
         return '';
       },
 
@@ -1860,6 +1871,7 @@
         if (this.dialog.id === 'relead') return 'Chạy lại Lead';
         if (this.dialog.id === 'return_lead') return 'Trả về Lead';
         if (this.dialog.id === 'reopen') return 'Mở lại task';
+        if (this.dialog.id === 'cleanup_worktree') return 'Dọn worktree';
         return '';
       },
 
@@ -1867,7 +1879,7 @@
         if (!this.dialog) return '';
         if (this.dialog.id === 'kill') return 'Giữ chạy tiếp';
         if (this.dialog.id === 'relead' || this.dialog.id === 'return_lead') return 'Giữ plan hiện tại';
-        if (this.dialog.id === 'reopen') return 'Hủy';
+        if (this.dialog.id === 'reopen' || this.dialog.id === 'cleanup_worktree') return 'Hủy';
         return '';
       },
 
@@ -1876,7 +1888,7 @@
         if (this.dialog.id === 'kill') {
           return 'bg-rose-600 text-white hover:bg-rose-700';
         }
-        if (this.dialog.id === 'reopen') {
+        if (this.dialog.id === 'reopen' || this.dialog.id === 'cleanup_worktree') {
           return 'bg-amber-600 text-white hover:bg-amber-700';
         }
         return 'bg-indigo-600 text-white hover:bg-indigo-700';
@@ -2514,6 +2526,10 @@
         if (reopen) {
           acts = acts.concat([reopen]);
         }
+        var cleanup = this.controlById('cleanup_worktree');
+        if (cleanup) {
+          acts = acts.concat([cleanup]);
+        }
         return acts;
       },
 
@@ -2664,6 +2680,12 @@
           this.dialog = a;
           window.AB.lockScroll(true);
           window.AB.focusLater('ab-reopen-note');
+        } else if (a.id === 'cleanup_worktree') {
+          // Removes a folder: always asked first; the dialog is the confirmation.
+          this.lastFocusId = this.actionId(a);
+          this.dialog = a;
+          window.AB.lockScroll(true);
+          window.AB.focusLater('ab-dlg-cancel');
         } else if (this.controlPaths[a.id]) {
           this.postControl(a);
         } else {
@@ -2675,6 +2697,7 @@
         approve: '/approve',
         return_lead: '/return',
         reopen: '/reopen',
+        cleanup_worktree: '/cleanup-worktree',
         auto_start: '/auto',
         auto_stop: '/auto/stop',
         auto_more_round: '/auto/more-round',
@@ -2690,6 +2713,8 @@
             return 'Đã trả plan về Lead (job ' + data.job_id + ').';
           case 'reopen':
             return 'Đã mở lại task' + (data && data.new_status ? ' (trạng thái: ' + data.new_status + ').' : '.');
+          case 'cleanup_worktree':
+            return (data && data.message) ? data.message : 'Đã dọn worktree.';
           case 'auto_start':
             return 'Đã bật autopilot.';
           case 'auto_stop':
@@ -2722,6 +2747,9 @@
         if (a.id === 'reopen') {
           var rnote = (this.reopenNote || '').trim();
           if (rnote) body.note = rnote;
+        }
+        if (a.id === 'cleanup_worktree') {
+          body.confirm = true;
         }
         if (a.id === 'approve' && this.approveNext && this.approveNext !== 'auto') {
           body.next = this.approveNext;
@@ -2759,7 +2787,7 @@
         var act = this.dialog;
         this.closeDialog();
         if (!act) return;
-        if (act.id === 'return_lead' || act.id === 'reopen') {
+        if (act.id === 'return_lead' || act.id === 'reopen' || act.id === 'cleanup_worktree') {
           this.postControl(act);
         } else {
           this.runAction(act);

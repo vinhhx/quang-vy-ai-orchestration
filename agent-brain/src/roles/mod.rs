@@ -556,8 +556,21 @@ pub fn execute_role_staged(
     let exclude = std::env::var(crate::autopilot::AUTOPILOT_TASK_ENV)
         .ok()
         .and_then(|v| v.trim().parse::<i64>().ok());
+    // D2.2: in worktree mode tasks do not share a tree, so another task's driver only blocks
+    // when the project already runs `max_parallel_tasks` tasks besides this one.
     use crate::autopilot::claim::live_driver_reason;
-    let live = live_driver_reason(&ctx.conn, &project.id, &project.profile, exclude)?;
+    let live = if project.workspace.is_worktree() {
+        crate::autopilot::claim::worktree_busy_reason(
+            &ctx.conn,
+            &project.id,
+            &project.profile,
+            plan.task_id.or(exclude),
+            project.workspace.max_parallel_tasks,
+            &[],
+        )?
+    } else {
+        live_driver_reason(&ctx.conn, &project.id, &project.profile, exclude)?
+    };
     if let Some(reason) = live {
         return Err(BrainError::error(reason));
     }

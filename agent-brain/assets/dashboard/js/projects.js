@@ -945,7 +945,9 @@
         return {
           base_branch: p.base_branch || '',
           hold_project_at_gate: p.hold_project_at_gate !== false,
-          auto_checkout_on_approve: p.auto_checkout_on_approve !== false
+          auto_checkout_on_approve: p.auto_checkout_on_approve !== false,
+          workspace: p.workspace || 'shared',
+          max_parallel_tasks: String(p.max_parallel_tasks || 1)
         };
       },
 
@@ -968,12 +970,20 @@
         var self = this;
         var d = this.workspaceDraft(p);
         var base = String(d.base_branch || '').trim();
+        var maxText = String(d.max_parallel_tasks || '').trim();
+        if (!/^[0-9]+$/.test(maxText)) {
+          this.workspaceErrors[p.id] = 'Số task song song phải là số nguyên.';
+          return Promise.resolve();
+        }
+        var maxParallel = parseInt(maxText, 10);
         this.workspaceSaving[p.id] = true;
         this.workspaceErrors[p.id] = '';
         return window.AB.api('PUT', '/api/projects/' + encodeURIComponent(p.id) + '/workspace', {
           base_branch: base,
           hold_project_at_gate: Boolean(d.hold_project_at_gate),
           auto_checkout_on_approve: Boolean(d.auto_checkout_on_approve),
+          workspace: d.workspace === 'worktree' ? 'worktree' : 'shared',
+          max_parallel_tasks: maxParallel,
           etag: this.etag
         }).then(function (res) {
           self.workspaceSaving[p.id] = false;
@@ -981,6 +991,8 @@
             p.base_branch = base || null;
             p.hold_project_at_gate = Boolean(d.hold_project_at_gate);
             p.auto_checkout_on_approve = Boolean(d.auto_checkout_on_approve);
+            p.workspace = d.workspace === 'worktree' ? 'worktree' : 'shared';
+            p.max_parallel_tasks = maxParallel;
             delete self.workspaceDrafts[p.id];
             if (res.data && res.data.etag) self.etag = res.data.etag;
           } else if (res && res.status === 409) {

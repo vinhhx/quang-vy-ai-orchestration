@@ -227,8 +227,41 @@ pub fn cmd_lead(
         return Err(BrainError::error(msg));
     }
 
-    let curr_branch = crate::gitops::current_branch(&proj_path);
-    let is_replan = curr_branch.as_deref() == Some(&branch);
+    // D2.2 (`workspace: "worktree"`): the task works in its own worktree. A task whose row and
+    // branch exist re-plans in its worktree (re-created when it was cleaned up); a new task gets
+    // the deterministic worktree path now and the branch + worktree right before the skeleton is
+    // written, leaving the main repo's checkout alone. `git_root` is where the repo is read
+    // before that worktree exists.
+    let repo_root = proj_path;
+    let mut wt_new: Option<std::path::PathBuf> = None;
+    let proj_path = if proj.workspace.is_worktree() {
+        let existing = crate::db::project_row_id(&ctx.conn, &proj.id)
+            .ok()
+            .and_then(|pid| crate::db::find_task_by_branch(&ctx.conn, pid, &branch).ok().flatten());
+        match existing {
+            Some(t) if crate::gitops::branch_exists(&repo_root, &branch) => {
+                if opts.dry_run {
+                    crate::workspace::task_root_at(&repo_root, &t)
+                } else {
+                    crate::workspace::ensure_task_root(&ctx.conn, &proj, &repo_root, &t)?
+                }
+            }
+            _ if crate::gitops::current_branch(&repo_root).as_deref() == Some(branch.as_str()) => {
+                repo_root.clone()
+            }
+            _ => {
+                let p = crate::workspace::worktree_path(&proj.id, &task_slug);
+                wt_new = Some(p.clone());
+                p
+            }
+        }
+    } else {
+        repo_root.clone()
+    };
+    let git_root = if wt_new.is_some() { repo_root.clone() } else { proj_path.clone() };
+
+    let curr_branch = crate::gitops::current_branch(&git_root);
+    let is_replan = wt_new.is_none() && curr_branch.as_deref() == Some(&branch);
 
     if opts.review {
         if !is_replan {
@@ -323,9 +356,9 @@ pub fn cmd_lead(
     };
     let mut git_block = String::new();
     if is_agy_lead {
-        let status_res = crate::gitops::git(&proj_path, &["status", "--short"]);
+        let status_res = crate::gitops::git(&git_root, &["status", "--short"]);
         let log_res = crate::gitops::git(
-            &proj_path,
+            &git_root,
             &["log", "-n", "20", "--stat", "--date=iso"],
         );
         let block = git_context_block(
@@ -341,7 +374,7 @@ pub fn cmd_lead(
     }
 
     // Skill mode (D-49): skills are found on every run, no per-project configuration.
-    let skill_block = crate::skills::prompt_block(&crate::skills::discover(&proj_path));
+    let skill_block = crate::skills::prompt_block(&crate::skills::discover(&git_root));
     if !skill_block.is_empty() {
         user_input.push_str("\n\n");
         user_input.push_str(&skill_block);
@@ -421,8 +454,14 @@ pub fn cmd_lead(
         return Ok(crate::error::EXIT_OK);
     }
 
-    let mut dirty = crate::gitops::changed_paths(&proj_path)?;
-    if crate::gitops::current_branch(&proj_path).as_deref() == Some(&branch) {
+    // A new task in worktree mode starts from a fresh worktree: the main repo's local changes
+    // are not part of it.
+    let mut dirty = if wt_new.is_some() {
+        Default::default()
+    } else {
+        crate::gitops::changed_paths(&proj_path)?
+    };
+    if crate::gitops::current_branch(&git_root).as_deref() == Some(&branch) {
         dirty.remove(&protocol.plan);
     }
     if !dirty.is_empty() {
@@ -461,7 +500,7 @@ pub fn cmd_lead(
                 chrono::Utc::now().to_rfc3339(),
             )
         }
-    } else if crate::gitops::branch_exists(&proj_path, &branch) {
+    } else if crate::gitops::branch_exists(&git_root, &branch) {
         return Err(BrainError::error(format!(
             "Nhánh '{branch}' đã tồn tại nhưng chưa được checkout — hãy checkout nhánh đó hoặc dùng cờ --name khác"
         )));
@@ -469,18 +508,18 @@ pub fn cmd_lead(
         // D2.1: the project's `base_branch` when set (it must exist), else the current branch.
         let (bb, bc) = match proj.workspace.base_branch.as_deref() {
             Some(base) => {
-                if !crate::gitops::branch_exists(&proj_path, base) {
+                if !crate::gitops::branch_exists(&git_root, base) {
                     return Err(BrainError::error(crate::projects::base_branch_missing_text(
                         base,
                     )));
                 }
                 let head_ref = format!("refs/heads/{base}");
-                let sha = crate::gitops::git(&proj_path, &["rev-parse", "--verify", &head_ref])?
+                let sha = crate::gitops::git(&git_root, &["rev-parse", "--verify", &head_ref])?
                     .trim()
                     .to_string();
                 (Some(base.to_string()), sha)
             }
-            None => (curr_branch.clone(), crate::gitops::head_sha(&proj_path)?),
+            None => (curr_branch.clone(), crate::gitops::head_sha(&git_root)?),
         };
         let ca = chrono::Utc::now().to_rfc3339();
         if let Some(ref cb) = bb {
@@ -502,7 +541,25 @@ pub fn cmd_lead(
         "created_at": created_at,
     });
 
-    if !is_replan {
+    if let Some(ref wt) = wt_new {
+        // D2.2: the branch from the base (the configured one, else the base commit read above:
+        // the main repo's HEAD) and its worktree; the main repo keeps its checkout.
+        let start = proj
+            .workspace
+            .base_branch
+            .clone()
+            .or_else(|| base_commit.clone())
+            .unwrap_or_else(|| "HEAD".to_string());
+        let made =
+            crate::workspace::create_task_worktree(&repo_root, &proj.id, &task_slug, &branch, &start)?;
+        if &made != wt {
+            return Err(BrainError::error(format!(
+                "Worktree tạo ở {} thay vì {}",
+                made.display(),
+                wt.display()
+            )));
+        }
+    } else if !is_replan {
         // A configured base branch is the start point; otherwise HEAD (the current branch).
         match proj.workspace.base_branch.as_deref() {
             Some(base) => crate::gitops::create_branch_from(&proj_path, &branch, base)?,
@@ -537,6 +594,10 @@ pub fn cmd_lead(
         base_branch.as_deref(),
         base_commit.as_deref(),
     )?;
+
+    if proj.workspace.is_worktree() && proj_path != repo_root {
+        crate::db::set_task_workdir(&ctx.conn, task_id, Some(&proj_path.to_string_lossy()))?;
+    }
 
     if let Some(ref lvl_str) = opts.level {
         let lvl = crate::departments::Level::parse(lvl_str).unwrap();

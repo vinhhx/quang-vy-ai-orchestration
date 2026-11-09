@@ -175,11 +175,62 @@ pub fn resolve_project(
     Ok((project, proj_root))
 }
 
+/// D2.2: the dashboard's busy check for a project in worktree mode. Live runs / drivers of
+/// other tasks and the tasks of jobs just handed over count toward `max_parallel_tasks`; the
+/// plan-gate hold does not apply (see `claim::worktree_busy_reason`).
+fn worktree_busy_reason(
+    conn: &rusqlite::Connection,
+    jobs: &JobManager,
+    project: &Project,
+    task_id: Option<i64>,
+) -> BrainResult<Option<String>> {
+    let mut extra = Vec::new();
+    for (p, profile, t) in jobs.reserved_tasks() {
+        if t.is_some() && t == task_id {
+            continue;
+        }
+        if project.profile == "personal" && profile == "personal" {
+            return Ok(Some(
+                "Profile personal đang có việc vừa giao từ dashboard — không chạy song song trên cùng thư mục cấu hình (E-06)".to_string(),
+            ));
+        }
+        if p != project.id {
+            continue;
+        }
+        match t {
+            Some(t) => extra.push(t),
+            None => {
+                return Ok(Some(format!(
+                    "Dự án {} đang có việc vừa giao từ dashboard — chờ run xong",
+                    project.id
+                )))
+            }
+        }
+    }
+    claim::worktree_busy_reason(
+        conn,
+        &project.id,
+        &project.profile,
+        task_id,
+        project.workspace.max_parallel_tasks,
+        &extra,
+    )
+}
+
+/// D2.4: the task branch is merged into its base (the task's `base_branch`, else the project's).
+fn worktree_merged(project: &Project, task: &TaskRow) -> bool {
+    crate::workspace::merge_base_of(project, task)
+        .is_some_and(|base| crate::gitops::is_merged_into(&project.root(), &task.branch, &base))
+}
+
 pub fn busy_reason(
     conn: &rusqlite::Connection,
     jobs: &JobManager,
     project: &Project,
 ) -> BrainResult<Option<String>> {
+    if project.workspace.is_worktree() {
+        return worktree_busy_reason(conn, jobs, project, None);
+    }
     let running = crate::db::running_runs(conn)?;
     for r in &running {
         if let (Some(pid), Some(pid_start)) = (r.pid, r.pid_start) {
@@ -267,6 +318,9 @@ pub fn busy_reason_for_task(
     task_id: i64,
     branch: &str,
 ) -> BrainResult<Option<String>> {
+    if project.workspace.is_worktree() {
+        return worktree_busy_reason(conn, jobs, project, Some(task_id));
+    }
     let running = crate::db::running_runs(conn)?;
     for r in &running {
         if r.task_id == Some(task_id) {
@@ -383,8 +437,26 @@ pub fn lead_preflight(
 ) -> BrainResult<LeadPreflight> {
     let current = crate::gitops::current_branch(root);
     let branch = format!("task/{slug}");
-    let replan = current.as_deref() == Some(&branch);
-    let mut dirty_set = crate::gitops::changed_paths(root)?;
+    // D2.2 (worktree mode): a task whose row and branch exist re-plans in its own worktree, and
+    // a new task starts in a fresh one, so the main repo's checkout and local changes do not
+    // matter; only the existing task's worktree is checked for local changes.
+    let worktree = project.workspace.is_worktree();
+    let wt_task = if worktree && crate::gitops::branch_exists(root, &branch) {
+        crate::db::project_row_id(conn, &project.id)
+            .ok()
+            .and_then(|pid| crate::db::find_task_by_branch(conn, pid, &branch).ok().flatten())
+    } else {
+        None
+    };
+    let replan = wt_task.is_some() || current.as_deref() == Some(&branch);
+    let mut dirty_set = match wt_task.as_ref() {
+        Some(t) => {
+            let task_root = crate::workspace::task_root_at(root, t);
+            crate::gitops::changed_paths(&task_root).unwrap_or_default()
+        }
+        None if worktree && !replan => Default::default(),
+        None => crate::gitops::changed_paths(root)?,
+    };
     if replan {
         dirty_set.remove(&crate::protocol_paths::paths(project, slug).plan);
     }
@@ -418,7 +490,10 @@ pub fn lead_preflight(
         None
     };
 
-    let busy = busy_reason(conn, jobs, project)?;
+    let busy = match wt_task.as_ref() {
+        Some(t) => busy_reason_for_task(conn, jobs, project, t.id, &branch)?,
+        None => busy_reason(conn, jobs, project)?,
+    };
 
     let (can_start, reason, kind) = if let Some(ref b) = busy {
         (false, Some(b.clone()), Some("busy".to_string()))
@@ -490,6 +565,7 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         .route("/api/tasks/{id}/human/return", post(post_human_return))
         .route("/api/tasks/{id}/approve", post(post_approve))
         .route("/api/tasks/{id}/reopen", post(post_reopen))
+        .route("/api/tasks/{id}/cleanup-worktree", post(post_cleanup_worktree))
         .route("/api/tasks/{id}/plan-diff", get(get_plan_diff))
         .route("/api/tasks/{id}/return", post(post_return))
         .route("/api/tasks/{id}/auto", post(post_auto))
@@ -914,6 +990,7 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
         branch: Some(info.branch.clone()),
         task_id: Some(task_id),
         args,
+        max_parallel: info.project.workspace.max_parallel_job_slots(),
     };
 
     match st.jobs.start(spec) {
@@ -1291,7 +1368,7 @@ async fn list_tasks(
         let mut stmt = conn.prepare(
             "SELECT tasks.id, tasks.project_id, tasks.slug, tasks.title, tasks.branch,
                     tasks.base_branch, tasks.base_commit, tasks.status, tasks.created_at, tasks.updated_at, tasks.level,
-                    projects.slug, projects.name_vi, projects.profile
+                    projects.slug, projects.name_vi, projects.profile, tasks.workdir
              FROM tasks
              JOIN projects ON tasks.project_id = projects.id
              WHERE (?1 IS NULL OR projects.profile = ?1)
@@ -1320,6 +1397,7 @@ async fn list_tasks(
                 created_at: r.get(8)?,
                 updated_at: r.get(9)?,
                 level: r.get(10)?,
+                workdir: r.get(14)?,
             };
             let proj_slug: String = r.get(11)?;
             let proj_name: String = r.get(12)?;
@@ -1550,7 +1628,9 @@ pub fn load_task_state(
         None => return Ok(Err(format!("Không tìm thấy dự án {project_slug}"))),
     };
 
-    let root = PathBuf::from(&project.path);
+    // D2.2: every git fact of the task is read where its work happens (its worktree in
+    // worktree mode, where the task branch is always checked out).
+    let root = crate::workspace::task_root(&project, &task);
     let current_branch = crate::gitops::current_branch(&root);
     let is_on_branch = current_branch.as_deref() == Some(task.branch.as_str());
     let dirty_set = crate::gitops::changed_paths(&root).unwrap_or_default();
@@ -1623,7 +1703,9 @@ pub fn load_task_state(
         dirty_outside_plan: Vec::new(),
         branch_exists,
         protocol: protocol.clone(),
-        checkout_on_approve: project.workspace.auto_checkout_on_approve,
+        // Worktree mode never checks a task branch out in the main repo.
+        checkout_on_approve: project.workspace.auto_checkout_on_approve
+            && !project.workspace.is_worktree(),
     };
 
     let busy = busy_reason_for_task(conn, &st.jobs, &project, task.id, &task.branch)?;
@@ -1763,6 +1845,16 @@ pub fn load_task_state(
         }
     }
     view.actions.push(quota_rerun);
+    // D2.4: Dọn worktree, for a task that has one (worktree mode).
+    if task.workdir.is_some() {
+        let merged = worktree_merged(&project, &task);
+        view.controls.push(taskstate::build_cleanup_worktree(
+            &task,
+            auto.auto_state.as_deref(),
+            running_of(&runs).is_some() || driver_alive,
+            merged,
+        ));
+    }
 
     let quota_teams = match latest.filter(|r| r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA)) {
         Some(r) => team_readiness(st, &task, &project).ready_names(&st.cfg, &teams, &r.role),
@@ -2636,6 +2728,8 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "runs": run_rows,
             "job": job_view,
             "plan_diff_summary": state.plan_diff_summary,
+            "workdir": task.workdir,
+            "workdir_merged": task.workdir.is_some() && worktree_merged(project, task),
         });
 
         Ok((
@@ -3206,6 +3300,7 @@ fn task_job(state: &TaskState, role: &str, args: Vec<String>) -> crate::dashboar
         branch: Some(state.task.branch.clone()),
         task_id: Some(state.task.id),
         args,
+        max_parallel: state.project.workspace.max_parallel_job_slots(),
     }
 }
 
@@ -3238,6 +3333,10 @@ fn absent_control(control: &str, state: &TaskState) -> (String, &'static str) {
             "Task chưa hoàn thành hoặc không có nhánh để mở lại.".to_string(),
             "not_allowed",
         ),
+        "cleanup_worktree" | "cleanup_worktree_confirmed" => (
+            "Task không có worktree để dọn.".to_string(),
+            "not_allowed",
+        ),
         _ => (NOT_ALLOWED_MSG.to_string(), "not_allowed"),
     }
 }
@@ -3248,6 +3347,8 @@ fn absent_control(control: &str, state: &TaskState) -> (String, &'static str) {
 pub enum ControlOutcome {
     /// Mở lại task đã xong (Phase B1).
     Reopened { new_status: String },
+    /// Worktree của task đã được dọn (D2.4); nhánh vẫn giữ.
+    CleanedUp { message: String },
     /// Duyệt plan: ghi nhận duyệt cho commit plan; `job_id` khi autopilot chạy tiếp.
     Approved {
         approved_at: i64,
@@ -3358,11 +3459,16 @@ pub fn run_control_as(
 
     let is_approve_variant =
         matches!(control, "approve" | "approve_none" | "approve_qa" | "approve_dev");
+    let is_cleanup_variant = control == "cleanup_worktree_confirmed";
     let ctl = match state
         .view
         .controls
         .iter()
-        .find(|c| c.id == control || (is_approve_variant && c.id == "approve"))
+        .find(|c| {
+            c.id == control
+                || (is_approve_variant && c.id == "approve")
+                || (is_cleanup_variant && c.id == "cleanup_worktree")
+        })
     {
         Some(c) => c.clone(),
         None => {
@@ -3422,10 +3528,19 @@ pub fn run_control_as(
             // An approval that runs on needs the branch; one that only records does not.
             let runs_on = control != "approve_none"
                 && taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto));
+            // D2.2: in worktree mode the task's worktree (re-created when missing) is on the
+            // task branch; nothing is ever checked out in the main repo.
+            let ws = &state.project.workspace;
+            let approve_root = if ws.is_worktree() {
+                let proj_root = state.project.root();
+                crate::workspace::ensure_task_root(&conn, &state.project, &proj_root, &state.task)?
+            } else {
+                state.root.clone()
+            };
             if let Err(reason) = claim::checkout_for_approve(
-                &state.root,
+                &approve_root,
                 &state.task.branch,
-                state.project.workspace.auto_checkout_on_approve,
+                ws.auto_checkout_on_approve && !ws.is_worktree(),
                 state.busy.as_deref(),
                 runs_on,
             ) {
@@ -3649,6 +3764,27 @@ pub fn run_control_as(
                 new_status: new_status.to_string(),
             })
         }
+        "cleanup_worktree" | "cleanup_worktree_confirmed" => {
+            // D2.4: `git worktree remove` without --force; an unmerged branch needs the user's
+            // confirmation (`cleanup_worktree_confirmed`). The branch is never deleted.
+            let proj_root = state.project.root();
+            match crate::workspace::cleanup_task(
+                &conn,
+                &state.project,
+                &proj_root,
+                &state.task,
+                control == "cleanup_worktree_confirmed",
+            )? {
+                Ok(message) => {
+                    crate::term::emit(&message);
+                    Ok(ControlOutcome::CleanedUp { message })
+                }
+                Err(reason) => Ok(ControlOutcome::Refused {
+                    reason,
+                    kind: "not_allowed",
+                }),
+            }
+        }
         "run_dev" => {
             if source == ActionSource::Telegram
                 && state.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
@@ -3685,6 +3821,13 @@ fn control_response(o: ControlOutcome) -> Response {
             serde_json::json!({
                 "status": new_status,
                 "reopened": true,
+            }),
+        ),
+        ControlOutcome::CleanedUp { message } => json_resp(
+            StatusCode::OK,
+            serde_json::json!({
+                "cleaned_up": true,
+                "message": message,
             }),
         ),
         ControlOutcome::Approved {
@@ -3800,6 +3943,29 @@ async fn post_reopen(
     Json(body): Json<ReopenBody>,
 ) -> Response {
     post_control(st, task_id, "reopen", body.rev, body.note).await
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CleanupWorktreeBody {
+    pub rev: Option<String>,
+    /// The user confirmed removing the worktree of a branch not merged into its base.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// D2.4: Dọn worktree (`cleanup_worktree`; `confirm` = `cleanup_worktree_confirmed`).
+async fn post_cleanup_worktree(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<CleanupWorktreeBody>,
+) -> Response {
+    let control = if body.confirm {
+        "cleanup_worktree_confirmed"
+    } else {
+        "cleanup_worktree"
+    };
+    post_control(st, task_id, control, body.rev, None).await
 }
 
 async fn get_plan_diff(

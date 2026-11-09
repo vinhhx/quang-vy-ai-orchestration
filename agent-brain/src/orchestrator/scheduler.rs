@@ -389,6 +389,10 @@ fn handle_quota_stops(st: &AppState, conn: &rusqlite::Connection) -> BrainResult
                     }
                 };
 
+                let ws = crate::projects::workspace_of(
+                    &crate::projects::load_map(&st.map_path).unwrap_or_default(),
+                    &proj_slug,
+                );
                 let spec = crate::dashboard::jobs::JobSpec {
                     role: "auto".to_string(),
                     project: proj_slug,
@@ -396,6 +400,7 @@ fn handle_quota_stops(st: &AppState, conn: &rusqlite::Connection) -> BrainResult
                     branch: Some(branch),
                     task_id: Some(qs.task_id),
                     args: vec!["auto".to_string(), qs.task_id.to_string()],
+                    max_parallel: ws.max_parallel_job_slots(),
                 };
 
                 // Chạy tiếp qua đường autopilot hiện có; xóa khỏi quota_stops để chỉ chạy 1 lần mỗi lần dừng
@@ -486,8 +491,8 @@ pub fn handle_env_stops(
         if running {
             continue;
         }
-        let hold = crate::projects::workspace_of(map, &slug).hold_project_at_gate;
-        if crate::autopilot::claim::project_busy_reason(conn, &slug, &profile, None, hold)?
+        let ws = crate::projects::workspace_of(map, &slug);
+        if crate::autopilot::claim::busy_reason_ws(conn, &slug, &profile, None, &ws)?
             .is_some()
         {
             continue;
@@ -512,6 +517,7 @@ pub fn handle_env_stops(
             branch: Some(branch),
             task_id: Some(task_id),
             args: vec!["auto".to_string(), task_id.to_string()],
+            max_parallel: ws.max_parallel_job_slots(),
         };
         match st.jobs.start(spec) {
             Ok(_) => {

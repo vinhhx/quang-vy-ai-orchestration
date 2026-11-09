@@ -189,9 +189,10 @@ ALTER TABLE proposals ADD COLUMN after_proposal_id INTEGER REFERENCES proposals(
 );
 CREATE INDEX plan_approvals_task ON plan_approvals(task_id);
 ALTER TABLE intake ADD COLUMN split INTEGER NOT NULL DEFAULT 1;"#,
+    r#"ALTER TABLE tasks ADD COLUMN workdir TEXT;"#,
 ];
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -368,10 +369,13 @@ pub struct TaskRow {
     pub created_at: i64,
     pub updated_at: i64,
     pub level: String,
+    /// The task's own git worktree (D2.2, project `workspace: "worktree"`); `None` = the
+    /// task works in the project repo.
+    pub workdir: Option<String>,
 }
 
 pub const TASK_COLUMNS: &str =
-    "id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level";
+    "id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level, workdir";
 
 fn task_from_row(r: &rusqlite::Row) -> rusqlite::Result<TaskRow> {
     Ok(TaskRow {
@@ -386,7 +390,29 @@ fn task_from_row(r: &rusqlite::Row) -> rusqlite::Result<TaskRow> {
         created_at: r.get(8)?,
         updated_at: r.get(9)?,
         level: r.get(10)?,
+        workdir: r.get(11)?,
     })
+}
+
+/// Stores (or with `None` clears) the task's worktree path (D2.2 / D2.4).
+pub fn set_task_workdir(conn: &Connection, task_id: i64, workdir: Option<&str>) -> BrainResult<()> {
+    conn.execute(
+        "UPDATE tasks SET workdir = ?1, updated_at = ?2 WHERE id = ?3",
+        params![workdir, now_ms(), task_id],
+    )?;
+    Ok(())
+}
+
+/// Tasks of a project (by row id) that have a worktree, oldest first.
+pub fn tasks_with_workdir(conn: &Connection, project_id: i64) -> BrainResult<Vec<TaskRow>> {
+    let sql = format!(
+        "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1 AND workdir IS NOT NULL ORDER BY id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params![project_id], task_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 pub fn upsert_task(

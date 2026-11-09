@@ -16,6 +16,17 @@ pub struct JobSpec {
     pub branch: Option<String>,
     pub task_id: Option<i64>,
     pub args: Vec<String>,
+    /// D2.2: `Some(n)` for a project in worktree mode (`max_parallel_tasks`): up to `n` jobs of
+    /// different tasks may hold the project at once. `None` = one job per project (shared mode).
+    pub max_parallel: Option<usize>,
+}
+
+/// A project slot held by a job from its start until it exits.
+#[derive(Clone, Debug)]
+struct Reservation {
+    project: String,
+    profile: String,
+    task_id: Option<i64>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -43,13 +54,42 @@ struct InnerJob {
 struct ManagerState {
     next_id: u64,
     shutting_down: bool,
-    reservations: HashMap<String, String>, // project -> profile
+    reservations: HashMap<u64, Reservation>, // job id -> project slot
     jobs: HashMap<u64, InnerJob>,
 }
 
 struct SpawnRequest {
     args: Vec<String>,
+    env: Vec<(String, String)>,
     reply: Sender<std::io::Result<std::process::Child>>,
+}
+
+/// Why a job may not take a slot of its project now (`None` = it may). Shared mode: one job per
+/// project. Worktree mode (`max_parallel`): one job per task, at most `n` per project.
+fn reservation_refusal(reservations: &HashMap<u64, Reservation>, spec: &JobSpec) -> Option<String> {
+    let same: Vec<&Reservation> = reservations
+        .values()
+        .filter(|r| r.project == spec.project)
+        .collect();
+    if same.is_empty() {
+        return None;
+    }
+    let busy = format!(
+        "Dự án {} đang có việc vừa giao từ dashboard — chờ run xong",
+        spec.project
+    );
+    match spec.max_parallel {
+        None => Some(busy),
+        Some(_) if spec.task_id.is_none() || same.iter().any(|r| r.task_id == spec.task_id) => {
+            Some(busy)
+        }
+        Some(n) if same.len() >= n.max(1) => Some(format!(
+            "Dự án {} đang có {} việc song song từ dashboard (tối đa {n}) — chờ một việc xong",
+            spec.project,
+            same.len()
+        )),
+        Some(_) => None,
+    }
 }
 
 pub struct JobManager {
@@ -69,6 +109,9 @@ impl JobManager {
                 for req in spawn_rx {
                     let mut cmd = std::process::Command::new(&exe_clone);
                     cmd.args(&req.args);
+                    for (k, v) in &req.env {
+                        cmd.env(k, v);
+                    }
                     cmd.stdin(std::process::Stdio::null());
                     cmd.stdout(std::process::Stdio::piped());
                     cmd.stderr(std::process::Stdio::piped());
@@ -126,27 +169,35 @@ impl JobManager {
                     "Dashboard đang dừng — không nhận việc mới",
                 ));
             }
-            if state.reservations.contains_key(&spec.project) {
-                return Err(BrainError::error(format!(
-                    "Dự án {} đang có việc vừa giao từ dashboard — chờ run xong",
-                    spec.project
-                )));
+            if let Some(msg) = reservation_refusal(&state.reservations, &spec) {
+                return Err(BrainError::error(msg));
             }
 
             let job_id = state.next_id;
             state.next_id += 1;
-            state
-                .reservations
-                .insert(spec.project.clone(), spec.profile.clone());
+            state.reservations.insert(
+                job_id,
+                Reservation {
+                    project: spec.project.clone(),
+                    profile: spec.profile.clone(),
+                    task_id: spec.task_id,
+                },
+            );
 
             let (reply_tx, reply_rx) = channel();
+            // D2.2: the child knows its task, so a role run finds the task's worktree.
+            let env = spec
+                .task_id
+                .map(|t| vec![(crate::workspace::TASK_ENV.to_string(), t.to_string())])
+                .unwrap_or_default();
             let req = SpawnRequest {
                 args: spec.args.clone(),
+                env,
                 reply: reply_tx,
             };
 
             if let Err(e) = self.spawn_tx.send(req) {
-                state.reservations.remove(&spec.project);
+                state.reservations.remove(&job_id);
                 return Err(BrainError::error(format!(
                     "Lỗi gửi yêu cầu tới spawner: {e}"
                 )));
@@ -162,7 +213,7 @@ impl JobManager {
             Ok(c) => c,
             Err(e) => {
                 let mut state = self.state.lock().unwrap();
-                state.reservations.remove(&spec.project);
+                state.reservations.remove(&job_id);
                 if e.kind() == std::io::ErrorKind::NotFound
                     || self.exe.to_string_lossy().ends_with(" (deleted)")
                 {
@@ -268,7 +319,6 @@ impl JobManager {
         });
 
         let state_clone = self.state.clone();
-        let project_name = spec.project.clone();
         std::thread::spawn(move || {
             let status = child.wait();
             let _ = t_out.join();
@@ -302,7 +352,7 @@ impl JobManager {
             };
 
             let mut state = state_clone.lock().unwrap();
-            state.reservations.remove(&project_name);
+            state.reservations.remove(&job_id);
             if let Some(job) = state.jobs.get_mut(&job_id) {
                 job.view.state = "exited".to_string();
                 job.view.exit_code = exit_code;
@@ -346,8 +396,18 @@ impl JobManager {
         let state = self.state.lock().unwrap();
         state
             .reservations
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .values()
+            .map(|r| (r.project.clone(), r.profile.clone()))
+            .collect()
+    }
+
+    /// Slots held by jobs as (project, profile, task) (D2.2).
+    pub fn reserved_tasks(&self) -> Vec<(String, String, Option<i64>)> {
+        let state = self.state.lock().unwrap();
+        state
+            .reservations
+            .values()
+            .map(|r| (r.project.clone(), r.profile.clone(), r.task_id))
             .collect()
     }
 
@@ -403,6 +463,45 @@ mod tests {
     use std::time::Instant;
 
     #[test]
+    fn reservations_per_project_or_per_task() {
+        let spec = |task: Option<i64>, max: Option<usize>| JobSpec {
+            role: "auto".into(),
+            project: "p".into(),
+            profile: "work".into(),
+            branch: None,
+            task_id: task,
+            args: vec![],
+            max_parallel: max,
+        };
+        let mut held: HashMap<u64, Reservation> = HashMap::new();
+        assert_eq!(reservation_refusal(&held, &spec(Some(1), None)), None);
+        held.insert(
+            1,
+            Reservation {
+                project: "p".into(),
+                profile: "work".into(),
+                task_id: Some(1),
+            },
+        );
+        // Shared mode: one job per project.
+        assert!(reservation_refusal(&held, &spec(Some(2), None)).is_some());
+        // Worktree mode: another task fits, the same task or a job without a task does not.
+        assert_eq!(reservation_refusal(&held, &spec(Some(2), Some(2))), None);
+        assert!(reservation_refusal(&held, &spec(Some(1), Some(2))).is_some());
+        assert!(reservation_refusal(&held, &spec(None, Some(2))).is_some());
+        held.insert(
+            2,
+            Reservation {
+                project: "p".into(),
+                profile: "work".into(),
+                task_id: Some(2),
+            },
+        );
+        assert!(reservation_refusal(&held, &spec(Some(3), Some(2))).is_some());
+        assert_eq!(reservation_refusal(&held, &spec(Some(3), Some(3))), None);
+    }
+
+    #[test]
     fn test_jobs_manager_basic() {
         let mgr = JobManager::new(PathBuf::from("/bin/sh"));
         let spec = JobSpec {
@@ -411,6 +510,7 @@ mod tests {
             profile: "work".into(),
             branch: None,
             task_id: None,
+            max_parallel: None,
             args: vec!["-c".into(), "echo a; echo b 1>&2; exit 3".into()],
         };
         let job_id = mgr.start(spec).expect("start job");
@@ -442,6 +542,7 @@ mod tests {
             profile: "work".into(),
             branch: None,
             task_id: None,
+            max_parallel: None,
             args: vec![
                 "-c".into(),
                 "exec python3 -c 'import time; time.sleep(30)'".into(),
@@ -455,6 +556,7 @@ mod tests {
             profile: "work".into(),
             branch: None,
             task_id: None,
+            max_parallel: None,
             args: vec!["-c".into(), "echo fail".into()],
         };
         let err = mgr.start(spec2).unwrap_err();

@@ -231,6 +231,8 @@ pub fn cleanup_session_files(config_dir: &Path, session_id: &str) -> Vec<PathBuf
 pub fn cmd_inspect(ctx: &mut Ctx, project: &str, verbose: bool) -> BrainResult<i32> {
     let project = crate::projects::select_project(project, &ctx.map)?;
     let root = crate::projects::require_runnable(&project, &ctx.cfg)?;
+    // D2.2: inspect the task's worktree in worktree mode (`workspace::role_root`).
+    let root = crate::workspace::role_root(&ctx.conn, &project, &root)?;
     let project_row_id = crate::db::project_row_id(&ctx.conn, &project.id)?;
     let task =
         crate::tasks::current_task_in(&ctx.conn, project_row_id, &root, &project.protocol_dir)?;
