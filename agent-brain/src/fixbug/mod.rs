@@ -4,11 +4,81 @@ pub mod config;
 pub mod envfile;
 pub mod gsheet;
 pub mod init;
+pub mod legacy;
 pub mod pull;
 pub mod trello;
 pub mod writeback;
 
 use crate::error::{BrainError, EXIT_ERROR};
+use rusqlite::Connection;
+use std::path::{Path, PathBuf};
+
+/// Dòng mở khối dữ liệu QA trong request của bug (theo sau là mã ngẫu nhiên 8 hex).
+/// `pull` viết khối, `roles::lead::wants_untrusted_prompt` tìm nó.
+pub const QA_DATA_OPEN: &str = "<<<DU_LIEU_QA ";
+/// Dòng đóng khối dữ liệu QA (theo sau là cùng mã).
+pub const QA_DATA_CLOSE: &str = "<<<HET_DU_LIEU_QA ";
+/// Tiền tố `note` của ref nhập từ skill `/fix-bugs` cũ.
+pub const LEGACY_NOTE_PREFIX: &str = "legacy:";
+
+/// Thư mục `fix-bugs/` trong thư mục tri thức của dự án.
+pub fn fixbug_dir(project_root: &Path) -> PathBuf {
+    crate::knowledge::find_or_default(project_root).dir.join("fix-bugs")
+}
+
+/// Các file `fix-bugs/tasks/*/state.json` của skill cũ (sắp theo tên thư mục).
+pub fn legacy_state_files(project_root: &Path) -> Vec<PathBuf> {
+    let tasks = fixbug_dir(project_root).join("tasks");
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&tasks) {
+        for entry in rd.flatten() {
+            let p = entry.path().join("state.json");
+            if p.is_file() {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Chặn pull khi skill `/fix-bugs` cũ đang chạy hoặc trạng thái của nó chưa được nhập.
+/// Gọi ở mọi nơi pull (CLI, API dashboard, Telegram).
+pub fn pull_guard(project_root: &Path, conn: &Connection, project_id: i64) -> Result<(), FixbugError> {
+    pull_guard_with(project_root, conn, project_id, false)
+}
+
+/// Như `pull_guard`; `skip_legacy_check` bỏ qua điều kiện "chưa nhập trạng thái cũ"
+/// (không bỏ qua `.lock`). Chỉ CLI `fixbug pull --skip-legacy-check` dùng.
+pub fn pull_guard_with(
+    project_root: &Path,
+    conn: &Connection,
+    project_id: i64,
+    skip_legacy_check: bool,
+) -> Result<(), FixbugError> {
+    let dir = fixbug_dir(project_root);
+    if std::fs::symlink_metadata(dir.join(".lock")).is_ok() {
+        return Err(FixbugError::Other(
+            "Skill /fix-bugs cũ đang chạy (có .lock) — thử lại sau".to_string(),
+        ));
+    }
+    if skip_legacy_check {
+        return Ok(());
+    }
+    let states = legacy_state_files(project_root);
+    if states.is_empty() {
+        return Ok(());
+    }
+    let imported = crate::db::count_legacy_fixbug_refs(conn, project_id)
+        .map_err(|e| FixbugError::Other(e.to_string()))?;
+    if imported == 0 {
+        return Err(FixbugError::Other(format!(
+            "Dự án còn {} bug của skill /fix-bugs cũ chưa nhập — chạy 'agent-brain fixbug import-legacy <dự án>' trước",
+            states.len()
+        )));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FixbugError {
@@ -145,7 +215,12 @@ pub fn cmd_check(ctx: &crate::app::Ctx, project_query: &str) -> i32 {
     0
 }
 
-pub fn cmd_pull(ctx: &mut crate::app::Ctx, project_query: &str, max: Option<usize>) -> i32 {
+pub fn cmd_pull(
+    ctx: &mut crate::app::Ctx,
+    project_query: &str,
+    max: Option<usize>,
+    skip_legacy_check: bool,
+) -> i32 {
     let project = match crate::routing::resolve(project_query, &ctx.projects) {
         Ok(p) => p,
         Err(_) => {
@@ -161,6 +236,10 @@ pub fn cmd_pull(ctx: &mut crate::app::Ctx, project_query: &str, max: Option<usiz
         }
     };
     let root = std::path::Path::new(&project.path);
+    if let Err(e) = pull_guard_with(root, &ctx.conn, project_id, skip_legacy_check) {
+        crate::term::emit(&format!("Lỗi khi lấy bug: {e}"));
+        return 1;
+    }
     match pull::pull(&mut ctx.conn, root, project_id, &project.name_vi, max) {
         Ok(report) => {
             if report.new.is_empty() {
@@ -201,15 +280,24 @@ pub fn cmd_list(ctx: &crate::app::Ctx, project_query: &str) -> i32 {
             return 1;
         }
     };
-    match crate::db::list_fixbug_refs(&ctx.conn, project_id) {
-        Ok(refs) => {
-            if refs.is_empty() {
+    match crate::db::fixbug_progress(&ctx.conn, project_id) {
+        Ok(rows) => {
+            if rows.is_empty() {
                 crate::term::emit(&format!("Dự án '{}' chưa có bug nào được lấy.", project.id));
             } else {
-                crate::term::emit(&format!("Danh sách bug dự án '{}' ({} mục):", project.id, refs.len()));
-                for r in refs {
+                crate::term::emit(&format!("Danh sách bug dự án '{}' ({} mục):", project.id, rows.len()));
+                for r in rows {
                     let it_str = r.intake_id.map(|id| format!("#{id}")).unwrap_or_else(|| "—".to_string());
-                    crate::term::emit(&format!("  {} | {:<8} | {:<6} | intake: {:<5} | {}", r.key, r.state, r.kind, it_str, r.title));
+                    crate::term::emit(&format!(
+                        "  {} | {:<8} | {:<6} | intake: {:<5} | đề xuất: {:<14} | task: {:<16} | {}",
+                        r.key,
+                        r.ref_state,
+                        r.kind,
+                        it_str,
+                        r.proposal_label(),
+                        r.task_label(),
+                        r.title
+                    ));
                 }
             }
             0
@@ -286,6 +374,41 @@ pub fn cmd_reject(
         }
         Err(e) => {
             crate::term::emit(&format!("Lỗi reject: {e}"));
+            1
+        }
+    }
+}
+
+pub fn cmd_import_legacy(
+    ctx: &mut crate::app::Ctx,
+    project_query: &str,
+    open: legacy::OpenMode,
+    dry_run: bool,
+) -> i32 {
+    let project = match crate::routing::resolve(project_query, &ctx.projects) {
+        Ok(p) => p,
+        Err(_) => {
+            crate::term::emit(&format!("Không tìm thấy dự án '{project_query}'"));
+            return 1;
+        }
+    };
+    let project_id = match crate::db::project_row_id(&ctx.conn, &project.id) {
+        Ok(id) => id,
+        Err(e) => {
+            crate::term::emit(&format!("Dự án '{}' chưa có trong CSDL: {e}", project.id));
+            return 1;
+        }
+    };
+    let root = std::path::Path::new(&project.path);
+    match legacy::import_legacy(&mut ctx.conn, root, project_id, open, dry_run) {
+        Ok(report) => {
+            for line in legacy::report_lines(&report, dry_run) {
+                crate::term::emit(&line);
+            }
+            0
+        }
+        Err(e) => {
+            crate::term::emit(&format!("Lỗi import-legacy: {e}"));
             1
         }
     }

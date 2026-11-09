@@ -3,6 +3,7 @@ pub mod triage;
 
 use crate::dashboard::AppState;
 use crate::db::IntakeRow;
+use triage::ProposalDraft;
 use crate::error::BrainResult;
 use crate::tracing;
 use rusqlite::Connection;
@@ -43,6 +44,41 @@ pub fn next_queued_intake(conn: &Connection) -> BrainResult<Option<IntakeRow>> {
     }
 }
 
+/// Độ dài tối đa của tiêu đề đề xuất dựng từ bug (`<KEY> <tiêu đề card>`).
+pub const FIXBUG_TITLE_MAX: usize = 120;
+
+/// Intake là bug lấy từ Trello / Google Sheet.
+pub fn is_fixbug_intake(intake: &IntakeRow) -> bool {
+    intake.source == "trello" || intake.source == "sheet"
+}
+
+/// Plan fixbug-trial A2: đề xuất của một bug giữ nguyên nội dung bug.
+/// - `request` = nguyên văn `intake.request` (giữ link, bình luận, khối dữ liệu QA, ảnh);
+/// - `title` = `<KEY> <tiêu đề card>` (cắt `FIXBUG_TITLE_MAX` ký tự) khi có ref;
+/// - `priority` = priority của intake (label Trello là nguồn đúng);
+/// - giữ `level`, `workflow`, `team` của triage.
+pub fn apply_fixbug_override(
+    draft: ProposalDraft,
+    intake: &IntakeRow,
+    fref: Option<&crate::db::FixbugRefRow>,
+) -> ProposalDraft {
+    let title = match fref {
+        Some(r) => {
+            let full = format!("{} {}", r.key.trim(), r.title.trim());
+            let first = full.lines().next().unwrap_or("").trim().to_string();
+            first.chars().take(FIXBUG_TITLE_MAX).collect()
+        }
+        None => draft.title.clone(),
+    };
+    ProposalDraft {
+        title,
+        request: intake.request.clone(),
+        priority: intake.priority.clone(),
+        after: None,
+        ..draft
+    }
+}
+
 /// Một nhịp xử lý của orchestrator: nếu bật `enabled`, lấy một intake queued và phân tích thành proposals.
 pub fn tick(st: &AppState) -> BrainResult<()> {
     if !st.orch().enabled {
@@ -57,7 +93,12 @@ pub fn tick(st: &AppState) -> BrainResult<()> {
     crate::db::set_intake_status(&conn, intake.id, "triaging")?;
 
     match triage::triage_with_warnings(st, &intake) {
-        Ok((valid_proposals, warnings)) => {
+        Ok((mut valid_proposals, warnings)) => {
+            if is_fixbug_intake(&intake) && valid_proposals.len() == 1 {
+                let fref = crate::db::fixbug_ref_by_intake(&conn, intake.id).ok().flatten();
+                let draft = valid_proposals.remove(0);
+                valid_proposals.push(apply_fixbug_override(draft, &intake, fref.as_ref()));
+            }
             if valid_proposals.is_empty() {
                 let err_msg = if !warnings.is_empty() {
                     warnings.join("; ")

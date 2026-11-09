@@ -720,6 +720,10 @@ pub(crate) fn on_command(ctx: &Arc<BotCtx>, state: &mut PollState, name: &str, r
             }
             None => bot::reply(ctx, NO_FLOW),
         },
+        "fixbugs" => super::fixbug_cmd::on_fixbugs(ctx, rest),
+        "bugs" => super::fixbug_cmd::on_bugs(ctx, rest),
+        "deployed" => super::fixbug_cmd::on_deployed(ctx, rest),
+        "reject" => super::fixbug_cmd::on_reject(ctx, rest),
         _ => bot::reply(ctx, HELP_TEXT),
     }
 }
@@ -1818,6 +1822,9 @@ mod tests {
     fn help_text_tells_how_to_give_work() {
         assert!(HELP_TEXT.contains("/task"), "{HELP_TEXT}");
         assert!(HELP_TEXT.contains("/huy"), "{HELP_TEXT}");
+        for cmd in ["/fixbugs", "/bugs", "/deployed", "/reject"] {
+            assert!(HELP_TEXT.contains(cmd), "{HELP_TEXT}");
+        }
         assert!(
             !HELP_TEXT.contains("không giao việc mới"),
             "the help line still says the bot takes no new work: {HELP_TEXT}"

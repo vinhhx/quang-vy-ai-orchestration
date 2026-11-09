@@ -327,6 +327,16 @@ pub fn team_names(s: &TaskState) -> Vec<String> {
         .collect()
 }
 
+/// Plan fixbug-trial A9: nhắc deploy khi task của một bug Trello/Sheet qua QA.
+pub fn fixbug_deploy_line(s: &TaskState) -> Option<String> {
+    s.fixbug_key.as_deref().map(|key| {
+        format!(
+            "Bug {key}: merge rồi deploy, sau đó gõ /deployed {} {key}",
+            s.project.id
+        )
+    })
+}
+
 fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
     let id = s.task.id;
     let mut lines: Vec<String> = Vec::new();
@@ -384,6 +394,9 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
             lines.push(
                 "Tóm tắt (yêu cầu, cách làm, kết quả) ở file đính kèm ngay trên.".to_string(),
             );
+            if let Some(line) = fixbug_deploy_line(s) {
+                lines.push(line);
+            }
         }
         EventKind::Quota => {
             if let Some(r) = quota_run_of(ev, s) {
@@ -789,6 +802,7 @@ mod tests {
             staff: crate::staff::LoadedStaff::default(),
             plan_diff_summary: None,
             quota_teams: Vec::new(),
+            fixbug_key: None,
         };
 
         let ev = Event {
@@ -809,6 +823,23 @@ mod tests {
         let st2 = make_state(run.clone());
         let msg2 = text_for(&ev, &st2, 3000);
         assert!(msg2.contains(&format!("{}…", "e".repeat(500))), "{msg2}");
+
+        // QA pass of a task tied to a fixbug ref: deploy reminder line (fixbug-trial A9).
+        let qa_ev = Event {
+            task_id: 1,
+            kind: EventKind::QaPass,
+            key: "qa:10".to_string(),
+            is_update: false,
+        };
+        let mut st_bug = make_state(run.clone());
+        st_bug.fixbug_key = Some("T-42".to_string());
+        let qa_bug = text_for(&qa_ev, &st_bug, 3000);
+        assert!(
+            qa_bug.contains("Bug T-42: merge rồi deploy, sau đó gõ /deployed proj T-42"),
+            "{qa_bug}"
+        );
+        let qa_plain = text_for(&qa_ev, &make_state(run.clone()), 3000);
+        assert!(!qa_plain.contains("/deployed"), "{qa_plain}");
 
         // 3. Without error
         run.error = None;

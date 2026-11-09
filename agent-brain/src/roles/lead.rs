@@ -121,8 +121,11 @@ pub fn dev_engine_block(
     block
 }
 
+/// Also for a bug pulled from Trello / Google Sheet: its request carries the QA data block
+/// (`fixbug::QA_DATA_OPEN`), whatever the origin.
 pub fn wants_untrusted_prompt(origin: Option<&str>, request: &str) -> bool {
-    origin == Some(crate::db::ORIGIN_TELEGRAM) && request.contains(UNTRUSTED_OPEN)
+    (origin == Some(crate::db::ORIGIN_TELEGRAM) && request.contains(UNTRUSTED_OPEN))
+        || request.contains(crate::fixbug::QA_DATA_OPEN)
 }
 
 /// IN-02 / CONTEXT O7: round của một Lead chạy tay (không có `--round`) = round hiệu lực

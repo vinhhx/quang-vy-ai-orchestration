@@ -234,6 +234,20 @@ enum FixbugCommands {
         /// Số bug tối đa lấy mỗi lần (mặc định: 10)
         #[arg(long)]
         max: Option<usize>,
+        /// Bỏ qua kiểm tra "chưa nhập trạng thái skill /fix-bugs cũ" (không bỏ qua .lock)
+        #[arg(long)]
+        skip_legacy_check: bool,
+    },
+    /// Nhập trạng thái các bug của skill /fix-bugs cũ (chỉ đọc tasks/*/state.json)
+    ImportLegacy {
+        /// Tên, id hoặc alias dự án
+        project: String,
+        /// Bug cũ need_info/plan_ready: skip = ghi 'pulled' (mặc định), take = để pull kéo thành task mới
+        #[arg(long, default_value = "skip")]
+        open: agent_brain::fixbug::legacy::OpenMode,
+        /// Chỉ in bảng KEY | state cũ | sẽ ghi, không ghi gì
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Danh sách bug đã lấy trong dự án
     List {
@@ -432,9 +446,16 @@ fn main() {
         },
         Commands::Fixbug { subcommand } => Ok(match subcommand {
             FixbugCommands::Check { project } => agent_brain::fixbug::cmd_check(&ctx, &project),
-            FixbugCommands::Pull { project, max } => {
-                agent_brain::fixbug::cmd_pull(&mut ctx, &project, max)
-            }
+            FixbugCommands::Pull {
+                project,
+                max,
+                skip_legacy_check,
+            } => agent_brain::fixbug::cmd_pull(&mut ctx, &project, max, skip_legacy_check),
+            FixbugCommands::ImportLegacy {
+                project,
+                open,
+                dry_run,
+            } => agent_brain::fixbug::cmd_import_legacy(&mut ctx, &project, open, dry_run),
             FixbugCommands::List { project } => agent_brain::fixbug::cmd_list(&ctx, &project),
             FixbugCommands::Deployed {
                 project,

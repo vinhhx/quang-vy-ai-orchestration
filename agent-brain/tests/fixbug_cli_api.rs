@@ -655,6 +655,6 @@ fn test_cli_fixbug_commands() {
     assert_eq!(code, 0);
 
     // cmd_pull với config trello không có mạng thật -> trả lỗi thoát 1, không panic
-    let code = cmd_pull(&mut ctx, "demo", Some(5));
+    let code = cmd_pull(&mut ctx, "demo", Some(5), false);
     assert_eq!(code, 1);
 }

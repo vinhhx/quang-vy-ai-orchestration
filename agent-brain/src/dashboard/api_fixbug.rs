@@ -79,6 +79,8 @@ struct FixbugStatusResponse {
     home: Option<String>,
     sources: Vec<SourceSummary>,
     refs: Vec<crate::db::FixbugRefRow>,
+    /// Tiến độ từng bug: ref → đề xuất → task (Plan fixbug-trial A7).
+    progress: Vec<crate::db::FixbugProgress>,
 }
 
 async fn get_fixbug_status(
@@ -95,6 +97,7 @@ async fn get_fixbug_status(
     let result = blocking(move || {
         let conn = crate::db::open(&db_path)?;
         let refs = crate::db::list_fixbug_refs(&conn, project_id)?;
+        let progress = crate::db::fixbug_progress(&conn, project_id)?;
 
         let (configured, sources) = match crate::fixbug::config::load_config(&root) {
             Ok(cfg) => {
@@ -133,6 +136,7 @@ async fn get_fixbug_status(
             home,
             sources,
             refs,
+            progress,
         })
     })
     .await;
@@ -156,6 +160,8 @@ async fn post_fixbug_pull(
 
     let result = blocking(move || {
         let mut conn = crate::db::open(&db_path)?;
+        crate::fixbug::pull_guard(&root, &conn, project_id)
+            .map_err(|e| crate::error::BrainError::error(e.to_string()))?;
         let report = crate::fixbug::pull::pull(
             &mut conn,
             &root,

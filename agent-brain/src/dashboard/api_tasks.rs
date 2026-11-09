@@ -1562,6 +1562,9 @@ pub struct TaskState {
     /// that run's role is ready now (`teams::TeamReadiness`); empty otherwise. The Telegram
     /// buttons, their callback decoding and the dashboard re-run dialog all read this one list.
     pub quota_teams: Vec<String>,
+    /// KEY của bug Trello/Sheet gắn với task (`proposals.task_id` → `intake_id` →
+    /// `fixbug_refs`), đọc một lần khi dựng snapshot (Plan fixbug-trial A9).
+    pub fixbug_key: Option<String>,
 }
 
 impl TaskState {
@@ -1872,6 +1875,8 @@ pub fn load_task_state(
     let project_telegram_ok = origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
         && crate::telegram::intake::project_in_allowlist(&st.map_path, &project.id);
 
+    let fixbug_key = crate::db::fixbug_key_for_task(conn, task.id).unwrap_or(None);
+
     let plan_diff_summary: Option<String> = if let Some(ref cur) = git.plan_commit {
         if let Ok(Some(prev)) = crate::db::latest_different_plan_approval(conn, task.id, cur) {
             if let Ok(Some((added, deleted))) =
@@ -1914,6 +1919,7 @@ pub fn load_task_state(
         staff,
         plan_diff_summary,
         quota_teams,
+        fixbug_key,
     }))
 }
 

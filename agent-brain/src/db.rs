@@ -1919,6 +1919,147 @@ pub fn list_fixbug_refs(
     Ok(rows)
 }
 
+/// Ghi một ref với trạng thái và ghi chú cho trước (nhập trạng thái skill `/fix-bugs` cũ).
+#[allow(clippy::too_many_arguments)]
+pub fn insert_fixbug_ref_with_state(
+    conn: &Connection,
+    project_id: i64,
+    kind: &str,
+    ext_id: &str,
+    key: &str,
+    title: &str,
+    url: Option<&str>,
+    state: &str,
+    note: Option<&str>,
+) -> BrainResult<i64> {
+    let now = now_ms();
+    conn.execute(
+        "INSERT INTO fixbug_refs (project_id, kind, ext_id, key, title, url, intake_id, state, note, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?9)",
+        params![project_id, kind, ext_id, key, title, url, state, note, now],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Số ref của dự án có `note` bắt đầu bằng `legacy:` (đã nhập trạng thái skill cũ).
+pub fn count_legacy_fixbug_refs(conn: &Connection, project_id: i64) -> BrainResult<i64> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM fixbug_refs WHERE project_id = ?1 AND note LIKE 'legacy:%'",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    Ok(n)
+}
+
+/// Ref gắn với intake `intake_id` (bug Trello/Sheet), nếu có.
+pub fn fixbug_ref_by_intake(conn: &Connection, intake_id: i64) -> BrainResult<Option<FixbugRefRow>> {
+    let sql = format!(
+        "SELECT {FIXBUG_REF_COLUMNS} FROM fixbug_refs WHERE intake_id = ?1 ORDER BY id ASC LIMIT 1"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params![intake_id])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(row_to_fixbug_ref(r)?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// KEY của bug gắn với task (`proposals.task_id` → `intake_id` → `fixbug_refs`), nếu có.
+pub fn fixbug_key_for_task(conn: &Connection, task_id: i64) -> BrainResult<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.key FROM proposals p JOIN fixbug_refs f ON f.intake_id = p.intake_id
+         WHERE p.task_id = ?1 ORDER BY p.id DESC, f.id ASC LIMIT 1",
+    )?;
+    let mut rows = stmt.query(params![task_id])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(r.get(0)?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Tiến độ một bug: ref → đề xuất mới nhất của intake → task của đề xuất.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FixbugProgress {
+    pub key: String,
+    pub kind: String,
+    pub title: String,
+    pub ref_state: String,
+    pub note: Option<String>,
+    pub intake_id: Option<i64>,
+    pub intake_status: Option<String>,
+    pub proposal_id: Option<i64>,
+    pub proposal_status: Option<String>,
+    pub task_id: Option<i64>,
+    pub task_status: Option<String>,
+    pub auto_state: Option<String>,
+    pub branch: Option<String>,
+}
+
+impl FixbugProgress {
+    /// Ref nhập từ skill `/fix-bugs` cũ.
+    pub fn is_legacy(&self) -> bool {
+        self.note.as_deref().is_some_and(|n| n.starts_with("legacy:"))
+    }
+
+    /// `#12 approved`, `skill cũ` hoặc `—`.
+    pub fn proposal_label(&self) -> String {
+        match (self.proposal_id, self.proposal_status.as_deref()) {
+            (Some(id), Some(st)) => format!("#{id} {st}"),
+            (Some(id), None) => format!("#{id}"),
+            _ if self.is_legacy() => "skill cũ".to_string(),
+            _ => "—".to_string(),
+        }
+    }
+
+    /// `#40 qa_pass`, `skill cũ` hoặc `—`.
+    pub fn task_label(&self) -> String {
+        match (self.task_id, self.task_status.as_deref()) {
+            (Some(id), Some(st)) => format!("#{id} {st}"),
+            (Some(id), None) => format!("#{id}"),
+            _ if self.is_legacy() => "skill cũ".to_string(),
+            _ => "—".to_string(),
+        }
+    }
+}
+
+/// Tiến độ các bug của dự án (theo thứ tự ref). Bug có nhiều đề xuất lấy đề xuất mới nhất.
+pub fn fixbug_progress(conn: &Connection, project_id: i64) -> BrainResult<Vec<FixbugProgress>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.key, f.kind, f.title, f.state, f.note, f.intake_id, i.status,
+                p.id, p.status, t.id, t.status, t.auto_state, t.branch
+         FROM fixbug_refs f
+         LEFT JOIN intake i ON i.id = f.intake_id
+         LEFT JOIN proposals p ON p.id = (
+             SELECT MAX(p2.id) FROM proposals p2 WHERE f.intake_id IS NOT NULL AND p2.intake_id = f.intake_id
+         )
+         LEFT JOIN tasks t ON t.id = p.task_id
+         WHERE f.project_id = ?1
+         ORDER BY f.id ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![project_id], |r| {
+            Ok(FixbugProgress {
+                key: r.get(0)?,
+                kind: r.get(1)?,
+                title: r.get(2)?,
+                ref_state: r.get(3)?,
+                note: r.get(4)?,
+                intake_id: r.get(5)?,
+                intake_status: r.get(6)?,
+                proposal_id: r.get(7)?,
+                proposal_status: r.get(8)?,
+                task_id: r.get(9)?,
+                task_status: r.get(10)?,
+                auto_state: r.get(11)?,
+                branch: r.get(12)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn set_task_level(conn: &Connection, task_id: i64, level: &str) -> BrainResult<()> {
     let now = now_ms();
     let changes = conn.execute(

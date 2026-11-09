@@ -113,6 +113,8 @@ pub struct TrelloAttachment {
     pub is_upload: Option<bool>,
     #[serde(rename = "mimeType")]
     pub mime_type: Option<String>,
+    #[serde(default)]
+    pub bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,11 +302,11 @@ impl TrelloClient {
         })
     }
 
-    /// `GET /1/boards/{board}/cards?fields=idShort,name,desc,idList,labels,shortUrl,dateLastActivity&attachments=true&attachment_fields=name,url,isUpload,mimeType`
+    /// `GET /1/boards/{board}/cards?fields=idShort,name,desc,idList,labels,shortUrl,dateLastActivity&attachments=true&attachment_fields=name,url,isUpload,mimeType,bytes`
     pub fn cards(&self, board_id: &str) -> Result<Vec<TrelloCard>, FixbugError> {
         let sep = if self.base.contains('?') { "&" } else { "?" };
         let url = format!(
-            "{}/1/boards/{board_id}/cards{sep}fields=idShort,name,desc,idList,labels,shortUrl,dateLastActivity&attachments=true&attachment_fields=name,url,isUpload,mimeType&key={}&token={}",
+            "{}/1/boards/{board_id}/cards{sep}fields=idShort,name,desc,idList,labels,shortUrl,dateLastActivity&attachments=true&attachment_fields=name,url,isUpload,mimeType,bytes&key={}&token={}",
             self.base, self.key, self.token
         );
         let cfg = format!("url = {}\nwrite-out = \"\\nHTTP_STATUS:%{{http_code}}\"\n", quote_cfg(&url));
@@ -315,6 +317,68 @@ impl TrelloClient {
                 message: format!("Phản hồi cards không phải JSON hợp lệ: {e}"),
             }
         })
+    }
+
+    /// `true` khi `url` thuộc Trello (`https://trello.com/`, `https://api.trello.com/`) hoặc
+    /// nằm dưới base API đang dùng (server giả trong test). Chỉ những URL này mới nhận header
+    /// OAuth chứa key/token.
+    pub fn download_allowed(&self, url: &str) -> bool {
+        let under_base = url
+            .strip_prefix(&self.base)
+            .is_some_and(|rest| rest.starts_with('/'));
+        under_base
+            || url.starts_with("https://trello.com/")
+            || url.starts_with("https://api.trello.com/")
+    }
+
+    /// Tải file đính kèm `url` vào `dest` (ghi file tạm rồi đổi tên). Key/token đi trong header
+    /// `Authorization: OAuth …` qua stdin của curl, không nằm trên dòng lệnh. File lớn hơn
+    /// `max_bytes` bị bỏ. Trả số byte đã ghi.
+    pub fn download(
+        &self,
+        url: &str,
+        dest: &std::path::Path,
+        max_bytes: u64,
+    ) -> Result<u64, FixbugError> {
+        if !self.download_allowed(url) {
+            return Err(FixbugError::Other(
+                "URL đính kèm không thuộc Trello — không tải".to_string(),
+            ));
+        }
+        let file_name = dest
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let tmp = dest.with_file_name(format!(".{file_name}.part"));
+        let auth = format!(
+            "Authorization: OAuth oauth_consumer_key=\"{}\", oauth_token=\"{}\"",
+            self.key, self.token
+        );
+        let cfg = format!(
+            "url = {}\nheader = {}\noutput = {}\nmax-filesize = {max_bytes}\nlocation\nwrite-out = \"\\nHTTP_STATUS:%{{http_code}}\"\n",
+            quote_cfg(url),
+            quote_cfg(&auth),
+            quote_cfg(&tmp.to_string_lossy())
+        );
+        let res = self.run_curl(&cfg, 60);
+        let res = res.and_then(|_| {
+            let len = std::fs::metadata(&tmp)
+                .map_err(|e| FixbugError::Io(format!("không đọc được file tải về: {e}")))?
+                .len();
+            if len > max_bytes {
+                return Err(FixbugError::Other(format!(
+                    "file lớn hơn {} MiB",
+                    max_bytes / (1024 * 1024)
+                )));
+            }
+            std::fs::rename(&tmp, dest)
+                .map_err(|e| FixbugError::Io(format!("không ghi được ảnh: {e}")))?;
+            Ok(len)
+        });
+        if res.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        res
     }
 
     /// `GET /1/cards/{id}/actions?filter=commentCard`
