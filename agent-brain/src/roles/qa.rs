@@ -9,6 +9,21 @@ pub fn qa_allowed_tools(protocol: &crate::protocol_paths::ProtocolPaths) -> Vec<
     crate::roles::with_protocol_write_rules(QA_ALLOWED_TOOLS, &protocol.qa_report)
 }
 
+/// The note added to QA's input listing the project's test commands; empty when there are none.
+pub fn qa_test_commands_note(cmds: &[String]) -> String {
+    if cmds.is_empty() {
+        return String::new();
+    }
+    let list = cmds
+        .iter()
+        .map(|c| format!("- `{c}`"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "\n\nLệnh kiểm tra bạn được chạy (cấu hình của dự án):\n{list}\nChạy các lệnh trong mục Cách kiểm tra của plan nếu khớp các mẫu này; ghi output tóm tắt (số test đạt/lỗi) vào báo cáo. Lệnh không khớp mẫu sẽ bị từ chối — khi đó ghi rõ lệnh nào chưa chạy được, không kết luận Cần sửa chỉ vì lệnh đó."
+    )
+}
+
 pub const QA_DISALLOWED_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "NotebookEdit", "Task"];
 
 /// Heading of the section agent-brain appends to the QA report after checking the products.
@@ -246,11 +261,21 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
         &[protocol.qa_report.as_str()],
         &["Write", "Edit"],
     ));
-    let qa_input = format!(
+    // The project's test commands (`test_commands`): QA may run them; an invalid value only
+    // warns, so the run goes on without them.
+    let test_cmds = crate::projects::test_commands_of(&ctx.map, &proj.id).unwrap_or_else(|e| {
+        crate::term::emit(&format!("Cảnh báo: {e} — QA chạy không có lệnh kiểm tra"));
+        Vec::new()
+    });
+    for c in &test_cmds {
+        allowed.push(format!("Bash({c})"));
+    }
+    let mut qa_input = format!(
         "Task: {task}\nĐầu vào: {plan} và kết quả lệnh: {diff_cmd}\nGhi {qa} theo khung có sẵn; mục Kết luận ghi đúng một dòng: Đạt hoặc Cần sửa.\nỞ đầu {qa} (trước dòng \"# QA:\") thêm front matter: dòng ---, specs: <số kiểm tra đã chạy>, failing: <số kiểm tra lỗi>, not_automatable: <số mục không kiểm tự động được>, dòng ---. Bỏ dòng nào bạn không biết.",
         plan = protocol.plan,
         qa = protocol.qa_report
     );
+    qa_input.push_str(&qa_test_commands_note(&test_cmds));
 
     let disallowed = QA_DISALLOWED_TOOLS
         .iter()
@@ -651,6 +676,27 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qa_test_commands_note_lists_the_patterns() {
+        assert_eq!(qa_test_commands_note(&[]), "");
+        let note = qa_test_commands_note(&[
+            "php artisan test".to_string(),
+            "php artisan test *".to_string(),
+        ]);
+        assert!(note.starts_with("\n\nLệnh kiểm tra bạn được chạy (cấu hình của dự án):\n"));
+        assert!(note.contains("- `php artisan test`\n- `php artisan test *`\n"));
+        assert!(note.contains("không kết luận Cần sửa chỉ vì lệnh đó"));
+    }
+
+    #[test]
+    fn qa_guard_hook_leaves_test_commands_to_claude() {
+        // QA's hook has no command list: a non-git command passes the guard and claude's
+        // `--allowedTools` decides; only git is policed.
+        for cmd in ["php artisan test", "php artisan test --filter=UserTest"] {
+            assert!(crate::guard::bash_command_check_with(cmd, None).is_ok(), "{cmd}");
+        }
+    }
 
     #[test]
     fn set_qa_verdict_replaces_only_the_verdict_line() {

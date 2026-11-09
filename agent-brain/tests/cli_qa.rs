@@ -910,3 +910,91 @@ fn qa_file_under_write_dir_is_restored_with_warning() {
     assert_eq!(res_qa_viol.code, 3);
     assert!(res_qa_viol.stdout.contains("vi phạm giao thức"));
 }
+
+// ---- `test_commands` of the project: QA may run them ----
+
+/// Sets `test_commands` on the sandbox project (`None` removes the key).
+fn set_test_commands(sb: &Sandbox, cmds: Option<serde_json::Value>) {
+    let mut map = sb.read_map();
+    let entry = &mut map["projects"][0];
+    match cmds {
+        Some(c) => entry["test_commands"] = c,
+        None => {
+            entry.as_object_mut().unwrap().remove("test_commands");
+        }
+    }
+    sb.write_map(map["projects"].clone(), &[]);
+}
+
+/// Runs QA with a passing report; returns the QA argv and the run's output.
+fn run_qa_argv(sb: &Sandbox) -> (Vec<String>, common::RunOut) {
+    let qa_report = "\
+# QA: x
+## Thay đổi có khớp plan không (từng mục)
+ok
+## Sửa ngoài plan (nếu có)
+## Rủi ro
+## Kết luận
+Đạt
+";
+    let sc_qa = serde_json::json!({
+        "ops": [{"op": "write", "path": ".qa-report.md", "content": qa_report}]
+    });
+    let res = sb.run(&["run", "qa", "web-ban-hang"], Some(sc_qa));
+    assert_eq!(
+        res.code, 0,
+        "QA failed: stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    let rec = sb.records().pop().unwrap();
+    let argv = rec["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    (argv, res)
+}
+
+fn user_input_of(argv: &[String]) -> &str {
+    let p_idx = argv.iter().position(|x| x == "-p").unwrap();
+    &argv[p_idx + 1]
+}
+
+#[test]
+fn qa_gets_project_test_commands() {
+    let sb = Sandbox::new();
+    setup_lead_and_dev(&sb);
+    set_test_commands(
+        &sb,
+        Some(serde_json::json!(["php artisan test", "php artisan test *"])),
+    );
+    let (argv, _) = run_qa_argv(&sb);
+    assert!(argv.contains(&"Bash(php artisan test)".to_string()), "{argv:?}");
+    assert!(argv.contains(&"Bash(php artisan test *)".to_string()), "{argv:?}");
+    let input = user_input_of(&argv);
+    assert!(input.contains("Lệnh kiểm tra bạn được chạy"), "{input}");
+    assert!(input.contains("- `php artisan test *`"), "{input}");
+}
+
+#[test]
+fn qa_without_test_commands_gets_no_extra_rules() {
+    let sb = Sandbox::new();
+    setup_lead_and_dev(&sb);
+    set_test_commands(&sb, None);
+    let (argv, _) = run_qa_argv(&sb);
+    assert!(!argv.iter().any(|a| a.starts_with("Bash(php")), "{argv:?}");
+    assert!(!user_input_of(&argv).contains("Lệnh kiểm tra bạn được chạy"));
+}
+
+#[test]
+fn qa_with_refused_test_command_warns_and_runs_without() {
+    let sb = Sandbox::new();
+    setup_lead_and_dev(&sb);
+    set_test_commands(&sb, Some(serde_json::json!(["rm -rf *"])));
+    let (argv, res) = run_qa_argv(&sb);
+    let out = format!("{}{}", res.stdout, res.stderr);
+    assert!(out.contains("Cảnh báo"), "{out}");
+    assert!(!argv.iter().any(|a| a.starts_with("Bash(rm")), "{argv:?}");
+    assert!(!user_input_of(&argv).contains("Lệnh kiểm tra bạn được chạy"));
+}
