@@ -97,6 +97,26 @@ function getDeskPositions(roomId) {
   }
 }
 
+// Hàng chờ nhân viên: xếp dọc tường trước của phòng, tránh khe cửa ở giữa,
+// đầy một hàng thì lùi vào trong một hàng.
+function getStaffPositions(roomId, count) {
+  const r = ROOM_LAYOUT[roomId];
+  if (!r || count <= 0) return [];
+  const halfW = r.w / 2;
+  const slots = [];
+  for (let dx = -halfW + 1.4; dx <= halfW - 1.4 + 1e-6; dx += 1.5) {
+    if (Math.abs(dx) < 2.2) continue; // khe cửa
+    slots.push(dx);
+  }
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const row = Math.floor(i / slots.length);
+    const dx = slots[i % slots.length];
+    out.push({ x: r.x + dx, z: r.z + r.d / 2 - 1.4 - row * 1.5 });
+  }
+  return out;
+}
+
 /**
  * Tạo văn phòng 3D và gắn vào container
  * @param {HTMLElement} container — DOM node chứa canvas và lớp phủ nhãn
@@ -286,7 +306,7 @@ export function createOffice(container, callbacks) {
     // Tạo badge HTML cho tên phòng
     const badgeEl = document.createElement('div');
     badgeEl.className = 'absolute -translate-x-1/2 -translate-y-full text-[11px] font-semibold px-2 py-0.5 rounded shadow pointer-events-auto cursor-pointer transition-transform hover:scale-105 bg-white/90 dark:bg-slate-800/90 text-slate-800 dark:text-slate-100 border border-slate-300 dark:border-slate-700 select-none';
-    badgeEl.innerHTML = `<span>${room.name}</span> <span class="badge-count ml-1 font-bold text-indigo-600 dark:text-indigo-400">(0)</span>`;
+    badgeEl.innerHTML = `<span>${room.name}</span> <span class="badge-count ml-1 font-bold text-indigo-600 dark:text-indigo-400">(0)</span><span class="badge-staff ml-1 hidden font-bold text-amber-600 dark:text-amber-400"></span>`;
     badgeEl.addEventListener('click', () => {
       focusPoint(new THREE.Vector3(cfg.x, 0, cfg.z), 38);
     });
@@ -298,6 +318,7 @@ export function createOffice(container, callbacks) {
       worldPos: new THREE.Vector3(cfg.x, 1.4, cfg.z - cfg.d / 2 + 1.2),
       el: badgeEl,
       countEl: badgeEl.querySelector('.badge-count'),
+      staffEl: badgeEl.querySelector('.badge-staff'),
       count: 0,
     });
   });
@@ -450,6 +471,101 @@ export function createOffice(container, callbacks) {
 
     scene.add(group);
     return group;
+  }
+
+  // ---- Nhân viên phòng ban: luôn có mặt trong phòng, người đang làm có hào quang ----
+  const staffChars = new Map(); // key = member id
+  const staffHeadMat = new THREE.MeshLambertMaterial({ color: 0xfcd9b6 });
+  const haloRingGeo = new THREE.RingGeometry(0.55, 1.2, 32);
+  haloRingGeo.rotateX(-Math.PI / 2);
+  const haloAuraGeo = new THREE.CylinderGeometry(0.85, 0.85, 2.3, 24, 1, true);
+  const haloCrownGeo = new THREE.TorusGeometry(0.34, 0.05, 8, 24);
+  haloCrownGeo.rotateX(Math.PI / 2);
+  const haloRingMat = new THREE.MeshBasicMaterial({
+    color: 0xfacc15, transparent: true, opacity: 0.85, side: THREE.DoubleSide,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const haloAuraMat = new THREE.MeshBasicMaterial({
+    color: 0xfde047, transparent: true, opacity: 0.22, side: THREE.DoubleSide,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const haloCrownMat = new THREE.MeshBasicMaterial({ color: 0xfacc15 });
+
+  function createStaffMesh(member) {
+    const group = new THREE.Group();
+    const room = ROOMS_BY_ID[member.room];
+    const bodyMat = new THREE.MeshLambertMaterial({ color: room ? room.color : 0x475569 });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 0.65;
+    group.add(body);
+    const head = new THREE.Mesh(headGeo, staffHeadMat);
+    head.position.y = 1.35;
+    group.add(head);
+
+    // Hào quang: vòng sáng dưới chân, quầng sáng trụ bao quanh, vành trên đầu
+    const halo = new THREE.Group();
+    const haloRing = new THREE.Mesh(haloRingGeo, haloRingMat);
+    haloRing.position.y = 0.04;
+    halo.add(haloRing);
+    const aura = new THREE.Mesh(haloAuraGeo, haloAuraMat);
+    aura.position.y = 1.05;
+    halo.add(aura);
+    const crown = new THREE.Mesh(haloCrownGeo, haloCrownMat);
+    crown.position.y = 1.85;
+    halo.add(crown);
+    halo.visible = !!member.working;
+    group.add(halo);
+
+    group.userData = {
+      id: member.id,
+      item: member,
+      itemType: 'staff',
+      bodyMesh: body,
+      headMesh: head,
+      halo: halo,
+      bodyMat: bodyMat,
+    };
+    group.rotation.y = Math.PI; // quay mặt vào trong phòng
+    scene.add(group);
+    return group;
+  }
+
+  function updateStaff(staff) {
+    const byRoom = {};
+    staff.forEach((m) => {
+      (byRoom[m.room] = byRoom[m.room] || []).push(m);
+    });
+    const active = new Set();
+    Object.keys(byRoom).forEach((roomId) => {
+      // Người đang làm đứng đầu hàng
+      const list = byRoom[roomId].slice().sort((a, b) => (b.working ? 1 : 0) - (a.working ? 1 : 0));
+      const pos = getStaffPositions(roomId, list.length);
+      list.forEach((m, i) => {
+        active.add(m.id);
+        let ch = staffChars.get(m.id);
+        if (!ch) {
+          ch = createStaffMesh(m);
+          staffChars.set(m.id, ch);
+        }
+        ch.userData.item = m;
+        ch.userData.halo.visible = !!m.working;
+        ch.position.set(pos[i].x, 0, pos[i].z);
+      });
+    });
+    for (const [id, ch] of staffChars.entries()) {
+      if (!active.has(id)) {
+        scene.remove(ch);
+        ch.userData.bodyMat.dispose();
+        staffChars.delete(id);
+      }
+    }
+  }
+
+  function hasWorkingStaff() {
+    for (const ch of staffChars.values()) {
+      if (ch.userData.halo.visible) return true;
+    }
+    return false;
   }
 
   // Tạo đường đi gấp khúc (waypoint) qua hành lang và cửa phòng
@@ -686,12 +802,28 @@ export function createOffice(container, callbacks) {
       }
     }
 
+    // E. Nhân viên phòng ban
+    const staff = Array.isArray(data.staff) ? data.staff : [];
+    updateStaff(staff);
+    const staffCounts = {};
+    const staffWorking = {};
+    staff.forEach((m) => {
+      staffCounts[m.room] = (staffCounts[m.room] || 0) + 1;
+      if (m.working) staffWorking[m.room] = (staffWorking[m.room] || 0) + 1;
+    });
+
     // Cập nhật số đếm trên badge phòng
     roomBadges.forEach((rb) => {
       const c = roomCounts[rb.roomId] || 0;
       rb.count = c;
       if (rb.countEl) {
         rb.countEl.textContent = `(${c})`;
+      }
+      if (rb.staffEl) {
+        const n = staffCounts[rb.roomId] || 0;
+        const w = staffWorking[rb.roomId] || 0;
+        rb.staffEl.textContent = n ? `· ${n} NV${w ? ` (${w} làm)` : ''}` : '';
+        rb.staffEl.classList.toggle('hidden', !n);
       }
     });
 
@@ -813,6 +945,9 @@ export function createOffice(container, callbacks) {
     for (const char of characters.values()) {
       hitMeshes.push(char.userData.bodyMesh, char.userData.headMesh);
     }
+    for (const ch of staffChars.values()) {
+      hitMeshes.push(ch.userData.bodyMesh, ch.userData.headMesh);
+    }
     const intersects = raycaster.intersectObjects(hitMeshes, false);
 
     if (intersects.length > 0) {
@@ -835,8 +970,25 @@ export function createOffice(container, callbacks) {
     }
   }
 
+  function escapeHtml(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
   function showTooltip(item, type, x, y) {
     if (!item) return;
+    if (type === 'staff') {
+      const st = item.working
+        ? `<div class="text-amber-300 font-medium">● Đang làm việc${item.running > 1 ? ` (${item.running} run)` : ''}</div>`
+        : '<div class="text-slate-300">Đang rảnh</div>';
+      tooltip.innerHTML = `
+        <div class="font-semibold text-slate-100">${escapeHtml(item.name)}</div>
+        <div class="text-[11px] text-slate-300">${escapeHtml(item.deptName)}${item.model ? ' · ' + escapeHtml(item.model) : ''}</div>
+        ${st}
+      `;
+      tooltip.classList.remove('hidden');
+      moveTooltip(x, y);
+      return;
+    }
     let title = item.title || item.request || item.slug || 'Mục';
     if (title.length > 36) title = title.slice(0, 36) + '…';
     const proj = item.project_name || item.project || 'Chung';
@@ -994,6 +1146,21 @@ export function createOffice(container, callbacks) {
       }
     }
 
+    // B2. Hào quang nhân viên đang làm: nhịp sáng và vành xoay
+    if (!reducedMotion && hasWorkingStaff()) {
+      needNextFrame = true;
+      const pulse = 0.5 + 0.5 * Math.sin(now / 350);
+      haloAuraMat.opacity = 0.14 + 0.16 * pulse;
+      haloRingMat.opacity = 0.6 + 0.35 * pulse;
+      for (const ch of staffChars.values()) {
+        if (ch.userData.halo.visible) {
+          ch.userData.halo.rotation.y += dt * 1.5;
+          const sc = 1 + 0.08 * pulse;
+          ch.userData.halo.children[0].scale.set(sc, 1, sc);
+        }
+      }
+    }
+
     // C. Mờ dần các vệt sáng (trails)
     for (let i = trails.length - 1; i >= 0; i--) {
       needNextFrame = true;
@@ -1102,6 +1269,20 @@ export function createOffice(container, callbacks) {
       });
     });
     characters.clear();
+
+    // Dọn nhân viên và tài nguyên hào quang
+    staffChars.forEach((ch) => {
+      scene.remove(ch);
+      ch.userData.bodyMat.dispose();
+    });
+    staffChars.clear();
+    staffHeadMat.dispose();
+    haloRingGeo.dispose();
+    haloAuraGeo.dispose();
+    haloCrownGeo.dispose();
+    haloRingMat.dispose();
+    haloAuraMat.dispose();
+    haloCrownMat.dispose();
 
     renderer.dispose();
     renderer.forceContextLoss();

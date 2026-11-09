@@ -16,6 +16,9 @@
       projects: [],
       projectsLoaded: false,
 
+      // Nhân viên các phòng ban (GET /api/departments), vẽ trong văn phòng 3D
+      departments: [],
+
       // Quick intake form
       quickRequest: '',
       quickProject: '',
@@ -97,6 +100,7 @@
         // component field once it is there to make the room tree and labels re-render.
         import('/js/office-rooms.js').then(function () {
           self.roomsReady = true;
+          self.updateOffice();
         }).catch(function () {});
         setTimeout(function () {
           self.initOffice();
@@ -141,9 +145,45 @@
 
       loadAll: function () {
         var self = this;
-        return Promise.all([this.loadBoard(), this.loadTasks()]).then(function () {
+        return Promise.all([this.loadBoard(), this.loadTasks(), this.loadDepartments()]).then(function () {
           self.updateOffice();
         });
+      },
+
+      // Lỗi đọc phòng ban không chặn màn Điều phối: giữ danh sách cũ.
+      loadDepartments: function () {
+        var self = this;
+        return window.AB.api('GET', '/api/departments').then(function (res) {
+          if (res && res.ok && res.data && Array.isArray(res.data.departments)) {
+            self.departments = res.data.departments;
+          }
+        }).catch(function () {});
+      },
+
+      get staffList() {
+        var helper = window.ABOfficeRooms;
+        if (!this.roomsReady || !helper || !helper.staffFromDepartments) return [];
+        return helper.staffFromDepartments(this.departments);
+      },
+
+      get totalStaffCount() {
+        return this.staffList.length;
+      },
+
+      get totalStaffWorking() {
+        return this.staffList.filter(function (m) { return m.working; }).length;
+      },
+
+      get staffSummaryText() {
+        var n = this.totalStaffCount;
+        if (n === 0) return '';
+        var w = this.totalStaffWorking;
+        return n + ' nhân viên' + (w > 0 ? ' · ' + w + ' đang làm' : '');
+      },
+
+      roomStaffText: function (r) {
+        if (!r.staff) return '';
+        return r.staff + ' NV' + (r.staffWorking > 0 ? ' · ' + r.staffWorking + ' làm' : '');
       },
 
       loadBoard: function () {
@@ -530,7 +570,11 @@
       },
 
       roomTitle: function (r) {
-        return r.name + ': ' + r.items.length;
+        var t = r.name + ': ' + r.items.length + ' việc';
+        if (r.staff) {
+          t += ', ' + r.staff + ' nhân viên (' + r.staffWorking + ' đang làm)';
+        }
+        return t;
       },
 
       progressStyle: function (task) {
@@ -756,6 +800,7 @@
             board: this.board,
             tasks: this.tasks,
             projects: this.projects,
+            staff: this.staffList,
           });
         }
       },
@@ -887,12 +932,16 @@
           }
         }
 
+        var staff = this.staffList;
         return rooms.map(function (r) {
+          var inRoom = staff.filter(function (m) { return m.room === r.id; });
           return {
             id: r.id,
             name: r.name,
             color: r.color,
             items: roomItemsMap[r.id] || [],
+            staff: inRoom.length,
+            staffWorking: inRoom.filter(function (m) { return m.working; }).length,
           };
         });
       },

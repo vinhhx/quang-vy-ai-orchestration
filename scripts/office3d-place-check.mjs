@@ -9,6 +9,8 @@ import {
   classifyU1Task,
   isStudioTask,
   projectColor,
+  DEPT_ROOM,
+  staffFromDepartments,
 } from '../agent-brain/assets/dashboard/js/office-rooms.js';
 
 console.log('--- Kiểm tra office-rooms.js: Định nghĩa 8 phòng ---');
@@ -280,6 +282,34 @@ console.log('\n--- Kiểm tra 8: Màu sắc dự án (projectColor) ---');
   assert(c1.startsWith('#'), 'Mã màu phải là hex');
   assert.equal(c1, c3, 'Cùng ID dự án phải ra cùng màu');
   console.log('✓ projectColor băm màu ổn định:', { 'web-ban-hang': c1, 'video-tiktok': c2 });
+}
+
+console.log('\n--- Kiểm tra 9: Nhân viên phòng ban (staffFromDepartments) ---');
+{
+  const staff = staffFromDepartments([
+    { id: 'ke-hoach', name: 'Phòng kế hoạch', members: [
+      { id: 'kh-a', display_name: 'KH A', model: 'm1', stats: { running: 1 } },
+      { id: 'kh-b', stats: { running: 0 } },
+    ] },
+    { id: 'thi-cong', name: 'Phòng thi công', members: [{ id: 'tc-a', display_name: 'TC A' }] },
+    { id: 'bao-mat', name: 'Phòng security', members: [{ id: 'bm-a', stats: { running: 2 } }] },
+    { id: 'phan-tich', members: null },
+  ]);
+  assert.equal(staff.length, 4, 'Trải phẳng đủ 4 nhân viên, bỏ phòng không có members');
+  const byId = Object.fromEntries(staff.map((m) => [m.id, m]));
+  assert.equal(byId['kh-a'].room, 'ba');
+  assert.equal(byId['kh-a'].working, true, 'running > 0 là đang làm');
+  assert.equal(byId['kh-b'].working, false);
+  assert.equal(byId['kh-b'].name, 'kh-b', 'Không có display_name thì dùng id');
+  assert.equal(byId['tc-a'].room, 'ky_thuat');
+  assert.equal(byId['tc-a'].working, false, 'Thiếu stats là đang rảnh');
+  assert.equal(byId['bm-a'].room, 'qa');
+  assert.equal(byId['bm-a'].running, 2);
+  for (const room of Object.values(DEPT_ROOM)) {
+    assert(ROOMS_BY_ID[room], `DEPT_ROOM trỏ tới phòng không tồn tại: ${room}`);
+  }
+  assert.deepEqual(staffFromDepartments(null), []);
+  console.log('✓ Nhân viên được xếp đúng phòng và cờ đang làm theo stats.running');
 }
 
 console.log('\n=== TẤT CẢ KIỂM TRA CHO office3d-place-check ĐỀU ĐẠT ===');

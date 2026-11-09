@@ -301,6 +301,50 @@ export function placeTask(task, board, projects) {
   };
 }
 
+/**
+ * Phòng 3D của từng phòng ban nhân viên (departments.json).
+ * Phân tích và Kế hoạch ngồi phòng BA, Thi công ở Kỹ thuật, QA và Security ở QA.
+ */
+export const DEPT_ROOM = Object.freeze({
+  'phan-tich': 'ba',
+  'ke-hoach': 'ba',
+  'thi-cong': 'ky_thuat',
+  'qa': 'qa',
+  'bao-mat': 'qa',
+});
+
+/**
+ * Trải phẳng danh sách nhân viên từ GET /api/departments.
+ * Mỗi phần tử: { id, name, deptId, deptName, room, model, engine, working, running }.
+ * working = nhân viên đang có run chạy (stats.running > 0).
+ */
+export function staffFromDepartments(depts) {
+  var out = [];
+  if (!Array.isArray(depts)) return out;
+  for (var i = 0; i < depts.length; i++) {
+    var d = depts[i];
+    if (!d || !Array.isArray(d.members)) continue;
+    var room = DEPT_ROOM[d.id] || 'ky_thuat';
+    for (var j = 0; j < d.members.length; j++) {
+      var m = d.members[j];
+      if (!m || !m.id) continue;
+      var running = (m.stats && m.stats.running) || 0;
+      out.push({
+        id: m.id,
+        name: m.display_name || m.id,
+        deptId: d.id,
+        deptName: d.name || d.id,
+        room: room,
+        model: m.model || '',
+        engine: m.engine || '',
+        working: running > 0,
+        running: running,
+      });
+    }
+  }
+  return out;
+}
+
 export function placeProposal(proposal) {
   if (!proposal) {
     return { room: 'dieu_phoi', desk: 'bench', flags: {} };
@@ -353,6 +397,8 @@ if (typeof window !== 'undefined') {
     placeTask: placeTask,
     placeProposal: placeProposal,
     placeIntake: placeIntake,
+    DEPT_ROOM: DEPT_ROOM,
+    staffFromDepartments: staffFromDepartments,
   };
 }
 
