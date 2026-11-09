@@ -1958,6 +1958,10 @@ fn commands_registered() {
         &json!([
             {"command": "task", "description": "Giao việc mới cho agent-brain"},
             {"command": "huy", "description": "Huỷ yêu cầu giao việc đang mở"},
+            {"command": "fixbugs", "description": "Kéo bug Trello/Sheet: /fixbugs <dự án> [số]"},
+            {"command": "bugs", "description": "Tiến độ bug: /bugs <dự án>"},
+            {"command": "deployed", "description": "Đã deploy: /deployed <dự án> <KEY...>"},
+            {"command": "reject", "description": "Loại bug: /reject <dự án> <KEY> <lý do>"},
         ]),
         "{:#?}",
         calls[0]
