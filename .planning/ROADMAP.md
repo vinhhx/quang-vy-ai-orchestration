@@ -522,3 +522,13 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 13/13 | Complete    | 2026-10-19 |
 | 6. Multi-engine & Media Branch | 30/30 | Complete    | 2026-11-10 |
+
+### Phase 7: Journal Vault (Obsidian)
+
+**Goal:** Xuất nhật ký công việc hằng ngày từ brain.db (nguồn sự thật, một chiều) sang vault Obsidian riêng tư `git@github.com:vinhhx/agent-brain-journal.git`; điện thoại chỉ đọc (obsidian-git, pull). Mỗi ngày một file (`Nhật ký/YYYY/MM/YYYY-MM-DD.md`), kèm `Today.md`, tháng, năm, `Dự án/<project>.md`; không có file tuần. Nội dung ngôn ngữ thường, 3 nhóm (Công việc / Video / Hỗ trợ bộ phận khác), mục "cần anh xử lý" ở đầu; chỉ field allowlist, quét secret trước push, không diff/prompt/path/env/key/endpoint/account. Thêm digest Telegram cuối ngày có link và `/tim` (SQLite FTS5); commit+push theo lô (~30 phút và cuối ngày). Quyết định thiết kế: memory `journal-vault-idea` (2026-11-10).
+**Requirements**: TBD
+**Depends on:** Phase 6
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 7 to break down)

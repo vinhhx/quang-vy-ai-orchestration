@@ -4,16 +4,16 @@ current_phase: 4
 current_phase_name: Session & Token Optimization
 status: planning
 stopped_at: Phase 06 complete, ready to plan Phase 4
-last_updated: "2026-11-10T10:46:12.672Z"
+last_updated: "2026-11-10T10:47:46.130Z"
 last_activity: 2026-11-10
 last_activity_desc: Phase 06 complete, transitioned to Phase 4
-state_head: 2b60674f4c442500af60b5ccb9cc3bccae393e7b
+state_head: bd6f4e4ce7399d61950e29ee9518d29cebe75950
 progress:
-  total_phases: 13
+  total_phases: 14
   completed_phases: 5
   total_plans: 127
   completed_plans: 126
-  percent: 83
+  percent: 36
 ---
 
 # Project State
@@ -36,7 +36,7 @@ Other open items:
 - Phase 06.2: 06.2-01, 06.2-02 done; 06.2-03 superseded (QA rule dropped by quick plan `team-any-engine-any-role`, account choice by D-45 `claude_config_dir`). Its unmerged commits are kept on branch `worktree-agent-aabbd671f000750da` (52355e6); do not merge.
 - Phase 4 and Phase 06.1: not planned yet.
 
-Progress: [████████░░] 83%
+Progress: [████░░░░░░] 36%
 
 ## Performance Metrics
 
@@ -133,6 +133,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Không có quyết đị
 - Phase 06.1 inserted after Phase 6: Media Branch — MEDIA-01…03 split out of Phase 6 (user decision 2026-10-24, 06-CONTEXT D-22); Phase 6 keeps ENG-01…07 + Settings screen + human engine
 - Phase 05.4 inserted after Phase 05.3: Telegram Task Intake — /task command and forwarded messages → one task; plans of Telegram-created tasks approved on the dashboard only (user decision 2026-10-21); work board renumbered to 05.5
 - Phase 06.2 inserted after Phase 6: UI/UX fixes from live demo: many small realtime fixes to the Phase 5 and 6 dashboard screens
+- Phase 7 added: Journal Vault (Obsidian): daily journal export from brain.db to Obsidian vault; user chose to build before Phase 4 (2026-11-10)
 
 ## Deferred Items
 
