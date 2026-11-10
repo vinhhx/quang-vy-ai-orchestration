@@ -463,8 +463,14 @@ fn qa_pass_notifies_summary() {
     );
     assert!(text.contains("Tổng: 5 run ·"), "{text}");
     let btns = buttons(&msg);
-    assert_eq!(labels(&msg), vec!["Mở lại task".to_string()], "{msg}");
-    assert!(is_rev_data(&btns[0].1, "o:1:"), "{btns:?}");
+    // Merge & push (the task branch is not merged into its base yet), then Mở lại task.
+    assert_eq!(
+        labels(&msg),
+        vec!["Merge & push".to_string(), "Mở lại task".to_string()],
+        "{msg}"
+    );
+    assert!(is_rev_data(&btns[0].1, "g:1:"), "{btns:?}");
+    assert!(is_rev_data(&btns[1].1, "o:1:"), "{btns:?}");
 
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(messages_starting(&tg, "Chờ duyệt plan").len(), 1);

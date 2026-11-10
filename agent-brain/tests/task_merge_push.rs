@@ -217,6 +217,24 @@ fn behind_origin_fast_forwards_then_pushes() {
     assert!(w.repo.join("src/other.txt").is_file());
 }
 
+// 2b. No local base branch: created from origin/<base> (tracking it), then merge and push.
+#[test]
+fn missing_local_base_is_created_from_origin() {
+    let sb = Sandbox::new();
+    let w = setup(&sb, true, Some("dev"), json!({}));
+    let remote = w.remote.as_ref().unwrap();
+    sb.git(&w.repo, &["branch", "-q", "-D", "dev"]);
+    let origin_before = sha(&sb, remote, "dev");
+
+    let res = merge_push(&sb, 1);
+    assert_code(&res, 0, "merge --push without local dev");
+    assert_eq!(current(&sb, &w.repo), "dev");
+    assert_eq!(sha(&sb, &w.repo, "dev^1"), origin_before);
+    assert_eq!(sha(&sb, &w.repo, "dev"), sha(&sb, remote, "dev"));
+    let upstream = sb.git(&w.repo, &["rev-parse", "--abbrev-ref", "dev@{upstream}"]);
+    assert_eq!(upstream.trim(), "origin/dev");
+}
+
 // 3. A conflict on a code file: refused, the merge aborted, nothing changed.
 #[test]
 fn code_conflict_aborts_and_changes_nothing() {
