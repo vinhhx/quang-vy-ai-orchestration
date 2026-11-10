@@ -231,16 +231,66 @@ pub struct SecretHit {
     pub rule: String,
 }
 
+/// Luật của cổng, theo thứ tự báo cáo (sau `known-value`). Tệp vault không bao giờ chứa URL hay
+/// đường dẫn tuyệt đối do cách dựng, nên các luật này có tín hiệu cao; luật chuỗi dài và đường
+/// dẫn tương đối của bộ lọc chữ không có ở đây (slug và wikilink sẽ vướng).
+static GATE_RULES: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
+    vec![
+        ("url", re(r"(?i)[a-z][a-z0-9+.-]*://")),
+        (
+            "abs-path",
+            re(r"/home/|/root/|/mnt/|/Users/|~/|\b[A-Za-z]:\\"),
+        ),
+        ("pem", re("-----BEGIN")),
+        (
+            "token-shape",
+            re(&format!(
+                r"{TOKEN_SHAPES}|(?i:\bbearer\s+[A-Za-z0-9._~+/=-]{{16,}})"
+            )),
+        ),
+        ("jwt", re(JWT_SHAPE)),
+        ("telegram-token", re(TELEGRAM_SHAPE)),
+        ("key-assignment", re(KEY_ASSIGN)),
+        ("email", re(r"[\w.+-]+@[\w-]+\.[\w.-]+")),
+    ]
+});
+
+/// Đường dẫn dùng trong báo cáo: giá trị secret đã biết và mọi chuỗi giống secret bị che.
+fn mask_path(path: &str, secrets: &[String]) -> String {
+    let hidden = crate::secrets::REDACTED;
+    replace_secret_shapes(
+        crate::secrets::redact_str(path, secrets),
+        hidden,
+        hidden,
+        hidden,
+    )
+}
+
 /// Cổng cuối (JRN-03): quét nội dung và đường dẫn mọi tệp đã dựng. Có kết quả = không ghi gì.
+/// Mỗi (tệp, luật) một kết quả; kết quả chỉ có đường dẫn đã che và tên luật, không bao giờ có
+/// đoạn khớp.
 pub fn scan_generated(files: &BTreeMap<String, String>, secrets: &[String]) -> Vec<SecretHit> {
     let mut hits = Vec::new();
     for (path, body) in files {
+        let mut rules: Vec<&'static str> = Vec::new();
         if crate::secrets::contains_secret(body.as_bytes(), secrets)
             || crate::secrets::contains_secret(path.as_bytes(), secrets)
         {
+            rules.push("known-value");
+        }
+        for (name, rule) in GATE_RULES.iter() {
+            if rule.is_match(body) || rule.is_match(path) {
+                rules.push(name);
+            }
+        }
+        if rules.is_empty() {
+            continue;
+        }
+        let shown = mask_path(path, secrets);
+        for rule in rules {
             hits.push(SecretHit {
-                path: crate::secrets::redact_str(path, secrets),
-                rule: "known-value".to_string(),
+                path: shown.clone(),
+                rule: rule.to_string(),
             });
         }
     }
@@ -467,6 +517,86 @@ mod tests {
     #[test]
     fn zero_width_and_bidi_removed() {
         assert_eq!(clean("chữ\u{200B}mẫu\u{202E}nè"), "chữmẫunè");
+    }
+
+    fn gate(files: &[(&str, String)], secrets: &[String]) -> Vec<(String, String)> {
+        let map: BTreeMap<String, String> = files
+            .iter()
+            .map(|(p, b)| (p.to_string(), b.clone()))
+            .collect();
+        scan_generated(&map, secrets)
+            .into_iter()
+            .map(|h| (h.path, h.rule))
+            .collect()
+    }
+
+    #[test]
+    fn gate_rules_fire() {
+        let jwt = format!(
+            "{}.{}.{}",
+            tok("eyJ", "hbGciOiJIUzI1NiJ9"),
+            "eyJzdWIiOiIxMjM0NTY",
+            "c2lnbmF0dXJlMTIz"
+        );
+        let cases: Vec<(&str, String)> = vec![
+            ("url", "https://x.example/a".to_string()),
+            ("abs-path", "/home/u/a".to_string()),
+            ("pem", "-----BEGIN KEY-----".to_string()),
+            ("token-shape", tok("ghp_", BODY35)),
+            ("jwt", jwt),
+            ("telegram-token", format!("123456789:{BODY35}")),
+            ("key-assignment", "secret = abcdefgh12".to_string()),
+            ("email", "a@b.vn".to_string()),
+        ];
+        for (rule, text) in &cases {
+            let path = format!("Nhật ký/{rule}.md");
+            let hits = gate(&[(path.as_str(), format!("trước {text} sau\n"))], &[]);
+            assert_eq!(hits, vec![(path.clone(), rule.to_string())], "{rule}");
+        }
+
+        // the same rules apply to the path
+        let path = "Dự án/a@b.vn.md";
+        let hits = gate(&[(path, "sạch\n".to_string())], &[]);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].1, "email");
+
+        // a day file in the tracer format and a long project path are clean
+        let day = "---\ndate: 2026-01-15\ntasks: 1\ntags: [nhat-ky]\n---\n\
+<!-- Tệp sinh tự động từ agent-brain — không sửa tay, lần xuất sau sẽ ghi đè. -->\n\
+# Thứ Năm 15/01/2026 — 1 việc (1 xong)\n\n## Video (1)\n\
+> [!success]- ✓ du-an-a — Dựng video giới thiệu sản phẩm mẫu\n\
+> **Trạng thái:** xong · 34 phút\n\
+> **Dự án:** [[Dự án/du-an-a|du-an-a]] · **Nhóm:** Video · **Số bước chạy:** 3 · **Vòng:** 1\n\
+> **Vai đã chạy:** Lead, Dev, QA\n>\n> Dựng video giới thiệu sản phẩm mẫu thêm phụ đề\n\n---\n\
+Tháng: [[2026-01]]\n";
+        let clean = gate(
+            &[
+                ("Nhật ký/2026/01/2026-01-15.md", day.to_string()),
+                (
+                    "Dự án/automation-test-e2e-very-long-name-1.md",
+                    "sạch\n".to_string(),
+                ),
+            ],
+            &[],
+        );
+        assert!(clean.is_empty(), "{clean:?}");
+    }
+
+    #[test]
+    fn gate_report_never_holds_the_value() {
+        let gh = tok("ghp_", BODY35);
+        let hits = gate(&[(&format!("Dự án/{gh}.md"), "sạch\n".to_string())], &[]);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].1, "token-shape");
+        assert!(!hits[0].0.contains(BODY35), "{hits:?}");
+
+        let known = "khoa-bi-mat-ba-24680".to_string();
+        let hits = gate(
+            &[("Today.md", format!("có {known} và https://x.example\n"))],
+            std::slice::from_ref(&known),
+        );
+        let rules: Vec<&str> = hits.iter().map(|h| h.1.as_str()).collect();
+        assert_eq!(rules, vec!["known-value", "url"]);
     }
 
     #[test]
