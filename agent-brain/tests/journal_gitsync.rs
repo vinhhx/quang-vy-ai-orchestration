@@ -554,11 +554,15 @@ fn no_push_then_push_commits_pending_files() {
 
     let commits = remote_commits(&sb, &remote);
     assert_eq!(commits.len(), 1, "{commits:?}");
-    assert!(commits[0].starts_with("agent-brain journal|"), "{commits:?}");
+    assert!(
+        commits[0].starts_with("agent-brain journal|"),
+        "{commits:?}"
+    );
     let co = checkout(&sb, &remote);
     let files = commit_files(&sb, &co, "HEAD");
     assert!(files.iter().any(|f| f == DAY_FILE), "{files:?}");
     assert!(files.iter().any(|f| f == "Today.md"), "{files:?}");
+    assert!(files.iter().any(|f| f == ".gitignore"), "{files:?}");
     assert!(files.len() >= 4, "{files:?}");
     assert_eq!(subject_count(&commits[0]), files.len(), "{commits:?}");
     assert!(
@@ -601,7 +605,10 @@ fn no_push_then_push_on_non_empty_vault() {
 
     let commits = remote_commits(&sb, &remote);
     assert_eq!(commits.len(), 2, "{commits:?}");
-    assert!(commits[0].starts_with("agent-brain journal|"), "{commits:?}");
+    assert!(
+        commits[0].starts_with("agent-brain journal|"),
+        "{commits:?}"
+    );
     let co = checkout(&sb, &remote);
     let files = commit_files(&sb, &co, "HEAD");
     assert!(files.iter().any(|f| f == DAY_FILE), "{files:?}");

@@ -566,6 +566,62 @@ pub fn prepare(ctx: &GitCtx, cfg: &JournalConfig, generated: &BTreeSet<String>) 
     }
 }
 
+fn gitignore_is_bootstrap(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_file() => {}
+        _ => return false,
+    }
+    std::fs::read(path)
+        .map(|b| b == super::writer::GITIGNORE_BOOTSTRAP.as_bytes())
+        .unwrap_or(false)
+}
+
+/// Đường dẫn sinh tự động mà git thấy là chưa theo dõi hoặc khác `HEAD` (ví dụ tệp do một lần
+/// `--no-push` trước ghi vào clone nhưng chưa commit). Chỉ trả đường dẫn nằm trong `generated`,
+/// là tệp thường còn dòng đánh dấu, không thuộc `.obsidian/`; tệp đã xóa không trả (đã có trong
+/// `removed`). Lỗi git → danh sách rỗng.
+pub fn pending_paths(ctx: &GitCtx, dir: &Path, generated: &BTreeSet<String>) -> Vec<String> {
+    let out = match run_git(
+        ctx,
+        Some(dir),
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    ) {
+        Ok(o) if o.ok() => o,
+        _ => return Vec::new(),
+    };
+    let mut found: BTreeSet<String> = BTreeSet::new();
+    let mut records = out.stdout.split('\0').filter(|r| !r.is_empty());
+    while let Some(rec) = records.next() {
+        if rec.len() < 4 {
+            continue;
+        }
+        let mut st = rec.chars();
+        let x = st.next().unwrap_or(' ');
+        let y = st.next().unwrap_or(' ');
+        let rel = &rec[3..];
+        if x == 'R' || x == 'C' {
+            records.next();
+        }
+        let differs =
+            (x == '?' && y == '?') || matches!(x, 'A' | 'M' | 'T') || matches!(y, 'A' | 'M' | 'T');
+        if !differs || rel == ".obsidian" || rel.starts_with(".obsidian/") {
+            continue;
+        }
+        if rel == ".gitignore" {
+            // Chỉ `.gitignore` do chính writer tạo (khi vault chưa có), còn chưa theo dõi và
+            // giống hệt nội dung bootstrap; `.gitignore` của người dùng không bao giờ được stage.
+            if x == '?' && gitignore_is_bootstrap(&dir.join(rel)) {
+                found.insert(rel.to_string());
+            }
+            continue;
+        }
+        if generated.contains(rel) && file_has_marker(&dir.join(rel)) {
+            found.insert(rel.to_string());
+        }
+    }
+    found.into_iter().collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Published {
     Pushed {
