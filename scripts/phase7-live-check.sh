@@ -228,9 +228,6 @@ export AGENT_BRAIN_JOURNAL_NOW_MS="$NOW_MS"
 
 VAULT="$TMP/vault.git"
 git init -q --bare -b main "$VAULT"
-VAULT_A="$TMP/vault-a.git"
-git init -q --bare -b main "$VAULT_A"
-CLONE_A="$TMP/clone-a"
 
 PROJECT_REPO="$TMP/repos/du-an-mau"
 mkdir -p "$PROJECT_REPO"
@@ -275,11 +272,11 @@ PYEOF
 write_map
 
 # config.json = cấu hình mặc định + mục journal trỏ vào repo bare cục bộ.
-python3 -I - "$REPO_ROOT/agent-brain/assets/config.default.json" "$AGENT_BRAIN_CONFIG" "$TMP/brain_config_no_journal.json" "$VAULT" "$TMP/brain_config_a.json" "$VAULT_A" "$CLONE_A" << 'PYEOF'
+python3 -I - "$REPO_ROOT/agent-brain/assets/config.default.json" "$AGENT_BRAIN_CONFIG" "$TMP/brain_config_no_journal.json" "$VAULT" << 'PYEOF'
 import json
 import sys
 
-src, dst, dst_no_journal, vault, dst_a, vault_a, clone_a = sys.argv[1:8]
+src, dst, dst_no_journal, vault = sys.argv[1:5]
 with open(src, encoding="utf-8") as f:
     cfg = json.load(f)
 with open(dst_no_journal, "w", encoding="utf-8") as f:
@@ -287,10 +284,6 @@ with open(dst_no_journal, "w", encoding="utf-8") as f:
 web = "https://github.com/example-owner/example-vault"
 cfg["journal"] = {"repo_url": vault, "utc_offset_minutes": 420, "web_base_url": web}
 with open(dst, "w", encoding="utf-8") as f:
-    json.dump(cfg, f, ensure_ascii=False)
-# Kiểm tra A dùng vault và bản clone riêng để không ảnh hưởng các kiểm tra sau.
-cfg["journal"] = {"repo_url": vault_a, "clone_dir": clone_a, "utc_offset_minutes": 420, "web_base_url": web}
-with open(dst_a, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False)
 PYEOF
 
@@ -371,23 +364,27 @@ fresh_clone() {
 seed_task du-an-mau dung-video-mau "Dựng video mẫu cho sản phẩm thử"
 CLONE="$XDG_DATA_HOME/agent-brain/journal"
 
-# Kiểm tra A (vault và bản clone riêng): --no-push ghi tệp nhưng không commit, repo bare chưa có commit.
-if ! AGENT_BRAIN_CONFIG="$TMP/brain_config_a.json" "$BIN" journal export --no-push > "$TMP/a.out" 2>&1; then
+# Kiểm tra A: --no-push ghi tệp nhưng không commit, repo bare chưa có commit. Bản clone này được
+# dùng tiếp cho kiểm tra B (luồng lần đầu thật: xem trước bằng --no-push rồi đẩy trên cùng bản clone).
+if ! "$BIN" journal export --no-push > "$TMP/a.out" 2>&1; then
   cat "$TMP/a.out" >&2
   die "A: journal export --no-push thoát khác 0"
 fi
-if git -C "$VAULT_A" rev-parse --verify --quiet refs/heads/main > /dev/null; then
+if git -C "$VAULT" rev-parse --verify --quiet refs/heads/main > /dev/null; then
   die "A: --no-push đã đẩy commit lên repo bare"
 fi
-if ! git -C "$CLONE_A" -c core.quotepath=false status --porcelain --untracked-files=all | grep -q 'Today.md'; then
+if ! git -C "$CLONE" -c core.quotepath=false status --porcelain --untracked-files=all | grep -q 'Today.md'; then
   die "A: --no-push không để lại tệp sinh ra chưa commit trong bản clone"
 fi
-if [[ -n "$(git -C "$CLONE_A" log --oneline 2> /dev/null || true)" ]]; then
+if [[ -n "$(git -C "$CLONE" log --oneline 2> /dev/null || true)" ]]; then
   die "A: --no-push đã tạo commit trong bản clone"
+fi
+if [[ -n "$(git -C "$CLONE" diff --cached --name-only)" ]]; then
+  die "A: --no-push đã stage tệp trong bản clone"
 fi
 echo "LIVE OK: A --no-push chỉ ghi tệp, không commit, không đẩy"
 
-# Kiểm tra B: export đẩy đúng một commit với năm loại tệp, không có tệp tuần.
+# Kiểm tra B: export trên CÙNG bản clone đẩy đúng một commit với năm loại tệp, không có tệp tuần.
 if ! "$BIN" journal export > "$TMP/b.out" 2>&1; then
   cat "$TMP/b.out" >&2
   die "B: journal export thoát khác 0"

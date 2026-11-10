@@ -509,7 +509,7 @@ Khóa `test_commands` của dự án trong `projects_map.json` là danh sách m�
 
 **Lần xuất đầu trên vault đã có nội dung** (ví dụ vault demo): các tệp demo mang dòng đánh dấu sẽ bị thay bằng bản thật, tệp của bạn không có dòng đó được giữ nguyên, và chỉ `journal.branch` được đẩy (`master` và `.obsidian/` không đổi). Làm theo thứ tự:
 1. `agent-brain journal export --no-push`, rồi xem thay đổi: `git -C ~/.local/share/agent-brain/journal status` và `git -C ~/.local/share/agent-brain/journal diff`.
-2. Hài lòng với định dạng thì xóa bản clone (`rm -rf ~/.local/share/agent-brain/journal`; chỉ chứa tệp sinh ra và dựng lại được hoàn toàn từ `brain.db`) rồi chạy `agent-brain journal export`. Lệnh clone lại vault, ghi lại toàn bộ tệp và đẩy đúng một commit. Cần xóa bản clone vì lần xuất thứ hai trên bản clone còn tệp mới chưa commit của `--no-push` chỉ báo `không có thay đổi` mà không commit chúng.
+2. Hài lòng với định dạng thì chạy `agent-brain journal export` trên cùng bản clone đó. Lệnh commit mọi tệp sinh ra chưa được commit (tệp mới và tệp khác `HEAD`, kể cả tệp cũ bị xóa) trong đúng một commit rồi đẩy; chạy lần nữa thì không tạo commit nào.
 
 **Xem nhật ký trên điện thoại** (chỉ đọc, kéo về):
 1. Tạo một token GitHub **fine-grained**, quyền `Contents: Read-only`, chỉ cho repo vault.
