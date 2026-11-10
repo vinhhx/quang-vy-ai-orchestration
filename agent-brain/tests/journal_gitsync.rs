@@ -207,3 +207,242 @@ fn human_file_at_generated_path_is_not_overwritten() {
         assert!(all.contains("Today.md"), "{all}");
     }
 }
+
+// ---------------------------------------------------------------- Task 2: sync of the clone
+
+fn any_label(text: &str) -> bool {
+    use agent_brain::journal::gitsync::FailCategory::*;
+    [Network, SshAuth, Rejected, Timeout, Other]
+        .iter()
+        .any(|c| text.contains(c.label()))
+}
+
+fn commit_count(sb: &Sandbox, repo: &Path) -> usize {
+    sb.git(repo, &["rev-list", "--count", "HEAD"])
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+/// The human edits the heading line of the day file in their own clone and pushes.
+fn human_edits_heading(sb: &Sandbox, remote: &Path) -> String {
+    let work = checkout(sb, remote);
+    let text = std::fs::read_to_string(work.join(DAY_FILE)).unwrap();
+    let edited: Vec<String> = text
+        .lines()
+        .map(|l| {
+            if l.starts_with("# ") {
+                "# Ngày này tôi đã sửa tay".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    let edited = format!("{}\n", edited.join("\n"));
+    human_push(sb, remote, &work, &[(DAY_FILE, &edited)], "sửa tay");
+    edited
+}
+
+#[test]
+fn offline_commit_then_catch_up() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    let conn = fixture(&sb, &remote);
+    ok(&export(&sb, &[], now()));
+
+    add_task(&conn, "viec-moi", 16);
+    go_offline(&remote);
+    let out = export(&sb, &[], later());
+    failed(&out);
+    assert!(any_label(&out.stderr), "{}", out.stderr);
+    let clone = clone_dir(&sb);
+    assert_eq!(commit_count(&sb, &clone), 2);
+    assert!(sb.git(&clone, &["status", "--porcelain"]).trim().is_empty());
+
+    go_online(&remote);
+    ok(&export(&sb, &[], later()));
+    assert_eq!(remote_commits(&sb, &remote).len(), 2);
+    assert_eq!(merges(&sb, &remote, "main"), "0");
+    assert_eq!(rev(&sb, &remote, "main"), rev(&sb, &clone, "HEAD"));
+}
+
+#[test]
+fn remote_moved_fast_forwards() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    let conn = fixture(&sb, &remote);
+    ok(&export(&sb, &[], now()));
+
+    let work = checkout(&sb, &remote);
+    human_push(
+        &sb,
+        &remote,
+        &work,
+        &[(OTHER_NOTE, "ghi chú khác\n")],
+        "ghi chú",
+    );
+    add_task(&conn, "viec-moi", 16);
+    ok(&export(&sb, &[], later()));
+
+    assert_eq!(remote_commits(&sb, &remote).len(), 3);
+    assert_eq!(merges(&sb, &remote, "main"), "0");
+    let co = checkout(&sb, &remote);
+    assert_eq!(
+        std::fs::read_to_string(co.join(OTHER_NOTE)).unwrap(),
+        "ghi chú khác\n"
+    );
+    assert!(co.join("Nhật ký/2026/01/2026-01-16.md").is_file());
+}
+
+#[test]
+fn diverged_history_rebases_local_commits() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    let conn = fixture(&sb, &remote);
+    ok(&export(&sb, &[], now()));
+
+    add_task(&conn, "viec-moi", 16);
+    go_offline(&remote);
+    failed(&export(&sb, &[], later()));
+    go_online(&remote);
+    let work = checkout(&sb, &remote);
+    human_push(
+        &sb,
+        &remote,
+        &work,
+        &[(OTHER_NOTE, "ghi chú khác\n")],
+        "ghi chú",
+    );
+
+    ok(&export(&sb, &[], later()));
+    assert_eq!(remote_commits(&sb, &remote).len(), 3);
+    assert_eq!(merges(&sb, &remote, "main"), "0");
+    let co = checkout(&sb, &remote);
+    assert!(co.join(OTHER_NOTE).is_file());
+    assert!(co.join("Nhật ký/2026/01/2026-01-16.md").is_file());
+    assert_eq!(rev(&sb, &remote, "main"), rev(&sb, &clone_dir(&sb), "HEAD"));
+}
+
+#[test]
+fn conflict_aborts_without_overwrite() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    let conn = fixture(&sb, &remote);
+    ok(&export(&sb, &[], now()));
+
+    add_task(&conn, "cung-ngay", 15);
+    go_offline(&remote);
+    failed(&export(&sb, &[], now()));
+    let clone = clone_dir(&sb);
+    let local_head = rev(&sb, &clone, "HEAD");
+    go_online(&remote);
+    let edited = human_edits_heading(&sb, &remote);
+    let remote_head = rev(&sb, &remote, "main");
+
+    for _ in 0..2 {
+        let out = export(&sb, &[], now());
+        failed(&out);
+        assert!(out.stderr.contains("xung đột"), "{}", out.stderr);
+        assert!(out.stderr.contains(DAY_FILE), "{}", out.stderr);
+        assert_eq!(rev(&sb, &remote, "main"), remote_head);
+        assert!(!clone.join(".git/rebase-merge").exists());
+        assert!(!clone.join(".git/rebase-apply").exists());
+        assert_eq!(rev(&sb, &clone, "HEAD"), local_head);
+        assert!(sb.git(&clone, &["status", "--porcelain"]).trim().is_empty());
+    }
+    let co = checkout(&sb, &remote);
+    assert_eq!(std::fs::read_to_string(co.join(DAY_FILE)).unwrap(), edited);
+}
+
+#[test]
+fn dirty_clone_stops_without_overwrite() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    fixture(&sb, &remote);
+    ok(&export(&sb, &[], now()));
+    let clone = clone_dir(&sb);
+
+    let gi = clone.join(".gitignore");
+    let original = std::fs::read_to_string(&gi).unwrap();
+    let mine = format!("{original}ghi-chu-rieng/\n");
+    std::fs::write(&gi, &mine).unwrap();
+    let out = export(&sb, &[], now());
+    failed(&out);
+    assert!(out.stderr.contains(".gitignore"), "{}", out.stderr);
+    assert_eq!(std::fs::read_to_string(&gi).unwrap(), mine);
+    std::fs::write(&gi, &original).unwrap();
+
+    let day = clone.join(DAY_FILE);
+    let generated = std::fs::read_to_string(&day).unwrap();
+    std::fs::write(&day, format!("{generated}dòng thêm tay\n")).unwrap();
+    ok(&export(&sb, &[], now()));
+    assert_eq!(std::fs::read_to_string(&day).unwrap(), generated);
+    assert!(sb.git(&clone, &["status", "--porcelain"]).trim().is_empty());
+    assert_eq!(remote_commits(&sb, &remote).len(), 1);
+}
+
+#[test]
+fn not_a_repo_dir_is_refused() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    fixture(&sb, &remote);
+    let clone = clone_dir(&sb);
+    write(&clone, "cua-toi.txt", "không xóa\n");
+
+    failed(&export(&sb, &[], now()));
+    assert_eq!(
+        std::fs::read_to_string(clone.join("cua-toi.txt")).unwrap(),
+        "không xóa\n"
+    );
+    assert!(!clone.join(".git").exists());
+    assert!(remote_commits(&sb, &remote).is_empty());
+}
+
+/// Library level: the remote moves between `prepare` and the push, so the first push is
+/// rejected; `commit_and_push` fetches, rebases its own commit and pushes once more.
+#[test]
+fn rejected_push_retries_once_after_rebase() {
+    use agent_brain::journal::config::JournalConfig;
+    use agent_brain::journal::gitsync::{self, GitCtx, Prepared, Published};
+    use std::collections::BTreeSet;
+
+    let sb = Sandbox::new();
+    // Only this test runs git through the library in this process; keep it on the sandbox
+    // config (every other git call here sets its own environment).
+    std::env::set_var("GIT_CONFIG_GLOBAL", &sb.git_config);
+    std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    let remote = bare_remote(&sb, "vault");
+    let cfg = JournalConfig {
+        repo_url: Some(remote.to_str().unwrap().to_string()),
+        clone_dir: sb.root.join("lib-clone"),
+        ..JournalConfig::default()
+    };
+    let ctx = GitCtx::from_cfg(&cfg, std::time::Duration::from_secs(1));
+    let none = BTreeSet::new();
+    let day = |title: &str| format!("---\ndate: x\n---\n{}\n# {title}\n", marker());
+
+    assert_eq!(gitsync::prepare(&ctx, &cfg, &none), Prepared::Ready);
+    write(&cfg.clone_dir, DAY_FILE, &day("một"));
+    let first = gitsync::commit_and_push(&ctx, &cfg, &[DAY_FILE.to_string()], "j1", true);
+    assert!(matches!(first, Published::Pushed { .. }), "{first:?}");
+
+    let work = checkout(&sb, &remote);
+    human_push(
+        &sb,
+        &remote,
+        &work,
+        &[(OTHER_NOTE, "ghi chú khác\n")],
+        "ghi chú",
+    );
+
+    let second_day = "Nhật ký/2026/01/2026-01-16.md";
+    write(&cfg.clone_dir, second_day, &day("hai"));
+    let second = gitsync::commit_and_push(&ctx, &cfg, &[second_day.to_string()], "j2", true);
+    let Published::Pushed { sha } = second else {
+        panic!("{second:?}");
+    };
+    assert_eq!(rev(&sb, &remote, "main"), sha);
+    assert_eq!(remote_commits(&sb, &remote).len(), 3);
+    assert_eq!(merges(&sb, &remote, "main"), "0");
+    assert!(cfg.clone_dir.join(OTHER_NOTE).is_file());
+}
