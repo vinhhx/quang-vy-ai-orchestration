@@ -1789,11 +1789,11 @@ if screen == 'settings':
     if len(navs) != 1:
         fail(f"Số nav 'Mục cài đặt' là {len(navs)}, kỳ vọng 1")
     sub = [collapse(b.text()) for b in navs[0].find(lambda n: n.tag == 'button')]
-    if sub != ['Đội hình', 'Quy trình', 'Nhân sự', 'Engine']:
-        fail(f"Các nút của nav 'Mục cài đặt' là {sub}, kỳ vọng ['Đội hình', 'Quy trình', 'Nhân sự', 'Engine']")
+    if sub != ['Hàng đợi (Orchestrator)', 'Đội hình', 'Quy trình', 'Nhân sự', 'Engine', 'Ghi chú prompt']:
+        fail(f"Các nút của nav 'Mục cài đặt' là {sub}, kỳ vọng ['Hàng đợi (Orchestrator)', 'Đội hình', 'Quy trình', 'Nhân sự', 'Engine', 'Ghi chú prompt']")
     current = [collapse(b.text()) for b in navs[0].find(lambda n: n.tag == 'button' and n.attrs.get('aria-current') == 'true')]
-    if current != ['Đội hình']:
-        fail(f"Nút nav đang chọn là {current}, kỳ vọng ['Đội hình']")
+    if current != ['Hàng đợi (Orchestrator)']:
+        fail(f"Nút nav đang chọn là {current}, kỳ vọng ['Hàng đợi (Orchestrator)']")
     main_nav = root.find(lambda n: n.tag == 'nav' and n.attrs.get('aria-label') == 'Điều hướng chính')
     if len(main_nav) != 1:
         fail(f"Số nav 'Điều hướng chính' là {len(main_nav)}, kỳ vọng 1")
@@ -1803,8 +1803,9 @@ if screen == 'settings':
     link = [n for n in links if n.attrs.get('href') == '#/settings']
     if len(link) != 1 or link[0].attrs.get('aria-current') != 'page':
         fail(f"Liên kết menu #/settings thiếu aria-current=page (nhận được: {[n.attrs.get('aria-current') for n in link]})")
-    if collapse(link[0].text()) != 'Cài đặt':
-        fail(f"Liên kết menu #/settings có nhãn '{collapse(link[0].text())}', kỳ vọng 'Cài đặt'")
+    # The link carries a tooltip span plus an sr-only span, so its text is doubled; the accessible name is aria-label.
+    if link[0].attrs.get('aria-label') != 'Cài đặt' or collapse(link[0].text()) not in ('Cài đặt', 'Cài đặt Cài đặt'):
+        fail(f"Liên kết menu #/settings có nhãn '{link[0].attrs.get('aria-label')}' / '{collapse(link[0].text())}', kỳ vọng 'Cài đặt'")
     print("OK settings-shell")
 
     # 06-24: the Engine section lists the configured engines in config order (D-30, D-44).
