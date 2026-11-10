@@ -495,3 +495,191 @@ fn secret_blocked_export_mails_user() {
     assert!(secret[0].1.contains("known-value"), "{}", secret[0].1);
     assert!(remote_commits(&sb, &remote).is_empty());
 }
+
+// ------------------------------------------- Plan 07-09: --no-push then push on the same clone
+
+/// Files of the commit at `r` (`git show --name-only`), paths as stored.
+fn commit_files(sb: &Sandbox, repo: &Path, r: &str) -> Vec<String> {
+    sb.git(
+        repo,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "show",
+            "--name-only",
+            "--format=",
+            r,
+        ],
+    )
+    .lines()
+    .map(str::to_string)
+    .collect()
+}
+
+/// The `<n>` of the commit subject `journal: <stamp> (<n> tệp)`.
+fn subject_count(subject: &str) -> usize {
+    let open = subject.rfind('(').expect("subject has a count");
+    subject[open + 1..]
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+fn assert_clean(sb: &Sandbox, repo: &Path) {
+    assert_eq!(
+        sb.git(repo, &["status", "--porcelain", "--untracked-files=all"])
+            .trim(),
+        ""
+    );
+}
+
+#[test]
+fn no_push_then_push_commits_pending_files() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    fixture(&sb, &remote);
+    let clone = clone_dir(&sb);
+
+    ok(&export(&sb, &["--no-push"], now()));
+    assert!(remote_commits(&sb, &remote).is_empty());
+    assert!(clone.join(DAY_FILE).is_file());
+    let status = sb.git(&clone, &["status", "--porcelain", "--untracked-files=all"]);
+    assert!(status.contains("??"), "{status}");
+
+    let out = export(&sb, &[], now());
+    ok(&out);
+    assert!(out.stdout.contains("đã đẩy"), "{}", out.stdout);
+
+    let commits = remote_commits(&sb, &remote);
+    assert_eq!(commits.len(), 1, "{commits:?}");
+    assert!(commits[0].starts_with("agent-brain journal|"), "{commits:?}");
+    let co = checkout(&sb, &remote);
+    let files = commit_files(&sb, &co, "HEAD");
+    assert!(files.iter().any(|f| f == DAY_FILE), "{files:?}");
+    assert!(files.iter().any(|f| f == "Today.md"), "{files:?}");
+    assert!(files.len() >= 4, "{files:?}");
+    assert_eq!(subject_count(&commits[0]), files.len(), "{commits:?}");
+    assert!(
+        out.stdout.contains(&format!("đã đẩy {} tệp", files.len())),
+        "{}",
+        out.stdout
+    );
+    assert_clean(&sb, &clone);
+}
+
+#[test]
+fn no_push_then_push_is_idempotent() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    fixture(&sb, &remote);
+
+    ok(&export(&sb, &["--no-push"], now()));
+    ok(&export(&sb, &[], now()));
+    assert_eq!(remote_commits(&sb, &remote).len(), 1);
+
+    let out = export(&sb, &[], now());
+    ok(&out);
+    assert!(out.stdout.contains("không có thay đổi"), "{}", out.stdout);
+    assert_eq!(remote_commits(&sb, &remote).len(), 1);
+}
+
+#[test]
+fn no_push_then_push_on_non_empty_vault() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    let older = format!("---\ndate: 2026-01-15\n---\n{}\n# Ngày cũ\n", marker());
+    let human = "Ghi chú viết tay, không có dòng đánh dấu.\n";
+    seed_remote(&sb, &remote, &[(DAY_FILE, &older), (HUMAN_NOTE, human)]);
+    fixture(&sb, &remote);
+    let clone = clone_dir(&sb);
+
+    ok(&export(&sb, &["--no-push"], now()));
+    assert_eq!(remote_commits(&sb, &remote).len(), 1);
+    ok(&export(&sb, &[], now()));
+
+    let commits = remote_commits(&sb, &remote);
+    assert_eq!(commits.len(), 2, "{commits:?}");
+    assert!(commits[0].starts_with("agent-brain journal|"), "{commits:?}");
+    let co = checkout(&sb, &remote);
+    let files = commit_files(&sb, &co, "HEAD");
+    assert!(files.iter().any(|f| f == DAY_FILE), "{files:?}");
+    assert!(files.iter().any(|f| f == "Today.md"), "{files:?}");
+    assert!(!files.iter().any(|f| f == HUMAN_NOTE), "{files:?}");
+    assert_eq!(subject_count(&commits[0]), files.len(), "{commits:?}");
+    let day = std::fs::read_to_string(co.join(DAY_FILE)).unwrap();
+    assert!(!day.contains("# Ngày cũ"), "{day}");
+    assert_eq!(std::fs::read_to_string(co.join(HUMAN_NOTE)).unwrap(), human);
+    assert_clean(&sb, &clone);
+}
+
+#[test]
+fn no_push_removed_stale_then_push_commits_deletion() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    let stale = format!("---\ndate: 2025-12-01\n---\n{}\n# Ngày cũ\n", marker());
+    seed_remote(&sb, &remote, &[(STALE_DAY, &stale)]);
+    fixture(&sb, &remote);
+    let clone = clone_dir(&sb);
+
+    ok(&export(&sb, &["--no-push"], now()));
+    assert!(!clone.join(STALE_DAY).exists(), "stale day kept on disk");
+    assert_eq!(remote_commits(&sb, &remote).len(), 1);
+
+    ok(&export(&sb, &[], now()));
+    let commits = remote_commits(&sb, &remote);
+    assert_eq!(commits.len(), 2, "{commits:?}");
+    let co = checkout(&sb, &remote);
+    assert!(!co.join(STALE_DAY).exists(), "deletion not pushed");
+    assert!(co.join(DAY_FILE).is_file());
+    let files = commit_files(&sb, &co, "HEAD");
+    assert!(files.iter().any(|f| f == STALE_DAY), "{files:?}");
+    assert_eq!(subject_count(&commits[0]), files.len(), "{commits:?}");
+    assert_clean(&sb, &clone);
+}
+
+#[test]
+fn pending_never_stages_foreign_or_obsidian() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    fixture(&sb, &remote);
+    let clone = clone_dir(&sb);
+    let foreign = "Nhật ký/2026/01/ghi-chu-tay.md";
+    let obsidian = ".obsidian/app.json";
+
+    ok(&export(&sb, &["--no-push"], now()));
+    write(&clone, foreign, "ghi chú tay, không có dòng đánh dấu\n");
+    write(&clone, obsidian, "{\"token\": \"khong-duoc-dua-len\"}\n");
+    ok(&export(&sb, &[], now()));
+
+    let commits = remote_commits(&sb, &remote);
+    assert_eq!(commits.len(), 1, "{commits:?}");
+    let co = checkout(&sb, &remote);
+    let files = commit_files(&sb, &co, "HEAD");
+    assert!(files.iter().any(|f| f == DAY_FILE), "{files:?}");
+    assert!(!files.iter().any(|f| f == foreign), "{files:?}");
+    assert!(
+        !files.iter().any(|f| f.starts_with(".obsidian/")),
+        "{files:?}"
+    );
+    assert_eq!(subject_count(&commits[0]), files.len(), "{commits:?}");
+    assert!(clone.join(foreign).is_file());
+    assert!(clone.join(obsidian).is_file());
+}
+
+#[test]
+fn no_push_stages_nothing() {
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    fixture(&sb, &remote);
+    let clone = clone_dir(&sb);
+
+    ok(&export(&sb, &["--no-push"], now()));
+    assert_eq!(
+        sb.git(&clone, &["diff", "--cached", "--name-only"]).trim(),
+        ""
+    );
+    assert!(remote_commits(&sb, &remote).is_empty());
+    assert!(clone.join(DAY_FILE).is_file());
+}
