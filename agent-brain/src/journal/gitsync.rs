@@ -57,6 +57,64 @@ const GLOBAL_OPTS: &[&str] = &[
     "core.hooksPath=/dev/null",
 ];
 
+/// Biến môi trường chọn kho git: nếu được kế thừa (hook, worktree của agent, shell đã export)
+/// thì mọi lệnh git của nhật ký sẽ chạy trên kho khác thay vì bản clone của vault (WR-04).
+const REPO_ENV_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_NAMESPACE",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+];
+
+/// Tùy chọn ssh luôn thêm vào: không hỏi, kiểm tra host key, có thời hạn kết nối.
+fn ssh_hardening(n: u64) -> String {
+    format!(
+        "-o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout={n} -o ServerAliveInterval={n} -o ServerAliveCountMax=2"
+    )
+}
+
+/// `GIT_SSH_COMMAND` mà bộ chạy dùng (IN-07). Người dùng đã cấu hình lệnh ssh (`user`: biến
+/// `GIT_SSH_COMMAND` hoặc `core.sshCommand`) → giữ lệnh đó và nối thêm tùy chọn an toàn (ssh lấy
+/// giá trị `-o` đầu tiên, nên tùy chọn riêng của người dùng vẫn thắng). Chỉ có `GIT_SSH` (một
+/// chương trình, không chắc nhận `-o`) → `None`: để nguyên, không đặt `GIT_SSH_COMMAND`. Không có
+/// gì → lệnh cố định `ssh ...`.
+pub(crate) fn ssh_command(user: Option<&str>, git_ssh_set: bool, n: u64) -> Option<String> {
+    match user.map(str::trim).filter(|u| !u.is_empty()) {
+        Some(u) => Some(format!("{u} {}", ssh_hardening(n))),
+        None if git_ssh_set => None,
+        None => Some(format!("ssh {}", ssh_hardening(n))),
+    }
+}
+
+/// Lệnh con chạm remote (cần ssh).
+fn is_network_cmd(args: &[&str]) -> bool {
+    matches!(
+        args.first().copied(),
+        Some("clone" | "fetch" | "push" | "pull" | "ls-remote")
+    )
+}
+
+/// `core.sshCommand` của người dùng (cấu hình của bản clone, rồi toàn cục). Biến
+/// `GIT_SSH_COMMAND` ghi đè giá trị này, nên phải đọc để nối thay vì làm mất.
+fn configured_ssh_command(cwd: Option<&Path>) -> Option<String> {
+    let mut cmd = Command::new("git");
+    cmd.args(["config", "--get", "core.sshCommand"]);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    for v in REPO_ENV_VARS {
+        cmd.env_remove(v);
+    }
+    cmd.stdin(Stdio::null());
+    let out = cmd.output().ok().filter(|o| o.status.success())?;
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
 fn command(ctx: &GitCtx, cwd: Option<&Path>, args: &[&str]) -> Command {
     use std::os::unix::process::CommandExt;
     let mut cmd = Command::new("git");
@@ -64,16 +122,36 @@ fn command(ctx: &GitCtx, cwd: Option<&Path>, args: &[&str]) -> Command {
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    let n = ctx.ssh_connect_timeout_seconds;
+    for v in REPO_ENV_VARS {
+        cmd.env_remove(v);
+    }
+    let user_ssh = std::env::var("GIT_SSH_COMMAND")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            if is_network_cmd(args) {
+                configured_ssh_command(cwd)
+            } else {
+                None
+            }
+        });
+    let git_ssh_set = std::env::var_os("GIT_SSH").is_some_and(|v| !v.is_empty());
+    match ssh_command(
+        user_ssh.as_deref(),
+        git_ssh_set,
+        ctx.ssh_connect_timeout_seconds,
+    ) {
+        Some(c) => {
+            cmd.env("GIT_SSH_COMMAND", c);
+        }
+        None => {
+            cmd.env_remove("GIT_SSH_COMMAND");
+        }
+    }
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
         .env("GIT_ALLOW_PROTOCOL", "file:ssh:https")
-        .env(
-            "GIT_SSH_COMMAND",
-            format!(
-                "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout={n} -o ServerAliveInterval={n} -o ServerAliveCountMax=2"
-            ),
-        )
+        .env("GIT_LITERAL_PATHSPECS", "1")
         .env("GIT_AUTHOR_NAME", &ctx.author_name)
         .env("GIT_COMMITTER_NAME", &ctx.author_name)
         .env("GIT_AUTHOR_EMAIL", &ctx.author_email)
@@ -480,6 +558,72 @@ fn integrate(ctx: &GitCtx, dir: &Path, branch: &str) -> Integrated {
     }
 }
 
+/// Thông báo cố định (không đường dẫn) khi bản clone đang ở nhánh khác mà còn thay đổi chưa commit.
+const WRONG_BRANCH_DIRTY: &str =
+    "bản clone nhật ký đang ở nhánh khác nhánh nhật ký và còn thay đổi chưa commit — xử lý tay trong bản clone";
+
+/// HEAD của bản clone có phải nhánh cục bộ `branch`? (`symbolic-ref` lỗi: HEAD tách rời.)
+fn head_on_branch(ctx: &GitCtx, dir: &Path, branch: &str) -> Result<bool, GitFailure> {
+    match run_git(ctx, Some(dir), &["symbolic-ref", "-q", "HEAD"]) {
+        Ok(o) if o.timed_out => Err(GitFailure::from_out(&o)),
+        Ok(o) => Ok(o.ok() && o.stdout.trim() == format!("refs/heads/{branch}")),
+        Err(_) => Err(GitFailure::of(FailCategory::Other)),
+    }
+}
+
+/// WR-10: bảo đảm HEAD là nhánh cục bộ `journal.branch` trước khi commit/đẩy (không bao giờ đẩy
+/// commit của nhánh khác lên `<branch>`). Sai nhánh, HEAD tách rời hoặc chưa có commit: cây theo
+/// dõi sạch (tệp chưa theo dõi thì bỏ qua) → chuyển sang `<branch>` (nhánh cục bộ đã có thì chỉ
+/// chuyển, không ghi đè commit chưa đẩy; chưa có thì tạo từ `origin/<branch>`, hoặc nhánh mới
+/// chưa có commit khi remote chưa có nhánh); còn thay đổi → `Conflict` với thông báo cố định.
+fn ensure_branch(ctx: &GitCtx, dir: &Path, branch: &str) -> Option<Prepared> {
+    match head_on_branch(ctx, dir, branch) {
+        Ok(true) => return None,
+        Ok(false) => {}
+        Err(f) => return Some(Prepared::Failed(f)),
+    }
+    match run_git(
+        ctx,
+        Some(dir),
+        &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
+    ) {
+        Ok(o) if o.ok() => {
+            if !o.stdout.trim_matches('\0').is_empty() {
+                return Some(Prepared::Stopped(GitStop::Conflict {
+                    detail: WRONG_BRANCH_DIRTY.to_string(),
+                }));
+            }
+        }
+        Ok(o) if o.timed_out => return Some(Prepared::Failed(GitFailure::from_out(&o))),
+        _ => return Some(Prepared::Stopped(GitStop::NotARepo)),
+    }
+    let upstream = format!("origin/{branch}");
+    let res = if ref_exists(ctx, dir, &format!("refs/heads/{branch}")) {
+        run_git(ctx, Some(dir), &["switch", "-q", branch])
+    } else if ref_exists(ctx, dir, &format!("refs/remotes/{upstream}")) {
+        run_git(ctx, Some(dir), &["checkout", "-q", "-B", branch, &upstream])
+    } else {
+        // Remote chưa có nhánh: nhánh mới chưa có commit, chỉ mục rỗng (tệp trên đĩa không đổi),
+        // để lần commit đầu không mang theo cây của nhánh cũ.
+        match run_git(
+            ctx,
+            Some(dir),
+            &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")],
+        ) {
+            Ok(o) if o.ok() => run_git(ctx, Some(dir), &["read-tree", "--empty"]),
+            other => other,
+        }
+    };
+    match res {
+        Ok(o) if o.ok() => None,
+        Ok(o) if o.timed_out => Some(Prepared::Failed(GitFailure::from_out(&o))),
+        Ok(_) => Some(Prepared::Stopped(GitStop::Conflict {
+            detail: WRONG_BRANCH_DIRTY.to_string(),
+        })),
+        Err(_) => Some(Prepared::Failed(GitFailure::of(FailCategory::Other))),
+    }
+}
+
 /// Bản clone đã có: khóa index cũ, rebase dở → hủy, kiểm tra thay đổi tay, `fetch`, rồi
 /// tích hợp. `fetch` lỗi (mất mạng) vẫn trả `Ready`: commit cục bộ, lần đẩy sẽ lỗi và bị đếm.
 fn sync_existing(
@@ -493,10 +637,13 @@ fn sync_existing(
     if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
         let _ = run_git(ctx, Some(dir), &["rebase", "--abort"]);
     }
+    let branch = cfg.branch.as_str();
+    if let Some(stop) = ensure_branch(ctx, dir, branch) {
+        return stop;
+    }
     if let Some(stop) = check_dirty(ctx, dir, generated) {
         return stop;
     }
-    let branch = cfg.branch.as_str();
     match run_git(ctx, Some(dir), &["fetch", "-q", "origin", branch]) {
         Ok(o) if o.ok() => set_fetch_failed(dir, None),
         Ok(o) => {
@@ -663,6 +810,10 @@ pub fn commit_and_push(
     if !push {
         return Published::LocalOnly;
     }
+    // Không bao giờ commit/đẩy khi HEAD không phải nhánh nhật ký (WR-10).
+    if !matches!(head_on_branch(ctx, &dir, cfg.branch.as_str()), Ok(true)) {
+        return local_failure();
+    }
     let (present, missing): (Vec<&String>, Vec<&String>) = paths
         .iter()
         .partition(|p| std::fs::symlink_metadata(dir.join(p)).is_ok());
@@ -802,5 +953,20 @@ mod tests {
             FailCategory::Rejected
         );
         assert_eq!(classify(1, "something", false), FailCategory::Other);
+    }
+
+    #[test]
+    fn ssh_command_keeps_the_users_command() {
+        let fixed = ssh_command(None, false, 10).unwrap();
+        assert!(fixed.starts_with("ssh -o BatchMode=yes -o StrictHostKeyChecking=yes"));
+        let mine = ssh_command(Some("ssh -i /k/vault_key"), false, 10).unwrap();
+        assert!(mine.starts_with("ssh -i /k/vault_key -o BatchMode=yes"));
+        assert!(mine.contains("StrictHostKeyChecking=yes"));
+        assert_eq!(ssh_command(Some("  "), false, 10), Some(fixed));
+        // Only GIT_SSH (a program that may not take -o): left untouched.
+        assert_eq!(ssh_command(None, true, 10), None);
+        assert!(ssh_command(Some("my-ssh"), true, 10)
+            .unwrap()
+            .starts_with("my-ssh -o"));
     }
 }
