@@ -973,7 +973,7 @@ fn v3_db_gains_team_json() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
-    assert_eq!(agent_brain::db::SCHEMA_VERSION, 11);
+    assert_eq!(agent_brain::db::SCHEMA_VERSION, 12);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 
     let n: i64 = conn
@@ -1026,7 +1026,7 @@ fn fresh_db_has_team_json_at_current_version() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
-    assert_eq!(user_ver, 11);
+    assert_eq!(user_ver, 12);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 }
 
@@ -1062,7 +1062,7 @@ fn v4_db_upgrades_to_v5_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 11);
+    assert_eq!(user_ver, 12);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Verify existing data preserved
@@ -1140,7 +1140,7 @@ fn v5_db_upgrades_to_v6_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 11);
+    assert_eq!(user_ver, 12);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong intake phải được giữ nguyên
@@ -1241,7 +1241,7 @@ fn v6_db_upgrades_to_v7_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 11);
+    assert_eq!(user_ver, 12);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong runs phải được giữ nguyên
@@ -1327,7 +1327,7 @@ fn v7_db_upgrades_to_v8_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 11);
+    assert_eq!(user_ver, 12);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong tasks phải được giữ nguyên và cột level mặc định là 'vua'
@@ -1420,7 +1420,7 @@ fn v8_db_upgrades_to_v9_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 11);
+    assert_eq!(user_ver, 12);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong proposals phải có after_proposal_id = None
@@ -1489,7 +1489,7 @@ fn v9_db_upgrades_to_v10_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 11);
+    assert_eq!(user_ver, 12);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Existing intake row has default split = true (1)
@@ -1583,6 +1583,183 @@ fn v10_db_with_orphan_events_upgrades() {
         .unwrap();
     assert_eq!(events, 3, "no event row is lost");
     assert_eq!(fk_violation_count(&conn), 2, "orphan count is unchanged");
+}
+
+fn build_v11(path: &Path) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    for sql in &agent_brain::db::MIGRATIONS[..11] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 11).unwrap();
+    conn.execute(
+        "INSERT INTO projects (id, slug, path, name_vi, aliases_json, type, profile, repo, missing)
+         VALUES (1, 'proj-1', '/path/1', 'Dự án 1', '[]', 'code', 'work', NULL, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level)
+         VALUES (1, 1, 'task-1', 'Task 1', 'task/1', 'main', 'base1', 'open', 1000, 1000, 'vua')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO runs (id, task_id, project_id, role, engine, profile, status, started_at)
+         VALUES (1, 1, 1, 'dev', 'claude', 'work', 'succeeded', 1000)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO events (run_id, seq, ts, kind, raw_json) VALUES (1, 1, 1000, 'msg', '{}')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO intake (id, source, project_id, request, priority, status, error, created_at, updated_at)
+         VALUES (1, 'ui', 1, 'Yêu cầu 1', 'normal', 'proposed', NULL, 1000, 1000)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO proposals (id, intake_id, project_id, title, request, priority, team, workflow, reason, status, task_id, error, created_at, updated_at, level)
+         VALUES (1, 1, 1, 'Đề xuất 1', 'Yêu cầu 1', 'normal', 'mac-dinh', 'mac-dinh', NULL, 'pending', NULL, NULL, 1000, 1000, 'vua')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO plan_approvals (task_id, \"commit\", approved_at, source) VALUES (1, 'c111111', 1000, 'ui')",
+        [],
+    )
+    .unwrap();
+}
+
+fn build_v11_with_orphans(path: &Path) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    for sql in &agent_brain::db::MIGRATIONS[..11] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 11).unwrap();
+    seed_with_orphan_events(&conn);
+}
+
+fn count_rows(conn: &rusqlite::Connection, table: &str) -> i64 {
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+        .unwrap()
+}
+
+fn user_version(conn: &rusqlite::Connection) -> i64 {
+    conn.pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn v11_db_upgrades_to_v12_keeping_data() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v11(&db_path);
+
+    let conn = agent_brain::db::open(&db_path).expect("open v11 DB upgrades to v12");
+
+    assert_eq!(user_version(&conn), 12);
+    assert_eq!(user_version(&conn), agent_brain::db::SCHEMA_VERSION);
+    for table in [
+        "projects",
+        "tasks",
+        "runs",
+        "events",
+        "intake",
+        "proposals",
+        "plan_approvals",
+    ] {
+        assert_eq!(count_rows(&conn, table), 1, "{table} keeps its row");
+    }
+
+    for name in ["journal_state", "journal_mail", "journal_fts"] {
+        let found: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1, "{name} exists");
+    }
+
+    // journal_mail.dedupe_key is UNIQUE and sent_at is nullable
+    let insert_mail = "INSERT INTO journal_mail(kind, dedupe_key, text, created_at) VALUES ('digest', 'k1', 'xin chào', 1)";
+    conn.execute(insert_mail, []).unwrap();
+    assert!(conn.execute(insert_mail, []).is_err());
+    let sent_at: Option<i64> = conn
+        .query_row("SELECT sent_at FROM journal_mail", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(sent_at, None);
+
+    // journal_state.key is the primary key
+    conn.execute(
+        "INSERT INTO journal_state(key, value, updated_at) VALUES ('last_export', '1', 1)",
+        [],
+    )
+    .unwrap();
+    assert!(conn
+        .execute(
+            "INSERT INTO journal_state(key, value, updated_at) VALUES ('last_export', '2', 2)",
+            [],
+        )
+        .is_err());
+
+    // FTS5: a row is found by a quoted-token MATCH
+    conn.execute(
+        "INSERT INTO journal_fts(task_ref, day, display, title, project, grp, day_text, status)
+         VALUES ('1', '2026-01-15', 'du-an-a — Sua loi', 'sua loi dang nhap', 'du-an-a', 'cong viec', '2026 01 15', 'xong')",
+        [],
+    )
+    .unwrap();
+    let found: String = conn
+        .query_row(
+            "SELECT task_ref FROM journal_fts WHERE journal_fts MATCH '\"dang\" \"nhap\"'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(found, "1");
+
+    assert_eq!(fk_violation_count(&conn), 0);
+}
+
+#[test]
+fn v11_db_with_orphan_events_upgrades_to_v12() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v11_with_orphans(&db_path);
+
+    let conn = agent_brain::db::open(&db_path).expect("v11 DB with orphan events must open");
+
+    assert_eq!(user_version(&conn), agent_brain::db::SCHEMA_VERSION);
+    assert_eq!(count_rows(&conn, "events"), 3, "no event row is lost");
+    assert_eq!(fk_violation_count(&conn), 2, "orphan count is unchanged");
+}
+
+#[test]
+fn v12_reopen_runs_no_migration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v11(&db_path);
+
+    let first = agent_brain::db::open(&db_path).expect("first open upgrades");
+    assert_eq!(user_version(&first), 12);
+    first
+        .execute(
+            "INSERT INTO journal_state(key, value, updated_at) VALUES ('k', 'v', 1)",
+            [],
+        )
+        .unwrap();
+    drop(first);
+
+    let second = agent_brain::db::open(&db_path).expect("reopen of a v12 DB");
+    assert_eq!(user_version(&second), 12);
+    assert_eq!(count_rows(&second, "journal_state"), 1);
 }
 
 #[test]

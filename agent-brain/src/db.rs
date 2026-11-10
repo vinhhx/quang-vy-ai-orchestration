@@ -190,9 +190,29 @@ ALTER TABLE proposals ADD COLUMN after_proposal_id INTEGER REFERENCES proposals(
 CREATE INDEX plan_approvals_task ON plan_approvals(task_id);
 ALTER TABLE intake ADD COLUMN split INTEGER NOT NULL DEFAULT 1;"#,
     r#"ALTER TABLE tasks ADD COLUMN workdir TEXT;"#,
+    // 12 (Phase 7): nhật ký Obsidian — trạng thái xuất, hộp thư Telegram, chỉ mục FTS5 /tim
+    r#"CREATE TABLE journal_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE journal_mail (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  text TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  sent_at INTEGER
+);
+CREATE INDEX journal_mail_unsent ON journal_mail(sent_at);
+CREATE VIRTUAL TABLE journal_fts USING fts5(
+  task_ref UNINDEXED, day UNINDEXED, display UNINDEXED,
+  title, project, grp, day_text, status,
+  tokenize='unicode61 remove_diacritics 0'
+);"#,
 ];
 
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
