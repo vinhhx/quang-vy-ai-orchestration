@@ -339,6 +339,25 @@ pub fn team_names(s: &TaskState) -> Vec<String> {
         .collect()
 }
 
+/// The `merge_push` control when it is enabled (the button is offered only then; the shared
+/// control re-checks everything at press time).
+fn merge_push_offered(s: &TaskState) -> Option<&crate::dashboard::taskstate::ActionView> {
+    s.view
+        .controls
+        .iter()
+        .find(|c| c.id == "merge_push" && c.enabled)
+}
+
+/// The question the first `Merge & push` press shows; nothing runs before `Xác nhận`.
+pub fn merge_confirm_text(task_id: i64, branch: &str, base: &str) -> String {
+    format!("Merge task {task_id} ({branch}) vào {base} và push?")
+}
+
+/// The result of Merge & push, sent as one message (within Telegram's limit).
+pub fn merge_result_text(task_id: i64, message: &str) -> String {
+    clip(&format!("Merge & push · task {task_id}\n{message}"), TELEGRAM_MAX)
+}
+
 /// Plan fixbug-trial A9: nhắc deploy khi task của một bug Trello/Sheet qua QA.
 pub fn fixbug_deploy_line(s: &TaskState) -> Option<String> {
     s.fixbug_key.as_deref().map(|key| {
@@ -554,6 +573,9 @@ pub fn buttons_for(ev: &Event, s: &TaskState) -> Vec<Vec<Button>> {
             }
         }
         EventKind::QaPass => {
+            if let Some(c) = merge_push_offered(s) {
+                rows.push(button(&c.label, Op::MergeAsk, s, None));
+            }
             if has_control(s, "reopen") {
                 rows.push(button("Mở lại task", Op::Reopen, s, None));
             }

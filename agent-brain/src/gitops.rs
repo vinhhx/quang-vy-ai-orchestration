@@ -457,6 +457,160 @@ pub fn is_merged_into(root: &Path, branch: &str, base: &str) -> bool {
     }
 }
 
+/// `git` with a time limit, for commands that talk to a remote (`fetch`, `push`). Never asks for
+/// anything: `GIT_TERMINAL_PROMPT=0`, and ssh runs in batch mode with a connect timeout unless
+/// the user chose their own ssh already (`GIT_SSH_COMMAND` / `GIT_SSH`, or `core.sshCommand`,
+/// which the variable would override). The child runs in its own process group; when `timeout`
+/// passes the whole group (git, ssh, hooks) is killed and an error is returned. No shell.
+pub fn git_net(root: &Path, args: &[&str], timeout: std::time::Duration) -> BrainResult<String> {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    let user_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
+        || std::env::var_os("GIT_SSH").is_some()
+        || git(root, &["config", "--get", "core.sshCommand"])
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+    let mut cmd = git_cmd(root);
+    cmd.args(args);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    if !user_ssh {
+        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=20");
+    }
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.process_group(0);
+    let first = args.first().copied().unwrap_or("");
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| BrainError::error(format!("Lỗi chạy git: {e}")))?;
+    let pid = child.id() as i32;
+    let reader = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let out_t = reader(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let err_t = reader(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break Some(st),
+            Ok(None) => {}
+            Err(e) => return Err(BrainError::error(format!("Lỗi chờ git: {e}"))),
+        }
+        if std::time::Instant::now() >= deadline {
+            // SAFETY: plain signal to the process group this function created.
+            unsafe {
+                libc::killpg(pid, libc::SIGKILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let stdout = out_t.join().unwrap_or_default();
+    let stderr = err_t.join().unwrap_or_default();
+    let Some(status) = status else {
+        return Err(BrainError::error(format!(
+            "git {first} quá {}s",
+            timeout.as_secs()
+        )));
+    };
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
+        let msg = if stderr.is_empty() {
+            let code = status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string());
+            format!("Lệnh git thất bại (exit {code}): git {first}")
+        } else {
+            stderr
+        };
+        return Err(BrainError::error(msg));
+    }
+    Ok(String::from_utf8_lossy(&stdout).to_string())
+}
+
+/// `git remote get-url <name>`; `None` when there is no such remote.
+pub fn remote_url(root: &Path, name: &str) -> Option<String> {
+    if name.is_empty() || name.starts_with('-') {
+        return None;
+    }
+    git(root, &["remote", "get-url", name])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The full sha `rev` points to (`git rev-parse --verify --quiet <rev>^{commit}`), or `None`.
+pub fn rev_parse(root: &Path, rev: &str) -> Option<String> {
+    if rev.is_empty() || rev.starts_with('-') {
+        return None;
+    }
+    let spec = format!("{rev}^{{commit}}");
+    git(root, &["rev-parse", "--verify", "--quiet", &spec])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| is_hex_sha(s))
+}
+
+/// `(ahead, behind)` of `local` against `upstream`: `git rev-list --left-right --count
+/// <local>...<upstream>`.
+pub fn ahead_behind(root: &Path, local: &str, upstream: &str) -> BrainResult<(usize, usize)> {
+    if local.starts_with('-') || upstream.starts_with('-') {
+        return Err(BrainError::error("Tên ref không hợp lệ"));
+    }
+    let range = format!("{local}...{upstream}");
+    let out = git(root, &["rev-list", "--left-right", "--count", &range, "--"])?;
+    let mut parts = out.split_whitespace().map(|p| p.parse::<usize>());
+    match (parts.next(), parts.next()) {
+        (Some(Ok(a)), Some(Ok(b))) => Ok((a, b)),
+        _ => Err(BrainError::error(format!(
+            "Không đọc được kết quả git rev-list: {}",
+            out.trim()
+        ))),
+    }
+}
+
+/// Subjects of the first-parent commits in `range` (newest first), at most `max`. Empty on error.
+pub fn log_subjects(root: &Path, range: &str, max: usize) -> Vec<String> {
+    if range.is_empty() || range.starts_with('-') {
+        return Vec::new();
+    }
+    let n = format!("--max-count={max}");
+    git(root, &["log", "--first-parent", "--format=%s", &n, range, "--"])
+        .map(|out| out.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// A branch name agent-brain may put on a git command line: not empty, no leading `-`, no
+/// whitespace or control characters, no `@{`, and accepted by `git check-ref-format --branch`.
+pub fn valid_branch_name(name: &str) -> bool {
+    if name.is_empty()
+        || name.starts_with('-')
+        || name.contains("@{")
+        || name.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return false;
+    }
+    std::process::Command::new("git")
+        .args(["check-ref-format", "--branch", name])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Diff giữa 2 commit cho 1 file duy nhất, giới hạn tối đa `max_bytes`.
 pub fn diff_file(
     root: &Path,
@@ -845,6 +999,71 @@ mod tests {
         )
         .expect("git() must pass GIT_OPTIONAL_LOCKS to git");
         assert_eq!(out.trim(), "0");
+    }
+
+    #[test]
+    fn git_net_timeout_kills_the_process_group() {
+        let dir = repo();
+        let root = dir.path();
+        let pidfile = root.join("slow.pid");
+        let alias = format!(
+            "alias.slow=!echo $$ > '{}'; exec sleep 30",
+            pidfile.display()
+        );
+        let start = std::time::Instant::now();
+        let err = git_net(root, &["-c", &alias, "slow"], std::time::Duration::from_secs(1))
+            .expect_err("a command past its time limit fails");
+        assert!(err.message.contains("quá 1s"), "{}", err.message);
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .expect("the slow command started")
+            .trim()
+            .parse()
+            .unwrap();
+        // The killed process is gone (or a zombie about to be reaped by init).
+        let gone = (0..50).any(|_| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            let dead = stat.is_empty() || stat.contains(") Z ");
+            if !dead {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            dead
+        });
+        assert!(gone, "process {pid} still runs after the timeout");
+        // A quick command works and returns its output.
+        let out = git_net(root, &["rev-parse", "--is-inside-work-tree"], std::time::Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(out.trim(), "true");
+    }
+
+    #[test]
+    fn branch_name_check() {
+        for bad in ["", "-x", "a b", "a..b", "a\tb", "a\nb", "@{-1}", "x@{1}", "a~1", "a:b"] {
+            assert!(!valid_branch_name(bad), "{bad:?}");
+        }
+        for ok in ["dev", "main", "task/sua-app", "release/1.2"] {
+            assert!(valid_branch_name(ok), "{ok:?}");
+        }
+    }
+
+    #[test]
+    fn rev_and_ahead_behind() {
+        let dir = repo();
+        let root = dir.path();
+        let a = commit(root, &[("a.txt", "1")], "one");
+        git(root, &["branch", "other"]).unwrap();
+        commit(root, &[("b.txt", "1")], "two");
+        commit(root, &[("c.txt", "1")], "three");
+        assert_eq!(rev_parse(root, "other").as_deref(), Some(a.as_str()));
+        assert_eq!(rev_parse(root, "nope"), None);
+        assert_eq!(rev_parse(root, "-x"), None);
+        assert_eq!(ahead_behind(root, "main", "other").unwrap(), (2, 0));
+        assert_eq!(ahead_behind(root, "other", "main").unwrap(), (0, 2));
+        assert_eq!(log_subjects(root, "other..main", 5), vec!["three", "two"]);
+        assert_eq!(log_subjects(root, "other..main", 1), vec!["three"]);
+        assert_eq!(remote_url(root, "origin"), None);
+        git(root, &["remote", "add", "origin", "/srv/x.git"]).unwrap();
+        assert_eq!(remote_url(root, "origin").as_deref(), Some("/srv/x.git"));
     }
 
     #[test]

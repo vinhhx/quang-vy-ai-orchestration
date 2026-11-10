@@ -91,6 +91,7 @@ Quay lại bản cũ: dừng `serve`, rồi khôi phục **cùng lúc** binary c
 | **human return** | `agent-brain human return TASK_ID` | Trả việc lại cho nhân sự kèm báo cáo lần trước (`.qa-report.md` hoặc `.code-review.md`); task lại ở trạng thái `Chờ <tên> làm`. Cũng là nút `Trả lại`. |
 | **container** | `agent-brain container PROJECT` | In kết quả dò container docker đang chạy mount repo dự án: tên container, thư mục repo trên máy → trong container, lệnh được chuyển vào, lý do chọn khi nhiều container khớp, hoặc lý do không có. Chỉ gọi `docker ps` và `docker inspect` (lấy tên, trạng thái, mount; không in biến môi trường của container). Xem mục "Lệnh dự án trong container docker". |
 | **fixbug** | `agent-brain fixbug {check\|pull\|list\|deployed\|reject\|init\|import-legacy} PROJECT` | Quản lý nguồn bug từ Trello và Google Sheet: kiểm tra cấu hình (`check`), lấy bug vào hàng chờ intake (`pull`), xem danh sách bug kèm cột `đề xuất` và `task` (`list`), đánh dấu đã sửa và deploy (`deployed`), từ chối sửa (`reject`), khởi tạo file cấu hình (`init`), nhập trạng thái skill `/fix-bugs` cũ (`import-legacy`). Mỗi bug thành đúng một đề xuất (không tách); đề xuất giữ nguyên nội dung bug, tiêu đề `<KEY> <tiêu đề card>`, priority theo label. Mô tả, bình luận, đính kèm nằm trong khối `<<<DU_LIEU_QA <mã>` … `<<<HET_DU_LIEU_QA <mã>` và Lead nhận luật dữ liệu không tin cậy. Ảnh upload của card Trello (tối đa 5 ảnh, mỗi ảnh ≤ 5 MiB) được tải vào `<thư mục tri thức>/fix-bugs/images/<KEY>/` chỉ khi thư mục đó nằm trong `.gitignore`. `pull` (CLI, dashboard, Telegram) bị chặn khi có `fix-bugs/.lock` của skill cũ, hoặc khi còn `fix-bugs/tasks/*/state.json` mà chưa chạy `import-legacy` (CLI bỏ qua điều kiện sau bằng `--skip-legacy-check`). `import-legacy [--open skip\|take] [--dry-run]` chỉ đọc `tasks/*/state.json`: `done` → `deployed`; `rejected`/`duplicate` → `rejected`; `need_info`/`plan_ready` → `pulled` (`skip`, mặc định) hoặc không ghi để `pull` kéo thành task mới (`take`); `approved`/`review`/`ready_to_merge`/`merged`/`blocked`/`parked` → luôn `pulled` (skill cũ đang giữ nhánh). Không sửa file của skill cũ, không gọi Trello. |
+| **task merge --push** | `agent-brain task merge TASK_ID --push` | Merge & push task đã QA đạt: lấy `origin/<nhánh gốc>`, checkout nhánh gốc, `git merge --no-ff` nhánh task (bỏ file giao thức), push nhánh gốc lên origin không force, xoá nhánh task cục bộ (`git branch -d`). Thoát `0` khi đã push, đã xong từ trước, hoặc đã merge trong repo không có origin; thoát `1` khi bị từ chối hoặc push lỗi. Không có `--push`: `task merge` giữ hành vi cũ (merge, không push). Xem mục "Merge & push sau QA đạt". |
 
 ### Dự án loại `idea`
 
@@ -102,6 +103,19 @@ Dự án ý tưởng/tài liệu không cần `.git` trong thư mục của nó 
 - `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `node_modules/`, `target/` được loại khỏi theo dõi.
 - Không có remote nên không đẩy lên được. Đổi nhánh trong repo ẩn đổi file thật trong thư mục, giống git thường.
 - Mỗi dự án chỉ có một đường dẫn; nhiều đường dẫn cho một dự án chưa được hỗ trợ.
+
+### Merge & push sau QA đạt
+
+Một cú bấm (nút `Merge & push` ở màn task, nút trên tin `QA đạt` của Telegram) hoặc lệnh `agent-brain task merge TASK_ID --push`; dashboard và Telegram hỏi xác nhận một lần trước khi chạy.
+
+- Điều kiện: task ở trạng thái `qa_pass`; dự án không có run, autopilot hay việc vừa giao nào đang chạy; repo chính sạch (kể cả file giao thức chưa commit); tên nhánh hợp lệ; nhánh task còn trong máy.
+- Nhánh gốc: `base_branch` của task, nếu trống thì của dự án, nếu cả hai trống thì `merge.default_base_branch` (mặc định `dev`).
+- Các bước: `git fetch origin <gốc>`; nhánh gốc cục bộ có commit chưa push không phải của task này, hoặc đã tách khỏi origin, thì từ chối; checkout nhánh gốc (tạo từ `origin/<gốc>` nếu chưa có, fast-forward nếu đi sau); `git merge --no-ff` với thông điệp `Merge <nhánh> vào <gốc> [task #N]: <tiêu đề>`; file giao thức (`.plan.md`, `.qa-report.md`, …) không vào nhánh gốc, vẫn còn trong lịch sử nhánh task; `git push origin <gốc>`; `git branch -d` nhánh task. Repo ở lại nhánh gốc.
+- Xung đột ở file không phải giao thức: `git merge --abort`, quay về nhánh ban đầu, báo danh sách file. Không có `origin`: chỉ merge cục bộ, ghi chú chưa push.
+- Chạy lại an toàn: trạng thái đọc từ git, không lưu DB. Push lỗi (bị từ chối, mất mạng, quá giờ) giữ nguyên merge cục bộ, nút thành `Push lại`; bấm lại chỉ push, không tạo commit merge thứ hai. Đã merge và push từ trước thì báo xong và chỉ dọn nhánh task nếu còn. Task có worktree giữ nhánh (dọn worktree trước).
+- Khóa `merge` trong `config.json` (đều tùy chọn): `default_base_branch` (chuỗi, mặc định `dev`), `git_timeout_secs` (10–900, mặc định 120; mỗi lần fetch/push quá giờ thì bị dừng), `delete_task_branch` (boolean, mặc định `true`).
+- Git chạy không tương tác (`GIT_TERMINAL_PROMPT=0`, ssh `BatchMode`), không qua shell. Thông báo lỗi không chứa URL remote hay đường dẫn repo.
+- agent-brain không bao giờ force-push và chỉ xoá nhánh đã merge (`git branch -d`, không `-D`); không dùng `reset --hard` hay `clean`.
 
 ---
 
