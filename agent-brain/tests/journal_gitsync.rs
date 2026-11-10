@@ -446,3 +446,52 @@ fn rejected_push_retries_once_after_rebase() {
     assert_eq!(merges(&sb, &remote, "main"), "0");
     assert!(cfg.clone_dir.join(OTHER_NOTE).is_file());
 }
+
+// ---------------------------------------------------------------- Task 3: failure policy
+
+#[test]
+fn secret_blocked_export_mails_user() {
+    const PLANTED: &str = "zq7plantedsecret9x";
+    let sb = Sandbox::new();
+    let remote = bare_remote(&sb, "vault");
+    sb.write_config(json!({"journal": journal_section(&remote)}));
+    let conn = setup_projects(&sb, &[(PLANTED, None)]);
+    let task = seed_task(&conn, PLANTED, "viec-mot", "Việc có mã dự án lạ");
+    seed_run(
+        &conn,
+        task,
+        "dev",
+        "succeeded",
+        None,
+        local_ms(2026, 1, 15, 10, 0, 0),
+        Some(local_ms(2026, 1, 15, 10, 20, 0)),
+        Some(1),
+    );
+    drop(conn);
+
+    let now = now().to_string();
+    let out = sb.run_env(
+        &["journal", "export"],
+        None,
+        &[
+            (agent_brain::journal::NOW_ENV, now.as_str()),
+            ("AB_TEST_JOURNAL_TOKEN", PLANTED),
+        ],
+    );
+    failed(&out);
+    assert!(!out.stdout.contains(PLANTED) && !out.stderr.contains(PLANTED));
+
+    let db = sb.db();
+    let rows: Vec<(String, String)> = db
+        .prepare("SELECT kind, text FROM journal_mail ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let secret: Vec<&(String, String)> = rows.iter().filter(|(k, _)| k == "secret").collect();
+    assert_eq!(secret.len(), 1, "{rows:?}");
+    assert!(!secret[0].1.contains(PLANTED), "{}", secret[0].1);
+    assert!(secret[0].1.contains("known-value"), "{}", secret[0].1);
+    assert!(remote_commits(&sb, &remote).is_empty());
+}
