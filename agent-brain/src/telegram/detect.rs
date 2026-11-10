@@ -503,6 +503,70 @@ impl ChainWaits {
     }
 }
 
+/// Journal mailbox (Phase 7, JRN-05, D-20): delivers every unsent `journal_mail` row to the paired
+/// chat at most once. A row is claimed (`sent_at`) before it goes to the outbox, so a restart or a
+/// second scan never sends it again; a crash between claim and send loses the message (A11). A
+/// `digest` of a day other than today's local day is claimed and dropped, never sent late.
+#[derive(Debug, Default)]
+pub struct JournalMail;
+
+/// The local day of `now_ms` in the journal's time zone.
+fn journal_today(cfg: &crate::journal::config::JournalConfig, now_ms: i64) -> chrono::NaiveDate {
+    use crate::journal::collect::local_day;
+    use crate::journal::config::JournalTz;
+    match cfg.tz() {
+        JournalTz::Local => local_day(now_ms, &chrono::Local),
+        JournalTz::Fixed(off) => local_day(now_ms, &off),
+    }
+}
+
+impl JournalMail {
+    pub fn scan(
+        &mut self,
+        conn: &Connection,
+        cfg: &crate::journal::config::JournalConfig,
+        now_ms: i64,
+    ) -> BrainResult<Vec<Outgoing>> {
+        let rows: Vec<(i64, String, String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT id, kind, dedupe_key, text FROM journal_mail
+                 WHERE sent_at IS NULL ORDER BY id LIMIT 20",
+            )?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        let today = journal_today(cfg, now_ms);
+        let mut out = Vec::new();
+        for (id, kind, key, text) in rows {
+            let claimed = conn.execute(
+                "UPDATE journal_mail SET sent_at = ?1 WHERE id = ?2 AND sent_at IS NULL",
+                rusqlite::params![now_ms, id],
+            )? == 1;
+            if !claimed {
+                continue;
+            }
+            if kind == "digest" {
+                let day = key
+                    .strip_prefix("digest:")
+                    .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+                if let Some(day) = day.filter(|d| *d != today) {
+                    crate::term::emit(&format!(
+                        "Nhật ký: bỏ digest ngày {} — quá 24:00, không gửi muộn",
+                        day.format("%d/%m/%Y")
+                    ));
+                    continue;
+                }
+            }
+            out.push(Outgoing::Message {
+                text: render::clip(&text, render::MAX_TEXT),
+            });
+        }
+        Ok(out)
+    }
+}
+
 fn open_db(ctx: &BotCtx) -> Option<Connection> {
     let mut reported = false;
     loop {
@@ -564,6 +628,20 @@ fn run(ctx: Arc<BotCtx>) {
     }
     last_err = None;
 
+    // Journal mail queued while serve was stopped goes out now, not after the first 60 s rescan.
+    let mut journal_mail = JournalMail;
+    match journal_mail.scan(&conn, &ctx.st.cfg.journal, crate::journal::now_ms()) {
+        Ok(items) => {
+            for item in items {
+                ctx.outbox.push(item);
+            }
+        }
+        Err(e) => {
+            crate::term::emit(&format!("Telegram: lỗi đọc CSDL: {}", e.message));
+            last_err = Some(e.message.clone());
+        }
+    }
+
     let mut last_full = Instant::now();
     loop {
         if sleep_or_stop(&ctx.stop, TICK_MS) {
@@ -591,6 +669,7 @@ fn run(ctx: Arc<BotCtx>) {
             fails.scan(&conn),
             reruns.scan(&conn),
             waits.scan(&conn),
+            journal_mail.scan(&conn, &ctx.st.cfg.journal, crate::journal::now_ms()),
         ];
         let mut failed = false;
         for res in results {
