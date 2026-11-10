@@ -214,6 +214,24 @@ fn human_runs(sb: &Sandbox) -> Vec<HumanRunRow> {
     .unwrap()
 }
 
+fn fail_human_runs(sb: &Sandbox) {
+    sb.db()
+        .execute_batch(
+            "CREATE TRIGGER ab_test_fail_human_run
+             BEFORE INSERT ON runs WHEN NEW.engine = 'người'
+             BEGIN
+                 SELECT RAISE(ABORT, 'buoc gia lap sau merge');
+             END;",
+        )
+        .unwrap();
+}
+
+fn allow_human_runs(sb: &Sandbox) {
+    sb.db()
+        .execute_batch("DROP TRIGGER IF EXISTS ab_test_fail_human_run;")
+        .unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // Task 1 (tracer): wait, push, Xong
 // ---------------------------------------------------------------------------
@@ -876,4 +894,66 @@ fn autopilot_violation_is_recorded_as_stop() {
         Some("protocol_violation")
     );
     assert!(task_team(&sb).wait.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Gap 06-27: Xong is retry-safe (CR-01)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn done_retry_after_failure_past_merge() {
+    let sb = Sandbox::new();
+    let w = setup(&sb, true);
+    let remote = w.remote.clone().unwrap();
+    let base = head(&sb, &w.repo);
+
+    let res = run_dev(&sb);
+    assert_eq!(res.code, 6, "{}", both(&res));
+
+    staff_clone_push(
+        &sb,
+        &remote,
+        "task/sua-app",
+        &[("src/a.txt", "a của Hà\n")],
+        "sua-app: xong phần của Hà",
+    );
+    let staff_head = sb
+        .git(&remote, &["rev-parse", "refs/heads/task/sua-app"])
+        .trim()
+        .to_string();
+
+    fail_human_runs(&sb);
+    let first = human(&sb, "done");
+    assert_eq!(first.code, 1, "{}", both(&first));
+    assert!(
+        both(&first).contains("buoc gia lap sau merge"),
+        "{}",
+        both(&first)
+    );
+    assert_eq!(head(&sb, &w.repo), staff_head);
+    let wait = task_team(&sb).wait.expect("wait marker still present");
+    assert_eq!(wait.base, base);
+    assert!(human_runs(&sb).is_empty());
+    assert_ne!(task_status(&sb), "dev_done");
+
+    allow_human_runs(&sb);
+    let second = human(&sb, "done");
+    assert_ok(&second, "second human done");
+    let out = both(&second);
+    assert!(
+        out.contains("Đã lấy nhánh task/sua-app của Hà — run "),
+        "{out}"
+    );
+    assert!(out.contains("đã được gộp ở lần bấm Xong trước"), "{out}");
+    assert!(!out.contains("chưa có commit mới nào"), "{out}");
+
+    let rows = human_runs(&sb);
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert_eq!(r.status, "succeeded");
+    assert_eq!(r.metrics["human"]["head"], json!(staff_head));
+    assert_eq!(r.metrics["human"]["base"], json!(base));
+    assert!(task_team(&sb).wait.is_none());
+    assert_eq!(task_status(&sb), "dev_done");
+    assert_eq!(head(&sb, &w.repo), staff_head);
 }

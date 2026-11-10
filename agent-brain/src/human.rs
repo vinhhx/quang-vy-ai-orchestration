@@ -112,7 +112,10 @@ fn print_done_hint(task_id: i64, name: &str) {
     ));
 }
 
-fn report_file_for(fix_for: &str, protocol: &crate::protocol_paths::ProtocolPaths) -> Option<String> {
+fn report_file_for(
+    fix_for: &str,
+    protocol: &crate::protocol_paths::ProtocolPaths,
+) -> Option<String> {
     match fix_for {
         "qa" => Some(protocol.qa_report.clone()),
         "code_review" => Some(protocol.code_review.clone()),
@@ -285,7 +288,19 @@ fn allowed_paths(
     allowed
 }
 
+/// Trả về true nếu một lần bấm Xong trước đã fast-forward nhánh của nhân sự nhưng bước bị gián
+/// đoạn sau khi gộp: HEAD đã chứa commit của remote và remote khác base (nhân sự đã đẩy việc sau
+/// khi bắt đầu chờ, commit cục bộ đơn thuần không bao giờ được tính).
+fn already_merged(root: &Path, base: &str, head: &str, remote: &str) -> bool {
+    head != base
+        && remote != base
+        && crate::gitops::is_ancestor(root, base, remote)
+        && crate::gitops::is_ancestor(root, remote, head)
+}
+
 /// Người dùng bấm Xong: lấy nhánh nhân sự đã đẩy (fetch + fast-forward), kiểm tra diff, ghi run.
+/// Bước này an toàn khi bấm lại (CR-01): nếu việc gộp đã diễn ra ở lần trước nhưng việc ghi DB bị
+/// gián đoạn, lần bấm lại bỏ qua gộp và tiếp tục ghi nhận.
 pub fn done(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
     let p = load_pending(ctx, task_id)?;
     let name = p.name.clone();
@@ -332,6 +347,8 @@ pub fn done(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
         )));
     }
 
+    let head = crate::gitops::head_sha(root)?;
+
     let remote_ref = format!("refs/heads/{branch}");
     if let Err(e) = crate::gitops::git(root, &["fetch", "origin", &remote_ref]) {
         // Phân biệt nhánh chưa có trên remote với lỗi mạng / quyền, không dựa vào lời nhắn của git.
@@ -353,18 +370,24 @@ pub fn done(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
     let remote_sha = crate::gitops::git(root, &["rev-parse", "FETCH_HEAD"])?
         .trim()
         .to_string();
-    let head = crate::gitops::head_sha(root)?;
-    if remote_sha == head {
-        return Err(BrainError::error(format!(
-            "Nhánh {branch} trên remote chưa có commit mới nào — nhờ {name} đẩy việc đã làm rồi bấm Xong lại."
-        )));
+    let merged_before = already_merged(root, &p.wait.base, &head, &remote_sha);
+    if merged_before {
+        crate::term::emit_out(&format!(
+            "Nhánh {branch} đã được gộp ở lần bấm Xong trước — ghi nhận tiếp."
+        ));
+    } else {
+        if remote_sha == head {
+            return Err(BrainError::error(format!(
+                "Nhánh {branch} trên remote chưa có commit mới nào — nhờ {name} đẩy việc đã làm rồi bấm Xong lại."
+            )));
+        }
+        if !crate::gitops::is_ancestor(root, &head, &remote_sha) {
+            return Err(BrainError::error(format!(
+                "Nhánh {branch} trên remote không đi tiếp từ nhánh trong máy (có thể đã bị viết lại lịch sử) — không gộp. Kiểm tra với {name} rồi thử lại."
+            )));
+        }
+        crate::gitops::git(root, &["merge", "--ff-only", &remote_sha])?;
     }
-    if !crate::gitops::is_ancestor(root, &head, &remote_sha) {
-        return Err(BrainError::error(format!(
-            "Nhánh {branch} trên remote không đi tiếp từ nhánh trong máy (có thể đã bị viết lại lịch sử) — không gộp. Kiểm tra với {name} rồi thử lại."
-        )));
-    }
-    crate::gitops::git(root, &["merge", "--ff-only", "FETCH_HEAD"])?;
     let new_head = crate::gitops::head_sha(root)?;
 
     // D-20: cùng luật với diff của một Dev agent; không tự hoàn tác gì.
