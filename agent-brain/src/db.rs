@@ -204,6 +204,41 @@ pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+fn foreign_key_violations(tx: &rusqlite::Transaction<'_>) -> BrainResult<i64> {
+    let n: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+        r.get(0)
+    })?;
+    Ok(n)
+}
+
+/// Runs `migrations[from..]` inside `tx`, setting `user_version` after each entry.
+/// Foreign-key violations that already existed before the pending migrations are
+/// tolerated (D-21: a live DB can hold orphan rows from deletes made with foreign keys
+/// off); the upgrade fails only when the count grows. Nothing is deleted or repaired here.
+fn apply_pending_migrations(
+    tx: &rusqlite::Transaction<'_>,
+    migrations: &[&str],
+    from: usize,
+) -> BrainResult<()> {
+    let before = foreign_key_violations(tx)?;
+    for (i, sql) in migrations.iter().enumerate().skip(from) {
+        tx.execute_batch(sql)?;
+        tx.pragma_update(None, "user_version", (i + 1) as i64)?;
+    }
+    let after = foreign_key_violations(tx)?;
+    if after > before {
+        return Err(BrainError::error(format!(
+            "Nâng cấp CSDL thất bại: vi phạm khóa ngoại tăng từ {before} lên {after} sau khi nâng lược đồ"
+        )));
+    }
+    if before > 0 {
+        crate::term::emit(&format!(
+            "Cảnh báo: CSDL có {before} dòng vi phạm khóa ngoại từ trước (không do lần nâng này) — xem README mục Nâng cấp lên Phase 7 (lược đồ 12)"
+        ));
+    }
+    Ok(())
+}
+
 pub fn open(path: &Path) -> BrainResult<Connection> {
     if let Some(parent) = path.parent() {
         if !parent.exists() {
@@ -284,18 +319,7 @@ pub fn open(path: &Path) -> BrainResult<Connection> {
         conn.pragma_update(None, "foreign_keys", "OFF")?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let ver_inside: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        for (i, sql) in MIGRATIONS.iter().enumerate().skip(ver_inside as usize) {
-            tx.execute_batch(sql)?;
-            tx.pragma_update(None, "user_version", (i + 1) as i64)?;
-        }
-        let bad: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
-            r.get(0)
-        })?;
-        if bad > 0 {
-            return Err(BrainError::error(
-                "Nâng cấp CSDL thất bại: vi phạm khóa ngoại sau khi dựng lại bảng runs",
-            ));
-        }
+        apply_pending_migrations(&tx, MIGRATIONS, ver_inside as usize)?;
         tx.commit()?;
     }
 
@@ -2217,6 +2241,83 @@ mod tests {
         )
         .expect("update run");
         id
+    }
+
+    /// A raw connection with every current migration applied and foreign keys OFF
+    /// (as `open` runs the upgrade).
+    fn raw_migrated_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        for sql in MIGRATIONS {
+            conn.execute_batch(sql).expect("migration");
+        }
+        conn
+    }
+
+    const ORPHAN_EVENT: &str =
+        "INSERT INTO events (run_id, seq, ts, kind, raw_json) VALUES (9999, 1, 1, 'k', '{}')";
+
+    fn fk_violations(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn preexisting_fk_violations_do_not_block_migration() {
+        let mut conn = raw_migrated_conn();
+        conn.execute(ORPHAN_EVENT, []).unwrap();
+        assert_eq!(fk_violations(&conn), 1);
+
+        let tx = conn.transaction().unwrap();
+        let list = ["SELECT 1", "CREATE TABLE t_extra (x INTEGER)"];
+        apply_pending_migrations(&tx, &list, 1).expect("pre-existing violations are tolerated");
+        tx.commit().unwrap();
+
+        let has_table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='t_extra'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_table, 1);
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(events, 1, "the orphan row is not deleted");
+        assert_eq!(fk_violations(&conn), 1);
+    }
+
+    #[test]
+    fn migration_that_adds_fk_violation_fails() {
+        let mut conn = raw_migrated_conn();
+        assert_eq!(fk_violations(&conn), 0);
+        let version_before: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let list = ["SELECT 1", ORPHAN_EVENT];
+        let err = apply_pending_migrations(&tx, &list, 1).expect_err("new violation must fail");
+        assert!(
+            err.message
+                .starts_with("Nâng cấp CSDL thất bại: vi phạm khóa ngoại"),
+            "{}",
+            err.message
+        );
+        assert!(err.message.contains("từ 0 lên 1"), "{}", err.message);
+        drop(tx); // rolled back
+
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(events, 0);
+        let version_after: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version_before, version_after);
     }
 
     #[test]

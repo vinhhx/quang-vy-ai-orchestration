@@ -1513,6 +1513,78 @@ fn v9_db_upgrades_to_v10_keeping_data() {
     assert_eq!(bad_fk, 0);
 }
 
+/// Seed rows shared by `build_v10` / `build_v11`: a project, a task, two runs, three events,
+/// then (foreign keys OFF) one run deleted so that two events become orphans.
+fn seed_with_orphan_events(conn: &rusqlite::Connection) {
+    conn.execute(
+        "INSERT INTO projects (id, slug, path, name_vi, aliases_json, type, profile, repo, missing)
+         VALUES (1, 'proj-1', '/path/1', 'Dự án 1', '[]', 'code', 'work', NULL, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level)
+         VALUES (1, 1, 'task-1', 'Task 1', 'task/1', 'main', 'base1', 'open', 1000, 1000, 'vua')",
+        [],
+    )
+    .unwrap();
+    for run_id in 1..=2 {
+        conn.execute(
+            "INSERT INTO runs (id, task_id, project_id, role, engine, profile, status, started_at)
+             VALUES (?1, 1, 1, 'dev', 'claude', 'work', 'succeeded', 1000)",
+            rusqlite::params![run_id],
+        )
+        .unwrap();
+    }
+    // run 1 gets one event, run 2 gets two events
+    for (run_id, seq) in [(1, 1), (2, 1), (2, 2)] {
+        conn.execute(
+            "INSERT INTO events (run_id, seq, ts, kind, raw_json) VALUES (?1, ?2, 1000, 'msg', '{}')",
+            rusqlite::params![run_id, seq],
+        )
+        .unwrap();
+    }
+    // delete run 2 with foreign keys OFF: its two events become orphans
+    conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    conn.execute("DELETE FROM runs WHERE id = 2", []).unwrap();
+}
+
+fn build_v10(path: &Path) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    for sql in &agent_brain::db::MIGRATIONS[..10] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 10).unwrap();
+    seed_with_orphan_events(&conn);
+}
+
+fn fk_violation_count(conn: &rusqlite::Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+        r.get(0)
+    })
+    .unwrap()
+}
+
+#[test]
+fn v10_db_with_orphan_events_upgrades() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v10(&db_path);
+
+    let conn = agent_brain::db::open(&db_path).expect("v10 DB with orphan events must open");
+
+    let user_ver: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
+    let events: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(events, 3, "no event row is lost");
+    assert_eq!(fk_violation_count(&conn), 2, "orphan count is unchanged");
+}
+
 #[test]
 fn team_if_null_writes_once() {
     let (_tmp, conn, _proj, task_id) = fresh_task_db();
