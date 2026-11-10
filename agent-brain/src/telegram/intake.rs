@@ -724,6 +724,7 @@ pub(crate) fn on_command(ctx: &Arc<BotCtx>, state: &mut PollState, name: &str, r
         "bugs" => super::fixbug_cmd::on_bugs(ctx, rest),
         "deployed" => super::fixbug_cmd::on_deployed(ctx, rest),
         "reject" => super::fixbug_cmd::on_reject(ctx, rest),
+        "tim" => super::journal_cmd::on_tim(ctx, rest),
         _ => bot::reply(ctx, HELP_TEXT),
     }
 }
