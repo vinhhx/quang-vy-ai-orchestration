@@ -412,7 +412,7 @@ Plans:
   4. *(chuyển sang Phase 06.1)*
   5. Antigravity được xử lý theo kết quả S7 (chạy headless như engine, hoặc dùng thủ công và theo dõi qua `git diff`), và tỉ lệ "Cần sửa" của QA được ghi theo engine.
 
-**Plans:** 28/30 plans executed
+**Plans:** 30/30 plans executed
 
 Plans:
 **Wave 1**
@@ -470,8 +470,8 @@ Plans:
 - [x] 06-28-PLAN.md — ENG-11 / D-40: one readiness predicate; `chưa kiểm` runnable at team refusal, quota re-run, project pin, department member (gap wave 1)
 
 **Gap closure** — gap wave 2 *(blocked on 06-28)*
-- [ ] 06-29-PLAN.md — ENG-11 / QUOTA-01: `chưa kiểm` mark on quota re-run choices (Telegram buttons + confirm, dashboard dialog), UI-SPEC delta (gap wave 2)
-- [ ] 06-30-PLAN.md — D-16 / WR-03: `phong-ban` stops with a message when a department has members but none usable or the pick errors (gap wave 2)
+- [x] 06-29-PLAN.md — ENG-11 / QUOTA-01: `chưa kiểm` mark on quota re-run choices (Telegram buttons + confirm, dashboard dialog), UI-SPEC delta (gap wave 2)
+- [x] 06-30-PLAN.md — D-16 / WR-03: `phong-ban` stops with a message when a department has members but none usable or the pick errors (gap wave 2)
 
 ### Phase 06.2: UI/UX Fixes from Live Demo (INSERTED)
 
@@ -521,4 +521,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 13/13 | Complete    | 2026-10-19 |
-| 6. Multi-engine & Media Branch | 28/30 | In Progress | - |
+| 6. Multi-engine & Media Branch | 30/30 | In Progress | - |
