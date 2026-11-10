@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 6
+current_phase: 06
 current_phase_name: Multi-engine & Media Branch
-status: verifying
-stopped_at: "Phase 6: 26/26 plans have a SUMMARY; phase not yet verified (no VERIFICATION.md)"
-last_updated: "2026-11-10T00:00:00.000Z"
+status: gaps_found
+stopped_at: "Phase 6 verified 2026-11-10: gaps_found (3 gaps: HUM-02 human done idempotency, ENG-11 chua_kiem policy, D-16 department fall-through) + 11 human checks"
+last_updated: "2026-11-10T01:15:46.513Z"
 last_activity: 2026-11-10
-last_activity_desc: State refreshed; stale milestone.lock and agent worktrees removed
-state_head: 89f2364faeee44a7a2881ff368379991f188eba0
+last_activity_desc: Phase 06 verification gates run; VERIFICATION gaps_found
+state_head: 6d172c0f26818f44168eb2960745b502ae25e2eb
 progress:
   total_phases: 13
   completed_phases: 5
-  total_plans: 120
-  completed_plans: 120
+  total_plans: 123
+  completed_plans: 122
   percent: 38
 ---
 
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-24)
 
 **Core value:** Giao việc cho nhiều AI agent bằng giao thức Lead → `.plan.md` → Dev → QA một cách đáng tin cậy: đúng dự án, đúng vai trò, kill sạch cây tiến trình, đo được token.
-**Current focus:** Phase 6 — Multi-engine & Media Branch
+**Current focus:** Phase 06 — Multi-engine & Media Branch
 
 ## Current Position
 
-Phase: 6 (Multi-engine & Media Branch) — PLANS DONE, AWAITING VERIFICATION
+Phase: 06 (Multi-engine & Media Branch) — VERIFIED: GAPS FOUND
 Plan: 26 of 26 (all have a SUMMARY)
-Status: Run `/gsd-verify-work 6` (or gsd-verifier) to write 06-VERIFICATION.md and close Phase 6
-Last activity: 2026-11-10 — STATE refreshed; since 2026-10-28 work continued as quick plans (`.planning/quick/`, all executed, latest `test-commands-quota-stops` → 799599f)
+Status: 06-VERIFICATION.md = gaps_found (11/16 must-haves). Next: `/gsd-plan-phase 06 --gaps`
+Last activity: 2026-11-10 — verification gates run: VALIDATION (partial), SECURITY (threats_open 0), UI-REVIEW 15/24, REVIEW 1 critical / 6 warning / 6 info (all open), VERIFICATION gaps_found
 
 Other open items:
 - Phase 06.2: 06.2-01, 06.2-02 done; 06.2-03 superseded (QA rule dropped by quick plan `team-any-engine-any-role`, account choice by D-45 `claude_config_dir`). Its unmerged commits are kept on branch `worktree-agent-aabbd671f000750da` (52355e6); do not merge.
