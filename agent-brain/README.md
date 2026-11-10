@@ -477,6 +477,8 @@ Khóa `test_commands` của dự án trong `projects_map.json` là danh sách m�
 | `push_fail_notify_after` | `3` | 1–100 | Số lần đẩy lỗi liên tiếp trước khi nhắn Telegram một lần. |
 | `title_max_chars` | `140` | 40–400 | Độ dài tối đa của tiêu đề việc lưu trong nhật ký. |
 | `callout_title_chars` | `60` | 20–200 | Độ dài tiêu đề trên dòng đầu mỗi khối việc (và trong digest). |
+| `max_remove_fraction` | `0.5` | 0.05–1.0 | Chặn lần xuất sẽ xóa từ 10 tệp trở lên mà vượt tỉ lệ này so với số tệp sinh ra đang có trong vault (ví dụ `brain.db` rỗng hoặc sai). Bị chặn thì không ghi, không commit, Telegram báo một lần. Chạy tay `agent-brain journal export --allow-removals` để bỏ qua kiểm tra này đúng một lần (vòng nền không bao giờ bỏ qua). Lần xuất cũng bị chặn khi đồng hồ máy chậm hơn dữ liệu trong `brain.db` hơn một ngày. |
+| `attention_max_days` | `14` | 1–365 | Việc có run lỗi, hết quota hay cần sửa quá số ngày này không còn được kéo sang mục `Cần anh xử lý` của hôm nay; việc đã đóng cũng không. |
 | `git_timeout_seconds` | `60` | 10–600 | Giới hạn thời gian mỗi lệnh git (clone, fetch, push). |
 | `ssh_connect_timeout_seconds` | `15` | 5–120 | Giới hạn thời gian kết nối SSH. |
 | `author_name` | `agent-brain journal` | chuỗi | Tên tác giả commit. |

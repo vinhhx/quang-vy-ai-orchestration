@@ -245,7 +245,10 @@ fn export_with_tz<Tz: TimeZone>(
     }
 
     let mut written = writer::apply(&cfg.clone_dir, &files)?;
-    fts::rebuild(p.conn, &fts::rows_from_model(&model))?;
+    fts::rebuild(
+        p.conn,
+        &fts::rows_from_model_cut(&model, cfg.callout_title_chars),
+    )?;
     let mut paths: Vec<String> = written.changed.clone();
     paths.extend(written.removed.iter().cloned());
     if p.push {
