@@ -1,6 +1,6 @@
 # Phase 7: Journal Vault (Obsidian) - Context
 
-**Gathered:** 2026-11-10
+**Gathered:** 2026-11-10 (cập nhật sau research cùng ngày)
 **Status:** Ready for planning
 
 <domain>
@@ -23,7 +23,7 @@ Ngoài phạm vi: ghi ngược từ vault, file tuần, nhật ký theo task, xe
 ### Nguồn chữ trong nhật ký
 - **D-04:** Câu mô tả mỗi task ghép từ **mẫu cố định theo allowlist** (tiêu đề, dự án, trạng thái, vai đã chạy). Không gọi model → không tốn token, không đọc plan/QA/diff nên không thể lộ chúng.
 - **D-05:** Tiêu đề/yêu cầu gốc do người dùng gõ được dùng **nguyên văn nhưng cắt gọn (~140 ký tự) và qua bộ quét secret**; chặn path và URL nội bộ.
-- **D-06:** **Một dòng mỗi task mỗi ngày**: trạng thái cuối trong ngày kèm số vòng. Task nhiều ngày xuất hiện lại ở ngày có thay đổi/hoàn tất.
+- **D-06:** **Một mục mỗi task mỗi ngày** (một callout, xem D-17): trạng thái cuối trong ngày kèm số vòng. Task nhiều ngày xuất hiện lại ở ngày có thay đổi/hoàn tất.
 
 ### Phân loại 3 nhóm
 - **D-07:** Nhóm (Công việc / Video / Hỗ trợ bộ phận khác) theo **cấu hình dự án** (`journal_group`, khai một lần). Không đoán theo từ khóa, không đánh nhãn theo task.
@@ -41,6 +41,15 @@ Ngoài phạm vi: ghi ngược từ vault, file tuần, nhật ký theo task, xe
 - **D-15:** `/tim` (SQLite FTS5 trong brain.db) chỉ index **nội dung đã allowlist của nhật ký** (tiêu đề, dự án, nhóm, ngày, trạng thái); trả về ngày + link, không lộ thêm so với vault.
 - **D-16:** Mục "cần anh xử lý" ở đầu file ngày gồm: **plan chờ duyệt (cổng)**; **hết quota / môi trường sập**; **QA "Cần sửa" hoặc vướng mắc chưa xử lý**; **run lỗi / timeout / protocol_violation**.
 
+### Cập nhật sau research (người dùng chốt 2026-11-10)
+- **D-17:** Repo vault **đã có bản demo do người dùng tự push** (commit `dcdb058` và `203c7fe`). File xuất ra **giữ đúng định dạng demo**, không đổi sang gạch đầu dòng thuần: frontmatter (`date`, `tasks`, `tags`), dòng đánh dấu tệp sinh tự động `<!-- Tệp sinh tự động từ agent-brain — không sửa tay, lần xuất sau sẽ ghi đè. -->`, tiêu đề ngày, mục nhóm `## <nhóm> (<số>)`, mỗi task một **callout gập `> [!success]- ✓ <dự án> — <tiêu đề cắt gọn>`** gồm `Trạng thái · thời lượng`, `Dự án: [[<dự án>]] · Nhóm · Số bước chạy`, đoạn yêu cầu đã cắt gọn; chân trang `← [[ngày trước]] · Tháng: [[YYYY-MM]]`; `Today.md` nhúng `![[ngày]]`; trang tháng có bảng nhóm và `## Theo dự án`; trang dự án liệt kê theo tháng. Task chưa xong/lỗi dùng loại callout khác (`warning`/`failure`, planner chọn) và mục "cần anh xử lý" ở đầu. Chấp nhận việc trên github.com callout hiển thị thô (link digest vẫn là github.com theo D-14). **Định dạng chuẩn để đối chiếu nằm ở repo vault tại commit `203c7fe`** (đọc từ bản clone `~/.local/share/agent-brain/journal`); **không sao chép nội dung demo vào repo này** vì có tiêu đề task thật của công ty.
+- **D-18:** Ba nhóm mặc định đúng D-07: `Công việc` / `Video` / `Hỗ trợ bộ phận khác`. Nhãn nhóm **cấu hình được** (`journal.groups`), nên nhãn "Phân tích & hỗ trợ bộ phận khác" trong demo sẽ đổi ở lần xuất đầu.
+- **D-19:** `journal_group` của từng dự án **sửa tay trong `projects_map.json`** (khóa đọc bằng hàm riêng, không thêm trường vào `Project`). Không thêm endpoint ghi; ghi nhận "thiếu đường sửa trên dashboard" là follow-up ngoài phase.
+- **D-20:** Digest 18:00 **chỉ gửi sau khi push thành công** (link luôn mở được). Nếu push lỗi lúc 18:00 thì thử lại ở các chu kỳ sau trong ngày; qua 24:00 thì bỏ digest ngày đó và ghi cảnh báo (tin báo lỗi push đi riêng theo D-10).
+- **D-21:** **Task đầu tiên của phase là sửa kiểm tra khóa ngoại trong `db::open`**: DB thật có 645 dòng `events` mồ côi nên mọi migration mới (kể cả lược đồ 12) sẽ bị dừng. Sửa thành: đếm vi phạm trước khi nâng, chỉ báo lỗi khi số vi phạm **tăng**; có test "dòng mồ côi cũ không chặn migration không liên quan". Sao lưu trước khi nâng theo **bước README** (mục "Nâng cấp lên Phase 7 (lược đồ 12)", mở rộng `scripts/phase6-live-check.sh --schema-dry-run`), không tự sao lưu trong `open()`.
+- **D-22:** Lần xuất đầu sẽ **ghi đè demo** (chính demo đã ghi vậy). Chạy `agent-brain journal export --no-push` trước để người dùng xem diff rồi mới push. Chỉ quản lý (ghi/xóa) file bắt đầu bằng dòng đánh dấu sinh tự động; file không có dòng đó là file của người dùng, không động tới. `.obsidian/` bị bỏ qua. Chỉ đẩy lên nhánh `main` (cấu hình `journal.branch`), không đụng `master`.
+- **D-23:** Tiêu đề task lấy từ `proposals.title` (≤200 ký tự) khi có; nếu không thì từ yêu cầu gốc **đã qua bộ lọc** (D-05). `tasks.title` thực chất là toàn bộ yêu cầu (trung bình ~1.500 ký tự, nhiều dòng) nên luôn qua bộ lọc.
+
 ### Claude's Discretion
 - Tên bảng/migration (lược đồ DB tiếp theo), cấu trúc module (`journal`), mẫu câu cụ thể, giá trị N cho báo lỗi push, định dạng frontmatter của file ngày, định dạng nhãn trạng thái tiếng Việt, tên trường cấu hình digest.
 
@@ -54,6 +63,8 @@ Ngoài phạm vi: ghi ngược từ vault, file tuần, nhật ký theo task, xe
 ### Thiết kế đã thống nhất
 - `/home/pc0741/.claude-max/projects/-mnt-data-IDE-QuangVy-Orchestration/memory/journal-vault-idea.md` — thiết kế gốc (vault, layout, allowlist, digest, `/tim`)
 - `.planning/ROADMAP.md` §Phase 7 — mục tiêu phase
+- `.planning/phases/07-journal-vault-obsidian/07-RESEARCH.md` — nghiên cứu: dữ liệu brain.db, điểm cắm vào code, FTS5, git, sanitizer, bẫy (đọc toàn bộ trước khi lập plan)
+- Repo vault `git@github.com:vinhhx/agent-brain-journal.git` commit `203c7fe` — định dạng demo chuẩn (D-17), chỉ đọc, không chép vào repo này
 
 ### Mã hiện có liên quan
 - `agent-brain/src/db.rs` — lược đồ và migration (tasks, runs, intake, proposals, quota_stops, plan_approvals…); thêm migration mới ở đây
