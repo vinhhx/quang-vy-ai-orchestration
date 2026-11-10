@@ -81,7 +81,7 @@ fn merge_config_of(obj: &serde_json::Map<String, serde_json::Value>) -> BrainRes
     };
     if let Some(v) = m.get("default_base_branch") {
         match v.as_str().map(str::trim) {
-            Some(s) if crate::gitops::valid_branch_name(s) => {
+            Some(s) if crate::gitops::valid_branch_name_syntax(s) => {
                 merge.default_base_branch = s.to_string()
             }
             _ => {
@@ -1637,6 +1637,22 @@ mod tests {
 
     fn default_cfg() -> Config {
         config_from_value(&serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn merge_base_branch_validation_needs_no_git() {
+        // The embedded default config (merge.default_base_branch = "dev") loads, and the
+        // validation is the pure-Rust syntax check, so it does not depend on `git` being on PATH.
+        assert_eq!(default_cfg().merge.default_base_branch, "dev");
+        let default_val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        for bad in ["bad name", "a..b"] {
+            let mut v = default_val.clone();
+            v["merge"]["default_base_branch"] = serde_json::json!(bad);
+            assert!(config_from_value(&v).is_err(), "{bad:?} must be rejected");
+        }
+        let mut v = default_val.clone();
+        v["merge"]["default_base_branch"] = serde_json::json!("release/1.2");
+        assert_eq!(config_from_value(&v).unwrap().merge.default_base_branch, "release/1.2");
     }
 
     #[test]

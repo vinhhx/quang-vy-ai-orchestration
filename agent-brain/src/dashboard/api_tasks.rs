@@ -1889,8 +1889,8 @@ pub fn load_task_state(
     if task.status == "qa_pass" {
         let base = crate::workspace::merge_push_base(&st.cfg, &project, &task);
         let proj_root = project.root();
-        let git_state = if crate::gitops::valid_branch_name(&base)
-            && crate::gitops::valid_branch_name(&task.branch)
+        let git_state = if crate::gitops::valid_branch_name_syntax(&base)
+            && crate::gitops::valid_branch_name_syntax(&task.branch)
         {
             crate::workspace::merge_state(&proj_root, task.id, &task.branch, &base)
         } else {

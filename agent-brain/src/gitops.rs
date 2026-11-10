@@ -590,14 +590,37 @@ pub fn log_subjects(root: &Path, range: &str, max: usize) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A branch name agent-brain may put on a git command line: not empty, no leading `-`, no
-/// whitespace or control characters, no `@{`, and accepted by `git check-ref-format --branch`.
-pub fn valid_branch_name(name: &str) -> bool {
+/// Pure-Rust syntax check for a branch short name, no process spawned. It applies the rules of
+/// `git check-ref-format --branch` that matter here: not empty, not `@`, no leading `-`, no
+/// whitespace or control characters (DEL included), none of `~ ^ : ? * [ \`, no `..`, no `@{`,
+/// no `//`, not starting or ending with `/`, not ending with `.`, and no path component that
+/// starts with `.` or ends with `.lock`. Unicode letters are allowed.
+pub fn valid_branch_name_syntax(name: &str) -> bool {
     if name.is_empty()
+        || name == "@"
         || name.starts_with('-')
+        || name.starts_with('/')
+        || name.ends_with('/')
+        || name.ends_with('.')
+        || name.contains("..")
         || name.contains("@{")
-        || name.chars().any(|c| c.is_whitespace() || c.is_control())
+        || name.contains("//")
+        || name
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c))
     {
+        return false;
+    }
+    name.split('/')
+        .all(|part| !part.starts_with('.') && !part.ends_with(".lock"))
+}
+
+/// A branch name agent-brain may put on a git command line: it passes
+/// [`valid_branch_name_syntax`] and is accepted by `git check-ref-format --branch`. The git
+/// process is only spawned for names that pass the cheap syntax check; use the syntax-only
+/// function where `git` may be absent (startup config validation, dashboard poll).
+pub fn valid_branch_name(name: &str) -> bool {
+    if !valid_branch_name_syntax(name) {
         return false;
     }
     std::process::Command::new("git")
@@ -1043,6 +1066,37 @@ mod tests {
         }
         for ok in ["dev", "main", "task/sua-app", "release/1.2"] {
             assert!(valid_branch_name(ok), "{ok:?}");
+        }
+    }
+
+    const VALID_BRANCHES: [&str; 5] = ["dev", "main", "task/sua-app", "release/1.2", "feature/đăng-nhập"];
+    const INVALID_BRANCHES: [&str; 21] = [
+        "", "@", "-x", "a b", "a..b", "a~1", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", "a//b",
+        "/a", "a/", "a.", "a.lock", "x/.hidden", "x/y.lock/z", "a@{1}", "a\tb",
+    ];
+
+    #[test]
+    fn branch_name_syntax_table() {
+        for ok in VALID_BRANCHES {
+            assert!(valid_branch_name_syntax(ok), "{ok:?}");
+        }
+        for bad in INVALID_BRANCHES {
+            assert!(!valid_branch_name_syntax(bad), "{bad:?}");
+        }
+        assert!(!valid_branch_name_syntax("a\u{7f}b"), "DEL");
+    }
+
+    #[test]
+    fn branch_name_syntax_agrees_with_git() {
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        for name in VALID_BRANCHES.iter().chain(INVALID_BRANCHES.iter()) {
+            assert_eq!(
+                valid_branch_name_syntax(name),
+                valid_branch_name(name),
+                "syntax check and git disagree on {name:?}"
+            );
         }
     }
 
