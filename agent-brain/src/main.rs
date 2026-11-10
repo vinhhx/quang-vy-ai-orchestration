@@ -203,10 +203,13 @@ enum TaskCommands {
         #[arg(long)]
         yes: bool,
     },
-    /// Merge nhánh task (đã qua QA) vào nhánh gốc trên repo chính (git merge --no-ff, không push)
+    /// Merge nhánh task (đã qua QA) vào nhánh gốc trên repo chính (git merge --no-ff; --push: fetch, merge, push không force, xoá nhánh task)
     Merge {
         /// ID của task
         task_id: i64,
+        /// Merge & push: lấy origin/<nhánh gốc>, checkout nhánh gốc, merge, push lên origin (không force), xoá nhánh task (git branch -d)
+        #[arg(long)]
+        push: bool,
     },
 }
 
@@ -498,7 +501,12 @@ fn main() {
                 merged,
                 yes,
             } => agent_brain::workspace::cmd_cleanup(&mut ctx, task_id, merged, yes),
-            TaskCommands::Merge { task_id } => agent_brain::workspace::cmd_merge(&mut ctx, task_id),
+            TaskCommands::Merge { task_id, push: false } => {
+                agent_brain::workspace::cmd_merge(&mut ctx, task_id)
+            }
+            TaskCommands::Merge { task_id, push: true } => {
+                agent_brain::workspace::cmd_merge_push(&mut ctx, task_id)
+            }
         },
         Commands::Dept { subcommand } => match subcommand {
             DeptCommands::List => agent_brain::departments::cmd_list(&ctx),
