@@ -42,6 +42,12 @@ pub struct JournalConfig {
     pub web_base_url: Option<String>,
     pub project_page_months: u32,
     pub search_max_results: usize,
+    /// `journal.max_remove_fraction` (0.05–1.0, mặc định 0.5) tính theo phần nghìn: một lần xuất
+    /// không được xóa nhiều hơn tỉ lệ này số tệp nhật ký đang có (WR-01).
+    pub max_remove_permille: u32,
+    /// `journal.attention_max_days` (1–365, mặc định 14): việc cần xử lý cũ hơn chừng này ngày
+    /// không còn được mang sang `Today.md` (WR-07).
+    pub attention_max_days: u32,
 }
 
 fn default_groups() -> Vec<GroupDef> {
@@ -80,6 +86,8 @@ impl Default for JournalConfig {
             web_base_url: None,
             project_page_months: 3,
             search_max_results: 8,
+            max_remove_permille: 500,
+            attention_max_days: 14,
         }
     }
 }
@@ -147,6 +155,24 @@ fn get_range(
     }
 }
 
+/// Số thực trong `[lo, hi]`, trả về theo phần nghìn (làm tròn).
+fn get_fraction_permille(
+    o: &serde_json::Map<String, Value>,
+    key: &str,
+    lo: f64,
+    hi: f64,
+) -> BrainResult<Option<u32>> {
+    match o.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_f64() {
+            Some(x) if (lo..=hi).contains(&x) => Ok(Some((x * 1000.0).round() as u32)),
+            _ => Err(err(format!(
+                "Cấu hình journal.{key} phải là số từ {lo} đến {hi}"
+            ))),
+        },
+    }
+}
+
 /// `HH:MM`, 00:00 đến 23:59, đúng hai chữ số mỗi phần.
 fn parse_digest_time(s: &str) -> Option<(u32, u32)> {
     let (h, m) = s.split_once(':')?;
@@ -196,6 +222,19 @@ fn valid_repo_url(s: &str) -> bool {
         return false;
     }
     s.starts_with('/') || scp_like(s)
+}
+
+/// IN-09: `https://` hay `ssh://` có phần userinfo chứa `:` (mật khẩu hoặc token).
+fn has_password(s: &str) -> bool {
+    ["https://", "ssh://"]
+        .iter()
+        .filter_map(|scheme| s.strip_prefix(scheme))
+        .any(|rest| {
+            let authority = rest.split('/').next().unwrap_or("");
+            authority
+                .rsplit_once('@')
+                .is_some_and(|(userinfo, _)| userinfo.contains(':'))
+        })
 }
 
 /// `[A-Za-z0-9._/-]{1,100}`, không bắt đầu bằng `-` hay `/`, không chứa `..` hay `//`,
@@ -281,6 +320,11 @@ pub fn parse(v: Option<&Value>) -> BrainResult<JournalConfig> {
                 "Cấu hình journal.repo_url không hợp lệ (dùng git@host:đường-dẫn, ssh://, https://, file:// hoặc đường dẫn tuyệt đối; không khoảng trắng, không bắt đầu bằng -, không chứa ::)".to_string(),
             ));
         }
+        if has_password(s) {
+            return Err(err(
+                "Cấu hình journal.repo_url không được chứa mật khẩu hay token (dạng người-dùng:mật-khẩu@); dùng khóa SSH (git@host:đường-dẫn) hoặc git credential helper".to_string(),
+            ));
+        }
         cfg.repo_url = Some(s.to_string());
     }
     if let Some(s) = get_str(o, "branch")? {
@@ -297,7 +341,16 @@ pub fn parse(v: Option<&Value>) -> BrainResult<JournalConfig> {
                 "Cấu hình journal.clone_dir phải là đường dẫn khác rỗng".to_string(),
             ));
         }
-        cfg.clone_dir = crate::config::expand_tilde(s, &crate::config::home_dir());
+        let dir = crate::config::expand_tilde(s, &crate::config::home_dir());
+        // WR-12: đường dẫn tương đối tính theo thư mục hiện tại, nên CLI và serve dùng hai
+        // bản clone khác nhau.
+        if !dir.is_absolute() {
+            return Err(err(
+                "Cấu hình journal.clone_dir phải là đường dẫn tuyệt đối (bắt đầu bằng / hoặc ~/)"
+                    .to_string(),
+            ));
+        }
+        cfg.clone_dir = dir;
     }
     if let Some(n) = get_range(o, "interval_minutes", 1, 1440)? {
         cfg.interval_minutes = n as u32;
@@ -365,6 +418,12 @@ pub fn parse(v: Option<&Value>) -> BrainResult<JournalConfig> {
     }
     if let Some(n) = get_range(o, "search_max_results", 1, 20)? {
         cfg.search_max_results = n as usize;
+    }
+    if let Some(n) = get_fraction_permille(o, "max_remove_fraction", 0.05, 1.0)? {
+        cfg.max_remove_permille = n;
+    }
+    if let Some(n) = get_range(o, "attention_max_days", 1, 365)? {
+        cfg.attention_max_days = n as u32;
     }
     Ok(cfg)
 }
@@ -518,6 +577,7 @@ mod tests {
             ("utc_offset_minutes", -720, 840),
             ("project_page_months", 1, 120),
             ("search_max_results", 1, 20),
+            ("attention_max_days", 1, 365),
         ];
         for (key, lo, hi) in ranges {
             assert_accepted(key, json!(lo));
@@ -558,6 +618,61 @@ mod tests {
             "https://github.com/owner/vault",
             "file:///tmp/v.git",
             "/tmp/v.git",
+        ] {
+            assert_accepted("repo_url", json!(good));
+        }
+    }
+
+    #[test]
+    fn max_remove_fraction_range() {
+        assert_eq!(JournalConfig::default().max_remove_permille, 500);
+        assert_eq!(JournalConfig::default().attention_max_days, 14);
+        assert_eq!(
+            with("max_remove_fraction", json!(0.05))
+                .unwrap()
+                .max_remove_permille,
+            50
+        );
+        assert_eq!(
+            with("max_remove_fraction", json!(1))
+                .unwrap()
+                .max_remove_permille,
+            1000
+        );
+        for bad in [json!(0.04), json!(1.01), json!(0), json!("0.5")] {
+            assert_rejected("max_remove_fraction", bad);
+        }
+    }
+
+    #[test]
+    fn clone_dir_must_be_absolute() {
+        for bad in ["journal", "./journal", "a/b"] {
+            assert_rejected("clone_dir", json!(bad));
+        }
+        assert!(with("clone_dir", json!("~/vault"))
+            .unwrap()
+            .clone_dir
+            .is_absolute());
+        assert_accepted("clone_dir", json!("/tmp/vault"));
+    }
+
+    #[test]
+    fn repo_url_credentials_rejected() {
+        for bad in [
+            "https://user:pw-zq9@git.example.test/o/v.git",
+            "https://:tok-zq9@git.example.test/o/v.git",
+            "ssh://git:pw-zq9@git.example.test/o/v.git",
+        ] {
+            let e = with("repo_url", json!(bad)).unwrap_err();
+            assert!(e.message.contains("journal.repo_url"), "{}", e.message);
+            assert!(e.message.contains("SSH"), "{}", e.message);
+            assert!(!e.message.contains("zq9"), "{}", e.message);
+        }
+        for good in [
+            "ssh://git@git.example.test:22/o/v.git",
+            "https://git.example.test/o/v.git",
+            "https://git.example.test/o/a:b.git",
+            "git@github.com:o/v.git",
         ] {
             assert_accepted("repo_url", json!(good));
         }

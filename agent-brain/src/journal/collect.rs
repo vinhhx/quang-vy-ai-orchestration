@@ -57,6 +57,8 @@ pub fn local_day<Tz: TimeZone>(ms: i64, tz: &Tz) -> NaiveDate {
     }
 }
 
+/// `^[a-z0-9][a-z0-9._-]{0,63}$`, không chứa `..` và không kết thúc bằng `.` (WR-02: `a..b`
+/// hay `foo.` làm `check_rel` từ chối cả lần xuất).
 fn slug_ok(s: &str) -> bool {
     let b = s.as_bytes();
     !b.is_empty()
@@ -65,6 +67,22 @@ fn slug_ok(s: &str) -> bool {
         && b.iter().all(|&c| {
             c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-')
         })
+        && !s.contains("..")
+        && !s.ends_with('.')
+}
+
+/// Mốc mới nhất (epoch ms) trong brain.db mà `collect` dùng để xếp ngày: `runs.started_at`,
+/// `runs.ended_at`, `tasks.approved_at`, `plan_approvals.approved_at`. `None` khi DB chưa có.
+pub fn newest_activity_ms(conn: &Connection) -> BrainResult<Option<i64>> {
+    Ok(conn.query_row(
+        "SELECT max(m) FROM (
+            SELECT max(started_at) AS m FROM runs
+            UNION ALL SELECT max(ended_at) FROM runs
+            UNION ALL SELECT max(approved_at) FROM tasks
+            UNION ALL SELECT max(approved_at) FROM plan_approvals)",
+        [],
+        |r| r.get(0),
+    )?)
 }
 
 /// Tên tệp của trang dự án: slug nếu khớp `^[a-z0-9][a-z0-9._-]{0,63}$`, nếu không thì
@@ -86,7 +104,13 @@ pub fn project_file_key(
         }
     };
     if key.is_empty() || taken.contains(&key) {
+        // IN-01: `du-an-{id}` có thể là slug thật của một dự án khác.
         key = format!("du-an-{row_id}");
+        let mut n = 2;
+        while taken.contains(&key) {
+            key = format!("du-an-{row_id}-{n}");
+            n += 1;
+        }
     }
     taken.insert(key.clone());
     key
@@ -344,19 +368,27 @@ pub fn collect<Tz: TimeZone>(
             },
         };
 
-        if !active_days.is_empty() && !active_days.contains(&today) {
+        // Carry-over (WR-07): bỏ task đã kết thúc theo trạng thái của chính nó và việc cũ hơn
+        // `journal.attention_max_days` ngày; danh sách của chính ngày xảy ra thì giữ nguyên.
+        if !active_days.is_empty()
+            && !active_days.contains(&today)
+            && !crate::tasks::is_success_status(&t.status)
+        {
             let (_, today_end) = day_bounds_ms(today, tz);
             if let (Some(li), StatusKind::Attention(kind)) =
                 (last_before(today_end), status_at(today_end).kind)
             {
                 let at = runs[li].ended_at.unwrap_or(runs[li].started_at);
-                carry.push(AttentionItem {
-                    task_id: t.id,
-                    project_slug: project.slug.clone(),
-                    title: title.clone(),
-                    kind,
-                    day: local_day(at, tz).min(today),
-                });
+                let day = local_day(at, tz).min(today);
+                if (today - day).num_days() <= i64::from(cfg.attention_max_days) {
+                    carry.push(AttentionItem {
+                        task_id: t.id,
+                        project_slug: project.slug.clone(),
+                        title: title.clone(),
+                        kind,
+                        day,
+                    });
+                }
             }
         }
 
@@ -519,5 +551,12 @@ mod tests {
         );
         assert_eq!(project_file_key("du-an-a", "x", 3, &mut taken), "du-an-3");
         assert_eq!(project_file_key("/", "///", 4, &mut taken), "du-an-4");
+        // WR-02: `..` and a trailing `.` would make `check_rel` refuse the whole export.
+        assert_eq!(project_file_key("a..b", "", 5, &mut taken), "du-an-5");
+        assert_eq!(project_file_key("foo.", "", 6, &mut taken), "du-an-6");
+        assert_eq!(project_file_key("v1.2", "", 7, &mut taken), "v1.2");
+        // IN-01: the fallback key never reuses a taken key.
+        assert_eq!(project_file_key("du-an-9", "", 8, &mut taken), "du-an-9");
+        assert_eq!(project_file_key("", "", 9, &mut taken), "du-an-9-2");
     }
 }

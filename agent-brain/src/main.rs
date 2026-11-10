@@ -305,6 +305,9 @@ enum JournalCommands {
     Export {
         #[arg(long)]
         no_push: bool,
+        /// Cho phép một lần xuất xóa nhiều tệp nhật ký đang có (bỏ qua chốt chặn xóa hàng loạt)
+        #[arg(long)]
+        allow_removals: bool,
     },
 }
 
@@ -510,7 +513,10 @@ fn main() {
             }
         }),
         Commands::Journal { subcommand } => match subcommand {
-            JournalCommands::Export { no_push } => agent_brain::journal::cmd_export(&ctx, no_push),
+            JournalCommands::Export {
+                no_push,
+                allow_removals,
+            } => agent_brain::journal::cmd_export(&ctx, no_push, allow_removals),
         },
         Commands::Task { subcommand } => match subcommand {
             TaskCommands::Cleanup {
