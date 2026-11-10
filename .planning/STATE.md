@@ -2,11 +2,11 @@
 gsd_state_version: "1.0"
 current_phase: 6
 current_phase_name: Multi-engine & Media Branch
-status: executing
-stopped_at: "Phase 6 waiting after wave 7: 17/19 plans done; 06-11 needs E-09, 06-19 waits on 06-11"
-last_updated: "2026-10-28T08:11:00.608Z"
-last_activity: 2026-10-28
-last_activity_desc: Phase 6 execution started
+status: verifying
+stopped_at: "Phase 6: 26/26 plans have a SUMMARY; phase not yet verified (no VERIFICATION.md)"
+last_updated: "2026-11-10T00:00:00.000Z"
+last_activity: 2026-11-10
+last_activity_desc: State refreshed; stale milestone.lock and agent worktrees removed
 state_head: 89f2364faeee44a7a2881ff368379991f188eba0
 progress:
   total_phases: 13
@@ -27,10 +27,14 @@ See: .planning/PROJECT.md (updated 2026-10-24)
 
 ## Current Position
 
-Phase: 6 (Multi-engine & Media Branch) — EXECUTING
-Plan: 1 of 26
-Status: Executing Phase 6
-Last activity: 2026-10-28 — Phase 6 execution started
+Phase: 6 (Multi-engine & Media Branch) — PLANS DONE, AWAITING VERIFICATION
+Plan: 26 of 26 (all have a SUMMARY)
+Status: Run `/gsd-verify-work 6` (or gsd-verifier) to write 06-VERIFICATION.md and close Phase 6
+Last activity: 2026-11-10 — STATE refreshed; since 2026-10-28 work continued as quick plans (`.planning/quick/`, all executed, latest `test-commands-quota-stops` → 799599f)
+
+Other open items:
+- Phase 06.2: 06.2-01, 06.2-02 done; 06.2-03 superseded (QA rule dropped by quick plan `team-any-engine-any-role`, account choice by D-45 `claude_config_dir`). Its unmerged commits are kept on branch `worktree-agent-aabbd671f000750da` (52355e6); do not merge.
+- Phase 4 and Phase 06.1: not planned yet.
 
 Progress: [████░░░░░░] 38%
 
@@ -117,7 +121,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Không có quyết đị
 - [Ops 2026-10-23]: Bot thử mới @quang_vy_bot (token cũ của 5.3 đã thu hồi); môi trường nghiệm thu 5.4 đã xóa; `~/.config/agent-brain` thật vẫn chưa có `telegram.json`; binary cài đặt chưa nâng lên 5.4 (cài bản mới sẽ migrate brain.db lên lược đồ v3 — sao lưu `brain.db.bak-pre-5.4-<ngày>` trước, xem README).
 - [Phase 05.5, follow-up không chặn]: từ 05.5-VERIFICATION.md — khe TOCTOU khi thư mục bị đổi thành symlink giữa lúc kiểm và lúc mở (xem ở `/gsd-secure-phase 05.5`); thẻ lỗi hiện chồng lên bảng cũ khi request lỗi sau một lần tải tốt (board.js:243-247); 05.5-03-SUMMARY ghi `requirements-completed: []`.
 - [Quick 2026-10-23]: Sửa flaky `index.lock` — `gitops::git_cmd` đặt `GIT_OPTIONAL_LOCKS=0` cho mọi lệnh git (a78fdac); kế hoạch ở `.planning/quick/git-optional-locks.plan.md`.
-- [Phase 6, waiting 2026-10-27] 17/19 plans done (06-02 agy probe: Dev = `--mode accept-edits`; 06-09, 06-12, 06-16, 06-18 merged). Left: 06-11 needs E-09 — run `bash spikes/e09/run.sh` with DEEPSEEK_API_KEY in your own shell (then record pass-alias/pass-explicit in spikes/e09/NOTES.md), or decide dsh vs drop (re-plan); 06-19 (phase close) waits on 06-11. Resume with /gsd-execute-phase 6.
+- ~~[Phase 6, waiting 2026-10-27] 17/19 plans done; 06-11 needed E-09, 06-19 waited on 06-11.~~ — resolved: all 26 Phase 6 plans have a SUMMARY (checked 2026-11-10). Remaining: phase verification.
 
 ### Roadmap Evolution
 
@@ -140,6 +144,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-27T08:41:08.358Z
-Stopped at: Phase 6 waiting after wave 7: 17/19 plans done; 06-11 needs E-09, 06-19 waits on 06-11
-Resume file: .planning/phases/06-multi-engine-media-branch/06-UI-SPEC.md
+Last session: 2026-11-10
+Stopped at: Phase 6 plans all done; awaiting verification. Stale `.planning/milestone.lock` and `.claude/worktrees/` agent worktrees removed.
+Resume file: None
