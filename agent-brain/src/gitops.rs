@@ -459,16 +459,21 @@ pub fn is_merged_into(root: &Path, branch: &str, base: &str) -> bool {
 
 /// `git` with a time limit, for commands that talk to a remote (`fetch`, `push`). Never asks for
 /// anything: `GIT_TERMINAL_PROMPT=0`, and ssh runs in batch mode with a connect timeout unless
-/// the user set `GIT_SSH_COMMAND` already. The child runs in its own process group; when
-/// `timeout` passes the whole group (git, ssh, hooks) is killed and an error is returned.
-/// No shell is involved.
+/// the user chose their own ssh already (`GIT_SSH_COMMAND` / `GIT_SSH`, or `core.sshCommand`,
+/// which the variable would override). The child runs in its own process group; when `timeout`
+/// passes the whole group (git, ssh, hooks) is killed and an error is returned. No shell.
 pub fn git_net(root: &Path, args: &[&str], timeout: std::time::Duration) -> BrainResult<String> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
+    let user_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
+        || std::env::var_os("GIT_SSH").is_some()
+        || git(root, &["config", "--get", "core.sshCommand"])
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
     let mut cmd = git_cmd(root);
     cmd.args(args);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
-    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+    if !user_ssh {
         cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=20");
     }
     cmd.stdin(std::process::Stdio::null());
