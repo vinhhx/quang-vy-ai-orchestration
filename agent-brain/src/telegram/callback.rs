@@ -37,9 +37,13 @@ pub enum Op {
     ApproveNone,
     /// Duyệt -> QA (Phase B2).
     ApproveQa,
+    /// `Merge & push` on a QA-passed message, in two presses: ask, confirm, cancel.
+    MergeAsk,
+    MergeConfirm,
+    MergeCancel,
 }
 
-pub const ALL_OPS: [Op; 19] = [
+pub const ALL_OPS: [Op; 22] = [
     Op::Approve,
     Op::ApproveAsk,
     Op::ApproveConfirm,
@@ -59,6 +63,9 @@ pub const ALL_OPS: [Op; 19] = [
     Op::Reopen,
     Op::ApproveNone,
     Op::ApproveQa,
+    Op::MergeAsk,
+    Op::MergeConfirm,
+    Op::MergeCancel,
 ];
 
 impl Op {
@@ -83,6 +90,9 @@ impl Op {
             Op::Reopen => 'o',
             Op::ApproveNone => '0',
             Op::ApproveQa => 'Q',
+            Op::MergeAsk => 'g',
+            Op::MergeConfirm => 'G',
+            Op::MergeCancel => 'h',
         }
     }
 
@@ -655,6 +665,11 @@ mod tests {
         for c in ["k", "K", "x"] {
             assert!(decode(&format!("{c}:1:2:{REV}")).is_some(), "{c}");
         }
+        // Merge & push: ask, confirm, cancel carry no run id.
+        for (c, op) in [("g", Op::MergeAsk), ("G", Op::MergeConfirm), ("h", Op::MergeCancel)] {
+            assert_eq!(decode(&format!("{c}:4:{REV}")).map(|cb| cb.op), Some(op), "{c}");
+            assert_eq!(decode(&format!("{c}:4:1:{REV}")), None, "{c}");
+        }
     }
 
     #[test]
@@ -665,7 +680,7 @@ mod tests {
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), n, "a callback code is used twice");
-        assert_eq!(ALL_OPS.len(), 19);
+        assert_eq!(ALL_OPS.len(), 22);
         for op in ALL_OPS {
             assert_eq!(Op::from_code(op.code()), Some(op));
         }

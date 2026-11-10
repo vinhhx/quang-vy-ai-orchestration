@@ -917,6 +917,7 @@
       reasonText: function (a) {
         if (!a) return '';
         if (!a.enabled && a.reason) return a.reason;
+        if (a.id === 'merge_push' && a.reason) return a.reason;
         if (a.id === 'change_team') return this.teamRefusal;
         if (a.id === 'quota_rerun') return this.quotaRefusal;
         if (a.id === 'human_done' || a.id === 'human_return') return this.humanRefusal;
@@ -1827,7 +1828,18 @@
         if (this.dialog.id === 'cleanup_worktree') {
           return 'Dọn worktree của task ' + ((this.task && this.task.slug) ? this.task.slug : '') + '?';
         }
+        if (this.dialog.id === 'merge_push') {
+          return 'Merge nhánh ' + this.mergeBranch + ' vào ' + this.mergeBase + ' rồi push lên origin?';
+        }
         return '';
+      },
+
+      get mergeBranch() {
+        return (this.task && this.task.branch) ? this.task.branch : '';
+      },
+
+      get mergeBase() {
+        return (this.task && this.task.merge_base) ? this.task.merge_base : '';
       },
 
       get dialogBody() {
@@ -1858,6 +1870,9 @@
           }
           return wbody;
         }
+        if (this.dialog.id === 'merge_push') {
+          return 'agent-brain lấy origin/' + this.mergeBase + ', checkout ' + this.mergeBase + ', merge --no-ff nhánh ' + this.mergeBranch + ' (bỏ file giao thức), push lên origin không force, rồi xoá nhánh task cục bộ (git branch -d). Repo ở lại nhánh ' + this.mergeBase + '.';
+        }
         return '';
       },
 
@@ -1876,6 +1891,7 @@
         if (this.dialog.id === 'return_lead') return 'Trả về Lead';
         if (this.dialog.id === 'reopen') return 'Mở lại task';
         if (this.dialog.id === 'cleanup_worktree') return 'Dọn worktree';
+        if (this.dialog.id === 'merge_push') return 'Merge & push';
         return '';
       },
 
@@ -1883,7 +1899,7 @@
         if (!this.dialog) return '';
         if (this.dialog.id === 'kill') return 'Giữ chạy tiếp';
         if (this.dialog.id === 'relead' || this.dialog.id === 'return_lead') return 'Giữ plan hiện tại';
-        if (this.dialog.id === 'reopen' || this.dialog.id === 'cleanup_worktree') return 'Hủy';
+        if (this.dialog.id === 'reopen' || this.dialog.id === 'cleanup_worktree' || this.dialog.id === 'merge_push') return 'Hủy';
         return '';
       },
 
@@ -1892,7 +1908,7 @@
         if (this.dialog.id === 'kill') {
           return 'bg-rose-600 text-white hover:bg-rose-700';
         }
-        if (this.dialog.id === 'reopen' || this.dialog.id === 'cleanup_worktree') {
+        if (this.dialog.id === 'reopen' || this.dialog.id === 'cleanup_worktree' || this.dialog.id === 'merge_push') {
           return 'bg-amber-600 text-white hover:bg-amber-700';
         }
         return 'bg-indigo-600 text-white hover:bg-indigo-700';
@@ -2534,6 +2550,10 @@
         if (cleanup) {
           acts = acts.concat([cleanup]);
         }
+        var mergePush = this.controlById('merge_push');
+        if (mergePush) {
+          acts = [mergePush].concat(acts);
+        }
         return acts;
       },
 
@@ -2629,6 +2649,7 @@
           if (a.id === 'change_team') return 'Đang đổi...';
           if (a.id === 'human_done') return 'Đang lấy nhánh...';
           if (a.id === 'human_return') return 'Đang trả...';
+          if (a.id === 'merge_push') return 'Đang merge & push...';
           return 'Đang giao...';
         }
         return a.label;
@@ -2684,8 +2705,8 @@
           this.dialog = a;
           window.AB.lockScroll(true);
           window.AB.focusLater('ab-reopen-note');
-        } else if (a.id === 'cleanup_worktree') {
-          // Removes a folder: always asked first; the dialog is the confirmation.
+        } else if (a.id === 'cleanup_worktree' || a.id === 'merge_push') {
+          // Removes a folder / pushes to origin: always asked first; the dialog is the confirmation.
           this.lastFocusId = this.actionId(a);
           this.dialog = a;
           window.AB.lockScroll(true);
@@ -2702,6 +2723,7 @@
         return_lead: '/return',
         reopen: '/reopen',
         cleanup_worktree: '/cleanup-worktree',
+        merge_push: '/merge-push',
         auto_start: '/auto',
         auto_stop: '/auto/stop',
         auto_more_round: '/auto/more-round',
@@ -2719,6 +2741,8 @@
             return 'Đã mở lại task' + (data && data.new_status ? ' (trạng thái: ' + data.new_status + ').' : '.');
           case 'cleanup_worktree':
             return (data && data.message) ? data.message : 'Đã dọn worktree.';
+          case 'merge_push':
+            return (data && data.message) ? data.message : 'Đã merge & push.';
           case 'auto_start':
             return 'Đã bật autopilot.';
           case 'auto_stop':
@@ -2791,7 +2815,7 @@
         var act = this.dialog;
         this.closeDialog();
         if (!act) return;
-        if (act.id === 'return_lead' || act.id === 'reopen' || act.id === 'cleanup_worktree') {
+        if (act.id === 'return_lead' || act.id === 'reopen' || act.id === 'cleanup_worktree' || act.id === 'merge_push') {
           this.postControl(act);
         } else {
           this.runAction(act);

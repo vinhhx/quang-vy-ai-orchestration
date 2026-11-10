@@ -830,6 +830,46 @@ pub fn build_cleanup_worktree(
     }
 }
 
+/// Merge & push of a QA-passed task. Built from local facts only (no network; the control is
+/// re-built on every poll): enabled for `qa_pass` with nothing busy and the task branch present
+/// (`NotMerged`) or merged but not pushed yet (`MergedLocal`, label `Push lại`). Once origin has
+/// the branch (`Pushed`) it stays off with that as the reason.
+pub fn build_merge_push(
+    task: &TaskRow,
+    busy: Option<&str>,
+    git_state: crate::workspace::MergeState,
+    base: &str,
+) -> ActionView {
+    use crate::workspace::MergeState;
+    let mut label = "Merge & push";
+    let (enabled, reason) = if task.status != "qa_pass" {
+        (false, Some("Chỉ merge task đã qua QA".to_string()))
+    } else if git_state == MergeState::Pushed {
+        (false, Some(format!("Đã merge vào {base} và push")))
+    } else if let Some(b) = busy {
+        (false, Some(b.to_string()))
+    } else {
+        match git_state {
+            MergeState::NoBranch => (
+                false,
+                Some(format!("Nhánh '{}' không còn tồn tại trên repo.", task.branch)),
+            ),
+            MergeState::MergedLocal => {
+                label = "Push lại";
+                (true, Some("Đã merge cục bộ, chưa push".to_string()))
+            }
+            _ => (true, None),
+        }
+    };
+    ActionView {
+        id: "merge_push".to_string(),
+        label: label.to_string(),
+        enabled,
+        reason,
+        run_id: None,
+    }
+}
+
 /// Xác định bước hiện tại của task (05.1 IN-05).
 pub fn current_step_of(f: &TaskFacts, running: Option<&RunRow>) -> String {
     if let Some(r) = running {
@@ -1133,6 +1173,29 @@ mod tests {
             level: "vua".to_string(),
             workdir: None,
         }
+    }
+
+    #[test]
+    fn merge_push_control_states() {
+        use crate::workspace::MergeState;
+        let ok = dummy_task("qa_pass");
+        let v = build_merge_push(&ok, None, MergeState::NotMerged, "dev");
+        assert_eq!((v.id.as_str(), v.label.as_str(), v.enabled, v.reason.clone()), ("merge_push", "Merge & push", true, None));
+        let v = build_merge_push(&ok, None, MergeState::MergedLocal, "dev");
+        assert!(v.enabled);
+        assert_eq!(v.label, "Push lại");
+        assert_eq!(v.reason.as_deref(), Some("Đã merge cục bộ, chưa push"));
+        let v = build_merge_push(&ok, None, MergeState::Pushed, "dev");
+        assert!(!v.enabled);
+        assert_eq!(v.reason.as_deref(), Some("Đã merge vào dev và push"));
+        let v = build_merge_push(&ok, Some("Dự án web đang có run 3"), MergeState::NotMerged, "dev");
+        assert!(!v.enabled);
+        assert_eq!(v.reason.as_deref(), Some("Dự án web đang có run 3"));
+        let v = build_merge_push(&ok, None, MergeState::NoBranch, "dev");
+        assert!(!v.enabled);
+        let v = build_merge_push(&dummy_task("dev_done"), None, MergeState::NotMerged, "dev");
+        assert!(!v.enabled);
+        assert_eq!(v.reason.as_deref(), Some("Chỉ merge task đã qua QA"));
     }
 
     fn dummy_run(id: i64, role: &str, status: &str, outcome: Option<&str>) -> RunRow {

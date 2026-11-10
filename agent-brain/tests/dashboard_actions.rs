@@ -643,3 +643,166 @@ fn start_new_task_unavailable_after_shutdown() {
     assert_eq!(outcome, StartOutcome::Unavailable);
     assert!(st.jobs.list().is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Merge & push (control `merge_push`, POST /api/tasks/{id}/merge-push)
+// ---------------------------------------------------------------------------
+
+/// Repo `web` with a bare `origin`, `dev` pushed, task 1 `qa_pass` on `task/sua-app` (one commit,
+/// checked out, clean). Returns `(repo, remote)`.
+fn mp_setup(sb: &Sandbox) -> (std::path::PathBuf, std::path::PathBuf) {
+    let remote = sb.root.join("remote.git");
+    std::fs::create_dir_all(&remote).unwrap();
+    sb.git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+    let repo = sb.make_repo("web", &[("src/a.txt", "a\n")], None, Some(remote.to_str().unwrap()));
+    sb.git(&repo, &["checkout", "-q", "-b", "dev"]);
+    sb.git(&repo, &["push", "-q", "origin", "main", "dev"]);
+    sb.git(&repo, &["checkout", "-q", "-b", "task/sua-app"]);
+    std::fs::write(repo.join("src/a.txt"), "a2\n").unwrap();
+    sb.git(&repo, &["commit", "-q", "-am", "sua-app: sửa a"]);
+    let entry = sb.project_entry(&repo, "web", "work");
+    sb.write_map(serde_json::json!([entry]), &[]);
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    let now = agent_brain::db::now_ms();
+    conn.execute(
+        "INSERT INTO projects (id, slug, path) VALUES (1, 'web', ?1)",
+        rusqlite::params![repo.to_str().unwrap()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, status, created_at, updated_at)
+         VALUES (1, 1, 'sua-app', 'Sửa app', 'task/sua-app', 'dev', 'qa_pass', ?1, ?1)",
+        rusqlite::params![now],
+    )
+    .unwrap();
+    (repo, remote)
+}
+
+fn mp_control(t: &serde_json::Value) -> Option<serde_json::Value> {
+    t["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "merge_push")
+        .cloned()
+}
+
+#[test]
+fn merge_push_route_runs_once() {
+    let sb = Sandbox::new();
+    let (repo, remote) = mp_setup(&sb);
+    let srv = sb.serve(&[]);
+
+    let t = srv.get("/api/tasks/1").json();
+    let c = mp_control(&t).unwrap_or_else(|| panic!("no merge_push control: {t}"));
+    assert_eq!(c["enabled"], true, "{c}");
+    assert_eq!(c["label"], "Merge & push", "{c}");
+    assert_eq!(t["merge_base"], "dev", "{t}");
+    let rev = t["rev"].as_str().unwrap().to_string();
+
+    // No token: refused by the middleware, nothing runs.
+    let r = srv.request(
+        "POST",
+        "/api/tasks/1/merge-push",
+        &[("Content-Type", "application/json")],
+        br#"{}"#,
+    );
+    assert_eq!(r.status, 401, "{}", r.text());
+    // An old rev: stale, nothing runs.
+    let r = srv.post_json(
+        "/api/tasks/1/merge-push",
+        &serde_json::json!({"rev": "0000000000000000"}),
+    );
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(r.json()["kind"], "stale");
+    assert_eq!(sb.git(&repo, &["branch", "--show-current"]).trim(), "task/sua-app");
+
+    let r = srv.post_json("/api/tasks/1/merge-push", &serde_json::json!({"rev": rev}));
+    assert_eq!(r.status, 200, "{}", r.text());
+    let j = r.json();
+    assert_eq!(j["ok"], true, "{j}");
+    assert_eq!(j["pushed"], true, "{j}");
+    assert!(
+        j["message"].as_str().unwrap().contains("và push lên origin."),
+        "{j}"
+    );
+    let local = sb.git(&repo, &["rev-parse", "dev"]);
+    assert_eq!(local, sb.git(&remote, &["rev-parse", "dev"]));
+
+    // Done: the control stays off and a second press does nothing.
+    let t = srv.get("/api/tasks/1").json();
+    let c = mp_control(&t).unwrap();
+    assert_eq!(c["enabled"], false, "{c}");
+    assert_eq!(c["reason"], "Đã merge vào dev và push", "{c}");
+    let r = srv.post_json(
+        "/api/tasks/1/merge-push",
+        &serde_json::json!({"rev": t["rev"]}),
+    );
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(r.json()["kind"], "merge_refused");
+    assert_eq!(sb.git(&repo, &["rev-parse", "dev"]), local, "no second merge");
+}
+
+#[test]
+fn merge_push_control_off_when_busy_or_not_qa_pass() {
+    let sb = Sandbox::new();
+    let (repo, remote) = mp_setup(&sb);
+    let origin_before = sb.git(&remote, &["rev-parse", "dev"]);
+
+    let mut decoy = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+    let pid = decoy.id() as i64;
+    let start = agent_brain::procs::read_stat(pid as i32).expect("stat").start as i64;
+    sb.db()
+        .execute(
+            "INSERT INTO runs (id, task_id, project_id, role, engine, profile, pid, pgid, pid_start, status, started_at)
+             VALUES (1, 1, 1, 'qa', 'claude', 'work', ?1, ?1, ?2, 'running', ?3)",
+            rusqlite::params![pid, start, agent_brain::db::now_ms()],
+        )
+        .unwrap();
+    let srv = sb.serve(&[]);
+    let t = srv.get("/api/tasks/1").json();
+    let c = mp_control(&t).unwrap();
+    assert_eq!(c["enabled"], false, "{c}");
+    assert_eq!(c["reason"], agent_brain::workspace::MERGE_TASK_BUSY, "{c}");
+    let r = srv.post_json(
+        "/api/tasks/1/merge-push",
+        &serde_json::json!({"rev": t["rev"]}),
+    );
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(r.json()["kind"], "busy", "{}", r.text());
+    let _ = decoy.kill();
+    let _ = decoy.wait();
+    sb.db()
+        .execute("UPDATE runs SET status = 'succeeded', ended_at = 1 WHERE id = 1", [])
+        .unwrap();
+
+    // Not qa_pass: no control, refused.
+    sb.db()
+        .execute("UPDATE tasks SET status = 'dev_done' WHERE id = 1", [])
+        .unwrap();
+    let t = srv.get("/api/tasks/1").json();
+    assert!(mp_control(&t).is_none(), "{t}");
+    let r = srv.post_json("/api/tasks/1/merge-push", &serde_json::json!({}));
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert!(
+        r.json()["error"].as_str().unwrap().contains("Chỉ merge task đã qua QA"),
+        "{}",
+        r.text()
+    );
+
+    // Merged locally, not pushed: `Push lại`, enabled.
+    sb.db()
+        .execute("UPDATE tasks SET status = 'qa_pass' WHERE id = 1", [])
+        .unwrap();
+    sb.git(&repo, &["checkout", "-q", "dev"]);
+    sb.git(
+        &repo,
+        &["merge", "-q", "--no-ff", "-m", "Merge task/sua-app vào dev [task #1]: Sửa app", "task/sua-app"],
+    );
+    let t = srv.get("/api/tasks/1").json();
+    let c = mp_control(&t).unwrap();
+    assert_eq!(c["enabled"], true, "{c}");
+    assert_eq!(c["label"], "Push lại", "{c}");
+    assert_eq!(c["reason"], "Đã merge cục bộ, chưa push", "{c}");
+    assert_eq!(sb.git(&remote, &["rev-parse", "dev"]), origin_before);
+}

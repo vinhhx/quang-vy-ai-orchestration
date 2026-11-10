@@ -39,7 +39,7 @@ const STRANGER_CAP: usize = 1024;
 
 /// The reply to a text the bot does not take (no open note prompt or `/task`
 /// flow waiting for it) and to an unknown command (Phase 05.4).
-pub const HELP_TEXT: &str = "Gõ /task <yêu cầu> để giao việc mới (hoặc /task rồi gửi yêu cầu), /huy để huỷ yêu cầu đang mở. Chuyển tiếp tin nhắn vào đây để gộp thành một task. Nút trên tin thông báo dùng như trước.\nBug từ Trello/Sheet: /fixbugs <dự án> [số] lấy bug mới, /bugs <dự án> xem tiến độ, /deployed <dự án> <KEY...> [-- ghi chú] báo đã deploy, /reject <dự án> <KEY> <lý do> từ chối sửa.";
+pub const HELP_TEXT: &str = "Gõ /task <yêu cầu> để giao việc mới (hoặc /task rồi gửi yêu cầu), /huy để huỷ yêu cầu đang mở. Chuyển tiếp tin nhắn vào đây để gộp thành một task. Nút trên tin thông báo dùng như trước.\nBug từ Trello/Sheet: /fixbugs <dự án> [số] lấy bug mới, /bugs <dự án> xem tiến độ, /deployed <dự án> <KEY...> [-- ghi chú] báo đã deploy, /reject <dự án> <KEY> <lý do> từ chối sửa.\nNhật ký: /tim <từ khóa> tìm việc đã làm (trả về ngày và link).";
 pub const INVALID_BUTTON: &str = "Nút không hợp lệ.";
 const UNAVAILABLE_TEXT: &str = "Dashboard đang dừng — không nhận việc mới";
 const INTERNAL_TEXT: &str = "Lỗi nội bộ — xem terminal đang chạy agent-brain serve";
@@ -504,6 +504,7 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
         Op::Reopen => act(ctx, &press, &cb, "Mở lại task", "reopen"),
         Op::ApproveNone => act(ctx, &press, &cb, "Duyệt, không chạy", "approve_none"),
         Op::ApproveQa => act(ctx, &press, &cb, "Duyệt → QA", "approve_qa"),
+        Op::MergeAsk | Op::MergeConfirm | Op::MergeCancel => on_merge_push(ctx, &press, &cb),
     }
 }
 
@@ -1088,6 +1089,130 @@ fn on_approve(ctx: &Arc<BotCtx>, press: &Press, cb: &Callback) {
     act(ctx, &shown, cb, label, "approve");
 }
 
+/// `Merge & push` on a QA-passed message, in two presses. The first press only asks; only
+/// `Xác nhận` runs the dashboard's own `merge_push` control (`run_control_as`, which re-checks the
+/// `rev`, that the control is still enabled and that nothing is busy), then the result goes out as
+/// one message. `Hủy` changes nothing. A press on an old message is refused by the same checks.
+fn on_merge_push(ctx: &Arc<BotCtx>, press: &Press, cb: &Callback) {
+    let label = "Merge & push";
+    let task_id = cb.task_id;
+    if cb.op == Op::MergeCancel {
+        restore_original(ctx, press, task_id);
+        answer(ctx, &press.id, "Đã huỷ — chưa merge", false);
+        audit(label, task_id, "Đã huỷ");
+        return;
+    }
+    let s = match load_fresh(ctx, task_id) {
+        Loaded::State(s) => s,
+        Loaded::Gone => {
+            untrack(ctx, press.message_id);
+            stale(ctx, press, label, task_id);
+            return;
+        }
+        Loaded::Error => {
+            answer(ctx, &press.id, INTERNAL_TEXT, true);
+            return;
+        }
+    };
+    if cb.rev != s.rev {
+        untrack(ctx, press.message_id);
+        stale(ctx, press, label, task_id);
+        return;
+    }
+    if cb.op == Op::MergeAsk {
+        if !has_control(&s, "merge_push") {
+            answer(ctx, &press.id, NOT_APPLICABLE, true);
+            return;
+        }
+        untrack(ctx, press.message_id);
+        let base = crate::workspace::merge_push_base(&ctx.st.cfg, &s.project, &s.task);
+        let keyboard = render::keyboard_json(&[
+            button_row("Xác nhận", Op::MergeConfirm, cb),
+            button_row("Hủy", Op::MergeCancel, cb),
+        ]);
+        edit(
+            ctx,
+            press.message_id,
+            &render::merge_confirm_text(task_id, &s.task.branch, &base),
+            keyboard,
+        );
+        answer(ctx, &press.id, "Xác nhận Merge & push?", false);
+        audit(label, task_id, "Yêu cầu xác nhận");
+        return;
+    }
+    // Op::MergeConfirm: the second press. The pressed message gets back the QA text.
+    untrack(ctx, press.message_id);
+    let base_text = detect::current_event(&s)
+        .map(|ev| render::message_for(&ev, &s).text)
+        .unwrap_or_default();
+    let shown = Press {
+        id: press.id.clone(),
+        message_id: press.message_id,
+        text: base_text,
+    };
+    let outcome = run_control_as(
+        &ctx.st,
+        task_id,
+        "merge_push",
+        Some(&cb.rev),
+        None,
+        ActionSource::Telegram,
+    );
+    let refused = |reason: &str| {
+        answer(ctx, &press.id, reason, true);
+        restore_original(ctx, press, task_id);
+        let _ = send_message(
+            ctx,
+            &render::merge_result_text(task_id, &format!("Không chạy: {reason}")),
+            render::no_keyboard(),
+        );
+        audit(label, task_id, reason.lines().next().unwrap_or(""));
+    };
+    match outcome {
+        Ok(ControlOutcome::MergePushed {
+            message,
+            pushed,
+            push_failed,
+        }) => {
+            let short = if push_failed {
+                "Đã merge, push lỗi — bấm lại để push"
+            } else if pushed {
+                "Đã merge & push"
+            } else {
+                "Đã merge (chưa push)"
+            };
+            answer(ctx, &press.id, short, push_failed);
+            let suffix = render::result_suffix(short, true, crate::db::now_ms());
+            edit_result(ctx, press.message_id, &shown.text, &suffix, render::no_keyboard());
+            let _ = send_message(
+                ctx,
+                &render::merge_result_text(task_id, &message),
+                render::no_keyboard(),
+            );
+            audit(label, task_id, message.lines().next().unwrap_or(""));
+        }
+        Ok(ControlOutcome::Stale) | Ok(ControlOutcome::NotFound(_)) => {
+            stale(ctx, &shown, label, task_id)
+        }
+        Ok(ControlOutcome::Refused { reason, .. }) => refused(&reason),
+        Ok(ControlOutcome::Invalid(msg)) => refused(&msg),
+        Ok(ControlOutcome::Unavailable) => refused(UNAVAILABLE_TEXT),
+        Ok(other) => {
+            crate::term::emit(&format!(
+                "Telegram: kết quả không mong đợi khi Merge & push task {task_id}: {other:?}"
+            ));
+            refused(INTERNAL_TEXT);
+        }
+        Err(e) => {
+            crate::term::emit(&format!(
+                "Telegram: lỗi nội bộ khi Merge & push task {task_id} ({})",
+                e.message
+            ));
+            refused(INTERNAL_TEXT);
+        }
+    }
+}
+
 /// Puts the task's current message (text and buttons) back on the pressed message, and under
 /// the detector's watch; or says the task has moved on when no event holds any more.
 fn restore_original(ctx: &Arc<BotCtx>, press: &Press, task_id: i64) {
@@ -1519,6 +1644,7 @@ pub(crate) fn apply_outcome(
             ("Đã mở lại task".to_string(), what)
         }
         Ok(ControlOutcome::CleanedUp { message }) => ("Đã dọn worktree".to_string(), message),
+        Ok(ControlOutcome::MergePushed { message, .. }) => ("Merge & push".to_string(), message),
         Ok(ControlOutcome::StopRequested) => {
             let what = "Đã gửi yêu cầu dừng".to_string();
             (what.clone(), what)

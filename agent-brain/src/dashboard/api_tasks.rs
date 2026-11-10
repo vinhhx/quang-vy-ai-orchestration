@@ -311,6 +311,20 @@ pub fn busy_reason(
     Ok(None)
 }
 
+/// Why Merge & push must wait: the task's own run or autopilot (`task_live`), else anything
+/// holding the project (`busy_reason`: runs, drivers, dashboard jobs, the gate hold).
+pub fn merge_busy_reason(
+    conn: &rusqlite::Connection,
+    jobs: &JobManager,
+    project: &Project,
+    task_live: bool,
+) -> BrainResult<Option<String>> {
+    if task_live {
+        return Ok(Some(crate::workspace::MERGE_TASK_BUSY.to_string()));
+    }
+    busy_reason(conn, jobs, project)
+}
+
 pub fn busy_reason_for_task(
     conn: &rusqlite::Connection,
     jobs: &JobManager,
@@ -566,6 +580,7 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         .route("/api/tasks/{id}/approve", post(post_approve))
         .route("/api/tasks/{id}/reopen", post(post_reopen))
         .route("/api/tasks/{id}/cleanup-worktree", post(post_cleanup_worktree))
+        .route("/api/tasks/{id}/merge-push", post(post_merge_push))
         .route("/api/tasks/{id}/plan-diff", get(get_plan_diff))
         .route("/api/tasks/{id}/return", post(post_return))
         .route("/api/tasks/{id}/auto", post(post_auto))
@@ -1870,6 +1885,30 @@ pub fn load_task_state(
             merged,
         ));
     }
+    // Merge & push, for a QA-passed task (local git facts only, no network).
+    if task.status == "qa_pass" {
+        let base = crate::workspace::merge_push_base(&st.cfg, &project, &task);
+        let proj_root = project.root();
+        let git_state = if crate::gitops::valid_branch_name(&base)
+            && crate::gitops::valid_branch_name(&task.branch)
+        {
+            crate::workspace::merge_state(&proj_root, task.id, &task.branch, &base)
+        } else {
+            crate::workspace::MergeState::NoBranch
+        };
+        let mbusy = merge_busy_reason(
+            conn,
+            &st.jobs,
+            &project,
+            running_of(&runs).is_some() || driver_alive,
+        )?;
+        view.controls.push(taskstate::build_merge_push(
+            &task,
+            mbusy.as_deref(),
+            git_state,
+            &base,
+        ));
+    }
 
     let (quota_teams, quota_unverified) = match latest.filter(|r| r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA)) {
         Some(r) => {
@@ -2767,6 +2806,8 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "plan_diff_summary": state.plan_diff_summary,
             "workdir": task.workdir,
             "workdir_merged": task.workdir.is_some() && worktree_merged(project, task),
+            // Base branch Merge & push merges into (task, project, else merge.default_base_branch).
+            "merge_base": crate::workspace::merge_push_base(&st.cfg, project, task),
         });
 
         Ok((
@@ -3374,6 +3415,13 @@ fn absent_control(control: &str, state: &TaskState) -> (String, &'static str) {
             "Task không có worktree để dọn.".to_string(),
             "not_allowed",
         ),
+        "merge_push" => (
+            format!(
+                "Chỉ merge task đã qua QA (trạng thái hiện tại: {}).",
+                state.task.status
+            ),
+            "merge_refused",
+        ),
         _ => (NOT_ALLOWED_MSG.to_string(), "not_allowed"),
     }
 }
@@ -3386,6 +3434,13 @@ pub enum ControlOutcome {
     Reopened { new_status: String },
     /// Worktree của task đã được dọn (D2.4); nhánh vẫn giữ.
     CleanedUp { message: String },
+    /// Merge & push đã chạy: `pushed` khi origin đã có nhánh task; `push_failed` khi merge cục bộ
+    /// còn đó nhưng push lỗi (bấm lại để push lại). `message` là câu ngắn cho người dùng.
+    MergePushed {
+        message: String,
+        pushed: bool,
+        push_failed: bool,
+    },
     /// Duyệt plan: ghi nhận duyệt cho commit plan; `job_id` khi autopilot chạy tiếp.
     Approved {
         approved_at: i64,
@@ -3527,6 +3582,15 @@ pub fn run_control_as(
         let reason = ctl.reason.unwrap_or_default();
         let kind = if state.busy.as_deref() == Some(reason.as_str()) {
             "busy"
+        } else if control == "merge_push" {
+            let live = running_of(&state.runs).is_some() || state.driver_alive;
+            if merge_busy_reason(&conn, &st.jobs, &state.project, live)?.as_deref()
+                == Some(reason.as_str())
+            {
+                "busy"
+            } else {
+                "merge_refused"
+            }
         } else {
             "not_allowed"
         };
@@ -3822,6 +3886,38 @@ pub fn run_control_as(
                 }),
             }
         }
+        "merge_push" => {
+            // The same core as `task merge --push`: fetch, merge --no-ff, push without force,
+            // `git branch -d`. Busy is read again here, after the control check.
+            let live = running_of(&state.runs).is_some() || state.driver_alive;
+            let busy = merge_busy_reason(&conn, &st.jobs, &state.project, live)?;
+            let proj_root = state.project.root();
+            match crate::workspace::merge_push_task(
+                &st.cfg,
+                &state.project,
+                &proj_root,
+                &state.task,
+                busy,
+            )? {
+                Ok(o) => {
+                    let message = o.message();
+                    crate::term::emit(&format!(
+                        "task {task_id}: Merge & push ({}) — {}",
+                        source_label(source),
+                        message.lines().next().unwrap_or("")
+                    ));
+                    Ok(ControlOutcome::MergePushed {
+                        message,
+                        pushed: o.pushed,
+                        push_failed: o.push_failed,
+                    })
+                }
+                Err(reason) => Ok(ControlOutcome::Refused {
+                    reason,
+                    kind: "merge_refused",
+                }),
+            }
+        }
         "run_dev" => {
             if source == ActionSource::Telegram
                 && state.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
@@ -3864,6 +3960,20 @@ fn control_response(o: ControlOutcome) -> Response {
             StatusCode::OK,
             serde_json::json!({
                 "cleaned_up": true,
+                "message": message,
+            }),
+        ),
+        ControlOutcome::MergePushed {
+            message,
+            pushed,
+            push_failed,
+        } => json_resp(
+            StatusCode::OK,
+            serde_json::json!({
+                "ok": true,
+                "merged": true,
+                "pushed": pushed,
+                "push_failed": push_failed,
                 "message": message,
             }),
         ),
@@ -4003,6 +4113,21 @@ async fn post_cleanup_worktree(
         "cleanup_worktree"
     };
     post_control(st, task_id, control, body.rev, None).await
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct MergePushBody {
+    pub rev: Option<String>,
+}
+
+/// Merge & push (`merge_push`): runs synchronously off the async thread, like the other controls.
+async fn post_merge_push(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<MergePushBody>,
+) -> Response {
+    post_control(st, task_id, "merge_push", body.rev, None).await
 }
 
 async fn get_plan_diff(

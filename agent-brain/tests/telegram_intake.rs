@@ -1962,6 +1962,7 @@ fn commands_registered() {
             {"command": "bugs", "description": "Tiến độ bug: /bugs <dự án>"},
             {"command": "deployed", "description": "Đã deploy: /deployed <dự án> <KEY...>"},
             {"command": "reject", "description": "Loại bug: /reject <dự án> <KEY> <lý do>"},
+            {"command": "tim", "description": "Tìm trong nhật ký: /tim <từ khóa>"},
         ]),
         "{:#?}",
         calls[0]

@@ -11,6 +11,7 @@ pub mod detect;
 pub mod fixbug_cmd;
 pub mod forward;
 pub mod intake;
+pub mod journal_cmd;
 pub mod outbox;
 pub mod prompt;
 pub mod render;
@@ -225,7 +226,7 @@ fn poll_thread(ctx: Arc<BotCtx>) {
                 let username = me.get("username").and_then(|u| u.as_str()).unwrap_or("?");
                 status::store().set_connected(username);
                 crate::term::emit_out(&format!("Telegram: đã kết nối (@{username})"));
-                // The `/task` / `/huy` command menu (INTAKE-01): once, a failure is ignored.
+                // The `/task` / `/huy` / `/tim` command menu (INTAKE-01): once, a failure is ignored.
                 let _ = ctx.tx.call(
                     "setMyCommands",
                     &transport::Body::Json(serde_json::json!({"commands": [
@@ -235,6 +236,7 @@ fn poll_thread(ctx: Arc<BotCtx>) {
                         {"command": "bugs", "description": "Tiến độ bug: /bugs <dự án>"},
                         {"command": "deployed", "description": "Đã deploy: /deployed <dự án> <KEY...>"},
                         {"command": "reject", "description": "Loại bug: /reject <dự án> <KEY> <lý do>"},
+                        {"command": "tim", "description": "Tìm trong nhật ký: /tim <từ khóa>"},
                     ]})),
                     20,
                 );

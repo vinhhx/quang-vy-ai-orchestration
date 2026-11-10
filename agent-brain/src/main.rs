@@ -173,6 +173,11 @@ enum Commands {
         #[command(subcommand)]
         subcommand: FixbugCommands,
     },
+    /// Nhật ký công việc sang vault Obsidian
+    Journal {
+        #[command(subcommand)]
+        subcommand: JournalCommands,
+    },
     /// Quản lý phòng ban và thành viên
     Dept {
         #[command(subcommand)]
@@ -203,10 +208,13 @@ enum TaskCommands {
         #[arg(long)]
         yes: bool,
     },
-    /// Merge nhánh task (đã qua QA) vào nhánh gốc trên repo chính (git merge --no-ff, không push)
+    /// Merge nhánh task (đã qua QA) vào nhánh gốc trên repo chính (git merge --no-ff; --push: fetch, merge, push không force, xoá nhánh task)
     Merge {
         /// ID của task
         task_id: i64,
+        /// Merge & push: lấy origin/<nhánh gốc>, checkout nhánh gốc, merge, push lên origin (không force), xoá nhánh task (git branch -d)
+        #[arg(long)]
+        push: bool,
     },
 }
 
@@ -288,6 +296,18 @@ enum FixbugCommands {
         /// Chỉ in cấu hình đề xuất, không ghi file
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum JournalCommands {
+    /// Dựng lại toàn bộ nhật ký từ brain.db, commit và đẩy lên repo vault (--no-push: chỉ ghi vào bản clone để xem diff)
+    Export {
+        #[arg(long)]
+        no_push: bool,
+        /// Cho phép một lần xuất xóa nhiều tệp nhật ký đang có (bỏ qua chốt chặn xóa hàng loạt)
+        #[arg(long)]
+        allow_removals: bool,
     },
 }
 
@@ -492,13 +512,24 @@ fn main() {
                 agent_brain::fixbug::cmd_init(&ctx, &project, dry_run)
             }
         }),
+        Commands::Journal { subcommand } => match subcommand {
+            JournalCommands::Export {
+                no_push,
+                allow_removals,
+            } => agent_brain::journal::cmd_export(&ctx, no_push, allow_removals),
+        },
         Commands::Task { subcommand } => match subcommand {
             TaskCommands::Cleanup {
                 task_id,
                 merged,
                 yes,
             } => agent_brain::workspace::cmd_cleanup(&mut ctx, task_id, merged, yes),
-            TaskCommands::Merge { task_id } => agent_brain::workspace::cmd_merge(&mut ctx, task_id),
+            TaskCommands::Merge { task_id, push: false } => {
+                agent_brain::workspace::cmd_merge(&mut ctx, task_id)
+            }
+            TaskCommands::Merge { task_id, push: true } => {
+                agent_brain::workspace::cmd_merge_push(&mut ctx, task_id)
+            }
         },
         Commands::Dept { subcommand } => match subcommand {
             DeptCommands::List => agent_brain::departments::cmd_list(&ctx),
