@@ -48,7 +48,42 @@ fn check_rel(rel: &str) -> BrainResult<()> {
     Ok(())
 }
 
+/// WR-11: mọi thành phần thư mục đã có giữa `clone_dir` và tệp `rel` là thư mục thật (không
+/// symlink, không tệp). Thành phần chưa có thì `create_dir_all` sẽ tạo thư mục thật.
+fn ancestors_are_real_dirs(clone_dir: &Path, rel: &str) -> bool {
+    let segs: Vec<&str> = rel.split('/').collect();
+    let mut cur = clone_dir.to_path_buf();
+    for seg in &segs[..segs.len().saturating_sub(1)] {
+        cur.push(seg);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_dir() => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Tạo tệp tạm mới (`create_new`: không theo symlink, không ghi vào tệp có sẵn); tệp tạm sót
+/// lại từ lần trước bị xóa (chính nó, không phải đích của nó) rồi tạo lại.
+fn create_tmp(tmp: &Path) -> std::io::Result<std::fs::File> {
+    let open = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)
+    };
+    match open() {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::remove_file(tmp)?;
+            open()
+        }
+        other => other,
+    }
+}
+
 fn write_atomic(target: &Path, text: &str) -> BrainResult<()> {
+    use std::io::Write;
     let dir = target
         .parent()
         .ok_or_else(|| BrainError::error("Nhật ký: đường dẫn tệp không có thư mục cha"))?;
@@ -58,7 +93,11 @@ fn write_atomic(target: &Path, text: &str) -> BrainResult<()> {
         .and_then(|n| n.to_str())
         .ok_or_else(|| BrainError::error("Nhật ký: tên tệp không hợp lệ"))?;
     let tmp = dir.join(format!(".{name}.journal-tmp"));
-    std::fs::write(&tmp, text.as_bytes())?;
+    let written = create_tmp(&tmp).and_then(|mut f| f.write_all(text.as_bytes()));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     if let Err(e) = std::fs::rename(&tmp, target) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
@@ -178,7 +217,15 @@ pub fn apply(clone_dir: &Path, files: &BTreeMap<String, String>) -> BrainResult<
     let mut report = WriteReport::default();
     for (rel, text) in files {
         let target = clone_dir.join(rel);
-        if target.exists() {
+        // WR-11: thư mục cha là symlink (hay tệp) thì ghi sẽ ra ngoài bản clone; chính đích là
+        // symlink hay không phải tệp thường cũng không động tới. Báo như tệp lạ.
+        let target_kind = std::fs::symlink_metadata(&target).map(|m| m.file_type());
+        let odd_target = matches!(&target_kind, Ok(ft) if !ft.is_file());
+        if odd_target || !ancestors_are_real_dirs(clone_dir, rel) {
+            report.foreign.push(rel.clone());
+            continue;
+        }
+        if target_kind.is_ok() {
             let existing = std::fs::read(&target)?;
             if existing == text.as_bytes() {
                 continue;
@@ -377,6 +424,44 @@ mod tests {
         assert!(std::fs::symlink_metadata(dir.path().join("Dự án/lien-ket.md")).is_ok());
         assert!(outside.path().join("ngoai.md").is_file());
         assert!(outside.path().join("sau/trong.md").is_file());
+    }
+
+    #[test]
+    fn symlinked_dir_is_not_written_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Nhật ký")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("Nhật ký/2026")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("x.md"), dir.path().join("Today.md"))
+            .unwrap();
+        let mut files = one_day();
+        files.insert("Today.md".to_string(), marked("hôm nay"));
+        let r = apply(dir.path(), &files).unwrap();
+        assert_eq!(
+            r.foreign,
+            vec![
+                "Nhật ký/2026/01/2026-01-15.md".to_string(),
+                "Today.md".to_string()
+            ]
+        );
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn stale_tmp_symlink_is_replaced_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("victim.txt");
+        std::fs::write(&victim, "giữ nguyên\n").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join(".Today.md.journal-tmp")).unwrap();
+        let mut files = BTreeMap::new();
+        files.insert("Today.md".to_string(), marked("hôm nay"));
+        apply(dir.path(), &files).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "giữ nguyên\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("Today.md")).unwrap(),
+            marked("hôm nay")
+        );
     }
 
     #[test]

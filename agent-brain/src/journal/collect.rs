@@ -104,7 +104,13 @@ pub fn project_file_key(
         }
     };
     if key.is_empty() || taken.contains(&key) {
+        // IN-01: `du-an-{id}` có thể là slug thật của một dự án khác.
         key = format!("du-an-{row_id}");
+        let mut n = 2;
+        while taken.contains(&key) {
+            key = format!("du-an-{row_id}-{n}");
+            n += 1;
+        }
     }
     taken.insert(key.clone());
     key
@@ -362,19 +368,27 @@ pub fn collect<Tz: TimeZone>(
             },
         };
 
-        if !active_days.is_empty() && !active_days.contains(&today) {
+        // Carry-over (WR-07): bỏ task đã kết thúc theo trạng thái của chính nó và việc cũ hơn
+        // `journal.attention_max_days` ngày; danh sách của chính ngày xảy ra thì giữ nguyên.
+        if !active_days.is_empty()
+            && !active_days.contains(&today)
+            && !crate::tasks::is_success_status(&t.status)
+        {
             let (_, today_end) = day_bounds_ms(today, tz);
             if let (Some(li), StatusKind::Attention(kind)) =
                 (last_before(today_end), status_at(today_end).kind)
             {
                 let at = runs[li].ended_at.unwrap_or(runs[li].started_at);
-                carry.push(AttentionItem {
-                    task_id: t.id,
-                    project_slug: project.slug.clone(),
-                    title: title.clone(),
-                    kind,
-                    day: local_day(at, tz).min(today),
-                });
+                let day = local_day(at, tz).min(today);
+                if (today - day).num_days() <= i64::from(cfg.attention_max_days) {
+                    carry.push(AttentionItem {
+                        task_id: t.id,
+                        project_slug: project.slug.clone(),
+                        title: title.clone(),
+                        kind,
+                        day,
+                    });
+                }
             }
         }
 
@@ -541,5 +555,8 @@ mod tests {
         assert_eq!(project_file_key("a..b", "", 5, &mut taken), "du-an-5");
         assert_eq!(project_file_key("foo.", "", 6, &mut taken), "du-an-6");
         assert_eq!(project_file_key("v1.2", "", 7, &mut taken), "v1.2");
+        // IN-01: the fallback key never reuses a taken key.
+        assert_eq!(project_file_key("du-an-9", "", 8, &mut taken), "du-an-9");
+        assert_eq!(project_file_key("", "", 9, &mut taken), "du-an-9-2");
     }
 }

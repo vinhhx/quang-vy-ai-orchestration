@@ -330,7 +330,13 @@ fn render_today(
     out.push_str("\n---\n");
     let mut parts: Vec<String> = Vec::new();
     if let Some(prev) = day_files.iter().rev().find(|d| **d < today) {
-        parts.push(format!("Hôm qua: [[{}]]", prev.format("%Y-%m-%d")));
+        // IN-02: ngày trước đó có việc không nhất thiết là hôm qua.
+        let label = if today.pred_opt() == Some(*prev) {
+            "Hôm qua"
+        } else {
+            "Trước đó"
+        };
+        parts.push(format!("{label}: [[{}]]", prev.format("%Y-%m-%d")));
     }
     if months.contains(&ym(today)) {
         parts.push(format!(
