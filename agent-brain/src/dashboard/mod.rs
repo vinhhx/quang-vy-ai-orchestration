@@ -269,6 +269,7 @@ async fn async_serve(port_flag: Option<u16>) -> i32 {
     );
     let bot = crate::telegram::start(state.clone());
     let _orchestrator = crate::orchestrator::spawn_loop(state.clone());
+    let _journal = crate::journal::loop_::spawn_loop(state.clone());
 
     let signal_fut = async {
         tokio::select! {

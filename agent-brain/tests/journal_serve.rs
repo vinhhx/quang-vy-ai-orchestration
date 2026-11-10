@@ -238,3 +238,182 @@ fn mail_inserted_while_running_is_delivered() {
     assert!(mail_sent_at(&sb, "recovered:1").is_some());
     stop(srv);
 }
+
+// ---------------------------------------------------------------------------
+// Task 3: the serve loop and the daily digest
+// ---------------------------------------------------------------------------
+
+/// `du-an-a` with one task and three finished runs on 2026-01-15 (+07:00); the journal section
+/// points at a fresh bare remote, enabled, with a github.com web base and the digest at 18:00.
+fn loop_fixture(sb: &Sandbox) -> PathBuf {
+    let remote = bare_remote(sb, "vault");
+    let mut section = journal_section(&remote);
+    section["enabled"] = json!(true);
+    section["web_base_url"] = json!(WEB_BASE);
+    section["digest_time"] = json!("18:00");
+    sb.write_config(json!({"journal": section}));
+    let conn = setup_projects(sb, &[("du-an-a", None)]);
+    let task = seed_task(
+        &conn,
+        "du-an-a",
+        "dung-video",
+        "Dựng video giới thiệu sản phẩm mẫu",
+    );
+    seed_proposal(&conn, task, "Dựng video giới thiệu sản phẩm mẫu");
+    for (role, outcome, h, m0, m1) in [
+        ("lead", None, 9, 0, 5),
+        ("dev", None, 9, 10, 30),
+        ("qa", Some("qa:pass"), 9, 31, 40),
+    ] {
+        seed_run(
+            &conn,
+            task,
+            role,
+            "succeeded",
+            outcome,
+            local_ms(2026, 1, 15, h, m0, 0),
+            Some(local_ms(2026, 1, 15, h, m1, 0)),
+            Some(1),
+        );
+    }
+    remote
+}
+
+fn is_digest(t: &str) -> bool {
+    t.starts_with("Nhật ký Thứ Năm 15/01/2026:")
+}
+
+#[test]
+fn digest_once_after_push() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    let remote = loop_fixture(&sb);
+    let now = local_ms(2026, 1, 15, 18, 30, 0).to_string();
+
+    let srv = tg.serve(&sb, &[(NOW_ENV, now.as_str())]);
+    let msg = wait_message(&tg, &srv, 20, "starting with the digest header", is_digest);
+    let text = text_of(&msg).to_string();
+    assert!(text.ends_with(DAY_LINK), "{text}");
+    assert!(
+        text.lines().nth(1).unwrap_or("").contains("Công việc 1"),
+        "{text}"
+    );
+    assert_eq!(remote_commits(&sb, &remote).len(), 1);
+    assert!(mail_sent_at(&sb, "digest:2026-01-15").is_some());
+    let ticks = loop_ticks(&sb);
+    assert!(ticks >= 1, "loop_ticks = {ticks}");
+    stop(srv);
+
+    let srv2 = tg.serve(&sb, &[(NOW_ENV, now.as_str())]);
+    assert!(
+        wait_until(Duration::from_secs(20), || loop_ticks(&sb) > ticks),
+        "loop_ticks did not grow after the restart; stderr:\n{}",
+        stderr_of(&srv2)
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(
+        messages(&tg, is_digest).len(),
+        1,
+        "digest sent again after the restart"
+    );
+    assert_eq!(remote_commits(&sb, &remote).len(), 1);
+    assert_eq!(mail_count(&sb, "kind = 'digest'"), 1);
+    stop(srv2);
+}
+
+#[test]
+fn no_digest_before_digest_time() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    let remote = loop_fixture(&sb);
+    let now = local_ms(2026, 1, 15, 17, 30, 0).to_string();
+
+    let srv = tg.serve(&sb, &[(NOW_ENV, now.as_str())]);
+    assert!(
+        wait_until(Duration::from_secs(30), || loop_ticks(&sb) >= 1
+            && remote_commits(&sb, &remote).len() == 1),
+        "no export before the digest time; stderr:\n{}",
+        stderr_of(&srv)
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(mail_count(&sb, "kind = 'digest'"), 0);
+    assert!(
+        messages(&tg, is_digest).is_empty(),
+        "{:#?}",
+        tg.calls("sendMessage")
+    );
+    stop(srv);
+}
+
+#[test]
+fn no_digest_when_push_fails() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    let missing = sb.root.join("does-not-exist.git");
+    let mut section = journal_section(&missing);
+    section["enabled"] = json!(true);
+    section["web_base_url"] = json!(WEB_BASE);
+    sb.write_config(json!({"journal": section}));
+    let conn = setup_projects(&sb, &[("du-an-a", None)]);
+    let task = seed_task(
+        &conn,
+        "du-an-a",
+        "dung-video",
+        "Dựng video giới thiệu sản phẩm mẫu",
+    );
+    seed_run(
+        &conn,
+        task,
+        "dev",
+        "succeeded",
+        None,
+        local_ms(2026, 1, 15, 9, 10, 0),
+        Some(local_ms(2026, 1, 15, 9, 30, 0)),
+        Some(1),
+    );
+    let now = local_ms(2026, 1, 15, 18, 30, 0).to_string();
+
+    let srv = tg.serve(&sb, &[(NOW_ENV, now.as_str())]);
+    assert!(
+        wait_until(Duration::from_secs(30), || loop_ticks(&sb) >= 1),
+        "loop never ticked; stderr:\n{}",
+        stderr_of(&srv)
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(mail_count(&sb, "dedupe_key = 'digest:2026-01-15'"), 0);
+    assert!(
+        messages(&tg, |t| t.starts_with("Nhật ký Thứ Năm")).is_empty(),
+        "{:#?}",
+        tg.calls("sendMessage")
+    );
+    assert!(
+        state_value(&sb, agent_brain::journal::state::KEY_LAST_EXPORT_MS).is_some(),
+        "the failed export was not recorded"
+    );
+    stop(srv);
+}
+
+#[test]
+fn loop_disabled_by_default() {
+    let sb = Sandbox::new();
+    let tg = FakeTelegram::start(&sb);
+    write_config(&sb, PAIRED_CHAT, 0o600);
+    let remote = bare_remote(&sb, "vault");
+    sb.write_config(json!({"journal": journal_section(&remote)}));
+    let _conn = setup_projects(&sb, &[("du-an-a", None)]);
+    let now = local_ms(2026, 1, 15, 18, 30, 0).to_string();
+
+    let srv = tg.serve(&sb, &[(NOW_ENV, now.as_str())]);
+    wait_polling(&tg, &srv);
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        !clone_dir(&sb).exists(),
+        "serve cloned the vault although journal.enabled is absent"
+    );
+    assert_eq!(state_value(&sb, "loop_ticks"), None);
+    assert!(remote_commits(&sb, &remote).is_empty());
+    stop(srv);
+}
