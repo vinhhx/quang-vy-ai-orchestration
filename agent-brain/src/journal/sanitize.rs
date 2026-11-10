@@ -10,7 +10,8 @@ use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 
 /// Dấu câu được giữ lại (ngoài chữ, số, khoảng trắng và `…`). Mọi ký tự khác, trong đó có
-/// `[ ] ! # ` < > | * ~ = % $ ^ { } @ / \`, thành khoảng trắng.
+/// `[ ] ! # ` < > | * ~ = % $ ^ { } @ \`, thành khoảng trắng. Dấu `/` chỉ được giữ khi đứng giữa
+/// hai ký tự chữ/số và từ chứa nó không phải đường dẫn (`CI/CD`, `15/01`); xem `is_path_token`.
 pub const ALLOWED_PUNCT: &str = ".,;:()&+-_'\"?";
 
 const ELLIPSIS: char = '…';
@@ -112,15 +113,74 @@ static RE_SHAPES: LazyLock<Regex> =
 static RE_IPV4: LazyLock<Regex> = LazyLock::new(|| {
     re(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b|(?i:\blocalhost(?::\d{1,5})?\b)")
 });
-static RE_HOST: LazyLock<Regex> = LazyLock::new(|| {
-    re(
-        r"(?i)\b(?:[a-z0-9-]+\.)+(?:com|net|org|vn|io|dev|app|local|internal|lan|corp|test|cloud|xyz|info|biz)(?::\d{1,5})?\b",
-    )
-});
+/// Tên máy chủ (WR-05). Luật: một chuỗi là máy chủ khi có ít nhất hai nhãn cách nhau bằng dấu
+/// chấm, nhãn cuối chỉ gồm chữ cái và dài từ 2 ký tự (TLD nào cũng được, không còn danh sách ngắn),
+/// kèm `:cổng` tùy chọn. Không coi là máy chủ: số phiên bản (`v1.2`, nhãn cuối là số), nhãn cuối
+/// một chữ cái (`e.g`, `i.e`, `a.b`) và tên tệp có đúng một dấu chấm với đuôi quen thuộc
+/// (`node.js`, `report.pdf`, xem `FILE_EXTENSIONS`; chỉ khi không có cổng). Dương tính giả đã biết:
+/// `ASP.NET`, `Dr.Smith`, hai câu dính nhau thiếu khoảng trắng sau dấu chấm (`xong.Sau`), tên tệp
+/// nhiều dấu chấm (`jquery.min.js`). Âm tính giả đã biết: tên miền một dấu chấm có TLD trùng
+/// đuôi tệp (`intranet.sh`, `corp.rs`). Che nhầm an toàn hơn để lọt máy chủ nội bộ (D-03).
+static RE_HOST: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d{1,5})?\b"));
+/// Đuôi tệp thường gặp: tên chỉ có một dấu chấm với các đuôi này không bị coi là máy chủ.
+const FILE_EXTENSIONS: &[&str] = &[
+    "js", "ts", "tsx", "jsx", "mjs", "py", "php", "rs", "go", "rb", "java", "kt", "md", "txt",
+    "json", "yml", "yaml", "toml", "ini", "cfg", "conf", "html", "css", "svg", "pdf", "png", "jpg",
+    "jpeg", "gif", "ico", "csv", "sql", "log", "sh", "lock", "xml", "doc", "docx", "xls", "xlsx",
+    "ppt", "pptx", "gz", "tmp", "bak",
+];
+
+/// `true` khi khớp của `RE_HOST` là một máy chủ cần che (xem chú thích của `RE_HOST`).
+fn is_host_match(m: &str) -> bool {
+    if m.contains(':') {
+        return true;
+    }
+    let lower = m.to_lowercase();
+    let mut labels = lower.split('.');
+    let first = labels.next().unwrap_or("");
+    let rest: Vec<&str> = labels.collect();
+    let single_dot = rest.len() == 1;
+    let last = rest.last().copied().unwrap_or(first);
+    !(single_dot && FILE_EXTENSIONS.contains(&last))
+}
+
 static RE_WIN_PATH: LazyLock<Regex> = LazyLock::new(|| re(r"\b[A-Za-z]:\\\S*"));
 static RE_HOME_PATH: LazyLock<Regex> = LazyLock::new(|| re(r"~/\S*"));
 static RE_ABS_PATH: LazyLock<Regex> = LazyLock::new(|| re(r#"(^|[\s(\["'=,;])/\S+"#));
+/// Mọi từ có dấu `/` ở giữa; `is_path_token` quyết định đó có phải đường dẫn (WR-06).
 static RE_REL_PATH: LazyLock<Regex> = LazyLock::new(|| re(r"\S*[^\s/]/+[^\s/]\S*"));
+
+/// Một vế của cặp một dấu `/` còn được giữ: chữ cái tối đa 6 ký tự (`CI`, `CD`, `và`, `hoặc`) hoặc
+/// số tối đa 4 chữ số (`24`, `7`, `2026`).
+fn is_short_side(s: &str) -> bool {
+    let n = s.chars().count();
+    n > 0
+        && ((n <= 6 && s.chars().all(char::is_alphabetic))
+            || (n <= 4 && s.chars().all(|c| c.is_ascii_digit())))
+}
+
+/// `true` khi từ có dấu `/` là đường dẫn cần che (WR-06). Không phải đường dẫn (giữ nguyên): đúng
+/// một dấu `/` giữa hai vế ngắn (`CI/CD`, `I/O`, `A/B`, `và/hoặc`, `24/7`, `50/50`, `15/01`), hoặc
+/// ngày kiểu `15/01/2026` (hai dấu, ba số). Còn lại là đường dẫn: từ hai dấu `/` trở lên, có đuôi
+/// tệp (`a/b.php`), có vế dài hoặc lẫn ký tự khác (`task/sua-loi-dang-nhap`, `./a`, `C:/x`).
+/// Đường bắt đầu bằng `/`, `~` hay ổ đĩa đã bị các luật trước che. Dương tính giả/âm tính giả đã
+/// biết: `src/app` (hai vế ngắn) được giữ; `v1/v2` (lẫn chữ và số) bị che.
+fn is_path_token(token: &str) -> bool {
+    let core = token
+        .trim_start_matches(['(', '[', '{', '"', '\'', '`'])
+        .trim_end_matches([')', ']', '}', '"', '\'', '`', '.', ',', ';', ':', '!', '?']);
+    let slashes = core.matches('/').count();
+    match slashes {
+        1 => core
+            .split_once('/')
+            .is_none_or(|(a, b)| !(is_short_side(a) && is_short_side(b))),
+        2 => !core
+            .split('/')
+            .all(|p| !p.is_empty() && p.len() <= 4 && p.chars().all(|c| c.is_ascii_digit())),
+        _ => true,
+    }
+}
 static RE_ENV_NAME: LazyLock<Regex> = LazyLock::new(|| re(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b"));
 static RE_BLOB: LazyLock<Regex> = LazyLock::new(|| re(r"[A-Za-z0-9+/=_-]{24,}"));
 
@@ -143,13 +203,29 @@ fn replace_secret_shapes(text: String, link: &str, email: &str, hidden: &str) ->
 fn replace_patterns(text: String) -> String {
     let t = replace_secret_shapes(text, WORD_LINK, WORD_EMAIL, WORD_HIDDEN);
     let t = sub(&RE_IPV4, t, WORD_ADDR);
-    let t = sub(&RE_HOST, t, WORD_ADDR);
+    let t = RE_HOST
+        .replace_all(&t, |c: &regex::Captures| {
+            if is_host_match(&c[0]) {
+                WORD_ADDR.to_string()
+            } else {
+                c[0].to_string()
+            }
+        })
+        .into_owned();
     let t = sub(&RE_WIN_PATH, t, WORD_PATH);
     let t = sub(&RE_HOME_PATH, t, WORD_PATH);
     let t = RE_ABS_PATH
         .replace_all(&t, |c: &regex::Captures| format!("{}{WORD_PATH}", &c[1]))
         .into_owned();
-    let t = sub(&RE_REL_PATH, t, WORD_PATH);
+    let t = RE_REL_PATH
+        .replace_all(&t, |c: &regex::Captures| {
+            if is_path_token(&c[0]) {
+                WORD_PATH.to_string()
+            } else {
+                c[0].to_string()
+            }
+        })
+        .into_owned();
     let t = sub(&RE_ENV_NAME, t, WORD_HIDDEN);
     RE_BLOB
         .replace_all(&t, |c: &regex::Captures| {
@@ -209,10 +285,23 @@ pub fn sanitize_text(raw: &str, max_chars: usize, secrets: &[String]) -> SafeTex
     }
     let redacted = crate::secrets::redact_str(&one_line, secrets);
     let replaced = replace_patterns(redacted);
-    let allowed: String = replaced
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == ' ' || c == ELLIPSIS || ALLOWED_PUNCT.contains(c) {
+    // `/` chỉ còn ở giữa hai ký tự chữ/số (`CI/CD`, `15/01`): các từ như vậy đã qua `is_path_token`.
+    // Dấu `/` đầu, cuối hay đứng đôi không bao giờ qua được.
+    let chars: Vec<char> = replaced.chars().collect();
+    let allowed: String = chars
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            let inner_slash = c == '/'
+                && i > 0
+                && chars[i - 1].is_alphanumeric()
+                && chars.get(i + 1).is_some_and(|n| n.is_alphanumeric());
+            if c.is_alphanumeric()
+                || c == ' '
+                || c == ELLIPSIS
+                || ALLOWED_PUNCT.contains(c)
+                || inner_slash
+            {
                 c
             } else {
                 ' '
@@ -597,6 +686,145 @@ Tháng: [[2026-01]]\n";
         );
         let rules: Vec<&str> = hits.iter().map(|h| h.1.as_str()).collect();
         assert_eq!(rules, vec!["known-value", "url"]);
+    }
+
+    #[test]
+    fn hosts_of_any_alphabetic_tld_are_redacted() {
+        for host in [
+            "git.example.co",
+            "jira.example.ai",
+            "wiki.example.me",
+            "intranet.example.tech",
+            "host.corp.site",
+            "x.example.uk",
+            "x.example.de",
+            "x.example.edu.vn",
+            "wiki.example.online:8443",
+            "Intranet.Example.CO",
+        ] {
+            let out = clean(&format!("mở {host} xem"));
+            assert_eq!(out, "mở (địa chỉ) xem", "{host} -> {out}");
+        }
+    }
+
+    #[test]
+    fn non_hosts_survive() {
+        for raw in [
+            "viết bằng node.js và Vue.js",
+            "bản v1.2 và 2.5.1",
+            "ví dụ e.g. như vậy, i.e. thế",
+            "gửi report.pdf và ảnh logo.png",
+            "sửa a.b cho đúng",
+            "sửa config.php và main.rs",
+            "giá 3.5 triệu",
+        ] {
+            assert_eq!(clean(raw), raw, "{raw}");
+        }
+        // a port makes even a file-looking name a host
+        assert_eq!(clean("chạy node.js:3000 rồi"), "chạy (địa chỉ) rồi");
+    }
+
+    #[test]
+    fn single_slash_text_survives() {
+        for raw in [
+            "Họp ngày 15/01 về dự án",
+            "Trực 24/7 cho khách",
+            "Chia 50/50 chi phí",
+            "Cấu hình CI/CD mới",
+            "Kiểm tra I/O đĩa",
+            "Chạy thử A/B cho trang chủ",
+            "Chọn email và/hoặc điện thoại",
+            "Hạn 15/01/2026 chốt",
+            "Làm xong (CI/CD), rồi nghỉ.",
+        ] {
+            assert_eq!(clean(raw), raw, "{raw}");
+        }
+    }
+
+    #[test]
+    fn real_paths_are_still_redacted() {
+        for (raw, banned) in [
+            ("xem /etc/x nhé", "etc"),
+            ("xem ~/a nhé", "~"),
+            ("xem ./a/b nhé", "./"),
+            ("xem ../a nhé", ".."),
+            (r"xem C:\x\y nhé", "C:"),
+            ("xem src/app/config.php nhé", "config"),
+            ("xem a/b.php nhé", "b.php"),
+            ("xem task/sua-loi-dang-nhap nhé", "sua-loi"),
+            ("xem (src/app/config.php) nhé", "config"),
+            ("xem a//b nhé", "a//b"),
+            ("xem 1/2/3/4 nhé", "1/2"),
+        ] {
+            let out = clean(raw);
+            assert!(out.contains("(đường dẫn)"), "{raw} -> {out}");
+            assert!(!out.contains(banned), "{raw} -> {out}");
+            assert!(!out.contains('/'), "{raw} -> {out}");
+        }
+    }
+
+    #[test]
+    fn date_survives_beside_path_and_url() {
+        let out = clean(
+            "ngày 15/01 sửa /home/someone/app/config.php rồi mở https://intranet.example.co/x?token=abc \
+             và git.example.co, hạn 24/7",
+        );
+        assert_eq!(
+            out,
+            "ngày 15/01 sửa (đường dẫn) rồi mở (liên kết) và (địa chỉ), hạn 24/7"
+        );
+    }
+
+    #[test]
+    fn slash_never_survives_at_the_edge_or_doubled() {
+        for raw in ["a/ b", "a /b", "src/", "a // b", "//x", "x//", "/"] {
+            let out = clean(raw);
+            assert!(!out.contains('/'), "{raw} -> {out}");
+        }
+        assert_eq!(clean("a/b"), "a/b");
+    }
+
+    #[test]
+    fn relaxed_rules_keep_secret_and_code_handling() {
+        // known secret still replaced first, even when it sits inside a slash/host-looking word
+        let secret = "khoa-bi-mat-12345".to_string();
+        let out = sanitize_text(
+            &format!("15/01 dùng {secret}/x và host.example.me"),
+            140,
+            &[secret.clone()],
+        );
+        assert!(!out.as_str().contains("khoa-bi-mat"), "{out}");
+        assert!(out.as_str().starts_with("15/01 dùng "), "{out}");
+        assert!(!out.as_str().contains("example"), "{out}");
+        // diff / fence / PEM cut still happens before the allow-list, one line, length cut last
+        assert_eq!(
+            clean("Sửa CI/CD\ndiff --git a/x.php b/x.php\n+x"),
+            "Sửa CI/CD (đã bỏ phần mã)"
+        );
+        assert_eq!(clean("Họp 15/01\n```\nx\n```"), "Họp 15/01 (đã bỏ phần mã)");
+        assert_eq!(
+            clean("Mã 24/7\n-----BEGIN KEY-----\nabc"),
+            "Mã 24/7 (đã ẩn)"
+        );
+        let long = "CI/CD ".repeat(60);
+        let cut = sanitize_text(&long, 40, &[]);
+        assert!(cut.as_str().chars().count() <= 40, "{cut}");
+        assert!(cut.as_str().ends_with('…'), "{cut}");
+        // markup next to a slash word is still neutralized
+        let out = clean("[[CI/CD]] #tag `A/B` <b>I/O</b>");
+        for bad in ["[", "]", "#", "`", "<", ">"] {
+            assert!(!out.contains(bad), "{bad} in {out}");
+        }
+        // a word still wrapped in an HTML tag has two slashes and is treated as a path (safe side)
+        assert_eq!(out, "CI/CD tag A/B (đường dẫn)");
+    }
+
+    #[test]
+    fn gate_accepts_slash_words_in_day_text() {
+        let body =
+            "# Thứ Năm 15/01/2026\n> [!success]- ✓ du-an-a — Cấu hình CI/CD ngày 15/01 24/7\n";
+        let hits = gate(&[("Nhật ký/2026/01/2026-01-15.md", body.to_string())], &[]);
+        assert!(hits.is_empty(), "{hits:?}");
     }
 
     #[test]
