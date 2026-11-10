@@ -465,6 +465,14 @@ Plans:
 **Wave 12** *(blocked on Wave 11 completion)*
 - [ ] 06-19-PLAN.md — Live check on the engine list, schema v4 dry run on a copy of brain.db, README, LIVE-CHECKS § 8, phase gate (wave 12)
 
+**Gap closure (06-VERIFICATION.md gaps, 2026-11-10)** — gap wave 1
+- [ ] 06-27-PLAN.md — HUM-02 / CR-01: `human done` (Xong) retry-safe after a failure past the merge, offline retry, newer pushes (gap wave 1)
+- [ ] 06-28-PLAN.md — ENG-11 / D-40: one readiness predicate; `chưa kiểm` runnable at team refusal, quota re-run, project pin, department member (gap wave 1)
+
+**Gap closure** — gap wave 2 *(blocked on 06-28)*
+- [ ] 06-29-PLAN.md — ENG-11 / QUOTA-01: `chưa kiểm` mark on quota re-run choices (Telegram buttons + confirm, dashboard dialog), UI-SPEC delta (gap wave 2)
+- [ ] 06-30-PLAN.md — D-16 / WR-03: `phong-ban` stops with a message when a department has members but none usable or the pick errors (gap wave 2)
+
 ### Phase 06.2: UI/UX Fixes from Live Demo (INSERTED)
 
 **Goal:** Fix the UI/UX problems the user finds while using the dashboard live on the Phase 5 and 6 screens (Cài đặt, Giao việc, task screen, Thống kê, work board). Each problem is a small task, logged as the user reports it and fixed one by one; nothing here changes engines, schema or the run protocol.
