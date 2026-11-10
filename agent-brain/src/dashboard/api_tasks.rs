@@ -2806,6 +2806,8 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "plan_diff_summary": state.plan_diff_summary,
             "workdir": task.workdir,
             "workdir_merged": task.workdir.is_some() && worktree_merged(project, task),
+            // Base branch Merge & push merges into (task, project, else merge.default_base_branch).
+            "merge_base": crate::workspace::merge_push_base(&st.cfg, project, task),
         });
 
         Ok((
