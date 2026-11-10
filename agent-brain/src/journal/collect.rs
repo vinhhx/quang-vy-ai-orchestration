@@ -6,7 +6,9 @@
 //! tệp plan hay báo cáo (D-03).
 
 use super::config::{journal_group_of, JournalConfig};
-use super::model::{AttentionKind, DayStatus, Model, ProjectRef, StatusKind, TaskDay};
+use super::model::{
+    AttentionItem, AttentionKind, DayStatus, Model, ProjectRef, StatusKind, TaskDay,
+};
 use super::sanitize::sanitize_text;
 use crate::db::RunRow;
 use crate::error::BrainResult;
@@ -96,51 +98,105 @@ struct TaskFacts {
     slug: String,
     request: String,
     status: String,
+    approved_at: Option<i64>,
 }
 
-fn day_status(last: &RunRow, is_last_overall: bool, task_status: &str) -> DayStatus {
-    let (key, _) = crate::dashboard::taskstate::step_state(Some(last));
-    let task_done = is_last_overall && crate::tasks::SUCCESS_STATUSES.contains(&task_status);
+/// Các sự kiện của run cuối cùng (L) mà `classify_as_of` cần.
+#[derive(Debug, Clone, Copy)]
+pub struct LastRun<'a> {
+    pub role: &'a str,
+    pub status: &'a str,
+    pub outcome: Option<&'a str>,
+    pub started_at: i64,
+}
+
+impl<'a> LastRun<'a> {
+    pub fn from_row(r: &'a RunRow) -> Self {
+        LastRun {
+            role: r.role.as_str(),
+            status: r.status.as_str(),
+            outcome: r.outcome.as_deref(),
+            started_at: r.started_at,
+        }
+    }
+}
+
+/// Trạng thái của một task tại cuối ngày (D-16, RESEARCH §1): phân loại run cuối `last` (L) theo
+/// đúng thứ tự ưu tiên. Thuần: chỉ nhận các sự kiện của run, mốc duyệt plan (`approvals`, epoch
+/// ms), trạng thái task, L có phải run cuối cùng của task không, và thời điểm kết thúc ngày.
+pub fn classify_as_of(
+    last: &LastRun<'_>,
+    approvals: &[i64],
+    task_status: &str,
+    is_last_overall: bool,
+    day_end_ms: i64,
+) -> DayStatus {
     let attention = |k: AttentionKind| DayStatus {
         kind: StatusKind::Attention(k),
         label: k.label().to_string(),
     };
-    match key {
-        "xong" => DayStatus {
-            kind: StatusKind::Done,
-            label: if matches!(last.role.as_str(), "analyst" | "analysis-review") {
-                "đã trả lời".to_string()
-            } else {
-                "xong".to_string()
-            },
-        },
-        _ if task_done && last.status != "running" => DayStatus {
-            kind: StatusKind::Done,
-            label: if matches!(last.role.as_str(), "analyst" | "analysis-review") {
-                "đã trả lời".to_string()
-            } else {
-                "xong".to_string()
-            },
-        },
-        "het_quota" => attention(AttentionKind::Quota),
-        "moi_truong" => attention(AttentionKind::EnvDown),
-        "can_sua" => attention(AttentionKind::QaFix),
-        "vuong_mac" => attention(AttentionKind::Blocked),
-        "vi_pham" => attention(AttentionKind::ProtocolViolation),
-        "loi" if last.status == "timed_out" => attention(AttentionKind::Timeout),
-        "loi" => attention(AttentionKind::Failed),
-        "killed" => DayStatus {
-            kind: StatusKind::Stopped,
-            label: "đã dừng".to_string(),
-        },
-        "dang_chay" => DayStatus {
-            kind: StatusKind::Running,
-            label: "đang chạy".to_string(),
-        },
-        _ => DayStatus {
-            kind: StatusKind::Active,
-            label: "đang làm".to_string(),
-        },
+    let done = |label: &str| DayStatus {
+        kind: StatusKind::Done,
+        label: label.to_string(),
+    };
+    let outcome = last.outcome.unwrap_or("");
+    if outcome == crate::quota::OUTCOME_QUOTA {
+        return attention(AttentionKind::Quota);
+    }
+    if outcome == crate::preflight::OUTCOME_ENV_DOWN {
+        return attention(AttentionKind::EnvDown);
+    }
+    if outcome == "protocol_violation" {
+        return attention(AttentionKind::ProtocolViolation);
+    }
+    if matches!(outcome, "dev:blocked" | "agy:empty" | "dsh:empty") {
+        return attention(AttentionKind::Blocked);
+    }
+    if outcome == "qa:fix" {
+        return attention(AttentionKind::QaFix);
+    }
+    match last.status {
+        "killed" => {
+            return DayStatus {
+                kind: StatusKind::Stopped,
+                label: "đã dừng".to_string(),
+            }
+        }
+        "running" => {
+            return DayStatus {
+                kind: StatusKind::Running,
+                label: "đang chạy".to_string(),
+            }
+        }
+        "timed_out" => return attention(AttentionKind::Timeout),
+        "failed" | "lost" => return attention(AttentionKind::Failed),
+        _ => {}
+    }
+    let succeeded = last.status == "succeeded";
+    if outcome == "qa:pass" {
+        return done("xong");
+    }
+    if succeeded
+        && matches!(last.role, "analyst" | "analysis-review")
+        && outcome != "analyst:invalid"
+    {
+        return done("đã trả lời");
+    }
+    if succeeded
+        && matches!(last.role, "lead" | "plan-review")
+        && matches!(outcome, "" | "review:approve" | "review:pass")
+        && !approvals
+            .iter()
+            .any(|&a| a >= last.started_at && a < day_end_ms)
+    {
+        return attention(AttentionKind::PlanWaiting);
+    }
+    if is_last_overall && crate::tasks::SUCCESS_STATUSES.contains(&task_status) {
+        return done("xong");
+    }
+    DayStatus {
+        kind: StatusKind::Active,
+        label: "đang làm".to_string(),
     }
 }
 
@@ -185,10 +241,24 @@ pub fn collect<Tz: TimeZone>(
                 slug: r.get(2)?,
                 request: r.get(3)?,
                 status: r.get(4)?,
+                approved_at: r.get(5)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()?
     };
+
+    // Mốc duyệt plan của từng task (D-16): `plan_approvals.approved_at` (cộng `tasks.approved_at`).
+    let mut approvals: HashMap<i64, Vec<i64>> = HashMap::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT task_id, approved_at FROM plan_approvals ORDER BY task_id, approved_at",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        for row in rows {
+            let (task_id, at) = row?;
+            approvals.entry(task_id).or_default().push(at);
+        }
+    }
 
     let mut proposal_titles: HashMap<i64, String> = HashMap::new();
     {
@@ -204,6 +274,7 @@ pub fn collect<Tz: TimeZone>(
 
     let mut days: BTreeMap<NaiveDate, Vec<TaskDay>> = BTreeMap::new();
     let mut used_projects: BTreeSet<String> = BTreeSet::new();
+    let mut carry: Vec<AttentionItem> = Vec::new();
 
     for t in &tasks {
         let Some(project) = project_refs.get(&t.project_id) else {
@@ -240,11 +311,59 @@ pub fn collect<Tz: TimeZone>(
         }
         let request = sanitize_text(&t.request, cfg.title_max_chars, secrets);
 
-        for (day, idx) in by_day {
+        // Mốc duyệt plan là hoạt động (D-16): ngày có duyệt cũng là ngày của task.
+        let mut appr: Vec<i64> = approvals.get(&t.id).cloned().unwrap_or_default();
+        if let Some(a) = t.approved_at {
+            appr.push(a);
+        }
+        appr.sort_unstable();
+        appr.dedup();
+        let mut appr_by_day: BTreeMap<NaiveDate, i64> = BTreeMap::new();
+        for &a in &appr {
+            let d = local_day(a, tz);
+            if d <= today {
+                appr_by_day.entry(d).or_insert(a);
+            }
+        }
+        let mut active_days: BTreeSet<NaiveDate> = by_day.keys().copied().collect();
+        active_days.extend(appr_by_day.keys().copied());
+
+        // L(D): run cuối của task bắt đầu trước hết ngày D.
+        let last_before = |end_ms: i64| runs.iter().rposition(|r| r.started_at < end_ms);
+        let status_at = |end_ms: i64| match last_before(end_ms) {
+            Some(li) => classify_as_of(
+                &LastRun::from_row(&runs[li]),
+                &appr,
+                &t.status,
+                li == runs.len() - 1,
+                end_ms,
+            ),
+            None => DayStatus {
+                kind: StatusKind::Active,
+                label: "đang làm".to_string(),
+            },
+        };
+
+        if !active_days.is_empty() && !active_days.contains(&today) {
+            let (_, today_end) = day_bounds_ms(today, tz);
+            if let (Some(li), StatusKind::Attention(kind)) =
+                (last_before(today_end), status_at(today_end).kind)
+            {
+                let at = runs[li].ended_at.unwrap_or(runs[li].started_at);
+                carry.push(AttentionItem {
+                    task_id: t.id,
+                    project_slug: project.slug.clone(),
+                    title: title.clone(),
+                    kind,
+                    day: local_day(at, tz).min(today),
+                });
+            }
+        }
+
+        for day in active_days {
+            let idx: Vec<usize> = by_day.get(&day).cloned().unwrap_or_default();
             let (_, day_end) = day_bounds_ms(day, tz);
-            let last_i = *idx.last().expect("ngày có ít nhất một run");
-            let last = &runs[last_i];
-            let status = day_status(last, last_i == runs.len() - 1, &t.status);
+            let status = status_at(day_end);
 
             let rounds = runs
                 .iter()
@@ -266,7 +385,12 @@ pub fn collect<Tz: TimeZone>(
                 .iter()
                 .filter_map(|&i| runs[i].ended_at.map(|e| (e - runs[i].started_at).max(0)))
                 .sum();
-            let first_run_ms = idx.iter().map(|&i| runs[i].started_at).min().unwrap_or(0);
+            let first_run_ms = idx
+                .iter()
+                .map(|&i| runs[i].started_at)
+                .min()
+                .or_else(|| appr_by_day.get(&day).copied())
+                .unwrap_or(0);
 
             used_projects.insert(project.slug.clone());
             days.entry(day).or_default().push(TaskDay {
@@ -287,10 +411,33 @@ pub fn collect<Tz: TimeZone>(
 
     tx.finish()?;
 
+    // Mục cần xử lý của từng ngày = các task hoạt động trong ngày có trạng thái Attention;
+    // riêng hôm nay thêm các việc cũ chưa giải quyết (carry-over, D-16).
+    let mut attention: BTreeMap<NaiveDate, Vec<AttentionItem>> = BTreeMap::new();
+    for (day, tasks) in &days {
+        for t in tasks {
+            if let StatusKind::Attention(kind) = t.status.kind {
+                attention.entry(*day).or_default().push(AttentionItem {
+                    task_id: t.task_id,
+                    project_slug: t.project.slug.clone(),
+                    title: t.title.clone(),
+                    kind,
+                    day: *day,
+                });
+            }
+        }
+    }
+    if !carry.is_empty() {
+        attention.entry(today).or_default().extend(carry);
+    }
+    for items in attention.values_mut() {
+        items.sort_by_key(|i| (i.kind.category(), i.day, i.task_id));
+    }
+
     Ok(Model {
         today,
         days,
-        attention: BTreeMap::new(),
+        attention,
         groups: cfg.groups.clone(),
         project_slugs: used_projects.into_iter().collect(),
     })
@@ -322,6 +469,44 @@ mod tests {
         assert_eq!(end, ms(&tz, 2026, 1, 16, 0, 0, 0));
         assert!(late >= start && late < end);
         assert!(early >= end);
+    }
+
+    fn kind_of(role: &str, status: &str, outcome: Option<&str>, approvals: &[i64]) -> StatusKind {
+        let last = LastRun {
+            role,
+            status,
+            outcome,
+            started_at: 1_000,
+        };
+        classify_as_of(&last, approvals, "open", true, 10_000).kind
+    }
+
+    #[test]
+    fn quota_precedes_failed_and_violation_precedes_gate() {
+        assert_eq!(
+            kind_of("dev", "failed", Some("quota"), &[]),
+            StatusKind::Attention(AttentionKind::Quota)
+        );
+        assert_eq!(
+            kind_of("lead", "succeeded", Some("protocol_violation"), &[]),
+            StatusKind::Attention(AttentionKind::ProtocolViolation)
+        );
+        assert_eq!(
+            kind_of("lead", "succeeded", None, &[]),
+            StatusKind::Attention(AttentionKind::PlanWaiting)
+        );
+        // Duyệt sau khi run bắt đầu (trước hết ngày) → không còn chờ duyệt.
+        assert_eq!(
+            kind_of("lead", "succeeded", None, &[2_000]),
+            StatusKind::Active
+        );
+        // Duyệt sau hết ngày thì chưa tính.
+        assert_eq!(
+            kind_of("lead", "succeeded", None, &[10_000]),
+            StatusKind::Attention(AttentionKind::PlanWaiting)
+        );
+        // Run bị dừng không phải việc cần xử lý.
+        assert_eq!(kind_of("dev", "killed", None, &[]), StatusKind::Stopped);
     }
 
     #[test]
