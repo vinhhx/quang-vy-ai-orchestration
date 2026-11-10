@@ -251,13 +251,276 @@ fn rev(ctx: &GitCtx, dir: &Path, r: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Bảo đảm có bản clone ở `cfg.clone_dir` (clone khi chưa có). Đồng bộ với remote, dọn tệp
-/// dở dang và xử lý xung đột là phần của 07-05.
+/// Tệp trong `.git/` ghi loại lỗi của lần `fetch` gần nhất (xóa khi `fetch`/`push` thành công):
+/// khi không có gì để đẩy, remote không với tới vẫn là một lần đẩy thất bại (D-10).
+const FETCH_FAILED_FILE: &str = "agent-brain-journal-fetch-failed";
+
+fn category_code(c: FailCategory) -> &'static str {
+    match c {
+        FailCategory::Network => "network",
+        FailCategory::SshAuth => "ssh",
+        FailCategory::Rejected => "rejected",
+        FailCategory::Timeout => "timeout",
+        FailCategory::Other => "other",
+    }
+}
+
+fn category_of_code(s: &str) -> FailCategory {
+    match s.trim() {
+        "network" => FailCategory::Network,
+        "ssh" => FailCategory::SshAuth,
+        "rejected" => FailCategory::Rejected,
+        "timeout" => FailCategory::Timeout,
+        _ => FailCategory::Other,
+    }
+}
+
+fn fetch_mark(dir: &Path) -> PathBuf {
+    dir.join(".git").join(FETCH_FAILED_FILE)
+}
+
+fn set_fetch_failed(dir: &Path, c: Option<FailCategory>) {
+    match c {
+        Some(c) => {
+            let _ = std::fs::write(fetch_mark(dir), category_code(c));
+        }
+        None => {
+            let _ = std::fs::remove_file(fetch_mark(dir));
+        }
+    }
+}
+
+fn fetch_failed(dir: &Path) -> Option<FailCategory> {
+    std::fs::read_to_string(fetch_mark(dir))
+        .ok()
+        .map(|s| category_of_code(&s))
+}
+
+fn nul_list<S: AsRef<str>>(paths: &[S]) -> Vec<u8> {
+    let mut input = Vec::new();
+    for p in paths {
+        input.extend_from_slice(p.as_ref().as_bytes());
+        input.push(0);
+    }
+    input
+}
+
+/// Tệp thường (không theo symlink) có dòng đánh dấu sinh tự động.
+fn file_has_marker(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_file() => {}
+        _ => return false,
+    }
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .map(|s| super::writer::has_marker(&s))
+        .unwrap_or(false)
+}
+
+fn head_has_marker(ctx: &GitCtx, dir: &Path, rel: &str) -> bool {
+    run_git(ctx, Some(dir), &["cat-file", "-p", &format!("HEAD:{rel}")])
+        .map(|o| o.ok() && super::writer::has_marker(&o.stdout))
+        .unwrap_or(false)
+}
+
+/// `.git/index.lock` cũ hơn thời hạn git: do một lần chạy bị ngắt để lại. Gọi khi đang giữ
+/// `journal.lock`, nên không có lệnh git nào khác của nhật ký đang chạy.
+fn remove_stale_index_lock(ctx: &GitCtx, dir: &Path) {
+    let lock = dir.join(".git").join("index.lock");
+    let old = std::fs::metadata(&lock)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|age| age >= ctx.timeout)
+        .unwrap_or(false);
+    if old {
+        let _ = std::fs::remove_file(&lock);
+    }
+}
+
+/// Bước 1: đường dẫn đã theo dõi có thay đổi chưa commit. Tệp sinh tự động còn dòng đánh dấu
+/// (hoặc tệp cũ có dấu đã bị xóa dở) được khôi phục từ `HEAD`; mọi thay đổi khác → dừng.
+fn check_dirty(ctx: &GitCtx, dir: &Path, generated: &BTreeSet<String>) -> Option<Prepared> {
+    let out = match run_git(
+        ctx,
+        Some(dir),
+        &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
+    ) {
+        Ok(o) if o.ok() => o,
+        Ok(o) if o.timed_out => return Some(Prepared::Failed(GitFailure::from_out(&o))),
+        _ => return Some(Prepared::Stopped(GitStop::NotARepo)),
+    };
+    let mut entries: Vec<(char, String)> = Vec::new();
+    let mut records = out.stdout.split('\0').filter(|r| !r.is_empty());
+    while let Some(rec) = records.next() {
+        if rec.len() < 4 {
+            continue;
+        }
+        let x = rec.chars().next().unwrap_or(' ');
+        entries.push((x, rec[3..].to_string()));
+        if x == 'R' || x == 'C' {
+            if let Some(orig) = records.next() {
+                entries.push((x, orig.to_string()));
+            }
+        }
+    }
+    let mut dirty = Vec::new();
+    let mut restore = Vec::new();
+    for (x, rel) in entries {
+        let path = dir.join(&rel);
+        let ours = (generated.contains(&rel) && file_has_marker(&path))
+            || (std::fs::symlink_metadata(&path).is_err()
+                && super::writer::is_managed_path(&rel)
+                && head_has_marker(ctx, dir, &rel));
+        if !ours {
+            dirty.push(rel);
+        } else if x != 'A' {
+            restore.push(rel);
+        }
+    }
+    if !dirty.is_empty() {
+        dirty.sort();
+        dirty.dedup();
+        return Some(Prepared::Stopped(GitStop::Dirty { paths: dirty }));
+    }
+    if !restore.is_empty() {
+        let res = run_git_input(
+            ctx,
+            Some(dir),
+            &[
+                "checkout",
+                "HEAD",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ],
+            Some(&nul_list(&restore)),
+        );
+        if !matches!(res, Ok(ref o) if o.ok()) {
+            return Some(Prepared::Stopped(GitStop::Dirty { paths: restore }));
+        }
+    }
+    None
+}
+
+enum Integrated {
+    Done,
+    Stop(GitStop),
+    Fail(GitFailure),
+}
+
+/// Bước 3: đưa `HEAD` lên `origin/<branch>` mà không viết lại lịch sử đã đẩy.
+/// - chỉ đứng sau: `merge --ff-only origin/<branch>`;
+/// - rẽ nhánh: `rebase origin/<branch>` (chỉ các commit chưa đẩy của mình);
+/// - xung đột: `rebase --abort` rồi dừng (không ghi đè thay đổi của người khác).
+fn integrate(ctx: &GitCtx, dir: &Path, branch: &str) -> Integrated {
+    let upstream = format!("origin/{branch}");
+    if !ref_exists(ctx, dir, &format!("refs/remotes/origin/{branch}")) {
+        return Integrated::Done;
+    }
+    let conflict = |detail: String| Integrated::Stop(GitStop::Conflict { detail });
+    if rev(ctx, dir, "HEAD").is_none() {
+        return match run_git(ctx, Some(dir), &["checkout", "-B", branch, &upstream]) {
+            Ok(o) if o.ok() => Integrated::Done,
+            Ok(o) if o.timed_out => Integrated::Fail(GitFailure::from_out(&o)),
+            Ok(_) => conflict(upstream),
+            Err(_) => Integrated::Fail(GitFailure::of(FailCategory::Other)),
+        };
+    }
+    let counts = match run_git(
+        ctx,
+        Some(dir),
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("HEAD...{upstream}"),
+        ],
+    ) {
+        Ok(o) if o.ok() => o.stdout,
+        Ok(o) => return Integrated::Fail(GitFailure::from_out(&o)),
+        Err(_) => return Integrated::Fail(GitFailure::of(FailCategory::Other)),
+    };
+    let mut nums = counts
+        .split_whitespace()
+        .map(|n| n.parse::<u64>().unwrap_or(0));
+    let ahead = nums.next().unwrap_or(0);
+    let behind = nums.next().unwrap_or(0);
+    if behind == 0 {
+        return Integrated::Done;
+    }
+    if ahead == 0 {
+        return match run_git(ctx, Some(dir), &["merge", "--ff-only", "-q", &upstream]) {
+            Ok(o) if o.ok() => Integrated::Done,
+            Ok(o) if o.timed_out => Integrated::Fail(GitFailure::from_out(&o)),
+            Ok(_) => conflict(upstream),
+            Err(_) => Integrated::Fail(GitFailure::of(FailCategory::Other)),
+        };
+    }
+    match run_git(ctx, Some(dir), &["rebase", "-q", &upstream]) {
+        Ok(o) if o.ok() => Integrated::Done,
+        _ => {
+            let unmerged = run_git(
+                ctx,
+                Some(dir),
+                &["diff", "--name-only", "--diff-filter=U", "-z"],
+            )
+            .map(|o| o.stdout)
+            .unwrap_or_default();
+            let _ = run_git(ctx, Some(dir), &["rebase", "--abort"]);
+            let mut paths: Vec<&str> = unmerged.split('\0').filter(|p| !p.is_empty()).collect();
+            paths.sort();
+            paths.dedup();
+            if paths.is_empty() {
+                conflict(upstream)
+            } else {
+                conflict(paths.join(", "))
+            }
+        }
+    }
+}
+
+/// Bản clone đã có: khóa index cũ, rebase dở → hủy, kiểm tra thay đổi tay, `fetch`, rồi
+/// tích hợp. `fetch` lỗi (mất mạng) vẫn trả `Ready`: commit cục bộ, lần đẩy sẽ lỗi và bị đếm.
+fn sync_existing(
+    ctx: &GitCtx,
+    cfg: &JournalConfig,
+    dir: &Path,
+    generated: &BTreeSet<String>,
+) -> Prepared {
+    remove_stale_index_lock(ctx, dir);
+    let git_dir = dir.join(".git");
+    if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+        let _ = run_git(ctx, Some(dir), &["rebase", "--abort"]);
+    }
+    if let Some(stop) = check_dirty(ctx, dir, generated) {
+        return stop;
+    }
+    let branch = cfg.branch.as_str();
+    match run_git(ctx, Some(dir), &["fetch", "-q", "origin", branch]) {
+        Ok(o) if o.ok() => set_fetch_failed(dir, None),
+        Ok(o) => {
+            set_fetch_failed(dir, Some(classify(o.code, &o.stderr, o.timed_out)));
+            return Prepared::Ready;
+        }
+        Err(_) => {
+            set_fetch_failed(dir, Some(FailCategory::Other));
+            return Prepared::Ready;
+        }
+    }
+    match integrate(ctx, dir, branch) {
+        Integrated::Done => Prepared::Ready,
+        Integrated::Stop(s) => Prepared::Stopped(s),
+        Integrated::Fail(f) => Prepared::Failed(f),
+    }
+}
+
+/// Bảo đảm có bản clone ở `cfg.clone_dir` (clone khi chưa có) và đồng bộ bản clone đã có với
+/// `origin/<branch>` (RESEARCH §4: kiểm tra thay đổi tay, fetch, ff/rebase, hủy khi xung đột).
 pub fn prepare(ctx: &GitCtx, cfg: &JournalConfig, generated: &BTreeSet<String>) -> Prepared {
-    let _ = generated;
     let dir: &Path = &cfg.clone_dir;
     if dir.join(".git").exists() {
-        return Prepared::Ready;
+        return sync_existing(ctx, cfg, dir, generated);
     }
     if dir.exists() && !dir_is_empty(dir) {
         return Prepared::Stopped(GitStop::NotARepo);
@@ -318,8 +581,21 @@ fn local_failure() -> Published {
     Published::CommittedNotPushed(GitFailure::of(FailCategory::Other))
 }
 
-/// Stage đúng `paths`, commit khi có thay đổi, rồi đẩy `HEAD` lên `refs/heads/<branch>` khi
-/// HEAD khác `origin/<branch>`. Không `-A`, không `-f`, không force-push.
+fn push_head(ctx: &GitCtx, dir: &Path, branch: &str) -> Result<(), GitFailure> {
+    match run_git(
+        ctx,
+        Some(dir),
+        &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
+    ) {
+        Ok(o) if o.ok() => Ok(()),
+        Ok(o) => Err(GitFailure::from_out(&o)),
+        Err(_) => Err(GitFailure::of(FailCategory::Other)),
+    }
+}
+
+/// Stage đúng `paths` (tệp còn trên đĩa: `add`; tệp đã xóa: `rm --cached`), commit khi có thay
+/// đổi, rồi đẩy `HEAD` lên `refs/heads/<branch>` khi HEAD khác `origin/<branch>`. Bị từ chối vì
+/// remote đã đổi → một lần `fetch` + tích hợp + đẩy lại. Không `-A`, không ép, không viết lại.
 pub fn commit_and_push(
     ctx: &GitCtx,
     cfg: &JournalConfig,
@@ -331,17 +607,33 @@ pub fn commit_and_push(
     if !push {
         return Published::LocalOnly;
     }
-    if !paths.is_empty() {
-        let mut input = Vec::new();
-        for p in paths {
-            input.extend_from_slice(p.as_bytes());
-            input.push(0);
-        }
+    let (present, missing): (Vec<&String>, Vec<&String>) = paths
+        .iter()
+        .partition(|p| std::fs::symlink_metadata(dir.join(p)).is_ok());
+    if !present.is_empty() {
         match run_git_input(
             ctx,
             Some(&dir),
             &["add", "--pathspec-from-file=-", "--pathspec-file-nul"],
-            Some(&input),
+            Some(&nul_list(&present)),
+        ) {
+            Ok(o) if o.ok() => {}
+            _ => return local_failure(),
+        }
+    }
+    if !missing.is_empty() {
+        match run_git_input(
+            ctx,
+            Some(&dir),
+            &[
+                "rm",
+                "-q",
+                "--cached",
+                "--ignore-unmatch",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ],
+            Some(&nul_list(&missing)),
         ) {
             Ok(o) if o.ok() => {}
             _ => return local_failure(),
@@ -365,16 +657,42 @@ pub fn commit_and_push(
     let branch = cfg.branch.as_str();
     let remote = rev(ctx, &dir, &format!("refs/remotes/origin/{branch}"));
     if remote.as_deref() == Some(head.as_str()) {
-        return Published::UpToDate;
+        // Không có gì để đẩy; remote không với tới ở lần `fetch` này vẫn là một lần thất bại.
+        return match fetch_failed(&dir) {
+            Some(c) => Published::CommittedNotPushed(GitFailure::of(c)),
+            None => Published::UpToDate,
+        };
     }
-    match run_git(
-        ctx,
-        Some(&dir),
-        &["push", "origin", &format!("HEAD:refs/heads/{branch}")],
-    ) {
-        Ok(o) if o.ok() => Published::Pushed { sha: head },
-        Ok(o) => Published::CommittedNotPushed(GitFailure::from_out(&o)),
-        Err(_) => Published::CommittedNotPushed(GitFailure::of(FailCategory::Other)),
+    let first = match push_head(ctx, &dir, branch) {
+        Ok(()) => {
+            set_fetch_failed(&dir, None);
+            return Published::Pushed { sha: head };
+        }
+        Err(f) => f,
+    };
+    if first.category != FailCategory::Rejected {
+        return Published::CommittedNotPushed(first);
+    }
+    // Remote đã đổi giữa `fetch` và `push`: lấy lại, tích hợp commit của mình, đẩy lại một lần.
+    match run_git(ctx, Some(&dir), &["fetch", "-q", "origin", branch]) {
+        Ok(o) if o.ok() => {}
+        Ok(o) => return Published::CommittedNotPushed(GitFailure::from_out(&o)),
+        Err(_) => return Published::CommittedNotPushed(first),
+    }
+    match integrate(ctx, &dir, branch) {
+        Integrated::Done => {}
+        Integrated::Stop(_) => return Published::CommittedNotPushed(first),
+        Integrated::Fail(f) => return Published::CommittedNotPushed(f),
+    }
+    let Some(head) = rev(ctx, &dir, "HEAD") else {
+        return Published::CommittedNotPushed(first);
+    };
+    match push_head(ctx, &dir, branch) {
+        Ok(()) => {
+            set_fetch_failed(&dir, None);
+            Published::Pushed { sha: head }
+        }
+        Err(f) => Published::CommittedNotPushed(f),
     }
 }
 
@@ -383,8 +701,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classify_categories() {
+    fn classify_examples() {
         assert_eq!(classify(128, "", true), FailCategory::Timeout);
+        assert_eq!(
+            classify(128, "ssh: Could not resolve hostname x", false),
+            FailCategory::Network
+        );
+        assert_eq!(
+            classify(128, "Host key verification failed.", false),
+            FailCategory::SshAuth
+        );
+        assert_eq!(
+            classify(
+                1,
+                "error: failed to push some refs\nhint: non-fast-forward",
+                false
+            ),
+            FailCategory::Rejected
+        );
+        assert_eq!(classify(1, "fatal: something", false), FailCategory::Other);
+        for c in [
+            FailCategory::Network,
+            FailCategory::SshAuth,
+            FailCategory::Rejected,
+            FailCategory::Timeout,
+            FailCategory::Other,
+        ] {
+            assert_eq!(category_of_code(category_code(c)), c);
+        }
         assert_eq!(
             classify(
                 128,
