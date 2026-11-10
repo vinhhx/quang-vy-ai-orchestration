@@ -180,17 +180,17 @@ Quyết định người dùng 2026-10-19, 2026-10-20, 2026-10-21 (ROADMAP Phase
 
 ### Multi-engine Routing (GSD Phase 6 — nguồn Phase 5)
 
-- [ ] **ENG-01**: Chạy task với đội hình `tiet-kiem` (trong `teams.json`): Lead và QA chạy Claude, Dev chạy trên một engine `anthropic` đã có bằng chứng E-09, endpoint DeepSeek chính thức hoặc gateway; log ghi đúng engine cho từng run. Đây là cổng phase: 1 task trộn engine chạy end-to-end. *(src: P5-01; sửa theo 06-CONTEXT D-34)*
-- [ ] **ENG-02**: Giả lập hết quota giữa task thì hệ thống báo lỗi quota/rate-limit (nhận diện từ stream hoặc mã thoát), đề xuất đổi đội hình và không tự đổi ngầm. *(src: P5-02)*
-- [ ] **ENG-03**: Đổi engine giữa task thì engine mới tiếp tục từ `.plan.md` (và `.handover.md` nếu có), không làm lại từ đầu. *(src: P5-03)*
-- [ ] **ENG-04**: Thống kê theo engine tách đúng số token của từng engine. *(src: P5-04)*
-- [ ] **ENG-05**: Key của mọi engine (mọi biến `key_env`) không xuất hiện trong file đã commit hay trong log (key đọc từ biến môi trường; lọc biến nhạy cảm trước khi ghi log). *(src: P5-07; sửa theo 06-CONTEXT D-30)*
-- [ ] **ENG-06**: Antigravity được tích hợp theo kết quả S7 (SPK-07): nếu headless thì chạy như engine; nếu không thì dùng thủ công (người dùng mở và giao `.plan.md`) và theo dõi qua `git diff` thay vì log. *(derived: 06-phase5 §2.2, §4)*
-- [ ] **ENG-07**: Tỉ lệ "Cần sửa" của QA được ghi theo engine để so sánh chất lượng; QA mặc định chạy bằng engine mạnh. *(derived: 06-phase5 §6)*
-- [ ] **ENG-08**: Danh sách engine do người dùng khai báo trong `config.json` (`engines`: mảng mục có `id`, `kind` = `anthropic` | `agy` | `dsh`, lệnh, `base_url` + tên biến `key_env` + model theo vai trò, giá); đội hình gọi engine theo `id` (cùng `claude` và `người:<mã>`); nhiều mục cùng loại được phép (gateway công ty và endpoint DeepSeek chính thức); dạng object `engines.deepseek` / `engines.agy` cũ vẫn đọc được; `runs.engine` ghi `id`; dashboard chỉ xem, không route nào ghi engine. *(derived: 06-CONTEXT D-30, D-31, D-32, D-33)*
-- [ ] **ENG-09**: Engine kiểu `dsh` chạy như hộp đen qua `docker exec` (chỉ văn bản, không token, dừng được bên trong container theo marker và quét các tiến trình con đã ghi, không theo tên, không khởi động lại container), kiểm tra git diff sau khi chạy như Dev của agy, và từ chối dự án nằm ngoài thư mục container thấy cùng đường dẫn; chỉ dùng cho Dev. *(derived: 06-CONTEXT D-35, D-37)*
-- [ ] **ENG-10**: Engine có `pin_profile` hoặc `allowed_profiles` chỉ chạy trên dự án có profile phù hợp: lưu đội hình dùng engine đó, giao việc, đổi đội hình, chạy lại khi hết quota, `run lead --team`, `auto --start --team` và chạy bước trên dự án khác profile đều bị từ chối bằng thông báo tiếng Việt, không đường nào mượn quota của profile khác (ranh giới SPK-10). *(derived: 06-CONTEXT D-36, D-38, D-42)*
-- [ ] **ENG-11**: Mỗi endpoint `anthropic` có `base_url` cần bằng chứng E-09 (stream-json, tool use, usage, sửa file, không lộ key) theo từng model trước khi được tin; chưa có thì hiện `chưa kiểm`; script thăm dò nhận tên biến key và nhãn endpoint; quyết định do người dùng chạy. *(derived: 06-CONTEXT D-34, D-40)*
+- [x] **ENG-01**: Chạy task với đội hình `tiet-kiem` (trong `teams.json`): Lead và QA chạy Claude, Dev chạy trên một engine `anthropic` đã có bằng chứng E-09, endpoint DeepSeek chính thức hoặc gateway; log ghi đúng engine cho từng run. Đây là cổng phase: 1 task trộn engine chạy end-to-end. *(src: P5-01; sửa theo 06-CONTEXT D-34)*
+- [x] **ENG-02**: Giả lập hết quota giữa task thì hệ thống báo lỗi quota/rate-limit (nhận diện từ stream hoặc mã thoát), đề xuất đổi đội hình và không tự đổi ngầm. *(src: P5-02)*
+- [x] **ENG-03**: Đổi engine giữa task thì engine mới tiếp tục từ `.plan.md` (và `.handover.md` nếu có), không làm lại từ đầu. *(src: P5-03)*
+- [x] **ENG-04**: Thống kê theo engine tách đúng số token của từng engine. *(src: P5-04)*
+- [x] **ENG-05**: Key của mọi engine (mọi biến `key_env`) không xuất hiện trong file đã commit hay trong log (key đọc từ biến môi trường; lọc biến nhạy cảm trước khi ghi log). *(src: P5-07; sửa theo 06-CONTEXT D-30)*
+- [x] **ENG-06**: Antigravity được tích hợp theo kết quả S7 (SPK-07): nếu headless thì chạy như engine; nếu không thì dùng thủ công (người dùng mở và giao `.plan.md`) và theo dõi qua `git diff` thay vì log. *(derived: 06-phase5 §2.2, §4)*
+- [x] **ENG-07**: Tỉ lệ "Cần sửa" của QA được ghi theo engine để so sánh chất lượng; QA mặc định chạy bằng engine mạnh. *(derived: 06-phase5 §6)*
+- [x] **ENG-08**: Danh sách engine do người dùng khai báo trong `config.json` (`engines`: mảng mục có `id`, `kind` = `anthropic` | `agy` | `dsh`, lệnh, `base_url` + tên biến `key_env` + model theo vai trò, giá); đội hình gọi engine theo `id` (cùng `claude` và `người:<mã>`); nhiều mục cùng loại được phép (gateway công ty và endpoint DeepSeek chính thức); dạng object `engines.deepseek` / `engines.agy` cũ vẫn đọc được; `runs.engine` ghi `id`; dashboard chỉ xem, không route nào ghi engine. *(derived: 06-CONTEXT D-30, D-31, D-32, D-33)*
+- [x] **ENG-09**: Engine kiểu `dsh` chạy như hộp đen qua `docker exec` (chỉ văn bản, không token, dừng được bên trong container theo marker và quét các tiến trình con đã ghi, không theo tên, không khởi động lại container), kiểm tra git diff sau khi chạy như Dev của agy, và từ chối dự án nằm ngoài thư mục container thấy cùng đường dẫn; chỉ dùng cho Dev. *(derived: 06-CONTEXT D-35, D-37)*
+- [x] **ENG-10**: Engine có `pin_profile` hoặc `allowed_profiles` chỉ chạy trên dự án có profile phù hợp: lưu đội hình dùng engine đó, giao việc, đổi đội hình, chạy lại khi hết quota, `run lead --team`, `auto --start --team` và chạy bước trên dự án khác profile đều bị từ chối bằng thông báo tiếng Việt, không đường nào mượn quota của profile khác (ranh giới SPK-10). *(derived: 06-CONTEXT D-36, D-38, D-42)*
+- [x] **ENG-11**: Mỗi endpoint `anthropic` có `base_url` cần bằng chứng E-09 (stream-json, tool use, usage, sửa file, không lộ key) theo từng model trước khi được tin; chưa có thì hiện `chưa kiểm`; script thăm dò nhận tên biến key và nhãn endpoint; quyết định do người dùng chạy. *(derived: 06-CONTEXT D-34, D-40)*
 
 ### Multi-engine Teams & Settings (GSD Phase 6 — đội hình, Cài đặt, engine người, quota)
 
@@ -347,17 +347,17 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | BOARD-12 | Phase 5.5 | Complete |
 | BOARD-13 | Phase 5.5 | Complete |
 | BOARD-14 | Phase 5.5 | Complete |
-| ENG-01 | Phase 6 | Pending |
-| ENG-02 | Phase 6 | Pending |
-| ENG-03 | Phase 6 | Pending |
-| ENG-04 | Phase 6 | Pending |
-| ENG-05 | Phase 6 | Pending |
-| ENG-06 | Phase 6 | Pending |
-| ENG-07 | Phase 6 | Pending |
-| ENG-08 | Phase 6 | Pending |
-| ENG-09 | Phase 6 | Pending |
-| ENG-10 | Phase 6 | Pending |
-| ENG-11 | Phase 6 | Pending |
+| ENG-01 | Phase 6 | Complete |
+| ENG-02 | Phase 6 | Complete |
+| ENG-03 | Phase 6 | Complete |
+| ENG-04 | Phase 6 | Complete |
+| ENG-05 | Phase 6 | Complete |
+| ENG-06 | Phase 6 | Complete |
+| ENG-07 | Phase 6 | Complete |
+| ENG-08 | Phase 6 | Complete |
+| ENG-09 | Phase 6 | Complete |
+| ENG-10 | Phase 6 | Complete |
+| ENG-11 | Phase 6 | Complete |
 | TEAM-01 | Phase 6 | Pending |
 | TEAM-02 | Phase 6 | Pending |
 | TEAM-03 | Phase 6 | Pending |

@@ -28,7 +28,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Rust CLI Core** - Binary `agent-brain` với kill sạch cây tiến trình, bắt log stream-json, token trong SQLite, fast-path (completed 2026-10-16)
 - [ ] **Phase 4: Session & Token Optimization** - Giảm token/task dựa trên số liệu `runs` thật (`.gsd-summary.md`, `.handover.md`)
 - [x] **Phase 5: Embedded Dashboard** - Web UI + SSE trong cùng binary: xem log realtime, giao việc, kill, thống kê (completed 2026-10-19)
-- [ ] **Phase 6: Multi-engine & Media Branch** - Mỗi vai trò một engine (claude, DeepSeek, agy, nhân sự), đội hình + màn Cài đặt, xử lý hết quota không đổi ngầm (nhánh Media tách sang 06.1)
+- [x] **Phase 6: Multi-engine & Media Branch** - Mỗi vai trò một engine (claude, DeepSeek, agy, nhân sự), đội hình + màn Cài đặt, xử lý hết quota không đổi ngầm (nhánh Media tách sang 06.1) (completed 2026-11-10)
 - [ ] **Phase 06.1: Media Branch (INSERTED)** - Dự án media chạy ngoài Git worktree, job render FFmpeg có kill sạch, bảng `media_jobs`
 
 **Execution Order & Dependencies:**
@@ -412,7 +412,7 @@ Plans:
   4. *(chuyển sang Phase 06.1)*
   5. Antigravity được xử lý theo kết quả S7 (chạy headless như engine, hoặc dùng thủ công và theo dõi qua `git diff`), và tỉ lệ "Cần sửa" của QA được ghi theo engine.
 
-**Plans:** 30/30 plans executed
+**Plans:** 30/30 plans complete
 
 Plans:
 **Wave 1**
@@ -521,4 +521,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 13/13 | Complete    | 2026-10-19 |
-| 6. Multi-engine & Media Branch | 30/30 | In Progress | - |
+| 6. Multi-engine & Media Branch | 30/30 | Complete    | 2026-11-10 |
