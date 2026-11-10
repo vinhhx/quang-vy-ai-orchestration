@@ -171,10 +171,19 @@ fn export_with_tz<Tz: TimeZone>(p: &ExportParams, tz: &Tz) -> BrainResult<Export
         }
     }
 
-    let written = writer::apply(&cfg.clone_dir, &files)?;
+    let mut written = writer::apply(&cfg.clone_dir, &files)?;
     fts::rebuild(p.conn, &fts::rows_from_model(&model))?;
     let mut paths: Vec<String> = written.changed.clone();
     paths.extend(written.removed.iter().cloned());
+    if p.push {
+        // Tệp một lần `--no-push` trước đã ghi (giống hệt trên đĩa) nhưng chưa commit (D-22).
+        for rel in gitsync::pending_paths(&ctx, &cfg.clone_dir, &generated) {
+            if !paths.contains(&rel) {
+                paths.push(rel.clone());
+                written.changed.push(rel);
+            }
+        }
+    }
     let message = format!(
         "journal: {} ({} tệp)",
         local_stamp(p.now_ms, tz),
