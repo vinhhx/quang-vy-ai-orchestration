@@ -1320,13 +1320,17 @@ fn on_team(ctx: &Arc<BotCtx>, press: &Press, cb: &TeamCb) {
 
     match cb.op {
         TeamOp::Pick => {
-            let engine = match s.teams.get(&name) {
+            let mut engine = match s.teams.get(&name) {
                 Some(t) => crate::teams::engine_text(&t.engine_for(&run.role), &s.staff),
                 None => {
                     answer(ctx, &press.id, INVALID_BUTTON, false);
                     return;
                 }
             };
+            if s.quota_unverified_engine(&name).is_some() {
+                engine.push_str(" — ");
+                engine.push_str(crate::engine::Readiness::ChuaKiem.word());
+            }
             // The confirmation is not the message the detector follows any more: it is
             // restored (and tracked again) by `Không chạy lại`, or answered by the second tap.
             untrack(ctx, press.message_id);

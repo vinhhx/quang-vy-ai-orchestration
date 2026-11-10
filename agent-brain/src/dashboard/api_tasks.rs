@@ -1562,6 +1562,10 @@ pub struct TaskState {
     /// that run's role is ready now (`teams::TeamReadiness`); empty otherwise. The Telegram
     /// buttons, their callback decoding and the dashboard re-run dialog all read this one list.
     pub quota_teams: Vec<String>,
+    /// D-40 (ENG-11): the offered teams (`quota_teams`) whose engine for the stopped role has
+    /// no E-09 evidence (readiness is `chưa kiểm`); shown with the `chưa kiểm` mark on the
+    /// dashboard and Telegram.
+    pub quota_unverified: Vec<(String, String)>,
     /// KEY của bug Trello/Sheet gắn với task (`proposals.task_id` → `intake_id` →
     /// `fixbug_refs`), đọc một lần khi dựng snapshot (Plan fixbug-trial A9).
     pub fixbug_key: Option<String>,
@@ -1571,6 +1575,14 @@ impl TaskState {
     /// The task's protocol file paths (D1).
     pub fn protocol(&self) -> crate::protocol_paths::ProtocolPaths {
         crate::protocol_paths::paths(&self.project, &self.task.slug)
+    }
+
+    /// Engine id when `team` is offered for quota re-run and its engine reads `chưa kiểm` (D-40).
+    pub fn quota_unverified_engine(&self, team: &str) -> Option<&str> {
+        self.quota_unverified
+            .iter()
+            .find(|(t, _)| t == team)
+            .map(|(_, eng)| eng.as_str())
     }
 }
 
@@ -1859,9 +1871,21 @@ pub fn load_task_state(
         ));
     }
 
-    let quota_teams = match latest.filter(|r| r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA)) {
-        Some(r) => team_readiness(st, &task, &project).ready_names(&st.cfg, &teams, &r.role),
-        None => Vec::new(),
+    let (quota_teams, quota_unverified) = match latest.filter(|r| r.outcome.as_deref() == Some(crate::quota::OUTCOME_QUOTA)) {
+        Some(r) => {
+            let tr = team_readiness(st, &task, &project);
+            let ready = tr.ready_names(&st.cfg, &teams, &r.role);
+            let unverified = ready
+                .iter()
+                .filter_map(|name| {
+                    let t = teams.get(name)?;
+                    let eng = tr.unverified_engine(t, &r.role)?;
+                    Some((name.clone(), eng))
+                })
+                .collect();
+            (ready, unverified)
+        }
+        None => (Vec::new(), Vec::new()),
     };
 
     let rev = task_rev(
@@ -1919,6 +1943,7 @@ pub fn load_task_state(
         staff,
         plan_diff_summary,
         quota_teams,
+        quota_unverified,
         fixbug_key,
     }))
 }

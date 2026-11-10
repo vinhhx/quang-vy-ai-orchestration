@@ -266,7 +266,7 @@ fn write_teams(sb: &Sandbox) {
 
 /// Manual task `sua-app` (origin `origin` when given) whose Dev run stopped on quota while serve
 /// was running; the second queued Dev entry completes the work. Teams: mac-dinh, tiet-kiem, doi-b.
-fn setup_quota(origin: Option<&str>) -> Env {
+fn setup_quota_env(origin: Option<&str>, extra_env: &[(&str, &str)]) -> Env {
     let sb = Sandbox::new();
     let tg = FakeTelegram::start(&sb);
     write_config(&sb, PAIRED_CHAT, 0o600);
@@ -289,7 +289,7 @@ fn setup_quota(origin: Option<&str>) -> Env {
     );
     assert_eq!(out.code, 0, "run lead: {}\n{}", out.stderr, out.stdout);
 
-    let srv = tg.serve(&sb, &[]);
+    let srv = tg.serve(&sb, extra_env);
     wait_polling(&tg, &srv);
 
     let sc = by_role(json!({
@@ -303,6 +303,10 @@ fn setup_quota(origin: Option<&str>) -> Env {
 
     let quota = wait_message(&tg, &srv, "Hết quota engine claude · task 1");
     Env { sb, tg, srv, quota }
+}
+
+fn setup_quota(origin: Option<&str>) -> Env {
+    setup_quota_env(origin, &[])
 }
 
 fn team_json_of(sb: &Sandbox, task_id: i64) -> Option<String> {
@@ -460,6 +464,70 @@ fn quota_two_tap_rerun() {
     assert_eq!(last["reason"], "quota", "{team}");
     assert_eq!(last["reset_at"], json!(1_792_310_400_000i64), "{team}");
     assert_eq!(env.srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+}
+
+const PLANTED_DS_KEY: &str = "test-planted-deepseek-key-0123456789";
+
+#[test]
+fn quota_unverified_team_button_marked() {
+    let mut env = setup_quota_env(None, &[("DEEPSEEK_API_KEY", PLANTED_DS_KEY)]);
+    let m = message_id_of(&env.quota);
+    assert_eq!(
+        labels(&env.quota),
+        vec![
+            "Đội hình mac-dinh",
+            "Đội hình phong-ban",
+            "Đội hình tiet-kiem (deepseek — chưa kiểm)",
+            "Đội hình doi-b",
+            "Thử lại sau"
+        ]
+    );
+    let text = text_of(&env.quota);
+    assert!(
+        !text.contains("đội hình chưa sẵn sàng"),
+        "unverified teams must not be counted as hidden: {text}"
+    );
+    let cb = press(&env.tg, &env.quota, "Đội hình tiet-kiem (deepseek — chưa kiểm)");
+    let ans = wait_answer(&env.tg, &env.srv, &cb);
+    assert_ne!(ans["json"]["show_alert"], json!(true), "{ans}");
+    let confirm = wait_edit(&env.tg, &env.srv, m, |r| {
+        text_of(r).starts_with("Chạy lại bước Code bằng đội hình tiet-kiem?")
+    });
+    assert!(
+        text_of(&confirm).contains("Bước Code sẽ chạy bằng: deepseek — chưa kiểm"),
+        "{confirm}"
+    );
+    assert_eq!(labels(&confirm), vec!["Chạy lại bước này", "Không chạy lại"]);
+    let cb = press(&env.tg, &confirm, "Chạy lại bước này");
+    wait_answer(&env.tg, &env.srv, &cb);
+    let done = wait_edit(&env.tg, &env.srv, m, |r| {
+        text_of(r).starts_with("Đã đổi sang đội hình tiet-kiem và giao lại bước Code (job ")
+    });
+    assert!(empty_keyboard(&done), "{done}");
+    assert!(
+        wait_until(Duration::from_secs(60), || {
+            env.sb
+                .db()
+                .query_row(
+                    "SELECT COUNT(*) FROM runs WHERE role = 'dev' AND engine = 'deepseek' AND status = 'succeeded'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                == 1
+        }),
+        "the re-run did not finish; stderr:\n{}",
+        stderr_of(&env.srv)
+    );
+    let team: Value = serde_json::from_str(&team_json_of(&env.sb, 1).expect("team_json")).unwrap();
+    assert_eq!(team["name"], "tiet-kiem");
+    assert_eq!(env.srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));
+
+    let recorded = serde_json::to_string(&env.tg.records()).unwrap();
+    assert!(
+        !recorded.contains(PLANTED_DS_KEY),
+        "planted key leaked into Telegram request: {recorded}"
+    );
 }
 
 // ---------------------------------------------------------------------------

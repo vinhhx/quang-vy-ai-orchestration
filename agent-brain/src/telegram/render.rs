@@ -316,6 +316,18 @@ pub fn rerun_done_text(team: &str, step: &str, job_id: u64) -> String {
 pub const RETRY_LATER_LINE: &str =
     "Đã hoãn — khi quota hồi phục, chạy lại bước này trên dashboard.";
 
+/// The label of a team button on a quota message (D-40): `Đội hình {name}` or
+/// `Đội hình {name} ({engine} — chưa kiểm)` when the team will run on an unverified endpoint.
+pub fn team_button_label(name: &str, unverified_engine: Option<&str>) -> String {
+    match unverified_engine {
+        Some(eng) => format!(
+            "Đội hình {name} ({eng} — {})",
+            crate::engine::Readiness::ChuaKiem.word()
+        ),
+        None => format!("Đội hình {name}"),
+    }
+}
+
 /// The team names a quota message offers: the first `MAX_TEAM_BUTTONS` of the teams that are
 /// ready for the stopped run's role now (`TaskState.quota_teams`, C3). A button carries an index
 /// into this filtered list and the version of it; the callback decodes against the same list.
@@ -422,7 +434,7 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
             let not_ready = s.teams.teams.len().saturating_sub(s.quota_teams.len());
             if not_ready > 0 {
                 lines.push(format!(
-                    "{not_ready} đội hình chưa sẵn sàng cho bước này (engine thiếu key, thiếu lệnh hoặc chưa kiểm) — không hiện."
+                    "{not_ready} đội hình chưa sẵn sàng cho bước này (engine thiếu key hoặc thiếu lệnh) — không hiện."
                 ));
             }
         }
@@ -552,7 +564,7 @@ pub fn buttons_for(ev: &Event, s: &TaskState) -> Vec<Vec<Button>> {
             let ver = callback::team_list_ver(&names);
             for (idx, name) in names.iter().enumerate() {
                 rows.push(vec![Button {
-                    label: format!("Đội hình {name}"),
+                    label: team_button_label(name, s.quota_unverified_engine(name)),
                     data: callback::encode_team(&TeamCb {
                         op: TeamOp::Pick,
                         task_id: s.task.id,
@@ -650,6 +662,15 @@ mod tests {
         assert!(!slug_ok("Sua"));
         assert!(!slug_ok("a/b"));
         assert!(!slug_ok(""));
+    }
+
+    #[test]
+    fn team_button_label_marks_unverified() {
+        assert_eq!(team_button_label("doi-b", None), "Đội hình doi-b");
+        assert_eq!(
+            team_button_label("tiet-kiem", Some("deepseek")),
+            "Đội hình tiet-kiem (deepseek — chưa kiểm)"
+        );
     }
 
     #[test]
@@ -802,6 +823,7 @@ mod tests {
             staff: crate::staff::LoadedStaff::default(),
             plan_diff_summary: None,
             quota_teams: Vec::new(),
+            quota_unverified: Vec::new(),
             fixbug_key: None,
         };
 

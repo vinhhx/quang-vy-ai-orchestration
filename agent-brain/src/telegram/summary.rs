@@ -758,6 +758,7 @@ mod tests {
             staff,
             plan_diff_summary: None,
             quota_teams: Vec::new(),
+            quota_unverified: Vec::new(),
             fixbug_key: None,
         }
     }
