@@ -957,3 +957,155 @@ fn done_retry_after_failure_past_merge() {
     assert_eq!(task_status(&sb), "dev_done");
     assert_eq!(head(&sb, &w.repo), staff_head);
 }
+
+#[test]
+fn done_retry_offline_after_merge() {
+    let sb = Sandbox::new();
+    let w = setup(&sb, true);
+    let remote = w.remote.clone().unwrap();
+    let bad_remote = sb.root.join("khong-co-remote.git");
+    let bad_url = bad_remote.to_str().unwrap();
+    let good_url = remote.to_str().unwrap();
+
+    let res = run_dev(&sb);
+    assert_eq!(res.code, 6, "{}", both(&res));
+
+    staff_clone_push(
+        &sb,
+        &remote,
+        "task/sua-app",
+        &[("src/a.txt", "a của Hà\n")],
+        "sua-app: xong phần của Hà",
+    );
+    let staff_head = sb
+        .git(&remote, &["rev-parse", "refs/heads/task/sua-app"])
+        .trim()
+        .to_string();
+
+    // (a) Broken origin before any merge: refused offline, nothing changed.
+    sb.git(&w.repo, &["remote", "set-url", "origin", bad_url]);
+    let before = snapshot(&sb, &w.repo);
+    let offline_refused = human(&sb, "done");
+    assert_refused(
+        &offline_refused,
+        "Không lấy được nhánh task/sua-app từ remote",
+    );
+    assert!(
+        both(&offline_refused).contains("thử lại sau"),
+        "{}",
+        both(&offline_refused)
+    );
+    assert_eq!(snapshot(&sb, &w.repo), before);
+
+    // (b) Good origin, but DB insert aborted: merge happens, but step fails.
+    sb.git(&w.repo, &["remote", "set-url", "origin", good_url]);
+    fail_human_runs(&sb);
+    let failed = human(&sb, "done");
+    assert_eq!(failed.code, 1, "{}", both(&failed));
+    assert!(
+        both(&failed).contains("buoc gia lap sau merge"),
+        "{}",
+        both(&failed)
+    );
+    assert_eq!(head(&sb, &w.repo), staff_head);
+
+    // (c) Broken origin again: retry works offline using already-merged commits.
+    sb.git(&w.repo, &["remote", "set-url", "origin", bad_url]);
+    allow_human_runs(&sb);
+    let retried = human(&sb, "done");
+    assert_ok(&retried, "human done offline retry");
+    let out = both(&retried);
+    assert!(
+        out.contains("dùng các commit đã gộp ở lần bấm Xong trước"),
+        "{out}"
+    );
+    let rows = human_runs(&sb);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].metrics["human"]["head"], json!(staff_head));
+    assert!(task_team(&sb).wait.is_none());
+    assert_eq!(task_status(&sb), "dev_done");
+}
+
+#[test]
+fn done_retry_takes_newer_push() {
+    let sb = Sandbox::new();
+    let w = setup(&sb, true);
+    let remote = w.remote.clone().unwrap();
+
+    let res = run_dev(&sb);
+    assert_eq!(res.code, 6, "{}", both(&res));
+
+    staff_clone_push(
+        &sb,
+        &remote,
+        "task/sua-app",
+        &[("src/a.txt", "a của Hà\n")],
+        "sua-app: lần 1",
+    );
+    let commit1 = sb
+        .git(&remote, &["rev-parse", "refs/heads/task/sua-app"])
+        .trim()
+        .to_string();
+
+    fail_human_runs(&sb);
+    let first = human(&sb, "done");
+    assert_eq!(first.code, 1, "{}", both(&first));
+    assert_eq!(head(&sb, &w.repo), commit1);
+
+    staff_clone_push(
+        &sb,
+        &remote,
+        "task/sua-app",
+        &[("src/a.txt", "a của Hà lần 2\n")],
+        "sua-app: lần 2",
+    );
+    let commit2 = sb
+        .git(&remote, &["rev-parse", "refs/heads/task/sua-app"])
+        .trim()
+        .to_string();
+    assert_ne!(commit1, commit2);
+
+    allow_human_runs(&sb);
+    let second = human(&sb, "done");
+    assert_ok(&second, "human done newer push");
+    let out = both(&second);
+    assert!(!out.contains("đã được gộp ở lần bấm Xong trước"), "{out}");
+    assert_eq!(head(&sb, &w.repo), commit2);
+    let rows = human_runs(&sb);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].metrics["human"]["head"], json!(commit2));
+}
+
+#[test]
+fn done_local_commit_not_taken_as_staff_work() {
+    let sb = Sandbox::new();
+    let w = setup(&sb, true);
+    let _remote = w.remote.clone().unwrap();
+
+    let res = run_dev(&sb);
+    assert_eq!(res.code, 6, "{}", both(&res));
+
+    // Staff pushes nothing. A local commit is added to task/sua-app in w.repo.
+    std::fs::write(w.repo.join("src/a.txt"), "a cục bộ\n").unwrap();
+    sb.git(&w.repo, &["add", "src/a.txt"]);
+    sb.git(&w.repo, &["commit", "-m", "commit cục bộ"]);
+    let local_head = head(&sb, &w.repo);
+    let before = snapshot(&sb, &w.repo);
+
+    let res = human(&sb, "done");
+    assert_refused(&res, "không đi tiếp từ nhánh trong máy");
+    assert_eq!(snapshot(&sb, &w.repo), before);
+    assert_eq!(head(&sb, &w.repo), local_head);
+    assert!(human_runs(&sb).is_empty());
+
+    // Break origin URL: still refused offline, still no run recorded.
+    let bad_remote = sb.root.join("khong-co-remote.git");
+    sb.git(
+        &w.repo,
+        &["remote", "set-url", "origin", bad_remote.to_str().unwrap()],
+    );
+    let res2 = human(&sb, "done");
+    assert_refused(&res2, "thử lại sau");
+    assert_eq!(snapshot(&sb, &w.repo), before);
+    assert!(human_runs(&sb).is_empty());
+}

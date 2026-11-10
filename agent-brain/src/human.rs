@@ -350,32 +350,59 @@ pub fn done(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
     let head = crate::gitops::head_sha(root)?;
 
     let remote_ref = format!("refs/heads/{branch}");
-    if let Err(e) = crate::gitops::git(root, &["fetch", "origin", &remote_ref]) {
-        // Phân biệt nhánh chưa có trên remote với lỗi mạng / quyền, không dựa vào lời nhắn của git.
-        let missing = matches!(
-            crate::gitops::git(root, &["ls-remote", "origin", &remote_ref]),
-            Ok(out) if out.trim().is_empty()
-        );
-        if missing {
-            return Err(BrainError::error(format!(
-                "Chưa thấy nhánh {branch} trên remote — nhờ {name} đẩy nhánh lên rồi bấm Xong lại."
-            )));
+    // git cập nhật refs/remotes/origin/<branch> sau mỗi lần fetch thành công ref đó và khi git push -u, nên sau một lần bấm Xong trước nó trỏ vào commit đã gộp.
+    let (remote_sha, merged_before) = match crate::gitops::git(
+        root,
+        &["fetch", "origin", &remote_ref],
+    ) {
+        Ok(_) => {
+            let remote_sha = crate::gitops::git(root, &["rev-parse", "FETCH_HEAD"])?
+                .trim()
+                .to_string();
+            let merged_before = already_merged(root, &p.wait.base, &head, &remote_sha);
+            if merged_before {
+                crate::term::emit_out(&format!(
+                    "Nhánh {branch} đã được gộp ở lần bấm Xong trước — ghi nhận tiếp."
+                ));
+            }
+            (remote_sha, merged_before)
         }
-        let first = e.message.lines().next().unwrap_or("").trim().to_string();
-        return Err(BrainError::error(format!(
-            "Không lấy được nhánh {branch} từ remote ({first}) — thử lại sau."
-        )));
-    }
+        Err(e) => {
+            // Phân biệt nhánh chưa có trên remote với lỗi mạng / quyền, không dựa vào lời nhắn của git.
+            let missing = matches!(
+                crate::gitops::git(root, &["ls-remote", "origin", &remote_ref]),
+                Ok(out) if out.trim().is_empty()
+            );
+            if missing {
+                return Err(BrainError::error(format!(
+                        "Chưa thấy nhánh {branch} trên remote — nhờ {name} đẩy nhánh lên rồi bấm Xong lại."
+                    )));
+            }
+            let first = e.message.lines().next().unwrap_or("").trim().to_string();
+            let tracked_ref = format!("refs/remotes/origin/{branch}");
+            if let Ok(tracked) =
+                crate::gitops::git(root, &["rev-parse", "--verify", "--quiet", &tracked_ref])
+            {
+                let tracked = tracked.trim().to_string();
+                if already_merged(root, &p.wait.base, &head, &tracked) {
+                    crate::term::emit_out(&format!(
+                            "Không lấy được nhánh {branch} từ remote ({first}) — dùng các commit đã gộp ở lần bấm Xong trước."
+                        ));
+                    (tracked, true)
+                } else {
+                    return Err(BrainError::error(format!(
+                        "Không lấy được nhánh {branch} từ remote ({first}) — thử lại sau."
+                    )));
+                }
+            } else {
+                return Err(BrainError::error(format!(
+                    "Không lấy được nhánh {branch} từ remote ({first}) — thử lại sau."
+                )));
+            }
+        }
+    };
 
-    let remote_sha = crate::gitops::git(root, &["rev-parse", "FETCH_HEAD"])?
-        .trim()
-        .to_string();
-    let merged_before = already_merged(root, &p.wait.base, &head, &remote_sha);
-    if merged_before {
-        crate::term::emit_out(&format!(
-            "Nhánh {branch} đã được gộp ở lần bấm Xong trước — ghi nhận tiếp."
-        ));
-    } else {
+    if !merged_before {
         if remote_sha == head {
             return Err(BrainError::error(format!(
                 "Nhánh {branch} trên remote chưa có commit mới nào — nhờ {name} đẩy việc đã làm rồi bấm Xong lại."
