@@ -336,3 +336,216 @@ fn approval_days_are_listed() {
     assert!(m.days[&day(14)].iter().any(|t| t.task_id == 2));
     assert!(m.days[&day(15)].iter().any(|t| t.task_id == 10));
 }
+
+// ---- rendered file set -------------------------------------------------------------------
+
+use agent_brain::journal::model::MARKER;
+use agent_brain::journal::render::render_all;
+use std::path::PathBuf;
+use unicode_normalization::UnicodeNormalization;
+
+fn rendered(sb: &Sandbox, conn: &Connection) -> BTreeMap<String, String> {
+    render_all(&model(sb, conn), &JournalConfig::default())
+}
+
+fn golden_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/journal/golden")
+}
+
+const EXPECTED_KEYS: &[&str] = &[
+    "Dự án/du-an-a.md",
+    "Dự án/du-an-b.md",
+    "Dự án/du-an-c.md",
+    "Dự án/du-an-d.md",
+    "Nhật ký/2026/01/2026-01-13.md",
+    "Nhật ký/2026/01/2026-01-14.md",
+    "Nhật ký/2026/01/2026-01-15.md",
+    "Nhật ký/2026/01/2026-01.md",
+    "Nhật ký/2026/2026.md",
+    "Today.md",
+];
+
+fn collect_golden(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            collect_golden(&p, base, out);
+        } else {
+            let rel = p.strip_prefix(base).unwrap().to_str().unwrap();
+            out.push(rel.nfc().collect());
+        }
+    }
+}
+
+#[test]
+fn golden_files_match() {
+    let sb = Sandbox::new();
+    let conn = fixture(&sb);
+    let files = rendered(&sb, &conn);
+    let keys: Vec<&str> = files.keys().map(String::as_str).collect();
+    let mut want: Vec<String> = EXPECTED_KEYS.iter().map(|s| s.to_string()).collect();
+    want.sort();
+    assert_eq!(keys, want);
+
+    let dir = golden_dir();
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        let mut stale = Vec::new();
+        collect_golden(&dir, &dir, &mut stale);
+        for rel in stale {
+            if !files.contains_key(&rel) {
+                std::fs::remove_file(dir.join(&rel)).unwrap();
+            }
+        }
+        for (rel, body) in &files {
+            let path = dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, body).unwrap();
+        }
+        return;
+    }
+    for (rel, body) in &files {
+        let golden = std::fs::read_to_string(dir.join(rel)).unwrap_or_else(|e| {
+            panic!("golden file {rel} missing ({e}); run with UPDATE_GOLDEN=1")
+        });
+        assert_eq!(&golden, body, "golden mismatch for {rel}");
+    }
+    let mut on_disk = Vec::new();
+    collect_golden(&dir, &dir, &mut on_disk);
+    on_disk.sort();
+    assert_eq!(
+        on_disk, want,
+        "golden directory has files outside the rendered set"
+    );
+}
+
+#[test]
+fn day_file_has_attention_first() {
+    let sb = Sandbox::new();
+    let conn = fixture(&sb);
+    let files = rendered(&sb, &conn);
+
+    let d15: Vec<&str> = files["Nhật ký/2026/01/2026-01-15.md"].lines().collect();
+    let h = d15
+        .iter()
+        .position(|l| l.starts_with("# Thứ Năm 15/01/2026"))
+        .expect("day heading");
+    assert_eq!(d15[h + 1], "");
+    assert_eq!(d15[h + 2], "## Cần anh xử lý (6)");
+    let items = &d15[h + 3..h + 9];
+    let kinds: Vec<&str> = items
+        .iter()
+        .map(|l| l.split("**").nth(1).expect("label"))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "hết quota",
+            "môi trường chưa sẵn sàng",
+            "QA cần sửa",
+            "vướng mắc",
+            "vi phạm giao thức",
+            "quá thời gian"
+        ]
+    );
+    for (i, l) in items.iter().enumerate() {
+        assert!(l.starts_with("- **"), "{l}");
+        assert!(l.contains(" — [[Dự án/du-an-"), "{l}");
+        // Quota (task 3) and QA fix (task 2) are carried over from 14/01.
+        assert_eq!(l.ends_with(" · từ 14/01"), i == 0 || i == 2, "{l}");
+    }
+    assert_eq!(d15[h + 9], "");
+
+    let d13: Vec<&str> = files["Nhật ký/2026/01/2026-01-13.md"].lines().collect();
+    let h = d13
+        .iter()
+        .position(|l| l.starts_with("# Thứ Ba 13/01/2026"))
+        .expect("day heading");
+    assert_eq!(d13[h + 2], "## Cần anh xử lý (2)");
+    assert!(d13[h + 3].starts_with("- **chờ duyệt plan** — [[Dự án/du-an-b|du-an-b]] — "));
+    assert!(d13[h + 4].starts_with("- **lỗi** — "));
+}
+
+#[test]
+fn today_embeds_today() {
+    let sb = Sandbox::new();
+    let conn = fixture(&sb);
+    let files = rendered(&sb, &conn);
+    let lines: Vec<&str> = files["Today.md"].lines().collect();
+    assert_eq!(lines[0], MARKER);
+    assert_eq!(lines[1], "# Hôm nay — Thứ Năm 15/01/2026");
+    assert!(lines.contains(&"![[2026-01-15]]"));
+    assert!(lines.contains(&"Hôm qua: [[2026-01-14]] · Tháng: [[2026-01]] · Năm: [[2026]]"));
+}
+
+fn link_targets(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(at) = rest.find("[[") {
+        let after = &rest[at + 2..];
+        let end = after.find("]]").expect("closed wikilink");
+        let inner = &after[..end];
+        out.push(inner.split('|').next().unwrap().to_string());
+        rest = &after[end + 2..];
+    }
+    out
+}
+
+#[test]
+fn all_links_resolve() {
+    let sb = Sandbox::new();
+    let conn = fixture(&sb);
+    let files = rendered(&sb, &conn);
+    let mut checked = 0;
+    for (path, body) in &files {
+        for target in link_targets(body) {
+            let found = if target.contains('/') {
+                files.contains_key(&format!("{target}.md"))
+            } else {
+                files.keys().any(|k| {
+                    k.rsplit('/').next().and_then(|n| n.strip_suffix(".md")) == Some(&target)
+                })
+            };
+            assert!(found, "dangling link [[{target}]] in {path}");
+            checked += 1;
+        }
+    }
+    assert!(checked > 30, "only {checked} links checked");
+}
+
+#[test]
+fn no_weekly_file_and_nfc_paths() {
+    let sb = Sandbox::new();
+    let conn = fixture(&sb);
+    let files = rendered(&sb, &conn);
+    for key in files.keys() {
+        assert!(
+            !key.contains("Tuần") && !key.to_lowercase().contains("tuan"),
+            "{key}"
+        );
+        assert!(!key.contains("-W") && !key.contains("/W"), "{key}");
+        assert!(key.nfc().eq(key.chars()), "{key} is not NFC");
+        let name = key.rsplit('/').next().unwrap();
+        assert!(name.is_ascii(), "{key}: file name is not ASCII");
+    }
+}
+
+#[test]
+fn render_is_deterministic() {
+    let sb = Sandbox::new();
+    let conn = fixture(&sb);
+    let a = rendered(&sb, &conn);
+    let b = rendered(&sb, &conn);
+    assert_eq!(a, b);
+    for (path, body) in &a {
+        assert!(!body.contains('\r'), "{path}");
+        assert!(body.ends_with('\n') && !body.ends_with("\n\n"), "{path}");
+        // Frontmatter carries only dates, counts and fixed tags.
+        assert!(
+            !body.contains("title:") && !body.contains("request:"),
+            "{path}"
+        );
+    }
+}
