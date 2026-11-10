@@ -6,8 +6,10 @@
 
 pub mod collect;
 pub mod config;
+pub mod digest;
 pub mod fts;
 pub mod gitsync;
+pub mod loop_;
 pub mod model;
 pub mod render;
 pub mod sanitize;
