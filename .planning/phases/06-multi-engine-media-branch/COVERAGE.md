@@ -5,25 +5,25 @@
 
 | capability | decision | reason |
 |---|---|---|
-| anthropic:messages (Anthropic-format POST /v1/messages through `claude -p`, company gateway first, then any other endpoint with E-09 evidence) | INTEGRATE | |
+| anthropic:messages | INTEGRATE | Anthropic-format POST /v1/messages through `claude -p`, company gateway first, then any other endpoint with E-09 evidence |
 | anthropic:streaming (stream-json events parsed by `stream::Summary`) | INTEGRATE | |
 | anthropic:tool-use (Read/Edit/Write/Bash under `--allowedTools` and guard hooks) | INTEGRATE | |
-| anthropic:usage-accounting (input/output/cache tokens into `runs`, cost priced per engine id) | INTEGRATE | |
-| anthropic:error-statuses (429 and 402 become a quota outcome, any other status becomes `run lỗi`) | INTEGRATE | |
-| anthropic:model-mapping (per role and per entry from `config.json` `engines[].models`, decided per model at E-09) | INTEGRATE | |
-| anthropic:context-caching (automatic; cache-hit tokens mapped to `cache_read_tokens`) | INTEGRATE | |
-| anthropic:compat-knobs (`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING`, set only on E-09's one retry or per entry) | INTEGRATE | |
-| anthropic:route-precheck (one unauthenticated zero-token POST to `{base}/v1/messages`, printing only the HTTP status; user-run E-09 only) | INTEGRATE | |
+| anthropic:usage-accounting | INTEGRATE | input/output/cache tokens into `runs`, cost priced per engine id |
+| anthropic:error-statuses | INTEGRATE | 429 and 402 become a quota outcome, any other status becomes `run lỗi` |
+| anthropic:model-mapping | INTEGRATE | per role and per entry from `config.json` `engines[].models`, decided per model at E-09 |
+| anthropic:context-caching | INTEGRATE | automatic; cache-hit tokens mapped to `cache_read_tokens` |
+| anthropic:compat-knobs | INTEGRATE | `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING`, set only on E-09's one retry or per entry |
+| anthropic:route-precheck | INTEGRATE | one unauthenticated zero-token POST to `{base}/v1/messages`, printing only the HTTP status; user-run E-09 only |
 | anthropic:models-list (GET /v1/models) | OPT-OUT | not needed — engines and models are declared in config.json and are not editable on the UI (D-08, D-33) |
-| anthropic:balance-or-budget-endpoints (provider balance, spend or key-info routes) | OPT-OUT | not needed — readiness is local only (UI-SPEC C8: no model or API call, no tokens); budget stops are read from the error result |
-| anthropic:openai-format-chat (OpenAI-format chat completions on the same gateway) | OPT-OUT | deferred (D-31) — only the Anthropic format through `claude` is integrated; an `openai` kind is a later phase |
+| anthropic:balance-or-budget-endpoints | OPT-OUT | not needed — readiness is local only (UI-SPEC C8: no model or API call, no tokens); budget stops are read from the error result |
+| anthropic:openai-format-chat | OPT-OUT | deferred (D-31) — only the Anthropic format through `claude` is integrated; an `openai` kind is a later phase |
 | anthropic:thinking-budget-controls | OPT-OUT | not needed — Claude Code decides thinking; the two compat knobs are the only fallback |
 | anthropic:batch-api (message batches) | OPT-OUT | not needed — roles are interactive agentic sessions, not batch jobs |
-| dsh:headless-exec (`docker exec -w <cwd> <container> sh -c '…' sh <profile> <prompt>` with the marker wrapper) | INTEGRATE | |
-| dsh:plain-text-output (final message as plain text lines, no tokens, `usage_source` none) | INTEGRATE | |
-| dsh:in-container-kill (stop hook records the marker subtree, TERM then KILL by recorded PID, never by name) | INTEGRATE | |
-| dsh:container-readiness (`docker ps --filter name=^C$ --format {{.Status}}`, read-only, local) | INTEGRATE | |
-| dsh:mount-preflight (`docker inspect <container> --format '{{json .Mounts}}'` only, to refuse a project outside the same-path mount) | INTEGRATE | |
+| dsh:headless-exec | INTEGRATE | `docker exec -w <cwd> <container> sh -c '…' sh <profile> <prompt>` with the marker wrapper |
+| dsh:plain-text-output | INTEGRATE | final message as plain text lines, no tokens, `usage_source` none |
+| dsh:in-container-kill | INTEGRATE | stop hook records the marker subtree, TERM then KILL by recorded PID, never by name |
+| dsh:container-readiness | INTEGRATE | `docker ps --filter name=^C$ --format {{.Status}}`, read-only, local |
+| dsh:mount-preflight | INTEGRATE | `docker inspect <container> --format '{{json .Mounts}}'` only, to refuse a project outside the same-path mount |
 | dsh:web-ui (`dsh web`) | OPT-OUT | explicitly out of scope — D-35: dsh is a black box headless engine, not a service to integrate |
 | dsh:plugin (`dsh plugin`) | OPT-OUT | not needed — plugins are the dsh user's own setup, invisible to agent-brain |
 | dsh:container-lifecycle (start, stop, restart, rebuild, rm) | OPT-OUT | explicitly out of scope — agent-brain never changes the container's state (D-07, D-35) |
@@ -31,10 +31,10 @@
 | dsh:uid-mapping (`docker exec -u <uid>:<gid>`) | OPT-OUT | not needed yet — assumption A19 is observed by the user-run `--uid-probe` only, nothing depends on it |
 | dsh:usage-tokens | OPT-OUT | not possible — dsh headless prints no token counts (S6), so cost stays 0 and the stats row says no usage |
 | agy:print-mode (`-p`) | INTEGRATE | |
-| agy:stream-json-output (`--output-format stream-json`, `event` key: init / step_update / result) | INTEGRATE | |
+| agy:stream-json-output | INTEGRATE | `--output-format stream-json`, `event` key: init / step_update / result |
 | agy:print-timeout (`--print-timeout`, always explicit) | INTEGRATE | |
-| agy:multiple-entries (several `agy` engines in `engines[]`, each with its own id, command and model) | INTEGRATE | |
-| agy:permission-modes (Dev only, limited to `--mode accept-edits` as decided at the 06-02 probe, D-26; no skip-permissions flag) | INTEGRATE | |
+| agy:multiple-entries | INTEGRATE | several `agy` engines in `engines[]`, each with its own id, command and model |
+| agy:permission-modes | INTEGRATE | Dev only, limited to `--mode accept-edits` as decided at the 06-02 probe, D-26; no skip-permissions flag |
 | agy:model-selection (`--model` from the entry's `model` when set) | INTEGRATE | |
 | agy:usage (result.usage → runs tokens) | INTEGRATE | |
 | agy:effort (`--effort`) | OPT-OUT | not needed yet — agy defaults are used; no requirement asks for effort control |
@@ -57,15 +57,25 @@
 | telegram:getFile | OPT-OUT | explicitly out of scope — files in forwarded messages stay deferred (05.4) |
 | telegram:message-copy-forward (forwardMessage(s), copyMessage(s)) | OPT-OUT | not needed — the bot only sends its own messages |
 | telegram:deleteMessage(s) | OPT-OUT | not needed — quota and team-pick messages are edited to their final state and kept as history |
-| telegram:media-sends (photo, audio, video, animation, voice, video note, paid media, media group) | OPT-OUT | not needed — quota and gate messages are text plus the existing plan document |
+| telegram:media-sends | OPT-OUT | not needed — quota and gate messages are text plus the existing plan document |
 | telegram:location-venue-contact-dice | OPT-OUT | not needed |
 | telegram:polls (sendPoll, stopPoll) | OPT-OUT | not needed — team choice uses inline buttons with a second confirm tap (D-28) |
 | telegram:sendChatAction | OPT-OUT | not needed — the outcome message follows within seconds |
 | telegram:setMessageReaction | OPT-OUT | not needed — outcomes are reported as messages |
 | telegram:edit-caption-media-live-location | OPT-OUT | not needed — documents are never edited in place |
-| telegram:chat-and-member-queries (getChat, getChatMember, getChatAdministrators, getChatMemberCount, getUserProfilePhotos) | OPT-OUT | not needed — authorization is the paired chat ID only; staff have no Telegram access (D-20) |
-| telegram:chat-administration (ban, restrict, promote, permissions, titles, invite links, join requests, appearance, pinning, leaveChat) | OPT-OUT | explicitly out of scope — one private chat, no group management |
+| telegram:chat-and-member-queries | OPT-OUT | not needed — authorization is the paired chat ID only; staff have no Telegram access (D-20) |
+| telegram:chat-administration | OPT-OUT | explicitly out of scope — one private chat, no group management |
 | telegram:forum-topics | OPT-OUT | explicitly out of scope — no groups |
 | telegram:bot-profile | OPT-OUT | not needed — set by the user in @BotFather |
 | telegram:inline-mode-and-web-apps | OPT-OUT | explicitly out of scope — only callback buttons on the bot's own messages |
 | telegram:payments-stars-passport-games-stickers-gifts-stories-business | OPT-OUT | explicitly out of scope — none of these features exist in agent-brain |
+
+## Capability details
+
+Scope notes moved out of the table (the capability cell is limited to 80 characters):
+
+- `anthropic:balance-or-budget-endpoints`: provider balance, spend or key-info routes
+- `anthropic:openai-format-chat`: OpenAI-format chat completions on the same gateway
+- `telegram:media-sends`: photo, audio, video, animation, voice, video note, paid media, media group
+- `telegram:chat-and-member-queries`: getChat, getChatMember, getChatAdministrators, getChatMemberCount, getUserProfilePhotos
+- `telegram:chat-administration`: ban, restrict, promote, permissions, titles, invite links, join requests, appearance, pinning, leaveChat
