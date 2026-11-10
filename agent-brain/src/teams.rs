@@ -292,9 +292,9 @@ pub fn team_role_of(role: &str) -> &str {
 
 /// C3: whether a team can run one role of a task now. One check shared by the quota message
 /// buttons (Telegram), the dashboard re-run dialog, `quota_rerun` and the autopilot's team
-/// restore: `team_profile_refusal`, then the engine of the role must be `san_sang` in
-/// `engine::readiness`; on the department team, a department with members needs one usable member
-/// for the role and level (`departments::ready_candidates`, the filter of `pick_from`).
+/// restore: `team_profile_refusal`, then the engine of the role must be runnable now (`sẵn sàng`,
+/// or `chưa kiểm` which runs marked, D-40) in `engine::readiness`; on the department team, a department
+/// with members needs one usable member for the role and level (`departments::ready_candidates`, the filter of `pick_from`).
 pub struct TeamReadiness {
     pub statuses: Vec<crate::engine::EngineStatus>,
     pub departments: crate::departments::LoadedDepartments,
@@ -314,7 +314,10 @@ impl TeamReadiness {
         let env = crate::profile::current_env();
         TeamReadiness {
             statuses: crate::engine::readiness(cfg, &env, 0),
-            departments: crate::departments::load_path(&crate::departments::departments_path(), cfg),
+            departments: crate::departments::load_path(
+                &crate::departments::departments_path(),
+                cfg,
+            ),
             project_id: project_id.to_string(),
             project_profile: project_profile.to_string(),
             level,
@@ -323,12 +326,7 @@ impl TeamReadiness {
 
     /// `Some(reason)` when `team` cannot run `role` now; the reason names the engine and what
     /// readiness says is missing (an env var name, never its value).
-    pub fn refusal(
-        &self,
-        cfg: &crate::config::Config,
-        team: &Team,
-        role: &str,
-    ) -> Option<String> {
+    pub fn refusal(&self, cfg: &crate::config::Config, team: &Team, role: &str) -> Option<String> {
         if let Some(msg) =
             team_profile_refusal(team, &cfg.engines, &self.project_id, &self.project_profile)
         {
@@ -364,7 +362,7 @@ impl TeamReadiness {
                 "Đội hình {}: engine '{name}' của vai {role} chưa khai báo trong config.json.",
                 team.name
             )),
-            Some(st) if st.readiness != crate::engine::Readiness::SanSang.key() => {
+            Some(st) if !crate::engine::readiness_allows_run(st.readiness) => {
                 let why = st
                     .reason
                     .as_deref()
@@ -392,6 +390,23 @@ impl TeamReadiness {
             .filter(|t| self.refusal(cfg, t, role).is_none())
             .map(|t| t.name.clone())
             .collect()
+    }
+
+    /// D-40: trả về id engine của role nếu engine đó ở trạng thái `chưa kiểm` (chua_kiem), ngược lại None.
+    /// Dùng để gắn dấu `chưa kiểm` lên các lựa chọn chạy chưa kiểm chứng (06-29).
+    /// Trên `phong-ban` hàm này đọc engine của chính team, không đọc thành viên phòng ban.
+    pub fn unverified_engine(&self, team: &Team, role: &str) -> Option<String> {
+        let engine = team.engine_for(team_role_of(role));
+        if engine.is_human() {
+            return None;
+        }
+        let name = engine.as_db_str();
+        let st = self.statuses.iter().find(|s| s.name == name)?;
+        if st.readiness == crate::engine::Readiness::ChuaKiem.key() {
+            Some(name.to_string())
+        } else {
+            None
+        }
     }
 }
 
@@ -1212,9 +1227,9 @@ mod tests {
         crate::config::config_from_value(&v).unwrap()
     }
 
-    fn c3_readiness(
+    fn c3_readiness_with_env(
         cfg: &crate::config::Config,
-        key_set: bool,
+        extra: &[(&str, &str)],
         departments: &str,
     ) -> (TeamReadiness, tempfile::TempDir) {
         use std::os::unix::fs::PermissionsExt;
@@ -1224,8 +1239,8 @@ mod tests {
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut env = BTreeMap::new();
         env.insert("PATH".to_string(), dir.path().to_str().unwrap().to_string());
-        if key_set {
-            env.insert("GW_TEST_KEY".to_string(), "planted-secret-value".to_string());
+        for (k, v) in extra {
+            env.insert((*k).to_string(), (*v).to_string());
         }
         let statuses = crate::engine::readiness_with(cfg, &env, 0, &|_, _| None);
         (
@@ -1238,6 +1253,19 @@ mod tests {
             },
             dir,
         )
+    }
+
+    fn c3_readiness(
+        cfg: &crate::config::Config,
+        key_set: bool,
+        departments: &str,
+    ) -> (TeamReadiness, tempfile::TempDir) {
+        let extra = if key_set {
+            vec![("GW_TEST_KEY", "planted-secret-value")]
+        } else {
+            vec![]
+        };
+        c3_readiness_with_env(cfg, &extra, departments)
     }
 
     fn c3_teams() -> LoadedTeams {
@@ -1255,24 +1283,40 @@ mod tests {
         let teams = c3_teams();
         let (r, _dir) = c3_readiness(&cfg, false, "{}");
 
-        let why = r.refusal(&cfg, teams.get("doi-gw").unwrap(), "dev").unwrap();
+        let why = r
+            .refusal(&cfg, teams.get("doi-gw").unwrap(), "dev")
+            .unwrap();
         assert!(why.contains("doi-gw") && why.contains("'gw'"), "{why}");
-        assert!(why.contains("Chưa đặt biến môi trường GW_TEST_KEY."), "{why}");
+        assert!(
+            why.contains("Chưa đặt biến môi trường GW_TEST_KEY."),
+            "{why}"
+        );
         assert!(!why.contains("planted"), "{why}");
-        let why = r.refusal(&cfg, teams.get("doi-lap").unwrap(), "dev").unwrap();
+        let why = r
+            .refusal(&cfg, teams.get("doi-lap").unwrap(), "dev")
+            .unwrap();
         assert!(why.contains("chưa khai báo trong config.json"), "{why}");
         // ENG-10 comes first: a personal-only engine on a work project.
-        let why = r.refusal(&cfg, teams.get("doi-pin").unwrap(), "dev").unwrap();
+        let why = r
+            .refusal(&cfg, teams.get("doi-pin").unwrap(), "dev")
+            .unwrap();
         assert!(why.contains("SPK-10"), "{why}");
 
         // Only the role of the stopped run counts: QA of every team runs on claude.
         // The third built-in team names an engine this engine list does not declare.
-        assert_eq!(r.ready_names(&cfg, &teams, "dev"), vec!["mac-dinh", "phong-ban"]);
-        assert!(r.ready_names(&cfg, &teams, "qa").contains(&"doi-gw".to_string()));
+        assert_eq!(
+            r.ready_names(&cfg, &teams, "dev"),
+            vec!["mac-dinh", "phong-ban"]
+        );
+        assert!(r
+            .ready_names(&cfg, &teams, "qa")
+            .contains(&"doi-gw".to_string()));
 
         // With the key set the gateway team is offered.
         let (r, _dir) = c3_readiness(&cfg, true, "{}");
-        assert!(r.ready_names(&cfg, &teams, "dev").contains(&"doi-gw".to_string()));
+        assert!(r
+            .ready_names(&cfg, &teams, "dev")
+            .contains(&"doi-gw".to_string()));
         assert_eq!(team_role_of("analyst"), "lead");
         assert_eq!(team_role_of("analysis-review"), "plan-review");
     }
@@ -1294,6 +1338,97 @@ mod tests {
     }
 
     #[test]
+    fn c3_unverified_engine_is_ready_and_marked() {
+        let mut v: serde_json::Value =
+            serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap();
+        v["engines"] = serde_json::json!([
+            {"id": "gw", "kind": "anthropic", "command": "claude",
+             "base_url": "https://gw.invalid/anthropic", "key_env": "GW_TEST_KEY",
+             "verified": "e09 ok", "models": {"dev": "m"}},
+            {"id": "gw-chua", "kind": "anthropic", "command": "claude",
+             "base_url": "https://gw-chua.invalid/anthropic", "key_env": "GW_TEST_KEY",
+             "models": {"dev": "m"}},
+            {"id": "pinned", "kind": "anthropic", "command": "claude", "pin_profile": "personal",
+             "models": {"dev": "m"}}
+        ]);
+        v["claude_bin"] = serde_json::json!("claude");
+        let cfg = crate::config::config_from_value(&v).unwrap();
+
+        let teams_text = r#"{
+            "doi-chua": {"description": "Dev trên gw-chua", "roles": {"dev": "gw-chua"}}
+        }"#;
+        let teams = load_from(Some(teams_text), &no_staff());
+        let doi_chua = teams.get("doi-chua").unwrap();
+        let mac_dinh = teams.get(DEFAULT_TEAM).unwrap();
+        let _phong_ban = teams.get(TEAM_PHONG_BAN).unwrap();
+
+        // Key set
+        let only_gw_chua = r#"{"thi-cong": {"members": {"m1": {"display_name": "M1", "engine": "gw-chua", "model": "x", "levels": ["vua"]}}}}"#;
+        let (r, _dir) = c3_readiness_with_env(
+            &cfg,
+            &[("GW_TEST_KEY", "planted-secret-value")],
+            only_gw_chua,
+        );
+
+        let gw_st = r.statuses.iter().find(|s| s.name == "gw-chua").unwrap();
+        assert_eq!(gw_st.readiness, crate::engine::Readiness::ChuaKiem.key());
+        assert_eq!(r.refusal(&cfg, doi_chua, "dev"), None);
+        assert!(r
+            .ready_names(&cfg, &teams, "dev")
+            .contains(&"doi-chua".to_string()));
+        assert_eq!(
+            r.unverified_engine(doi_chua, "dev"),
+            Some("gw-chua".to_string())
+        );
+        assert_eq!(r.unverified_engine(doi_chua, "qa"), None);
+        assert_eq!(r.unverified_engine(mac_dinh, "dev"), None);
+        // phong-ban member readiness is wired in Task 2 (member_usable).
+
+        // Key unset
+        let (r_no_key, _dir) = c3_readiness_with_env(&cfg, &[], only_gw_chua);
+        let why = r_no_key.refusal(&cfg, doi_chua, "dev").unwrap();
+        assert!(why.contains("thiếu key"), "{why}");
+        assert!(
+            why.contains("Chưa đặt biến môi trường GW_TEST_KEY."),
+            "{why}"
+        );
+        assert!(!r_no_key
+            .ready_names(&cfg, &teams, "dev")
+            .contains(&"doi-chua".to_string()));
+    }
+
+    #[test]
+    fn c3_builtin_tiet_kiem_on_default_deepseek() {
+        let v: serde_json::Value =
+            serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap();
+        let cfg = crate::config::config_from_value(&v).unwrap();
+        let teams = load_from(None, &no_staff());
+        let tiet_kiem = teams.get("tiet-kiem").unwrap();
+
+        // With DEEPSEEK_API_KEY set:
+        let (r, _dir) =
+            c3_readiness_with_env(&cfg, &[("DEEPSEEK_API_KEY", "planted-key-val")], "{}");
+        assert_eq!(
+            r.ready_names(&cfg, &teams, "dev"),
+            vec!["mac-dinh", "phong-ban", "tiet-kiem"]
+        );
+        assert_eq!(
+            r.unverified_engine(tiet_kiem, "dev"),
+            Some("deepseek".to_string())
+        );
+
+        // Without DEEPSEEK_API_KEY:
+        let (r_no_key, _dir) = c3_readiness_with_env(&cfg, &[], "{}");
+        assert_eq!(
+            r_no_key.ready_names(&cfg, &teams, "dev"),
+            vec!["mac-dinh", "phong-ban"]
+        );
+        let why = r_no_key.refusal(&cfg, tiet_kiem, "dev").unwrap();
+        assert!(why.contains("DEEPSEEK_API_KEY"), "{why}");
+        assert!(!why.contains("planted-key-val"), "{why}");
+    }
+
+    #[test]
     fn c3_quota_restore_target() {
         let switched = TaskTeam::parse(Some(
             r#"{"name":"doi-b","history":[{"at":1,"by":"telegram","from":"mac-dinh","to":"doi-b","reason":"quota","reset_at":1000}]}"#,
@@ -1306,7 +1441,10 @@ mod tests {
         assert_eq!(back.name, "mac-dinh");
         let last = back.history.last().unwrap();
         assert_eq!(last.reason.as_deref(), Some(CHANGE_REASON_QUOTA_RESTORE));
-        assert_eq!((last.from.as_str(), last.to.as_str()), ("doi-b", "mac-dinh"));
+        assert_eq!(
+            (last.from.as_str(), last.to.as_str()),
+            ("doi-b", "mac-dinh")
+        );
         // Restored once: the last entry is no longer a quota switch.
         assert_eq!(back.quota_restore_target(5000), None);
 
@@ -1316,7 +1454,13 @@ mod tests {
             r#"{"name":"doi-b","history":[{"at":1,"by":"telegram","from":"mac-dinh","to":"doi-b","reason":"quota"}]}"#,
             r#"{"name":"doi-c","history":[{"at":1,"by":"telegram","from":"mac-dinh","to":"doi-b","reason":"quota","reset_at":1}]}"#,
         ] {
-            assert_eq!(TaskTeam::parse(Some(raw)).unwrap().quota_restore_target(9999), None, "{raw}");
+            assert_eq!(
+                TaskTeam::parse(Some(raw))
+                    .unwrap()
+                    .quota_restore_target(9999),
+                None,
+                "{raw}"
+            );
         }
         // Old documents without the new keys still parse and serialize without them.
         let old = TaskTeam::parse(Some(

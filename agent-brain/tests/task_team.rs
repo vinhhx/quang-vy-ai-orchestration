@@ -724,7 +724,10 @@ fn run_summary(sb: &Sandbox) -> Vec<(String, String, Option<String>)> {
 
 /// Manual task on team `doi-a`: Lead planned, then a Dev run through the dashboard that wrote part
 /// of `src/app.py` and hit the quota wall. The second queued Dev entry completes the work.
-fn manual_dev_quota(sb: &Sandbox) -> (std::path::PathBuf, Serve) {
+fn manual_dev_quota_with_env(
+    sb: &Sandbox,
+    extra_env: &[(&str, &str)],
+) -> (std::path::PathBuf, Serve) {
     write_doi_a_b(sb);
     let repo = cli_lead_task_with(sb, Some("doi-a"));
     sb.write_scenario(by_role(json!({
@@ -733,12 +736,108 @@ fn manual_dev_quota(sb: &Sandbox) -> (std::path::PathBuf, Serve) {
             ok_entry(vec![write_op("src/app.py", "def app():\n    return 3\n")]),
         ]
     })));
-    let srv = sb.serve(&[]);
+    let srv = sb.serve(extra_env);
     let resp = srv.post_json("/api/tasks/1/dev", &json!({}));
     assert_eq!(resp.status, 202, "body: {}", resp.text());
     let job = wait_for_job(&srv, resp.json()["job_id"].as_u64().unwrap());
     assert_eq!(job["exit_code"], 5, "the quota stop exits 5: {job}");
     (repo, srv)
+}
+
+fn manual_dev_quota(sb: &Sandbox) -> (std::path::PathBuf, Serve) {
+    manual_dev_quota_with_env(sb, &[])
+}
+
+const PLANTED_DS_KEY: &str = "test-planted-deepseek-key-0123456789";
+
+#[test]
+fn quota_rerun_unverified_engine_runs() {
+    let sb = Sandbox::new();
+    let (_repo, srv) = manual_dev_quota_with_env(&sb, &[("DEEPSEEK_API_KEY", PLANTED_DS_KEY)]);
+    let task = srv.get("/api/tasks/1").json();
+    let ready_teams = task["quota"]["ready_teams"]
+        .as_array()
+        .expect("ready_teams");
+    let ready_names: Vec<&str> = ready_teams.iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(
+        ready_names,
+        vec!["mac-dinh", "phong-ban", "tiet-kiem", "doi-a", "doi-b"],
+        "task: {task}"
+    );
+
+    let resp = srv.post_json(
+        "/api/tasks/1/quota-rerun",
+        &json!({"team": "tiet-kiem", "rev": task["rev"]}),
+    );
+    assert_eq!(resp.status, 202, "body: {}", resp.text());
+    let job_id = resp.json()["job_id"].as_u64().expect("job_id");
+    let job = wait_for_job(&srv, job_id);
+    assert_eq!(job["exit_code"], 0, "job: {job}");
+
+    let conn = sb.db();
+    let mut stmt = conn
+        .prepare(
+            "SELECT engine, status, outcome, metrics_json, error FROM runs WHERE role = 'dev' ORDER BY id",
+        )
+        .unwrap();
+    let dev_runs: Vec<(
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(dev_runs.len(), 2, "dev_runs: {dev_runs:?}");
+    assert_eq!(dev_runs[0].0, "claude");
+    assert_eq!(dev_runs[0].2.as_deref(), Some("quota"));
+
+    assert_eq!(dev_runs[1].0, "deepseek");
+    assert_eq!(dev_runs[1].1, "succeeded");
+    let m2: Value = serde_json::from_str(dev_runs[1].3.as_deref().unwrap_or("{}")).unwrap();
+    assert_eq!(m2["unverified"], true, "metrics: {m2}");
+
+    let after = srv.get("/api/tasks/1").json();
+    assert_eq!(after["team"]["name"], "tiet-kiem");
+    let history = after["team_history"].as_array().unwrap();
+    assert_eq!(history.len(), 1, "history: {history:?}");
+    assert_eq!(history[0]["from"], "doi-a");
+    assert_eq!(history[0]["to"], "tiet-kiem");
+
+    let recs = sb.records();
+    let last_rec = recs.last().expect("fake claude records");
+    let env_names = last_rec["env_names"].as_array().expect("env_names");
+    assert!(
+        env_names.iter().any(|v| v == "ANTHROPIC_BASE_URL"),
+        "env_names: {env_names:?}"
+    );
+
+    let task_str = task.to_string();
+    let after_str = after.to_string();
+    let job_str = job.to_string();
+    assert!(
+        !task_str.contains(PLANTED_DS_KEY),
+        "task leaked planted key"
+    );
+    assert!(
+        !after_str.contains(PLANTED_DS_KEY),
+        "after leaked planted key"
+    );
+    assert!(!job_str.contains(PLANTED_DS_KEY), "job leaked planted key");
+    for r in &dev_runs {
+        if let Some(err) = &r.4 {
+            assert!(!err.contains(PLANTED_DS_KEY), "error leaked key");
+        }
+        if let Some(met) = &r.3 {
+            assert!(!met.contains(PLANTED_DS_KEY), "metrics leaked key");
+        }
+    }
 }
 
 #[test]

@@ -107,6 +107,13 @@ impl Readiness {
     }
 }
 
+/// D-40: kiểm tra readiness có cho phép chạy bước hay không.
+/// `sẵn sàng` (san_sang) và `chưa kiểm` (chua_kiem) đều được phép chạy (chưa kiểm chạy có đánh dấu unverified, D-40);
+/// `thiếu key` (thieu_key), `thiếu lệnh` (thieu_lenh) và các trạng thái khác không bao giờ được chạy.
+pub fn readiness_allows_run(readiness: &str) -> bool {
+    readiness == Readiness::SanSang.key() || readiness == Readiness::ChuaKiem.key()
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct EngineStatus {
     pub name: String,
@@ -513,7 +520,8 @@ fn project_pin(
     };
     match pin {
         crate::projects::RolePin::Member(member_id) => {
-            let loaded = crate::departments::load_path(&crate::departments::departments_path(), cfg);
+            let loaded =
+                crate::departments::load_path(&crate::departments::departments_path(), cfg);
             let member = loaded.get(&member_id).ok_or_else(|| {
                 BrainError::error(format!(
                     "Dự án '{project_id}' ghim thành viên '{member_id}' cho vai {lookup_role}, nhưng thành viên này không có trong departments.json — sửa ghim trên trang Dự án."
@@ -677,9 +685,14 @@ fn resolve_inner(
 
     // C4: a project pin comes before the department pick.
     if let Some(active_cfg) = active_cfg {
-        if let Some((engine, pick)) =
-            project_pin(active_cfg, &pins, &project_id, &project_profile, role, lookup_role)?
-        {
+        if let Some((engine, pick)) = project_pin(
+            active_cfg,
+            &pins,
+            &project_id,
+            &project_profile,
+            role,
+            lookup_role,
+        )? {
             return Ok(ResolvedEngine {
                 engine,
                 team: Some(task_team.name.clone()),
@@ -691,17 +704,12 @@ fn resolve_inner(
 
     if is_phong_ban {
         let level_str = crate::db::task_level(conn, task_id).unwrap_or_else(|_| "vua".to_string());
-        let level = crate::departments::Level::parse(&level_str).unwrap_or(crate::departments::Level::Vua);
+        let level =
+            crate::departments::Level::parse(&level_str).unwrap_or(crate::departments::Level::Vua);
 
         if let Some(active_cfg) = active_cfg {
-            match crate::departments::pick(
-                conn,
-                active_cfg,
-                task_id,
-                role,
-                level,
-                &project_profile,
-            ) {
+            match crate::departments::pick(conn, active_cfg, task_id, role, level, &project_profile)
+            {
                 Ok(Some(picked)) => {
                     resolved_engine = picked.member.engine.clone();
                     member_pick = Some(picked);
@@ -1073,11 +1081,7 @@ fn agy_plan(
     let resolved_model = if let Some(m) = member_model {
         Some(m.to_string())
     } else {
-        acfg
-            .models
-            .get(role)
-            .or(acfg.model.as_ref())
-            .cloned()
+        acfg.models.get(role).or(acfg.model.as_ref()).cloned()
     };
     if let Some(m) = &resolved_model {
         argv.push("--model".to_string());
@@ -1622,8 +1626,14 @@ mod tests {
     fn response_files_by_role() {
         use crate::protocol_paths::ProtocolFile;
         assert_eq!(response_file_for("lead"), Some(ProtocolFile::Plan));
-        assert_eq!(response_file_for("plan-review"), Some(ProtocolFile::PlanReview));
-        assert_eq!(response_file_for("code-review"), Some(ProtocolFile::CodeReview));
+        assert_eq!(
+            response_file_for("plan-review"),
+            Some(ProtocolFile::PlanReview)
+        );
+        assert_eq!(
+            response_file_for("code-review"),
+            Some(ProtocolFile::CodeReview)
+        );
         assert_eq!(response_file_for("dev"), None);
         assert_eq!(response_file_for("qa"), None);
     }
@@ -1682,7 +1692,10 @@ mod tests {
         assert_eq!(p.db_engine, "agy");
         assert_eq!(p.stream, StreamFormat::Agy);
         assert!(p.stdout_file);
-        assert_eq!(p.response_file, Some(crate::protocol_paths::ProtocolFile::Plan));
+        assert_eq!(
+            p.response_file,
+            Some(crate::protocol_paths::ProtocolFile::Plan)
+        );
         let names: Vec<&str> = p.env.keys().map(String::as_str).collect();
         assert_eq!(names, ["HOME", "PATH"]);
 
@@ -2168,6 +2181,16 @@ mod tests {
     }
 
     #[test]
+    fn readiness_allows_run_policy() {
+        assert!(readiness_allows_run(Readiness::SanSang.key()));
+        assert!(readiness_allows_run(Readiness::ChuaKiem.key()));
+        assert!(!readiness_allows_run(Readiness::ThieuKey.key()));
+        assert!(!readiness_allows_run(Readiness::ThieuLenh.key()));
+        assert!(!readiness_allows_run(""));
+        assert!(!readiness_allows_run("khac"));
+    }
+
+    #[test]
     fn agy_readonly_prompt_guidance() {
         let cfg = test_cfg(serde_json::json!({
             "engines": {"agy": {"model": "gemini-x"}}
@@ -2342,7 +2365,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p_lead.model_label, "gemini-4-argon-high");
-        assert!(p_lead.argv.windows(2).any(|w| w == ["--model", "gemini-4-argon-high"]));
+        assert!(p_lead
+            .argv
+            .windows(2)
+            .any(|w| w == ["--model", "gemini-4-argon-high"]));
 
         let p_qa = run_plan(
             &cfg,
@@ -2355,6 +2381,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p_qa.model_label, "gemini-3.8-flash-high");
-        assert!(p_qa.argv.windows(2).any(|w| w == ["--model", "gemini-3.8-flash-high"]));
+        assert!(p_qa
+            .argv
+            .windows(2)
+            .any(|w| w == ["--model", "gemini-3.8-flash-high"]));
     }
 }
