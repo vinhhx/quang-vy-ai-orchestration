@@ -173,6 +173,11 @@ enum Commands {
         #[command(subcommand)]
         subcommand: FixbugCommands,
     },
+    /// Nhật ký công việc sang vault Obsidian
+    Journal {
+        #[command(subcommand)]
+        subcommand: JournalCommands,
+    },
     /// Quản lý phòng ban và thành viên
     Dept {
         #[command(subcommand)]
@@ -291,6 +296,15 @@ enum FixbugCommands {
         /// Chỉ in cấu hình đề xuất, không ghi file
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum JournalCommands {
+    /// Dựng lại toàn bộ nhật ký từ brain.db, commit và đẩy lên repo vault (--no-push: chỉ ghi vào bản clone để xem diff)
+    Export {
+        #[arg(long)]
+        no_push: bool,
     },
 }
 
@@ -495,6 +509,9 @@ fn main() {
                 agent_brain::fixbug::cmd_init(&ctx, &project, dry_run)
             }
         }),
+        Commands::Journal { subcommand } => match subcommand {
+            JournalCommands::Export { no_push } => agent_brain::journal::cmd_export(&ctx, no_push),
+        },
         Commands::Task { subcommand } => match subcommand {
             TaskCommands::Cleanup {
                 task_id,
