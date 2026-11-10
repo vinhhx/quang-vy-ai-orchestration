@@ -2,8 +2,8 @@
 gsd_state_version: "1.0"
 current_phase: 06
 current_phase_name: Multi-engine & Media Branch
-status: executing
-stopped_at: "Phase 6 verified 2026-11-10: gaps_found (3 gaps: HUM-02 human done idempotency, ENG-11 chua_kiem policy, D-16 department fall-through) + 11 human checks"
+status: human_needed
+stopped_at: "Phase 6 gap closure 06-27..06-30 done (agy), re-verified 2026-11-10: human_needed (14/16, 3 gaps closed, 11 human checks in 06-UAT.md)"
 last_updated: "2026-11-10T07:01:31.773Z"
 last_activity: 2026-11-10
 last_activity_desc: Phase 06 execution started
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-10-24)
 ## Current Position
 
 Phase: 06 (Multi-engine & Media Branch) — EXECUTING
-Plan: gap closure 06-27..06-30 (26 of 30 have a SUMMARY; executor: agy in the open Orca window, user choice 2026-11-10)
-Status: Executing Phase 06 gap closure (`/gsd-execute-phase 06 --gaps-only`)
-Last activity: 2026-11-10 — Phase 06 gap-closure execution started
+Plan: 30 of 30 (gap closure 06-27..06-30 done by agy, reviewed; 1719 tests pass)
+Status: 06-VERIFICATION.md = human_needed (14/16, all 3 gaps closed). 11 human checks in 06-UAT.md. Next: `/gsd-verify-work 06`
+Last activity: 2026-11-10 — gap closure executed and re-verified; 06-GAPS-REVIEW.md 0 critical / 3 warning (all flagged assumptions)
 
 Other open items:
 - Phase 06.2: 06.2-01, 06.2-02 done; 06.2-03 superseded (QA rule dropped by quick plan `team-any-engine-any-role`, account choice by D-45 `claude_config_dir`). Its unmerged commits are kept on branch `worktree-agent-aabbd671f000750da` (52355e6); do not merge.
