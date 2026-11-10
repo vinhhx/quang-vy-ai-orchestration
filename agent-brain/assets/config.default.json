@@ -40,6 +40,11 @@
     "plan-review": null,
     "code-review": null
   },
+  "merge": {
+    "default_base_branch": "dev",
+    "git_timeout_secs": 120,
+    "delete_task_branch": true
+  },
   "models": {
     "lead": "opus",
     "dev": "sonnet",

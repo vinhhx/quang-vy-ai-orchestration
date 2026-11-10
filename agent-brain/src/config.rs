@@ -46,6 +46,74 @@ pub struct OrchestratorConfig {
     pub restore_team_after_quota: bool,
 }
 
+/// `merge` block of config.json: how `Merge & push` (task merge --push) works.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MergeConfig {
+    /// Base branch when neither the task nor the project names one.
+    pub default_base_branch: String,
+    /// Time limit of one `git fetch` / `git push` (10..=900 seconds).
+    pub git_timeout_secs: u64,
+    /// Delete the local task branch (`git branch -d`) once it is merged and pushed.
+    pub delete_task_branch: bool,
+}
+
+/// `merge.default_base_branch` when config.json has none.
+pub const DEFAULT_MERGE_BASE_BRANCH: &str = "dev";
+
+impl Default for MergeConfig {
+    fn default() -> Self {
+        Self {
+            default_base_branch: DEFAULT_MERGE_BASE_BRANCH.to_string(),
+            git_timeout_secs: 120,
+            delete_task_branch: true,
+        }
+    }
+}
+
+/// Reads the optional `merge` block; a missing key keeps its default.
+fn merge_config_of(obj: &serde_json::Map<String, serde_json::Value>) -> BrainResult<MergeConfig> {
+    let mut merge = MergeConfig::default();
+    let Some(val) = obj.get("merge") else {
+        return Ok(merge);
+    };
+    let Some(m) = val.as_object() else {
+        return Err(BrainError::error("Cấu hình merge phải là object"));
+    };
+    if let Some(v) = m.get("default_base_branch") {
+        match v.as_str().map(str::trim) {
+            Some(s) if crate::gitops::valid_branch_name(s) => {
+                merge.default_base_branch = s.to_string()
+            }
+            _ => {
+                return Err(BrainError::error(
+                    "Cấu hình merge.default_base_branch phải là tên nhánh git hợp lệ",
+                ))
+            }
+        }
+    }
+    if let Some(v) = m.get("git_timeout_secs") {
+        match v.as_u64() {
+            Some(n) if (10..=900).contains(&n) => merge.git_timeout_secs = n,
+            _ => {
+                return Err(BrainError::error(
+                    "Cấu hình merge.git_timeout_secs phải là số nguyên từ 10 đến 900",
+                ))
+            }
+        }
+    }
+    if let Some(v) = m.get("delete_task_branch") {
+        match v.as_bool() {
+            Some(b) => merge.delete_task_branch = b,
+            None => {
+                return Err(BrainError::error(
+                    "Cấu hình merge.delete_task_branch phải là boolean",
+                ))
+            }
+        }
+    }
+    Ok(merge)
+}
+
 /// `orchestrator.triage_engine` when config.json has none.
 pub const DEFAULT_TRIAGE_ENGINE: &str = "claude";
 
@@ -1056,6 +1124,8 @@ pub struct Config {
     pub telegram_max_tasks_per_day: u32,
     /// Optional `engines` block of config.json (D-08); absent means today's behaviour.
     pub engines: EnginesCfg,
+    /// Optional `merge` block (Merge & push after QA).
+    pub merge: MergeConfig,
 }
 
 impl Config {
@@ -1498,6 +1568,8 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
     }
     file_engine_prices(&mut pricing, &engines);
 
+    let merge = merge_config_of(obj)?;
+
     Ok(Config {
         claude_bin,
         models,
@@ -1515,6 +1587,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         pricing,
         telegram_max_tasks_per_day,
         engines,
+        merge,
     })
 }
 
@@ -2714,5 +2787,54 @@ mod tests {
         let mut bad = base;
         bad["orchestrator"]["restore_team_after_quota"] = serde_json::json!("yes");
         assert!(config_from_value(&bad).is_err());
+    }
+
+    #[test]
+    fn merge_block_defaults_and_validation() {
+        let base: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        assert_eq!(config_from_value(&base).unwrap().merge, MergeConfig::default());
+        let mut none = base.clone();
+        none.as_object_mut().unwrap().remove("merge");
+        let d = config_from_value(&none).unwrap().merge;
+        assert_eq!(d.default_base_branch, "dev");
+        assert_eq!(d.git_timeout_secs, 120);
+        assert!(d.delete_task_branch);
+
+        let mut set = base.clone();
+        set["merge"] = serde_json::json!({
+            "default_base_branch": "main",
+            "git_timeout_secs": 10,
+            "delete_task_branch": false
+        });
+        let m = config_from_value(&set).unwrap().merge;
+        assert_eq!(m.default_base_branch, "main");
+        assert_eq!(m.git_timeout_secs, 10);
+        assert!(!m.delete_task_branch);
+
+        let mut partial = base.clone();
+        partial["merge"] = serde_json::json!({"git_timeout_secs": 900});
+        let m = config_from_value(&partial).unwrap().merge;
+        assert_eq!(m.git_timeout_secs, 900);
+        assert_eq!(m.default_base_branch, "dev");
+
+        for (key, val, word) in [
+            ("default_base_branch", serde_json::json!(5), "merge.default_base_branch"),
+            ("default_base_branch", serde_json::json!("-x"), "merge.default_base_branch"),
+            ("default_base_branch", serde_json::json!("a b"), "merge.default_base_branch"),
+            ("default_base_branch", serde_json::json!(""), "merge.default_base_branch"),
+            ("git_timeout_secs", serde_json::json!(9), "merge.git_timeout_secs"),
+            ("git_timeout_secs", serde_json::json!(901), "merge.git_timeout_secs"),
+            ("git_timeout_secs", serde_json::json!("60"), "merge.git_timeout_secs"),
+            ("git_timeout_secs", serde_json::json!(1.5), "merge.git_timeout_secs"),
+            ("delete_task_branch", serde_json::json!("yes"), "merge.delete_task_branch"),
+        ] {
+            let mut bad = base.clone();
+            bad["merge"] = serde_json::json!({ key: val.clone() });
+            let e = config_from_value(&bad).expect_err(&format!("{key}={val}"));
+            assert!(e.message.contains(word), "{key}={val}: {}", e.message);
+        }
+        let mut not_obj = base;
+        not_obj["merge"] = serde_json::json!(true);
+        assert!(config_from_value(&not_obj).is_err());
     }
 }
