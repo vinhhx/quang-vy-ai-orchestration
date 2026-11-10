@@ -61,7 +61,7 @@ Ngoài phạm vi: ghi ngược từ vault, file tuần, nhật ký theo task, xe
 **Downstream agents MUST read these before planning or implementing.**
 
 ### Thiết kế đã thống nhất
-- `/home/pc0741/.claude-max/projects/-mnt-data-IDE-QuangVy-Orchestration/memory/journal-vault-idea.md` — thiết kế gốc (vault, layout, allowlist, digest, `/tim`)
+- `~/.claude-max/projects/-mnt-data-IDE-QuangVy-Orchestration/memory/journal-vault-idea.md` — thiết kế gốc (vault, layout, allowlist, digest, `/tim`)
 - `.planning/ROADMAP.md` §Phase 7 — mục tiêu phase
 - `.planning/phases/07-journal-vault-obsidian/07-RESEARCH.md` — nghiên cứu: dữ liệu brain.db, điểm cắm vào code, FTS5, git, sanitizer, bẫy (đọc toàn bộ trước khi lập plan)
 - Repo vault `git@github.com:vinhhx/agent-brain-journal.git` commit `203c7fe` — định dạng demo chuẩn (D-17), chỉ đọc, không chép vào repo này
