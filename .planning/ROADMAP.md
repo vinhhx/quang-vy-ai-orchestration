@@ -412,7 +412,7 @@ Plans:
   4. *(chuyển sang Phase 06.1)*
   5. Antigravity được xử lý theo kết quả S7 (chạy headless như engine, hoặc dùng thủ công và theo dõi qua `git diff`), và tỉ lệ "Cần sửa" của QA được ghi theo engine.
 
-**Plans:** 18/26 plans executed
+**Plans:** 28/30 plans executed
 
 Plans:
 **Wave 1**
@@ -448,26 +448,26 @@ Plans:
 
 **Wave 8** *(blocked on Wave 7 completion)* — engine list re-plan (D-30…D-44)
 - [x] 06-11-PLAN.md — Engine list in config.json, `anthropic` kind, run-seam guards (unknown id, profile, unverified mark), final example config (wave 8)
-- [ ] 06-20-PLAN.md — E-09 per endpoint (gateway first) and dsh kill-wrapper probe (user-run), COVERAGE.md, ENG-08…11 registered (wave 8)
+- [x] 06-20-PLAN.md — E-09 per endpoint (gateway first) and dsh kill-wrapper probe (user-run), COVERAGE.md, ENG-08…11 registered (wave 8)
 
 **Wave 9** *(blocked on Wave 8 completion)*
-- [ ] 06-21-PLAN.md — Key hygiene for every engine key: redaction before every sink, post-run scan before commit (wave 9)
-- [ ] 06-22-PLAN.md — Teams know the engine list: profile guard at every bind point, dsh Dev-only, unknown ids (wave 9)
-- [ ] 06-26-PLAN.md — Readiness of the configured list (`chưa kiểm`, dsh container) and pricing by engine id (wave 9)
+- [x] 06-21-PLAN.md — Key hygiene for every engine key: redaction before every sink, post-run scan before commit (wave 9)
+- [x] 06-22-PLAN.md — Teams know the engine list: profile guard at every bind point, dsh Dev-only, unknown ids (wave 9)
+- [x] 06-26-PLAN.md — Readiness of the configured list (`chưa kiểm`, dsh container) and pricing by engine id (wave 9)
 
 **Wave 10** *(blocked on Wave 9 completion)*
-- [ ] 06-23-PLAN.md — dsh black-box engine: docker exec wrapper, text events, in-container kill by marker (wave 10)
-- [ ] 06-24-PLAN.md — UI-SPEC delta + approval, then the engine list on Cài đặt and Giao việc (wave 10)
+- [x] 06-23-PLAN.md — dsh black-box engine: docker exec wrapper, text events, in-container kill by marker (wave 10)
+- [x] 06-24-PLAN.md — UI-SPEC delta + approval, then the engine list on Cài đặt and Giao việc (wave 10)
 
 **Wave 11** *(blocked on Wave 10 completion)*
-- [ ] 06-25-PLAN.md — dsh outcomes: Dev diff checks, `dsh:empty`, text-mode quota (wave 11)
+- [x] 06-25-PLAN.md — dsh outcomes: Dev diff checks, `dsh:empty`, text-mode quota (wave 11)
 
 **Wave 12** *(blocked on Wave 11 completion)*
-- [ ] 06-19-PLAN.md — Live check on the engine list, schema v4 dry run on a copy of brain.db, README, LIVE-CHECKS § 8, phase gate (wave 12)
+- [x] 06-19-PLAN.md — Live check on the engine list, schema v4 dry run on a copy of brain.db, README, LIVE-CHECKS § 8, phase gate (wave 12)
 
 **Gap closure (06-VERIFICATION.md gaps, 2026-11-10)** — gap wave 1
-- [ ] 06-27-PLAN.md — HUM-02 / CR-01: `human done` (Xong) retry-safe after a failure past the merge, offline retry, newer pushes (gap wave 1)
-- [ ] 06-28-PLAN.md — ENG-11 / D-40: one readiness predicate; `chưa kiểm` runnable at team refusal, quota re-run, project pin, department member (gap wave 1)
+- [x] 06-27-PLAN.md — HUM-02 / CR-01: `human done` (Xong) retry-safe after a failure past the merge, offline retry, newer pushes (gap wave 1)
+- [x] 06-28-PLAN.md — ENG-11 / D-40: one readiness predicate; `chưa kiểm` runnable at team refusal, quota re-run, project pin, department member (gap wave 1)
 
 **Gap closure** — gap wave 2 *(blocked on 06-28)*
 - [ ] 06-29-PLAN.md — ENG-11 / QUOTA-01: `chưa kiểm` mark on quota re-run choices (Telegram buttons + confirm, dashboard dialog), UI-SPEC delta (gap wave 2)
@@ -521,4 +521,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 | 3. Rust CLI Core | 13/13 | Complete    | 2026-10-16 |
 | 4. Session & Token Optimization | 0/TBD | Not started | - |
 | 5. Embedded Dashboard | 13/13 | Complete    | 2026-10-19 |
-| 6. Multi-engine & Media Branch | 18/26 | In Progress | - |
+| 6. Multi-engine & Media Branch | 28/30 | In Progress | - |
