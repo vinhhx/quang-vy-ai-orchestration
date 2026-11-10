@@ -317,11 +317,23 @@ pub fn run_export_once_with(p: &ExportParams, opts: ExportOptions) -> BrainResul
     Ok(report)
 }
 
-/// Giá trị secret đã biết: biến môi trường có tên chứa key/token/secret/password, token
-/// Telegram và giá trị các biến khóa của engine.
-pub fn known_secrets(cfg: &crate::config::Config) -> Vec<String> {
+/// Giá trị secret đã biết (IN-03: cùng tập với `inputs::collect_secrets` của vòng lặp nền):
+/// biến môi trường có tên chứa key/token/secret/password, token dashboard (khi có), token
+/// Telegram trong `config_dir` (thư mục chứa projects_map.json) và giá trị các biến khóa của
+/// engine.
+pub fn known_secrets(
+    cfg: &crate::config::Config,
+    config_dir: &Path,
+    dashboard_token: Option<&str>,
+) -> Vec<String> {
     let mut out = crate::inputs::env_secrets();
-    if let Ok(tg) = crate::telegram::config::load(&crate::telegram::config::path()) {
+    if let Some(t) = dashboard_token {
+        if t.len() >= crate::secrets::MIN_SECRET_BYTES {
+            out.push(t.to_string());
+        }
+    }
+    let tg_file = config_dir.join(crate::telegram::config::FILE_NAME);
+    if let Ok(tg) = crate::telegram::config::load(&tg_file) {
         if tg.token.len() >= crate::secrets::MIN_SECRET_BYTES {
             out.push(tg.token);
         }
@@ -346,7 +358,14 @@ pub fn cmd_export(ctx: &crate::app::Ctx, no_push: bool, allow_removals: bool) ->
             "Chưa cấu hình journal.repo_url trong config.json — xem README mục Nhật ký Obsidian.",
         ));
     }
-    let secrets = known_secrets(&ctx.cfg);
+    // Token dashboard chỉ sống trong bộ nhớ của tiến trình serve (tạo mới mỗi lần chạy, không
+    // ghi ra đĩa), nên CLI không có để thêm vào.
+    let map_path = crate::config::map_path();
+    let config_dir = map_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(crate::config::config_dir);
+    let secrets = known_secrets(&ctx.cfg, &config_dir, None);
     let lock_dir = crate::config::data_dir();
     let params = ExportParams {
         conn: &ctx.conn,
