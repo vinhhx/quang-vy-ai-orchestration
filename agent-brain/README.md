@@ -62,6 +62,25 @@ Bản này thêm cột `tasks.team_json` (đội hình của task, lịch sử �
 
 Quay lại bản cũ: dừng `serve`, rồi khôi phục **cùng lúc** binary cũ và bản sao lưu (`cp -p brain.db.bak-pre-6-<ngày> brain.db` trong `~/.local/share/agent-brain`, xóa `brain.db-wal` / `brain.db-shm` của bản mới nếu có). Chỉ khôi phục một trong hai thì không chạy được: binary cũ từ chối database lược đồ 4, còn binary mới lại nâng bản sao lưu lên lược đồ 4. Task và run tạo sau lúc nâng cấp không có trong bản sao lưu.
 
+### Nâng cấp lên Phase 7 (lược đồ 12)
+Bản này thêm ba bảng cho nhật ký Obsidian: `journal_state` (trạng thái các lần xuất), `journal_mail` (hộp thư Telegram của nhật ký) và `journal_fts` (chỉ mục tìm kiếm cho `/tim`), và nâng `brain.db` lên lược đồ 12 ngay lần đầu binary mới mở database. Mọi task, run và sự kiện cũ được giữ nguyên. Việc nâng chỉ đi một chiều: sau đó binary cũ từ chối database với `CSDL … có phiên bản 12, mới hơn bản agent-brain này (hỗ trợ tới 11) — hãy cài agent-brain mới hơn.` Nhật ký tắt cho tới khi bạn cấu hình mục `journal` trong `config.json` (xem "Nhật ký Obsidian (journal)" ở mục 5). **Không thay binary khi còn task đang chạy**: chỉ cài lúc khởi động lại `serve`, sau khi mọi run và autopilot đã xong.
+1. Dừng `agent-brain serve` (Ctrl+C trong terminal của nó) và chờ các run / autopilot đang chạy xong (hoặc dừng chúng), để không còn tiến trình `agent-brain` nào mở `brain.db`.
+2. **Trước** lần chạy đầu tiên của binary mới, sao lưu database:
+   ```bash
+   cp -p ~/.local/share/agent-brain/brain.db ~/.local/share/agent-brain/brain.db.bak-pre-7-$(date +%Y%m%d)
+   ```
+   `brain.db` dùng chế độ WAL: nếu cạnh nó còn file `brain.db-wal`, chép cả file đó với cùng đuôi `.bak-pre-7-<ngày>` (và `brain.db-shm` nếu có).
+3. Chạy thử nâng lược đồ trên **bản sao** của database (từ gốc repo, sau khi đã `cargo build --manifest-path agent-brain/Cargo.toml --offline --locked`):
+   ```bash
+   bash scripts/phase7-live-check.sh --schema-dry-run
+   ```
+   Script chỉ chép `brain.db` (và `-wal` / `-shm`) bằng `cp -p` vào thư mục tạm, mở **bản sao** bằng binary mới, rồi so sánh: lược đồ phải lên 12, `PRAGMA integrity_check` là `ok`, số dòng của `projects`, `tasks`, `runs`, `events` không đổi, ba bảng journal có mặt, và thư mục dữ liệu thật không đổi (danh sách file và sha256). Đạt khi in `Schema v12 dry run OK (từ v11)` (hoặc `từ v12` nếu bạn đã nâng), `fk_violations_before=N after=N` và `real_dir_unchanged=yes`.
+   - `fk_violations_before=N after=N` là số dòng vi phạm khóa ngoại của bản sao trước và sau khi nâng. Database cũ có thể đã chứa sẵn dòng `events` mồ côi (run của chúng đã bị xóa từ lâu); các dòng đó không còn chặn việc nâng cấp, script chỉ đòi số này **không tăng**. Dọn chúng là tùy chọn, không bắt buộc: chỉ làm **sau khi đã sao lưu** và khi `serve` đã dừng, ví dụ `python3 -I -c "import os, sqlite3; c = sqlite3.connect(os.path.expanduser('~/.local/share/agent-brain/brain.db')); c.execute('DELETE FROM events WHERE run_id NOT IN (SELECT id FROM runs)'); c.commit()"`.
+   - Gặp dòng `LỖI dry run: …` thì không cài bản mới và báo lại; không sửa database bằng tay.
+4. Cài binary mới (mục trên), rồi chạy lại `agent-brain serve`.
+
+Quay lại bản cũ: dừng `serve`, rồi khôi phục **cùng lúc** binary cũ và bản sao lưu (`cp -p brain.db.bak-pre-7-<ngày> brain.db` trong `~/.local/share/agent-brain`, xóa `brain.db-wal` / `brain.db-shm` của bản mới nếu có, và chép lại `-wal` / `-shm` của bản sao lưu nếu bạn đã sao lưu chúng). Chỉ khôi phục một trong hai thì không chạy được: binary cũ từ chối database lược đồ 12, còn binary mới lại nâng bản sao lưu lên lược đồ 12. Task, run và dữ liệu nhật ký ghi sau lúc nâng cấp không có trong bản sao lưu (vault trên GitHub không bị ảnh hưởng và xuất lại được từ `brain.db`).
+
 ---
 
 ## 3. Bảng lệnh CLI
@@ -87,6 +106,7 @@ Quay lại bản cũ: dừng `serve`, rồi khôi phục **cùng lúc** binary c
 | **serve** | `agent-brain serve [--port N]` | Mở dashboard web trong chính binary, chỉ 127.0.0.1, có token. Cổng mặc định 7437, `--port 0` để hệ điều hành tự chọn. Khi đã ghép nối Telegram (`telegram.json` hợp lệ), serve chạy luôn bot Telegram (xem mục 14, Telegram: thông báo và nút; Telegram: giao việc). |
 | **telegram setup** | `agent-brain telegram setup` | Ghép nối bot Telegram: hỏi token bot (từ @BotFather, không hiện khi gõ), kiểm tra token, in một mã 6 số; bạn nhắn mã đó cho bot từ chat riêng trên điện thoại. Lưu token và chat ID vào `telegram.json` (quyền `0600`), gửi tin xác nhận vào Telegram. Từ chối khi `agent-brain serve` đang chạy trên cùng thư mục dữ liệu. Chạy lại để thay ghép nối cũ. |
 | **telegram test** | `agent-brain telegram test` | Gửi một tin thử tới chat đã ghép nối. Chưa ghép nối: `Chưa ghép nối Telegram — chạy agent-brain telegram setup`, thoát `1`. |
+| **journal export** | `agent-brain journal export [--no-push]` | Dựng lại toàn bộ nhật ký Obsidian từ `brain.db` vào bản clone của vault (`~/.local/share/agent-brain/journal`), commit bằng tác giả `agent-brain journal` và đẩy lên `journal.branch` (mặc định `main`), không bao giờ force-push. `--no-push` chỉ ghi tệp (không commit, không đẩy) để bạn xem thay đổi bằng `git -C ~/.local/share/agent-brain/journal diff` (và `status` cho tệp mới). Thoát `0` khi đã đẩy, không có gì mới, chỉ ghi tệp (`--no-push`) hoặc đang có lần xuất khác chạy; thoát `1` khi đẩy lỗi, khi git dừng (xung đột, bản clone có sửa chưa commit) hoặc khi phát hiện chuỗi giống secret. Từ chối khi chưa có `journal.repo_url` trong `config.json`. Chạy song song với `serve` an toàn (khóa `journal.lock`). Xem mục "Nhật ký Obsidian (journal)". |
 | **human done** | `agent-brain human done TASK_ID` | Bước Dev do nhân sự làm (engine `người`): lấy nhánh task mà nhân sự đã đẩy lên remote (`git fetch origin` rồi chỉ `merge --ff-only`, không bao giờ force-push), ghi một run engine `người` không có token và chạy tiếp quy trình. Từ chối khi task không chờ nhân sự (`Task N không chờ nhân sự làm`), khi chưa có nhánh trên remote, khi nhánh remote không có commit mới hoặc không đi tiếp từ nhánh trong máy, khi working tree có thay đổi chưa commit, hoặc khi nhân sự sửa file ngoài danh sách của plan (vi phạm giao thức, thoát `3`). Cũng là nút `Xong` của màn hình task. |
 | **human return** | `agent-brain human return TASK_ID` | Trả việc lại cho nhân sự kèm báo cáo lần trước (`.qa-report.md` hoặc `.code-review.md`); task lại ở trạng thái `Chờ <tên> làm`. Cũng là nút `Trả lại`. |
 | **container** | `agent-brain container PROJECT` | In kết quả dò container docker đang chạy mount repo dự án: tên container, thư mục repo trên máy → trong container, lệnh được chuyển vào, lý do chọn khi nhiều container khớp, hoặc lý do không có. Chỉ gọi `docker ps` và `docker inspect` (lấy tên, trạng thái, mount; không in biến môi trường của container). Xem mục "Lệnh dự án trong container docker". |
@@ -425,6 +445,77 @@ Khóa `test_commands` của dự án trong `projects_map.json` là danh sách m�
 - **Dev**: engine claude nhận `Bash(<mẫu>)` như QA; engine agy nhận các mẫu trong `bash_allow` của guard (`policy.json`), cộng với lệnh plan khai. Dev dsh và bước của nhân sự không đổi.
 - Dự án không khai khóa: QA và Dev chạy như trước.
 - Kết hợp với `container`: lệnh `php`, `composer` trong `test_commands` vẫn chạy trong container của dự án nhờ shim (mục trên).
+
+### Nhật ký Obsidian (journal)
+
+`agent-brain` ghi một nhật ký công việc theo ngày vào một vault Obsidian (một repo git riêng). **Một chiều**: `brain.db` là nguồn duy nhất, vault chỉ là bản hiển thị dựng lại được bất kỳ lúc nào bằng `agent-brain journal export`; không có lệnh hay đường dẫn nào đọc vault ngược vào `brain.db`. Nhật ký **tắt** cho tới khi `config.json` có mục `journal` với `repo_url`.
+
+**Bật**: thêm mục `journal` vào `~/.config/agent-brain/config.json` (mọi khóa đều tùy chọn trừ `repo_url`; `enabled: true` để `serve` tự xuất theo lịch):
+
+```json
+{
+  "journal": {
+    "enabled": true,
+    "repo_url": "git@github.com:example-owner/example-vault.git",
+    "branch": "main",
+    "utc_offset_minutes": 420
+  }
+}
+```
+
+**Các khóa `journal`** (khóa sai kiểu hoặc ngoài khoảng bị từ chối với thông báo nêu tên khóa; `serve` đọc mục này một lần lúc khởi động, đổi config thì khởi động lại `serve`):
+
+| Khóa | Mặc định | Khoảng / giá trị | Ý nghĩa |
+|---|---|---|---|
+| `enabled` | `false` | `true` / `false` | Bật vòng xuất tự động và digest trong `serve`. Lệnh `agent-brain journal export` chạy tay không cần khóa này. |
+| `repo_url` | không có | `git@host:đường-dẫn`, `ssh://`, `https://`, `file://` hoặc đường dẫn tuyệt đối | Repo vault. Bắt buộc để xuất; thiếu thì `journal export` thoát `1` với thông báo nhắc `journal.repo_url`. |
+| `branch` | `main` | tên nhánh hợp lệ (1–100 ký tự `A-Z a-z 0-9 . _ / -`) | Nhánh duy nhất được đẩy. Nhánh khác (ví dụ `master`) không bị đụng tới. |
+| `clone_dir` | `<thư mục dữ liệu>/journal` (`~/.local/share/agent-brain/journal`) | đường dẫn khác rỗng (`~` được khai triển) | Nơi giữ bản clone của vault. |
+| `interval_minutes` | `30` | 1–1440 | Chu kỳ xuất tự động trong `serve`. |
+| `digest_enabled` | `true` | `true` / `false` | Gửi tóm tắt cuối ngày qua Telegram. |
+| `digest_time` | `18:00` | `HH:MM`, 00:00–23:59 | Giờ (theo múi giờ của nhật ký) từ đó digest của ngày được gửi. |
+| `push_fail_notify_after` | `3` | 1–100 | Số lần đẩy lỗi liên tiếp trước khi nhắn Telegram một lần. |
+| `title_max_chars` | `140` | 40–400 | Độ dài tối đa của tiêu đề việc lưu trong nhật ký. |
+| `callout_title_chars` | `60` | 20–200 | Độ dài tiêu đề trên dòng đầu mỗi khối việc (và trong digest). |
+| `git_timeout_seconds` | `60` | 10–600 | Giới hạn thời gian mỗi lệnh git (clone, fetch, push). |
+| `ssh_connect_timeout_seconds` | `15` | 5–120 | Giới hạn thời gian kết nối SSH. |
+| `author_name` | `agent-brain journal` | chuỗi | Tên tác giả commit. |
+| `author_email` | `journal@agent-brain.invalid` | chuỗi | Email tác giả commit. |
+| `groups` | `cong-viec` (Công việc), `video` (Video), `ho-tro` (Hỗ trợ bộ phận khác) | 1–10 nhóm `{"id", "label"}`; `id` gồm `a-z`, số, `-` (1–40 ký tự), `label` không rỗng, tối đa 60 ký tự, không chứa `[ ] \| #` | Các nhóm việc. Nhóm đầu tiên là nhóm mặc định. |
+| `utc_offset_minutes` | không có (dùng giờ máy) | −720 đến 840 | Múi giờ cố định để tính ranh giới ngày (UTC+7 = `420`). |
+| `web_base_url` | suy ra từ `repo_url` khi là repo GitHub | `https://…`, không khoảng trắng | Địa chỉ web để tạo link `github.com` trong Telegram. Repo không phải GitHub thì đặt tay. |
+| `project_page_months` | `3` | 1–120 | Số tháng gần nhất liệt kê trên trang mỗi dự án. |
+| `search_max_results` | `8` | 1–20 | Số kết quả tối đa của `/tim`. |
+
+**Nhóm của từng dự án**: khóa `journal_group` của dự án trong `projects_map.json` (ví dụ `{"id": "du-an-mau", "journal_group": "video"}`). Thiếu khóa hoặc id không có trong `journal.groups` thì dự án vào nhóm đầu tiên (id lạ có in một cảnh báo). Dashboard chưa có ô để sửa `journal_group` và mục `journal`: hiện sửa tay hai file này.
+
+**Cấu trúc vault** (tất cả do agent-brain sinh, tiếng Việt có dấu):
+- `Today.md`: nhúng tệp ngày hôm nay.
+- `Nhật ký/YYYY/MM/YYYY-MM-DD.md`: một tệp mỗi ngày, mỗi việc là một khối gập (callout) theo nhóm, có mục `Cần anh xử lý` cho việc đang chờ bạn.
+- `Nhật ký/YYYY/MM/YYYY-MM.md`: tổng kết tháng. `Nhật ký/YYYY/YYYY.md`: tổng kết năm.
+- `Dự án/<dự án>.md`: trang mỗi dự án (các tháng gần nhất, xem `project_page_months`).
+- Không có tệp theo tuần.
+- Mỗi tệp sinh ra mở đầu bằng một dòng đánh dấu `Tệp sinh tự động từ agent-brain …`. **Tệp không có dòng đó là của bạn: không bao giờ bị ghi đè hay xóa**, và agent-brain báo một lần qua Telegram khi một tệp như vậy nằm đúng chỗ tệp sinh ra. Thư mục `.obsidian/` không bao giờ bị đọc hay sửa; `.gitignore` (`.obsidian/`, `.trash/`) chỉ được tạo khi vault chưa có.
+
+**Chỉ những gì dưới đây được xuất** (danh sách cho phép): tiêu đề việc (hoặc phần đầu của yêu cầu, đã cắt), dự án, nhóm, trạng thái, số bước chạy, số vòng, các vai đã chạy (Lead, Dev, QA, …) và thời lượng. **Không bao giờ xuất**: diff, prompt, đường dẫn máy, biến môi trường, key / token / secret, endpoint, tài khoản, nội dung plan hay báo cáo QA. Chữ lấy từ `brain.db` đều bị lọc trước khi ghi: bỏ đường dẫn, URL, cặp `TÊN=giá trị`, liên kết nhúng `![[…]]` và ký tự Markdown / Obsidian. Trước khi ghi tệp đầu tiên, mọi tệp đã dựng (cả đường dẫn) được quét một lần nữa: thấy một giá trị secret đã biết hoặc chuỗi giống secret thì **không ghi, không commit, không đẩy**, lệnh thoát `1` và Telegram nhận một tin nêu tên tệp và tên luật, không bao giờ nêu giá trị.
+
+**Lịch trong `serve`** (khi `journal.enabled`): xuất khoảng mỗi `interval_minutes` phút, khi sang ngày mới và một lần sau `digest_time`. Lần xuất nào cũng chỉ commit khi có thay đổi: xuất lần hai không đổi gì thì không tạo commit.
+
+**Khi lỗi**:
+- Mất mạng hoặc đẩy lỗi: commit vẫn nằm trong bản clone và được đẩy bù ở lần sau. Sau `push_fail_notify_after` lần lỗi liên tiếp Telegram nhận **một** tin báo, và **một** tin khi đẩy lại được.
+- Xung đột khi lấy thay đổi từ remote, hoặc bản clone có sửa chưa commit ngoài tệp sinh ra: dừng, **không ghi đè**, Telegram báo một lần. Sửa xong (xử lý xung đột hoặc commit / bỏ phần sửa tay trong `~/.local/share/agent-brain/journal`) rồi chạy `agent-brain journal export`.
+- Thư mục `clone_dir` không phải repo git: dừng, không xóa gì.
+- agent-brain không bao giờ viết lại lịch sử đã đẩy: không `--force`, không `reset --hard`, không `--amend`.
+
+**Lần xuất đầu trên vault đã có nội dung** (ví dụ vault demo): các tệp demo mang dòng đánh dấu sẽ bị thay bằng bản thật, tệp của bạn không có dòng đó được giữ nguyên, và chỉ `journal.branch` được đẩy (`master` và `.obsidian/` không đổi). Làm theo thứ tự:
+1. `agent-brain journal export --no-push`, rồi xem thay đổi: `git -C ~/.local/share/agent-brain/journal status` và `git -C ~/.local/share/agent-brain/journal diff`.
+2. Hài lòng với định dạng thì xóa bản clone (`rm -rf ~/.local/share/agent-brain/journal`; chỉ chứa tệp sinh ra và dựng lại được hoàn toàn từ `brain.db`) rồi chạy `agent-brain journal export`. Lệnh clone lại vault, ghi lại toàn bộ tệp và đẩy đúng một commit. Cần xóa bản clone vì lần xuất thứ hai trên bản clone còn tệp mới chưa commit của `--no-push` chỉ báo `không có thay đổi` mà không commit chúng.
+
+**Xem nhật ký trên điện thoại** (chỉ đọc, kéo về):
+1. Tạo một token GitHub **fine-grained**, quyền `Contents: Read-only`, chỉ cho repo vault.
+2. Cài Obsidian và plugin obsidian-git. Clone vault qua **HTTPS** (`https://github.com/example-owner/example-vault.git`), đăng nhập bằng token đó. Plugin trên di động không hỗ trợ SSH.
+3. Trong plugin: tắt commit và push tự động, bật `pull` khi mở ứng dụng và / hoặc mỗi N phút. Điện thoại chỉ `pull`; mọi thay đổi do máy chạy `agent-brain` đẩy lên.
+4. Mở `Today.md`; chạm liên kết dự án và ngày để mở tệp. Link `github.com` trong tin Telegram mở được khi trình duyệt đã đăng nhập GitHub (repo riêng tư).
 
 ---
 
@@ -800,6 +891,18 @@ Chỉ cho dự án trong `telegram_projects` (cùng danh sách với `/task`); t
 - `/reject <dự án> <KEY> <lý do>`: cùng hàm với `agent-brain fixbug reject`; thiếu lý do thì bot trả hướng dẫn.
 - Tin `QA đạt` của task làm từ một bug thêm dòng `Bug <KEY>: merge rồi deploy, sau đó gõ /deployed <dự án> <KEY>`.
 - Câu trả lời không chứa key, token hay board id Trello.
+
+### Telegram: nhật ký (/tim và digest)
+Dùng nhật ký Obsidian (mục 5, "Nhật ký Obsidian (journal)"). Chỉ chat đã ghép nối được trả lời; chat khác không nhận phản hồi.
+- `/tim <từ khóa>`: tìm trong chỉ mục nhật ký (`journal_fts`, dựng lại ở mỗi lần xuất). Chỉ tìm trong những gì vault đang hiển thị: tiêu đề, dự án, nhóm, ngày và trạng thái; không bao giờ đụng tới plan, báo cáo QA, diff hay nội dung yêu cầu ngoài phần vault đã hiện. Gõ tiếng Việt không dấu vẫn khớp (`tim kiem` khớp `Tìm kiếm`). Mỗi kết quả gồm ngày `DD/MM/YYYY`, dòng hiển thị (dự án, tiêu đề, trạng thái) và link `github.com` tới tệp ngày (mở được khi bạn đã đăng nhập GitHub). Tối đa `journal.search_max_results` kết quả. Không có từ khóa thì bot trả `Cách dùng: /tim <từ khóa>`; chưa xuất lần nào thì bot nhắc chạy `agent-brain journal export`.
+- **Digest**: khi `journal.enabled` và `journal.digest_enabled`, mỗi ngày bot gửi **một** tin tóm tắt, một lần sau `journal.digest_time`, và **chỉ sau khi** lần xuất của ngày đó đã đẩy lên vault thành công (để link mở được). Tin gồm số việc theo từng nhóm, danh sách `Cần anh xử lý` (tối đa 10 dòng, phần còn lại ghi `… và m mục khác`; không có thì ghi `Không có việc cần anh xử lý.`) và một link tới tệp ngày (hoặc `Today.md` khi ngày không có việc). Digest chưa gửi được trước 24:00 (ví dụ vì không đẩy được) bị bỏ, không gửi muộn sang hôm sau.
+- **Tin báo lỗi của nhật ký** (mỗi nguyên nhân một tin, không lặp):
+  - `Nhật ký: chưa đẩy được lên repo vault N lần liên tiếp (…). Commit vẫn nằm trên máy, sẽ tự đẩy bù khi kết nối lại.` sau `journal.push_fail_notify_after` lần lỗi, và `Nhật ký: đã đẩy lại được lên repo vault.` khi hết lỗi.
+  - `Nhật ký: xung đột khi lấy thay đổi từ repo vault (…) — đã dừng, không ghi đè. Sửa xong chạy: agent-brain journal export` và `Nhật ký: bản clone của vault có thay đổi chưa commit (…) — đã dừng, không ghi đè.`
+  - `Nhật ký: phát hiện chuỗi giống secret — không ghi, không commit, không đẩy.` kèm tên tệp và tên luật (không có giá trị).
+  - `Nhật ký: các tệp sau trong vault không có dòng đánh dấu sinh tự động nên không bị ghi đè: …`
+  - `Nhật ký: thư mục clone của vault không phải repo git — đã dừng, không xoá gì.`
+  Mỗi tin được giao tối đa một lần; tin lỡ lúc `serve` chết đúng giữa lúc gửi có thể mất.
 
 ### Xử lý sự cố (Troubleshooting)
 - **Lỗi 401 Unauthorized**: Mở lại URL đầy đủ chứa `?token=TOKEN` được in ở terminal chạy `agent-brain serve` để làm mới cookie phiên trên trình duyệt.
