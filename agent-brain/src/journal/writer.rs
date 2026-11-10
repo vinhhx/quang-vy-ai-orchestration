@@ -129,6 +129,27 @@ fn managed_files_on_disk(clone_dir: &Path) -> BrainResult<Vec<String>> {
     Ok(out)
 }
 
+/// Chỉ đọc (WR-01): `(số tệp có dòng đánh dấu đang có trong các gốc được quản lý, số tệp trong
+/// đó mà `apply` sẽ xóa vì không còn trong `files`)`. Cùng danh sách và cùng điều kiện với phần
+/// xóa của `apply`.
+pub fn planned_removals(
+    clone_dir: &Path,
+    files: &BTreeMap<String, String>,
+) -> BrainResult<(usize, usize)> {
+    let mut existing = 0;
+    let mut removing = 0;
+    for rel in managed_files_on_disk(clone_dir)? {
+        if !is_managed_path(&rel) || !read_marked(&clone_dir.join(&rel)) {
+            continue;
+        }
+        existing += 1;
+        if !files.contains_key(&rel) {
+            removing += 1;
+        }
+    }
+    Ok((existing, removing))
+}
+
 /// Xóa thư mục rỗng bên dưới `Nhật ký/` (không bao giờ xóa chính thư mục gốc).
 fn prune_empty_dirs(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {

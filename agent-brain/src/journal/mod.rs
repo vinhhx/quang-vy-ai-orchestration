@@ -90,15 +90,42 @@ pub struct ExportParams<'a> {
     pub kill_grace: Duration,
 }
 
+/// Tùy chọn của một lần xuất mà vòng lặp nền không bao giờ bật.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExportOptions {
+    /// `journal export --allow-removals` (chỉ CLI, một lần): bỏ qua chốt chặn xóa hàng loạt.
+    /// Không bỏ qua chốt chặn đồng hồ.
+    pub allow_removals: bool,
+}
+
+/// Lý do từ chối khi đồng hồ máy chậm hơn dữ liệu trong brain.db (WR-01).
+pub const REFUSED_CLOCK: &str = "Nhật ký: từ chối xuất — đồng hồ máy đang chậm hơn dữ liệu trong brain.db; không ghi, không commit, không đẩy. Kiểm tra giờ hệ thống rồi chạy lại.";
+
+/// Lý do từ chối khi lần xuất sẽ xóa quá nhiều tệp nhật ký đang có (WR-01).
+pub const REFUSED_REMOVALS: &str = "Nhật ký: từ chối xuất — lần xuất này sẽ xóa quá nhiều tệp nhật ký đang có trong vault (brain.db rỗng hoặc không đúng?); không ghi, không commit, không đẩy. Nếu chắc chắn muốn xóa, chạy tay: agent-brain journal export --allow-removals";
+
+/// Đồng hồ được phép chậm hơn mốc mới nhất trong brain.db tối đa chừng này (1 ngày).
+const CLOCK_SKEW_MAX_MS: i64 = 86_400_000;
+
+/// Chốt chặn xóa chỉ áp dụng khi số tệp sẽ xóa đạt ít nhất chừng này.
+const MIN_GUARDED_REMOVALS: usize = 10;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportOutcome {
-    Pushed { sha: String },
+    Pushed {
+        sha: String,
+    },
     UpToDate,
     LocalOnly,
     PushFailed(GitFailure),
     Stopped(GitStop),
     SecretBlocked(Vec<SecretHit>),
     Busy,
+    /// Từ chối trước khi ghi, commit hay đẩy (WR-01); lý do là văn bản cố định, không có
+    /// đường dẫn hay giá trị.
+    Refused(String),
+    /// Lần xuất trả `Err` (WR-02); chỉ dùng để ghi `journal_state`, lỗi vẫn trả cho người gọi.
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,9 +162,38 @@ fn local_stamp<Tz: TimeZone>(ms: i64, tz: &Tz) -> String {
     }
 }
 
-fn export_with_tz<Tz: TimeZone>(p: &ExportParams, tz: &Tz) -> BrainResult<ExportReport> {
+/// Chốt chặn xóa hàng loạt (WR-01): chỉ đọc bản clone. Từ chối khi số tệp có dòng đánh dấu
+/// sẽ bị xóa ≥ `MIN_GUARDED_REMOVALS` và vượt `journal.max_remove_fraction` số tệp đang có.
+fn removals_refused(
+    cfg: &JournalConfig,
+    files: &std::collections::BTreeMap<String, String>,
+    opts: ExportOptions,
+) -> BrainResult<bool> {
+    if opts.allow_removals {
+        return Ok(false);
+    }
+    let (existing, removing) = writer::planned_removals(&cfg.clone_dir, files)?;
+    let over = removing as u64 * 1000 > u64::from(cfg.max_remove_permille) * existing as u64;
+    Ok(removing >= MIN_GUARDED_REMOVALS && over)
+}
+
+fn export_with_tz<Tz: TimeZone>(
+    p: &ExportParams,
+    tz: &Tz,
+    opts: ExportOptions,
+) -> BrainResult<ExportReport> {
     let cfg = p.cfg;
     let today = collect::local_day(p.now_ms, tz);
+    // Đồng hồ chậm hơn dữ liệu thì mọi ngày "sau hôm nay" bị bỏ và trang của chúng bị xóa.
+    if let Some(newest) = collect::newest_activity_ms(p.conn)? {
+        if p.now_ms < newest.saturating_sub(CLOCK_SKEW_MAX_MS) {
+            return Ok(ExportReport::bare(
+                ExportOutcome::Refused(REFUSED_CLOCK.to_string()),
+                today,
+                None,
+            ));
+        }
+    }
     let model = collect::collect(p.conn, p.map, cfg, p.secrets, today, tz)?;
     let summary = Some(model::summarize(&model, today));
     let files = render::render_all(&model, cfg);
@@ -151,10 +207,27 @@ fn export_with_tz<Tz: TimeZone>(p: &ExportParams, tz: &Tz) -> BrainResult<Export
         ));
     }
 
+    let refused = || {
+        ExportReport::bare(
+            ExportOutcome::Refused(REFUSED_REMOVALS.to_string()),
+            today,
+            summary.clone(),
+        )
+    };
+    if removals_refused(cfg, &files, opts)? {
+        return Ok(refused());
+    }
+
     let ctx = gitsync::GitCtx::from_cfg(cfg, p.kill_grace);
     let generated: BTreeSet<String> = files.keys().cloned().collect();
     match gitsync::prepare(&ctx, cfg, &generated) {
-        gitsync::Prepared::Ready => {}
+        gitsync::Prepared::Ready => {
+            // `prepare` có thể vừa clone hoặc kéo tệp mới từ remote: kiểm tra lại trên bản
+            // clone đã đồng bộ, vẫn trước khi ghi tệp nào.
+            if removals_refused(cfg, &files, opts)? {
+                return Ok(refused());
+            }
+        }
         gitsync::Prepared::Stopped(s) => {
             return Ok(ExportReport::bare(
                 ExportOutcome::Stopped(s),
@@ -207,20 +280,39 @@ fn export_with_tz<Tz: TimeZone>(p: &ExportParams, tz: &Tz) -> BrainResult<Export
 
 /// Một lần xuất trọn vẹn, độc quyền nhờ `journal.lock` trong `p.lock_dir` (đang bận → `Busy`,
 /// không làm gì khác). Ngày tính theo `cfg.tz()` (giờ máy, hoặc độ lệch cấu hình). Mọi kết quả
-/// khác `Busy` được ghi vào `journal_state`.
+/// khác `Busy` được ghi vào `journal_state`, kể cả `Err` (ghi như `Failed` rồi trả lỗi, để
+/// vòng lặp lùi tới `interval_minutes` thay vì thử lại mỗi phút).
 pub fn run_export_once(p: &ExportParams) -> BrainResult<ExportReport> {
+    run_export_once_with(p, ExportOptions::default())
+}
+
+/// Như `run_export_once`, với tùy chọn chỉ CLI dùng (`--allow-removals`).
+pub fn run_export_once_with(p: &ExportParams, opts: ExportOptions) -> BrainResult<ExportReport> {
     let tz = p.cfg.tz();
+    let today = match tz {
+        JournalTz::Local => collect::local_day(p.now_ms, &chrono::Local),
+        JournalTz::Fixed(off) => collect::local_day(p.now_ms, &off),
+    };
     let Some(_lock) = acquire_lock(p.lock_dir)? else {
-        let today = match tz {
-            JournalTz::Local => collect::local_day(p.now_ms, &chrono::Local),
-            JournalTz::Fixed(off) => collect::local_day(p.now_ms, &off),
-        };
         return Ok(ExportReport::bare(ExportOutcome::Busy, today, None));
     };
-    let report = match tz {
-        JournalTz::Local => export_with_tz(p, &chrono::Local),
-        JournalTz::Fixed(off) => export_with_tz(p, &off),
-    }?;
+    let res = match tz {
+        JournalTz::Local => export_with_tz(p, &chrono::Local, opts),
+        JournalTz::Fixed(off) => export_with_tz(p, &off, opts),
+    };
+    let report = match res {
+        Ok(r) => r,
+        Err(e) => {
+            let failed = ExportReport::bare(ExportOutcome::Failed, today, None);
+            if let Err(e2) = state::record_outcome(p.conn, p.cfg, &failed, p.now_ms) {
+                crate::term::emit(&format!(
+                    "Nhật ký: không ghi được trạng thái lần xuất lỗi: {}",
+                    e2.message
+                ));
+            }
+            return Err(e);
+        }
+    };
     state::record_outcome(p.conn, p.cfg, &report, p.now_ms)?;
     Ok(report)
 }
@@ -246,8 +338,8 @@ pub fn known_secrets(cfg: &crate::config::Config) -> Vec<String> {
     out
 }
 
-/// `agent-brain journal export [--no-push]`
-pub fn cmd_export(ctx: &crate::app::Ctx, no_push: bool) -> BrainResult<i32> {
+/// `agent-brain journal export [--no-push] [--allow-removals]`
+pub fn cmd_export(ctx: &crate::app::Ctx, no_push: bool, allow_removals: bool) -> BrainResult<i32> {
     let cfg = &ctx.cfg.journal;
     if cfg.repo_url.is_none() {
         return Err(BrainError::error(
@@ -266,7 +358,7 @@ pub fn cmd_export(ctx: &crate::app::Ctx, no_push: bool) -> BrainResult<i32> {
         lock_dir: &lock_dir,
         kill_grace: Duration::from_secs(ctx.cfg.kill_grace_secs),
     };
-    let report = run_export_once(&params)?;
+    let report = run_export_once_with(&params, ExportOptions { allow_removals })?;
     for f in &report.foreign {
         crate::term::emit(&format!(
             "Cảnh báo: {f} không có dòng đánh dấu tệp sinh tự động — không ghi đè."
@@ -321,6 +413,8 @@ pub fn cmd_export(ctx: &crate::app::Ctx, no_push: bool) -> BrainResult<i32> {
                 list.join(", ")
             )))
         }
+        ExportOutcome::Refused(reason) => Err(BrainError::error(reason.clone())),
+        ExportOutcome::Failed => Err(BrainError::error("Nhật ký: xuất lỗi.")),
     }
 }
 

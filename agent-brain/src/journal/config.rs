@@ -42,6 +42,9 @@ pub struct JournalConfig {
     pub web_base_url: Option<String>,
     pub project_page_months: u32,
     pub search_max_results: usize,
+    /// `journal.max_remove_fraction` (0.05–1.0, mặc định 0.5) tính theo phần nghìn: một lần xuất
+    /// không được xóa nhiều hơn tỉ lệ này số tệp nhật ký đang có (WR-01).
+    pub max_remove_permille: u32,
 }
 
 fn default_groups() -> Vec<GroupDef> {
@@ -80,6 +83,7 @@ impl Default for JournalConfig {
             web_base_url: None,
             project_page_months: 3,
             search_max_results: 8,
+            max_remove_permille: 500,
         }
     }
 }
@@ -143,6 +147,24 @@ fn get_range(
         Some(v) => match v.as_i64() {
             Some(n) if (lo..=hi).contains(&n) => Ok(Some(n)),
             _ => Err(range_err(key, lo, hi)),
+        },
+    }
+}
+
+/// Số thực trong `[lo, hi]`, trả về theo phần nghìn (làm tròn).
+fn get_fraction_permille(
+    o: &serde_json::Map<String, Value>,
+    key: &str,
+    lo: f64,
+    hi: f64,
+) -> BrainResult<Option<u32>> {
+    match o.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_f64() {
+            Some(x) if (lo..=hi).contains(&x) => Ok(Some((x * 1000.0).round() as u32)),
+            _ => Err(err(format!(
+                "Cấu hình journal.{key} phải là số từ {lo} đến {hi}"
+            ))),
         },
     }
 }
@@ -365,6 +387,9 @@ pub fn parse(v: Option<&Value>) -> BrainResult<JournalConfig> {
     }
     if let Some(n) = get_range(o, "search_max_results", 1, 20)? {
         cfg.search_max_results = n as usize;
+    }
+    if let Some(n) = get_fraction_permille(o, "max_remove_fraction", 0.05, 1.0)? {
+        cfg.max_remove_permille = n;
     }
     Ok(cfg)
 }

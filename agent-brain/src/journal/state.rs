@@ -19,8 +19,17 @@ pub const KEY_PUSH_FAIL_STREAK: &str = "push_fail_streak";
 pub const KEY_PUSH_FAIL_SINCE_MS: &str = "push_fail_since_ms";
 /// `1` khi đã báo chuỗi thất bại hiện tại, ngược lại `0`.
 pub const KEY_PUSH_ALERT_SENT: &str = "push_alert_sent";
-/// Rỗng, hoặc loại nguyên nhân đang chặn (`conflict`, `dirty`, `notrepo`, `secret`).
+/// Rỗng, hoặc loại nguyên nhân đang chặn (`conflict`, `dirty`, `notrepo`, `secret`,
+/// `refused`, `failed`).
 pub const KEY_BLOCKED: &str = "blocked";
+/// Thời điểm (epoch ms) bắt đầu đợt bị chặn hiện tại; rỗng khi không bị chặn. Khóa chống trùng
+/// của tin chặn chứa mốc này nên cùng một nguyên nhân được báo một lần mỗi đợt (WR-03); lần
+/// xuất thành công kết thúc đợt.
+pub const KEY_ALERT_EPISODE_MS: &str = "alert_episode_ms";
+/// Như `KEY_ALERT_EPISODE_MS`, cho tệp lạ: đợt kết thúc khi một lần xuất đã ghi không còn tệp lạ.
+pub const KEY_FOREIGN_EPISODE_MS: &str = "foreign_episode_ms";
+/// Văn bản tin khi một lần xuất trả lỗi (WR-02).
+pub const FAILED_MAIL_TEXT: &str = "Nhật ký: xuất lỗi, xem log của serve.";
 
 /// Danh sách đường dẫn trong một tin: tối đa chừng này mục.
 const MAX_LISTED: usize = 10;
@@ -80,6 +89,18 @@ fn capped<S: AsRef<str>>(items: &[S], sep: &str) -> String {
     out
 }
 
+/// Mốc bắt đầu của đợt lưu ở `key`; chưa có thì đợt bắt đầu lúc `now_ms`.
+fn episode(conn: &Connection, key: &str, now_ms: i64) -> BrainResult<String> {
+    match get(conn, key)? {
+        Some(s) if !s.is_empty() => Ok(s),
+        _ => {
+            let s = now_ms.to_string();
+            set(conn, key, &s, now_ms)?;
+            Ok(s)
+        }
+    }
+}
+
 fn get_u64(conn: &Connection, key: &str) -> BrainResult<u64> {
     Ok(get(conn, key)?
         .and_then(|v| v.trim().parse::<u64>().ok())
@@ -103,6 +124,7 @@ fn on_success(conn: &Connection, now_ms: i64) -> BrainResult<()> {
     set(conn, KEY_PUSH_FAIL_SINCE_MS, "", now_ms)?;
     set(conn, KEY_PUSH_ALERT_SENT, "0", now_ms)?;
     set(conn, KEY_BLOCKED, "", now_ms)?;
+    set(conn, KEY_ALERT_EPISODE_MS, "", now_ms)?;
     Ok(())
 }
 
@@ -140,13 +162,13 @@ fn on_push_failed(
 }
 
 /// Loại, khóa chống trùng và văn bản tin cho một lần dừng của git.
-fn stop_mail(stop: &GitStop, day: &str) -> (&'static str, String, String) {
+fn stop_mail(stop: &GitStop, day: &str, ep: &str) -> (&'static str, String, String) {
     match stop {
         GitStop::Conflict { detail } => {
             let paths: Vec<&str> = detail.split(", ").filter(|p| !p.is_empty()).collect();
             (
                 "conflict",
-                format!("conflict:{}", fnv1a(detail)),
+                format!("conflict:{ep}:{}", fnv1a(detail)),
                 format!(
                     "Nhật ký: xung đột khi lấy thay đổi từ repo vault ({}) — đã dừng, không ghi đè. Sửa xong chạy: agent-brain journal export",
                     capped(&paths, ", ")
@@ -155,7 +177,7 @@ fn stop_mail(stop: &GitStop, day: &str) -> (&'static str, String, String) {
         }
         GitStop::Dirty { paths } => (
             "dirty",
-            format!("dirty:{}", fnv1a(&paths.join(", "))),
+            format!("dirty:{ep}:{}", fnv1a(&paths.join(", "))),
             format!(
                 "Nhật ký: bản clone của vault có thay đổi chưa commit ({}) — đã dừng, không ghi đè.",
                 capped(paths, ", ")
@@ -194,7 +216,8 @@ fn record_in(
         }
         ExportOutcome::PushFailed(f) => on_push_failed(conn, cfg, f, now_ms)?,
         ExportOutcome::Stopped(stop) => {
-            let (kind, key, text) = stop_mail(stop, &day);
+            let ep = episode(conn, KEY_ALERT_EPISODE_MS, now_ms)?;
+            let (kind, key, text) = stop_mail(stop, &day, &ep);
             enqueue_mail(conn, kind, &key, &text, now_ms)?;
             set(conn, KEY_BLOCKED, kind, now_ms)?;
         }
@@ -207,13 +230,40 @@ fn record_in(
                 "Nhật ký: phát hiện chuỗi giống secret — không ghi, không commit, không đẩy.\n{}",
                 capped(&lines, "\n")
             );
-            let key = format!("secret:{}", fnv1a(&lines.join("\n")));
+            let ep = episode(conn, KEY_ALERT_EPISODE_MS, now_ms)?;
+            let key = format!("secret:{ep}:{}", fnv1a(&lines.join("\n")));
             enqueue_mail(conn, "secret", &key, &text, now_ms)?;
             set(conn, KEY_BLOCKED, "secret", now_ms)?;
         }
+        ExportOutcome::Refused(reason) => {
+            let ep = episode(conn, KEY_ALERT_EPISODE_MS, now_ms)?;
+            let key = format!("refused:{ep}:{}", fnv1a(reason));
+            enqueue_mail(conn, "refused", &key, reason, now_ms)?;
+            set(conn, KEY_BLOCKED, "refused", now_ms)?;
+        }
+        ExportOutcome::Failed => {
+            let ep = episode(conn, KEY_ALERT_EPISODE_MS, now_ms)?;
+            enqueue_mail(
+                conn,
+                "failed",
+                &format!("failed:{ep}"),
+                FAILED_MAIL_TEXT,
+                now_ms,
+            )?;
+            set(conn, KEY_BLOCKED, "failed", now_ms)?;
+        }
         ExportOutcome::LocalOnly | ExportOutcome::Busy => {}
     }
-    if !report.foreign.is_empty() {
+    let wrote = matches!(
+        report.outcome,
+        ExportOutcome::Pushed { .. } | ExportOutcome::UpToDate | ExportOutcome::LocalOnly
+    );
+    if report.foreign.is_empty() {
+        if wrote {
+            set(conn, KEY_FOREIGN_EPISODE_MS, "", now_ms)?;
+        }
+    } else {
+        let ep = episode(conn, KEY_FOREIGN_EPISODE_MS, now_ms)?;
         let joined = report.foreign.join(", ");
         let text = format!(
             "Nhật ký: các tệp sau trong vault không có dòng đánh dấu sinh tự động nên không bị ghi đè: {}",
@@ -222,7 +272,7 @@ fn record_in(
         enqueue_mail(
             conn,
             "foreign",
-            &format!("foreign:{}", fnv1a(&joined)),
+            &format!("foreign:{ep}:{}", fnv1a(&joined)),
             &text,
             now_ms,
         )?;
@@ -232,8 +282,9 @@ fn record_in(
 
 /// Ghi kết quả một lần xuất: mọi kết quả trừ `Busy` cập nhật `last_export_*`; `Pushed` và
 /// `UpToDate` cập nhật `last_published_*` (`Pushed` ghi thêm `last_pushed_sha`) và xóa chuỗi
-/// lỗi; `PushFailed` đếm chuỗi lỗi; `Stopped`/`SecretBlocked` và tệp lạ xếp một tin cho mỗi
-/// nguyên nhân. Mọi thay đổi của một lần ghi nằm trong một giao dịch.
+/// lỗi và kết thúc đợt bị chặn; `PushFailed` đếm chuỗi lỗi; `Stopped`/`SecretBlocked`/
+/// `Refused`/`Failed` và tệp lạ xếp một tin cho mỗi nguyên nhân trong mỗi đợt (WR-03). Mọi
+/// thay đổi của một lần ghi nằm trong một giao dịch.
 pub fn record_outcome(
     conn: &Connection,
     cfg: &super::config::JournalConfig,
@@ -461,7 +512,7 @@ mod tests {
         record_outcome(&conn, &cfg, &conflict("Today.md"), 200).unwrap();
         let rows = mails(&conn, "conflict");
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert!(rows[0].0.starts_with("conflict:") && rows[0].0.len() == 9 + 16);
+        assert!(rows[0].0.starts_with("conflict:100:") && rows[0].0.len() == 13 + 16);
         assert!(rows[0].1.contains("(Today.md)"), "{}", rows[0].1);
         assert!(rows[0].1.contains("agent-brain journal export"));
         assert_eq!(val(&conn, KEY_BLOCKED), "conflict");
@@ -495,6 +546,58 @@ mod tests {
         assert_eq!(val(&conn, KEY_BLOCKED), "");
         // Stops are not push failures.
         assert_eq!(val(&conn, KEY_PUSH_FAIL_STREAK), "0");
+    }
+
+    #[test]
+    fn cause_mail_recurs_in_new_episode() {
+        let (_d, conn) = db();
+        let cfg = cfg3();
+        let conflict = report(
+            ExportOutcome::Stopped(GitStop::Conflict {
+                detail: "Today.md".to_string(),
+            }),
+            15,
+        );
+        let refused = report(ExportOutcome::Refused("lý do".to_string()), 15);
+        let failed = report(ExportOutcome::Failed, 15);
+        for t in [100, 200] {
+            record_outcome(&conn, &cfg, &conflict, t).unwrap();
+            record_outcome(&conn, &cfg, &refused, t + 1).unwrap();
+            record_outcome(&conn, &cfg, &failed, t + 2).unwrap();
+        }
+        assert_eq!(mails(&conn, "conflict").len(), 1);
+        assert_eq!(mails(&conn, "refused").len(), 1);
+        assert_eq!(mails(&conn, "failed").len(), 1);
+        assert_eq!(val(&conn, KEY_BLOCKED), "failed");
+        assert_eq!(val(&conn, KEY_LAST_EXPORT_MS), "202");
+        record_outcome(&conn, &cfg, &pushed(), 300).unwrap();
+        assert_eq!(val(&conn, KEY_ALERT_EPISODE_MS), "");
+        for t in [400, 500] {
+            record_outcome(&conn, &cfg, &conflict, t).unwrap();
+            record_outcome(&conn, &cfg, &failed, t + 2).unwrap();
+        }
+        let rows = mails(&conn, "conflict");
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows[1].0.starts_with("conflict:400:"), "{rows:?}");
+        assert_eq!(mails(&conn, "failed").len(), 2);
+        assert_eq!(mails(&conn, "failed")[0].1, FAILED_MAIL_TEXT);
+    }
+
+    #[test]
+    fn foreign_mail_recurs_after_clean_export() {
+        let (_d, conn) = db();
+        let cfg = cfg3();
+        let mut r = pushed();
+        r.foreign = vec!["Today.md".to_string()];
+        record_outcome(&conn, &cfg, &r, 100).unwrap();
+        // Stopped exports never reach the writer: they do not end the foreign episode.
+        let stop = report(ExportOutcome::Stopped(GitStop::NotARepo), 15);
+        record_outcome(&conn, &cfg, &stop, 150).unwrap();
+        record_outcome(&conn, &cfg, &r, 200).unwrap();
+        assert_eq!(mails(&conn, "foreign").len(), 1);
+        record_outcome(&conn, &cfg, &pushed(), 300).unwrap();
+        record_outcome(&conn, &cfg, &r, 400).unwrap();
+        assert_eq!(mails(&conn, "foreign").len(), 2);
     }
 
     #[test]
