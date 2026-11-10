@@ -2,6 +2,7 @@
 //! dự án, nhóm, ngày, trạng thái), gấp dấu tiếng Việt trong Rust (hàm `normalize` của routing, đổi cả
 //! `đ`) vì tokenizer `unicode61` không gấp `đ`. Dựng lại toàn bộ sau mỗi lần xuất.
 
+use super::config::JournalConfig;
 use super::model::{weekday_vi, Model};
 use crate::error::BrainResult;
 use rusqlite::{params, Connection, TransactionBehavior};
@@ -23,18 +24,28 @@ pub fn fold(text: &str) -> String {
     crate::routing::normalize(text)
 }
 
-/// Một dòng cho mỗi mục (task, ngày) của mô hình.
+/// Một dòng cho mỗi mục (task, ngày) của mô hình, tiêu đề cắt theo giá trị mặc định của
+/// `journal.callout_title_chars`. Nơi gọi có cấu hình phải dùng `rows_from_model_cut` với đúng
+/// giá trị đang cấu hình để chữ tìm được khớp chữ vault hiển thị.
 pub fn rows_from_model(model: &Model) -> Vec<FtsRow> {
+    rows_from_model_cut(model, JournalConfig::default().callout_title_chars)
+}
+
+/// Như `rows_from_model`, nhưng `display` và `title` chỉ lấy `title.cut(title_chars)`, đúng đoạn
+/// tiêu đề mà callout và trang dự án của vault hiển thị (`callout_title_chars`, WR-08, D-15):
+/// `/tim` không khớp và không trả chữ nằm sau chỗ cắt, vì vault không hiển thị chữ đó.
+pub fn rows_from_model_cut(model: &Model, title_chars: usize) -> Vec<FtsRow> {
     let mut out = Vec::new();
     for (day, tasks) in &model.days {
         let iso = day.format("%Y-%m-%d").to_string();
         let day_text = format!("{iso} {} {}", day.format("%d/%m/%Y"), weekday_vi(*day));
         for t in tasks {
+            let shown = t.title.cut(title_chars);
             out.push(FtsRow {
                 task_ref: t.task_id.to_string(),
                 day: iso.clone(),
-                display: format!("{} — {} · {}", t.project.slug, t.title, t.status.label),
-                title: fold(t.title.as_str()),
+                display: format!("{} — {} · {}", t.project.slug, shown, t.status.label),
+                title: fold(shown.as_str()),
                 project: fold(&t.project.slug),
                 grp: fold(&t.project.group_label),
                 day_text: fold(&day_text),
@@ -306,6 +317,66 @@ mod tests {
         assert_eq!(
             hit.display,
             "du-an-a — Sửa lỗi đăng nhập trang quản trị · xong"
+        );
+    }
+
+    fn model_with_title(title: &str) -> Model {
+        use super::super::model::{DayStatus, ProjectRef, StatusKind, TaskDay};
+        use super::super::sanitize::sanitize_text;
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let task = TaskDay {
+            task_id: 7,
+            day,
+            project: ProjectRef {
+                slug: "du-an-a".to_string(),
+                group_id: "cong-viec".to_string(),
+                group_label: "Công việc".to_string(),
+            },
+            title: sanitize_text(title, 140, &[]),
+            request: sanitize_text("", 140, &[]),
+            status: DayStatus {
+                kind: StatusKind::Done,
+                label: "xong".to_string(),
+            },
+            runs: 1,
+            rounds: 1,
+            roles: vec!["dev".to_string()],
+            duration_ms: 0,
+            first_run_ms: 0,
+        };
+        Model {
+            today: day,
+            days: [(day, vec![task])].into_iter().collect(),
+            attention: Default::default(),
+            groups: Vec::new(),
+            project_slugs: vec!["du-an-a".to_string()],
+        }
+    }
+
+    #[test]
+    fn rows_use_the_vault_title_cut() {
+        // the distinguishing word starts after character 40 of the title
+        let title = format!(
+            "{} chuyenbiet cuoi cung",
+            "từ khóa mở đầu rất dài".repeat(3)
+        );
+        let model = model_with_title(&title);
+        let rows = rows_from_model_cut(&model, 40);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].display.contains('…'), "{}", rows[0].display);
+        assert!(
+            !rows[0].display.contains("chuyenbiet"),
+            "{}",
+            rows[0].display
+        );
+        assert!(!rows[0].title.contains("chuyenbiet"), "{}", rows[0].title);
+        let wide = rows_from_model_cut(&model, 200);
+        assert!(wide[0].title.contains("chuyenbiet"), "{}", wide[0].title);
+        // `rows_from_model` keeps the default vault cut (60)
+        let default = rows_from_model(&model);
+        assert_eq!(
+            default,
+            rows_from_model_cut(&model, JournalConfig::default().callout_title_chars)
         );
     }
 
