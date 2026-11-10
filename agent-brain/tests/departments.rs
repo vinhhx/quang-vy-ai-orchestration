@@ -1141,3 +1141,81 @@ fn phong_ban_member_on_unverified_endpoint_is_picked() {
     std::env::remove_var(TEST_ENV_KEY);
     std::env::remove_var("AGENT_BRAIN_CONFIG_DIR");
 }
+
+#[test]
+fn phong_ban_department_branches_agree_with_team_readiness() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let (_tmp, conn) = test_db();
+    let cfg = {
+        let val = json!({
+            "models": { "lead": "opus", "dev": "sonnet", "qa": "sonnet" },
+            "profiles": { "work": {}, "personal": {} },
+            "engines": [
+                { "id": "agy-hong", "kind": "agy", "command": "/khong/co/agy-hong" }
+            ]
+        });
+        agent_brain::config::config_from_value(&val).unwrap()
+    };
+
+    let tmp_cfg = tempfile::tempdir().unwrap();
+    let dept_file = tmp_cfg.path().join("departments.json");
+    let dept_json = json!({
+        "thi-cong": {
+            "members": {
+                "tc-hong": {
+                    "display_name": "Thi công hỏng",
+                    "engine": "agy-hong",
+                    "levels": ["vua"]
+                }
+            }
+        }
+    });
+    std::fs::write(&dept_file, serde_json::to_string(&dept_json).unwrap()).unwrap();
+    std::env::set_var("AGENT_BRAIN_CONFIG_DIR", tmp_cfg.path());
+
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level, team_json)
+         VALUES (41, 1, 'task-41', 'Task 41', 'task/41', 'main', 'base1', 'open', 1000, 1000, 'vua', '{\"name\":\"phong-ban\"}')",
+        [],
+    )
+    .unwrap();
+
+    let dev_err = resolve_for_run_with(&conn, Some(41), "dev", Some(&cfg)).unwrap_err();
+    assert!(
+        dev_err.message.contains("Đội hình phong-ban: Phòng thi công có thành viên nhưng không ai sẵn sàng cho vai dev (độ khó Vừa)"),
+        "dev_err: {}",
+        dev_err.message
+    );
+    assert!(
+        dev_err.message.contains("không tự chạy bằng engine khác"),
+        "dev_err: {}",
+        dev_err.message
+    );
+
+    let prev_err = agent_brain::engine::preview_for_role(&conn, Some(41), "dev", &cfg).unwrap_err();
+    assert_eq!(prev_err.message, dev_err.message);
+
+    let qa_res = resolve_for_run_with(&conn, Some(41), "qa", Some(&cfg)).unwrap();
+    assert_eq!(qa_res.engine, Engine::Claude);
+    assert!(qa_res.member.is_none());
+
+    let loaded_teams = agent_brain::teams::load_from(None, &agent_brain::staff::load_from(None));
+    let phong_ban_team = loaded_teams.get("phong-ban").unwrap();
+
+    let env_vars = agent_brain::profile::current_env();
+    let tr = agent_brain::teams::TeamReadiness {
+        statuses: agent_brain::engine::readiness(&cfg, &env_vars, 0),
+        departments: agent_brain::departments::load_from(
+            &serde_json::to_string(&dept_json).unwrap(),
+            &cfg,
+        ),
+        project_id: "p1".to_string(),
+        project_profile: "work".to_string(),
+        level: Level::Vua,
+    };
+
+    assert!(tr.refusal(&cfg, phong_ban_team, "dev").is_some());
+    assert!(tr.refusal(&cfg, phong_ban_team, "qa").is_none());
+
+    std::env::remove_var("AGENT_BRAIN_CONFIG_DIR");
+}

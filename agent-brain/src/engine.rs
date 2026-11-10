@@ -744,9 +744,17 @@ fn resolve_inner(
                     // Documented phong-ban rule: a role whose department has no members runs on the team's engine (claude).
                 }
                 Err(e) => {
-                    warn(format!(
-                        "Cảnh báo: không chọn được thành viên phòng ban: {e}"
-                    ));
+                    let dept_name = dept
+                        .and_then(crate::departments::dept_name_of)
+                        .or(dept)
+                        .unwrap_or("phòng");
+                    return Err(BrainError::error(format!(
+                        "Đội hình {}: không chọn được thành viên của {} cho vai {}: {} — không tự chạy bằng engine khác.",
+                        task_team.name,
+                        dept_name,
+                        role,
+                        e.message
+                    )));
                 }
             }
         }
