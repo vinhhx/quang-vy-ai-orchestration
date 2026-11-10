@@ -450,7 +450,8 @@ impl ResolvedEngine {
 
 /// Task's stored team -> the role's engine. No task, or a task created before Phase 6 (NULL
 /// `team_json`), runs on claude. A team that no longer exists refuses the step: the engine is
-/// never switched silently (D-16). While the task waits for a person, only the waiting role runs.
+/// never switched silently (D-16); on `phong-ban`, a department with members but no usable member stops the step.
+/// While the task waits for a person, only the waiting role runs.
 pub fn resolve_for_run(
     conn: &rusqlite::Connection,
     task_id: Option<i64>,
@@ -708,13 +709,40 @@ fn resolve_inner(
             crate::departments::Level::parse(&level_str).unwrap_or(crate::departments::Level::Vua);
 
         if let Some(active_cfg) = active_cfg {
-            match crate::departments::pick(conn, active_cfg, task_id, role, level, &project_profile)
-            {
+            let loaded =
+                crate::departments::load_path(&crate::departments::departments_path(), active_cfg);
+            let dept = crate::departments::dept_of_role(role);
+            let has_members = dept.is_some_and(|d| !loaded.members_of(d).is_empty());
+
+            match crate::departments::pick_from(
+                conn,
+                active_cfg,
+                &loaded,
+                task_id,
+                role,
+                level,
+                &project_profile,
+            ) {
                 Ok(Some(picked)) => {
                     resolved_engine = picked.member.engine.clone();
                     member_pick = Some(picked);
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    if has_members {
+                        let dept_name = dept
+                            .and_then(crate::departments::dept_name_of)
+                            .or(dept)
+                            .unwrap_or("phòng");
+                        return Err(BrainError::error(format!(
+                            "Đội hình {}: {} có thành viên nhưng không ai sẵn sàng cho vai {} (độ khó {}) — không tự chạy bằng engine khác. Sửa engine của thành viên trên trang Phòng ban hoặc đổi đội hình rồi chạy lại.",
+                            task_team.name,
+                            dept_name,
+                            role,
+                            level.display_vi()
+                        )));
+                    }
+                    // Documented phong-ban rule: a role whose department has no members runs on the team's engine (claude).
+                }
                 Err(e) => {
                     warn(format!(
                         "Cảnh báo: không chọn được thành viên phòng ban: {e}"

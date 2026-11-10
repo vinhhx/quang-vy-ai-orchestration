@@ -1386,3 +1386,102 @@ fn unverified_endpoint_pinned_runs_marked() {
     assert_eq!(engine, "vcadm-deepseek");
     assert_eq!(metrics["unverified"], json!(true), "metrics: {metrics}");
 }
+
+// ---------------------------------------------------------------------------
+// Gap 06-30: no silent claude on phong-ban (D-16, WR-03)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn phong_ban_unusable_members_stop_dev() {
+    let sb = Sandbox::new();
+    sb.write_config(json!({
+        "engines": [{
+            "id": "agy-hong",
+            "kind": "agy",
+            "command": "/khong/co/agy-hong"
+        }]
+    }));
+
+    let dept_dir = sb.xdg_config.join("agent-brain");
+    std::fs::create_dir_all(&dept_dir).unwrap();
+    let dept_json = json!({
+        "thi-cong": {
+            "members": {
+                "tc-hong": {
+                    "display_name": "Thi công hỏng",
+                    "engine": "agy-hong",
+                    "model": "gemini-3.8-flash-high",
+                    "levels": ["de", "vua", "kho"]
+                }
+            }
+        }
+    });
+    std::fs::write(
+        dept_dir.join("departments.json"),
+        serde_json::to_string(&dept_json).unwrap(),
+    )
+    .unwrap();
+
+    let repo = app_repo(&sb, "web-ban-hang");
+    let proj = team_project_entry(&sb, &repo, "web-ban-hang", "work", "phong-ban");
+    write_map_of(&sb, vec![proj]);
+
+    let res = sb.run(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+    );
+    assert_ok(&res, "run lead");
+
+    let run_dir: String = sb
+        .db()
+        .query_row(
+            "SELECT run_dir FROM runs WHERE role = 'lead' ORDER BY id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let prompt_md =
+        std::fs::read_to_string(std::path::Path::new(&run_dir).join("prompt.md")).unwrap();
+    assert!(
+        prompt_md.contains("Chưa xác định được engine Dev sẽ chạy: Đội hình phong-ban: Phòng thi công có thành viên nhưng không ai sẵn sàng cho vai dev"),
+        "prompt_md: {prompt_md}"
+    );
+
+    let records_before = sb.records().len();
+
+    let res = sb.run(
+        &["run", "dev", "--", "web-ban-hang"],
+        Some(dev_entry_for("sua-app")),
+    );
+    assert_eq!(
+        res.code, 1,
+        "run dev must exit 1: stderr: {}\nstdout: {}",
+        res.stderr, res.stdout
+    );
+    assert!(
+        res.stderr.contains("Đội hình phong-ban: Phòng thi công có thành viên nhưng không ai sẵn sàng cho vai dev (độ khó Vừa) — không tự chạy bằng engine khác."),
+        "stderr: {}",
+        res.stderr
+    );
+
+    let dev_count: i64 = sb
+        .db()
+        .query_row("SELECT COUNT(*) FROM runs WHERE role = 'dev'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(dev_count, 0, "no dev run row must be inserted");
+    assert_eq!(
+        sb.records().len(),
+        records_before,
+        "claude must not be invoked"
+    );
+}
