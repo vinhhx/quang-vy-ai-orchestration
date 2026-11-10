@@ -505,7 +505,9 @@ impl ChainWaits {
 
 /// Journal mailbox (Phase 7, JRN-05, D-20): delivers every unsent `journal_mail` row to the paired
 /// chat at most once. A row is claimed (`sent_at`) before it goes to the outbox, so a restart or a
-/// second scan never sends it again; a crash between claim and send loses the message (A11). A
+/// second scan never sends it again; a crash between claim and send loses the message (A11). Rows are
+/// claimed one at a time and a database error on a later row returns the rows already claimed (the
+/// failing row stays unclaimed for the next scan, WR-09). A
 /// `digest` of a day other than today's local day is claimed and dropped, never sent late.
 #[derive(Debug, Default)]
 pub struct JournalMail;
@@ -540,10 +542,22 @@ impl JournalMail {
         let today = journal_today(cfg, now_ms);
         let mut out = Vec::new();
         for (id, kind, key, text) in rows {
-            let claimed = conn.execute(
+            let claimed = match conn.execute(
                 "UPDATE journal_mail SET sent_at = ?1 WHERE id = ?2 AND sent_at IS NULL",
                 rusqlite::params![now_ms, id],
-            )? == 1;
+            ) {
+                Ok(n) => n == 1,
+                // WR-09: a database error on a later row (e.g. SQLITE_BUSY while the exporter
+                // writes) must not discard the rows already claimed: return them now. This row was
+                // not claimed (the UPDATE failed), so the next scan retries it and the rest.
+                Err(e) if !out.is_empty() => {
+                    crate::term::emit(&format!(
+                        "Nhật ký: lỗi đọc hộp thư ({e}) — gửi các thư đã nhận, phần còn lại quét lại sau"
+                    ));
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            };
             if !claimed {
                 continue;
             }
