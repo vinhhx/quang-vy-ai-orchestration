@@ -64,6 +64,74 @@ pub fn rebuild(conn: &Connection, rows: &[FtsRow]) -> BrainResult<()> {
     Ok(())
 }
 
+/// Giới hạn độ dài truy vấn `/tim` (ký tự) và số từ khóa; phần thừa bị bỏ (D-15, T-07-26).
+pub const MAX_QUERY_CHARS: usize = 100;
+pub const MAX_QUERY_TOKENS: usize = 8;
+
+/// Một kết quả tìm kiếm: ngày (`YYYY-MM-DD`) và dòng hiển thị đúng như vault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hit {
+    pub day: String,
+    pub display: String,
+}
+
+/// Các từ khóa đã gấp dấu của truy vấn người dùng, tối đa `MAX_QUERY_TOKENS`.
+pub fn query_tokens(user: &str) -> Vec<String> {
+    let cut: String = user.chars().take(MAX_QUERY_CHARS).collect();
+    fold(&cut)
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .take(MAX_QUERY_TOKENS)
+        .map(str::to_string)
+        .collect()
+}
+
+/// Chuỗi MATCH an toàn từ văn bản Telegram không tin cậy: mỗi từ khóa là một chuỗi trong ngoặc kép
+/// (không toán tử, không lọc cột), từ cuối cùng khớp tiền tố (trừ từ một ký tự, để `du-an-a` không
+/// khớp luôn `an`); các từ nối bằng AND ngầm.
+pub fn match_query(user: &str) -> Option<String> {
+    let toks = query_tokens(user);
+    let last = toks.len().checked_sub(1)?;
+    let parts: Vec<String> = toks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let quoted = format!("\"{}\"", t.replace('"', "\"\""));
+            if i == last && t.chars().count() >= 2 {
+                format!("{quoted}*")
+            } else {
+                quoted
+            }
+        })
+        .collect();
+    Some(parts.join(" "))
+}
+
+/// Tìm trong `journal_fts` (chỉ `day` và `display`); rỗng khi truy vấn không có từ khóa.
+pub fn search(conn: &Connection, user: &str, limit: usize) -> BrainResult<Vec<Hit>> {
+    let Some(q) = match_query(user) else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = conn.prepare(
+        "SELECT day, display FROM journal_fts WHERE journal_fts MATCH ?1
+         ORDER BY bm25(journal_fts), day DESC LIMIT ?2",
+    )?;
+    let hits = stmt
+        .query_map(params![q, limit as i64], |r| {
+            Ok(Hit {
+                day: r.get(0)?,
+                display: r.get(1)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(hits)
+}
+
+pub fn index_is_empty(conn: &Connection) -> BrainResult<bool> {
+    let n: i64 = conn.query_row("SELECT count(*) FROM journal_fts", [], |r| r.get(0))?;
+    Ok(n == 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +194,126 @@ mod tests {
         assert_eq!(matches(&conn, "\"dang\" \"nhap\""), vec!["1"]);
         assert_eq!(matches(&conn, "\"tim\""), vec!["2"]);
         assert_eq!(matches(&conn, "\"kiem\"*"), vec!["2"]);
+    }
+
+    fn dated_rows() -> Vec<FtsRow> {
+        let mk = |id: i64, day: &str, dmy: &str, wd: &str, slug: &str, title: &str| FtsRow {
+            task_ref: id.to_string(),
+            day: day.to_string(),
+            display: format!("{slug} — {title} · xong"),
+            title: fold(title),
+            project: fold(slug),
+            grp: fold("Công việc"),
+            day_text: fold(&format!("{day} {dmy} {wd}")),
+            status: fold("xong"),
+        };
+        vec![
+            mk(
+                1,
+                "2026-01-15",
+                "15/01/2026",
+                "Thứ Năm",
+                "du-an-a",
+                "Sửa lỗi đăng nhập trang quản trị",
+            ),
+            mk(
+                2,
+                "2026-01-14",
+                "14/01/2026",
+                "Thứ Tư",
+                "du-an-b",
+                "Tìm kiếm khách hàng theo số điện thoại",
+            ),
+        ]
+    }
+
+    fn days(hits: &[Hit]) -> Vec<String> {
+        hits.iter().map(|h| h.day.clone()).collect()
+    }
+
+    #[test]
+    fn match_query_quotes_tokens() {
+        assert_eq!(
+            match_query("dang nhap").as_deref(),
+            Some("\"dang\" \"nhap\"*")
+        );
+        assert_eq!(
+            match_query("Đăng  NHẬP!!").as_deref(),
+            Some("\"dang\" \"nhap\"*")
+        );
+        assert_eq!(match_query("du a").as_deref(), Some("\"du\" \"a\""));
+        assert_eq!(match_query(""), None);
+        assert_eq!(match_query("!!! ???"), None);
+        let twenty = (1..=20)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(query_tokens(&twenty).len(), MAX_QUERY_TOKENS);
+        let long = format!("{} zzzcuoi", "a".repeat(MAX_QUERY_CHARS));
+        assert_eq!(query_tokens(&long), vec!["a".repeat(MAX_QUERY_CHARS)]);
+        let five_hundred = "ab ".repeat(200);
+        assert!(query_tokens(&five_hundred).len() <= MAX_QUERY_TOKENS);
+    }
+
+    #[test]
+    fn hostile_queries_never_error() {
+        let (_d, conn) = db();
+        rebuild(&conn, &dated_rows()).unwrap();
+        for q in [
+            "AND",
+            "foo AND",
+            "\"unterminated",
+            "a-b",
+            "col:foo",
+            "title:sua",
+            "*",
+            "(",
+            "tim^",
+            "NOT x",
+            "fix bug #12",
+            "50% off",
+            "a'b",
+            "title:sua AND (",
+            "NEAR(a b)",
+        ] {
+            let r = search(&conn, q, 5);
+            assert!(r.is_ok(), "query {q:?} errored: {r:?}");
+        }
+        assert!(search(&conn, "title:sua", 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_folds_and_prefixes() {
+        let (_d, conn) = db();
+        rebuild(&conn, &dated_rows()).unwrap();
+        assert_eq!(
+            days(&search(&conn, "dang nhap", 5).unwrap()),
+            vec!["2026-01-15"]
+        );
+        assert_eq!(days(&search(&conn, "tim", 5).unwrap()), vec!["2026-01-14"]);
+        assert_eq!(days(&search(&conn, "kie", 5).unwrap()), vec!["2026-01-14"]);
+        assert_eq!(
+            days(&search(&conn, "2026 01 14", 5).unwrap()),
+            vec!["2026-01-14"]
+        );
+        assert_eq!(
+            days(&search(&conn, "du-an-a", 5).unwrap()),
+            vec!["2026-01-15"]
+        );
+        assert_eq!(search(&conn, "2026", 1).unwrap().len(), 1);
+        assert_eq!(search(&conn, "2026", 5).unwrap().len(), 2);
+        let hit = &search(&conn, "dang nhap", 5).unwrap()[0];
+        assert_eq!(
+            hit.display,
+            "du-an-a — Sửa lỗi đăng nhập trang quản trị · xong"
+        );
+    }
+
+    #[test]
+    fn index_is_empty_reports() {
+        let (_d, conn) = db();
+        assert!(index_is_empty(&conn).unwrap());
+        rebuild(&conn, &rows()).unwrap();
+        assert!(!index_is_empty(&conn).unwrap());
     }
 }
