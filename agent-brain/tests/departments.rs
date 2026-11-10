@@ -40,8 +40,8 @@ fn test_db() -> (tempfile::TempDir, Connection) {
 
 #[test]
 fn example_departments_json_loads_cleanly() {
-    let example_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("assets/departments.example.json");
+    let example_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/departments.example.json");
     let text = std::fs::read_to_string(&example_path).expect("read departments.example.json");
     let cfg = test_cfg_with_agy();
     let loaded = load_from(&text, &cfg);
@@ -138,7 +138,10 @@ fn validation_rejects_duplicate_member_id_across_departments() {
     .to_string();
     let loaded = load_from(&json_text, &cfg);
     assert!(!loaded.errors.is_empty());
-    assert!(loaded.errors.iter().any(|e| e.contains("Mã thành viên bị trùng: 'm-1'")));
+    assert!(loaded
+        .errors
+        .iter()
+        .any(|e| e.contains("Mã thành viên bị trùng: 'm-1'")));
     assert_eq!(loaded.members.len(), 1);
 }
 
@@ -173,8 +176,14 @@ fn validation_rejects_human_and_dsh_engines() {
     .to_string();
     let loaded = load_from(&json_text, &cfg);
     assert_eq!(loaded.members.len(), 0);
-    assert!(loaded.errors.iter().any(|e| e.contains("không thể là người thật")));
-    assert!(loaded.errors.iter().any(|e| e.contains("Engine dsh không được hỗ trợ")));
+    assert!(loaded
+        .errors
+        .iter()
+        .any(|e| e.contains("không thể là người thật")));
+    assert!(loaded
+        .errors
+        .iter()
+        .any(|e| e.contains("Engine dsh không được hỗ trợ")));
 }
 
 #[test]
@@ -200,7 +209,10 @@ fn validation_rejects_empty_levels_and_invalid_model() {
     .to_string();
     let loaded = load_from(&json_text, &cfg);
     assert_eq!(loaded.members.len(), 0);
-    assert!(loaded.errors.iter().any(|e| e.contains("levels không được để rỗng")));
+    assert!(loaded
+        .errors
+        .iter()
+        .any(|e| e.contains("levels không được để rỗng")));
     assert!(loaded.errors.iter().any(|e| e.contains("không hợp lệ")));
 }
 
@@ -287,7 +299,9 @@ fn pick_rules_keeps_previous_member_same_role() {
     )
     .unwrap();
 
-    let picked = pick_from(&conn, &cfg, &loaded, 1, "dev", Level::Kho, "work").unwrap().unwrap();
+    let picked = pick_from(&conn, &cfg, &loaded, 1, "dev", Level::Kho, "work")
+        .unwrap()
+        .unwrap();
     assert_eq!(picked.member.id, "dev-2");
     assert!(picked.reason.contains("giữ người cũ"));
 }
@@ -328,7 +342,9 @@ fn pick_rules_review_independence_prefers_different_model_family() {
     .unwrap();
 
     // Khi chọn QA, qa-sonnet cùng họ model claude-sonnet-5-5 bị loại, chọn qa-opus (họ claude-opus-5-5)
-    let picked = pick_from(&conn, &cfg, &loaded, 1, "qa", Level::Vua, "work").unwrap().unwrap();
+    let picked = pick_from(&conn, &cfg, &loaded, 1, "qa", Level::Vua, "work")
+        .unwrap()
+        .unwrap();
     assert_eq!(picked.member.id, "qa-opus");
 }
 
@@ -373,11 +389,14 @@ fn pick_rules_fewest_running_and_score_tie_break() {
     )
     .unwrap();
 
-    let picked = pick_from(&conn, &cfg, &loaded, 1, "dev", Level::Vua, "work").unwrap().unwrap();
+    let picked = pick_from(&conn, &cfg, &loaded, 1, "dev", Level::Vua, "work")
+        .unwrap()
+        .unwrap();
     assert_eq!(picked.member.id, "dev-free");
 
     // Nếu cả 2 đều rảnh (0 running), người có điểm cao hơn (>= 5 lượt) thắng
-    conn.execute("UPDATE runs SET status = 'succeeded' WHERE id = 30", []).unwrap();
+    conn.execute("UPDATE runs SET status = 'succeeded' WHERE id = 30", [])
+        .unwrap();
 
     // dev-busy có 5 điểm 5.0 (cần tạo run trước vì có khoá ngoại)
     for i in 1..=5 {
@@ -409,7 +428,9 @@ fn pick_rules_fewest_running_and_score_tie_break() {
     )
     .unwrap();
 
-    let picked_scored = pick_from(&conn, &cfg, &loaded, 3, "dev", Level::Vua, "work").unwrap().unwrap();
+    let picked_scored = pick_from(&conn, &cfg, &loaded, 3, "dev", Level::Vua, "work")
+        .unwrap()
+        .unwrap();
     assert_eq!(picked_scored.member.id, "dev-busy");
 }
 
@@ -485,7 +506,10 @@ fn resolve_for_run_and_plan_for_phong_ban_and_mac_dinh() {
 
     let resolved_claude = resolve_for_run_with(&conn, Some(11), "dev", Some(&cfg)).unwrap();
     assert_eq!(resolved_claude.engine, Engine::Claude);
-    assert_eq!(resolved_claude.member.as_ref().unwrap().member.id, "tc-opus");
+    assert_eq!(
+        resolved_claude.member.as_ref().unwrap().member.id,
+        "tc-opus"
+    );
 
     let plan_claude = plan_for(
         &cfg,
@@ -506,7 +530,11 @@ fn resolve_for_run_and_plan_for_phong_ban_and_mac_dinh() {
     .unwrap();
     assert_eq!(plan_claude.model_label, "claude-opus-5-5");
     assert!(plan_claude.argv.contains(&"--model".to_string()));
-    let model_idx = plan_claude.argv.iter().position(|x| x == "--model").unwrap();
+    let model_idx = plan_claude
+        .argv
+        .iter()
+        .position(|x| x == "--model")
+        .unwrap();
     assert_eq!(plan_claude.argv[model_idx + 1], "claude-opus-5-5");
 
     // Task 12 mức de -> chọn tc-flash (engine agy, model gemini-3.8-flash-high)
@@ -548,8 +576,8 @@ fn resolve_for_run_and_plan_for_phong_ban_and_mac_dinh() {
 fn cli_dept_check_and_list_and_pick() {
     let _lock = ENV_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    let example_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("assets/departments.example.json");
+    let example_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/departments.example.json");
     let dept_file = tmp.path().join("departments.json");
     std::fs::copy(&example_path, &dept_file).unwrap();
     std::env::set_var("AGENT_BRAIN_CONFIG_DIR", tmp.path());
@@ -651,15 +679,28 @@ fn prompts_departments_layer_and_builtins() {
     // 2. Builtin file được đọc khi chưa có file người dùng
     let note_dev = agent_brain::prompts::read_note("departments", "thi-cong", "dev").unwrap();
     assert!(note_dev.is_some());
-    assert!(note_dev.unwrap().contains("Chỉ sửa đổi các file đã được liệt kê trong plan"));
+    assert!(note_dev
+        .unwrap()
+        .contains("Chỉ sửa đổi các file đã được liệt kê trong plan"));
 
     // 3. File người dùng thắng file có sẵn
-    let user_note_dir = tmp.path().join("prompts").join("departments").join("thi-cong");
+    let user_note_dir = tmp
+        .path()
+        .join("prompts")
+        .join("departments")
+        .join("thi-cong");
     std::fs::create_dir_all(&user_note_dir).unwrap();
-    std::fs::write(user_note_dir.join("dev.md"), "- Luật riêng từ người dùng cho dev\n").unwrap();
+    std::fs::write(
+        user_note_dir.join("dev.md"),
+        "- Luật riêng từ người dùng cho dev\n",
+    )
+    .unwrap();
 
     let note_user = agent_brain::prompts::read_note("departments", "thi-cong", "dev").unwrap();
-    assert_eq!(note_user.as_deref(), Some("- Luật riêng từ người dùng cho dev\n"));
+    assert_eq!(
+        note_user.as_deref(),
+        Some("- Luật riêng từ người dùng cho dev\n")
+    );
 
     // 4. Tên phòng lạ -> lỗi API
     let err_dept = agent_brain::prompts::read_note("departments", "phong-la", "dev").unwrap_err();
@@ -686,7 +727,11 @@ fn dept_skills_discovery_and_budget() {
     let tmp = tempfile::tempdir().unwrap();
     std::env::set_var("AGENT_BRAIN_CONFIG_DIR", tmp.path());
 
-    let skills_dir = tmp.path().join("departments").join("thi-cong").join("skills");
+    let skills_dir = tmp
+        .path()
+        .join("departments")
+        .join("thi-cong")
+        .join("skills");
     std::fs::create_dir_all(&skills_dir).unwrap();
 
     // 1. Skill hợp lệ với frontmatter
@@ -716,7 +761,11 @@ fn dept_skills_discovery_and_budget() {
     assert_eq!(skills[0].description, "Playbook clean code");
 
     // 4. Giới hạn 24 KiB: skill còn lại chỉ đưa tên và mô tả, kèm cảnh báo
-    let kh_skills_dir = tmp.path().join("departments").join("ke-hoach").join("skills");
+    let kh_skills_dir = tmp
+        .path()
+        .join("departments")
+        .join("ke-hoach")
+        .join("skills");
     std::fs::create_dir_all(&kh_skills_dir).unwrap();
 
     let kh_s1 = kh_skills_dir.join("skill-1");
@@ -738,7 +787,9 @@ fn dept_skills_discovery_and_budget() {
     .unwrap();
 
     let (formatted, warnings) = agent_brain::departments::format_dept_skills("ke-hoach");
-    assert!(formatted.contains("## Skill của phòng Phòng kế hoạch (playbook dùng chung — bổ sung, không mở rộng quyền)"));
+    assert!(formatted.contains(
+        "## Skill của phòng Phòng kế hoạch (playbook dùng chung — bổ sung, không mở rộng quyền)"
+    ));
     assert!(formatted.contains("### Skill: Skill 1"));
     assert!(formatted.contains("- Skill 2: Mô tả 2"));
     assert_eq!(warnings.len(), 1);
@@ -825,7 +876,12 @@ fn execute_seam_phong_ban_and_mac_dinh() {
     .to_string();
     std::fs::write(&dept_file, dept_json).unwrap();
 
-    let skills_dir = tmp_cfg.path().join("departments").join("thi-cong").join("skills").join("checklist");
+    let skills_dir = tmp_cfg
+        .path()
+        .join("departments")
+        .join("thi-cong")
+        .join("skills")
+        .join("checklist");
     std::fs::create_dir_all(&skills_dir).unwrap();
     std::fs::write(
         skills_dir.join("SKILL.md"),
@@ -871,10 +927,22 @@ fn execute_seam_phong_ban_and_mac_dinh() {
     )
     .unwrap();
 
-    assert!(plan_claude.argv.iter().any(|arg| arg.contains("## Skill của phòng Phòng thi công")));
-    assert!(plan_claude.argv.iter().any(|arg| arg.contains("Nội dung playbook thi công")));
-    assert!(plan_claude.argv.iter().any(|arg| arg.contains("## Rules riêng của thành viên Thi công Claude")));
-    assert!(plan_claude.argv.iter().any(|arg| arg.contains("Claude: tuân thủ nghiêm ngặt plan")));
+    assert!(plan_claude
+        .argv
+        .iter()
+        .any(|arg| arg.contains("## Skill của phòng Phòng thi công")));
+    assert!(plan_claude
+        .argv
+        .iter()
+        .any(|arg| arg.contains("Nội dung playbook thi công")));
+    assert!(plan_claude
+        .argv
+        .iter()
+        .any(|arg| arg.contains("## Rules riêng của thành viên Thi công Claude")));
+    assert!(plan_claude
+        .argv
+        .iter()
+        .any(|arg| arg.contains("Claude: tuân thủ nghiêm ngặt plan")));
 
     // 2. Task phong-ban mức de -> tc-agy (có rules và skill)
     conn.execute(
@@ -955,8 +1023,14 @@ fn execute_seam_phong_ban_and_mac_dinh() {
     )
     .unwrap();
 
-    assert!(plan_mac_dinh.argv.iter().any(|arg| arg.contains("## Skill của phòng Phòng thi công")));
-    assert!(!plan_mac_dinh.argv.iter().any(|arg| arg.contains("## Rules riêng của thành viên")));
+    assert!(plan_mac_dinh
+        .argv
+        .iter()
+        .any(|arg| arg.contains("## Skill của phòng Phòng thi công")));
+    assert!(!plan_mac_dinh
+        .argv
+        .iter()
+        .any(|arg| arg.contains("## Rules riêng của thành viên")));
 
     std::env::remove_var("AGENT_BRAIN_CONFIG_DIR");
 }
@@ -973,7 +1047,8 @@ fn project_skills_in_qa_and_analyst() {
     .unwrap();
 
     // 1. Analyst prompt
-    let analyst_input = agent_brain::roles::analyst::build_analyst_user_input(tmp.path(), "cần phân tích gì", None);
+    let analyst_input =
+        agent_brain::roles::analyst::build_analyst_user_input(tmp.path(), "cần phân tích gì", None);
     assert!(analyst_input.contains("## Skill có sẵn trong dự án"));
     assert!(analyst_input.contains("My Tool"));
     assert!(analyst_input.contains("Công cụ kiểm tra tự động"));
@@ -983,4 +1058,86 @@ fn project_skills_in_qa_and_analyst() {
     let qa_skill_block = agent_brain::skills::prompt_block(&skills);
     assert!(qa_skill_block.contains("## Skill có sẵn trong dự án"));
     assert!(qa_skill_block.contains("My Tool"));
+}
+
+#[test]
+fn phong_ban_member_on_unverified_endpoint_is_picked() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    const TEST_ENV_KEY: &str = "AB_TEST_DEPT_GW_KEY";
+    std::env::set_var(TEST_ENV_KEY, "planted-dept-key-0123456789");
+
+    let (_tmp, conn) = test_db();
+    let exe_path = std::env::current_exe()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let val = json!({
+        "models": { "lead": "opus", "dev": "sonnet", "qa": "sonnet" },
+        "profiles": { "work": {}, "personal": {} },
+        "engines": [
+            {
+                "id": "gw-chua",
+                "kind": "anthropic",
+                "command": exe_path,
+                "base_url": "https://gw-chua.invalid/anthropic",
+                "key_env": TEST_ENV_KEY,
+                "models": { "dev": "m-dev" }
+            }
+        ]
+    });
+    let cfg = agent_brain::config::config_from_value(&val).unwrap();
+
+    let tmp_cfg = tempfile::tempdir().unwrap();
+    let dept_file = tmp_cfg.path().join("departments.json");
+    let dept_json = json!({
+        "thi-cong": {
+            "members": {
+                "tc-gw": {
+                    "display_name": "Thi công GW",
+                    "engine": "gw-chua",
+                    "model": "m-dev",
+                    "levels": ["vua"]
+                }
+            }
+        }
+    });
+    std::fs::write(&dept_file, serde_json::to_string(&dept_json).unwrap()).unwrap();
+    std::env::set_var("AGENT_BRAIN_CONFIG_DIR", tmp_cfg.path().to_str().unwrap());
+
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level, team_json)
+         VALUES (31, 1, 'task-31', 'Task 31', 'task/31', 'main', 'base1', 'open', 1000, 1000, 'vua', '{\"name\":\"phong-ban\"}')",
+        [],
+    )
+    .unwrap();
+
+    let resolved = resolve_for_run_with(&conn, Some(31), "dev", Some(&cfg)).unwrap();
+    assert_eq!(resolved.engine, Engine::Named("gw-chua".to_string()));
+    assert_eq!(
+        resolved.member.as_ref().map(|m| m.member.id.as_str()),
+        Some("tc-gw")
+    );
+
+    let mut env_map = std::collections::BTreeMap::new();
+    env_map.insert(
+        TEST_ENV_KEY.to_string(),
+        "planted-dept-key-0123456789".to_string(),
+    );
+    let plan = plan_for(
+        &cfg,
+        &resolved,
+        "dev",
+        &["claude".to_string()],
+        "m-dev",
+        env_map,
+        std::time::Duration::from_secs(60),
+        std::path::Path::new("/tmp"),
+    )
+    .unwrap();
+    assert!(plan.unverified);
+    assert_eq!(plan.db_engine, "gw-chua");
+
+    std::env::remove_var(TEST_ENV_KEY);
+    std::env::remove_var("AGENT_BRAIN_CONFIG_DIR");
 }

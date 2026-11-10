@@ -491,7 +491,7 @@ pub fn kind_word(cfg: &Config, engine: &Engine) -> Option<&'static str> {
 }
 
 /// C4: the project pin of `role` (`role_members` / `role_engines` in projects_map.json) checked
-/// for readiness now. `Ok(None)` when the project pins nothing for the role; an error when the
+/// for readiness now: a `chưa kiểm` engine is accepted and runs marked (D-40). `Ok(None)` when the project pins nothing for the role; an error when the
 /// pinned member or engine cannot run (never a silent fall back to the automatic pick).
 fn project_pin(
     cfg: &Config,
@@ -572,7 +572,7 @@ fn project_pin(
             let ready = statuses
                 .iter()
                 .find(|s| s.name == db_name)
-                .is_some_and(|s| s.readiness == Readiness::SanSang.key());
+                .is_some_and(|s| readiness_allows_run(s.readiness));
             if !ready {
                 return Err(BrainError::error(format!(
                     "Engine '{db_name}' được dự án '{project_id}' ghim cho vai {lookup_role} chưa sẵn sàng ({}). Không tự chọn engine khác — sửa engine hoặc bỏ ghim trên trang Dự án.",

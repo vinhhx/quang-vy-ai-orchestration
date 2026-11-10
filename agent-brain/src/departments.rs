@@ -139,7 +139,10 @@ impl LoadedDepartments {
     }
 
     pub fn members_of(&self, dept: &str) -> Vec<&Member> {
-        self.members.iter().filter(|m| m.department == dept).collect()
+        self.members
+            .iter()
+            .filter(|m| m.department == dept)
+            .collect()
     }
 
     pub fn has_members(&self) -> bool {
@@ -172,9 +175,9 @@ fn field_error(field: &str, message: impl Into<String>) -> FieldError {
 fn is_valid_model_str(model: &str) -> bool {
     !model.is_empty()
         && model.len() <= MAX_MODEL_CHARS
-        && model
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' || c == ':' || c == '/')
+        && model.chars().all(|c| {
+            c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' || c == ':' || c == '/'
+        })
 }
 
 /// Validate một thành viên trong phòng ban. Tách riêng để tái sử dụng ở dashboard.
@@ -203,7 +206,10 @@ pub fn validate_entry(
     let obj = match value.as_object() {
         Some(o) => o,
         None => {
-            errors.push(field_error("entry", "Giá trị của thành viên phải là một object"));
+            errors.push(field_error(
+                "entry",
+                "Giá trị của thành viên phải là một object",
+            ));
             return Err(errors);
         }
     };
@@ -213,7 +219,10 @@ pub fn validate_entry(
         Some(name) => {
             let trimmed = name.trim();
             if trimmed.is_empty() {
-                errors.push(field_error("display_name", "Tên hiển thị không được để trống"));
+                errors.push(field_error(
+                    "display_name",
+                    "Tên hiển thị không được để trống",
+                ));
                 String::new()
             } else if trimmed.chars().count() > MAX_NAME_CHARS {
                 errors.push(field_error(
@@ -443,7 +452,9 @@ pub fn load_from(text: &str, cfg: &Config) -> LoadedDepartments {
         let members_map = match members_val.as_object() {
             Some(m) => m,
             None => {
-                errors.push(format!("Trường 'members' của phòng '{k}' phải là một object"));
+                errors.push(format!(
+                    "Trường 'members' của phòng '{k}' phải là một object"
+                ));
                 continue;
             }
         };
@@ -486,7 +497,10 @@ pub fn load_path(path: &Path, cfg: &Config) -> LoadedDepartments {
         Err(e) => {
             return LoadedDepartments {
                 members: Vec::new(),
-                errors: vec![format!("Không thể đọc thông tin file {}: {e}", path.display())],
+                errors: vec![format!(
+                    "Không thể đọc thông tin file {}: {e}",
+                    path.display()
+                )],
             };
         }
     };
@@ -546,7 +560,7 @@ pub fn pick(
     pick_from(conn, cfg, &loaded, task_id, role, level, project_profile)
 }
 
-/// A member's engine is `san_sang` in `statuses` and `profile_refusal` does not refuse it for
+/// A member's engine is runnable (`sẵn sàng` or `chưa kiểm`, D-40) in `statuses` and `profile_refusal` does not refuse it for
 /// `role` on a project of `project_profile` (people are never picked from a department).
 pub fn member_usable(
     cfg: &Config,
@@ -559,7 +573,7 @@ pub fn member_usable(
     let ready = statuses
         .iter()
         .find(|s| s.name == name)
-        .map(|s| s.readiness == crate::engine::Readiness::SanSang.key())
+        .map(|s| crate::engine::readiness_allows_run(s.readiness))
         .unwrap_or(false);
     let not_refused = match &member.engine {
         Engine::Claude => true,
@@ -759,7 +773,8 @@ pub fn cmd_list(ctx: &crate::app::Ctx) -> BrainResult<i32> {
                     .map(|s| s.word)
                     .unwrap_or("chưa rõ");
 
-                let (avg, count) = crate::db::member_score_avg(&ctx.conn, &m.id).unwrap_or((0.0, 0));
+                let (avg, count) =
+                    crate::db::member_score_avg(&ctx.conn, &m.id).unwrap_or((0.0, 0));
                 let score_str = if count == 0 {
                     "- (0 lượt)".to_string()
                 } else {
@@ -809,7 +824,10 @@ pub fn cmd_check(ctx: &crate::app::Ctx) -> BrainResult<i32> {
         if let Some(parent) = p.parent() {
             println!("  mkdir -p {}", parent.display());
         }
-        println!("  cp <agent-brain>/assets/departments.example.json {}", p.display());
+        println!(
+            "  cp <agent-brain>/assets/departments.example.json {}",
+            p.display()
+        );
         return Ok(0);
     }
 
@@ -822,7 +840,11 @@ pub fn cmd_check(ctx: &crate::app::Ctx) -> BrainResult<i32> {
         return Ok(1);
     }
 
-    println!("File {} hợp lệ ({} thành viên).", p.display(), loaded.members.len());
+    println!(
+        "File {} hợp lệ ({} thành viên).",
+        p.display(),
+        loaded.members.len()
+    );
     Ok(0)
 }
 
@@ -836,7 +858,9 @@ pub fn cmd_pick(ctx: &crate::app::Ctx, task_id: i64, role: &str) -> BrainResult<
             rusqlite::params![task_id],
             |r| r.get(0),
         )
-        .map_err(|e| crate::error::BrainError::error(format!("Không tìm thấy task {task_id}: {e}")))?;
+        .map_err(|e| {
+            crate::error::BrainError::error(format!("Không tìm thấy task {task_id}: {e}"))
+        })?;
 
     match pick(&ctx.conn, &ctx.cfg, task_id, role, level, &project_profile)? {
         Some(pick) => {
@@ -871,10 +895,16 @@ pub struct DeptSkill {
 pub fn dept_skills_dir(dept: &str) -> PathBuf {
     if let Ok(dir) = std::env::var("AGENT_BRAIN_CONFIG_DIR") {
         if !dir.is_empty() {
-            return PathBuf::from(dir).join("departments").join(dept).join("skills");
+            return PathBuf::from(dir)
+                .join("departments")
+                .join(dept)
+                .join("skills");
         }
     }
-    crate::config::config_dir().join("departments").join(dept).join("skills")
+    crate::config::config_dir()
+        .join("departments")
+        .join(dept)
+        .join("skills")
 }
 
 pub fn dept_skills(dept: &str) -> Vec<DeptSkill> {
@@ -903,7 +933,9 @@ pub fn dept_skills(dept: &str) -> Vec<DeptSkill> {
         };
         let (fm_name, fm_desc) = crate::skills::front_matter(&text);
         let folder_name = entry.file_name().to_string_lossy().to_string();
-        let name = fm_name.filter(|n| !n.trim().is_empty()).unwrap_or(folder_name);
+        let name = fm_name
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or(folder_name);
         let description = fm_desc.unwrap_or_else(|| crate::skills::first_line(&text));
 
         list.push(DeptSkill {
@@ -925,7 +957,9 @@ pub fn format_dept_skills(dept: &str) -> (String, Vec<String>) {
     }
 
     let dept_name = dept_name_of(dept).unwrap_or(dept);
-    let mut out = format!("## Skill của phòng {dept_name} (playbook dùng chung — bổ sung, không mở rộng quyền)\n");
+    let mut out = format!(
+        "## Skill của phòng {dept_name} (playbook dùng chung — bổ sung, không mở rộng quyền)\n"
+    );
     let mut warnings = Vec::new();
     let mut current_bytes = out.len();
     let mut budget_exceeded = false;

@@ -1334,3 +1334,55 @@ fn qa_on_list_id_accepted() {
     );
     assert_eq!(engines_of_runs(&sb), ["claude"]);
 }
+
+#[test]
+fn unverified_endpoint_pinned_runs_marked() {
+    let sb = Sandbox::new();
+    let mut entry = gateway_entry(
+        "vcadm-deepseek",
+        "https://gateway.invalid/proxyllm",
+        "VCADM_GATEWAY_KEY",
+    );
+    entry.as_object_mut().unwrap().remove("verified");
+    sb.write_config(json!({ "engines": [entry] }));
+
+    let repo = app_repo(&sb, "web-ban-hang");
+    let mut proj = team_project_entry(&sb, &repo, "web-ban-hang", "work", "mac-dinh");
+    proj["role_engines"] = json!({"dev": "vcadm-deepseek"});
+    write_map_of(&sb, vec![proj]);
+
+    let env = [("VCADM_GATEWAY_KEY", PLANTED_GW_KEY)];
+    let res = sb.run_env(
+        &[
+            "run",
+            "lead",
+            "--name",
+            "sua-app",
+            "--",
+            "web-ban-hang",
+            "sửa app",
+        ],
+        Some(lead_plan_entry()),
+        &env,
+    );
+    assert_ok(&res, "run lead");
+
+    let res = sb.run_env(
+        &["run", "dev", "--", "web-ban-hang"],
+        Some(dev_entry_for("sua-app")),
+        &env,
+    );
+    assert_ok(&res, "run dev");
+    let header = res
+        .stderr
+        .lines()
+        .find(|l| l.starts_with("[agent-brain] dev "))
+        .unwrap_or_else(|| panic!("no dev header: {}", res.stderr));
+    assert!(
+        header.contains("engine vcadm-deepseek") && header.ends_with("· chưa kiểm E-09"),
+        "header: {header}"
+    );
+    let (engine, metrics) = run_of(&sb, "dev");
+    assert_eq!(engine, "vcadm-deepseek");
+    assert_eq!(metrics["unverified"], json!(true), "metrics: {metrics}");
+}
