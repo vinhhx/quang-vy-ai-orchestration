@@ -2172,10 +2172,15 @@ fn quota_retry_label(state: &TaskState, run: &RunRow) -> Option<String> {
         .map(|a| a.label.clone())
 }
 
-/// `{run_id, role, stage, step_name, engine, detail, retry_label}` của UI-SPEC khi bước gần
-/// nhất của task dừng vì hết quota (D-15, D-18); `None` khi không có quota stop.
+/// `{run_id, role, stage, step_name, engine, detail, retry_label, ready_teams, unverified_teams}` của UI-SPEC khi bước gần
+/// nhất của task dừng vì hết quota (D-15, D-18, D-40); `None` khi không có quota stop.
 pub fn quota_view(state: &TaskState) -> Option<serde_json::Value> {
     let run = quota_run(state)?;
+    let unverified_teams: Vec<&str> = state
+        .quota_unverified
+        .iter()
+        .map(|(t, _)| t.as_str())
+        .collect();
     Some(serde_json::json!({
         "run_id": run.id,
         "role": run.role,
@@ -2185,6 +2190,7 @@ pub fn quota_view(state: &TaskState) -> Option<serde_json::Value> {
         "detail": crate::quota::stop_detail(run.id, &run.role, &run.engine),
         "retry_label": quota_retry_label(state, run),
         "ready_teams": state.quota_teams,
+        "unverified_teams": unverified_teams,
     }))
 }
 

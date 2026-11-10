@@ -841,6 +841,28 @@ fn quota_rerun_unverified_engine_runs() {
 }
 
 #[test]
+fn quota_payload_marks_unverified_team() {
+    let sb = Sandbox::new();
+    let (_repo, srv) = manual_dev_quota_with_env(&sb, &[("DEEPSEEK_API_KEY", PLANTED_DS_KEY)]);
+    let task = srv.get("/api/tasks/1").json();
+    let unv = task["quota"]["unverified_teams"]
+        .as_array()
+        .expect("unverified_teams");
+    let unv_names: Vec<&str> = unv.iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(unv_names, vec!["tiet-kiem"], "task: {task}");
+    let ready_teams = task["quota"]["ready_teams"]
+        .as_array()
+        .expect("ready_teams");
+    let ready_names: Vec<&str> = ready_teams.iter().map(|v| v.as_str().unwrap()).collect();
+    assert!(ready_names.contains(&"tiet-kiem"), "ready: {ready_names:?}");
+    let task_str = task.to_string();
+    assert!(
+        !task_str.contains(PLANTED_DS_KEY),
+        "task leaked planted key: {task_str}"
+    );
+}
+
+#[test]
 fn quota_payload_and_rerun_manual() {
     let sb = Sandbox::new();
     let (repo, srv) = manual_dev_quota(&sb);
@@ -858,7 +880,8 @@ fn quota_payload_and_rerun_manual() {
             "detail": format!("Run {dev_id} (dev) trên engine claude dừng vì hết quota hoặc bị giới hạn tốc độ. Agent-brain không tự đổi engine."),
             "retry_label": "Chạy Dev",
             // C3: tiet-kiem (Dev on deepseek, no key in the sandbox) is not offered.
-            "ready_teams": ["mac-dinh", "phong-ban", "doi-a", "doi-b"]
+            "ready_teams": ["mac-dinh", "phong-ban", "doi-a", "doi-b"],
+            "unverified_teams": []
         }),
         "task: {task}"
     );

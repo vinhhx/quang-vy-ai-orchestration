@@ -782,3 +782,13 @@ Trong thẻ `Theo engine`, dòng engine có `usage: "none"` (dsh) có dòng 2 l�
 | partial | list-collection: stats engine rows with `usage: none` | ✅ covered | `không đếm token · {n} run`, không bao giờ `chưa có giá` cho dsh |
 | overflow | list-collection: many configured engines, long labels | 🧪 backstop | `break-words`, không cuộn ngang ở 1024 / 768 / 480 px; kiểm bằng UAT (LIVE-CHECKS § 8 P6-07) |
 | populated | static-content: contrast of the kind chip and the dashed `chưa kiểm` badge | 🧪 backstop | Chip slate và badge dashed dùng class đã tính; kiểm sáng / tối bằng UAT |
+
+## Delta 2026-11-10 — dấu chưa kiểm khi chạy lại sau hết quota (gap 06-29, D-40)
+
+- **Trạng thái:** Áp dụng quyết định khóa D-40 với từ ngữ đã được duyệt `chưa kiểm` (`Readiness::ChuaKiem.word()`) và khuôn thức `{id} — {từ}` của Delta 2026-10-28 §6–§7; không thêm từ sẵn sàng mới, không thêm class CSS mới.
+- **Hộp thoại chạy lại (Re-run dialog):** Dòng tùy chọn đội hình trong danh sách hiển thị `Bước {tên bước} sẽ chạy bằng: {engine} — chưa kiểm` đối với các đội hình nằm trong danh sách `quota.unverified_teams` (tùy chọn vẫn bấm chọn được); các đội hình khác giữ nguyên `Bước {tên bước} sẽ chạy bằng: {engine}`. Trên đội hình `phong-ban`, dòng này gọi tên engine riêng của đội hình (claude).
+- **Telegram:**
+  - Nút chọn đội hình: `Đội hình {tên} ({engine} — chưa kiểm)`.
+  - Dòng xác nhận (bước 1): `Bước {tên bước} sẽ chạy bằng: {engine} — chưa kiểm`.
+  - Dòng ẩn đội hình: `{n} đội hình chưa sẵn sàng cho bước này (engine thiếu key hoặc thiếu lệnh) — không hiện.` (bỏ vế "hoặc chưa kiểm" vì các đội hình chưa kiểm nay được hiển thị kèm dấu cảnh báo).
+- **Hợp đồng dữ liệu:** Bổ sung `quota.unverified_teams[]` (mảng con của `ready_teams`, giữ nguyên thứ tự) trong `GET /api/tasks/{id}`.

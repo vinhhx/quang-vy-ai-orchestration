@@ -3672,6 +3672,17 @@ const sections = [
         check('rerun: review roles map to the team role keys', cr.teamDlgStepLine(TEAMS[1]) === 'Bước Review code sẽ chạy bằng: claude' && cr.teamDlgChips(TEAMS[1]).indexOf('vẫn là claude') >= 0, cr.teamDlgStepLine(TEAMS[1]));
         cr.teamDlgCancel();
 
+        // an unverified team in quota.unverified_teams gains the " — chưa kiểm" mark (D-40)
+        const unv = fresh({ ...T, quota: { ...QUOTA, unverified_teams: ['tiet-kiem'] }, actions: [CHANGE, RERUN] });
+        await unv.openQuotaRerun();
+        check(
+          'rerun: chưa kiểm mark on an unverified team',
+          unv.teamDlgStepLine(TEAMS[1]) === 'Bước Code sẽ chạy bằng: deepseek — chưa kiểm' &&
+            unv.teamDlgStepLine(TEAMS[0]) === 'Bước Code sẽ chạy bằng: claude',
+          unv.teamDlgStepLine(TEAMS[1])
+        );
+        unv.teamDlgCancel();
+
         // refusal inside the dialog and under the banner button
         const RERUN_REFUSAL = 'Dev đang chờ commit — không chạy lại được lúc này.';
         respond = (method, url) => (method === 'POST' ? ok({ error: RERUN_REFUSAL, kind: 'not_allowed' }, 409) : routes()(method, url));

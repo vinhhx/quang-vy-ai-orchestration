@@ -1035,7 +1035,11 @@
         var q = this.quotaView;
         var eng = this.teamDlgRoleEngine(t);
         if (!q || !eng) return '';
-        return 'Bước ' + q.step_name + ' sẽ chạy bằng: ' + window.AB.engineText(eng);
+        var line = 'Bước ' + q.step_name + ' sẽ chạy bằng: ' + window.AB.engineText(eng);
+        if (q.unverified_teams && Array.isArray(q.unverified_teams) && t && q.unverified_teams.indexOf(t.name) !== -1) {
+          line += ' — chưa kiểm';
+        }
+        return line;
       },
 
       // Engines of the team's roles that are not ready, as Giao việc shows them.
