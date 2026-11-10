@@ -526,8 +526,16 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 (Phase 4, 5, 6 
 ### Phase 7: Journal Vault (Obsidian)
 
 **Goal:** Xuất nhật ký công việc hằng ngày từ brain.db (nguồn sự thật, một chiều) sang vault Obsidian riêng tư `git@github.com:vinhhx/agent-brain-journal.git`; điện thoại chỉ đọc (obsidian-git, pull). Mỗi ngày một file (`Nhật ký/YYYY/MM/YYYY-MM-DD.md`), kèm `Today.md`, tháng, năm, `Dự án/<project>.md`; không có file tuần. Nội dung ngôn ngữ thường, 3 nhóm (Công việc / Video / Hỗ trợ bộ phận khác), mục "cần anh xử lý" ở đầu; chỉ field allowlist, quét secret trước push, không diff/prompt/path/env/key/endpoint/account. Thêm digest Telegram cuối ngày có link và `/tim` (SQLite FTS5); commit+push theo lô (~30 phút và cuối ngày). Quyết định thiết kế: memory `journal-vault-idea` (2026-11-10).
-**Requirements**: TBD
+**Requirements**: JRN-01, JRN-02, JRN-03, JRN-04, JRN-05, JRN-06, JRN-07
 **Depends on:** Phase 6
+**Success Criteria** (what must be TRUE):
+  1. `agent-brain journal export` trên brain.db thật tạo file ngày đúng đường dẫn `Nhật ký/YYYY/MM/YYYY-MM-DD.md` (giờ Asia/Ho_Chi_Minh) cùng `Today.md`, tháng, năm và `Dự án/<project>.md`; chạy lại lần hai cho ra đúng cùng nội dung (không tạo commit mới); không có file tuần.
+  2. File ngày có ba nhóm Công việc / Video / Hỗ trợ bộ phận khác theo `journal_group` (dự án chưa khai vào Công việc), mỗi task một dòng mỗi ngày, và mục `cần anh xử lý` ở đầu liệt kê đủ bốn loại (plan chờ duyệt, hết quota hoặc môi trường sập, QA Cần sửa hoặc vướng mắc, run lỗi / timeout / protocol_violation) khi có.
+  3. Một task thử chứa diff, path, URL nội bộ và chuỗi giống key trong yêu cầu không để lại bất kỳ thứ gì trong vault; bộ quét secret chặn commit và push khi cố tình chèn secret, và báo cho người dùng.
+  4. Trong `serve`, vòng nền đẩy lên repo vault khoảng 30 phút một lần và cuối ngày; khi mất mạng hoặc từ chối SSH thì commit cục bộ vẫn có, lần sau tự đẩy bù, sau N lần thất bại liên tiếp có tin Telegram; pull xung đột thì dừng và báo, không ghi đè.
+  5. Lúc 18:00 (cấu hình được) chat Telegram đã ghép nhận đúng một digest trong ngày với số task theo nhóm, mục cần xử lý và link github.com tới file ngày; `/tim <từ khóa>` trả về ngày kèm link từ nội dung đã allowlist và không trả về plan, QA report hay diff.
+  6. Obsidian trên điện thoại pull được vault và hiển thị `Today.md` với file hôm nay nhúng sẵn; không có route hay lệnh nào ghi ngược từ vault vào brain.db.
+
 **Plans:** 0 plans
 
 Plans:

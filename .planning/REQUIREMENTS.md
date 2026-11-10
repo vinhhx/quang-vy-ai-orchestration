@@ -215,6 +215,16 @@ Quyết định người dùng 2026-10-24 và 2026-10-26 (06-CONTEXT.md D-01…D
 - [ ] **MEDIA-02**: Kill một job render thì FFmpeg dừng và không còn tiến trình sót (runner Phase 3 quản lý render như tiến trình riêng). *(src: P5-06)*
 - [ ] **MEDIA-03**: Kịch bản whiteboard đã duyệt được đưa vào bước dựng: agent viết cấu hình render → render (FFmpeg/Remotion/Python) → file output; mỗi job ghi vào bảng `media_jobs`. *(derived: 06-phase5 §2.4, §3.2, §3.3)*
 
+### Journal Vault (GSD Phase 7 — nhật ký công việc sang Obsidian)
+
+- [ ] **JRN-01**: Exporter dựng file ngày `Nhật ký/YYYY/MM/YYYY-MM-DD.md` từ brain.db theo giờ Asia/Ho_Chi_Minh (ngày đổi lúc 00:00): một dòng mỗi task mỗi ngày (trạng thái cuối trong ngày kèm số vòng) ghép từ mẫu cố định theo allowlist, không gọi model; ba nhóm `Công việc` / `Video` / `Hỗ trợ bộ phận khác` theo `journal_group` của dự án (chưa khai thì `Công việc`); mục `cần anh xử lý` ở đầu gồm plan chờ duyệt, hết quota hoặc môi trường sập, QA `Cần sửa` hoặc vướng mắc chưa xử lý, run lỗi / timeout / protocol_violation. *(derived: 07-CONTEXT D-04, D-06, D-07, D-08, D-12, D-16)*
+- [ ] **JRN-02**: Exporter dựng `Today.md` (nhúng file hôm nay, link hôm qua và tháng), tháng `YYYY-MM.md`, năm `YYYY.md` và `Dự án/<project>.md`; không có file tuần; chạy lại trên cùng brain.db cho ra cùng nội dung (dựng lại được hoàn toàn từ brain.db, một chiều, vault không ghi ngược). *(derived: 07-CONTEXT D-01, D-02)*
+- [ ] **JRN-03**: Vault chỉ chứa field allowlist: không diff, prompt, path, env, key, endpoint, account; yêu cầu gốc do người dùng gõ chỉ đưa vào nhật ký sau khi cắt gọn (~140 ký tự), chặn path và URL nội bộ; bộ quét secret chạy trước mọi commit và khi phát hiện thì không commit, không push, báo người dùng. *(derived: 07-CONTEXT D-03, D-05)*
+- [ ] **JRN-04**: Đồng bộ git: vault clone tại `~/.local/share/agent-brain/journal`, commit dưới tác giả `agent-brain journal`; xuất chạy trong `agent-brain serve` (vòng nền khoảng 30 phút và cuối ngày) và bằng lệnh tay `agent-brain journal export`; push lỗi thì commit cục bộ, thử lại lần sau và báo Telegram sau N lần liên tiếp; pull xung đột thì dừng và báo, không ghi đè. *(derived: 07-CONTEXT D-09, D-10, D-11)*
+- [ ] **JRN-05**: Digest Telegram cuối ngày (mặc định 18:00, cấu hình được, mỗi ngày một lần): số task theo nhóm, mục `cần anh xử lý`, link github.com tới file ngày; chỉ gửi tới chat đã ghép. *(derived: 07-CONTEXT D-13, D-14)*
+- [ ] **JRN-06**: Lệnh Telegram `/tim <từ khóa>` tìm bằng SQLite FTS5 trong brain.db chỉ trên nội dung đã allowlist của nhật ký (tiêu đề, dự án, nhóm, ngày, trạng thái) và trả về ngày kèm link; chỉ chat đã ghép dùng được. *(derived: 07-CONTEXT D-15)*
+- [ ] **JRN-07**: Mọi số và đường dẫn nằm trong cấu hình, không hard code (URL repo vault, giờ digest, chu kỳ xuất, số lần thử trước khi báo, `journal_group` của dự án); lược đồ brain.db nâng bằng migration có sao lưu trước; không thay binary đang chạy trong lúc task chạy. *(derived: 07-CONTEXT D-09, D-13; CLAUDE.md; memory agent-brain-binary-swap)*
+
 ## v2 Requirements
 
 Hoãn lại, chưa nằm trong roadmap hiện tại.
@@ -373,10 +383,17 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 | MEDIA-01 | Phase 06.1 | Pending |
 | MEDIA-02 | Phase 06.1 | Pending |
 | MEDIA-03 | Phase 06.1 | Pending |
+| JRN-01 | Phase 7 | Pending |
+| JRN-02 | Phase 7 | Pending |
+| JRN-03 | Phase 7 | Pending |
+| JRN-04 | Phase 7 | Pending |
+| JRN-05 | Phase 7 | Pending |
+| JRN-06 | Phase 7 | Pending |
+| JRN-07 | Phase 7 | Pending |
 
 **Coverage:**
-- v1 requirements: 126 total (42 từ test case nguồn + 84 derived)
-- Mapped to phases: 126
+- v1 requirements: 133 total (42 từ test case nguồn + 91 derived)
+- Mapped to phases: 133
 - Unmapped: 0 ✓
 - Ngoài v1 (chưa gán, cần quyết định): FAST-03 (xem mục v2)
 
@@ -403,4 +420,4 @@ Mỗi yêu cầu v1 ánh xạ đúng một phase. Bảng này giữ đúng 3 c�
 
 ---
 *Requirements defined: 2026-10-14*
-*Last updated: 2026-10-28 — added ENG-08..11 (Phase 6, D-30…D-44)*
+*Last updated: 2026-11-10 — added JRN-01..07 (Phase 7, 07-CONTEXT D-01…D-16)*
