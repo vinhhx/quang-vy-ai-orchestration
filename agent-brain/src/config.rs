@@ -1120,6 +1120,8 @@ pub struct Config {
     pub autopilot: AutopilotDefaults,
     pub orchestrator: OrchestratorConfig,
     pub pricing: BTreeMap<String, Price>,
+    /// Mục journal của config.json (Phase 7); thiếu = tắt.
+    pub journal: crate::journal::config::JournalConfig,
     /// Tasks the Telegram bot may create per local day; 0 turns `/task` off.
     pub telegram_max_tasks_per_day: u32,
     /// Optional `engines` block of config.json (D-08); absent means today's behaviour.
@@ -1567,6 +1569,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         }
     }
     file_engine_prices(&mut pricing, &engines);
+    let journal = crate::journal::config::parse(obj.get("journal"))?;
 
     let merge = merge_config_of(obj)?;
 
@@ -1585,6 +1588,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         autopilot,
         orchestrator,
         pricing,
+        journal,
         telegram_max_tasks_per_day,
         engines,
         merge,
