@@ -199,3 +199,27 @@ fn export_without_journal_config_refuses() {
     assert!(out.stderr.contains("journal.repo_url"), "{}", out.stderr);
     assert!(!clone_dir(&sb).exists());
 }
+
+#[test]
+fn export_rebuilds_fts_index() {
+    let sb = Sandbox::new();
+    tracer_fixture(&sb);
+    let out = export(&sb, &[], now());
+    assert_eq!(out.code, 0, "{}", out.stderr);
+
+    let conn = sb.db();
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT display, day FROM journal_fts")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![(
+            "du-an-a — Dựng video giới thiệu sản phẩm mẫu · xong".to_string(),
+            "2026-01-15".to_string()
+        )]
+    );
+}
