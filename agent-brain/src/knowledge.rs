@@ -43,13 +43,14 @@ const CANDIDATES: &[(HomeKind, &str)] = &[
     (HomeKind::AgentBrain, ".agent-brain"),
 ];
 
-/// `.gsd/` chỉ tính là thư mục tri thức khi chứa ít nhất một mục khác ngoài `quick`
-/// (`quick/` do chương trình tạo cho file giao thức; thư mục chỉ có nó không phải tri thức).
-fn gsd_has_content(dir: &Path) -> bool {
+/// `.gsd/` mà chỉ chứa `quick/` là do chương trình tạo cho file giao thức theo task, không phải
+/// thư mục tri thức. Một `.gsd/` rỗng hay có mục khác (README.md, phases/…) do người dùng đặt vẫn tính.
+fn gsd_only_quick(dir: &Path) -> bool {
     match std::fs::read_dir(dir) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok())
-            .any(|e| e.file_name() != "quick"),
+        Ok(rd) => {
+            let names: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+            !names.is_empty() && names.iter().all(|n| n == "quick")
+        }
         Err(_) => false,
     }
 }
@@ -61,7 +62,7 @@ pub fn find(root: &Path) -> Option<Home> {
         let p = root.join(rel);
         if let Ok(meta) = std::fs::symlink_metadata(&p) {
             if !meta.file_type().is_symlink() && meta.is_dir() {
-                if *kind == HomeKind::Gsd && !gsd_has_content(&p) {
+                if *kind == HomeKind::Gsd && gsd_only_quick(&p) {
                     continue;
                 }
                 let dir = if p.is_absolute() {
@@ -140,7 +141,6 @@ mod tests {
         let gsd_dir = temp.path().join(".gsd");
         let plan_dir = temp.path().join(".planning");
         std::fs::create_dir_all(&gsd_dir).unwrap();
-        std::fs::write(gsd_dir.join("README.md"), "# GSD").unwrap();
         std::fs::create_dir_all(&plan_dir).unwrap();
 
         let home = find(temp.path()).expect("found .gsd");
@@ -171,10 +171,10 @@ mod tests {
         std::fs::write(temp.path().join(".gsd/README.md"), "# GSD").unwrap();
         assert_eq!(find(temp.path()).unwrap().kind, HomeKind::Gsd);
 
-        // An empty `.gsd/` has no content either.
+        // An empty `.gsd/` was made by the user: still a home, as before.
         let empty = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(empty.path().join(".gsd")).unwrap();
-        assert!(find(empty.path()).is_none());
+        assert_eq!(find(empty.path()).unwrap().kind, HomeKind::Gsd);
     }
 
     #[test]
@@ -213,7 +213,7 @@ mod tests {
     fn test_readme_detection() {
         let temp = tempfile::tempdir().unwrap();
         let gsd = temp.path().join(".gsd");
-        std::fs::create_dir_all(gsd.join("phases")).unwrap();
+        std::fs::create_dir_all(&gsd).unwrap();
         let home_gsd = find(temp.path()).unwrap();
         assert!(readme(&home_gsd).is_none());
 
