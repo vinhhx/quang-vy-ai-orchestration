@@ -22,6 +22,12 @@ pub const SLUG_VAR: &str = "{slug}";
 /// Longest accepted `protocol_dir` (characters, before `{slug}` is replaced).
 pub const PROTOCOL_DIR_MAX_CHARS: usize = 120;
 
+/// Default `protocol_dir` of a project whose entry has no `protocol_dir` key and that has a real
+/// `.planning/` folder.
+pub const DEFAULT_DIR_PLANNING: &str = ".planning/quick/plan-{slug}";
+/// Default `protocol_dir` of every other project without a `protocol_dir` key.
+pub const DEFAULT_DIR_GSD: &str = ".gsd/quick/plan-{slug}";
+
 /// Prompt placeholders, replaced by `ProtocolPaths::render` wherever a prompt is built.
 pub const PLAN_PLACEHOLDER: &str = "{plan_path}";
 pub const QA_REPORT_PLACEHOLDER: &str = "{qa_report_path}";
@@ -240,7 +246,23 @@ pub fn validate_protocol_dir(raw: &str) -> Result<String, String> {
     Ok(parts.join("/"))
 }
 
+/// The `protocol_dir` of a project whose entry has no `protocol_dir` key: per-task folders under
+/// the project's knowledge home. A real (non-symlink) `.planning/` folder gives
+/// `.planning/quick/plan-{slug}`, anything else `.gsd/quick/plan-{slug}`. Only `.planning/` is
+/// looked at (never `.gsd/`), so the answer does not change once the program creates `.gsd/`.
+pub fn default_protocol_dir(root: &Path) -> String {
+    let planning_is_real_dir = std::fs::symlink_metadata(root.join(".planning"))
+        .map(|m| !m.file_type().is_symlink() && m.is_dir())
+        .unwrap_or(false);
+    if planning_is_real_dir {
+        DEFAULT_DIR_PLANNING.to_string()
+    } else {
+        DEFAULT_DIR_GSD.to_string()
+    }
+}
+
 /// The `protocol_dir` of a projects_map.json entry; missing or invalid reads as `""`.
+/// (The projects loader applies `default_protocol_dir` when the key is absent.)
 pub fn protocol_dir_of_value(entry: &serde_json::Value) -> String {
     entry
         .get(CONFIG_KEY)
@@ -326,6 +348,37 @@ mod tests {
         assert!(is_protocol_file(".plan.md"));
         assert!(is_protocol_file(".brain/t/.qa-report.md"));
         assert!(!is_protocol_file("plan.md"));
+    }
+
+    #[test]
+    fn default_dir_follows_planning_folder() {
+        let t = tempfile::tempdir().unwrap();
+        // nothing: .gsd
+        assert_eq!(default_protocol_dir(t.path()), ".gsd/quick/plan-{slug}");
+        // .gsd alone does not change the answer
+        std::fs::create_dir_all(t.path().join(".gsd/quick")).unwrap();
+        assert_eq!(default_protocol_dir(t.path()), ".gsd/quick/plan-{slug}");
+        // a real .planning: .planning
+        std::fs::create_dir_all(t.path().join(".planning")).unwrap();
+        assert_eq!(default_protocol_dir(t.path()), ".planning/quick/plan-{slug}");
+        assert_eq!(
+            paths_in(&default_protocol_dir(t.path()), "sua-nut").plan,
+            ".planning/quick/plan-sua-nut/.plan.md"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_dir_ignores_planning_symlink() {
+        let t = tempfile::tempdir().unwrap();
+        let other = t.path().join("elsewhere");
+        std::fs::create_dir_all(&other).unwrap();
+        std::os::unix::fs::symlink(&other, t.path().join(".planning")).unwrap();
+        assert_eq!(default_protocol_dir(t.path()), ".gsd/quick/plan-{slug}");
+        // a plain file named .planning is not a folder either
+        let t2 = tempfile::tempdir().unwrap();
+        std::fs::write(t2.path().join(".planning"), "x").unwrap();
+        assert_eq!(default_protocol_dir(t2.path()), ".gsd/quick/plan-{slug}");
     }
 
     #[test]

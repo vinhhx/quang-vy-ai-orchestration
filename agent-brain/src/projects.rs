@@ -271,6 +271,15 @@ impl Project {
             })
             .unwrap_or_default();
 
+        let protocol_dir = if obj.contains_key(crate::protocol_paths::CONFIG_KEY) {
+            // The key is present (even `""`): the user's own value wins, as before.
+            crate::protocol_paths::protocol_dir_of_value(v)
+        } else {
+            // Key absent: per-task folder under the project's knowledge home.
+            let home = crate::config::home_dir();
+            crate::protocol_paths::default_protocol_dir(&crate::config::expand_tilde(&path, &home))
+        };
+
         Some(Project {
             id,
             path,
@@ -282,7 +291,7 @@ impl Project {
             missing,
             stack,
             read_sources,
-            protocol_dir: crate::protocol_paths::protocol_dir_of_value(v),
+            protocol_dir,
             workspace: WorkspaceOpts::from_value(v),
         })
     }
@@ -1591,6 +1600,40 @@ pub fn cmd_list() -> BrainResult<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protocol_dir_absent_key_uses_default_present_key_wins() {
+        let plain = tempfile::tempdir().unwrap();
+        let with_planning = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(with_planning.path().join(".planning")).unwrap();
+        let entry = |path: &Path, extra: Option<serde_json::Value>| {
+            let mut v = serde_json::json!({"id": "x", "path": path.to_string_lossy()});
+            if let Some(d) = extra {
+                v["protocol_dir"] = d;
+            }
+            Project::from_value(&v).unwrap()
+        };
+        // absent key: new default, chosen by `.planning/` only
+        assert_eq!(entry(plain.path(), None).protocol_dir, ".gsd/quick/plan-{slug}");
+        std::fs::create_dir_all(plain.path().join(".gsd")).unwrap();
+        assert_eq!(entry(plain.path(), None).protocol_dir, ".gsd/quick/plan-{slug}");
+        assert_eq!(
+            entry(with_planning.path(), None).protocol_dir,
+            ".planning/quick/plan-{slug}"
+        );
+        // present key (even empty): the user's value, as before
+        assert_eq!(entry(plain.path(), Some(serde_json::json!(""))).protocol_dir, "");
+        assert_eq!(
+            entry(with_planning.path(), Some(serde_json::json!(""))).protocol_dir,
+            ""
+        );
+        assert_eq!(
+            entry(plain.path(), Some(serde_json::json!(".brain/{slug}"))).protocol_dir,
+            ".brain/{slug}"
+        );
+        // present but invalid: root, as before
+        assert_eq!(entry(plain.path(), Some(serde_json::json!("../x"))).protocol_dir, "");
+    }
 
     #[test]
     fn workspace_options_default_and_parse() {
