@@ -350,7 +350,7 @@ pub fn done(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
     let head = crate::gitops::head_sha(root)?;
 
     let remote_ref = format!("refs/heads/{branch}");
-    // git cập nhật refs/remotes/origin/<branch> sau mỗi lần fetch thành công ref đó và khi git push -u, nên sau một lần bấm Xong trước nó trỏ vào commit đã gộp.
+    // Fetch trần `origin refs/heads/<branch>` luôn ghi commit vào FETCH_HEAD (đọc ở dưới); còn refs/remotes/origin/<branch> chỉ được git cập nhật khi remote.origin.fetch có refspec khớp (hoặc khi git push -u), nên với repo thiếu refspec đó nó có thể không có hoặc cũ. Chỗ dùng nó ở nhánh lỗi mạng bên dưới chỉ là phương án dự phòng.
     let (remote_sha, merged_before) = match crate::gitops::git(
         root,
         &["fetch", "origin", &remote_ref],
