@@ -1,6 +1,13 @@
 // js/projects.js — Dự án screen component
 (function () {
+  var FILTER_KEY = 'ab-projects-filter';
+
   window.AB.onReady('projects', function () {
+    // The filtered lists are computed once per change of their inputs (182+ rows): the cache
+    // lives outside the reactive state so reading it inside a getter does not re-trigger it.
+    var projCache = { projects: null, key: '', list: [] };
+    var candCache = { cands: null, key: '', list: [] };
+
     return {
       etag: '',
       projects: [],
@@ -32,7 +39,19 @@
       telegramCount: 0,
       telegramMax: 30,
       scanning: false,
-      scanOut: null,
+      // Result of POST /api/projects/scan: { candidates, bad_roots, refreshed } or null.
+      scanResult: null,
+      candQuery: '',
+      candSelected: {},
+      candAdding: false,
+      // Table filters (browser only, remembered in localStorage).
+      query: '',
+      filterTasks: false,
+      filterTelegram: false,
+      filterNoStack: false,
+      showHidden: false,
+      selected: {},
+      hideBusy: false,
       statusFor: '',
       status: null,
       statusError: '',
@@ -90,6 +109,7 @@
 
       init: function () {
         var self = this;
+        this.loadFilters();
         this.load();
         this.loadWorkflows();
         this.loadPromptsMeta();
@@ -495,18 +515,221 @@
         return 'Telegram: ' + this.telegramCount + '/' + this.telegramMax + ' dự án';
       },
 
+      // POST /api/projects/scan lists the repos under the scan roots that are not projects yet.
+      // It adds nothing: the user ticks rows and confirms with addSelectedCandidates().
       rescan: function () {
         var self = this;
+        if (this.scanning) return Promise.resolve();
         this.scanning = true;
         this.error = '';
-        window.AB.api('POST', '/api/projects/scan', {}).then(function (res) {
+        this.message = '';
+        return window.AB.api('POST', '/api/projects/scan', {}).then(function (res) {
           self.scanning = false;
           if (res.ok && res.data) {
-            self.scanOut = res.data;
-            self.load();
-          } else {
-            self.error = window.AB.errorText(res);
+            self.candQuery = '';
+            self.candSelected = {};
+            self.scanResult = {
+              candidates: Array.isArray(res.data.candidates) ? res.data.candidates : [],
+              bad_roots: Array.isArray(res.data.bad_roots) ? res.data.bad_roots : [],
+              refreshed: res.data.refreshed || null
+            };
+            // The panel sits below the forms: bring it into view.
+            self.$nextTick(function () {
+              var el = self.$root && self.$root.querySelector('[data-scan-candidates]');
+              if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start' });
+            });
+            return self.load();
           }
+          self.error = window.AB.errorText(res);
+        });
+      },
+
+      closeScan: function () {
+        this.scanResult = null;
+        this.candSelected = {};
+        this.candQuery = '';
+      },
+
+      // ---- scan candidates ----
+      isCandidateSelected: function (c) {
+        return Boolean(this.candSelected[c.path]);
+      },
+
+      toggleCandidate: function (c, on) {
+        var next = Object.assign({}, this.candSelected);
+        if (on) next[c.path] = true; else delete next[c.path];
+        this.candSelected = next;
+      },
+
+      toggleAllCandidates: function (on) {
+        var next = Object.assign({}, this.candSelected);
+        this.filteredCandidates.forEach(function (c) {
+          if (on) next[c.path] = true; else delete next[c.path];
+        });
+        this.candSelected = next;
+      },
+
+      candidateStack: function (c) {
+        return (c && c.stack && c.stack.length > 0) ? c.stack.join(', ') : '—';
+      },
+
+      candidateDate: function (c) {
+        if (!c || !c.last_commit_at) return '—';
+        var d = new Date(c.last_commit_at * 1000);
+        if (isNaN(d.getTime())) return '—';
+        return d.toLocaleDateString('vi-VN');
+      },
+
+      // POST /api/projects/scan/add: only the ticked paths. Nothing ticked, nothing added.
+      addSelectedCandidates: function () {
+        var self = this;
+        var paths = this.selectedCandidatePaths();
+        if (this.candAdding || paths.length === 0) return Promise.resolve();
+        this.candAdding = true;
+        this.message = '';
+        this.error = '';
+        return window.AB.api('POST', '/api/projects/scan/add', { paths: paths, etag: this.etag }).then(function (res) {
+          self.candAdding = false;
+          if (res.ok && res.data) {
+            self.etag = res.data.etag || self.etag;
+            self.projects = res.data.projects || self.projects;
+            if (Array.isArray(res.data.warnings)) self.warnings = res.data.warnings;
+            var added = {};
+            paths.forEach(function (p) { added[p] = true; });
+            if (self.scanResult) {
+              self.scanResult = Object.assign({}, self.scanResult, {
+                candidates: self.scanResult.candidates.filter(function (c) { return !added[c.path]; })
+              });
+            }
+            self.candSelected = {};
+            self.message = 'Đã thêm ' + paths.length + ' dự án';
+            return;
+          }
+          if (res.status === 409) {
+            self.error = (res.data && res.data.error) ? res.data.error : 'projects_map.json vừa thay đổi ở nơi khác — đã tải lại danh sách, hãy quét lại';
+            return self.load();
+          }
+          self.error = window.AB.errorText(res);
+        });
+      },
+
+      selectedCandidatePaths: function () {
+        var sel = this.candSelected;
+        var out = [];
+        ((this.scanResult && this.scanResult.candidates) || []).forEach(function (c) {
+          if (sel[c.path]) out.push(c.path);
+        });
+        return out;
+      },
+
+      // ---- table filters (browser only) ----
+      loadFilters: function () {
+        try {
+          var raw = window.localStorage.getItem(FILTER_KEY);
+          if (!raw) return;
+          var f = JSON.parse(raw);
+          if (!f || typeof f !== 'object') return;
+          this.query = typeof f.query === 'string' ? f.query : '';
+          this.filterTasks = f.tasks === true;
+          this.filterTelegram = f.telegram === true;
+          this.filterNoStack = f.noStack === true;
+          this.showHidden = f.showHidden === true;
+        } catch (e) { /* storage unavailable or corrupt: keep defaults */ }
+      },
+
+      saveFilters: function () {
+        try {
+          window.localStorage.setItem(FILTER_KEY, JSON.stringify({
+            query: this.query || '',
+            tasks: Boolean(this.filterTasks),
+            telegram: Boolean(this.filterTelegram),
+            noStack: Boolean(this.filterNoStack),
+            showHidden: Boolean(this.showHidden)
+          }));
+        } catch (e) { /* storage unavailable: the filter just is not remembered */ }
+      },
+
+      clearFilters: function () {
+        this.query = '';
+        this.filterTasks = false;
+        this.filterTelegram = false;
+        this.filterNoStack = false;
+        this.showHidden = false;
+        this.saveFilters();
+      },
+
+      projectMatches: function (p, q) {
+        if (!q) return true;
+        var hay = [p.id, p.name_vi, p.path].concat(p.aliases || []);
+        for (var i = 0; i < hay.length; i++) {
+          if (hay[i] && String(hay[i]).toLowerCase().indexOf(q) !== -1) return true;
+        }
+        return false;
+      },
+
+      // ---- selection and hide ----
+      isSelected: function (p) {
+        return Boolean(this.selected[p.id]);
+      },
+
+      toggleSelected: function (p, on) {
+        var next = Object.assign({}, this.selected);
+        if (on) next[p.id] = true; else delete next[p.id];
+        this.selected = next;
+      },
+
+      toggleAllProjects: function (on) {
+        var next = Object.assign({}, this.selected);
+        this.filteredProjects.forEach(function (p) {
+          if (on) next[p.id] = true; else delete next[p.id];
+        });
+        this.selected = next;
+      },
+
+      clearSelection: function () {
+        this.selected = {};
+      },
+
+      selectedIds: function () {
+        var sel = this.selected;
+        return (this.projects || []).filter(function (p) { return sel[p.id]; }).map(function (p) { return p.id; });
+      },
+
+      hideLabel: function (p) {
+        return (p.hidden ? 'Bỏ ẩn dự án ' : 'Ẩn dự án ') + (p.name_vi || p.id);
+      },
+
+      taskCountText: function (p) {
+        var n = (p && p.task_count) ? p.task_count : 0;
+        return n + ' task';
+      },
+
+      toggleHidden: function (p) {
+        return this.applyHidden([p.id], !p.hidden);
+      },
+
+      hideSelected: function (hidden) {
+        return this.applyHidden(this.selectedIds(), hidden);
+      },
+
+      // PUT /api/projects/hidden: one write for the whole list; nothing is removed from the map.
+      applyHidden: function (ids, hidden) {
+        var self = this;
+        if (this.hideBusy || ids.length === 0) return Promise.resolve();
+        this.hideBusy = true;
+        this.message = '';
+        this.error = '';
+        return window.AB.api('PUT', '/api/projects/hidden', { ids: ids, hidden: hidden, etag: this.etag }).then(function (res) {
+          self.hideBusy = false;
+          if (res.ok && res.status === 200 && res.data) {
+            self.etag = res.data.etag || self.etag;
+            self.projects = res.data.projects || self.projects;
+            self.telegramCount = res.data.telegram_count || self.telegramCount;
+            self.selected = {};
+            self.message = (hidden ? 'Đã ẩn ' : 'Đã bỏ ẩn ') + ids.length + ' dự án';
+            return;
+          }
+          return self.conflictOrError(res);
         });
       },
 
@@ -616,21 +839,130 @@
         return (this.warnings || []).join('\n');
       },
 
-      get scanTitle() {
-        var code = (this.scanOut && this.scanOut.exit_code !== undefined && this.scanOut.exit_code !== null) ? this.scanOut.exit_code : 0;
-        return 'Kết quả quét (mã thoát ' + code + ')';
+      // The projects after search + filters, computed once per change of its inputs.
+      get filteredProjects() {
+        var all = this.projects || [];
+        var q = (this.query || '').trim().toLowerCase();
+        var key = [q, this.filterTasks ? 1 : 0, this.filterTelegram ? 1 : 0, this.filterNoStack ? 1 : 0, this.showHidden ? 1 : 0, all.length].join('|');
+        if (projCache.projects === all && projCache.key === key) return projCache.list;
+        var self = this;
+        var list = all.filter(function (p) {
+          if (p.hidden && !self.showHidden) return false;
+          if (self.filterTasks && !(p.task_count > 0)) return false;
+          if (self.filterTelegram && !p.telegram) return false;
+          if (self.filterNoStack && p.stack && p.stack.length > 0) return false;
+          return self.projectMatches(p, q);
+        });
+        projCache = { projects: all, key: key, list: list };
+        return list;
       },
 
-      get scanText() {
-        if (!this.scanOut) return '';
-        var lines = [];
-        if (this.scanOut.stdout && this.scanOut.stdout.length > 0) {
-          lines = lines.concat(this.scanOut.stdout);
-        }
-        if (this.scanOut.stderr && this.scanOut.stderr.length > 0) {
-          lines = lines.concat(this.scanOut.stderr);
-        }
-        return lines.join('\n');
+      get countText() {
+        var total = (this.projects || []).length;
+        var hidden = (this.projects || []).filter(function (p) { return p.hidden; }).length;
+        var t = this.filteredProjects.length + ' / ' + total + ' dự án';
+        if (hidden > 0 && !this.showHidden) t += ' (' + hidden + ' đã ẩn)';
+        return t;
+      },
+
+      get hasActiveFilter() {
+        return Boolean((this.query || '').trim() || this.filterTasks || this.filterTelegram || this.filterNoStack || this.showHidden);
+      },
+
+      get noProjectMatch() {
+        return this.filteredProjects.length === 0;
+      },
+
+      get selectedCount() {
+        return this.selectedIds().length;
+      },
+
+      get selectedText() {
+        return 'Đã chọn ' + this.selectedCount + ' dự án';
+      },
+
+      get allProjectsSelected() {
+        var list = this.filteredProjects;
+        if (list.length === 0) return false;
+        var sel = this.selected;
+        return list.every(function (p) { return sel[p.id]; });
+      },
+
+      // ---- scan candidates getters ----
+      get hasScanResult() {
+        return Boolean(this.scanResult);
+      },
+
+      get scanCandidates() {
+        return (this.scanResult && this.scanResult.candidates) || [];
+      },
+
+      get scanBadRoots() {
+        return (this.scanResult && this.scanResult.bad_roots) || [];
+      },
+
+      get hasBadRoots() {
+        return this.scanBadRoots.length > 0;
+      },
+
+      get scanRefreshedText() {
+        var r = this.scanResult && this.scanResult.refreshed;
+        if (!r) return '';
+        var parts = [];
+        if (r.missing > 0) parts.push(r.missing + ' dự án thiếu thư mục');
+        if (r.restored > 0) parts.push(r.restored + ' dự án có lại thư mục');
+        return parts.length > 0 ? 'Dự án đã có: ' + parts.join(', ') + '.' : '';
+      },
+
+      get hasCandidates() {
+        return this.scanCandidates.length > 0;
+      },
+
+      get noCandidates() {
+        return this.scanResult !== null && this.scanCandidates.length === 0;
+      },
+
+      get filteredCandidates() {
+        var all = this.scanCandidates;
+        var q = (this.candQuery || '').trim().toLowerCase();
+        var key = q + '|' + all.length;
+        if (candCache.cands === all && candCache.key === key) return candCache.list;
+        var list = all.filter(function (c) {
+          if (!q) return true;
+          return [c.id, c.name, c.path, c.repo].some(function (v) {
+            return v && String(v).toLowerCase().indexOf(q) !== -1;
+          });
+        });
+        candCache = { cands: all, key: key, list: list };
+        return list;
+      },
+
+      get noCandidateMatch() {
+        return this.hasCandidates && this.filteredCandidates.length === 0;
+      },
+
+      get allCandidatesSelected() {
+        var list = this.filteredCandidates;
+        if (list.length === 0) return false;
+        var sel = this.candSelected;
+        return list.every(function (c) { return sel[c.path]; });
+      },
+
+      get candidateCountText() {
+        var total = this.scanCandidates.length;
+        if (total === 0) return '';
+        var picked = this.selectedCandidatePaths().length;
+        var t = 'Đã chọn ' + picked + ' / ' + total;
+        if (this.filteredCandidates.length !== total) t += ' (đang hiện ' + this.filteredCandidates.length + ')';
+        return t;
+      },
+
+      get candidateAddDisabled() {
+        return this.candAdding || this.selectedCandidatePaths().length === 0;
+      },
+
+      get candidateAddLabel() {
+        return this.candAdding ? 'Đang thêm...' : 'Thêm mục đã chọn';
       },
 
       get statusText() {
