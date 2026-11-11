@@ -281,6 +281,35 @@ fn qa_no_code_change_exit_1() {
     assert_eq!(sb.records().len(), records_before);
 }
 
+/// Dev, QA and both reviews on a branch that is not `task/<slug>`: the plan is not found in the
+/// task-less folder (`.gsd/quick`, never a stray `plan-` folder) and the message says the branch
+/// is not a task branch.
+#[test]
+fn roles_off_a_task_branch_name_the_branch_and_no_plan_dash_folder() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+    // The sandbox entry has no `protocol_dir` and reads as the root here: set the real default.
+    let mut entry = sb.project_entry(&repo, "web-ban-hang", "work");
+    entry["name_vi"] = serde_json::json!("Web bán hàng");
+    entry["protocol_dir"] = serde_json::json!(".gsd/quick/plan-{slug}");
+    sb.write_map(serde_json::json!([entry]), &[]);
+    for role in ["dev", "qa", "plan-review", "code-review"] {
+        let res = sb.run(&["run", role, "web-ban-hang"], None);
+        assert_eq!(res.code, 1, "{role}: {}", res.stderr);
+        assert!(
+            res.stderr.contains("Không tìm thấy .gsd/quick/.plan.md ở gốc dự án"),
+            "{role}: {}",
+            res.stderr
+        );
+        assert!(
+            res.stderr.contains("Đang ở nhánh main, không phải nhánh task."),
+            "{role}: {}",
+            res.stderr
+        );
+        assert!(!res.stderr.contains("plan-/"), "{role}: {}", res.stderr);
+    }
+}
+
 #[test]
 fn qa_refusals() {
     let sb = Sandbox::new();
