@@ -1191,7 +1191,22 @@ pub struct ScanReport {
     pub stack_suggested: usize,
 }
 
-pub fn scan(data: &mut serde_json::Value) -> ScanReport {
+/// A git repo found directly under a scan root that is not in `projects` yet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScanCandidate {
+    /// Canonical path of the repo.
+    pub path: String,
+    /// Suggested project id (the folder name, suffixed when it is taken).
+    pub id: String,
+    pub name: String,
+    pub repo: Option<String>,
+    pub stack: Vec<String>,
+    /// Unix seconds of the last HEAD move (commit, checkout, pull); `None` when unknown.
+    pub last_commit_at: Option<i64>,
+}
+
+/// Valid (existing) scan roots, canonical, plus the roots that are not a directory.
+fn valid_scan_roots(data: &serde_json::Value) -> (Vec<PathBuf>, Vec<String>) {
     let scan_roots = data
         .get("scan_roots")
         .and_then(|r| r.as_array())
@@ -1209,10 +1224,59 @@ pub fn scan(data: &mut serde_json::Value) -> ScanReport {
             bad_roots.push(r_str.to_string());
         }
     }
+    (valid_roots, bad_roots)
+}
 
+/// Git repos (a `.git` entry) that are direct children of the valid roots, canonical, sorted by
+/// name inside each root. An unreadable root goes to `bad_roots`.
+fn repo_children(valid_roots: &[PathBuf], bad_roots: &mut Vec<String>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for r in valid_roots {
+        let mut list = match std::fs::read_dir(r) {
+            Ok(rd) => rd.flatten().collect::<Vec<_>>(),
+            Err(_) => {
+                bad_roots.push(r.to_string_lossy().to_string());
+                continue;
+            }
+        };
+        list.sort_by_key(|e| e.file_name());
+        for entry in list {
+            let entry_path = entry.path();
+            if !entry_path.is_dir() {
+                continue;
+            }
+            let child_path = std::fs::canonicalize(&entry_path).unwrap_or(entry_path);
+            if !child_path.join(".git").exists() {
+                continue;
+            }
+            out.push(child_path);
+        }
+    }
+    out
+}
+
+/// Realpaths of the projects already in the map (hidden ones included).
+fn known_realpaths(data: &serde_json::Value) -> HashSet<String> {
+    data.get("projects")
+        .and_then(|p| p.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.get("path").and_then(|s| s.as_str()))
+                .filter(|s| !s.is_empty())
+                .map(to_realpath)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Updates the projects that are ALREADY in the map: sets/clears `missing`, refreshes `repo` of
+/// the ones found under a scan root. Adds nothing and touches no other key. `added` is 0.
+pub fn refresh_known(data: &mut serde_json::Value) -> ScanReport {
+    let (valid_roots, mut bad_roots) = valid_scan_roots(data);
     if data.get("projects").is_none() {
         data["projects"] = serde_json::json!([]);
     }
+    let children = repo_children(&valid_roots, &mut bad_roots);
 
     let mut projects_by_realpath: HashMap<String, usize> = HashMap::new();
     if let Some(arr) = data.get("projects").and_then(|p| p.as_array()) {
@@ -1225,96 +1289,37 @@ pub fn scan(data: &mut serde_json::Value) -> ScanReport {
         }
     }
 
-    let mut added_count = 0;
     let mut restored_count = 0;
     let mut unchanged_count = 0;
-    let mut suffixed_ids = Vec::new();
     let mut scanned_realpaths = HashSet::new();
-    let mut stack_suggested = 0;
-
-    for r in &valid_roots {
-        let entries = match std::fs::read_dir(r) {
-            Ok(rd) => {
-                let mut list = Vec::new();
-                for entry_res in rd {
-                    if let Ok(e) = entry_res {
-                        list.push(e);
-                    }
-                }
-                list.sort_by_key(|e| e.file_name());
-                list
-            }
-            Err(_) => {
-                bad_roots.push(r.to_string_lossy().to_string());
-                continue;
-            }
-        };
-
-        for entry in entries {
-            let entry_path = entry.path();
-            let is_dir = entry_path.is_dir();
-            if !is_dir {
-                continue;
-            }
-            let child_path = std::fs::canonicalize(&entry_path).unwrap_or(entry_path);
-            let git_path = child_path.join(".git");
-            if !git_path.exists() {
-                continue;
-            }
-            let real_child = to_realpath(&child_path.to_string_lossy());
-            scanned_realpaths.insert(real_child.clone());
-
-            let projects = data
-                .get_mut("projects")
-                .and_then(|p| p.as_array_mut())
-                .unwrap();
-
-            if let Some(&idx) = projects_by_realpath.get(&real_child) {
-                if let Some(proj) = projects.get_mut(idx) {
-                    let repo_val = git_remote(&child_path)
-                        .map(serde_json::Value::String)
-                        .unwrap_or(serde_json::Value::Null);
-                    proj["repo"] = repo_val;
-                    let was_missing = proj
-                        .get("missing")
-                        .and_then(|b| b.as_bool())
-                        .unwrap_or(false);
-                    if was_missing {
-                        proj["missing"] = serde_json::Value::Bool(false);
-                        restored_count += 1;
-                    } else {
-                        unchanged_count += 1;
-                    }
-                }
-            } else {
-                let base_name = child_path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let new_proj = new_entry_from_projects(projects, &child_path, "code");
-                let new_id = new_proj
-                    .get("id")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if new_id != base_name {
-                    suffixed_ids.push((
-                        base_name,
-                        new_id,
-                        child_path.to_string_lossy().to_string(),
-                    ));
-                }
-                projects.push(new_proj);
-                projects_by_realpath.insert(real_child, projects.len() - 1);
-                added_count += 1;
-            }
-        }
-    }
-
     let projects = data
         .get_mut("projects")
         .and_then(|p| p.as_array_mut())
         .unwrap();
+
+    for child_path in &children {
+        let real_child = to_realpath(&child_path.to_string_lossy());
+        let Some(&idx) = projects_by_realpath.get(&real_child) else {
+            continue;
+        };
+        scanned_realpaths.insert(real_child);
+        if let Some(proj) = projects.get_mut(idx) {
+            let repo_val = git_remote(child_path)
+                .map(serde_json::Value::String)
+                .unwrap_or(serde_json::Value::Null);
+            proj["repo"] = repo_val;
+            let was_missing = proj
+                .get("missing")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
+            if was_missing {
+                proj["missing"] = serde_json::Value::Bool(false);
+                restored_count += 1;
+            } else {
+                unchanged_count += 1;
+            }
+        }
+    }
 
     for p in projects.iter_mut() {
         let p_path = match p.get("path").and_then(|s| s.as_str()) {
@@ -1325,8 +1330,7 @@ pub fn scan(data: &mut serde_json::Value) -> ScanReport {
         if scanned_realpaths.contains(&real_p) {
             continue;
         }
-        let is_dir = Path::new(&real_p).is_dir();
-        if !is_dir {
+        if !Path::new(&real_p).is_dir() {
             p["missing"] = serde_json::Value::Bool(true);
         } else {
             let was_missing = p.get("missing").and_then(|b| b.as_bool()).unwrap_or(false);
@@ -1344,32 +1348,156 @@ pub fn scan(data: &mut serde_json::Value) -> ScanReport {
         .filter(|p| p.get("missing").and_then(|b| b.as_bool()).unwrap_or(false))
         .count();
 
-    for p in projects.iter_mut() {
-        if p.get("stack").is_none() {
-            if let Some(pth) = p.get("path").and_then(|s| s.as_str()) {
-                let p_dir = Path::new(pth);
-                if p_dir.is_dir() {
-                    let detected = detect_stack(p_dir);
-                    if !detected.is_empty() {
-                        p["stack"] = serde_json::Value::Array(
-                            detected.into_iter().map(serde_json::Value::String).collect(),
-                        );
-                        stack_suggested += 1;
+    ScanReport {
+        added: 0,
+        missing: total_missing,
+        restored: restored_count,
+        unchanged: unchanged_count,
+        bad_roots,
+        suffixed: Vec::new(),
+        stack_suggested: 0,
+    }
+}
+
+/// New project entries for the repos under the scan roots that are not in the map yet, with the
+/// same id rules as `add_project` (the id is suffixed when taken, also by an earlier candidate).
+/// Reads only; the map is not changed.
+fn candidate_entries(
+    data: &serde_json::Value,
+) -> (Vec<(PathBuf, serde_json::Value)>, Vec<String>) {
+    let (valid_roots, mut bad_roots) = valid_scan_roots(data);
+    let children = repo_children(&valid_roots, &mut bad_roots);
+    let known = known_realpaths(data);
+    let mut working: Vec<serde_json::Value> = data
+        .get("projects")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for child_path in children {
+        let real_child = to_realpath(&child_path.to_string_lossy());
+        if known.contains(&real_child) || !seen.insert(real_child) {
+            continue;
+        }
+        let entry = new_entry_from_projects(&working, &child_path, "code");
+        working.push(entry.clone());
+        out.push((child_path, entry));
+    }
+    (out, bad_roots)
+}
+
+/// Unix seconds of the last HEAD move read from `.git/logs/HEAD` (no git process); falls back
+/// to the mtime of `.git/HEAD`. `None` when neither can be read.
+fn last_head_move(repo: &Path) -> Option<i64> {
+    let git_dir = repo.join(".git");
+    if !git_dir.is_dir() {
+        return None;
+    }
+    if let Ok(bytes) = std::fs::read(git_dir.join("logs").join("HEAD")) {
+        let text = String::from_utf8_lossy(&bytes);
+        if let Some(line) = text.lines().rev().find(|l| !l.trim().is_empty()) {
+            // "<old> <new> Name <email> <unix-ts> <tz>\t<message>"
+            let head = line.split('\t').next().unwrap_or("");
+            let mut parts = head.rsplit(' ');
+            let _tz = parts.next();
+            if let Some(ts) = parts.next().and_then(|t| t.parse::<i64>().ok()) {
+                return Some(ts);
+            }
+        }
+    }
+    std::fs::metadata(git_dir.join("HEAD"))
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs() as i64)
+}
+
+/// Lists the repos under the scan roots that are not in the map yet (hidden projects count as
+/// known). Reads only: the map is not changed. Second value: scan roots that cannot be read.
+pub fn scan_candidates(data: &serde_json::Value) -> (Vec<ScanCandidate>, Vec<String>) {
+    let (entries, bad_roots) = candidate_entries(data);
+    let list = entries
+        .into_iter()
+        .map(|(path, entry)| {
+            let text = |k: &str| {
+                entry
+                    .get(k)
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            ScanCandidate {
+                path: text("path"),
+                id: text("id"),
+                name: text("name_vi"),
+                repo: entry
+                    .get("repo")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string()),
+                stack: detect_stack(&path),
+                last_commit_at: last_head_move(&path),
+            }
+        })
+        .collect();
+    (list, bad_roots)
+}
+
+/// Adds stack suggestions for the projects that have no `stack` key. Returns how many.
+fn suggest_missing_stacks(data: &mut serde_json::Value) -> usize {
+    let mut stack_suggested = 0;
+    if let Some(projects) = data.get_mut("projects").and_then(|p| p.as_array_mut()) {
+        for p in projects.iter_mut() {
+            if p.get("stack").is_none() {
+                if let Some(pth) = p.get("path").and_then(|s| s.as_str()) {
+                    let p_dir = Path::new(pth);
+                    if p_dir.is_dir() {
+                        let detected = detect_stack(p_dir);
+                        if !detected.is_empty() {
+                            p["stack"] = serde_json::Value::Array(
+                                detected.into_iter().map(serde_json::Value::String).collect(),
+                            );
+                            stack_suggested += 1;
+                        }
                     }
                 }
             }
         }
     }
+    stack_suggested
+}
 
-    ScanReport {
-        added: added_count,
-        missing: total_missing,
-        restored: restored_count,
-        unchanged: unchanged_count,
-        bad_roots,
-        suffixed: suffixed_ids,
-        stack_suggested,
+/// The CLI scan: refreshes the known projects, adds EVERY repo found (the dashboard uses
+/// `scan_candidates` and lets the user choose) and suggests stacks.
+pub fn scan(data: &mut serde_json::Value) -> ScanReport {
+    let mut report = refresh_known(data);
+    let (entries, _) = candidate_entries(data);
+    if let Some(projects) = data.get_mut("projects").and_then(|p| p.as_array_mut()) {
+        for (child_path, entry) in entries {
+            let base_name = child_path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let new_id = entry
+                .get("id")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            if new_id != base_name {
+                report.suffixed.push((
+                    base_name,
+                    new_id,
+                    child_path.to_string_lossy().to_string(),
+                ));
+            }
+            projects.push(entry);
+            report.added += 1;
+        }
     }
+    report.stack_suggested = suggest_missing_stacks(data);
+    report
 }
 
 pub fn add_project(
@@ -1478,7 +1606,7 @@ pub fn find_duplicates(projects: &[serde_json::Value]) -> Vec<(String, Vec<Strin
     duplicates
 }
 
-pub fn cmd_scan(roots: &[String]) -> BrainResult<i32> {
+pub fn cmd_scan(roots: &[String], list_only: bool) -> BrainResult<i32> {
     for r in roots {
         let p = Path::new(r);
         let r_path = if p.is_absolute() {
@@ -1541,6 +1669,24 @@ pub fn cmd_scan(roots: &[String]) -> BrainResult<i32> {
             .map(|s| serde_json::Value::String(s.clone()))
             .collect(),
     );
+
+    if list_only {
+        // Read only: the roots given on the command line are used but not stored.
+        let (candidates, bad_roots) = scan_candidates(&data);
+        for br in &bad_roots {
+            crate::term::emit(&format!(
+                "CẢNH BÁO: thư mục gốc không tồn tại, bỏ qua: {br}"
+            ));
+        }
+        for c in &candidates {
+            crate::term::emit_out(&format!("{}\t{}", c.id, c.path));
+        }
+        crate::term::emit_out(&format!(
+            "{} repo chưa có trong map (chưa ghi gì)",
+            candidates.len()
+        ));
+        return Ok(0);
+    }
 
     let report = scan(&mut data);
     save_map(&map_p, &data)?;

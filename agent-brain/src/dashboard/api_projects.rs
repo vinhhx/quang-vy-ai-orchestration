@@ -196,6 +196,8 @@ fn save_and_respond_with(
 const MAX_SCAN_ROOTS: usize = 20;
 const MAX_PATH_CHARS: usize = 500;
 const MAX_DIR_ENTRIES: usize = 300;
+/// Most scan candidates added by one `scan/add` call.
+const MAX_SCAN_ADD: usize = 500;
 
 /// Absolute or `~/` path, no control chars, no `..`. Returns the expanded path.
 fn parse_path(raw: &str) -> Result<std::path::PathBuf, String> {
@@ -360,6 +362,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/projects/scan-roots", put(update_scan_roots))
         .route("/api/projects/suggest", get(suggest_projects))
         .route("/api/projects/scan", post(scan_projects))
+        .route("/api/projects/scan/add", post(scan_add))
         .route("/api/projects/{id}", put(update_aliases))
         .route("/api/projects/{id}/telegram", put(update_telegram))
         .route("/api/projects/{id}/profile", put(update_profile))
@@ -1546,41 +1549,144 @@ async fn fs_dirs(Query(query): Query<FsDirsQuery>) -> Response {
     }
 }
 
+fn candidate_json(c: &crate::projects::ScanCandidate) -> serde_json::Value {
+    serde_json::json!({
+        "path": c.path,
+        "id": c.id,
+        "name": c.name,
+        "repo": c.repo,
+        "stack": c.stack,
+        "last_commit_at": c.last_commit_at,
+    })
+}
+
+/// Rescan: refreshes the projects already in the map (`missing`, `repo`) and LISTS the repos
+/// under the scan roots that are not in the map. Adds nothing (see `scan_add`).
 async fn scan_projects(State(st): State<Arc<AppState>>, _body: Option<Json<ScanBody>>) -> Response {
     let res = blocking(move || {
-        let mut cmd = std::process::Command::new(&st.exe);
-        cmd.args(["projects", "scan"]);
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
+        let _guard = write_mutex().lock().unwrap();
 
-        let output = cmd
-            .output()
-            .map_err(|e| crate::error::BrainError::error(format!("Không chạy được scan: {e}")))?;
-
-        let exit_code = output.status.code().unwrap_or(1);
-        let stdout_lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(|s| s.to_string())
-            .collect();
-        let stderr_lines: Vec<String> = String::from_utf8_lossy(&output.stderr)
-            .lines()
-            .map(|s| s.to_string())
-            .collect();
-
-        if let Ok(map) = crate::projects::load_map(&st.map_path) {
+        let before = crate::projects::load_map(&st.map_path)?;
+        let has_roots = before
+            .get("scan_roots")
+            .and_then(|r| r.as_array())
+            .is_some_and(|a| !a.is_empty());
+        if !has_roots {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Chưa có thư mục gốc để quét — thêm thư mục gốc rồi quét lại.",
+            ));
+        }
+        let mut data = before.clone();
+        let report = crate::projects::refresh_known(&mut data);
+        if data != before {
+            crate::projects::save_map(&st.map_path, &data)?;
             if let Ok(conn) = crate::db::open(&st.db_path) {
-                let _ = crate::db::sync_projects(&conn, &crate::projects::projects_of(&map));
+                let _ = crate::db::sync_projects(&conn, &crate::projects::projects_of(&data));
+            }
+        }
+        let (candidates, bad_roots) = crate::projects::scan_candidates(&data);
+        let body = serde_json::json!({
+            "etag": map_etag(&st.map_path),
+            "candidates": candidates.iter().map(candidate_json).collect::<Vec<_>>(),
+            "bad_roots": bad_roots,
+            "refreshed": { "missing": report.missing, "restored": report.restored },
+        });
+        Ok(Json(body).into_response())
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanAddBody {
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub etag: Option<String>,
+}
+
+/// Adds the chosen scan candidates. Every path must be a repo directly under a scan root that is
+/// not in the map yet; one bad path rejects the whole request (422) and nothing is written.
+async fn scan_add(State(st): State<Arc<AppState>>, Json(body): Json<ScanAddBody>) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if let Some(ref req_etag) = body.etag {
+            if req_etag != &current_etag {
+                return conflict_response(&st, current_etag);
+            }
+        }
+        if body.paths.is_empty() {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Chưa chọn thư mục nào để thêm.",
+            ));
+        }
+        if body.paths.len() > MAX_SCAN_ADD {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &format!("Tối đa {MAX_SCAN_ADD} dự án mỗi lần thêm."),
+            ));
+        }
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        let (candidates, _) = crate::projects::scan_candidates(&data);
+        let allowed: HashSet<String> = candidates.into_iter().map(|c| c.path).collect();
+
+        let mut chosen: Vec<std::path::PathBuf> = Vec::new();
+        for raw in &body.paths {
+            let raw = raw.trim();
+            if raw.chars().count() > MAX_PATH_CHARS || raw.chars().any(|c| c.is_control()) {
+                return Ok(json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "Đường dẫn không hợp lệ.",
+                ));
+            }
+            let canon = match std::fs::canonicalize(raw) {
+                Ok(c) => c,
+                Err(_) => {
+                    return Ok(json_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        &format!("Thư mục không tồn tại: {raw}"),
+                    ))
+                }
+            };
+            if !allowed.contains(canon.to_string_lossy().as_ref()) {
+                return Ok(json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    &format!(
+                        "Không thêm được {raw}: không phải repo git mới nằm trực tiếp dưới một thư mục gốc quét (hoặc đã có trong danh sách)."
+                    ),
+                ));
+            }
+            if !chosen.contains(&canon) {
+                chosen.push(canon);
             }
         }
 
-        let body = serde_json::json!({
-            "exit_code": exit_code,
-            "stdout": stdout_lines,
-            "stderr": stderr_lines,
-        });
-
-        Ok(Json(body).into_response())
+        let mut added: Vec<serde_json::Value> = Vec::new();
+        for path in &chosen {
+            let (entry, _) = crate::projects::add_project(&mut data, path, Some("code"))?;
+            let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(p) = crate::projects::projects_of(&data)
+                .iter()
+                .find(|p| p.id == id)
+            {
+                added.push(project_json(p, &data, &st.cfg.profiles));
+            }
+        }
+        save_and_respond(
+            &st,
+            &data,
+            StatusCode::OK,
+            Some(("added", serde_json::Value::Array(added))),
+        )
     })
     .await;
 

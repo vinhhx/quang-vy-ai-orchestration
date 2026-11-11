@@ -411,81 +411,307 @@ fn d15_profile_not_editable() {
     assert_eq!(exit, Some(0));
 }
 
+fn candidate_paths(j: &serde_json::Value) -> Vec<String> {
+    j["candidates"]
+        .as_array()
+        .expect("candidates array")
+        .iter()
+        .map(|c| c["path"].as_str().expect("path").to_string())
+        .collect()
+}
+
 #[test]
-fn dash12_rescan_runs_cli_scan() {
+fn dash12_rescan_lists_candidates_without_adding() {
     let sb = Sandbox::new();
     let repos_dir = sb.repos.clone();
-    sb.write_map(serde_json::json!([]), &[repos_dir.to_str().unwrap()]);
+    let known = sb.make_repo("known-proj", &[], None, None);
+    sb.write_map(
+        serde_json::json!([sb.project_entry(&known, "known-proj", "work")]),
+        &[repos_dir.to_str().unwrap()],
+    );
 
     let mut srv = sb.serve(&[]);
 
-    // Create a new git repo in scan_roots after serve starts
-    let _repo_new = sb.make_repo("new-scanned-proj", &[], None, None);
+    // Created after serve started.
+    let repo_new = sb.make_repo(
+        "new-scanned-proj",
+        &[("package.json", "{}\n")],
+        None,
+        Some("https://example.com/x/new.git"),
+    );
+    let map_before = std::fs::read(sb.map_path()).expect("read map");
 
     let r_scan = srv.post_json("/api/projects/scan", &serde_json::json!({}));
     assert_eq!(r_scan.status, 200);
     let j_scan = r_scan.json();
-    assert_eq!(j_scan["exit_code"], 0);
-    let stdout = j_scan["stdout"].as_array().expect("stdout array");
-    let stdout_str = stdout
+    let cands = j_scan["candidates"].as_array().expect("candidates");
+    assert_eq!(cands.len(), 1, "only the new repo is a candidate: {j_scan}");
+    let c = &cands[0];
+    assert_eq!(c["id"], "new-scanned-proj");
+    assert_eq!(c["name"], "new-scanned-proj");
+    assert_eq!(c["path"], repo_new.canonicalize().unwrap().to_str().unwrap());
+    assert_eq!(c["repo"], "https://example.com/x/new.git");
+    assert_eq!(c["stack"], serde_json::json!(["node"]));
+    assert!(
+        c["last_commit_at"].as_i64().unwrap_or(0) > 1_500_000_000,
+        "last_commit_at should be a unix time: {c}"
+    );
+    assert_eq!(j_scan["bad_roots"], serde_json::json!([]));
+    assert!(j_scan["refreshed"].is_object());
+
+    // The scan wrote nothing: the map is byte-identical, GET /api/projects does not list it.
+    assert_eq!(
+        std::fs::read(sb.map_path()).expect("read map"),
+        map_before,
+        "rescan must not change projects_map.json when nothing known changed"
+    );
+    let projs = srv.get("/api/projects").json();
+    assert!(!projs["projects"]
+        .as_array()
+        .unwrap()
         .iter()
-        .filter_map(|v| v.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        stdout_str.contains("Đã quét"),
-        "stdout should contain 'Đã quét', got: {stdout_str}"
-    );
-
-    // GET /api/projects now lists the new project
-    let r_projs = srv.get("/api/projects");
-    assert_eq!(r_projs.status, 200);
-    let j_projs = r_projs.json();
-    let projs = j_projs["projects"].as_array().expect("projects array");
-    assert!(
-        projs.iter().any(|p| p["id"] == "new-scanned-proj"),
-        "projects should include new-scanned-proj"
-    );
-
-    // SQLite has its row
-    let conn = sb.db();
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM projects WHERE slug = 'new-scanned-proj'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("count project row");
-    assert_eq!(count, 1, "new-scanned-proj row must exist in SQLite");
+        .any(|p| p["id"] == "new-scanned-proj"));
 
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
 }
 
 #[test]
-fn dash12_rescan_without_roots_shows_cli_error() {
+fn dash12_rescan_without_roots_is_422() {
     let sb = Sandbox::new();
     sb.write_map(serde_json::json!([]), &[]);
 
     let mut srv = sb.serve(&[]);
 
     let r_scan = srv.post_json("/api/projects/scan", &serde_json::json!({}));
-    assert_eq!(r_scan.status, 200);
-    let j_scan = r_scan.json();
-    assert_eq!(j_scan["exit_code"], 1);
-    let stderr = j_scan["stderr"].as_array().expect("stderr array");
-    let stderr_str = stderr
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    assert_eq!(r_scan.status, 422);
     assert!(
-        stderr_str.contains("Chưa có scan_roots"),
-        "stderr should contain 'Chưa có scan_roots', got: {stderr_str}"
+        r_scan.json()["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("thư mục gốc"),
+        "got: {}",
+        r_scan.text()
     );
 
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn rescan_refreshes_missing_flag_of_known_projects_only() {
+    let sb = Sandbox::new();
+    let repos_dir = sb.repos.clone();
+    let alive = sb.make_repo("alive", &[], None, None);
+    let gone = sb.make_repo("gone", &[], None, None);
+    let mut e_alive = sb.project_entry(&alive, "alive", "work");
+    e_alive["missing"] = serde_json::json!(true);
+    e_alive["aliases"] = serde_json::json!(["keep-me"]);
+    let e_gone = sb.project_entry(&gone, "gone", "work");
+    sb.write_map(
+        serde_json::json!([e_alive, e_gone]),
+        &[repos_dir.to_str().unwrap()],
+    );
+    std::fs::remove_dir_all(&gone).expect("remove repo");
+
+    let mut srv = sb.serve(&[]);
+    let r = srv.post_json("/api/projects/scan", &serde_json::json!({}));
+    assert_eq!(r.status, 200);
+    let j = r.json();
+    assert_eq!(j["candidates"], serde_json::json!([]));
+    assert_eq!(j["refreshed"]["missing"], 1);
+    assert_eq!(j["refreshed"]["restored"], 1);
+
+    let map = sb.read_map();
+    let projs = map["projects"].as_array().unwrap();
+    assert_eq!(projs.len(), 2, "nothing added");
+    let alive_v = projs.iter().find(|p| p["id"] == "alive").unwrap();
+    let gone_v = projs.iter().find(|p| p["id"] == "gone").unwrap();
+    assert_eq!(alive_v["missing"], false, "missing flag cleared");
+    assert_eq!(alive_v["aliases"], serde_json::json!(["keep-me"]));
+    assert_eq!(gone_v["missing"], true, "vanished folder marked missing");
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn scan_add_adds_only_the_chosen_paths_and_rescan_forgets_them() {
+    let sb = Sandbox::new();
+    let repos_dir = sb.repos.clone();
+    sb.write_map(serde_json::json!([]), &[repos_dir.to_str().unwrap()]);
+    let r1 = sb.make_repo("cand-one", &[], None, None);
+    let _r2 = sb.make_repo("cand-two", &[], None, None);
+    let r3 = sb.make_repo("cand-three", &[], None, None);
+
+    let mut srv = sb.serve(&[]);
+    let j = srv.post_json("/api/projects/scan", &serde_json::json!({})).json();
+    assert_eq!(candidate_paths(&j).len(), 3);
+
+    let p1 = r1.canonicalize().unwrap().to_string_lossy().to_string();
+    let p3 = r3.canonicalize().unwrap().to_string_lossy().to_string();
+    let r_add = srv.post_json(
+        "/api/projects/scan/add",
+        &serde_json::json!({ "paths": [p1, p3], "etag": j["etag"] }),
+    );
+    assert_eq!(r_add.status, 200, "{}", r_add.text());
+    let ja = r_add.json();
+    let added: Vec<String> = ja["added"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(added, vec!["cand-one", "cand-three"]);
+
+    let map = sb.read_map();
+    let ids: Vec<&str> = map["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["cand-one", "cand-three"], "cand-two was not chosen");
+
+    // SQLite got the rows.
+    let conn = sb.db();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM projects WHERE slug IN ('cand-one','cand-three')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(count, 2);
+
+    // Rescan lists only the one left.
+    let j2 = srv.post_json("/api/projects/scan", &serde_json::json!({})).json();
+    let left = j2["candidates"].as_array().unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0]["id"], "cand-two");
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn scan_add_rejects_paths_outside_roots_and_already_known() {
+    let sb = Sandbox::new();
+    let repos_dir = sb.repos.clone();
+    let known = sb.make_repo("known", &[], None, None);
+    let good = sb.make_repo("good", &[], None, None);
+    // A repo outside every scan root, a nested repo (not a direct child) and a plain folder.
+    let outside_root = sb.root.join("elsewhere");
+    std::fs::create_dir_all(&outside_root).unwrap();
+    let outside = sb.make_repo("outside", &[], Some(&outside_root), None);
+    let nested_parent = repos_dir.join("known").join("sub");
+    std::fs::create_dir_all(&nested_parent).unwrap();
+    let nested = sb.make_repo("nested", &[], Some(&nested_parent), None);
+    let plain = repos_dir.join("plain-folder");
+    std::fs::create_dir_all(&plain).unwrap();
+
+    sb.write_map(
+        serde_json::json!([sb.project_entry(&known, "known", "work")]),
+        &[repos_dir.to_str().unwrap()],
+    );
+    let mut srv = sb.serve(&[]);
+    let before = std::fs::read(sb.map_path()).unwrap();
+
+    let bad: Vec<(&str, String)> = vec![
+        ("outside the roots", outside.to_string_lossy().to_string()),
+        ("nested repo", nested.to_string_lossy().to_string()),
+        ("not a git repo", plain.to_string_lossy().to_string()),
+        ("already in the map", known.to_string_lossy().to_string()),
+        ("parent dir trick", format!("{}/../elsewhere/outside", repos_dir.display())),
+        ("missing path", "/nonexistent/zzz".to_string()),
+        ("the root itself", repos_dir.to_string_lossy().to_string()),
+    ];
+    for (why, p) in bad {
+        let r = srv.post_json("/api/projects/scan/add", &serde_json::json!({ "paths": [p] }));
+        assert_eq!(r.status, 422, "{why}: {}", r.text());
+    }
+    // One bad path among good ones rejects the whole request.
+    let r = srv.post_json(
+        "/api/projects/scan/add",
+        &serde_json::json!({ "paths": [good.to_string_lossy(), outside.to_string_lossy()] }),
+    );
+    assert_eq!(r.status, 422);
+    // Empty selection adds nothing.
+    let r = srv.post_json("/api/projects/scan/add", &serde_json::json!({ "paths": [] }));
+    assert_eq!(r.status, 422);
+
+    assert_eq!(
+        std::fs::read(sb.map_path()).unwrap(),
+        before,
+        "no rejected request may change the map"
+    );
+
+    // A stale etag is a conflict.
+    let r = srv.post_json(
+        "/api/projects/scan/add",
+        &serde_json::json!({ "paths": [good.to_string_lossy()], "etag": "stale" }),
+    );
+    assert_eq!(r.status, 409);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn cli_scan_list_prints_candidates_and_writes_nothing() {
+    let sb = Sandbox::new();
+    let repos_dir = sb.repos.clone();
+    let known = sb.make_repo("known", &[], None, None);
+    sb.write_map(
+        serde_json::json!([sb.project_entry(&known, "known", "work")]),
+        &[repos_dir.to_str().unwrap()],
+    );
+    let _new = sb.make_repo("fresh", &[], None, None);
+    let before = std::fs::read(sb.map_path()).unwrap();
+
+    let res = sb.run(&["projects", "scan", "--list"], None);
+    assert_eq!(res.code, 0, "stderr: {}", res.stderr);
+    assert!(res.stdout.contains("fresh"), "stdout: {}", res.stdout);
+    assert!(!res.stdout.contains("known\t"), "stdout: {}", res.stdout);
+    assert_eq!(std::fs::read(sb.map_path()).unwrap(), before, "--list must not write");
+
+    // Without --list the CLI still adds every repo.
+    let res = sb.run(&["projects", "scan"], None);
+    assert_eq!(res.code, 0, "stderr: {}", res.stderr);
+    let ids: Vec<String> = sb.read_map()["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(ids.contains(&"fresh".to_string()), "{ids:?}");
+}
+
+#[test]
+fn scan_candidates_skip_known_hidden_and_suffix_taken_ids() {
+    let sb = Sandbox::new();
+    let root_a = sb.root.join("rootA");
+    let root_b = sb.root.join("rootB");
+    std::fs::create_dir_all(&root_a).unwrap();
+    std::fs::create_dir_all(&root_b).unwrap();
+    let a_dup = sb.make_repo("dup", &[], Some(&root_a), None);
+    let b_dup = sb.make_repo("dup", &[], Some(&root_b), None);
+    let hidden = sb.make_repo("quiet", &[], Some(&root_a), None);
+    let mut e_hidden = sb.project_entry(&hidden, "quiet", "work");
+    e_hidden["hidden"] = serde_json::json!(true);
+
+    let data = serde_json::json!({
+        "scan_roots": [root_a.to_str().unwrap(), root_b.to_str().unwrap(), "/nonexistent-root"],
+        "projects": [e_hidden],
+    });
+    let before = data.clone();
+    let (cands, bad_roots) = agent_brain::projects::scan_candidates(&data);
+    assert_eq!(data, before, "scan_candidates takes &data and cannot write");
+    assert_eq!(bad_roots, vec!["/nonexistent-root".to_string()]);
+    let ids: Vec<&str> = cands.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids, vec!["dup", "dup-2"], "hidden project is not a candidate");
+    assert_eq!(cands[0].path, a_dup.canonicalize().unwrap().to_str().unwrap());
+    assert_eq!(cands[1].path, b_dup.canonicalize().unwrap().to_str().unwrap());
 }
 
 // ---- Telegram toggle per project ----
