@@ -426,7 +426,10 @@ pub fn done(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
     let mut violations: Vec<String> = changed
         .iter()
         .filter(|f| {
-            !allowed.contains(*f) || f.starts_with(".planning/") || crate::report::sensitive_path(f)
+            !allowed.contains(*f)
+                // The plan file may sit under `.planning/` (default protocol_dir); it stays allowed.
+                || (f.starts_with(".planning/") && **f != p.protocol.plan)
+                || crate::report::sensitive_path(f)
         })
         .cloned()
         .collect();
