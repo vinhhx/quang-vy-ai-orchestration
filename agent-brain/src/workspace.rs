@@ -867,13 +867,19 @@ pub fn merge_push_task(
     // a. fetch
     crate::term::emit(&format!("task {id}: fetch origin {base}"));
     let base_ref = format!("refs/heads/{base}");
-    if let Err(e) = crate::gitops::git_net(root, &["fetch", "origin", &base_ref], timeout) {
+    let remote_ref = format!("refs/remotes/origin/{base}");
+    // Explicit `src:dst` refspec: a bare `fetch origin <ref>` only updates the tracking ref when
+    // `remote.origin.fetch` maps it, and repos without that line (non-standard clone or
+    // `remote add`) would never get `origin/<base>`. `base` passed `valid_branch_name` above, so it
+    // holds no `:`, `*`, `?`, `[`, `\`, space or `..` that could break the refspec. The `+` applies
+    // to the local tracking ref only; the local branch is untouched.
+    let refspec = format!("+{base_ref}:{remote_ref}");
+    if let Err(e) = crate::gitops::git_net(root, &["fetch", "origin", &refspec], timeout) {
         return refuse(format!(
             "Không fetch được origin/{base}: {}",
             scrub(&e.message, root, url_ref)
         ));
     }
-    let remote_ref = format!("refs/remotes/origin/{base}");
     if crate::gitops::rev_parse(root, &remote_ref).is_none() {
         return refuse(format!("Không thấy origin/{base} sau khi fetch."));
     }

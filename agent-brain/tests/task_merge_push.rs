@@ -558,10 +558,18 @@ fn never_forces_anything() {
     );
     assert!(lines.iter().any(|l| l.starts_with("merge --no-ff --no-commit refs/heads/task/sua-app")), "{lines:#?}");
     assert!(lines.iter().any(|l| l == "branch -d -- task/sua-app"), "{lines:#?}");
+    // The only `+` allowed is the fetch refspec that overwrites the remote-tracking ref (never a
+    // local branch, never a push): it is what creates origin/<base> when remote.origin.fetch is
+    // missing.
+    assert!(
+        lines.iter().any(|l| l == "fetch origin +refs/heads/dev:refs/remotes/origin/dev"),
+        "{lines:#?}"
+    );
     for l in &lines {
         let words: Vec<&str> = l.split_whitespace().collect();
+        let tracking_fetch = l == "fetch origin +refs/heads/dev:refs/remotes/origin/dev";
         assert!(
-            !words.iter().any(|w| *w == "-f" || w.starts_with("--force") || w.starts_with('+') || *w == "-D" || *w == "--hard" || *w == "--delete"),
+            !words.iter().any(|w| *w == "-f" || w.starts_with("--force") || (w.starts_with('+') && !tracking_fetch) || *w == "-D" || *w == "--hard" || *w == "--delete"),
             "forbidden git word in {l:?}"
         );
         assert!(
@@ -599,4 +607,81 @@ fn bad_branch_names_refused_before_git() {
         assert!(!l.contains("-x") && !l.contains("a b"), "a bad name reached git: {l:?}");
     }
     assert_eq!(current(&sb, &w.repo), BRANCH);
+}
+
+/// Drops `remote.origin.fetch` and every remote-tracking ref: what a repo made by a non-standard
+/// clone or `remote add` looks like. A bare `git fetch origin <ref>` then fetches into FETCH_HEAD
+/// only and never creates `refs/remotes/origin/<base>`.
+fn strip_origin_fetch_refspec(sb: &Sandbox, repo: &Path) {
+    sb.git(repo, &["config", "--unset-all", "remote.origin.fetch"]);
+    let refs = sb.git(repo, &["for-each-ref", "--format=%(refname)", "refs/remotes/origin/"]);
+    for r in refs.lines().filter(|l| !l.trim().is_empty()) {
+        sb.git(repo, &["update-ref", "-d", r.trim()]);
+    }
+    assert!(try_git(sb, repo, &["config", "--get-all", "remote.origin.fetch"]).is_none_or(|s| s.is_empty()));
+}
+
+fn set_task_base(sb: &Sandbox, base: &str) {
+    sb.db()
+        .execute("UPDATE tasks SET base_branch = ?1 WHERE id = 1", rusqlite::params![base])
+        .unwrap();
+}
+
+/// 13. `remote.origin.fetch` is missing: the explicit refspec still creates `origin/<base>`, the
+/// merge is pushed and the task branch deleted. For `main` and for `master`.
+fn merge_push_without_fetch_refspec(base: &str) {
+    let sb = Sandbox::new();
+    let w = setup(&sb, true, Some("dev"), json!({}));
+    let remote = w.remote.as_ref().unwrap();
+    if base != "main" {
+        sb.git(&w.repo, &["branch", "-q", base, "main"]);
+        sb.git(&w.repo, &["push", "-q", "origin", base]);
+    }
+    set_task_base(&sb, base);
+    strip_origin_fetch_refspec(&sb, &w.repo);
+    let tip = sha(&sb, &w.repo, BRANCH);
+    let base_before = sha(&sb, remote, base);
+
+    let res = merge_push(&sb, 1);
+    assert_code(&res, 0, &format!("merge --push into {base} without remote.origin.fetch"));
+    assert!(!res.stderr.contains("sau khi fetch"), "{}", res.stderr);
+    assert!(res.stdout.contains("và push lên origin."), "{}", res.stdout);
+    // origin/<base> has the merge commit on top of the old tip, with the task branch as 2nd parent.
+    assert_eq!(sha(&sb, remote, &format!("{base}^1")), base_before);
+    assert_eq!(sha(&sb, remote, &format!("{base}^2")), tip);
+    assert_eq!(sha(&sb, &w.repo, base), sha(&sb, remote, base));
+    assert!(!has_branch(&sb, &w.repo, BRANCH), "the task branch is deleted");
+    assert_eq!(current(&sb, &w.repo), base);
+}
+
+#[test]
+fn merge_push_works_without_remote_fetch_refspec_main() {
+    merge_push_without_fetch_refspec("main");
+}
+
+#[test]
+fn merge_push_works_without_remote_fetch_refspec_master() {
+    merge_push_without_fetch_refspec("master");
+}
+
+/// 14. The remote really has no such base branch: still a clear refusal, nothing merged.
+#[test]
+fn missing_base_on_remote_is_still_refused_without_fetch_refspec() {
+    let sb = Sandbox::new();
+    let w = setup(&sb, true, Some("dev"), json!({}));
+    sb.git(&w.repo, &["branch", "-q", "ghost", "main"]);
+    set_task_base(&sb, "ghost");
+    strip_origin_fetch_refspec(&sb, &w.repo);
+    let tip = sha(&sb, &w.repo, BRANCH);
+
+    let res = merge_push(&sb, 1);
+    assert_code(&res, 1, "base missing on the remote");
+    assert!(
+        res.stderr.contains("origin/ghost"),
+        "the refusal names origin/ghost: {}",
+        res.stderr
+    );
+    assert!(has_branch(&sb, &w.repo, BRANCH));
+    assert_eq!(sha(&sb, &w.repo, BRANCH), tip);
+    assert!(try_git(&sb, w.remote.as_ref().unwrap(), &["rev-parse", "--verify", "--quiet", "refs/heads/ghost"]).is_none());
 }

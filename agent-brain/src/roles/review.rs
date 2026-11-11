@@ -108,10 +108,9 @@ pub fn cmd_review(
     let report_file = protocol.review(kind).to_string();
     let plan_path = proj_path.join(&protocol.plan);
     if !plan_path.is_file() {
-        return Err(BrainError::error(format!(
-            "Không tìm thấy {} ở gốc dự án",
-            protocol.plan
-        )));
+        return Err(BrainError::error(
+            crate::protocol_paths::plan_not_found_message(&protocol.plan, &proj_path),
+        ));
     }
 
     let text_plan = std::fs::read_to_string(&plan_path)?;

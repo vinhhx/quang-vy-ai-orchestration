@@ -179,10 +179,9 @@ pub fn cmd_qa(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Bra
     let protocol = crate::protocol_paths::current(&proj, &proj_path);
     let plan_path = proj_path.join(&protocol.plan);
     if !plan_path.is_file() {
-        return Err(BrainError::error(format!(
-            "Không tìm thấy {} ở gốc dự án",
-            protocol.plan
-        )));
+        return Err(BrainError::error(
+            crate::protocol_paths::plan_not_found_message(&protocol.plan, &proj_path),
+        ));
     }
 
     let text_plan = std::fs::read_to_string(&plan_path)?;

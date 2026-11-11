@@ -154,13 +154,21 @@ impl ProtocolPaths {
 
 /// The paths for a `protocol_dir` value and a task slug. An invalid value falls back to the
 /// root (callers validate before storing; this keeps a hand-edited map from escaping the repo).
+///
+/// With an empty slug (no task known) every path segment that holds `{slug}` is dropped whole,
+/// not just the variable: `.gsd/quick/plan-{slug}` gives `.gsd/quick` (never a meaningless
+/// `plan-` folder), `.brain/{slug}` gives `.brain`, `{slug}` alone gives the root.
 pub fn paths_in(protocol_dir: &str, slug: &str) -> ProtocolPaths {
     let dir = match validate_protocol_dir(protocol_dir) {
-        Ok(d) => d.replace(SLUG_VAR, slug),
+        Ok(d) => d,
         Err(_) => String::new(),
     };
-    // An empty slug leaves an empty segment: drop it so the path stays well formed.
-    let dir: Vec<&str> = dir.split('/').filter(|s| !s.is_empty()).collect();
+    let dir: Vec<String> = dir
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .filter(|s| !(slug.is_empty() && s.contains(SLUG_VAR)))
+        .map(|s| s.replace(SLUG_VAR, slug))
+        .collect();
     let dir = dir.join("/");
     let join = |name: &str| {
         if dir.is_empty() {
@@ -193,6 +201,23 @@ pub fn for_branch(project: &crate::projects::Project, branch: Option<&str>) -> P
 /// The paths of the task whose branch is checked out at `root`.
 pub fn current(project: &crate::projects::Project, root: &Path) -> ProtocolPaths {
     for_branch(project, crate::gitops::current_branch(root).as_deref())
+}
+
+/// The error text of a role that does not find the plan at `plan` under the project root. When
+/// the branch checked out at `root` is not `task/<slug>` it adds one sentence saying so, because
+/// that is the usual reason (the plan path depends on the slug of the branch).
+pub fn plan_not_found_message(plan: &str, root: &Path) -> String {
+    plan_not_found_for_branch(plan, crate::gitops::current_branch(root).as_deref())
+}
+
+fn plan_not_found_for_branch(plan: &str, branch: Option<&str>) -> String {
+    let mut msg = format!("Không tìm thấy {plan} ở gốc dự án");
+    match branch {
+        Some(b) if b.starts_with("task/") => {}
+        Some(b) => msg.push_str(&format!(". Đang ở nhánh {b}, không phải nhánh task.")),
+        None => msg.push_str(". Đang không ở nhánh nào, không phải nhánh task."),
+    }
+    msg
 }
 
 /// True when the file name of `p` is one of the protocol file names (wherever it lives).
@@ -307,6 +332,78 @@ mod tests {
         // no slug (not on a task branch): the empty segment is dropped
         assert_eq!(paths_in(".brain/{slug}", "").plan, ".brain/.plan.md");
         assert_eq!(paths_in("./docs/", "x").plan, "docs/.plan.md");
+    }
+
+    #[test]
+    fn empty_slug_drops_the_whole_segment_with_the_variable() {
+        // Defaults: no `plan-` folder on its own; the files sit in the parent folder.
+        assert_eq!(paths_in(DEFAULT_DIR_GSD, "").plan, ".gsd/quick/.plan.md");
+        assert_eq!(paths_in(DEFAULT_DIR_PLANNING, "").plan, ".planning/quick/.plan.md");
+        assert_eq!(paths_in(DEFAULT_DIR_GSD, "").dir(), Some(".gsd/quick"));
+        // Old pattern: unchanged behaviour.
+        assert_eq!(paths_in(".brain/{slug}", "").plan, ".brain/.plan.md");
+        // The variable alone: the root.
+        assert_eq!(paths_in("{slug}", "").plan, ".plan.md");
+        assert_eq!(paths_in("{slug}", "").dir(), None);
+        // A segment with `{slug}` in the middle of a path is dropped as a whole: `docs/x-{slug}/y`
+        // gives `docs/y` (intended: the segment that needs the slug cannot exist without it).
+        assert_eq!(paths_in("docs/x-{slug}/y", "").plan, "docs/y/.plan.md");
+        // A pattern without the variable is untouched.
+        assert_eq!(paths_in("docs/plans", "").plan, "docs/plans/.plan.md");
+        // No file of an empty slug ever lands in a folder named `plan-`.
+        for dir in [DEFAULT_DIR_GSD, DEFAULT_DIR_PLANNING] {
+            for f in paths_in(dir, "").all() {
+                assert!(!f.contains("plan-/") && !f.contains("plan-."), "{f}");
+            }
+        }
+    }
+
+    #[test]
+    fn real_slug_fills_every_pattern() {
+        assert_eq!(paths_in(DEFAULT_DIR_GSD, "sua-nut").plan, ".gsd/quick/plan-sua-nut/.plan.md");
+        assert_eq!(
+            paths_in(DEFAULT_DIR_PLANNING, "sua-nut").qa_report,
+            ".planning/quick/plan-sua-nut/.qa-report.md"
+        );
+        assert_eq!(paths_in(".brain/{slug}", "sua-nut").plan, ".brain/sua-nut/.plan.md");
+        assert_eq!(paths_in("{slug}", "sua-nut").plan, "sua-nut/.plan.md");
+        assert_eq!(paths_in("docs/x-{slug}/y", "sua-nut").plan, "docs/x-sua-nut/y/.plan.md");
+    }
+
+    #[test]
+    fn for_branch_without_a_task_branch_has_no_plan_folder() {
+        let proj = crate::projects::Project {
+            id: "p".into(),
+            path: String::new(),
+            name_vi: "p".into(),
+            aliases: vec![],
+            kind: "code".into(),
+            profile: "work".into(),
+            repo: None,
+            missing: false,
+            hidden: false,
+            stack: vec![],
+            read_sources: vec![],
+            protocol_dir: DEFAULT_DIR_GSD.to_string(),
+            workspace: Default::default(),
+        };
+        assert_eq!(for_branch(&proj, Some("main")).plan, ".gsd/quick/.plan.md");
+        assert_eq!(for_branch(&proj, None).plan, ".gsd/quick/.plan.md");
+        assert_eq!(for_branch(&proj, Some("task/sua-nut")).plan, ".gsd/quick/plan-sua-nut/.plan.md");
+    }
+
+    #[test]
+    fn plan_not_found_hints_at_a_non_task_branch() {
+        let p = ".gsd/quick/.plan.md";
+        assert_eq!(
+            plan_not_found_for_branch(p, Some("main")),
+            "Không tìm thấy .gsd/quick/.plan.md ở gốc dự án. Đang ở nhánh main, không phải nhánh task."
+        );
+        assert_eq!(
+            plan_not_found_for_branch(p, Some("task/x")),
+            "Không tìm thấy .gsd/quick/.plan.md ở gốc dự án"
+        );
+        assert!(plan_not_found_for_branch(p, None).contains("không phải nhánh task"));
     }
 
     #[test]
