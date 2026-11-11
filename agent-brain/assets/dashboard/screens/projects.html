@@ -120,192 +120,223 @@
     <div class="rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all whitespace-pre-wrap text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-text="scanText"></div>
   </div>
 
-  <div class="space-y-4">
-    <template x-for="p in projects" :key="p.id">
-      <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
-        <div class="flex flex-wrap items-center gap-2">
-          <h2 class="text-xl font-semibold leading-[1.2] break-words" x-text="p.name_vi"></h2>
-          <span :class="profileClass(p.profile)" x-text="p.profile"></span>
-          <span class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200" x-show="p.missing">thiếu thư mục</span>
-        </div>
-        <div class="flex flex-wrap gap-2 text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">
-          <span class="font-mono break-all" x-text="p.id"></span>
-          <span>·</span>
-          <span class="font-mono break-all" x-text="p.path"></span>
-          <span>·</span>
-          <span x-text="p.type"></span>
-        </div>
-        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="projectWorkflowLine(p)"></p>
-        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Quy trình mặc định chỉ đổi trong projects_map.json</p>
-        <div class="space-y-2">
-          <label :for="profileSelectId(p)" class="text-sm font-semibold leading-normal">Profile</label>
-          <select :id="profileSelectId(p)" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="profileSaving" :value="p.profile" @change="setProfile(p, $event.target.value)">
-            <option value="" :selected="!p.profile">Chọn profile…</option>
-            <template x-for="o in profileOptions" :key="o">
-              <option :value="o" :selected="o === p.profile" x-text="o"></option>
-            </template>
-          </select>
-          <p class="text-sm font-semibold leading-normal text-amber-900 dark:text-amber-200 break-words" x-show="hasIssue(p)" x-text="issueText(p)"></p>
-        </div>
-        <div class="flex flex-wrap items-center gap-2" x-show="notEditing(p)">
-          <template x-for="a in p.aliases" :key="a">
-            <span class="rounded-full bg-slate-100 px-2 py-1 text-sm text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="a"></span>
-          </template>
-          <span class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="noAliases(p)">Chưa có alias</span>
-          <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="startEdit(p)">Sửa alias</button>
-        </div>
-        <div class="space-y-2" x-show="isEditing(p)">
-          <label :for="aliasId(p)" class="text-sm font-semibold leading-normal">Alias</label>
-          <input type="text" :id="aliasId(p)" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="aliasText">
-          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Các alias cách nhau bằng dấu phẩy</p>
-          <div class="flex flex-wrap gap-2">
-            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="saving" @click="save" x-text="saveLabel">Lưu alias</button>
-            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="cancelEdit">Hủy sửa alias</button>
-          </div>
-        </div>
-        <div class="space-y-2">
-          <label class="inline-flex min-h-12 items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100">
-            <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="p.telegram" :disabled="telegramDisabled(p)" :aria-label="telegramLabel(p)" @change="toggleTelegram(p)">
-            <span>Giao việc qua Telegram</span>
-          </label>
-          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="telegramLocked(p)">Dự án media hoặc mất thư mục không giao qua Telegram được.</p>
-        </div>
-        <div class="space-y-2">
-          <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="p.missing" :title="statusTitle(p)" @click="showStatus(p)">Trạng thái git</button>
-          <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal leading-normal whitespace-pre-wrap break-words" x-show="isStatusOpen(p) && statusError" x-text="statusError"></div>
-          <div class="rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all whitespace-pre-wrap text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-show="isStatusOpen(p) && status" x-text="statusText"></div>
-        </div>
+  <div class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700" x-show="hasProjects">
+    <div class="relative overflow-x-auto">
+      <table data-projects-table class="w-full min-w-[60rem] border-collapse text-left text-sm text-slate-900 dark:text-slate-100">
+        <thead>
+          <tr class="border-b border-slate-200 text-xs font-semibold text-slate-500 dark:border-slate-700 dark:text-slate-400">
+            <th scope="col" class="pb-3 pr-4">Dự án</th>
+            <th scope="col" class="pb-3 pr-4">Đường dẫn / loại</th>
+            <th scope="col" class="pb-3 pr-4">Profile</th>
+            <th scope="col" class="pb-3 pr-4">Alias</th>
+            <th scope="col" class="pb-3 pr-4">Telegram</th>
+            <th scope="col" class="pb-3 pr-4">Workspace</th>
+            <th scope="col" class="pb-3 pr-4">Trạng thái</th>
+            <th scope="col" class="pb-3 text-right">Thao tác</th>
+          </tr>
+        </thead>
+        <template x-for="p in projects" :key="p.id">
+          <tbody class="border-b border-slate-100 font-normal dark:border-slate-700/60">
+            <tr class="align-top hover:bg-slate-50 dark:hover:bg-slate-700/30">
+              <td class="py-3.5 pr-4">
+                <div class="font-semibold leading-snug break-words text-slate-900 dark:text-slate-100" x-text="p.name_vi"></div>
+                <div class="font-mono text-xs break-all text-slate-500 dark:text-slate-400" x-text="p.id"></div>
+                <div class="mt-1 flex flex-wrap items-center gap-1">
+                  <span :class="profileClass(p.profile)" x-text="p.profile"></span>
+                  <span class="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-800 dark:bg-rose-900/40 dark:text-rose-200" x-show="p.missing">thiếu thư mục</span>
+                </div>
+              </td>
+              <td class="py-3.5 pr-4">
+                <div class="font-mono text-xs break-all text-slate-700 dark:text-slate-300" x-text="p.path"></div>
+                <div class="text-xs text-slate-500 dark:text-slate-400" x-text="p.type"></div>
+              </td>
+              <td class="py-3.5 pr-4">
+                <label :for="profileSelectId(p)" class="sr-only" x-text="'Profile của ' + p.name_vi"></label>
+                <select :id="profileSelectId(p)" class="min-h-9 w-full rounded-lg bg-white px-2 py-1 text-sm text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 disabled:opacity-50 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="profileSaving" :value="p.profile" @change="setProfile(p, $event.target.value)">
+                  <option value="" :selected="!p.profile">Chọn profile…</option>
+                  <template x-for="o in profileOptions" :key="o">
+                    <option :value="o" :selected="o === p.profile" x-text="o"></option>
+                  </template>
+                </select>
+                <p class="mt-1 text-xs font-semibold leading-normal text-amber-900 break-words dark:text-amber-200" x-show="hasIssue(p)" x-text="issueText(p)"></p>
+              </td>
+              <td class="py-3.5 pr-4">
+                <div class="mb-1 flex flex-wrap items-center gap-1">
+                  <template x-for="a in p.aliases" :key="a">
+                    <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="a"></span>
+                  </template>
+                  <span class="text-xs text-slate-500 dark:text-slate-400" x-show="noAliases(p)">Chưa có alias</span>
+                </div>
+                <label :for="aliasId(p)" class="sr-only" x-text="'Alias của ' + p.name_vi + ', cách nhau bằng dấu phẩy'"></label>
+                <input type="text" :id="aliasId(p)" autocomplete="off" spellcheck="false" placeholder="alias, cách nhau dấu phẩy" class="min-h-9 w-full rounded-lg bg-white px-2 py-1 text-sm text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 disabled:opacity-50 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="aliasDraft(p)" :disabled="saving" @input="setAliasDraft(p, $event.target.value)" @keydown.enter.prevent="commitAlias(p)" @blur="commitAlias(p)">
+              </td>
+              <td class="py-3.5 pr-4">
+                <label class="inline-flex min-h-9 items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="p.telegram" :disabled="telegramDisabled(p)" :aria-label="telegramLabel(p) + ' — ' + p.name_vi" @change="toggleTelegram(p)">
+                  <span>Giao qua Telegram</span>
+                </label>
+                <p class="text-xs leading-normal text-slate-600 dark:text-slate-400" x-show="telegramLocked(p)">Dự án media hoặc mất thư mục không giao qua Telegram được.</p>
+              </td>
+              <td class="py-3.5 pr-4">
+                <div class="space-y-1">
+                  <label :for="'ab-proj-workspace-' + p.id" class="sr-only" x-text="'Không gian làm việc của ' + p.name_vi"></label>
+                  <select :id="'ab-proj-workspace-' + p.id" class="min-h-9 w-full rounded-lg bg-white px-2 py-1 text-sm text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 disabled:opacity-50 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).workspace" @change="applyWorkspaceField(p, 'workspace', $event.target.value)" :disabled="isWorkspaceSaving(p)" :aria-describedby="'ab-proj-workspace-help-' + p.id">
+                    <option value="shared">Dùng chung repo</option>
+                    <option value="worktree">Worktree riêng cho mỗi task</option>
+                  </select>
+                  <div class="flex items-center gap-2">
+                    <label :for="'ab-proj-max-parallel-' + p.id" class="text-xs text-slate-600 dark:text-slate-400">Song song</label>
+                    <input :id="'ab-proj-max-parallel-' + p.id" type="number" inputmode="numeric" min="1" max="10" class="min-h-9 w-16 rounded-lg bg-white px-2 py-1 text-sm text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 disabled:opacity-50 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).max_parallel_tasks" @input="setWorkspaceDraft(p, 'max_parallel_tasks', $event.target.value)" @change="applyWorkspaceField(p, 'max_parallel_tasks', $event.target.value)" :disabled="isWorkspaceSaving(p)">
+                  </div>
+                </div>
+              </td>
+              <td class="py-3.5 pr-4">
+                <button type="button" class="inline-flex min-h-9 items-center justify-center whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="p.missing" :title="statusTitle(p)" :aria-label="'Kiểm tra trạng thái git của ' + p.name_vi" @click="showStatus(p)">Kiểm tra</button>
+              </td>
+              <td class="py-3.5 text-right whitespace-nowrap">
+                <button type="button" class="inline-flex min-h-9 items-center justify-center whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :aria-expanded="isExpanded(p) ? 'true' : 'false'" :aria-label="'Nâng cao: ' + p.name_vi" @click="toggleExpanded(p)">Nâng cao</button>
+              </td>
+            </tr>
+            <tr x-show="isExpanded(p)" class="bg-slate-50 dark:bg-slate-900/40">
+              <td colspan="8" class="px-4 py-4">
+                <div class="space-y-5">
+                  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words" x-text="projectWorkflowLine(p)"></p>
+                  <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Quy trình mặc định chỉ đổi trong projects_map.json</p>
+                  <div class="space-y-2">
+                    <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-sm font-normal leading-normal whitespace-pre-wrap break-words" x-show="isStatusOpen(p) && statusError" x-text="statusError"></div>
+                    <div class="rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all whitespace-pre-wrap text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-show="isStatusOpen(p) && status" x-text="statusText"></div>
+                  </div>
 
-        <div class="space-y-2">
-          <span class="text-sm font-semibold leading-normal">Stack công nghệ</span>
-          <div class="flex flex-wrap items-center gap-2">
-            <template x-for="stk in projectStacks(p)" :key="stk">
-              <span class="inline-flex items-center gap-1 rounded-full bg-slate-100 py-1 pl-2.5 pr-1 text-sm font-medium text-slate-800 dark:bg-slate-700 dark:text-slate-200">
-                <span x-text="stk"></span>
-                <button type="button" class="inline-flex h-5 w-5 items-center justify-center rounded-full text-slate-500 hover:bg-slate-200 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-600 dark:hover:text-slate-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="removeProjectStack(p, stk)" :aria-label="'Xóa stack ' + stk">×</button>
-              </span>
-            </template>
-            <span class="text-sm font-normal text-slate-500 dark:text-slate-400" x-show="hasNoStack(p)">Chưa gắn stack</span>
-          </div>
-          <div class="flex flex-wrap items-center gap-2">
-            <select class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @change="addProjectStackFromSelect(p, $event.target.value); $event.target.value = '';" :disabled="isStackSaving(p.id)">
-              <option value="">Thêm stack…</option>
-              <template x-for="opt in availableStacksFor(p)" :key="opt">
-                <option :value="opt" x-text="opt"></option>
-              </template>
-            </select>
-            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isStackSaving(p.id)" @click="promptCustomStack(p)">Nhập stack mới</button>
-          </div>
-          <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="stackError(p.id)" x-text="stackError(p.id)"></p>
-        </div>
+                  <div class="space-y-2">
+                    <span class="text-sm font-semibold leading-normal">Stack công nghệ</span>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <template x-for="stk in projectStacks(p)" :key="stk">
+                        <span class="inline-flex items-center gap-1 rounded-full bg-slate-100 py-1 pl-2.5 pr-1 text-sm font-medium text-slate-800 dark:bg-slate-700 dark:text-slate-200">
+                          <span x-text="stk"></span>
+                          <button type="button" class="inline-flex h-5 w-5 items-center justify-center rounded-full text-slate-500 hover:bg-slate-200 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-600 dark:hover:text-slate-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="removeProjectStack(p, stk)" :aria-label="'Xóa stack ' + stk">×</button>
+                        </span>
+                      </template>
+                      <span class="text-sm font-normal text-slate-500 dark:text-slate-400" x-show="hasNoStack(p)">Chưa gắn stack</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <select class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @change="addProjectStackFromSelect(p, $event.target.value); $event.target.value = '';" :disabled="isStackSaving(p.id)">
+                        <option value="">Thêm stack…</option>
+                        <template x-for="opt in availableStacksFor(p)" :key="opt">
+                          <option :value="opt" x-text="opt"></option>
+                        </template>
+                      </select>
+                      <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isStackSaving(p.id)" @click="promptCustomStack(p)">Nhập stack mới</button>
+                    </div>
+                    <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="stackError(p.id)" x-text="stackError(p.id)"></p>
+                  </div>
 
-        <div class="space-y-2">
-          <span class="text-sm font-semibold leading-normal">Dự án nguồn (chỉ đọc)</span>
-          <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Task của dự án này được đọc code các dự án nguồn, không ghi, không đọc .env.</p>
-          <div class="flex flex-wrap items-center gap-2">
-            <template x-for="src in projectReadSources(p)" :key="src">
-              <span class="inline-flex items-center gap-1 rounded-full bg-slate-100 py-1 pl-2.5 pr-1 text-sm font-medium text-slate-800 dark:bg-slate-700 dark:text-slate-200">
-                <span x-text="projectSourceLabel(src)"></span>
-                <button type="button" class="inline-flex h-5 w-5 items-center justify-center rounded-full text-slate-500 hover:bg-slate-200 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-600 dark:hover:text-slate-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="removeProjectReadSource(p, src)" :aria-label="'Xóa nguồn ' + src">×</button>
-              </span>
-            </template>
-            <span class="text-sm font-normal text-slate-500 dark:text-slate-400" x-show="hasNoReadSources(p)">Chưa có dự án nguồn</span>
-          </div>
-          <div class="flex flex-wrap items-center gap-2">
-            <select class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @change="addProjectReadSourceFromSelect(p, $event.target.value); $event.target.value = '';" :disabled="isReadSourcesSaving(p.id)">
-              <option value="">Thêm dự án nguồn…</option>
-              <template x-for="opt in availableProjectsForReadSources(p)" :key="opt.id">
-                <option :value="opt.id" x-text="opt.name_vi ? (opt.name_vi + ' (' + opt.id + ')') : opt.id"></option>
-              </template>
-            </select>
-          </div>
-          <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="hasReadSourcesError(p.id)" x-text="readSourcesError(p.id)"></p>
-        </div>
+                  <div class="space-y-2">
+                    <span class="text-sm font-semibold leading-normal">Dự án nguồn (chỉ đọc)</span>
+                    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Task của dự án này được đọc code các dự án nguồn, không ghi, không đọc .env.</p>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <template x-for="src in projectReadSources(p)" :key="src">
+                        <span class="inline-flex items-center gap-1 rounded-full bg-slate-100 py-1 pl-2.5 pr-1 text-sm font-medium text-slate-800 dark:bg-slate-700 dark:text-slate-200">
+                          <span x-text="projectSourceLabel(src)"></span>
+                          <button type="button" class="inline-flex h-5 w-5 items-center justify-center rounded-full text-slate-500 hover:bg-slate-200 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-600 dark:hover:text-slate-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="removeProjectReadSource(p, src)" :aria-label="'Xóa nguồn ' + src">×</button>
+                        </span>
+                      </template>
+                      <span class="text-sm font-normal text-slate-500 dark:text-slate-400" x-show="hasNoReadSources(p)">Chưa có dự án nguồn</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <select class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @change="addProjectReadSourceFromSelect(p, $event.target.value); $event.target.value = '';" :disabled="isReadSourcesSaving(p.id)">
+                        <option value="">Thêm dự án nguồn…</option>
+                        <template x-for="opt in availableProjectsForReadSources(p)" :key="opt.id">
+                          <option :value="opt.id" x-text="opt.name_vi ? (opt.name_vi + ' (' + opt.id + ')') : opt.id"></option>
+                        </template>
+                      </select>
+                    </div>
+                    <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="hasReadSourcesError(p.id)" x-text="readSourcesError(p.id)"></p>
+                  </div>
 
-        <div class="space-y-2">
-          <label :for="'ab-proj-timeouts-' + p.id" class="text-sm font-semibold leading-normal">Thời gian tối đa mỗi lần chạy theo vai (giây)</label>
-          <p :id="'ab-proj-timeouts-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Ví dụ dev=3600, qa=1200. Được ưu tiên hơn quy trình và cấu hình chung; để trống rồi lưu để bỏ.</p>
-          <div class="flex flex-wrap items-center gap-2">
-            <input :id="'ab-proj-timeouts-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="dev=3600, qa=1200" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="timeoutDraft(p)" @input="setTimeoutDraft(p, $event.target.value)" :disabled="isTimeoutSaving(p)" :aria-describedby="'ab-proj-timeouts-help-' + p.id">
-            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isTimeoutSaving(p)" @click="saveTimeouts(p)">Lưu thời gian</button>
-          </div>
-          <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="timeoutError(p)" x-text="timeoutError(p)" role="alert"></p>
-        </div>
+                  <div class="space-y-2">
+                    <label :for="'ab-proj-timeouts-' + p.id" class="text-sm font-semibold leading-normal">Thời gian tối đa mỗi lần chạy theo vai (giây)</label>
+                    <p :id="'ab-proj-timeouts-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Ví dụ dev=3600, qa=1200. Được ưu tiên hơn quy trình và cấu hình chung; để trống rồi lưu để bỏ.</p>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <input :id="'ab-proj-timeouts-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="dev=3600, qa=1200" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="timeoutDraft(p)" @input="setTimeoutDraft(p, $event.target.value)" :disabled="isTimeoutSaving(p)" :aria-describedby="'ab-proj-timeouts-help-' + p.id">
+                      <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isTimeoutSaving(p)" @click="saveTimeouts(p)">Lưu thời gian</button>
+                    </div>
+                    <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="timeoutError(p)" x-text="timeoutError(p)" role="alert"></p>
+                  </div>
 
-        <div class="space-y-2">
-          <label :for="'ab-proj-protocol-dir-' + p.id" class="text-sm font-semibold leading-normal">Thư mục file giao thức (plan, báo cáo QA, review)</label>
-          <p :id="'ab-proj-protocol-dir-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đường dẫn tương đối so với gốc repo, ví dụ .brain/{slug} ({slug} là tên task). Không dùng .., đường dẫn tuyệt đối hay .git. Để trống rồi lưu để ghi ở gốc repo như mặc định.</p>
-          <div class="flex flex-wrap items-center gap-2">
-            <input :id="'ab-proj-protocol-dir-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder=".brain/{slug}" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="protocolDirDraft(p)" @input="setProtocolDirDraft(p, $event.target.value)" :disabled="isProtocolDirSaving(p)" :aria-describedby="'ab-proj-protocol-dir-help-' + p.id">
-            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isProtocolDirSaving(p)" @click="saveProtocolDir(p)">Lưu thư mục</button>
-          </div>
-          <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="protocolDirError(p)" x-text="protocolDirError(p)" role="alert"></p>
-        </div>
+                  <div class="space-y-2">
+                    <label :for="'ab-proj-protocol-dir-' + p.id" class="text-sm font-semibold leading-normal">Thư mục file giao thức (plan, báo cáo QA, review)</label>
+                    <p :id="'ab-proj-protocol-dir-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Đường dẫn tương đối so với gốc repo, ví dụ .brain/{slug} ({slug} là tên task). Không dùng .., đường dẫn tuyệt đối hay .git. Để trống rồi lưu để ghi ở gốc repo như mặc định.</p>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <input :id="'ab-proj-protocol-dir-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder=".brain/{slug}" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="protocolDirDraft(p)" @input="setProtocolDirDraft(p, $event.target.value)" :disabled="isProtocolDirSaving(p)" :aria-describedby="'ab-proj-protocol-dir-help-' + p.id">
+                      <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isProtocolDirSaving(p)" @click="saveProtocolDir(p)">Lưu thư mục</button>
+                    </div>
+                    <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="protocolDirError(p)" x-text="protocolDirError(p)" role="alert"></p>
+                  </div>
 
-        <div class="space-y-2">
-          <label :for="'ab-proj-base-branch-' + p.id" class="text-sm font-semibold leading-normal">Nhánh gốc của task mới</label>
-          <p :id="'ab-proj-base-branch-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Task mới tạo nhánh từ nhánh này. Để trống thì dùng nhánh repo đang ở lúc tạo task.</p>
-          <div class="flex flex-wrap items-center gap-2">
-            <input :id="'ab-proj-base-branch-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="nhánh hiện tại" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).base_branch" @input="setWorkspaceDraft(p, 'base_branch', $event.target.value)" :disabled="isWorkspaceSaving(p)" :aria-describedby="'ab-proj-base-branch-help-' + p.id">
+                  <div class="space-y-2">
+                    <label :for="'ab-proj-base-branch-' + p.id" class="text-sm font-semibold leading-normal">Nhánh gốc của task mới</label>
+                    <p :id="'ab-proj-base-branch-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Task mới tạo nhánh từ nhánh này. Để trống thì dùng nhánh repo đang ở lúc tạo task.</p>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <input :id="'ab-proj-base-branch-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="nhánh hiện tại" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).base_branch" @input="setWorkspaceDraft(p, 'base_branch', $event.target.value)" :disabled="isWorkspaceSaving(p)" :aria-describedby="'ab-proj-base-branch-help-' + p.id">
+                    </div>
+                    <label class="inline-flex min-h-12 items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100">
+                      <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="workspaceDraft(p).hold_project_at_gate" :disabled="isWorkspaceSaving(p)" @change="setWorkspaceDraft(p, 'hold_project_at_gate', $event.target.checked)">
+                      <span>Giữ dự án khi task chờ duyệt plan (task khác chờ)</span>
+                    </label>
+                    <label class="inline-flex min-h-12 items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100">
+                      <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="workspaceDraft(p).auto_checkout_on_approve" :disabled="isWorkspaceSaving(p)" @change="setWorkspaceDraft(p, 'auto_checkout_on_approve', $event.target.checked)">
+                      <span>Tự checkout nhánh task khi duyệt (working tree sạch)</span>
+                    </label>
           </div>
-          <label class="inline-flex min-h-12 items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100">
-            <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="workspaceDraft(p).hold_project_at_gate" :disabled="isWorkspaceSaving(p)" @change="setWorkspaceDraft(p, 'hold_project_at_gate', $event.target.checked)">
-            <span>Giữ dự án khi task chờ duyệt plan (task khác chờ)</span>
-          </label>
-          <label class="inline-flex min-h-12 items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100">
-            <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="workspaceDraft(p).auto_checkout_on_approve" :disabled="isWorkspaceSaving(p)" @change="setWorkspaceDraft(p, 'auto_checkout_on_approve', $event.target.checked)">
-            <span>Tự checkout nhánh task khi duyệt (working tree sạch)</span>
-          </label>
-          <label :for="'ab-proj-workspace-' + p.id" class="text-sm font-semibold leading-normal">Không gian làm việc của task</label>
-          <p :id="'ab-proj-workspace-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Dùng chung: mọi task làm trong repo dự án, lần lượt từng task. Worktree riêng: mỗi task có một git worktree riêng, chạy song song tối đa số task bên dưới; repo chính không đổi nhánh.</p>
-          <div class="flex flex-wrap items-center gap-2">
-            <select :id="'ab-proj-workspace-' + p.id" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).workspace" @change="setWorkspaceDraft(p, 'workspace', $event.target.value)" :disabled="isWorkspaceSaving(p)" :aria-describedby="'ab-proj-workspace-help-' + p.id">
-              <option value="shared">Dùng chung repo</option>
-              <option value="worktree">Worktree riêng cho mỗi task</option>
-            </select>
-            <label :for="'ab-proj-max-parallel-' + p.id" class="text-sm font-semibold leading-normal">Số task song song</label>
-            <input :id="'ab-proj-max-parallel-' + p.id" type="number" inputmode="numeric" min="1" max="10" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).max_parallel_tasks" @input="setWorkspaceDraft(p, 'max_parallel_tasks', $event.target.value)" :disabled="isWorkspaceSaving(p)">
-          </div>
-          <div class="flex flex-wrap items-center gap-2">
-            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isWorkspaceSaving(p)" @click="saveWorkspace(p)">Lưu nhánh và cách duyệt</button>
-          </div>
-          <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="workspaceError(p)" x-text="workspaceError(p)" role="alert"></p>
-        </div>
 
-        <div class="space-y-2">
-          <p class="text-sm font-semibold leading-normal">Ghim thành viên hoặc engine theo vai</p>
-          <p :id="'ab-proj-pins-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Ví dụ dev=ten-thanh-vien hoặc dev=ten-engine. Mỗi vai chỉ ghim một trong hai. Được dùng trước đội hình và phòng ban; nếu chưa sẵn sàng thì run báo lỗi, không tự chọn khác. Để trống rồi lưu để bỏ.</p>
-          <div class="flex flex-wrap items-center gap-2">
-            <label :for="'ab-proj-pin-members-' + p.id" class="text-sm font-normal leading-normal">Thành viên</label>
-            <input :id="'ab-proj-pin-members-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="dev=ten-thanh-vien" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="pinDraft(p, 'role_members')" @input="setPinDraft(p, 'role_members', $event.target.value)" :disabled="isPinSaving(p)" :aria-describedby="'ab-proj-pins-help-' + p.id">
-            <label :for="'ab-proj-pin-engines-' + p.id" class="text-sm font-normal leading-normal">Engine</label>
-            <input :id="'ab-proj-pin-engines-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="dev=ten-engine" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="pinDraft(p, 'role_engines')" @input="setPinDraft(p, 'role_engines', $event.target.value)" :disabled="isPinSaving(p)" :aria-describedby="'ab-proj-pins-help-' + p.id">
-            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isPinSaving(p)" @click="savePins(p)">Lưu ghim</button>
+          <div class="space-y-2">
+            <span class="text-sm font-semibold leading-normal">Không gian làm việc của task</span>
+            <p :id="'ab-proj-workspace-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Dùng chung: mọi task làm trong repo dự án, lần lượt từng task. Worktree riêng: mỗi task có một git worktree riêng, chạy song song tối đa số task đặt ở cột Workspace; repo chính không đổi nhánh. Đổi cách làm việc hoặc số task song song ở cột Workspace sẽ lưu ngay, cùng với nhánh gốc và 2 tuỳ chọn ở trên.</p>
+            <div class="flex flex-wrap items-center gap-2">
+              <button type="button" class="inline-flex min-h-12 items-center justify-center rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isWorkspaceSaving(p)" @click="saveWorkspace(p)">Lưu nhánh và cách duyệt</button>
+            </div>
+            <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="workspaceError(p)" x-text="workspaceError(p)" role="alert"></p>
           </div>
-          <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="pinError(p)" x-text="pinError(p)" role="alert"></p>
-        </div>
 
-        <div class="space-y-2">
-          <label :for="'ab-proj-preflight-' + p.id" class="text-sm font-semibold leading-normal">Kiểm môi trường đích trước khi chạy</label>
-          <p :id="'ab-proj-preflight-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Tối đa 5 mục JSON, ví dụ [{"kind": "http", "url_env": "TEN_BIEN", "expect_status": [200, 302]}, {"kind": "tcp", "host": "db", "port": 5432}]. url_env đọc biến môi trường của tiến trình serve. Để trống rồi lưu để tắt.</p>
-          <textarea :id="'ab-proj-preflight-' + p.id" rows="4" spellcheck="false" class="w-full rounded-xl bg-white p-3 font-mono text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="preflightDraft(p).checks" @input="setPreflightField(p, 'checks', $event.target.value)" :disabled="isPreflightSaving(p)" :aria-describedby="'ab-proj-preflight-help-' + p.id"></textarea>
-          <div class="flex flex-wrap items-center gap-2">
-            <label :for="'ab-proj-preflight-roles-' + p.id" class="text-sm font-semibold leading-normal">Vai</label>
-            <input :id="'ab-proj-preflight-roles-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="dev, qa" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="preflightDraft(p).roles" @input="setPreflightField(p, 'roles', $event.target.value)" :disabled="isPreflightSaving(p)">
-            <label :for="'ab-proj-preflight-retry-' + p.id" class="text-sm font-semibold leading-normal">Tự chạy lại sau (phút, 0 = tắt)</label>
-            <input :id="'ab-proj-preflight-retry-' + p.id" type="number" inputmode="numeric" min="0" max="1440" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="preflightDraft(p).retry" @input="setPreflightField(p, 'retry', $event.target.value)" :disabled="isPreflightSaving(p)">
-            <label :for="'ab-proj-preflight-interval-' + p.id" class="text-sm font-semibold leading-normal">Kiểm trong lúc chạy mỗi (giây, 0 = tắt)</label>
-            <input :id="'ab-proj-preflight-interval-' + p.id" type="number" inputmode="numeric" min="0" max="3600" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="preflightDraft(p).interval" @input="setPreflightField(p, 'interval', $event.target.value)" :disabled="isPreflightSaving(p)">
-            <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isPreflightSaving(p)" @click="savePreflight(p)">Lưu kiểm môi trường</button>
-          </div>
-          <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="preflightError(p)" x-text="preflightError(p)" role="alert"></p>
-        </div>
+                  <div class="space-y-2">
+                    <p class="text-sm font-semibold leading-normal">Ghim thành viên hoặc engine theo vai</p>
+                    <p :id="'ab-proj-pins-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Ví dụ dev=ten-thanh-vien hoặc dev=ten-engine. Mỗi vai chỉ ghim một trong hai. Được dùng trước đội hình và phòng ban; nếu chưa sẵn sàng thì run báo lỗi, không tự chọn khác. Để trống rồi lưu để bỏ.</p>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <label :for="'ab-proj-pin-members-' + p.id" class="text-sm font-normal leading-normal">Thành viên</label>
+                      <input :id="'ab-proj-pin-members-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="dev=ten-thanh-vien" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="pinDraft(p, 'role_members')" @input="setPinDraft(p, 'role_members', $event.target.value)" :disabled="isPinSaving(p)" :aria-describedby="'ab-proj-pins-help-' + p.id">
+                      <label :for="'ab-proj-pin-engines-' + p.id" class="text-sm font-normal leading-normal">Engine</label>
+                      <input :id="'ab-proj-pin-engines-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="dev=ten-engine" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="pinDraft(p, 'role_engines')" @input="setPinDraft(p, 'role_engines', $event.target.value)" :disabled="isPinSaving(p)" :aria-describedby="'ab-proj-pins-help-' + p.id">
+                      <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isPinSaving(p)" @click="savePins(p)">Lưu ghim</button>
+                    </div>
+                    <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="pinError(p)" x-text="pinError(p)" role="alert"></p>
+                  </div>
 
-        <div class="space-y-2">
-          <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="openPromptPanel(p)">Ghi chú prompt</button>
-        </div>
-      </div>
-    </template>
+                  <div class="space-y-2">
+                    <label :for="'ab-proj-preflight-' + p.id" class="text-sm font-semibold leading-normal">Kiểm môi trường đích trước khi chạy</label>
+                    <p :id="'ab-proj-preflight-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Tối đa 5 mục JSON, ví dụ [{"kind": "http", "url_env": "TEN_BIEN", "expect_status": [200, 302]}, {"kind": "tcp", "host": "db", "port": 5432}]. url_env đọc biến môi trường của tiến trình serve. Để trống rồi lưu để tắt.</p>
+                    <textarea :id="'ab-proj-preflight-' + p.id" rows="4" spellcheck="false" class="w-full rounded-xl bg-white p-3 font-mono text-xs text-slate-900 ring-1 ring-slate-300 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="preflightDraft(p).checks" @input="setPreflightField(p, 'checks', $event.target.value)" :disabled="isPreflightSaving(p)" :aria-describedby="'ab-proj-preflight-help-' + p.id"></textarea>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <label :for="'ab-proj-preflight-roles-' + p.id" class="text-sm font-semibold leading-normal">Vai</label>
+                      <input :id="'ab-proj-preflight-roles-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="dev, qa" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="preflightDraft(p).roles" @input="setPreflightField(p, 'roles', $event.target.value)" :disabled="isPreflightSaving(p)">
+                      <label :for="'ab-proj-preflight-retry-' + p.id" class="text-sm font-semibold leading-normal">Tự chạy lại sau (phút, 0 = tắt)</label>
+                      <input :id="'ab-proj-preflight-retry-' + p.id" type="number" inputmode="numeric" min="0" max="1440" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="preflightDraft(p).retry" @input="setPreflightField(p, 'retry', $event.target.value)" :disabled="isPreflightSaving(p)">
+                      <label :for="'ab-proj-preflight-interval-' + p.id" class="text-sm font-semibold leading-normal">Kiểm trong lúc chạy mỗi (giây, 0 = tắt)</label>
+                      <input :id="'ab-proj-preflight-interval-' + p.id" type="number" inputmode="numeric" min="0" max="3600" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="preflightDraft(p).interval" @input="setPreflightField(p, 'interval', $event.target.value)" :disabled="isPreflightSaving(p)">
+                      <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isPreflightSaving(p)" @click="savePreflight(p)">Lưu kiểm môi trường</button>
+                    </div>
+                    <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="preflightError(p)" x-text="preflightError(p)" role="alert"></p>
+                  </div>
+
+                  <div class="space-y-2">
+                    <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="openPromptPanel(p)">Ghi chú prompt</button>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </template>
+      </table>
+    </div>
   </div>
 
   <div data-workflow-card class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
