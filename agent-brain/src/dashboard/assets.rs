@@ -41,6 +41,11 @@ pub static ASSETS: &[Asset] = &[
         body: include_bytes!("../../assets/dashboard/js/theme.js"),
     },
     Asset {
+        path: "/js/markdown.js",
+        mime: "text/javascript; charset=utf-8",
+        body: include_bytes!("../../assets/dashboard/js/markdown.js"),
+    },
+    Asset {
         path: "/js/app.js",
         mime: "text/javascript; charset=utf-8",
         body: include_bytes!("../../assets/dashboard/js/app.js"),

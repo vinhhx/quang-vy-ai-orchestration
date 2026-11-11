@@ -86,6 +86,10 @@
       </div>
     </div>
 
+    <!-- Two columns from xl up (35% / 65%) when there is an answer card; one column otherwise -->
+    <div :class="splitGridClass()">
+      <!-- Left column: pipeline, run ledger, inputs, plan, QA -->
+      <div class="min-w-0 space-y-6">
     <!-- Pipeline card -->
     <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
       <div class="flex flex-wrap items-center gap-2">
@@ -529,26 +533,6 @@
       </div>
     </div>
 
-    <!-- Answer card -->
-    <div x-show="showAnswerCard()" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
-      <div class="flex flex-wrap items-center gap-4">
-        <h2 class="text-xl font-semibold leading-[1.2]">Câu trả lời</h2>
-        <span x-show="answerLoading" class="text-sm font-normal text-slate-500 dark:text-slate-400">Đang tải...</span>
-      </div>
-      <div class="space-y-2" x-show="showNoAnswer()">
-        <p class="text-sm font-semibold leading-normal">Chưa có câu trả lời</p>
-        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Analyst chưa chạy xong hoặc đã lỗi. Khi xong, câu trả lời sẽ hiện ở đây.</p>
-      </div>
-      <div class="space-y-4" x-show="hasAnswer()">
-        <div class="flex flex-wrap items-center gap-2">
-          <code id="ab-answer-path" class="font-mono text-sm leading-normal break-all" x-text="answerPath()"></code>
-          <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="copyAnswerPath">Sao chép</button>
-          <button type="button" aria-label="Gửi kết quả sang dự án khác" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="openHandoffDialog">Gửi kết quả sang dự án khác</button>
-        </div>
-        <pre class="overflow-x-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-4 font-mono text-sm leading-normal text-slate-900 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-800" x-text="answerMarkdown()"></pre>
-      </div>
-    </div>
-
     <!-- Task Inputs card -->
     <div x-show="hasInputs()" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
       <div class="flex flex-wrap items-center gap-4">
@@ -657,6 +641,35 @@
           <p class="whitespace-pre-wrap break-words text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="sectionText(s)"></p>
         </div>
       </template>
+    </div>
+      </div>
+
+    <!-- Answer card (right column from xl up; first on narrow screens) -->
+    <div x-show="showAnswerCard()" class="order-first min-w-0 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4 xl:order-none xl:sticky xl:top-4 xl:flex xl:max-h-[calc(100vh-2rem)] xl:flex-col">
+      <div class="flex flex-wrap items-center gap-4">
+        <h2 class="text-xl font-semibold leading-[1.2]">Câu trả lời</h2>
+        <span x-show="answerLoading" class="text-sm font-normal text-slate-500 dark:text-slate-400">Đang tải...</span>
+      </div>
+      <div class="space-y-2" x-show="showNoAnswer()">
+        <p class="text-sm font-semibold leading-normal">Chưa có câu trả lời</p>
+        <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Analyst chưa chạy xong hoặc đã lỗi. Khi xong, câu trả lời sẽ hiện ở đây.</p>
+      </div>
+      <div class="flex min-h-0 flex-col gap-4 xl:flex-1" x-show="hasAnswer()">
+        <div class="flex flex-wrap items-center gap-2">
+          <code id="ab-answer-path" class="font-mono text-sm leading-normal break-all" x-text="answerPath()"></code>
+          <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="copyAnswerPath">Sao chép</button>
+          <button type="button" aria-label="Gửi kết quả sang dự án khác" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="openHandoffDialog">Gửi kết quả sang dự án khác</button>
+          <div role="group" aria-label="Chế độ xem câu trả lời" class="inline-flex overflow-hidden rounded-xl ring-1 ring-slate-300 dark:ring-slate-600 sm:ml-auto">
+            <button type="button" id="ab-answer-view-preview" :aria-pressed="isAnswerPreview()" :class="answerViewBtnClass('preview')" @click="setAnswerView('preview')">Xem trước</button>
+            <button type="button" id="ab-answer-view-raw" :aria-pressed="isAnswerRaw()" :class="answerViewBtnClass('raw')" @click="setAnswerView('raw')">Raw</button>
+          </div>
+        </div>
+        <div id="ab-answer-body" class="max-h-[70vh] min-h-0 overflow-y-auto rounded-xl bg-slate-50 p-4 text-base text-slate-900 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-800 xl:max-h-none xl:flex-1">
+          <div id="ab-answer-md" x-show="isAnswerPreview()" x-effect="renderAnswerPreview" class="min-w-0"></div>
+          <pre id="ab-answer-raw" x-show="isAnswerRaw()" class="overflow-x-auto whitespace-pre-wrap break-words font-mono text-sm leading-normal" x-text="answerMarkdown()"></pre>
+        </div>
+      </div>
+    </div>
     </div>
 
     <!-- Log card -->

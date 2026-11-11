@@ -210,3 +210,47 @@ fn assets_served_after_handshake() {
         );
     }
 }
+
+#[test]
+fn markdown_renderer_is_served_and_loaded_by_index() {
+    let asset = agent_brain::dashboard::assets::lookup("/js/markdown.js")
+        .expect("Missing ASSETS entry for /js/markdown.js");
+    assert!(
+        asset.mime.starts_with("text/javascript"),
+        "markdown.js mime: {}",
+        asset.mime
+    );
+    let js = String::from_utf8(asset.body.to_vec()).expect("markdown.js is utf-8");
+    assert!(
+        js.contains("window.abMarkdown"),
+        "markdown.js must export window.abMarkdown"
+    );
+    // The renderer builds DOM nodes only: no HTML-string sinks, no evaluation.
+    for forbidden in [
+        "innerHTML",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "eval(",
+        "new Function",
+    ] {
+        assert!(
+            !js.contains(forbidden),
+            "markdown.js must not use {forbidden}"
+        );
+    }
+
+    let index = agent_brain::dashboard::assets::lookup("/").expect("index asset");
+    let index_html = String::from_utf8(index.body.to_vec()).expect("index.html is utf-8");
+    assert!(
+        index_html.contains("src=\"/js/markdown.js\""),
+        "index.html must load /js/markdown.js"
+    );
+
+    let task = agent_brain::dashboard::assets::lookup("/screens/task.html").expect("task screen");
+    let task_html = String::from_utf8(task.body.to_vec()).expect("task.html is utf-8");
+    assert!(
+        task_html.contains("id=\"ab-answer-md\""),
+        "task screen must have the Markdown preview container"
+    );
+}
