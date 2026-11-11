@@ -125,10 +125,24 @@ pub fn resolve_project(
     cfg: &Config,
     query: &str,
 ) -> Result<(Project, PathBuf), Refusal> {
-    let projects = crate::projects::projects_of(map);
+    // New work (assign, preflight): a hidden project is not a choice.
+    let projects = crate::projects::visible_projects_of(map);
     let project = match crate::routing::resolve(query, &projects) {
         Ok(p) => p,
         Err(err) => {
+            if let Ok(hidden) = crate::routing::resolve(query, &crate::projects::projects_of(map)) {
+                if hidden.hidden {
+                    return Err(Refusal {
+                        status: StatusCode::UNPROCESSABLE_ENTITY,
+                        body: serde_json::json!({
+                            "error": format!(
+                                "Dự án '{}' đã ẩn — bỏ ẩn ở màn Dự án rồi giao việc",
+                                hidden.id
+                            ),
+                        }),
+                    });
+                }
+            }
             let error_msg = match crate::projects::select_project(query, map) {
                 Ok(_) => String::new(),
                 Err(e) => e.message,
@@ -1169,6 +1183,12 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
 
                 let project = crate::projects::select_project(&body.project, &map)
                     .map_err(|e| crate::error::BrainError::error(e.message))?;
+                if project.hidden {
+                    return Err(crate::error::BrainError::error(format!(
+                        "Dự án '{}' đã ẩn — bỏ ẩn ở màn Dự án rồi giao việc",
+                        project.id
+                    )));
+                }
 
                 if let Some(msg) = crate::teams::team_profile_refusal(
                     &team_resolved.team,
@@ -1253,6 +1273,7 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
                 ),
                 Err(e) => {
                     if e.message.contains("Không tìm thấy dự án")
+                        || e.message.contains("đã ẩn")
                         || e.message.contains("Độ khó")
                         || e.message.contains("tài liệu")
                         || e.message.contains("bí mật")
@@ -1284,6 +1305,15 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
                 }
             };
             let map = crate::projects::load_map(&st.map_path)?;
+            if crate::projects::projects_of(&map)
+                .iter()
+                .any(|p| p.id == body.project && p.hidden)
+            {
+                return Err(crate::error::BrainError::error(format!(
+                    "Dự án '{}' đã ẩn — bỏ ẩn ở màn Dự án rồi giao việc",
+                    body.project
+                )));
+            }
             let split = crate::projects::triage_split_of(&map, &body.project);
 
             let tx = conn.transaction()?;
@@ -1324,6 +1354,7 @@ async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>)
             ),
             Err(e) => {
                 if e.message.contains("Không tìm thấy dự án")
+                    || e.message.contains("đã ẩn")
                     || e.message.contains("tài liệu")
                     || e.message.contains("bí mật")
                     || e.message.contains("64 KiB")

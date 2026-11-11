@@ -383,6 +383,8 @@ pub fn allowed_projects(map: &Value, cfg: &Config) -> Result<(Vec<Project>, Vec<
             Some(p) => {
                 if p.kind == "media" {
                     reasons.push((id.clone(), "dự án loại media, không giao việc được".into()));
+                } else if p.hidden {
+                    reasons.push((id.clone(), "dự án đã ẩn".into()));
                 } else if p.missing {
                     reasons.push((id.clone(), "thư mục dự án không còn (missing)".into()));
                 } else {
@@ -1794,6 +1796,13 @@ mod tests {
             vec!["a"]
         );
         assert_eq!(unknown, vec!["khong-co".to_string()]);
+
+        // A hidden project is never offered, even when it is on the allowlist.
+        let mut hidden_projects = projects.clone();
+        hidden_projects[0]["hidden"] = json!(true);
+        let map = json!({"projects": hidden_projects, "telegram_projects": ["a"]});
+        let err = allowed_projects(&map, &cfg).unwrap_err();
+        assert!(err.contains("• a: dự án đã ẩn"), "{err}");
 
         // Media and unrunnable projects are never offered.
         let map = json!({

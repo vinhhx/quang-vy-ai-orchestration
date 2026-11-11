@@ -166,8 +166,10 @@ async fn get_board(State(st): State<Arc<AppState>>, Query(query): Query<BoardQue
         // 2. Danh sách dự án (lọc theo profile) và dự án được chọn.
         let map = crate::projects::load_map(&st.map_path)?;
         let all_projects = crate::projects::projects_of(&map);
+        // The project selector skips hidden projects; an explicit `?project=` still opens one.
         let listed: Vec<&Project> = all_projects
             .iter()
+            .filter(|p| p.is_visible())
             .filter(|p| profile_opt.is_none_or(|prof| p.profile == prof))
             .take(PROJECTS_LIST_MAX)
             .collect();

@@ -80,7 +80,8 @@ fn project_json(
     let on_telegram = telegram_ids(map).iter().any(|i| i == &p.id);
     serde_json::json!({
         "telegram": on_telegram,
-        "telegram_offerable": p.kind != "media" && !p.missing,
+        "telegram_offerable": p.kind != "media" && !p.missing && !p.hidden,
+        "hidden": p.hidden,
         "id": p.id,
         "name_vi": p.name_vi,
         "aliases": p.aliases,
@@ -106,7 +107,32 @@ fn project_json(
     })
 }
 
-fn projects_body(map: &serde_json::Value, etag: String, profiles: &Profiles) -> serde_json::Value {
+/// Tasks per project slug from brain.db (a project without tasks has no entry). Empty when the
+/// database cannot be read.
+fn task_counts(st: &AppState) -> std::collections::HashMap<String, i64> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(conn) = crate::db::open(&st.db_path) else {
+        return out;
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT p.slug, COUNT(t.id) FROM tasks t JOIN projects p ON p.id = t.project_id GROUP BY p.slug",
+    ) else {
+        return out;
+    };
+    if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+        for (slug, n) in rows.flatten() {
+            out.insert(slug, n);
+        }
+    }
+    out
+}
+
+fn projects_body(
+    map: &serde_json::Value,
+    etag: String,
+    profiles: &Profiles,
+    counts: &std::collections::HashMap<String, i64>,
+) -> serde_json::Value {
     let scan_roots = map
         .get("scan_roots")
         .and_then(|r| r.as_array())
@@ -121,9 +147,14 @@ fn projects_body(map: &serde_json::Value, etag: String, profiles: &Profiles) -> 
         .into_iter()
         .map(|(key, ids)| serde_json::json!({ "key": key, "ids": ids }))
         .collect();
+    // Every project, hidden ones included (the projects screen shows and unhides them).
     let projects_json: Vec<serde_json::Value> = crate::projects::projects_of(map)
         .into_iter()
-        .map(|p| project_json(&p, map, profiles))
+        .map(|p| {
+            let mut v = project_json(&p, map, profiles);
+            v["task_count"] = serde_json::json!(counts.get(&p.id).copied().unwrap_or(0));
+            v
+        })
         .collect();
     serde_json::json!({
         "etag": etag,
@@ -138,7 +169,7 @@ fn projects_body(map: &serde_json::Value, etag: String, profiles: &Profiles) -> 
 
 fn conflict_response(st: &AppState, current_etag: String) -> crate::error::BrainResult<Response> {
     let map = crate::projects::load_map(&st.map_path)?;
-    let mut body = projects_body(&map, current_etag, &st.cfg.profiles);
+    let mut body = projects_body(&map, current_etag, &st.cfg.profiles, &task_counts(st));
     body["error"] = serde_json::json!(
         "projects_map.json vừa thay đổi ở nơi khác — đã tải lại danh sách, hãy sửa lại"
     );
@@ -175,7 +206,7 @@ fn save_and_respond_with(
         crate::db::sync_projects(&conn, &crate::projects::projects_of(data))?;
     }
     let new_etag = map_etag(&st.map_path);
-    let mut body = projects_body(data, new_etag, &st.cfg.profiles);
+    let mut body = projects_body(data, new_etag, &st.cfg.profiles, &task_counts(st));
     let raw_projects = data
         .get("projects")
         .and_then(|p| p.as_array())
@@ -363,6 +394,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/projects/suggest", get(suggest_projects))
         .route("/api/projects/scan", post(scan_projects))
         .route("/api/projects/scan/add", post(scan_add))
+        .route("/api/projects/hidden", put(set_hidden_bulk))
+        .route("/api/projects/{id}/hidden", put(set_hidden_one))
         .route("/api/projects/{id}", put(update_aliases))
         .route("/api/projects/{id}/telegram", put(update_telegram))
         .route("/api/projects/{id}/profile", put(update_profile))
@@ -392,12 +425,17 @@ async fn list_projects(
         let etag = map_etag(&st.map_path);
 
         let mut projects = crate::projects::projects_of(&map);
-        let mut body = projects_body(&map, etag, &st.cfg.profiles);
+        let counts = task_counts(&st);
+        let mut body = projects_body(&map, etag, &st.cfg.profiles, &counts);
         if let Some(prof) = profile_opt {
             projects.retain(|p| p.profile == prof);
             let filtered: Vec<serde_json::Value> = projects
                 .iter()
-                .map(|p| project_json(p, &map, &st.cfg.profiles))
+                .map(|p| {
+                    let mut v = project_json(p, &map, &st.cfg.profiles);
+                    v["task_count"] = serde_json::json!(counts.get(&p.id).copied().unwrap_or(0));
+                    v
+                })
                 .collect();
             body["projects"] = serde_json::json!(filtered);
         }
@@ -425,7 +463,8 @@ async fn suggest_projects(
         }
 
         let map = crate::projects::load_map(&st.map_path)?;
-        let mut projects = crate::projects::projects_of(&map);
+        // Suggestions feed the places that pick a project for new work: no hidden projects.
+        let mut projects = crate::projects::visible_projects_of(&map);
         if let Some(prof) = profile_opt {
             projects.retain(|p| p.profile == prof);
         }
@@ -571,6 +610,12 @@ async fn update_telegram(
                 return Ok(json_error(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "Thư mục dự án không còn.",
+                ));
+            }
+            if project.hidden {
+                return Ok(json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "Dự án đã ẩn — bỏ ẩn rồi mới bật Telegram.",
                 ));
             }
             if !already {
@@ -1543,6 +1588,116 @@ async fn fs_dirs(Query(query): Query<FsDirsQuery>) -> Response {
     })
     .await;
 
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HiddenBody {
+    pub hidden: bool,
+    #[serde(default)]
+    pub etag: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HiddenBulkBody {
+    pub ids: Vec<String>,
+    pub hidden: bool,
+    #[serde(default)]
+    pub etag: Option<String>,
+}
+
+/// Most projects hidden or shown by one bulk call.
+const MAX_HIDE_IDS: usize = 1000;
+
+/// Sets or clears `hidden` on the given projects with ONE write. A project is never removed from
+/// the map; `hidden` is stored only as `true` (absent = visible). Unknown id: 404, nothing written.
+fn apply_hidden(
+    st: &AppState,
+    ids: &[String],
+    hidden: bool,
+    etag: Option<&str>,
+) -> crate::error::BrainResult<Response> {
+    let _guard = write_mutex().lock().unwrap();
+
+    let current_etag = map_etag(&st.map_path);
+    if let Some(req_etag) = etag {
+        if req_etag != current_etag {
+            return conflict_response(st, current_etag);
+        }
+    }
+    let mut data = crate::projects::load_map(&st.map_path)?;
+    let projects_arr = data
+        .get_mut("projects")
+        .and_then(|p| p.as_array_mut())
+        .ok_or_else(|| crate::error::BrainError::error("projects_map.json thiếu mảng 'projects'"))?;
+
+    let wanted: HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+    let present: HashSet<String> = projects_arr
+        .iter()
+        .filter_map(|o| o.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+    if let Some(unknown) = ids.iter().find(|id| !present.contains(id.as_str())) {
+        return Ok(json_error(
+            StatusCode::NOT_FOUND,
+            &format!("Không tìm thấy dự án {unknown}"),
+        ));
+    }
+    for obj in projects_arr.iter_mut() {
+        let in_set = obj
+            .get("id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|id| wanted.contains(id));
+        if !in_set {
+            continue;
+        }
+        if let Some(map_obj) = obj.as_object_mut() {
+            if hidden {
+                map_obj.insert("hidden".to_string(), serde_json::Value::Bool(true));
+            } else {
+                map_obj.remove("hidden");
+            }
+        }
+    }
+    save_and_respond(st, &data, StatusCode::OK, None)
+}
+
+async fn set_hidden_one(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<HiddenBody>,
+) -> Response {
+    let res = blocking(move || apply_hidden(&st, &[id], body.hidden, body.etag.as_deref())).await;
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+async fn set_hidden_bulk(
+    State(st): State<Arc<AppState>>,
+    Json(body): Json<HiddenBulkBody>,
+) -> Response {
+    let res = blocking(move || {
+        if body.ids.is_empty() {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Chưa chọn dự án nào.",
+            ));
+        }
+        if body.ids.len() > MAX_HIDE_IDS {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &format!("Tối đa {MAX_HIDE_IDS} dự án mỗi lần."),
+            ));
+        }
+        apply_hidden(&st, &body.ids, body.hidden, body.etag.as_deref())
+    })
+    .await;
     match res {
         Ok(r) => r,
         Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),

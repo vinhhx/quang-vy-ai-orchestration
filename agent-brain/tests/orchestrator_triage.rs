@@ -625,6 +625,14 @@ fn test_validate_rules() {
     d.project = "du-an-la".to_string();
     assert!(validate(&d, &projects, &teams, &workflows, &st.cfg.engines).is_err());
 
+    // 1b. Dự án đã ẩn không nhận việc mới
+    let mut hidden_map = map.clone();
+    hidden_map["projects"][0]["hidden"] = serde_json::json!(true);
+    let hidden_projects = agent_brain::projects::projects_of(&hidden_map);
+    let err = validate(&valid_draft, &hidden_projects, &teams, &workflows, &st.cfg.engines)
+        .expect_err("hidden project must be refused");
+    assert!(err.contains("đã ẩn"), "{err}");
+
     // 2. Team không tồn tại
     let mut d = valid_draft.clone();
     d.team = "doi-la".to_string();

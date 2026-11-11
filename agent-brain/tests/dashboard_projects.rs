@@ -714,6 +714,252 @@ fn scan_candidates_skip_known_hidden_and_suffix_taken_ids() {
     assert_eq!(cands[1].path, b_dup.canonicalize().unwrap().to_str().unwrap());
 }
 
+// ---- Hide projects ----
+
+fn hidden_fixture(sb: &Sandbox) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let a = sb.make_repo("alpha", &[], None, None);
+    let b = sb.make_repo("beta", &[], None, None);
+    let c = sb.make_repo("gamma", &[], None, None);
+    let mut ea = sb.project_entry(&a, "alpha", "work");
+    ea["name_vi"] = serde_json::json!("Alpha shop");
+    let eb = sb.project_entry(&b, "beta", "work");
+    let ec = sb.project_entry(&c, "gamma", "work");
+    sb.write_map(serde_json::json!([ea, eb, ec]), &[]);
+    (a, b, c)
+}
+
+fn list_etag(srv: &common::Serve) -> String {
+    srv.get("/api/projects").json()["etag"]
+        .as_str()
+        .expect("etag")
+        .to_string()
+}
+
+fn ids_of(j: &serde_json::Value, key: &str) -> Vec<String> {
+    j[key]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|p| p["id"].as_str().expect("id").to_string())
+        .collect()
+}
+
+#[test]
+fn hide_and_unhide_one_project_keeps_it_in_the_map() {
+    let sb = Sandbox::new();
+    hidden_fixture(&sb);
+    let mut srv = sb.serve(&[]);
+
+    let before = srv.get("/api/projects").json();
+    for p in before["projects"].as_array().unwrap() {
+        assert_eq!(p["hidden"], false, "{p}");
+        assert_eq!(p["task_count"], 0, "{p}");
+    }
+
+    let r = srv.put_json(
+        "/api/projects/beta/hidden",
+        &serde_json::json!({ "hidden": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    let j = r.json();
+    assert_eq!(ids_of(&j, "projects"), vec!["alpha", "beta", "gamma"], "still listed");
+    let beta = j["projects"].as_array().unwrap().iter().find(|p| p["id"] == "beta").unwrap();
+    assert_eq!(beta["hidden"], true);
+    assert_eq!(beta["telegram_offerable"], false);
+
+    let map = sb.read_map();
+    let beta_v = map["projects"].as_array().unwrap().iter().find(|p| p["id"] == "beta").unwrap();
+    assert_eq!(beta_v["hidden"], true);
+    assert_eq!(map["projects"].as_array().unwrap().len(), 3, "nothing removed");
+
+    // Unhide: the key goes away (absent = visible).
+    let r = srv.put_json(
+        "/api/projects/beta/hidden",
+        &serde_json::json!({ "hidden": false, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 200);
+    let map = sb.read_map();
+    let beta_v = map["projects"].as_array().unwrap().iter().find(|p| p["id"] == "beta").unwrap();
+    assert!(beta_v.get("hidden").is_none(), "{beta_v}");
+
+    // Unknown id 404, stale etag 409.
+    let r = srv.put_json(
+        "/api/projects/nope/hidden",
+        &serde_json::json!({ "hidden": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 404);
+    let r = srv.put_json(
+        "/api/projects/beta/hidden",
+        &serde_json::json!({ "hidden": true, "etag": "stale" }),
+    );
+    assert_eq!(r.status, 409);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn bulk_hide_is_one_write_and_all_or_nothing() {
+    let sb = Sandbox::new();
+    hidden_fixture(&sb);
+    let mut srv = sb.serve(&[]);
+
+    let before = std::fs::read(sb.map_path()).unwrap();
+    let r = srv.put_json(
+        "/api/projects/hidden",
+        &serde_json::json!({ "ids": ["alpha", "nope"], "hidden": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 404);
+    assert_eq!(std::fs::read(sb.map_path()).unwrap(), before, "unknown id: nothing written");
+    let r = srv.put_json(
+        "/api/projects/hidden",
+        &serde_json::json!({ "ids": [], "hidden": true }),
+    );
+    assert_eq!(r.status, 422);
+
+    let r = srv.put_json(
+        "/api/projects/hidden",
+        &serde_json::json!({ "ids": ["alpha", "gamma"], "hidden": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    let map = sb.read_map();
+    let hidden: Vec<&str> = map["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["hidden"] == true)
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(hidden, vec!["alpha", "gamma"]);
+
+    let r = srv.put_json(
+        "/api/projects/hidden",
+        &serde_json::json!({ "ids": ["alpha"], "hidden": true, "etag": "stale" }),
+    );
+    assert_eq!(r.status, 409);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn hidden_project_is_not_offered_for_new_work_but_old_tasks_still_resolve() {
+    let sb = Sandbox::new();
+    hidden_fixture(&sb);
+
+    // A task of "alpha" exists before it is hidden.
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    agent_brain::db::sync_projects(
+        &conn,
+        &agent_brain::projects::projects_of(&sb.read_map()),
+    )
+    .unwrap();
+    let pid = agent_brain::db::project_row_id(&conn, "alpha").unwrap();
+    let task_id =
+        agent_brain::db::upsert_task(&conn, pid, "old-job", "Việc cũ", "task/old-job", None, None)
+            .unwrap();
+    drop(conn);
+
+    let mut srv = sb.serve(&[]);
+    let r = srv.put_json(
+        "/api/projects/hidden",
+        &serde_json::json!({ "ids": ["alpha"], "hidden": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 200);
+    let j = r.json();
+    let alpha = j["projects"].as_array().unwrap().iter().find(|p| p["id"] == "alpha").unwrap();
+    assert_eq!(alpha["task_count"], 1);
+    assert_eq!(alpha["hidden"], true);
+
+    // Suggestions (assign) leave it out; the whole list keeps it.
+    let sug = srv.get("/api/projects/suggest?q=alpha").json();
+    assert!(sug["items"].as_array().unwrap().is_empty(), "{sug}");
+    let all = srv.get("/api/projects/suggest").json();
+    assert_eq!(ids_of(&all, "items"), vec!["beta", "gamma"]);
+
+    // Assign: refused with a reason, nothing queued.
+    let r = srv.post_json(
+        "/api/tasks",
+        &serde_json::json!({"project": "alpha", "request": "việc mới", "name": "viec-moi"}),
+    );
+    assert_eq!(r.status, 422, "{}", r.text());
+    assert!(r.json()["error"].as_str().unwrap_or("").contains("đã ẩn"), "{}", r.text());
+    let r = srv.post_json(
+        "/api/tasks",
+        &serde_json::json!({"project": "alpha", "request": "việc mới", "direct": true}),
+    );
+    assert!(
+        r.status == 400 || r.status == 422 || r.status == 409,
+        "direct assign must be refused: {} {}",
+        r.status,
+        r.text()
+    );
+
+    // Intake with that project is refused too.
+    let r = srv.post_json(
+        "/api/intake",
+        &serde_json::json!({"request": "việc mới", "project": "alpha"}),
+    );
+    assert_eq!(r.status, 422, "{}", r.text());
+
+    // The old task of the hidden project still resolves.
+    let r = srv.get(&format!("/api/tasks/{task_id}"));
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["project"]["id"], "alpha");
+
+    // A visible project is unaffected: the same request is not refused for being hidden.
+    let r = srv.post_json(
+        "/api/intake",
+        &serde_json::json!({"request": "việc mới", "project": "beta"}),
+    );
+    assert_ne!(r.status, 422, "{}", r.text());
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn hidden_project_cannot_join_telegram_and_is_not_offered() {
+    let sb = Sandbox::new();
+    hidden_fixture(&sb);
+    let mut srv = sb.serve(&[]);
+    let r = srv.put_json(
+        "/api/projects/hidden",
+        &serde_json::json!({ "ids": ["gamma"], "hidden": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 200);
+    let r = srv.put_json(
+        "/api/projects/gamma/telegram",
+        &serde_json::json!({ "enabled": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 422, "{}", r.text());
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn visible_projects_of_skips_hidden_but_projects_of_keeps_all() {
+    let map = serde_json::json!({"projects": [
+        {"id": "a", "path": "/tmp/a"},
+        {"id": "b", "path": "/tmp/b", "hidden": true},
+        {"id": "c", "path": "/tmp/c", "hidden": false},
+    ]});
+    let all: Vec<String> = agent_brain::projects::projects_of(&map)
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(all, vec!["a", "b", "c"]);
+    let vis: Vec<String> = agent_brain::projects::visible_projects_of(&map)
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(vis, vec!["a", "c"]);
+    // The CLI still resolves a hidden project by its exact id.
+    let p = agent_brain::projects::select_project("b", &map).expect("hidden id resolves");
+    assert!(p.hidden);
+}
+
 // ---- Telegram toggle per project ----
 
 fn patch_map(sb: &Sandbox, f: impl FnOnce(&mut serde_json::Value)) {

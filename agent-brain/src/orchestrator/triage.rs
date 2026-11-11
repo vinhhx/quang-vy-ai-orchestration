@@ -325,6 +325,13 @@ pub fn validate(
         return Err(format!("Dự án '{}' bị đánh dấu missing", draft.project));
     }
 
+    if proj.hidden {
+        return Err(format!(
+            "Dự án '{}' đã ẩn — bỏ ẩn ở màn Dự án rồi giao việc",
+            draft.project
+        ));
+    }
+
     // 2. team phải có trong teams::load()
     let team = teams
         .get(&draft.team)
@@ -395,7 +402,8 @@ pub fn triage(st: &AppState, intake: &IntakeRow) -> BrainResult<Vec<ProposalDraf
 pub fn build_triage_prompt(st: &AppState, intake: &IntakeRow) -> BrainResult<(String, String)> {
     // 1. Tải danh sách dự án
     let map = crate::projects::load_map(&st.map_path)?;
-    let projects = crate::projects::projects_of(&map);
+    // Hidden projects are not offered to the orchestrator for new work.
+    let projects = crate::projects::visible_projects_of(&map);
 
     let mut projects_text = String::new();
     for p in &projects {

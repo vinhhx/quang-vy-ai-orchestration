@@ -16,6 +16,9 @@ pub struct Project {
     pub profile: String,
     pub repo: Option<String>,
     pub missing: bool,
+    /// Hidden from the places that PICK a project for new work (assign, intake, triage,
+    /// Telegram). It stays in the map: its tasks, runs and stats still resolve.
+    pub hidden: bool,
     pub stack: Vec<String>,
     pub read_sources: Vec<String>,
     /// Folder of the protocol files, relative to the repo root (`protocol_dir`, D1); `""` = root.
@@ -282,6 +285,10 @@ impl Project {
             .get("missing")
             .and_then(|b| b.as_bool())
             .unwrap_or(false);
+        let hidden = obj
+            .get("hidden")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false);
         let stack = obj
             .get("stack")
             .and_then(|s| s.as_array())
@@ -330,6 +337,7 @@ impl Project {
             profile,
             repo,
             missing,
+            hidden,
             stack,
             read_sources,
             protocol_dir,
@@ -343,12 +351,29 @@ impl Project {
     }
 }
 
+/// Every project of the map, hidden ones included: old tasks, runs and stats resolve their
+/// project through this.
 pub fn projects_of(map: &serde_json::Value) -> Vec<Project> {
     if let Some(arr) = map.get("projects").and_then(|p| p.as_array()) {
         arr.iter().filter_map(Project::from_value).collect()
     } else {
         Vec::new()
     }
+}
+
+impl Project {
+    /// `false` for a hidden project: do not offer it for NEW work.
+    pub fn is_visible(&self) -> bool {
+        !self.hidden
+    }
+}
+
+/// The projects that may be chosen for new work (not hidden).
+pub fn visible_projects_of(map: &serde_json::Value) -> Vec<Project> {
+    projects_of(map)
+        .into_iter()
+        .filter(Project::is_visible)
+        .collect()
 }
 
 pub fn read_source_paths(
@@ -894,10 +919,19 @@ pub fn load_map(path: &Path) -> BrainResult<serde_json::Value> {
 }
 
 pub fn select_project(query: &str, map: &serde_json::Value) -> BrainResult<Project> {
-    let projects = projects_of(map);
+    // The CLI names a project explicitly, also to carry on an existing task, so a hidden project
+    // still resolves; but visible ones go first, so hidden names never make a query ambiguous
+    // and the "not found" list offers only visible projects.
+    let all = projects_of(map);
+    let projects: Vec<Project> = all.iter().filter(|p| p.is_visible()).cloned().collect();
     match crate::routing::resolve(query, &projects) {
         Ok(p) => Ok(p),
         Err(err) => {
+            if err.kind == crate::routing::RouteKind::None {
+                if let Ok(p) = crate::routing::resolve(query, &all) {
+                    return Ok(p);
+                }
+            }
             let header = if err.kind == crate::routing::RouteKind::Ambiguous {
                 format!(
                     "Tên \"{}\" khớp {} dự án — dừng, không chạy agent. Gọi lại bằng id chính xác:",
@@ -1776,9 +1810,10 @@ pub fn cmd_list() -> BrainResult<i32> {
         } else {
             format!(" [nguồn: {}]", p.read_sources.join(", "))
         };
+        let hidden_str = if p.hidden { " [ẩn]" } else { "" };
         crate::term::emit_out(&format!(
-            "{}\t{}\t{}{}",
-            p.id, p.name_vi, p.path, sources_str
+            "{}\t{}\t{}{}{}",
+            p.id, p.name_vi, p.path, sources_str, hidden_str
         ));
     }
     Ok(0)
@@ -2065,6 +2100,7 @@ mod tests {
             repo: None,
             profile: "work".into(),
             missing: false,
+            hidden: false,
             stack: vec![],
             read_sources: vec![],
             protocol_dir: String::new(),
