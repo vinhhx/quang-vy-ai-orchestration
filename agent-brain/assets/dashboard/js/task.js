@@ -54,6 +54,8 @@
       answer: null,
       answerLoading: false,
       answerError: '',
+      // 'preview' renders the answer as Markdown, 'raw' shows the source text.
+      answerView: 'preview',
 
       // Task inputs and handoff state
       taskInputs: [],
@@ -1416,6 +1418,63 @@
 
       answerMarkdown: function () {
         return (this.answer && this.answer.markdown) ? this.answer.markdown : '';
+      },
+
+      setAnswerView: function (view) {
+        this.answerView = view === 'raw' ? 'raw' : 'preview';
+      },
+
+      isAnswerPreview: function () {
+        return this.answerView !== 'raw';
+      },
+
+      isAnswerRaw: function () {
+        return this.answerView === 'raw';
+      },
+
+      answerViewBtnClass: function (view) {
+        var base = 'inline-flex min-h-10 items-center justify-center px-3 py-1 text-sm font-semibold motion-safe:transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400';
+        var on = (view === 'raw') === this.isAnswerRaw();
+        return base + (on
+          ? ' bg-indigo-600 text-white'
+          : ' text-slate-900 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-700');
+      },
+
+      // Two columns (35% / 65%) from xl up when the task has an answer card; a
+      // single column otherwise. The log card sits outside this grid.
+      splitGridClass: function () {
+        return this.showAnswerCard()
+          ? 'grid gap-6 xl:grid-cols-[minmax(0,35fr)_minmax(0,65fr)] xl:items-start'
+          : '';
+      },
+
+      // Draws the answer into #ab-answer-md. Called from x-effect, so it re-runs
+      // when the answer text or the view changes. The DOM is rebuilt only when
+      // the text differs from what is already drawn (the 3 s poll replaces
+      // this.answer with an equal object each time). The marker lives on the
+      // element, not on the component, so the effect does not retrigger itself.
+      renderAnswerPreview: function () {
+        var md = this.answerMarkdown();
+        var view = this.answerView;
+        var host = document.getElementById('ab-answer-md');
+        if (!host) return;
+        if (view === 'raw' || !md) {
+          if (host.firstChild) host.textContent = '';
+          host._abMd = null;
+          return;
+        }
+        if (host._abMd === md && host.firstChild) return;
+        host.textContent = '';
+        if (window.abMarkdown && typeof window.abMarkdown.render === 'function') {
+          try {
+            host.appendChild(window.abMarkdown.render(md));
+          } catch (e) {
+            host.textContent = md;
+          }
+        } else {
+          host.textContent = md;
+        }
+        host._abMd = md;
       },
 
       copyAnswerPath: function () {
