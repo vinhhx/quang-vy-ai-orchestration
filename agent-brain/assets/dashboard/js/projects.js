@@ -8,6 +8,8 @@
       warnings: [],
       editingId: '',
       aliasText: '',
+      aliasDrafts: {},
+      expanded: {},
       saving: false,
       telegramSaving: false,
       roots: [],
@@ -211,16 +213,19 @@
           .map(function (s) { return s.trim(); })
           .filter(Boolean);
 
-        window.AB.api('PUT', '/api/projects/' + encodeURIComponent(this.editingId), { aliases: aliases, etag: this.etag }).then(function (res) {
+        var savingId = this.editingId;
+        return window.AB.api('PUT', '/api/projects/' + encodeURIComponent(this.editingId), { aliases: aliases, etag: this.etag }).then(function (res) {
           self.saving = false;
           if (res.ok && res.status === 200) {
             self.message = 'Đã lưu alias';
             self.warnings = (res.data && res.data.warnings) ? res.data.warnings : [];
+            delete self.aliasDrafts[savingId];
             self.editingId = '';
             self.aliasText = '';
             self.load();
           } else if (res.status === 409) {
             self.error = (res.data && res.data.error) ? res.data.error : window.AB.errorText(res);
+            delete self.aliasDrafts[savingId];
             self.load().then(function () {
               var fresh = null;
               for (var i = 0; i < self.projects.length; i++) {
@@ -237,6 +242,53 @@
             self.error = window.AB.errorText(res);
           }
         });
+      },
+
+      // Inline alias edit (table row): the draft lives per project; Enter or blur saves it
+      // through save() (same PUT, same 409 handling).
+      aliasDraft: function (p) {
+        if (Object.prototype.hasOwnProperty.call(this.aliasDrafts, p.id)) return this.aliasDrafts[p.id];
+        return (p.aliases || []).join(', ');
+      },
+
+      setAliasDraft: function (p, value) {
+        this.aliasDrafts[p.id] = value;
+      },
+
+      commitAlias: function (p) {
+        if (this.saving || !Object.prototype.hasOwnProperty.call(this.aliasDrafts, p.id)) return Promise.resolve();
+        var next = String(this.aliasDrafts[p.id] || '')
+          .split(',')
+          .map(function (s) { return s.trim(); })
+          .filter(Boolean)
+          .join(', ');
+        if (next === (p.aliases || []).join(', ')) {
+          delete this.aliasDrafts[p.id];
+          return Promise.resolve();
+        }
+        this.editingId = p.id;
+        this.aliasText = next;
+        return this.save();
+      },
+
+      // Row expansion for the less-used fields ("Nâng cao").
+      isExpanded: function (p) {
+        return Boolean(this.expanded[p.id]);
+      },
+
+      toggleExpanded: function (p) {
+        this.expanded[p.id] = !this.expanded[p.id];
+      },
+
+      // A field error that lives in the expanded row opens that row.
+      expandOnError: function (id) {
+        this.expanded[id] = true;
+      },
+
+      // Row workspace controls save at once (one PUT with the whole draft).
+      applyWorkspaceField: function (p, key, value) {
+        this.setWorkspaceDraft(p, key, value);
+        return this.saveWorkspace(p);
       },
 
       toggleTelegram: function (p) {
@@ -468,6 +520,7 @@
         this.statusFor = p.id;
         this.status = null;
         this.statusError = '';
+        this.expanded[p.id] = true;
         window.AB.api('GET', '/api/projects/' + encodeURIComponent(p.id) + '/status').then(function (res) {
           if (self.statusFor !== p.id) return;
           if (res.ok && res.data) {
@@ -748,12 +801,14 @@
         var re = /^[a-z0-9][a-z0-9-_]*$/;
         if (!re.test(name)) {
           this.stackErrors[p.id] = 'Tên stack không hợp lệ (dùng chữ thường, số, gạch ngang, gạch dưới)';
+          this.expandOnError(p.id);
           return;
         }
         var cur = this.projectStacks(p).slice();
         if (cur.indexOf(name) >= 0) return;
         if (cur.length >= 6) {
           this.stackErrors[p.id] = 'Tối đa 6 stack';
+          this.expandOnError(p.id);
           return;
         }
         cur.push(name);
@@ -781,9 +836,11 @@
             p.stack = list;
           } else if (res && res.status === 409) {
             self.stackErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+            self.expandOnError(p.id);
             self.load();
           } else {
             self.stackErrors[p.id] = window.AB.errorText(res);
+            self.expandOnError(p.id);
           }
         });
       },
@@ -835,6 +892,7 @@
         if (cur.indexOf(srcId) >= 0) return;
         if (cur.length >= 5) {
           this.readSourcesErrors[p.id] = 'Tối đa 5 nguồn';
+          this.expandOnError(p.id);
           return;
         }
         cur.push(srcId);
@@ -873,6 +931,7 @@
         var parsed = window.AB.parseTimeouts(this.timeoutDraft(p));
         if (!parsed.ok) {
           this.timeoutErrors[p.id] = parsed.message;
+          this.expandOnError(p.id);
           return Promise.resolve();
         }
         this.timeoutSaving[p.id] = true;
@@ -888,9 +947,11 @@
             if (res.data && res.data.etag) self.etag = res.data.etag;
           } else if (res && res.status === 409) {
             self.timeoutErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+            self.expandOnError(p.id);
             self.load();
           } else {
             self.timeoutErrors[p.id] = window.AB.errorText(res) || 'Không lưu được thời gian chạy';
+            self.expandOnError(p.id);
           }
         });
       },
@@ -931,9 +992,11 @@
             if (res.data && res.data.etag) self.etag = res.data.etag;
           } else if (res && res.status === 409) {
             self.protocolDirErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+            self.expandOnError(p.id);
             self.load();
           } else {
             self.protocolDirErrors[p.id] = window.AB.errorText(res) || 'Không lưu được thư mục file giao thức';
+            self.expandOnError(p.id);
           }
         });
       },
@@ -973,6 +1036,7 @@
         var maxText = String(d.max_parallel_tasks || '').trim();
         if (!/^[0-9]+$/.test(maxText)) {
           this.workspaceErrors[p.id] = 'Số task song song phải là số nguyên.';
+          this.expandOnError(p.id);
           return Promise.resolve();
         }
         var maxParallel = parseInt(maxText, 10);
@@ -997,9 +1061,11 @@
             if (res.data && res.data.etag) self.etag = res.data.etag;
           } else if (res && res.status === 409) {
             self.workspaceErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+            self.expandOnError(p.id);
             self.load();
           } else {
             self.workspaceErrors[p.id] = window.AB.errorText(res) || 'Không lưu được nhánh gốc và cách duyệt';
+            self.expandOnError(p.id);
           }
         });
       },
@@ -1052,6 +1118,7 @@
         var bad = !members.ok ? members : (!engines.ok ? engines : null);
         if (bad) {
           this.pinErrors[p.id] = bad.message;
+          this.expandOnError(p.id);
           return Promise.resolve();
         }
         this.pinSaving[p.id] = true;
@@ -1069,9 +1136,11 @@
             if (res.data && res.data.etag) self.etag = res.data.etag;
           } else if (res && res.status === 409) {
             self.pinErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+            self.expandOnError(p.id);
             self.load();
           } else {
             self.pinErrors[p.id] = window.AB.errorText(res) || 'Không lưu được ghim theo vai';
+            self.expandOnError(p.id);
           }
         });
       },
@@ -1116,6 +1185,7 @@
             checks = JSON.parse(text);
           } catch (e) {
             this.preflightErrors[p.id] = 'Danh sách kiểm phải là JSON hợp lệ (một mảng các mục http hoặc tcp).';
+            this.expandOnError(p.id);
             return Promise.resolve();
           }
         }
@@ -1125,6 +1195,7 @@
         var interval = Number(String(d.interval || '0').trim() || '0');
         if (!Number.isInteger(retry) || !Number.isInteger(interval)) {
           this.preflightErrors[p.id] = 'Số phút và số giây phải là số nguyên.';
+          this.expandOnError(p.id);
           return Promise.resolve();
         }
         var body = {
@@ -1150,9 +1221,11 @@
               if (res.data && res.data.etag) self.etag = res.data.etag;
             } else if (res && res.status === 409) {
               self.preflightErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+              self.expandOnError(p.id);
               self.load();
             } else {
               self.preflightErrors[p.id] = window.AB.errorText(res) || 'Không lưu được kiểm môi trường';
+              self.expandOnError(p.id);
             }
           });
       },
@@ -1171,6 +1244,7 @@
             if (res.data && res.data.etag) self.etag = res.data.etag;
           } else if (res && res.status === 409) {
             self.readSourcesErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
+            self.expandOnError(p.id);
             self.load();
           } else {
             var msg = window.AB.errorText(res);
@@ -1178,6 +1252,7 @@
               msg = res.data.errors[0].message || msg;
             }
             self.readSourcesErrors[p.id] = msg || 'Không lưu được dự án nguồn';
+            self.expandOnError(p.id);
           }
         });
       },
