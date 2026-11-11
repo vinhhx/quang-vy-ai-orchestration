@@ -40,6 +40,7 @@ fn setup_sandbox(root: &Path) -> (rusqlite::Connection, Project) {
         profile: "default".to_string(),
         repo: None,
         missing: false,
+        hidden: false,
         stack: vec![],
         read_sources: vec![],
         protocol_dir: String::new(),

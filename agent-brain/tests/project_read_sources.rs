@@ -41,6 +41,7 @@ fn test_projects_read_sources_parsing_and_filtering() {
         profile: "work".to_string(),
         repo: None,
         missing: false,
+        hidden: false,
         stack: vec![],
         read_sources: vec![
             "lib-source".to_string(),
@@ -531,6 +532,7 @@ fn test_prompt_block_sources() {
         profile: "work".to_string(),
         repo: None,
         missing: false,
+        hidden: false,
         stack: vec![],
         read_sources: vec!["src-lib".to_string()],
         protocol_dir: String::new(),
@@ -546,6 +548,7 @@ fn test_prompt_block_sources() {
         profile: "work".to_string(),
         repo: None,
         missing: false,
+        hidden: false,
         stack: vec![],
         read_sources: vec![],
         protocol_dir: String::new(),
