@@ -1212,6 +1212,45 @@ mod tests {
     }
 
     #[test]
+    fn default_worktree_mode_keeps_the_workplace_of_existing_tasks() {
+        // A git project without a `workspace` key now defaults to worktree mode. Tasks created
+        // before keep their place: a recorded workdir wins, and a task whose branch the repo has
+        // checked out (how shared-mode tasks work) stays in the repo, with no new worktree.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["commit", "-q", "--allow-empty", "-m", "init"]);
+        run(&["checkout", "-q", "-b", "task/x"]);
+        let project = Project::from_value(&serde_json::json!({
+            "id": "web", "path": repo.to_string_lossy(), "name_vi": "web", "aliases": [],
+            "type": "code", "repo": null, "profile": "work", "missing": false
+        }))
+        .unwrap();
+        assert!(project.workspace.is_worktree());
+        let conn = Connection::open_in_memory().unwrap();
+
+        let wd = tmp.path().join("old-worktree");
+        std::fs::create_dir_all(&wd).unwrap();
+        let with_workdir = task("planned", Some(&wd.to_string_lossy()));
+        assert_eq!(ensure_task_root(&conn, &project, &repo, &with_workdir).unwrap(), wd);
+
+        let legacy = task("planned", None);
+        assert_eq!(ensure_task_root(&conn, &project, &repo, &legacy).unwrap(), repo);
+        assert_eq!(task_root(&project, &legacy), project.root());
+    }
+
+    #[test]
     fn cleanup_rules() {
         let done = task("qa_pass", Some("/wt/x"));
         assert!(cleanup_refusal(&task("qa_pass", None), None, false, true, true).is_some());
