@@ -364,6 +364,9 @@ enum ProjectsCommands {
         /// Thư mục gốc cần quét
         #[arg(long = "root", value_name = "DIR")]
         roots: Vec<String>,
+        /// Chỉ liệt kê repo chưa có trong map, không ghi gì
+        #[arg(long = "list")]
+        list: bool,
     },
     /// Thêm dự án vào map
     Add {
@@ -466,7 +469,7 @@ fn main() {
         },
         Commands::Projects { subcommand } => match subcommand {
             None | Some(ProjectsCommands::List) => projects::cmd_list(),
-            Some(ProjectsCommands::Scan { roots }) => projects::cmd_scan(&roots),
+            Some(ProjectsCommands::Scan { roots, list }) => projects::cmd_scan(&roots, list),
             Some(ProjectsCommands::Add { path, r#type }) => projects::cmd_add(&path, r#type.as_deref()),
         },
         Commands::Prompt { subcommand } => match subcommand {

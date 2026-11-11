@@ -240,7 +240,7 @@
             x-model="quickProject"
           >
             <option value="">Để agent tự chọn</option>
-            <template x-for="p in projects" :key="p.id">
+            <template x-for="p in projects.filter(function (q) { return !q.hidden; })" :key="p.id">
               <option :value="p.id" x-text="(p.name_vi || p.id) + ' (' + p.id + ')'"></option>
             </template>
           </select>

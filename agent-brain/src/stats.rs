@@ -545,6 +545,7 @@ mod tests {
             profile: "work".to_string(),
             repo: None,
             missing: false,
+            hidden: false,
             stack: vec![],
             read_sources: vec![],
             protocol_dir: String::new(),

@@ -248,6 +248,7 @@ fn test_g_prompt_show_cli() {
         profile: "default".to_string(),
         repo: None,
         missing: false,
+        hidden: false,
         stack: vec!["rust".to_string()],
         read_sources: vec![],
         protocol_dir: String::new(),

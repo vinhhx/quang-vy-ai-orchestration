@@ -183,6 +183,27 @@ async fn create_intake(
         };
 
         let map = crate::projects::load_map(&st.map_path)?;
+        // A hidden project cannot be chosen for new work.
+        if let Some(pid) = project_id {
+            let slug: Option<String> = conn
+                .query_row(
+                    "SELECT slug FROM projects WHERE id = ?1",
+                    rusqlite::params![pid],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(sl) = slug {
+                if crate::projects::projects_of(&map)
+                    .iter()
+                    .any(|p| p.id == sl && p.hidden)
+                {
+                    return Err(crate::error::BrainError::new(
+                        format!("Dự án '{sl}' đã ẩn — bỏ ẩn ở màn Dự án rồi giao việc"),
+                        crate::error::EXIT_ERROR,
+                    ));
+                }
+            }
+        }
         let split = match body.split {
             Some(s) => s,
             None => match project_id {
@@ -219,6 +240,7 @@ async fn create_intake(
         Ok(id) => json_response(StatusCode::CREATED, serde_json::json!({ "id": id })),
         Err(e) => {
             if e.message.contains("Không tìm thấy dự án")
+                || e.message.contains("đã ẩn")
                 || e.message.contains("tài liệu")
                 || e.message.contains("bí mật")
                 || e.message.contains("64 KiB")

@@ -80,7 +80,8 @@ fn project_json(
     let on_telegram = telegram_ids(map).iter().any(|i| i == &p.id);
     serde_json::json!({
         "telegram": on_telegram,
-        "telegram_offerable": p.kind != "media" && !p.missing,
+        "telegram_offerable": p.kind != "media" && !p.missing && !p.hidden,
+        "hidden": p.hidden,
         "id": p.id,
         "name_vi": p.name_vi,
         "aliases": p.aliases,
@@ -106,7 +107,32 @@ fn project_json(
     })
 }
 
-fn projects_body(map: &serde_json::Value, etag: String, profiles: &Profiles) -> serde_json::Value {
+/// Tasks per project slug from brain.db (a project without tasks has no entry). Empty when the
+/// database cannot be read.
+fn task_counts(st: &AppState) -> std::collections::HashMap<String, i64> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(conn) = crate::db::open(&st.db_path) else {
+        return out;
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT p.slug, COUNT(t.id) FROM tasks t JOIN projects p ON p.id = t.project_id GROUP BY p.slug",
+    ) else {
+        return out;
+    };
+    if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+        for (slug, n) in rows.flatten() {
+            out.insert(slug, n);
+        }
+    }
+    out
+}
+
+fn projects_body(
+    map: &serde_json::Value,
+    etag: String,
+    profiles: &Profiles,
+    counts: &std::collections::HashMap<String, i64>,
+) -> serde_json::Value {
     let scan_roots = map
         .get("scan_roots")
         .and_then(|r| r.as_array())
@@ -121,9 +147,14 @@ fn projects_body(map: &serde_json::Value, etag: String, profiles: &Profiles) -> 
         .into_iter()
         .map(|(key, ids)| serde_json::json!({ "key": key, "ids": ids }))
         .collect();
+    // Every project, hidden ones included (the projects screen shows and unhides them).
     let projects_json: Vec<serde_json::Value> = crate::projects::projects_of(map)
         .into_iter()
-        .map(|p| project_json(&p, map, profiles))
+        .map(|p| {
+            let mut v = project_json(&p, map, profiles);
+            v["task_count"] = serde_json::json!(counts.get(&p.id).copied().unwrap_or(0));
+            v
+        })
         .collect();
     serde_json::json!({
         "etag": etag,
@@ -138,7 +169,7 @@ fn projects_body(map: &serde_json::Value, etag: String, profiles: &Profiles) -> 
 
 fn conflict_response(st: &AppState, current_etag: String) -> crate::error::BrainResult<Response> {
     let map = crate::projects::load_map(&st.map_path)?;
-    let mut body = projects_body(&map, current_etag, &st.cfg.profiles);
+    let mut body = projects_body(&map, current_etag, &st.cfg.profiles, &task_counts(st));
     body["error"] = serde_json::json!(
         "projects_map.json vừa thay đổi ở nơi khác — đã tải lại danh sách, hãy sửa lại"
     );
@@ -175,7 +206,7 @@ fn save_and_respond_with(
         crate::db::sync_projects(&conn, &crate::projects::projects_of(data))?;
     }
     let new_etag = map_etag(&st.map_path);
-    let mut body = projects_body(data, new_etag, &st.cfg.profiles);
+    let mut body = projects_body(data, new_etag, &st.cfg.profiles, &task_counts(st));
     let raw_projects = data
         .get("projects")
         .and_then(|p| p.as_array())
@@ -196,6 +227,8 @@ fn save_and_respond_with(
 const MAX_SCAN_ROOTS: usize = 20;
 const MAX_PATH_CHARS: usize = 500;
 const MAX_DIR_ENTRIES: usize = 300;
+/// Most scan candidates added by one `scan/add` call.
+const MAX_SCAN_ADD: usize = 500;
 
 /// Absolute or `~/` path, no control chars, no `..`. Returns the expanded path.
 fn parse_path(raw: &str) -> Result<std::path::PathBuf, String> {
@@ -360,6 +393,9 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/projects/scan-roots", put(update_scan_roots))
         .route("/api/projects/suggest", get(suggest_projects))
         .route("/api/projects/scan", post(scan_projects))
+        .route("/api/projects/scan/add", post(scan_add))
+        .route("/api/projects/hidden", put(set_hidden_bulk))
+        .route("/api/projects/{id}/hidden", put(set_hidden_one))
         .route("/api/projects/{id}", put(update_aliases))
         .route("/api/projects/{id}/telegram", put(update_telegram))
         .route("/api/projects/{id}/profile", put(update_profile))
@@ -389,12 +425,17 @@ async fn list_projects(
         let etag = map_etag(&st.map_path);
 
         let mut projects = crate::projects::projects_of(&map);
-        let mut body = projects_body(&map, etag, &st.cfg.profiles);
+        let counts = task_counts(&st);
+        let mut body = projects_body(&map, etag, &st.cfg.profiles, &counts);
         if let Some(prof) = profile_opt {
             projects.retain(|p| p.profile == prof);
             let filtered: Vec<serde_json::Value> = projects
                 .iter()
-                .map(|p| project_json(p, &map, &st.cfg.profiles))
+                .map(|p| {
+                    let mut v = project_json(p, &map, &st.cfg.profiles);
+                    v["task_count"] = serde_json::json!(counts.get(&p.id).copied().unwrap_or(0));
+                    v
+                })
                 .collect();
             body["projects"] = serde_json::json!(filtered);
         }
@@ -422,7 +463,8 @@ async fn suggest_projects(
         }
 
         let map = crate::projects::load_map(&st.map_path)?;
-        let mut projects = crate::projects::projects_of(&map);
+        // Suggestions feed the places that pick a project for new work: no hidden projects.
+        let mut projects = crate::projects::visible_projects_of(&map);
         if let Some(prof) = profile_opt {
             projects.retain(|p| p.profile == prof);
         }
@@ -568,6 +610,12 @@ async fn update_telegram(
                 return Ok(json_error(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "Thư mục dự án không còn.",
+                ));
+            }
+            if project.hidden {
+                return Ok(json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "Dự án đã ẩn — bỏ ẩn rồi mới bật Telegram.",
                 ));
             }
             if !already {
@@ -1546,41 +1594,254 @@ async fn fs_dirs(Query(query): Query<FsDirsQuery>) -> Response {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HiddenBody {
+    pub hidden: bool,
+    #[serde(default)]
+    pub etag: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HiddenBulkBody {
+    pub ids: Vec<String>,
+    pub hidden: bool,
+    #[serde(default)]
+    pub etag: Option<String>,
+}
+
+/// Most projects hidden or shown by one bulk call.
+const MAX_HIDE_IDS: usize = 1000;
+
+/// Sets or clears `hidden` on the given projects with ONE write. A project is never removed from
+/// the map; `hidden` is stored only as `true` (absent = visible). Unknown id: 404, nothing written.
+fn apply_hidden(
+    st: &AppState,
+    ids: &[String],
+    hidden: bool,
+    etag: Option<&str>,
+) -> crate::error::BrainResult<Response> {
+    let _guard = write_mutex().lock().unwrap();
+
+    let current_etag = map_etag(&st.map_path);
+    if let Some(req_etag) = etag {
+        if req_etag != current_etag {
+            return conflict_response(st, current_etag);
+        }
+    }
+    let mut data = crate::projects::load_map(&st.map_path)?;
+    let projects_arr = data
+        .get_mut("projects")
+        .and_then(|p| p.as_array_mut())
+        .ok_or_else(|| crate::error::BrainError::error("projects_map.json thiếu mảng 'projects'"))?;
+
+    let wanted: HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+    let present: HashSet<String> = projects_arr
+        .iter()
+        .filter_map(|o| o.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+    if let Some(unknown) = ids.iter().find(|id| !present.contains(id.as_str())) {
+        return Ok(json_error(
+            StatusCode::NOT_FOUND,
+            &format!("Không tìm thấy dự án {unknown}"),
+        ));
+    }
+    for obj in projects_arr.iter_mut() {
+        let in_set = obj
+            .get("id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|id| wanted.contains(id));
+        if !in_set {
+            continue;
+        }
+        if let Some(map_obj) = obj.as_object_mut() {
+            if hidden {
+                map_obj.insert("hidden".to_string(), serde_json::Value::Bool(true));
+            } else {
+                map_obj.remove("hidden");
+            }
+        }
+    }
+    save_and_respond(st, &data, StatusCode::OK, None)
+}
+
+async fn set_hidden_one(
+    State(st): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<HiddenBody>,
+) -> Response {
+    let res = blocking(move || apply_hidden(&st, &[id], body.hidden, body.etag.as_deref())).await;
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+async fn set_hidden_bulk(
+    State(st): State<Arc<AppState>>,
+    Json(body): Json<HiddenBulkBody>,
+) -> Response {
+    let res = blocking(move || {
+        if body.ids.is_empty() {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Chưa chọn dự án nào.",
+            ));
+        }
+        if body.ids.len() > MAX_HIDE_IDS {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &format!("Tối đa {MAX_HIDE_IDS} dự án mỗi lần."),
+            ));
+        }
+        apply_hidden(&st, &body.ids, body.hidden, body.etag.as_deref())
+    })
+    .await;
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+fn candidate_json(c: &crate::projects::ScanCandidate) -> serde_json::Value {
+    serde_json::json!({
+        "path": c.path,
+        "id": c.id,
+        "name": c.name,
+        "repo": c.repo,
+        "stack": c.stack,
+        "last_commit_at": c.last_commit_at,
+    })
+}
+
+/// Rescan: refreshes the projects already in the map (`missing`, `repo`) and LISTS the repos
+/// under the scan roots that are not in the map. Adds nothing (see `scan_add`).
 async fn scan_projects(State(st): State<Arc<AppState>>, _body: Option<Json<ScanBody>>) -> Response {
     let res = blocking(move || {
-        let mut cmd = std::process::Command::new(&st.exe);
-        cmd.args(["projects", "scan"]);
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
+        let _guard = write_mutex().lock().unwrap();
 
-        let output = cmd
-            .output()
-            .map_err(|e| crate::error::BrainError::error(format!("Không chạy được scan: {e}")))?;
-
-        let exit_code = output.status.code().unwrap_or(1);
-        let stdout_lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(|s| s.to_string())
-            .collect();
-        let stderr_lines: Vec<String> = String::from_utf8_lossy(&output.stderr)
-            .lines()
-            .map(|s| s.to_string())
-            .collect();
-
-        if let Ok(map) = crate::projects::load_map(&st.map_path) {
+        let before = crate::projects::load_map(&st.map_path)?;
+        let has_roots = before
+            .get("scan_roots")
+            .and_then(|r| r.as_array())
+            .is_some_and(|a| !a.is_empty());
+        if !has_roots {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Chưa có thư mục gốc để quét — thêm thư mục gốc rồi quét lại.",
+            ));
+        }
+        let mut data = before.clone();
+        let report = crate::projects::refresh_known(&mut data);
+        if data != before {
+            crate::projects::save_map(&st.map_path, &data)?;
             if let Ok(conn) = crate::db::open(&st.db_path) {
-                let _ = crate::db::sync_projects(&conn, &crate::projects::projects_of(&map));
+                let _ = crate::db::sync_projects(&conn, &crate::projects::projects_of(&data));
+            }
+        }
+        let (candidates, bad_roots) = crate::projects::scan_candidates(&data);
+        let body = serde_json::json!({
+            "etag": map_etag(&st.map_path),
+            "candidates": candidates.iter().map(candidate_json).collect::<Vec<_>>(),
+            "bad_roots": bad_roots,
+            "refreshed": { "missing": report.missing, "restored": report.restored },
+        });
+        Ok(Json(body).into_response())
+    })
+    .await;
+
+    match res {
+        Ok(r) => r,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.message),
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanAddBody {
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub etag: Option<String>,
+}
+
+/// Adds the chosen scan candidates. Every path must be a repo directly under a scan root that is
+/// not in the map yet; one bad path rejects the whole request (422) and nothing is written.
+async fn scan_add(State(st): State<Arc<AppState>>, Json(body): Json<ScanAddBody>) -> Response {
+    let res = blocking(move || {
+        let _guard = write_mutex().lock().unwrap();
+
+        let current_etag = map_etag(&st.map_path);
+        if let Some(ref req_etag) = body.etag {
+            if req_etag != &current_etag {
+                return conflict_response(&st, current_etag);
+            }
+        }
+        if body.paths.is_empty() {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Chưa chọn thư mục nào để thêm.",
+            ));
+        }
+        if body.paths.len() > MAX_SCAN_ADD {
+            return Ok(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &format!("Tối đa {MAX_SCAN_ADD} dự án mỗi lần thêm."),
+            ));
+        }
+
+        let mut data = crate::projects::load_map(&st.map_path)?;
+        let (candidates, _) = crate::projects::scan_candidates(&data);
+        let allowed: HashSet<String> = candidates.into_iter().map(|c| c.path).collect();
+
+        let mut chosen: Vec<std::path::PathBuf> = Vec::new();
+        for raw in &body.paths {
+            let raw = raw.trim();
+            if raw.chars().count() > MAX_PATH_CHARS || raw.chars().any(|c| c.is_control()) {
+                return Ok(json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "Đường dẫn không hợp lệ.",
+                ));
+            }
+            let canon = match std::fs::canonicalize(raw) {
+                Ok(c) => c,
+                Err(_) => {
+                    return Ok(json_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        &format!("Thư mục không tồn tại: {raw}"),
+                    ))
+                }
+            };
+            if !allowed.contains(canon.to_string_lossy().as_ref()) {
+                return Ok(json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    &format!(
+                        "Không thêm được {raw}: không phải repo git mới nằm trực tiếp dưới một thư mục gốc quét (hoặc đã có trong danh sách)."
+                    ),
+                ));
+            }
+            if !chosen.contains(&canon) {
+                chosen.push(canon);
             }
         }
 
-        let body = serde_json::json!({
-            "exit_code": exit_code,
-            "stdout": stdout_lines,
-            "stderr": stderr_lines,
-        });
-
-        Ok(Json(body).into_response())
+        let mut added: Vec<serde_json::Value> = Vec::new();
+        for path in &chosen {
+            let (entry, _) = crate::projects::add_project(&mut data, path, Some("code"))?;
+            let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(p) = crate::projects::projects_of(&data)
+                .iter()
+                .find(|p| p.id == id)
+            {
+                added.push(project_json(p, &data, &st.cfg.profiles));
+            }
+        }
+        save_and_respond(
+            &st,
+            &data,
+            StatusCode::OK,
+            Some(("added", serde_json::Value::Array(added))),
+        )
     })
     .await;
 

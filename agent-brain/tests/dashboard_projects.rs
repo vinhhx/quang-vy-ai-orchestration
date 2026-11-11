@@ -411,81 +411,553 @@ fn d15_profile_not_editable() {
     assert_eq!(exit, Some(0));
 }
 
+fn candidate_paths(j: &serde_json::Value) -> Vec<String> {
+    j["candidates"]
+        .as_array()
+        .expect("candidates array")
+        .iter()
+        .map(|c| c["path"].as_str().expect("path").to_string())
+        .collect()
+}
+
 #[test]
-fn dash12_rescan_runs_cli_scan() {
+fn dash12_rescan_lists_candidates_without_adding() {
     let sb = Sandbox::new();
     let repos_dir = sb.repos.clone();
-    sb.write_map(serde_json::json!([]), &[repos_dir.to_str().unwrap()]);
+    let known = sb.make_repo("known-proj", &[], None, None);
+    sb.write_map(
+        serde_json::json!([sb.project_entry(&known, "known-proj", "work")]),
+        &[repos_dir.to_str().unwrap()],
+    );
 
     let mut srv = sb.serve(&[]);
 
-    // Create a new git repo in scan_roots after serve starts
-    let _repo_new = sb.make_repo("new-scanned-proj", &[], None, None);
+    // Created after serve started.
+    let repo_new = sb.make_repo(
+        "new-scanned-proj",
+        &[("package.json", "{}\n")],
+        None,
+        Some("https://example.com/x/new.git"),
+    );
+    let map_before = std::fs::read(sb.map_path()).expect("read map");
 
     let r_scan = srv.post_json("/api/projects/scan", &serde_json::json!({}));
     assert_eq!(r_scan.status, 200);
     let j_scan = r_scan.json();
-    assert_eq!(j_scan["exit_code"], 0);
-    let stdout = j_scan["stdout"].as_array().expect("stdout array");
-    let stdout_str = stdout
+    let cands = j_scan["candidates"].as_array().expect("candidates");
+    assert_eq!(cands.len(), 1, "only the new repo is a candidate: {j_scan}");
+    let c = &cands[0];
+    assert_eq!(c["id"], "new-scanned-proj");
+    assert_eq!(c["name"], "new-scanned-proj");
+    assert_eq!(c["path"], repo_new.canonicalize().unwrap().to_str().unwrap());
+    assert_eq!(c["repo"], "https://example.com/x/new.git");
+    assert_eq!(c["stack"], serde_json::json!(["node"]));
+    assert!(
+        c["last_commit_at"].as_i64().unwrap_or(0) > 1_500_000_000,
+        "last_commit_at should be a unix time: {c}"
+    );
+    assert_eq!(j_scan["bad_roots"], serde_json::json!([]));
+    assert!(j_scan["refreshed"].is_object());
+
+    // The scan wrote nothing: the map is byte-identical, GET /api/projects does not list it.
+    assert_eq!(
+        std::fs::read(sb.map_path()).expect("read map"),
+        map_before,
+        "rescan must not change projects_map.json when nothing known changed"
+    );
+    let projs = srv.get("/api/projects").json();
+    assert!(!projs["projects"]
+        .as_array()
+        .unwrap()
         .iter()
-        .filter_map(|v| v.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        stdout_str.contains("Đã quét"),
-        "stdout should contain 'Đã quét', got: {stdout_str}"
-    );
-
-    // GET /api/projects now lists the new project
-    let r_projs = srv.get("/api/projects");
-    assert_eq!(r_projs.status, 200);
-    let j_projs = r_projs.json();
-    let projs = j_projs["projects"].as_array().expect("projects array");
-    assert!(
-        projs.iter().any(|p| p["id"] == "new-scanned-proj"),
-        "projects should include new-scanned-proj"
-    );
-
-    // SQLite has its row
-    let conn = sb.db();
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM projects WHERE slug = 'new-scanned-proj'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("count project row");
-    assert_eq!(count, 1, "new-scanned-proj row must exist in SQLite");
+        .any(|p| p["id"] == "new-scanned-proj"));
 
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
 }
 
 #[test]
-fn dash12_rescan_without_roots_shows_cli_error() {
+fn dash12_rescan_without_roots_is_422() {
     let sb = Sandbox::new();
     sb.write_map(serde_json::json!([]), &[]);
 
     let mut srv = sb.serve(&[]);
 
     let r_scan = srv.post_json("/api/projects/scan", &serde_json::json!({}));
-    assert_eq!(r_scan.status, 200);
-    let j_scan = r_scan.json();
-    assert_eq!(j_scan["exit_code"], 1);
-    let stderr = j_scan["stderr"].as_array().expect("stderr array");
-    let stderr_str = stderr
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    assert_eq!(r_scan.status, 422);
     assert!(
-        stderr_str.contains("Chưa có scan_roots"),
-        "stderr should contain 'Chưa có scan_roots', got: {stderr_str}"
+        r_scan.json()["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("thư mục gốc"),
+        "got: {}",
+        r_scan.text()
     );
 
     let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
     assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn rescan_refreshes_missing_flag_of_known_projects_only() {
+    let sb = Sandbox::new();
+    let repos_dir = sb.repos.clone();
+    let alive = sb.make_repo("alive", &[], None, None);
+    let gone = sb.make_repo("gone", &[], None, None);
+    let mut e_alive = sb.project_entry(&alive, "alive", "work");
+    e_alive["missing"] = serde_json::json!(true);
+    e_alive["aliases"] = serde_json::json!(["keep-me"]);
+    let e_gone = sb.project_entry(&gone, "gone", "work");
+    sb.write_map(
+        serde_json::json!([e_alive, e_gone]),
+        &[repos_dir.to_str().unwrap()],
+    );
+    std::fs::remove_dir_all(&gone).expect("remove repo");
+
+    let mut srv = sb.serve(&[]);
+    let r = srv.post_json("/api/projects/scan", &serde_json::json!({}));
+    assert_eq!(r.status, 200);
+    let j = r.json();
+    assert_eq!(j["candidates"], serde_json::json!([]));
+    assert_eq!(j["refreshed"]["missing"], 1);
+    assert_eq!(j["refreshed"]["restored"], 1);
+
+    let map = sb.read_map();
+    let projs = map["projects"].as_array().unwrap();
+    assert_eq!(projs.len(), 2, "nothing added");
+    let alive_v = projs.iter().find(|p| p["id"] == "alive").unwrap();
+    let gone_v = projs.iter().find(|p| p["id"] == "gone").unwrap();
+    assert_eq!(alive_v["missing"], false, "missing flag cleared");
+    assert_eq!(alive_v["aliases"], serde_json::json!(["keep-me"]));
+    assert_eq!(gone_v["missing"], true, "vanished folder marked missing");
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn scan_add_adds_only_the_chosen_paths_and_rescan_forgets_them() {
+    let sb = Sandbox::new();
+    let repos_dir = sb.repos.clone();
+    sb.write_map(serde_json::json!([]), &[repos_dir.to_str().unwrap()]);
+    let r1 = sb.make_repo("cand-one", &[], None, None);
+    let _r2 = sb.make_repo("cand-two", &[], None, None);
+    let r3 = sb.make_repo("cand-three", &[], None, None);
+
+    let mut srv = sb.serve(&[]);
+    let j = srv.post_json("/api/projects/scan", &serde_json::json!({})).json();
+    assert_eq!(candidate_paths(&j).len(), 3);
+
+    let p1 = r1.canonicalize().unwrap().to_string_lossy().to_string();
+    let p3 = r3.canonicalize().unwrap().to_string_lossy().to_string();
+    let r_add = srv.post_json(
+        "/api/projects/scan/add",
+        &serde_json::json!({ "paths": [p1, p3], "etag": j["etag"] }),
+    );
+    assert_eq!(r_add.status, 200, "{}", r_add.text());
+    let ja = r_add.json();
+    let added: Vec<String> = ja["added"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(added, vec!["cand-one", "cand-three"]);
+
+    let map = sb.read_map();
+    let ids: Vec<&str> = map["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["cand-one", "cand-three"], "cand-two was not chosen");
+
+    // SQLite got the rows.
+    let conn = sb.db();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM projects WHERE slug IN ('cand-one','cand-three')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(count, 2);
+
+    // Rescan lists only the one left.
+    let j2 = srv.post_json("/api/projects/scan", &serde_json::json!({})).json();
+    let left = j2["candidates"].as_array().unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0]["id"], "cand-two");
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn scan_add_rejects_paths_outside_roots_and_already_known() {
+    let sb = Sandbox::new();
+    let repos_dir = sb.repos.clone();
+    let known = sb.make_repo("known", &[], None, None);
+    let good = sb.make_repo("good", &[], None, None);
+    // A repo outside every scan root, a nested repo (not a direct child) and a plain folder.
+    let outside_root = sb.root.join("elsewhere");
+    std::fs::create_dir_all(&outside_root).unwrap();
+    let outside = sb.make_repo("outside", &[], Some(&outside_root), None);
+    let nested_parent = repos_dir.join("known").join("sub");
+    std::fs::create_dir_all(&nested_parent).unwrap();
+    let nested = sb.make_repo("nested", &[], Some(&nested_parent), None);
+    let plain = repos_dir.join("plain-folder");
+    std::fs::create_dir_all(&plain).unwrap();
+
+    sb.write_map(
+        serde_json::json!([sb.project_entry(&known, "known", "work")]),
+        &[repos_dir.to_str().unwrap()],
+    );
+    let mut srv = sb.serve(&[]);
+    let before = std::fs::read(sb.map_path()).unwrap();
+
+    let bad: Vec<(&str, String)> = vec![
+        ("outside the roots", outside.to_string_lossy().to_string()),
+        ("nested repo", nested.to_string_lossy().to_string()),
+        ("not a git repo", plain.to_string_lossy().to_string()),
+        ("already in the map", known.to_string_lossy().to_string()),
+        ("parent dir trick", format!("{}/../elsewhere/outside", repos_dir.display())),
+        ("missing path", "/nonexistent/zzz".to_string()),
+        ("the root itself", repos_dir.to_string_lossy().to_string()),
+    ];
+    for (why, p) in bad {
+        let r = srv.post_json("/api/projects/scan/add", &serde_json::json!({ "paths": [p] }));
+        assert_eq!(r.status, 422, "{why}: {}", r.text());
+    }
+    // One bad path among good ones rejects the whole request.
+    let r = srv.post_json(
+        "/api/projects/scan/add",
+        &serde_json::json!({ "paths": [good.to_string_lossy(), outside.to_string_lossy()] }),
+    );
+    assert_eq!(r.status, 422);
+    // Empty selection adds nothing.
+    let r = srv.post_json("/api/projects/scan/add", &serde_json::json!({ "paths": [] }));
+    assert_eq!(r.status, 422);
+
+    assert_eq!(
+        std::fs::read(sb.map_path()).unwrap(),
+        before,
+        "no rejected request may change the map"
+    );
+
+    // A stale etag is a conflict.
+    let r = srv.post_json(
+        "/api/projects/scan/add",
+        &serde_json::json!({ "paths": [good.to_string_lossy()], "etag": "stale" }),
+    );
+    assert_eq!(r.status, 409);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn cli_scan_list_prints_candidates_and_writes_nothing() {
+    let sb = Sandbox::new();
+    let repos_dir = sb.repos.clone();
+    let known = sb.make_repo("known", &[], None, None);
+    sb.write_map(
+        serde_json::json!([sb.project_entry(&known, "known", "work")]),
+        &[repos_dir.to_str().unwrap()],
+    );
+    let _new = sb.make_repo("fresh", &[], None, None);
+    let before = std::fs::read(sb.map_path()).unwrap();
+
+    let res = sb.run(&["projects", "scan", "--list"], None);
+    assert_eq!(res.code, 0, "stderr: {}", res.stderr);
+    assert!(res.stdout.contains("fresh"), "stdout: {}", res.stdout);
+    assert!(!res.stdout.contains("known\t"), "stdout: {}", res.stdout);
+    assert_eq!(std::fs::read(sb.map_path()).unwrap(), before, "--list must not write");
+
+    // Without --list the CLI still adds every repo.
+    let res = sb.run(&["projects", "scan"], None);
+    assert_eq!(res.code, 0, "stderr: {}", res.stderr);
+    let ids: Vec<String> = sb.read_map()["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(ids.contains(&"fresh".to_string()), "{ids:?}");
+}
+
+#[test]
+fn scan_candidates_skip_known_hidden_and_suffix_taken_ids() {
+    let sb = Sandbox::new();
+    let root_a = sb.root.join("rootA");
+    let root_b = sb.root.join("rootB");
+    std::fs::create_dir_all(&root_a).unwrap();
+    std::fs::create_dir_all(&root_b).unwrap();
+    let a_dup = sb.make_repo("dup", &[], Some(&root_a), None);
+    let b_dup = sb.make_repo("dup", &[], Some(&root_b), None);
+    let hidden = sb.make_repo("quiet", &[], Some(&root_a), None);
+    let mut e_hidden = sb.project_entry(&hidden, "quiet", "work");
+    e_hidden["hidden"] = serde_json::json!(true);
+
+    let data = serde_json::json!({
+        "scan_roots": [root_a.to_str().unwrap(), root_b.to_str().unwrap(), "/nonexistent-root"],
+        "projects": [e_hidden],
+    });
+    let before = data.clone();
+    let (cands, bad_roots) = agent_brain::projects::scan_candidates(&data);
+    assert_eq!(data, before, "scan_candidates takes &data and cannot write");
+    assert_eq!(bad_roots, vec!["/nonexistent-root".to_string()]);
+    let ids: Vec<&str> = cands.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids, vec!["dup", "dup-2"], "hidden project is not a candidate");
+    assert_eq!(cands[0].path, a_dup.canonicalize().unwrap().to_str().unwrap());
+    assert_eq!(cands[1].path, b_dup.canonicalize().unwrap().to_str().unwrap());
+}
+
+// ---- Hide projects ----
+
+fn hidden_fixture(sb: &Sandbox) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let a = sb.make_repo("alpha", &[], None, None);
+    let b = sb.make_repo("beta", &[], None, None);
+    let c = sb.make_repo("gamma", &[], None, None);
+    let mut ea = sb.project_entry(&a, "alpha", "work");
+    ea["name_vi"] = serde_json::json!("Alpha shop");
+    let eb = sb.project_entry(&b, "beta", "work");
+    let ec = sb.project_entry(&c, "gamma", "work");
+    sb.write_map(serde_json::json!([ea, eb, ec]), &[]);
+    (a, b, c)
+}
+
+fn list_etag(srv: &common::Serve) -> String {
+    srv.get("/api/projects").json()["etag"]
+        .as_str()
+        .expect("etag")
+        .to_string()
+}
+
+fn ids_of(j: &serde_json::Value, key: &str) -> Vec<String> {
+    j[key]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|p| p["id"].as_str().expect("id").to_string())
+        .collect()
+}
+
+#[test]
+fn hide_and_unhide_one_project_keeps_it_in_the_map() {
+    let sb = Sandbox::new();
+    hidden_fixture(&sb);
+    let mut srv = sb.serve(&[]);
+
+    let before = srv.get("/api/projects").json();
+    for p in before["projects"].as_array().unwrap() {
+        assert_eq!(p["hidden"], false, "{p}");
+        assert_eq!(p["task_count"], 0, "{p}");
+    }
+
+    let r = srv.put_json(
+        "/api/projects/beta/hidden",
+        &serde_json::json!({ "hidden": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    let j = r.json();
+    assert_eq!(ids_of(&j, "projects"), vec!["alpha", "beta", "gamma"], "still listed");
+    let beta = j["projects"].as_array().unwrap().iter().find(|p| p["id"] == "beta").unwrap();
+    assert_eq!(beta["hidden"], true);
+    assert_eq!(beta["telegram_offerable"], false);
+
+    let map = sb.read_map();
+    let beta_v = map["projects"].as_array().unwrap().iter().find(|p| p["id"] == "beta").unwrap();
+    assert_eq!(beta_v["hidden"], true);
+    assert_eq!(map["projects"].as_array().unwrap().len(), 3, "nothing removed");
+
+    // Unhide: the key goes away (absent = visible).
+    let r = srv.put_json(
+        "/api/projects/beta/hidden",
+        &serde_json::json!({ "hidden": false, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 200);
+    let map = sb.read_map();
+    let beta_v = map["projects"].as_array().unwrap().iter().find(|p| p["id"] == "beta").unwrap();
+    assert!(beta_v.get("hidden").is_none(), "{beta_v}");
+
+    // Unknown id 404, stale etag 409.
+    let r = srv.put_json(
+        "/api/projects/nope/hidden",
+        &serde_json::json!({ "hidden": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 404);
+    let r = srv.put_json(
+        "/api/projects/beta/hidden",
+        &serde_json::json!({ "hidden": true, "etag": "stale" }),
+    );
+    assert_eq!(r.status, 409);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn bulk_hide_is_one_write_and_all_or_nothing() {
+    let sb = Sandbox::new();
+    hidden_fixture(&sb);
+    let mut srv = sb.serve(&[]);
+
+    let before = std::fs::read(sb.map_path()).unwrap();
+    let r = srv.put_json(
+        "/api/projects/hidden",
+        &serde_json::json!({ "ids": ["alpha", "nope"], "hidden": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 404);
+    assert_eq!(std::fs::read(sb.map_path()).unwrap(), before, "unknown id: nothing written");
+    let r = srv.put_json(
+        "/api/projects/hidden",
+        &serde_json::json!({ "ids": [], "hidden": true }),
+    );
+    assert_eq!(r.status, 422);
+
+    let r = srv.put_json(
+        "/api/projects/hidden",
+        &serde_json::json!({ "ids": ["alpha", "gamma"], "hidden": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    let map = sb.read_map();
+    let hidden: Vec<&str> = map["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["hidden"] == true)
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(hidden, vec!["alpha", "gamma"]);
+
+    let r = srv.put_json(
+        "/api/projects/hidden",
+        &serde_json::json!({ "ids": ["alpha"], "hidden": true, "etag": "stale" }),
+    );
+    assert_eq!(r.status, 409);
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn hidden_project_is_not_offered_for_new_work_but_old_tasks_still_resolve() {
+    let sb = Sandbox::new();
+    hidden_fixture(&sb);
+
+    // A task of "alpha" exists before it is hidden.
+    let conn = agent_brain::db::open(&sb.db_path).unwrap();
+    agent_brain::db::sync_projects(
+        &conn,
+        &agent_brain::projects::projects_of(&sb.read_map()),
+    )
+    .unwrap();
+    let pid = agent_brain::db::project_row_id(&conn, "alpha").unwrap();
+    let task_id =
+        agent_brain::db::upsert_task(&conn, pid, "old-job", "Việc cũ", "task/old-job", None, None)
+            .unwrap();
+    drop(conn);
+
+    let mut srv = sb.serve(&[]);
+    let r = srv.put_json(
+        "/api/projects/hidden",
+        &serde_json::json!({ "ids": ["alpha"], "hidden": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 200);
+    let j = r.json();
+    let alpha = j["projects"].as_array().unwrap().iter().find(|p| p["id"] == "alpha").unwrap();
+    assert_eq!(alpha["task_count"], 1);
+    assert_eq!(alpha["hidden"], true);
+
+    // Suggestions (assign) leave it out; the whole list keeps it.
+    let sug = srv.get("/api/projects/suggest?q=alpha").json();
+    assert!(sug["items"].as_array().unwrap().is_empty(), "{sug}");
+    let all = srv.get("/api/projects/suggest").json();
+    assert_eq!(ids_of(&all, "items"), vec!["beta", "gamma"]);
+
+    // Assign: refused with a reason, nothing queued.
+    let r = srv.post_json(
+        "/api/tasks",
+        &serde_json::json!({"project": "alpha", "request": "việc mới", "name": "viec-moi"}),
+    );
+    assert_eq!(r.status, 422, "{}", r.text());
+    assert!(r.json()["error"].as_str().unwrap_or("").contains("đã ẩn"), "{}", r.text());
+    let r = srv.post_json(
+        "/api/tasks",
+        &serde_json::json!({"project": "alpha", "request": "việc mới", "direct": true}),
+    );
+    assert!(
+        r.status == 400 || r.status == 422 || r.status == 409,
+        "direct assign must be refused: {} {}",
+        r.status,
+        r.text()
+    );
+
+    // Intake with that project is refused too.
+    let r = srv.post_json(
+        "/api/intake",
+        &serde_json::json!({"request": "việc mới", "project": "alpha"}),
+    );
+    assert_eq!(r.status, 422, "{}", r.text());
+
+    // The old task of the hidden project still resolves.
+    let r = srv.get(&format!("/api/tasks/{task_id}"));
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["project"]["id"], "alpha");
+
+    // A visible project is unaffected: the same request is not refused for being hidden.
+    let r = srv.post_json(
+        "/api/intake",
+        &serde_json::json!({"request": "việc mới", "project": "beta"}),
+    );
+    assert_ne!(r.status, 422, "{}", r.text());
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn hidden_project_cannot_join_telegram_and_is_not_offered() {
+    let sb = Sandbox::new();
+    hidden_fixture(&sb);
+    let mut srv = sb.serve(&[]);
+    let r = srv.put_json(
+        "/api/projects/hidden",
+        &serde_json::json!({ "ids": ["gamma"], "hidden": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 200);
+    let r = srv.put_json(
+        "/api/projects/gamma/telegram",
+        &serde_json::json!({ "enabled": true, "etag": list_etag(&srv) }),
+    );
+    assert_eq!(r.status, 422, "{}", r.text());
+
+    let exit = srv.stop(libc::SIGINT, std::time::Duration::from_secs(5));
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn visible_projects_of_skips_hidden_but_projects_of_keeps_all() {
+    let map = serde_json::json!({"projects": [
+        {"id": "a", "path": "/tmp/a"},
+        {"id": "b", "path": "/tmp/b", "hidden": true},
+        {"id": "c", "path": "/tmp/c", "hidden": false},
+    ]});
+    let all: Vec<String> = agent_brain::projects::projects_of(&map)
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(all, vec!["a", "b", "c"]);
+    let vis: Vec<String> = agent_brain::projects::visible_projects_of(&map)
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(vis, vec!["a", "c"]);
+    // The CLI still resolves a hidden project by its exact id.
+    let p = agent_brain::projects::select_project("b", &map).expect("hidden id resolves");
+    assert!(p.hidden);
 }
 
 // ---- Telegram toggle per project ----
