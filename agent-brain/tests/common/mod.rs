@@ -276,7 +276,22 @@ impl Sandbox {
         let _ = fs::remove_file(self.queue_state_path());
     }
 
-    pub fn write_map(&self, projects: serde_json::Value, scan_roots: &[&str]) {
+    /// Writes the map with every project that has no `protocol_dir` key pinned to `""` (protocol
+    /// files at the repo root), the layout the suites were written for. The built-in default
+    /// (`.gsd|.planning/quick/plan-{slug}`) is covered by `write_map_raw` users.
+    pub fn write_map(&self, mut projects: serde_json::Value, scan_roots: &[&str]) {
+        if let Some(arr) = projects.as_array_mut() {
+            for p in arr {
+                if let Some(o) = p.as_object_mut() {
+                    o.entry("protocol_dir").or_insert_with(|| serde_json::json!(""));
+                }
+            }
+        }
+        self.write_map_raw(projects, scan_roots);
+    }
+
+    /// Writes the map exactly as given (no `protocol_dir` is added).
+    pub fn write_map_raw(&self, projects: serde_json::Value, scan_roots: &[&str]) {
         let map_path = self.map_path();
         if let Some(p) = map_path.parent() {
             fs::create_dir_all(p).expect("create map dir");

@@ -786,7 +786,9 @@ async fn update_timeouts(
 }
 
 /// D1: the project's `protocol_dir`, validated by `protocol_paths::validate_protocol_dir`
-/// (relative, no `..`, not inside `.git`, `{slug}` the only variable). `""` removes the key.
+/// (relative, no `..`, not inside `.git`, `{slug}` the only variable). `""` removes the key, which
+/// puts the project back on the built-in default (`.gsd|.planning/quick/plan-{slug}`); a project
+/// that must keep its files at the repo root carries `"protocol_dir": ""` in projects_map.json.
 async fn update_protocol_dir(
     State(st): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,

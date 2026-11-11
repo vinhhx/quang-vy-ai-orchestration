@@ -1144,7 +1144,9 @@ pub fn cmd_dev(ctx: &mut Ctx, project: &str, opts: &crate::roles::RunOpts) -> Br
         // `.planning/` and secret-looking paths are never agy's or dsh's to change, even when
         // the plan lists them.
         for p in &all_changed_nfc {
-            if (p.starts_with(".planning/") || crate::report::sensitive_path(p))
+            // The plan file may sit under `.planning/` (default protocol_dir); it stays allowed.
+            if ((p.starts_with(".planning/") && *p != protocol.plan)
+                || crate::report::sensitive_path(p))
                 && !violations.contains(p)
             {
                 violations.push(p.clone());
