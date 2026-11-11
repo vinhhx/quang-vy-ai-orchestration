@@ -6,7 +6,8 @@
 //! 2. `.planning/`
 //! 3. `.agent-brain/`
 //!
-//! Bỏ qua symlink và các entry không phải thư mục thật.
+//! Bỏ qua symlink và các entry không phải thư mục thật. Thư mục `.gsd/` chỉ có `quick/`
+//! (chương trình tự tạo để chứa file giao thức theo task) KHÔNG tính là thư mục tri thức.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -42,13 +43,27 @@ const CANDIDATES: &[(HomeKind, &str)] = &[
     (HomeKind::AgentBrain, ".agent-brain"),
 ];
 
+/// `.gsd/` chỉ tính là thư mục tri thức khi chứa ít nhất một mục khác ngoài `quick`
+/// (`quick/` do chương trình tạo cho file giao thức; thư mục chỉ có nó không phải tri thức).
+fn gsd_has_content(dir: &Path) -> bool {
+    match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name() != "quick"),
+        Err(_) => false,
+    }
+}
+
 /// Tìm thư mục tri thức đầu tiên tồn tại theo thứ tự ưu tiên (.gsd -> .planning -> .agent-brain).
-/// Bỏ qua symlink và thứ không phải thư mục.
+/// Bỏ qua symlink và thứ không phải thư mục; `.gsd/` chỉ có `quick/` cũng bị bỏ qua.
 pub fn find(root: &Path) -> Option<Home> {
     for (kind, rel) in CANDIDATES {
         let p = root.join(rel);
         if let Ok(meta) = std::fs::symlink_metadata(&p) {
             if !meta.file_type().is_symlink() && meta.is_dir() {
+                if *kind == HomeKind::Gsd && !gsd_has_content(&p) {
+                    continue;
+                }
                 let dir = if p.is_absolute() {
                     p
                 } else if let Ok(cwd) = std::env::current_dir() {
@@ -125,12 +140,41 @@ mod tests {
         let gsd_dir = temp.path().join(".gsd");
         let plan_dir = temp.path().join(".planning");
         std::fs::create_dir_all(&gsd_dir).unwrap();
+        std::fs::write(gsd_dir.join("README.md"), "# GSD").unwrap();
         std::fs::create_dir_all(&plan_dir).unwrap();
 
         let home = find(temp.path()).expect("found .gsd");
         assert_eq!(home.kind, HomeKind::Gsd);
         assert_eq!(home.rel, ".gsd");
         assert_eq!(home.dir, gsd_dir);
+    }
+
+    #[test]
+    fn test_find_gsd_with_only_quick_is_not_a_home() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join(".gsd/quick/plan-x")).unwrap();
+        let ab = temp.path().join(".agent-brain");
+        std::fs::create_dir_all(&ab).unwrap();
+
+        // `.gsd/` made by the program (only `quick/`) must not shadow `.agent-brain/`.
+        let home = find(temp.path()).expect("found .agent-brain");
+        assert_eq!(home.kind, HomeKind::AgentBrain);
+        assert_eq!(home.dir, ab);
+
+        // Nothing else there: no home at all (and default stays .agent-brain).
+        let only = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(only.path().join(".gsd/quick")).unwrap();
+        assert!(find(only.path()).is_none());
+        assert_eq!(find_or_default(only.path()).kind, HomeKind::AgentBrain);
+
+        // `.gsd/` with any other entry is a home again.
+        std::fs::write(temp.path().join(".gsd/README.md"), "# GSD").unwrap();
+        assert_eq!(find(temp.path()).unwrap().kind, HomeKind::Gsd);
+
+        // An empty `.gsd/` has no content either.
+        let empty = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(empty.path().join(".gsd")).unwrap();
+        assert!(find(empty.path()).is_none());
     }
 
     #[test]
@@ -169,7 +213,7 @@ mod tests {
     fn test_readme_detection() {
         let temp = tempfile::tempdir().unwrap();
         let gsd = temp.path().join(".gsd");
-        std::fs::create_dir_all(&gsd).unwrap();
+        std::fs::create_dir_all(gsd.join("phases")).unwrap();
         let home_gsd = find(temp.path()).unwrap();
         assert!(readme(&home_gsd).is_none());
 
