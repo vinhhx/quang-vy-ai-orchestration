@@ -226,7 +226,9 @@ impl Sandbox {
             "profile": profile,
             "missing": false,
             // existing dashboard tests post /api/tasks without a workflow and must keep the manual flow; a test that needs the server default removes the key
-            "workflow": "nhanh"
+            "workflow": "nhanh",
+            // the default workspace of a git project is a worktree per task; these tests were written for the shared repo and keep it explicitly (worktree tests set "worktree", and the default-mode tests remove this key)
+            "workspace": "shared"
         })
     }
 

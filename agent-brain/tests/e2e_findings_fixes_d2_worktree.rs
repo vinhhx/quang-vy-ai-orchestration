@@ -455,38 +455,46 @@ fn task_merge_rules_and_conflicts() {
 fn workspace_mode_endpoint_validates_and_stores() {
     let sb = Sandbox::new();
     let repo = sb.make_repo(PROJECT, &[("a.txt", "a\n")], None, None);
-    let entry = sb.project_entry(&repo, PROJECT, "work");
+    let mut entry = sb.project_entry(&repo, PROJECT, "work");
+    // No `workspace` key: the project takes the default.
+    entry.as_object_mut().unwrap().remove("workspace");
     sb.write_map(json!([entry]), &[]);
     let mut srv = sb.serve(&[]);
 
+    // A git code project without the key defaults to a worktree per task.
     let p = srv.get("/api/projects").json()["projects"][0].clone();
-    assert_eq!(p["workspace"], "shared", "{p}");
+    assert_eq!(p["workspace"], "worktree", "{p}");
     assert_eq!(p["max_parallel_tasks"], 1);
+    assert!(sb.read_map()["projects"][0].get("workspace").is_none());
 
     for bad in [json!({"workspace": "pool"}), json!({"max_parallel_tasks": 0}), json!({"max_parallel_tasks": 11})] {
         let r = srv.put_json(&format!("/api/projects/{PROJECT}/workspace"), &bad);
         assert_eq!(r.status, 400, "{bad}");
     }
+    // `shared` is not the default any more: it is stored, and wins over the default.
     let r = srv.put_json(
         &format!("/api/projects/{PROJECT}/workspace"),
-        &json!({"workspace": "worktree", "max_parallel_tasks": 3}),
+        &json!({"workspace": "shared", "max_parallel_tasks": 3}),
     );
     assert_eq!(r.status, 200, "{}", r.text());
     let entry = sb.read_map()["projects"][0].clone();
-    assert_eq!(entry["workspace"], "worktree");
+    assert_eq!(entry["workspace"], "shared");
     assert_eq!(entry["max_parallel_tasks"], 3);
     let p = srv.get("/api/projects").json()["projects"][0].clone();
-    assert_eq!(p["workspace"], "worktree");
+    assert_eq!(p["workspace"], "shared");
     assert_eq!(p["max_parallel_tasks"], 3);
 
+    // `worktree` equals the default: the key is removed (as is max_parallel_tasks = 1).
     let r = srv.put_json(
         &format!("/api/projects/{PROJECT}/workspace"),
-        &json!({"workspace": "shared", "max_parallel_tasks": 1}),
+        &json!({"workspace": "worktree", "max_parallel_tasks": 1}),
     );
     assert_eq!(r.status, 200);
     let entry = sb.read_map()["projects"][0].clone();
     assert!(entry.get("workspace").is_none(), "{entry}");
     assert!(entry.get("max_parallel_tasks").is_none(), "{entry}");
+    let p = srv.get("/api/projects").json()["projects"][0].clone();
+    assert_eq!(p["workspace"], "worktree");
 
     let exit = srv.stop(libc::SIGINT, Duration::from_secs(5));
     assert_eq!(exit, Some(0));

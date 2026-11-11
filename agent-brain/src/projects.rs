@@ -32,7 +32,7 @@ pub const HOLD_AT_GATE_KEY: &str = "hold_project_at_gate";
 pub const AUTO_CHECKOUT_KEY: &str = "auto_checkout_on_approve";
 /// Longest accepted `base_branch` (characters).
 pub const BASE_BRANCH_MAX_CHARS: usize = 120;
-/// Key of the workspace mode (D2.1): `"shared"` (default) or `"worktree"`.
+/// Key of the workspace mode (D2.1): `"worktree"` (default for a git code project) or `"shared"`.
 pub const WORKSPACE_KEY: &str = "workspace";
 /// Key of the parallel task limit in worktree mode (D2.1).
 pub const MAX_PARALLEL_KEY: &str = "max_parallel_tasks";
@@ -42,10 +42,12 @@ pub const MAX_PARALLEL_RANGE: std::ops::RangeInclusive<usize> = 1..=10;
 /// How the tasks of a project use the repo (D2.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorkspaceMode {
-    /// Every task works in the project repo itself, one at a time (the old behaviour).
-    #[default]
+    /// Every task works in the project repo itself, one at a time (the old behaviour). The
+    /// default only for a project that cannot have worktrees (see `default_mode_for`).
     Shared,
     /// Each task works in its own git worktree under the data dir; tasks may run in parallel.
+    /// The default for a git code project.
+    #[default]
     Worktree,
 }
 
@@ -77,7 +79,7 @@ pub struct WorkspaceOpts {
     pub hold_project_at_gate: bool,
     /// `auto_checkout_on_approve`: approving off the task branch with a clean tree checks it out.
     pub auto_checkout_on_approve: bool,
-    /// `workspace`: shared repo (default) or one git worktree per task.
+    /// `workspace`: one git worktree per task (default) or the shared repo.
     pub mode: WorkspaceMode,
     /// `max_parallel_tasks`: tasks with a live run / driver at once in worktree mode.
     pub max_parallel_tasks: usize,
@@ -89,7 +91,7 @@ impl Default for WorkspaceOpts {
             base_branch: None,
             hold_project_at_gate: true,
             auto_checkout_on_approve: true,
-            mode: WorkspaceMode::Shared,
+            mode: WorkspaceMode::Worktree,
             max_parallel_tasks: 1,
         }
     }
@@ -128,6 +130,17 @@ impl WorkspaceOpts {
         }
     }
 
+    /// `from_value` for a project entry, with the mode the project can actually have: a project
+    /// without a (valid) `workspace` key defaults to `worktree` only when it is a present git
+    /// repo of `type` code (`default_mode_for`), else to `shared`. An explicit key always wins.
+    pub fn from_entry(entry: &serde_json::Value) -> WorkspaceOpts {
+        let mut ws = WorkspaceOpts::from_value(entry);
+        if !entry_has_valid_mode(entry) {
+            ws.mode = default_mode_for(entry);
+        }
+        ws
+    }
+
     /// True in worktree mode (each task in its own git worktree).
     pub fn is_worktree(&self) -> bool {
         self.mode == WorkspaceMode::Worktree
@@ -145,6 +158,34 @@ impl WorkspaceOpts {
         self.base_branch
             .clone()
             .or_else(|| crate::gitops::current_branch(root))
+    }
+}
+
+fn entry_has_valid_mode(entry: &serde_json::Value) -> bool {
+    entry
+        .get(WORKSPACE_KEY)
+        .and_then(|v| v.as_str())
+        .and_then(WorkspaceMode::parse)
+        .is_some()
+}
+
+/// The workspace mode of a project entry that has no `workspace` key: `worktree` when it is a
+/// present (not `missing`) project of `type` code whose path has a `.git`, else `shared`
+/// (a worktree needs a git repo; other projects keep working in place, without an error).
+pub fn default_mode_for(entry: &serde_json::Value) -> WorkspaceMode {
+    let kind = entry.get("type").and_then(|v| v.as_str()).unwrap_or("code");
+    let missing = entry.get("missing").and_then(|v| v.as_bool()).unwrap_or(false);
+    let path = entry.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if kind != "code" || missing || path.is_empty() {
+        return WorkspaceMode::Shared;
+    }
+    let p = crate::config::expand_tilde(path, &crate::config::home_dir());
+    // A stat, not `git rev-parse`: this runs on every `projects_of` call. A repo root (or a
+    // linked worktree) has `.git`.
+    if p.join(".git").exists() {
+        WorkspaceMode::Worktree
+    } else {
+        WorkspaceMode::Shared
     }
 }
 
@@ -192,7 +233,7 @@ pub fn workspace_of(map: &serde_json::Value, project_id: &str) -> WorkspaceOpts 
             arr.iter()
                 .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(project_id))
         })
-        .map(WorkspaceOpts::from_value)
+        .map(WorkspaceOpts::from_entry)
         .unwrap_or_default()
 }
 
@@ -292,7 +333,7 @@ impl Project {
             stack,
             read_sources,
             protocol_dir,
-            workspace: WorkspaceOpts::from_value(v),
+            workspace: WorkspaceOpts::from_entry(v),
         })
     }
 
@@ -1641,10 +1682,13 @@ mod tests {
         assert_eq!(d.base_branch, None);
         assert!(d.hold_project_at_gate);
         assert!(d.auto_checkout_on_approve);
-        assert_eq!(d.mode, WorkspaceMode::Shared);
+        assert_eq!(d.mode, WorkspaceMode::Worktree);
         assert_eq!(d.max_parallel_tasks, 1);
-        assert!(!d.is_worktree());
+        assert!(d.is_worktree());
         assert_eq!(WorkspaceOpts::from_value(&serde_json::json!({"id": "x"})), d);
+        let shared = WorkspaceOpts::from_value(&serde_json::json!({"id": "x", "workspace": "shared"}));
+        assert_eq!(shared.mode, WorkspaceMode::Shared);
+        assert!(!shared.is_worktree());
         let wt = WorkspaceOpts::from_value(&serde_json::json!({
             "id": "x", "workspace": "worktree", "max_parallel_tasks": 3
         }));
@@ -1674,6 +1718,63 @@ mod tests {
         let map = serde_json::json!({"projects": [{"id": "x", "base_branch": "rel/1"}]});
         assert_eq!(workspace_of(&map, "x").base_branch.as_deref(), Some("rel/1"));
         assert_eq!(workspace_of(&map, "y"), d);
+    }
+
+    #[test]
+    fn workspace_mode_default_depends_on_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(git_dir.join(".git")).unwrap();
+        let plain_dir = tmp.path().join("plain");
+        std::fs::create_dir_all(&plain_dir).unwrap();
+        let entry = |path: &std::path::Path, extra: serde_json::Value| {
+            let mut v = serde_json::json!({"id": "x", "path": path.to_string_lossy()});
+            for (k, val) in extra.as_object().unwrap() {
+                v[k] = val.clone();
+            }
+            v
+        };
+        let none = serde_json::json!({});
+        // A git code project without the key: worktree.
+        assert_eq!(WorkspaceOpts::from_entry(&entry(&git_dir, none.clone())).mode, WorkspaceMode::Worktree);
+        // Not a git repo, path gone, missing, or not code: shared (no error).
+        assert_eq!(WorkspaceOpts::from_entry(&entry(&plain_dir, none.clone())).mode, WorkspaceMode::Shared);
+        assert_eq!(
+            WorkspaceOpts::from_entry(&entry(&tmp.path().join("gone"), none.clone())).mode,
+            WorkspaceMode::Shared
+        );
+        assert_eq!(
+            WorkspaceOpts::from_entry(&entry(&git_dir, serde_json::json!({"missing": true}))).mode,
+            WorkspaceMode::Shared
+        );
+        assert_eq!(
+            WorkspaceOpts::from_entry(&entry(&git_dir, serde_json::json!({"type": "docs"}))).mode,
+            WorkspaceMode::Shared
+        );
+        assert_eq!(WorkspaceOpts::from_entry(&serde_json::json!({"id": "x"})).mode, WorkspaceMode::Shared);
+        // An explicit key wins either way; an invalid value falls back to the default.
+        assert_eq!(
+            WorkspaceOpts::from_entry(&entry(&git_dir, serde_json::json!({"workspace": "shared"}))).mode,
+            WorkspaceMode::Shared
+        );
+        assert_eq!(
+            WorkspaceOpts::from_entry(&entry(&plain_dir, serde_json::json!({"workspace": "worktree"}))).mode,
+            WorkspaceMode::Worktree
+        );
+        assert_eq!(
+            WorkspaceOpts::from_entry(&entry(&git_dir, serde_json::json!({"workspace": "pool"}))).mode,
+            WorkspaceMode::Worktree
+        );
+        // `Project` and `workspace_of` use the same rule.
+        let map = serde_json::json!({"projects": [
+            entry(&git_dir, none.clone()),
+            {"id": "plain", "path": plain_dir.to_string_lossy()}
+        ]});
+        assert!(workspace_of(&map, "x").is_worktree());
+        assert!(!workspace_of(&map, "plain").is_worktree());
+        let ps = projects_of(&map);
+        assert!(ps[0].workspace.is_worktree());
+        assert!(!ps[1].workspace.is_worktree());
     }
 
     #[test]

@@ -61,6 +61,7 @@
       workspaceDrafts: {},
       workspaceSaving: {},
       workspaceErrors: {},
+      workspaceErrorRow: {},
       timeoutErrors: {},
       pinDrafts: {},
       pinSaving: {},
@@ -1009,7 +1010,7 @@
           base_branch: p.base_branch || '',
           hold_project_at_gate: p.hold_project_at_gate !== false,
           auto_checkout_on_approve: p.auto_checkout_on_approve !== false,
-          workspace: p.workspace || 'shared',
+          workspace: p.workspace === 'shared' ? 'shared' : 'worktree',
           max_parallel_tasks: String(p.max_parallel_tasks || 1)
         };
       },
@@ -1029,19 +1030,56 @@
         return this.workspaceErrors[p.id] || '';
       },
 
-      saveWorkspace: function (p) {
+      // Where a workspace error shows: under the base-branch input of the table row when the
+      // save came from there, else in the expanded row (which then opens).
+      workspaceRowError: function (p) {
+        return Boolean(this.workspaceErrors[p.id]) && Boolean(this.workspaceErrorRow[p.id]);
+      },
+
+      workspaceExpandedError: function (p) {
+        return Boolean(this.workspaceErrors[p.id]) && !this.workspaceErrorRow[p.id];
+      },
+
+      isWorktreeDraft: function (p) {
+        return this.workspaceDraft(p).workspace !== 'shared';
+      },
+
+      // Base branch (table row): Enter or blur saves it when it changed (same PUT as the
+      // expanded row, which carries the rest of the draft).
+      commitBaseBranch: function (p) {
+        if (this.isWorkspaceSaving(p) || !Object.prototype.hasOwnProperty.call(this.workspaceDrafts, p.id)) return Promise.resolve();
+        var next = String(this.workspaceDrafts[p.id].base_branch || '').trim();
+        if (next === (p.base_branch || '')) {
+          var d = this.workspaceDrafts[p.id];
+          var cur = {
+            hold_project_at_gate: p.hold_project_at_gate !== false,
+            auto_checkout_on_approve: p.auto_checkout_on_approve !== false,
+            workspace: p.workspace === 'shared' ? 'shared' : 'worktree',
+            max_parallel_tasks: String(p.max_parallel_tasks || 1)
+          };
+          var same = Object.keys(cur).every(function (k) { return String(d[k]) === String(cur[k]); });
+          if (same) delete this.workspaceDrafts[p.id];
+          return Promise.resolve();
+        }
+        return this.saveWorkspace(p, 'row');
+      },
+
+      saveWorkspace: function (p, where) {
         var self = this;
+        var inRow = where === 'row';
         var d = this.workspaceDraft(p);
         var base = String(d.base_branch || '').trim();
         var maxText = String(d.max_parallel_tasks || '').trim();
         if (!/^[0-9]+$/.test(maxText)) {
-          this.workspaceErrors[p.id] = 'Số task song song phải là số nguyên.';
+          this.workspaceErrors[p.id] = 'Số task chạy cùng lúc phải là số nguyên.';
+          this.workspaceErrorRow[p.id] = false;
           this.expandOnError(p.id);
           return Promise.resolve();
         }
         var maxParallel = parseInt(maxText, 10);
         this.workspaceSaving[p.id] = true;
         this.workspaceErrors[p.id] = '';
+        this.workspaceErrorRow[p.id] = inRow;
         return window.AB.api('PUT', '/api/projects/' + encodeURIComponent(p.id) + '/workspace', {
           base_branch: base,
           hold_project_at_gate: Boolean(d.hold_project_at_gate),
@@ -1061,11 +1099,11 @@
             if (res.data && res.data.etag) self.etag = res.data.etag;
           } else if (res && res.status === 409) {
             self.workspaceErrors[p.id] = 'projects_map.json vừa đổi ở nơi khác — đã tải lại, vui lòng thử lại.';
-            self.expandOnError(p.id);
+            if (!inRow) self.expandOnError(p.id);
             self.load();
           } else {
-            self.workspaceErrors[p.id] = window.AB.errorText(res) || 'Không lưu được nhánh gốc và cách duyệt';
-            self.expandOnError(p.id);
+            self.workspaceErrors[p.id] = window.AB.errorText(res) || 'Không lưu được cấu hình workspace';
+            if (!inRow) self.expandOnError(p.id);
           }
         });
       },

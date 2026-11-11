@@ -927,8 +927,13 @@ async fn update_workspace(
 
         // A value equal to its default removes the key, as for the booleans below.
         let defaults = crate::projects::WorkspaceOpts::default();
+        // The default mode of this project: `worktree` only for a git code project (a project
+        // that cannot have worktrees defaults to `shared`, so picking `worktree` there is stored).
+        let default_mode = crate::projects::default_mode_for(&serde_json::Value::Object(
+            project_obj.clone(),
+        ));
         match mode {
-            Some(m) if m == defaults.mode => {
+            Some(m) if m == default_mode => {
                 project_obj.remove(crate::projects::WORKSPACE_KEY);
             }
             Some(m) => {

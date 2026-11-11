@@ -129,8 +129,8 @@
             <th scope="col" class="pb-3 pr-4">Đường dẫn / loại</th>
             <th scope="col" class="pb-3 pr-4">Profile</th>
             <th scope="col" class="pb-3 pr-4">Alias</th>
+            <th scope="col" class="pb-3 pr-4">Nhánh gốc</th>
             <th scope="col" class="pb-3 pr-4">Telegram</th>
-            <th scope="col" class="pb-3 pr-4">Workspace</th>
             <th scope="col" class="pb-3 pr-4">Trạng thái</th>
             <th scope="col" class="pb-3 text-right">Thao tác</th>
           </tr>
@@ -160,15 +160,21 @@
                 </select>
                 <p class="mt-1 text-xs font-semibold leading-normal text-amber-900 break-words dark:text-amber-200" x-show="hasIssue(p)" x-text="issueText(p)"></p>
               </td>
-              <td class="py-3.5 pr-4">
-                <div class="mb-1 flex flex-wrap items-center gap-1">
+              <td class="min-w-0 py-3.5 pr-4">
+                <label :for="aliasId(p)" class="sr-only" x-text="'Alias của ' + p.name_vi + ', cách nhau bằng dấu phẩy'"></label>
+                <input type="text" :id="aliasId(p)" autocomplete="off" spellcheck="false" placeholder="alias, cách nhau dấu phẩy" class="min-h-9 w-full rounded-lg bg-white px-2 py-1 text-sm text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 disabled:opacity-50 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="aliasDraft(p)" :disabled="saving" @input="setAliasDraft(p, $event.target.value)" @keydown.enter.prevent="commitAlias(p)" @blur="commitAlias(p)">
+                <div class="mt-1 flex min-w-0 flex-wrap items-center gap-1">
                   <template x-for="a in p.aliases" :key="a">
-                    <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="a"></span>
+                    <span class="min-w-0 max-w-full break-all rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700 dark:bg-slate-700 dark:text-slate-200" x-text="a"></span>
                   </template>
                   <span class="text-xs text-slate-500 dark:text-slate-400" x-show="noAliases(p)">Chưa có alias</span>
                 </div>
-                <label :for="aliasId(p)" class="sr-only" x-text="'Alias của ' + p.name_vi + ', cách nhau bằng dấu phẩy'"></label>
-                <input type="text" :id="aliasId(p)" autocomplete="off" spellcheck="false" placeholder="alias, cách nhau dấu phẩy" class="min-h-9 w-full rounded-lg bg-white px-2 py-1 text-sm text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 disabled:opacity-50 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="aliasDraft(p)" :disabled="saving" @input="setAliasDraft(p, $event.target.value)" @keydown.enter.prevent="commitAlias(p)" @blur="commitAlias(p)">
+              </td>
+              <td class="min-w-0 py-3.5 pr-4">
+                <label :for="'ab-proj-base-branch-' + p.id" class="sr-only" x-text="'Nhánh gốc của task mới — ' + p.name_vi"></label>
+                <input :id="'ab-proj-base-branch-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="nhánh hiện tại" title="Task mới tạo nhánh từ nhánh này. Để trống thì dùng nhánh repo đang ở lúc tạo task." class="min-h-9 w-full rounded-lg bg-white px-2 py-1 text-sm text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 disabled:opacity-50 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).base_branch" @input="setWorkspaceDraft(p, 'base_branch', $event.target.value)" @keydown.enter.prevent="commitBaseBranch(p)" @blur="commitBaseBranch(p)" :disabled="isWorkspaceSaving(p)" :aria-describedby="'ab-proj-base-branch-help-' + p.id">
+                <p :id="'ab-proj-base-branch-help-' + p.id" class="mt-1 text-xs leading-normal text-slate-500 dark:text-slate-400">Để trống = nhánh đang checkout</p>
+                <p class="mt-1 text-xs font-semibold leading-normal text-rose-700 break-words dark:text-rose-300" x-show="workspaceRowError(p)" x-text="workspaceError(p)" role="alert"></p>
               </td>
               <td class="py-3.5 pr-4">
                 <label class="inline-flex min-h-9 items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -176,19 +182,6 @@
                   <span>Giao qua Telegram</span>
                 </label>
                 <p class="text-xs leading-normal text-slate-600 dark:text-slate-400" x-show="telegramLocked(p)">Dự án media hoặc mất thư mục không giao qua Telegram được.</p>
-              </td>
-              <td class="py-3.5 pr-4">
-                <div class="space-y-1">
-                  <label :for="'ab-proj-workspace-' + p.id" class="sr-only" x-text="'Không gian làm việc của ' + p.name_vi"></label>
-                  <select :id="'ab-proj-workspace-' + p.id" class="min-h-9 w-full rounded-lg bg-white px-2 py-1 text-sm text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 disabled:opacity-50 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).workspace" @change="applyWorkspaceField(p, 'workspace', $event.target.value)" :disabled="isWorkspaceSaving(p)" :aria-describedby="'ab-proj-workspace-help-' + p.id">
-                    <option value="shared">Dùng chung repo</option>
-                    <option value="worktree">Worktree riêng cho mỗi task</option>
-                  </select>
-                  <div class="flex items-center gap-2">
-                    <label :for="'ab-proj-max-parallel-' + p.id" class="text-xs text-slate-600 dark:text-slate-400">Song song</label>
-                    <input :id="'ab-proj-max-parallel-' + p.id" type="number" inputmode="numeric" min="1" max="10" class="min-h-9 w-16 rounded-lg bg-white px-2 py-1 text-sm text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 disabled:opacity-50 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).max_parallel_tasks" @input="setWorkspaceDraft(p, 'max_parallel_tasks', $event.target.value)" @change="applyWorkspaceField(p, 'max_parallel_tasks', $event.target.value)" :disabled="isWorkspaceSaving(p)">
-                  </div>
-                </div>
               </td>
               <td class="py-3.5 pr-4">
                 <button type="button" class="inline-flex min-h-9 items-center justify-center whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="p.missing" :title="statusTitle(p)" :aria-label="'Kiểm tra trạng thái git của ' + p.name_vi" @click="showStatus(p)">Kiểm tra</button>
@@ -274,11 +267,26 @@
                   </div>
 
                   <div class="space-y-2">
-                    <label :for="'ab-proj-base-branch-' + p.id" class="text-sm font-semibold leading-normal">Nhánh gốc của task mới</label>
-                    <p :id="'ab-proj-base-branch-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Task mới tạo nhánh từ nhánh này. Để trống thì dùng nhánh repo đang ở lúc tạo task.</p>
+                    <span class="block text-sm font-semibold leading-normal">Workspace của task mới</span>
+                    <p :id="'ab-proj-workspace-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Riêng cho mỗi task (worktree, mặc định cho dự án git): mỗi task có một git worktree riêng, repo chính không đổi nhánh, nhiều task có thể chạy cùng lúc. Dùng chung repo (shared): mọi task làm trong repo dự án, lần lượt từng task. Chỉ task tạo sau khi đổi mới theo cách này; task đã có giữ nguyên chỗ làm việc của nó. Đổi ở đây sẽ lưu ngay, cùng với nhánh gốc và 2 tuỳ chọn duyệt bên dưới.</p>
                     <div class="flex flex-wrap items-center gap-2">
-                      <input :id="'ab-proj-base-branch-' + p.id" type="text" autocomplete="off" spellcheck="false" placeholder="nhánh hiện tại" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).base_branch" @input="setWorkspaceDraft(p, 'base_branch', $event.target.value)" :disabled="isWorkspaceSaving(p)" :aria-describedby="'ab-proj-base-branch-help-' + p.id">
+                      <label :for="'ab-proj-workspace-' + p.id" class="text-sm font-semibold leading-normal">Cách làm việc</label>
+                      <select :id="'ab-proj-workspace-' + p.id" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 disabled:opacity-50 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :value="workspaceDraft(p).workspace" @change="applyWorkspaceField(p, 'workspace', $event.target.value)" :disabled="isWorkspaceSaving(p)" :aria-describedby="'ab-proj-workspace-help-' + p.id">
+                        <option value="worktree" :selected="workspaceDraft(p).workspace === 'worktree'">Riêng cho mỗi task (worktree)</option>
+                        <option value="shared" :selected="workspaceDraft(p).workspace === 'shared'">Dùng chung repo (shared)</option>
+                      </select>
                     </div>
+                    <div class="space-y-1" x-show="isWorktreeDraft(p)">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <label :for="'ab-proj-max-parallel-' + p.id" class="text-sm font-semibold leading-normal">Số task chạy cùng lúc</label>
+                        <input :id="'ab-proj-max-parallel-' + p.id" type="number" inputmode="numeric" min="1" max="10" class="min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 disabled:opacity-50 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400 w-24" :value="workspaceDraft(p).max_parallel_tasks" @input="setWorkspaceDraft(p, 'max_parallel_tasks', $event.target.value)" @change="applyWorkspaceField(p, 'max_parallel_tasks', $event.target.value)" :disabled="isWorkspaceSaving(p)" :aria-describedby="'ab-proj-max-parallel-help-' + p.id">
+                      </div>
+                      <p :id="'ab-proj-max-parallel-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Số task của dự án được có run hoặc autopilot chạy cùng lúc (1 đến 10, mặc định 1). Chỉ có tác dụng với worktree riêng; ở chế độ dùng chung mỗi dự án chỉ chạy một việc.</p>
+                    </div>
+                  </div>
+
+                  <div class="space-y-2">
+                    <span class="block text-sm font-semibold leading-normal">Cách duyệt plan và nhánh task</span>
                     <label class="inline-flex min-h-12 items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100">
                       <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="workspaceDraft(p).hold_project_at_gate" :disabled="isWorkspaceSaving(p)" @change="setWorkspaceDraft(p, 'hold_project_at_gate', $event.target.checked)">
                       <span>Giữ dự án khi task chờ duyệt plan (task khác chờ)</span>
@@ -287,16 +295,12 @@
                       <input type="checkbox" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :checked="workspaceDraft(p).auto_checkout_on_approve" :disabled="isWorkspaceSaving(p)" @change="setWorkspaceDraft(p, 'auto_checkout_on_approve', $event.target.checked)">
                       <span>Tự checkout nhánh task khi duyệt (working tree sạch)</span>
                     </label>
-          </div>
-
-          <div class="space-y-2">
-            <span class="text-sm font-semibold leading-normal">Không gian làm việc của task</span>
-            <p :id="'ab-proj-workspace-help-' + p.id" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Dùng chung: mọi task làm trong repo dự án, lần lượt từng task. Worktree riêng: mỗi task có một git worktree riêng, chạy song song tối đa số task đặt ở cột Workspace; repo chính không đổi nhánh. Đổi cách làm việc hoặc số task song song ở cột Workspace sẽ lưu ngay, cùng với nhánh gốc và 2 tuỳ chọn ở trên.</p>
-            <div class="flex flex-wrap items-center gap-2">
-              <button type="button" class="inline-flex min-h-12 items-center justify-center rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isWorkspaceSaving(p)" @click="saveWorkspace(p)">Lưu nhánh và cách duyệt</button>
-            </div>
-            <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="workspaceError(p)" x-text="workspaceError(p)" role="alert"></p>
-          </div>
+                    <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Nhánh gốc của task mới sửa ngay ở cột Nhánh gốc của bảng.</p>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <button type="button" class="inline-flex min-h-12 items-center justify-center rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="isWorkspaceSaving(p)" @click="saveWorkspace(p)">Lưu cách duyệt</button>
+                    </div>
+                    <p class="text-sm font-normal text-rose-700 dark:text-rose-300 break-words" x-show="workspaceExpandedError(p)" x-text="workspaceError(p)" role="alert"></p>
+                  </div>
 
                   <div class="space-y-2">
                     <p class="text-sm font-semibold leading-normal">Ghim thành viên hoặc engine theo vai</p>
