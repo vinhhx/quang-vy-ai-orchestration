@@ -5,7 +5,12 @@
 //! - Tự động tiếp tục (auto_resume) khi auto_resume_quota = true và đã qua resume_after_minutes (chỉ một lần mỗi lần dừng).
 //! - Không tự đổi engine.
 
-use crate::dashboard::api_tasks::{start_new_task, Origin, StartOutcome, StartRequest};
+use crate::dashboard::api_tasks::{
+    find_task_action, is_busy_reason, load_task_state, queued_action_label, queued_action_role,
+    run_control_as, run_task_action, start_new_task, ActionSource, ControlOutcome, Origin,
+    StartOutcome, StartRequest,
+};
+use crate::orchestrator::plancheck::{plan_check, PlanCheck};
 use crate::dashboard::AppState;
 use crate::error::BrainResult;
 use crate::tracing;
@@ -46,6 +51,13 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
     if any_env_retry(&map) {
         let conn = crate::db::open(&st.db_path)?;
         handle_env_stops(st, &conn, &map, crate::db::now_ms())?;
+    }
+
+    // Hành động xếp hàng chờ slot chạy khi dự án hết bận, kể cả khi orchestrator tắt
+    // (như `handle_env_stops`): đó là việc người dùng đã yêu cầu tay.
+    {
+        let conn = crate::db::open(&st.db_path)?;
+        handle_queued_actions(st, &conn)?;
     }
 
     let orch = st.orch();
@@ -651,6 +663,218 @@ pub fn handle_env_stops(
         }
     }
     Ok(restarted)
+}
+
+/// Lý do khi hành động đã biến mất khỏi trạng thái task.
+pub const QUEUED_STATE_CHANGED: &str = "Task đã đổi trạng thái — không chạy nữa";
+
+/// Cảnh báo đã in cho mỗi hàng chờ (id → câu), để một lỗi kéo dài không in lại mỗi 5 giây.
+fn queue_warned() -> &'static std::sync::Mutex<std::collections::HashMap<i64, String>> {
+    static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<i64, String>>> =
+        std::sync::OnceLock::new();
+    WARNED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn warn_queue_once(queued_id: i64, task_id: i64, text: &str) {
+    let mut warned = queue_warned().lock().unwrap_or_else(|e| e.into_inner());
+    if warned.get(&queued_id).map(String::as_str) == Some(text) {
+        return;
+    }
+    warned.insert(queued_id, text.to_string());
+    crate::term::emit(&format!("Task {task_id}: {text}"));
+}
+
+/// Hàng chờ chạy lại bước của task có sẵn khi dự án bận. Mỗi tick duyệt các hàng `waiting`
+/// từ cũ tới mới; hàng chạy được thì chạy bằng đúng `run_task_action` / `run_control_as`,
+/// hàng còn bận thì giữ nguyên. Mỗi dự án bắt đầu tối đa MỘT hành động mỗi tick. Với `run_dev`
+/// kiểm plan trước (`plan_check`): lệch thì đổi hàng thành `relead` kèm lý do (chạy ở tick sau),
+/// không chắc thì giữ `waiting`. Trả id các task đã bắt đầu.
+pub fn handle_queued_actions(st: &AppState, conn: &rusqlite::Connection) -> BrainResult<Vec<i64>> {
+    let rows = crate::db::waiting_actions(conn)?;
+    {
+        // Quên cảnh báo của hàng không còn `waiting`.
+        let live: std::collections::HashSet<i64> = rows.iter().map(|r| r.id).collect();
+        queue_warned()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|id, _| live.contains(id));
+    }
+
+    let mut started_projects: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut started_tasks = Vec::new();
+
+    for row in rows {
+        let task_id = row.task_id;
+        let state = match load_task_state(st, conn, task_id) {
+            Ok(Ok(s)) => s,
+            Ok(Err(_)) => {
+                finish_queued(st, conn, &row, "failed", QUEUED_STATE_CHANGED);
+                continue;
+            }
+            Err(e) => {
+                warn_queue_once(
+                    row.id,
+                    task_id,
+                    &format!("không đọc được trạng thái task — {}", e.message),
+                );
+                continue;
+            }
+        };
+
+        let action = match find_task_action(&state, &row.action_id) {
+            Some(a) => a,
+            None => {
+                finish_queued(st, conn, &row, "failed", QUEUED_STATE_CHANGED);
+                continue;
+            }
+        };
+        if !action.enabled {
+            let reason = action.reason.clone().unwrap_or_default();
+            if is_busy_reason(&state, &reason) {
+                continue; // vẫn bận: giữ `waiting`
+            }
+            // Dev bị khoá vì chính plan (vd. thiếu mục) cũng là plan không còn khớp: đưa về Lead
+            // thay vì bỏ hàng.
+            if row.action_id == "run_dev" {
+                if let PlanCheck::Mismatch(why) = plan_check(&state) {
+                    send_dev_back_to_lead(st, conn, &row, &why);
+                    continue;
+                }
+            }
+            let text = if reason.is_empty() {
+                QUEUED_STATE_CHANGED.to_string()
+            } else {
+                reason
+            };
+            finish_queued(st, conn, &row, "failed", &text);
+            continue;
+        }
+        if started_projects.contains(&state.project.id) {
+            continue; // dự án này đã nhận một hành động ở tick này
+        }
+
+        if row.action_id == "run_dev" {
+            match plan_check(&state) {
+                PlanCheck::Ok => {}
+                PlanCheck::Unsure(why) => {
+                    warn_queue_once(
+                        row.id,
+                        task_id,
+                        &format!(
+                            "chưa kiểm được plan trước khi chạy Dev từ hàng chờ — {why}; thử lại sau"
+                        ),
+                    );
+                    continue;
+                }
+                PlanCheck::Mismatch(why) => {
+                    send_dev_back_to_lead(st, conn, &row, &why);
+                    continue;
+                }
+            }
+        }
+
+        let source = if row.source == ActionSource::Telegram.as_str() {
+            ActionSource::Telegram
+        } else {
+            ActionSource::Dashboard
+        };
+        let outcome = match queued_action_role(&row.action_id) {
+            Some(role) => {
+                run_task_action(st, task_id, &row.action_id, role, None, row.note.as_deref())
+            }
+            None => run_control_as(st, task_id, &row.action_id, None, row.note.as_deref(), source),
+        };
+        let label = queued_action_label(&row.action_id);
+        match outcome {
+            Ok(ControlOutcome::Started { .. }) => {
+                finish_queued(st, conn, &row, "started", "");
+                crate::term::emit(&format!("Task {task_id}: {label} chạy từ hàng chờ"));
+                started_projects.insert(state.project.id.clone());
+                started_tasks.push(task_id);
+            }
+            Ok(ControlOutcome::Refused { kind: "busy", .. }) | Ok(ControlOutcome::Unavailable) => {}
+            Ok(ControlOutcome::Refused { reason, .. }) => {
+                finish_queued(st, conn, &row, "failed", &reason);
+            }
+            Ok(ControlOutcome::Invalid(msg)) | Ok(ControlOutcome::NotFound(msg)) => {
+                finish_queued(st, conn, &row, "failed", &msg);
+            }
+            Ok(_) => {
+                // `Stale` (không truyền `rev` nên không xảy ra) hoặc kết quả không thuộc luồng này.
+                finish_queued(st, conn, &row, "failed", QUEUED_STATE_CHANGED);
+            }
+            Err(e) => warn_queue_once(
+                row.id,
+                task_id,
+                &format!("{label} từ hàng chờ lỗi — {}", e.message),
+            ),
+        }
+    }
+    Ok(started_tasks)
+}
+
+/// Plan không còn khớp: hàng `run_dev` đổi thành `relead` kèm ghi chú cho Lead (chạy ở tick
+/// sau); Dev không chạy.
+fn send_dev_back_to_lead(
+    st: &AppState,
+    conn: &rusqlite::Connection,
+    row: &crate::db::QueuedAction,
+    why: &str,
+) {
+    let note = clip_note(&format!("Plan không còn khớp: {why}"));
+    match crate::db::retarget_queued(conn, row.id, "relead", Some(&note), Some(why)) {
+        Ok(_) => {
+            crate::term::emit(&format!(
+                "Task {}: plan không còn khớp ({why}) — không chạy Dev, chạy lại Lead từ hàng chờ",
+                row.task_id
+            ));
+            let _ = st.hints.send(0);
+        }
+        Err(e) => warn_queue_once(
+            row.id,
+            row.task_id,
+            &format!("không ghi được hàng chờ — {}", e.message),
+        ),
+    }
+}
+
+/// Ghi trạng thái cuối của một hàng chờ, báo màn Task cập nhật; lỗi ghi chỉ in ra terminal.
+fn finish_queued(
+    st: &AppState,
+    conn: &rusqlite::Connection,
+    row: &crate::db::QueuedAction,
+    status: &str,
+    reason: &str,
+) {
+    let reason = if reason.is_empty() { None } else { Some(reason) };
+    match crate::db::set_queued_status(conn, row.id, status, reason) {
+        Ok(_) => {
+            if status == "failed" {
+                crate::term::emit(&format!(
+                    "Task {}: {} trong hàng chờ bị bỏ — {}",
+                    row.task_id,
+                    queued_action_label(&row.action_id),
+                    reason.unwrap_or("")
+                ));
+            }
+            let _ = st.hints.send(0);
+        }
+        Err(e) => crate::term::emit(&format!(
+            "Task {}: không ghi được trạng thái hàng chờ — {}",
+            row.task_id, e.message
+        )),
+    }
+}
+
+/// Cắt ghi chú cho vừa `MAX_NOTE_CHARS` (`normalize_note` từ chối ghi chú dài hơn).
+fn clip_note(note: &str) -> String {
+    let max = crate::roles::lead::MAX_NOTE_CHARS;
+    if note.chars().count() <= max {
+        return note.to_string();
+    }
+    let mut s: String = note.chars().take(max.saturating_sub(1)).collect();
+    s.push('…');
+    s
 }
 
 #[cfg(test)]

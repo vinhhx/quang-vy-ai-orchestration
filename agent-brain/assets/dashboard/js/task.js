@@ -2699,6 +2699,80 @@
         return !a.enabled || Boolean(this.busyAction);
       },
 
+      // ---- Queue for a slot (migration 13): a rerun refused only because the project is busy ----
+      queueableIds: { run_dev: true, run_qa: true, relead: true, auto_start: true },
+
+      // The row the scheduler is holding for this task (`queued_action` of GET /api/tasks/{id}).
+      get queuedAction() {
+        return (this.task && this.task.queued_action) ? this.task.queued_action : null;
+      },
+
+      get hasQueued() {
+        return this.queuedAction !== null;
+      },
+
+      get queuedBannerText() {
+        var q = this.queuedAction;
+        if (!q) return '';
+        return 'Đang chờ slot — ' + (q.label || q.action) + ' (đặt lúc ' + window.AB.fmtClock(q.created_at) + ')';
+      },
+
+      // Set when the row was turned into a Lead rerun because the plan no longer matches.
+      get queuedPlanReason() {
+        var q = this.queuedAction;
+        if (!q || !q.note) return '';
+        return String(q.note).indexOf('Plan không còn khớp') === 0 ? q.note : '';
+      },
+
+      // The server alone decides (a refusal other than busy answers 409 with its reason); the
+      // button shows when the action is locked with the project's busy reason.
+      canQueue: function (a) {
+        if (!a || a.enabled || !this.queueableIds[a.id] || this.hasQueued) return false;
+        var busy = (this.task && this.task.busy_reason) ? this.task.busy_reason : '';
+        return busy !== '' && a.reason === busy;
+      },
+
+      queueButtonId: function (a) {
+        return 'ab-queue-' + (a ? a.id : '');
+      },
+
+      queueDisabled: function () {
+        return Boolean(this.busyAction);
+      },
+
+      queueAction: function (a) {
+        var self = this;
+        if (!a || this.busyAction || !this.canQueue(a)) return;
+        this.busyAction = 'queue_' + a.id;
+        return window.AB.api('POST', '/api/tasks/' + this.id + '/queue-action', { action: a.id }).then(function (res) {
+          self.busyAction = '';
+          if (res && res.status === 201) {
+            self.message = 'Đã xếp hàng chờ slot — ' + a.label + '. Tự chạy khi dự án rảnh.';
+            self.load();
+          } else if (res && res.status === 409 && res.data && res.data.error) {
+            self.message = res.data.error;
+            self.load();
+          } else {
+            self.message = window.AB.errorText(res);
+          }
+        });
+      },
+
+      cancelQueued: function () {
+        var self = this;
+        if (this.busyAction || !this.hasQueued) return;
+        this.busyAction = 'queue_cancel';
+        return window.AB.api('POST', '/api/tasks/' + this.id + '/queue-action/cancel', {}).then(function (res) {
+          self.busyAction = '';
+          if (res && res.status === 200) {
+            self.message = 'Đã huỷ hàng chờ slot.';
+            self.load();
+          } else {
+            self.message = window.AB.errorText(res);
+          }
+        });
+      },
+
       actionText: function (a) {
         if (this.busyAction === a.id) {
           if (a.id === 'auto_start') return 'Đang bật...';

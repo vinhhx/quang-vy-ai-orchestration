@@ -979,7 +979,7 @@ fn v3_db_gains_team_json() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
-    assert_eq!(agent_brain::db::SCHEMA_VERSION, 12);
+    assert_eq!(agent_brain::db::SCHEMA_VERSION, 13);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 
     let n: i64 = conn
@@ -1032,7 +1032,7 @@ fn fresh_db_has_team_json_at_current_version() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
-    assert_eq!(user_ver, 12);
+    assert_eq!(user_ver, 13);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 }
 
@@ -1068,7 +1068,7 @@ fn v4_db_upgrades_to_v5_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 12);
+    assert_eq!(user_ver, 13);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Verify existing data preserved
@@ -1146,7 +1146,7 @@ fn v5_db_upgrades_to_v6_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 12);
+    assert_eq!(user_ver, 13);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong intake phải được giữ nguyên
@@ -1247,7 +1247,7 @@ fn v6_db_upgrades_to_v7_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 12);
+    assert_eq!(user_ver, 13);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong runs phải được giữ nguyên
@@ -1333,7 +1333,7 @@ fn v7_db_upgrades_to_v8_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 12);
+    assert_eq!(user_ver, 13);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong tasks phải được giữ nguyên và cột level mặc định là 'vua'
@@ -1426,7 +1426,7 @@ fn v8_db_upgrades_to_v9_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 12);
+    assert_eq!(user_ver, 13);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong proposals phải có after_proposal_id = None
@@ -1495,7 +1495,7 @@ fn v9_db_upgrades_to_v10_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 12);
+    assert_eq!(user_ver, 13);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Existing intake row has default split = true (1)
@@ -1668,7 +1668,7 @@ fn v11_db_upgrades_to_v12_keeping_data() {
 
     let conn = agent_brain::db::open(&db_path).expect("open v11 DB upgrades to v12");
 
-    assert_eq!(user_version(&conn), 12);
+    assert_eq!(user_version(&conn), 13);
     assert_eq!(user_version(&conn), agent_brain::db::SCHEMA_VERSION);
     for table in [
         "projects",
@@ -1754,7 +1754,7 @@ fn v12_reopen_runs_no_migration() {
     build_v11(&db_path);
 
     let first = agent_brain::db::open(&db_path).expect("first open upgrades");
-    assert_eq!(user_version(&first), 12);
+    assert_eq!(user_version(&first), 13);
     first
         .execute(
             "INSERT INTO journal_state(key, value, updated_at) VALUES ('k', 'v', 1)",
@@ -1764,7 +1764,7 @@ fn v12_reopen_runs_no_migration() {
     drop(first);
 
     let second = agent_brain::db::open(&db_path).expect("reopen of a v12 DB");
-    assert_eq!(user_version(&second), 12);
+    assert_eq!(user_version(&second), 13);
     assert_eq!(count_rows(&second, "journal_state"), 1);
 }
 
@@ -1976,4 +1976,159 @@ fn human_run_not_reconciled() {
     let run = agent_brain::db::get_run(&conn, id).unwrap().unwrap();
     assert_eq!(run.status, "succeeded");
     assert_eq!(run.engine, HUMAN_ENGINE_NFC);
+}
+
+/// A v12 DB: the v11 fixture plus migration 12 applied by hand (journal tables).
+fn build_v12(path: &Path) {
+    build_v11(path);
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(agent_brain::db::MIGRATIONS[11]).unwrap();
+    conn.pragma_update(None, "user_version", 12).unwrap();
+}
+
+fn object_exists(conn: &rusqlite::Connection, kind: &str, name: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
+        [kind, name],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap()
+        == 1
+}
+
+#[test]
+fn v12_db_upgrades_to_v13_keeping_data() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v12(&db_path);
+
+    let conn = agent_brain::db::open(&db_path).expect("open v12 DB upgrades to v13");
+
+    assert_eq!(user_version(&conn), 13);
+    assert_eq!(user_version(&conn), agent_brain::db::SCHEMA_VERSION);
+    for table in [
+        "projects",
+        "tasks",
+        "runs",
+        "events",
+        "intake",
+        "proposals",
+        "plan_approvals",
+    ] {
+        assert_eq!(count_rows(&conn, table), 1, "{table} keeps its row");
+    }
+    assert!(object_exists(&conn, "table", "queued_actions"));
+    assert!(object_exists(&conn, "index", "queued_actions_one_waiting"));
+    assert_eq!(count_rows(&conn, "queued_actions"), 0);
+    assert_eq!(fk_violation_count(&conn), 0);
+}
+
+#[test]
+fn queued_actions_unique_index_rejects_two_waiting_rows_for_one_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v12(&db_path);
+    let conn = agent_brain::db::open(&db_path).unwrap();
+
+    let insert = |action: &str, status: &str| {
+        conn.execute(
+            "INSERT INTO queued_actions (task_id, action_id, source, status, created_at, updated_at)
+             VALUES (1, ?1, 'ui', ?2, 1, 1)",
+            [action, status],
+        )
+    };
+    insert("run_dev", "waiting").unwrap();
+    assert!(insert("relead", "waiting").is_err(), "second waiting row");
+    // Rows in other states do not count against the unique index.
+    insert("relead", "cancelled").unwrap();
+    insert("relead", "failed").unwrap();
+    insert("run_qa", "started").unwrap();
+    assert_eq!(count_rows(&conn, "queued_actions"), 4);
+}
+
+#[test]
+fn queued_actions_check_rejects_unknown_action_and_status() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v12(&db_path);
+    let conn = agent_brain::db::open(&db_path).unwrap();
+
+    let bad_action = conn.execute(
+        "INSERT INTO queued_actions (task_id, action_id, source, created_at, updated_at)
+         VALUES (1, 'approve', 'ui', 1, 1)",
+        [],
+    );
+    assert!(bad_action.is_err(), "unknown action_id");
+    let bad_status = conn.execute(
+        "INSERT INTO queued_actions (task_id, action_id, source, status, created_at, updated_at)
+         VALUES (1, 'run_dev', 'ui', 'done', 1, 1)",
+        [],
+    );
+    assert!(bad_status.is_err(), "unknown status");
+    assert_eq!(count_rows(&conn, "queued_actions"), 0);
+}
+
+#[test]
+fn queued_actions_helpers_replace_waiting_row_and_order_fifo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v12(&db_path);
+    let conn = agent_brain::db::open(&db_path).unwrap();
+    // A second task so FIFO has two entries.
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, base_branch, base_commit, status, created_at, updated_at, level)
+         VALUES (2, 1, 'task-2', 'Task 2', 'task/2', 'main', 'base2', 'open', 1000, 1000, 'vua')",
+        [],
+    )
+    .unwrap();
+
+    let first = agent_brain::db::enqueue_action(&conn, 1, "run_dev", None, "ui").unwrap();
+    let second =
+        agent_brain::db::enqueue_action(&conn, 2, "run_qa", Some("ghi chú"), "ui").unwrap();
+    let replaced = agent_brain::db::enqueue_action(&conn, 1, "relead", Some("x"), "ui").unwrap();
+    assert_ne!(first, replaced);
+
+    assert_eq!(count_rows(&conn, "queued_actions"), 3, "replaced row is kept");
+    let old_status: String = conn
+        .query_row(
+            "SELECT status FROM queued_actions WHERE id = ?1",
+            [first],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_status, "cancelled");
+
+    let waiting = agent_brain::db::waiting_actions(&conn).unwrap();
+    assert_eq!(waiting.len(), 2, "one waiting row per task");
+    assert_eq!(waiting[0].id, second, "oldest first");
+    assert_eq!(waiting[1].id, replaced);
+    assert_eq!(waiting[1].action_id, "relead");
+
+    let for_task = agent_brain::db::waiting_action_for_task(&conn, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(for_task.id, replaced);
+
+    assert!(agent_brain::db::retarget_queued(
+        &conn,
+        replaced,
+        "run_qa",
+        Some("n"),
+        Some("lý do")
+    )
+    .unwrap());
+    let r = agent_brain::db::waiting_action_for_task(&conn, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (r.action_id.as_str(), r.note.as_deref(), r.reason.as_deref()),
+        ("run_qa", Some("n"), Some("lý do"))
+    );
+
+    assert!(agent_brain::db::set_queued_status(&conn, replaced, "cancelled", None).unwrap());
+    assert!(agent_brain::db::waiting_action_for_task(&conn, 1)
+        .unwrap()
+        .is_none());
+    // A non-waiting row cannot be retargeted.
+    assert!(!agent_brain::db::retarget_queued(&conn, replaced, "run_dev", None, None).unwrap());
 }

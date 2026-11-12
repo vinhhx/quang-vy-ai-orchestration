@@ -81,6 +81,18 @@ Bản này thêm ba bảng cho nhật ký Obsidian: `journal_state` (trạng th�
 
 Quay lại bản cũ: dừng `serve`, rồi khôi phục **cùng lúc** binary cũ và bản sao lưu (`cp -p brain.db.bak-pre-7-<ngày> brain.db` trong `~/.local/share/agent-brain`, xóa `brain.db-wal` / `brain.db-shm` của bản mới nếu có, và chép lại `-wal` / `-shm` của bản sao lưu nếu bạn đã sao lưu chúng). Chỉ khôi phục một trong hai thì không chạy được: binary cũ từ chối database lược đồ 12, còn binary mới lại nâng bản sao lưu lên lược đồ 12. Task, run và dữ liệu nhật ký ghi sau lúc nâng cấp không có trong bản sao lưu (vault trên GitHub không bị ảnh hưởng và xuất lại được từ `brain.db`).
 
+### Nâng cấp lên schema 13 (hàng chờ chạy lại bước của task)
+Bản này thêm bảng `queued_actions` (hàng chờ chạy lại bước của task có sẵn khi dự án bận, xem "Quy tắc điều phối" ở mục 14) và nâng `brain.db` lên lược đồ 13 ngay lần đầu binary mới mở database. Mọi dữ liệu cũ được giữ nguyên. Việc nâng chỉ đi một chiều: sau đó binary cũ từ chối database với `CSDL … có phiên bản 13, mới hơn bản agent-brain này (hỗ trợ tới 12) — hãy cài agent-brain mới hơn.` **Không thay binary khi còn task đang chạy**: chỉ cài lúc khởi động lại `serve`, sau khi mọi run và autopilot đã xong.
+1. Dừng `agent-brain serve` (Ctrl+C trong terminal của nó) và chờ các run / autopilot đang chạy xong (hoặc dừng chúng), để không còn tiến trình `agent-brain` nào mở `brain.db`.
+2. **Trước** lần chạy đầu tiên của binary mới, SAO LƯU database:
+   ```bash
+   cp -p ~/.local/share/agent-brain/brain.db ~/.local/share/agent-brain/brain.db.bak-pre-13-$(date +%Y%m%d)
+   ```
+   `brain.db` dùng chế độ WAL: nếu cạnh nó còn file `brain.db-wal`, chép cả file đó với cùng đuôi `.bak-pre-13-<ngày>` (và `brain.db-shm` nếu có).
+3. Cài binary mới (mục trên), rồi chạy lại `agent-brain serve`.
+
+Quay lại bản cũ: dừng `serve`, rồi khôi phục **cùng lúc** binary cũ và bản sao lưu (`cp -p brain.db.bak-pre-13-<ngày> brain.db` trong `~/.local/share/agent-brain`, xóa `brain.db-wal` / `brain.db-shm` của bản mới nếu có, và chép lại `-wal` / `-shm` của bản sao lưu nếu bạn đã sao lưu chúng). Chỉ khôi phục một trong hai thì không chạy được: binary cũ từ chối database lược đồ 13, còn binary mới lại nâng bản sao lưu lên lược đồ 13. Các hàng chờ ghi sau lúc nâng cấp không có trong bản sao lưu.
+
 ---
 
 ## 3. Bảng lệnh CLI
@@ -720,6 +732,8 @@ Lệnh `agent-brain serve [--port N]` khởi động giao diện web nội bộ 
 ### Quy tắc điều phối & Hồ sơ (Pipeline & Profile Rules)
 - **Quy tắc pipeline**: Sau khi Lead chạy xong, task chuyển sang trạng thái `Chờ duyệt plan`. Với quy trình thủ công (ví dụ `nhanh`) hoặc khi autopilot đang tắt, các bước Dev và QA chỉ chạy khi người dùng chủ động bấm nút; với quy trình `auto` (ví dụ `mac-dinh`), autopilot tự chạy các bước sau khi bạn duyệt plan (xem mục Autopilot). Nội dung plan không chỉnh sửa trên web; nếu gặp `Vướng mắc` (dev:blocked) hoặc `Cần sửa` (qa:fix), giao diện cung cấp nút bấm để chạy lại Lead hoặc tiếp tục Dev sau khi người dùng sửa file và commit.
 - **Ràng buộc một run mỗi dự án**: Không cho phép khởi chạy song song hai tác vụ trên cùng một dự án. Nút chạy sẽ bị vô hiệu hóa kèm lý do thông báo nếu dự án đang bận.
+- **Xếp hàng chờ slot (chạy lại bước của task có sẵn)**: Khi `Chạy Dev`, `Chạy QA`, `Chạy lại Lead` hoặc `Bật autopilot` của một task có sẵn bị khóa CHỈ vì dự án đang bận (đúng lý do bận của dự án, ví dụ `max_parallel_tasks` đã đủ), màn Task hiện thêm nút `Xếp hàng chờ slot`. Bấm thì ghi nhận hành động vào bảng `queued_actions` và màn Task hiện `Đang chờ slot — <hành động> (đặt lúc HH:MM)` kèm nút `Huỷ`. Mỗi tick (5 giây) của bộ lập lịch duyệt các hàng đang chờ từ cũ tới mới, kể cả khi `orchestrator.enabled = false`: hàng nào chạy được thì chạy bằng đúng hàm của nút gốc, hàng còn bận thì giữ nguyên, hàng mà hành động đã biến mất khỏi trạng thái task (task đổi trạng thái) thì bị bỏ với lý do `Task đã đổi trạng thái — không chạy nữa`. Mỗi task có tối đa MỘT hàng đang chờ (xếp hàng lần hai thay hàng trước); mỗi dự án chỉ bắt đầu thêm một hành động mỗi tick. Lý do khóa khác (không được phép, task đang có run...) không xếp hàng.
+  - **Kiểm tra plan trước khi Dev chạy từ hàng chờ**: chỉ đọc, KHÔNG đụng git (không merge, không rebase). Plan còn đúng khi (a) file plan đọc được và `validate_plan` không có lỗi, (b) commit plan trên nhánh task còn tồn tại và, nếu task đã duyệt, bằng commit đã duyệt, (c) không file nào trong bảng `Thay đổi` của plan đã bị sửa trên nhánh gốc kể từ `base_commit`. Lệch thì KHÔNG chạy Dev: hàng đổi thành `Chạy lại Lead` kèm ghi chú `Plan không còn khớp: <lý do>` (màn Task hiện lý do) và chạy ở tick sau. Lỗi khi kiểm tra (git lỗi...) là "không chắc": hàng giữ nguyên chờ, cảnh báo ra terminal, thử lại ở tick sau; Dev không chạy và task không bị đẩy về Lead.
 - **Ràng buộc tài khoản cá nhân (Personal Profile)**: Tuân thủ quy tắc E-06, toàn hệ thống chỉ cho phép tối đa 1 tác vụ chạy với profile `personal` tại một thời điểm để tránh xung đột `~/.claude-orca`.
 - **Bộ chuyển đổi Profile**: Bộ chọn profile trên giao diện (`Tất cả` / `work` / `personal`) chỉ có tác dụng lọc tầm nhìn (view filter) cho danh sách task, thống kê và bộ gợi ý dự án. Một task mới khi tạo sẽ luôn chạy dưới profile được cấu hình sẵn của dự án đó trong `projects_map.json`, giao diện không cho phép ghi đè profile khi giao việc.
 
@@ -734,6 +748,8 @@ Task và việc chạy:
 - `POST /api/tasks/{id}/dev`: Khởi chạy bước Dev (thân `{}`).
 - `POST /api/tasks/{id}/qa`: Khởi chạy bước QA (thân `{}`).
 - `POST /api/tasks/{id}/relead`: Chạy lại Lead từ khung plan mới (thân `{}`); khi autopilot còn bật cho task thì chạy `agent-brain auto N --replan`. Bị từ chối trong lúc autopilot chờ ở cổng duyệt plan.
+- `POST /api/tasks/{id}/queue-action`: Xếp hàng chờ slot (`{ "action": "run_dev|run_qa|relead|auto_start", "note": "..."? }`, ghi chú chỉ dùng cho `relead`). `201` với `queued_id`, `action`, `status: "waiting"`; `409` (`kind: "not_queueable"`) khi hành động chạy được ngay hoặc bị khóa vì lý do khác bận; `400` khi hành động không nằm trong danh sách hoặc ghi chú quá dài; `404` khi task lạ. `GET /api/tasks/{id}` có thêm `queued_action` (`null` hoặc `{ id, action, label, note, reason, created_at }`, chỉ hàng đang chờ) và `busy_reason` (lý do bận của dự án).
+- `POST /api/tasks/{id}/queue-action/cancel`: Huỷ hàng đang chờ của task (thân `{}`); `200` với `cancelled` (`false` khi không có hàng chờ), `404` khi task lạ.
 - `POST /api/tasks/{id}/team`: Đổi đội hình của task chưa chạy (`{ "team": "...", "rev": "..." }`, `rev` không bắt buộc); ghi một dòng `team_history`. Bị từ chối khi có run đang chạy, autopilot đang chạy task, hoặc bước nhân sự đang chờ.
 - `POST /api/tasks/{id}/quota-rerun`: Chạy lại bước vừa dừng vì hết quota bằng một đội hình (`{ "team": "...", "rev": "..." }`, `rev` không bắt buộc); chỉ hợp lệ khi bước gần nhất có outcome `quota` (`409` nếu không). Chọn lại đúng đội hình hiện tại cũng được và cũng ghi một dòng lịch sử. Engine mới tiếp tục trên thư mục làm việc hiện tại.
 - `POST /api/tasks/{id}/human/done`, `POST /api/tasks/{id}/human/return`: `Xong` / `Trả lại` cho bước Dev của nhân sự (thân `{}`), cùng hàm với `agent-brain human done|return`; không có nút tương ứng trên Telegram.
