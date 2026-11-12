@@ -2813,6 +2813,9 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "updated_at": task.updated_at,
             "inputs": inputs_meta,
             "queued_action": queued_action_json(&conn, task.id)?,
+            // Lý do bận của dự án (chuỗi đúng bằng `reason` của hành động bị khoá vì bận): màn
+            // Task dựa vào đó để hiện nút "Xếp hàng chờ slot".
+            "busy_reason": state.busy,
             "project": {
                 "id": project.id,
                 "name_vi": project.name_vi,

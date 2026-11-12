@@ -657,6 +657,24 @@ fn api_queue_cancel_and_task_json() {
     let g = srv.get("/api/tasks/1");
     assert_eq!(g.status, 200);
     assert!(g.json()["queued_action"].is_null());
+    // The busy reason the screen compares with each locked action's reason.
+    let busy = g.json()["busy_reason"]
+        .as_str()
+        .expect("busy_reason")
+        .to_string();
+    assert!(busy.contains("autopilot"), "{busy}");
+    let relead_reason = g.json()["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "relead")
+        .map(|a| a["reason"].clone())
+        .expect("relead action");
+    assert_eq!(
+        relead_reason,
+        json!(busy),
+        "relead is locked with the busy reason"
+    );
 
     let r = srv.post_json("/api/tasks/1/queue-action", &json!({ "action": "relead" }));
     assert_eq!(r.status, 201, "{}", r.text());

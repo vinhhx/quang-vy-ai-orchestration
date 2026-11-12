@@ -41,6 +41,13 @@
       </div>
     </div>
 
+    <!-- Waiting for a slot (queued rerun, migration 13) -->
+    <div data-queued-banner x-show="hasQueued" role="status" aria-live="polite" class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2">
+      <p class="text-base font-semibold leading-normal break-words" x-text="queuedBannerText"></p>
+      <p class="text-base font-normal leading-normal break-words" x-show="queuedPlanReason" x-text="queuedPlanReason"></p>
+      <button type="button" id="ab-queue-cancel" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="queueDisabled()" @click="cancelQueued()">Huỷ</button>
+    </div>
+
     <!-- Stop banner (autopilot stopped with a reason) -->
     <div data-stop-banner x-show="showBanner" aria-live="polite" class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-4">
       <div class="flex items-center gap-2">
@@ -102,6 +109,7 @@
           <div class="ml-auto space-y-1">
             <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
             <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
+            <button type="button" :id="queueButtonId(a)" x-show="canQueue(a)" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="queueDisabled()" @click="queueAction(a)">Xếp hàng chờ slot</button>
           </div>
         </template>
       </div>
@@ -233,6 +241,7 @@
                     </template>
                     <button :id="actionId(a)" type="button" class="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl px-2 py-2 text-center text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
                     <p :id="reasonId(a)" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
+                    <button type="button" :id="queueButtonId(a)" x-show="canQueue(a)" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="queueDisabled()" @click="queueAction(a)">Xếp hàng chờ slot</button>
                     <template x-if="a.id === 'approve' && hasPlanWarnings">
                       <div class="mt-1 space-y-0.5 rounded-xl bg-amber-50 p-2 text-xs text-amber-800 ring-1 ring-amber-300 dark:bg-amber-950/40 dark:text-amber-200 dark:ring-amber-700">
                         <template x-for="w in planWarnings" :key="w">
@@ -355,6 +364,7 @@
               <button :id="actionId(a)" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="actionClass(a)" :disabled="actionDisabled(a)" :title="a.reason || ''" :aria-describedby="reasonId(a)" @click="onAction(a)" x-text="actionText(a)"></button>
               <p :id="reasonId(a)" class="text-sm font-medium leading-normal text-amber-800 dark:text-amber-300 whitespace-pre-wrap break-words" x-show="showReason(a)" x-text="reasonText(a)"></p>
               <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="actionHelp(a)" x-text="actionHelp(a)"></p>
+              <button type="button" :id="queueButtonId(a)" x-show="canQueue(a)" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="queueDisabled()" @click="queueAction(a)">Xếp hàng chờ slot</button>
               <template x-if="a.id === 'approve' && hasPlanWarnings">
                 <div class="mt-1 space-y-0.5 rounded-xl bg-amber-50 p-2 text-xs text-amber-800 ring-1 ring-amber-300 dark:bg-amber-950/40 dark:text-amber-200 dark:ring-amber-700">
                   <template x-for="w in planWarnings" :key="w">

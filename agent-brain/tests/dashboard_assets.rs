@@ -281,3 +281,45 @@ fn assign_screen_queues_work_when_project_is_busy() {
         "assign.html must have the queued-busy callout"
     );
 }
+
+#[test]
+fn task_screen_queues_reruns_while_the_project_is_busy() {
+    let js = agent_brain::dashboard::assets::lookup("/js/task.js").expect("task.js asset");
+    let js = String::from_utf8(js.body.to_vec()).expect("task.js is utf-8");
+    for needle in [
+        "queue-action",
+        "queue-action/cancel",
+        "queued_action",
+        "busy_reason",
+        "canQueue",
+        "queueAction",
+        "cancelQueued",
+        "Đang chờ slot",
+        "Plan không còn khớp",
+    ] {
+        assert!(js.contains(needle), "task.js must contain {needle}");
+    }
+
+    let html = agent_brain::dashboard::assets::lookup("/screens/task.html").expect("task screen");
+    let html = String::from_utf8(html.body.to_vec()).expect("task.html is utf-8");
+    assert!(
+        html.contains("data-queued-banner"),
+        "task.html must have the waiting-for-a-slot banner"
+    );
+    assert!(
+        html.contains("x-show=\"hasQueued\""),
+        "the banner is shown only while a row waits"
+    );
+    assert!(
+        html.contains("Xếp hàng chờ slot"),
+        "task.html must have the queue button"
+    );
+    assert!(
+        html.contains("cancelQueued()"),
+        "task.html must have the cancel button"
+    );
+    assert!(
+        !html.contains("<script") && !html.contains("<style") && !html.contains(" style=\""),
+        "CSP: no inline script or style in the task screen"
+    );
+}
