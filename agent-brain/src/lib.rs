@@ -8,6 +8,7 @@ pub mod container;
 pub mod dashboard;
 pub mod departments;
 pub mod db;
+pub mod doctor;
 pub mod dsh;
 pub mod engine;
 pub mod error;
