@@ -114,6 +114,78 @@ fn merge_config_of(obj: &serde_json::Map<String, serde_json::Value>) -> BrainRes
     Ok(merge)
 }
 
+/// `housekeeping` block of config.json: tự dọn worktree của task đã xong và nhánh task đã merge.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Housekeeping {
+    /// Bật dọn tự động (mặc định bật).
+    pub enabled: bool,
+    /// Số phút giữa hai lần dọn (1..=1440).
+    pub interval_minutes: u64,
+    /// Worktree sạch của task xong mà nhánh CHƯA merge được dọn sau chừng này ngày (1..=365);
+    /// nhánh luôn được giữ.
+    pub keep_unmerged_days: u64,
+    /// Xoá nhánh `task/*`, `analysis/*` đã merge (`git branch -d`, không bao giờ `-D`).
+    pub delete_merged_branches: bool,
+    /// Ổ chứa worktree còn dưới chừng này GB thì dọn sớm mọi worktree sạch của task xong
+    /// (0..=2000; 0 = tắt dọn theo dung lượng).
+    pub min_free_gb: u64,
+}
+
+impl Default for Housekeeping {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_minutes: 10,
+            keep_unmerged_days: 7,
+            delete_merged_branches: true,
+            min_free_gb: 20,
+        }
+    }
+}
+
+/// Reads the optional `housekeeping` block; a missing key (or block) keeps its default.
+fn housekeeping_of(obj: &serde_json::Map<String, serde_json::Value>) -> BrainResult<Housekeeping> {
+    let mut hk = Housekeeping::default();
+    let Some(val) = obj.get("housekeeping") else {
+        return Ok(hk);
+    };
+    let Some(m) = val.as_object() else {
+        return Err(BrainError::error("Cấu hình housekeeping phải là object"));
+    };
+    let bool_key = |key: &str, slot: &mut bool| -> BrainResult<()> {
+        if let Some(v) = m.get(key) {
+            match v.as_bool() {
+                Some(b) => *slot = b,
+                None => {
+                    return Err(BrainError::error(format!(
+                        "Cấu hình housekeeping.{key} phải là boolean"
+                    )))
+                }
+            }
+        }
+        Ok(())
+    };
+    let num_key = |key: &str, lo: u64, hi: u64, slot: &mut u64| -> BrainResult<()> {
+        if let Some(v) = m.get(key) {
+            match v.as_u64() {
+                Some(n) if (lo..=hi).contains(&n) => *slot = n,
+                _ => {
+                    return Err(BrainError::error(format!(
+                        "Cấu hình housekeeping.{key} phải là số nguyên từ {lo} đến {hi}"
+                    )))
+                }
+            }
+        }
+        Ok(())
+    };
+    bool_key("enabled", &mut hk.enabled)?;
+    num_key("interval_minutes", 1, 1440, &mut hk.interval_minutes)?;
+    num_key("keep_unmerged_days", 1, 365, &mut hk.keep_unmerged_days)?;
+    bool_key("delete_merged_branches", &mut hk.delete_merged_branches)?;
+    num_key("min_free_gb", 0, 2000, &mut hk.min_free_gb)?;
+    Ok(hk)
+}
+
 /// `orchestrator.triage_engine` when config.json has none.
 pub const DEFAULT_TRIAGE_ENGINE: &str = "claude";
 
@@ -1137,6 +1209,8 @@ pub struct Config {
     pub engines: EnginesCfg,
     /// Optional `merge` block (Merge & push after QA).
     pub merge: MergeConfig,
+    /// Optional `housekeeping` block: tự dọn worktree task xong và nhánh đã merge.
+    pub housekeeping: Housekeeping,
 }
 
 impl Config {
@@ -1599,6 +1673,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
     let journal = crate::journal::config::parse(obj.get("journal"))?;
 
     let merge = merge_config_of(obj)?;
+    let housekeeping = housekeeping_of(obj)?;
 
     Ok(Config {
         claude_bin,
@@ -1620,6 +1695,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         telegram_max_tasks_per_day,
         engines,
         merge,
+        housekeeping,
     })
 }
 
@@ -2911,6 +2987,68 @@ mod tests {
         }
         let mut not_obj = base;
         not_obj["merge"] = serde_json::json!(true);
+        assert!(config_from_value(&not_obj).is_err());
+    }
+
+    #[test]
+    fn housekeeping_block_defaults_ranges_and_types() {
+        let base: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        let want = Housekeeping {
+            enabled: true,
+            interval_minutes: 10,
+            keep_unmerged_days: 7,
+            delete_merged_branches: true,
+            min_free_gb: 20,
+        };
+        assert_eq!(Housekeeping::default(), want);
+        // no block at all, and an empty block: the defaults
+        let mut none = base.clone();
+        none.as_object_mut().unwrap().remove("housekeeping");
+        assert_eq!(config_from_value(&none).unwrap().housekeeping, want);
+        let mut empty = base.clone();
+        empty["housekeeping"] = serde_json::json!({});
+        assert_eq!(config_from_value(&empty).unwrap().housekeeping, want);
+
+        // valid values, edges included
+        let mut set = base.clone();
+        set["housekeeping"] = serde_json::json!({
+            "enabled": false, "interval_minutes": 1440, "keep_unmerged_days": 365,
+            "delete_merged_branches": false, "min_free_gb": 2000
+        });
+        let h = config_from_value(&set).unwrap().housekeeping;
+        assert!(!h.enabled && !h.delete_merged_branches);
+        assert_eq!((h.interval_minutes, h.keep_unmerged_days, h.min_free_gb), (1440, 365, 2000));
+        let mut low = base.clone();
+        low["housekeeping"] = serde_json::json!({"interval_minutes": 1, "keep_unmerged_days": 1, "min_free_gb": 0});
+        let h = config_from_value(&low).unwrap().housekeeping;
+        assert_eq!((h.interval_minutes, h.keep_unmerged_days, h.min_free_gb), (1, 1, 0));
+        // a partial block keeps the other defaults
+        let mut partial = base.clone();
+        partial["housekeeping"] = serde_json::json!({"keep_unmerged_days": 30});
+        let h = config_from_value(&partial).unwrap().housekeeping;
+        assert_eq!(h.keep_unmerged_days, 30);
+        assert_eq!(h.interval_minutes, 10);
+
+        for (key, val) in [
+            ("enabled", serde_json::json!("yes")),
+            ("delete_merged_branches", serde_json::json!(1)),
+            ("interval_minutes", serde_json::json!(0)),
+            ("interval_minutes", serde_json::json!(1441)),
+            ("interval_minutes", serde_json::json!("10")),
+            ("interval_minutes", serde_json::json!(1.5)),
+            ("keep_unmerged_days", serde_json::json!(0)),
+            ("keep_unmerged_days", serde_json::json!(366)),
+            ("keep_unmerged_days", serde_json::json!(-1)),
+            ("min_free_gb", serde_json::json!(2001)),
+            ("min_free_gb", serde_json::json!(true)),
+        ] {
+            let mut bad = base.clone();
+            bad["housekeeping"] = serde_json::json!({ key: val.clone() });
+            let e = config_from_value(&bad).expect_err(&format!("{key}={val}"));
+            assert!(e.message.contains(&format!("housekeeping.{key}")), "{key}={val}: {}", e.message);
+        }
+        let mut not_obj = base;
+        not_obj["housekeeping"] = serde_json::json!(true);
         assert!(config_from_value(&not_obj).is_err());
     }
 }

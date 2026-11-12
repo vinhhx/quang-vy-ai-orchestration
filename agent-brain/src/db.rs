@@ -472,6 +472,17 @@ pub fn tasks_with_workdir(conn: &Connection, project_id: i64) -> BrainResult<Vec
     Ok(rows)
 }
 
+/// Every task of a project (by row id), oldest first (housekeeping: which branches belong to
+/// a task, which tasks are still unfinished).
+pub fn tasks_of_project(conn: &Connection, project_id: i64) -> BrainResult<Vec<TaskRow>> {
+    let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1 ORDER BY id");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params![project_id], task_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn upsert_task(
     conn: &Connection,
     project_id: i64,

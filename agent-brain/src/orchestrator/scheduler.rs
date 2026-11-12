@@ -58,6 +58,11 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
     {
         let conn = crate::db::open(&st.db_path)?;
         handle_queued_actions(st, &conn)?;
+        // Tự dọn worktree task xong và nhánh đã merge (cũng khi orchestrator tắt); lỗi chỉ ghi
+        // ra terminal, không làm hỏng tick.
+        if let Err(e) = crate::orchestrator::housekeeping::run_if_due(st, &conn, crate::db::now_ms()) {
+            crate::term::emit(&format!("Dọn tự động: lỗi — {}", e.message));
+        }
     }
 
     let orch = st.orch();
