@@ -854,7 +854,7 @@ fn finish_after_result_stops_hung_tree_as_success() {
     assert!(
         obs.notices
             .iter()
-            .any(|n| n.contains("agy đã trả kết quả nhưng chưa thoát sau 1s")),
+            .any(|n| n.contains("Run đã trả kết quả nhưng tiến trình chưa thoát sau 1s")),
         "notices: {:?}",
         obs.notices
     );

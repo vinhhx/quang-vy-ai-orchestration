@@ -212,9 +212,11 @@ pub struct RunRequest {
     /// (by marker and recorded pids), because killing the host-side docker client leaves them
     /// running (S6 4a). `None` for every other engine.
     pub container_stop: Option<crate::dsh::DshRun>,
-    /// agy only: once the observer has seen the final `result` event, the child gets this long to
-    /// exit by itself; after it the whole tree is stopped (S4) and the run counts as ended by
-    /// itself (`RunStop::AfterResult`), because an MCP server agy started can keep it alive.
+    /// Every stream engine: once the observer has seen the final `result` event, the child gets
+    /// this long to exit by itself; after it the whole tree is stopped (S4) and the run counts as
+    /// ended by itself (`RunStop::AfterResult`), because an MCP server (agy) or a stuck CLI
+    /// (claude) can keep the process alive after its answer. A `result` that reports an error
+    /// is never turned into a success this way (`RunObserver::result_is_error`).
     /// `None` = wait for the child (or the timeout) as before.
     pub finish_after_result: Option<Duration>,
     /// C2: re-check the project's environment every `interval` while the run runs;
@@ -340,6 +342,12 @@ pub trait RunObserver {
     fn kill_requested(&mut self) -> bool;
     /// The final `result` event of the run has been seen (read after every `on_line`).
     fn result_seen(&self) -> bool {
+        false
+    }
+    /// The final `result` event reports an error (`is_error`, an `error_*` subtype, a non-SUCCESS
+    /// agy status). Read only when the run was stopped by `finish_after_result`, so that a
+    /// failed answer is not turned into `Succeeded`.
+    fn result_is_error(&self) -> bool {
         false
     }
     /// `Some(reason)` asks the runner to stop the run now (read after every `on_line`). The stop
@@ -650,7 +658,7 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
                 let grace = req.finish_after_result.unwrap_or_default();
                 stopping = Some(RunStop::AfterResult);
                 obs.on_notice(&format!(
-                    "agy đã trả kết quả nhưng chưa thoát sau {}s — dừng cây tiến trình",
+                    "Run đã trả kết quả nhưng tiến trình chưa thoát sau {}s — dừng cây tiến trình",
                     grace.as_secs()
                 ));
                 kill_task = Some(spawn_stop(
@@ -839,6 +847,10 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         Some(RunStop::AfterResult) => {
             if obs.kill_requested() {
                 RunStatus::Killed
+            } else if obs.result_is_error() {
+                // The answer itself reported an error: stopping the leftover process must not
+                // make it a success.
+                RunStatus::Failed
             } else {
                 RunStatus::Succeeded
             }
