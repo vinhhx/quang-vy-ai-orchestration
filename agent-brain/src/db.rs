@@ -210,9 +210,22 @@ CREATE VIRTUAL TABLE journal_fts USING fts5(
   title, project, grp, day_text, status,
   tokenize='unicode61 remove_diacritics 0'
 );"#,
+    // 13: hàng chờ chạy lại bước của task có sẵn khi dự án bận
+    r#"CREATE TABLE queued_actions (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  action_id TEXT NOT NULL CHECK (action_id IN ('run_dev','run_qa','relead','auto_start')),
+  note TEXT,
+  source TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'waiting' CHECK (status IN ('waiting','started','failed','cancelled')),
+  reason TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX queued_actions_one_waiting ON queued_actions(task_id) WHERE status = 'waiting';"#,
 ];
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -1256,6 +1269,124 @@ pub fn latest_different_plan_approval(
     } else {
         Ok(None)
     }
+}
+
+/// Một hàng trong hàng chờ chạy lại bước của task (migration 13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedAction {
+    pub id: i64,
+    pub task_id: i64,
+    pub action_id: String,
+    pub note: Option<String>,
+    pub source: String,
+    pub status: String,
+    pub reason: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+const QUEUED_COLUMNS: &str =
+    "id, task_id, action_id, note, source, status, reason, created_at, updated_at";
+
+fn row_to_queued(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedAction> {
+    Ok(QueuedAction {
+        id: r.get(0)?,
+        task_id: r.get(1)?,
+        action_id: r.get(2)?,
+        note: r.get(3)?,
+        source: r.get(4)?,
+        status: r.get(5)?,
+        reason: r.get(6)?,
+        created_at: r.get(7)?,
+        updated_at: r.get(8)?,
+    })
+}
+
+/// Xếp một hành động vào hàng chờ của task. Mỗi task chỉ có tối đa một hàng
+/// `waiting`: hàng `waiting` cũ (nếu có) được đánh dấu `cancelled` (giữ lịch sử, id không bị
+/// dùng lại) và hàng mới thay chỗ nó, trong một giao dịch.
+pub fn enqueue_action(
+    conn: &Connection,
+    task_id: i64,
+    action_id: &str,
+    note: Option<&str>,
+    source: &str,
+) -> BrainResult<i64> {
+    let now = now_ms();
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE queued_actions SET status = 'cancelled', reason = 'Thay bằng hành động xếp hàng mới', updated_at = ?2
+         WHERE task_id = ?1 AND status = 'waiting'",
+        params![task_id, now],
+    )?;
+    tx.execute(
+        "INSERT INTO queued_actions (task_id, action_id, note, source, status, reason, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 'waiting', NULL, ?5, ?5)",
+        params![task_id, action_id, note, source, now],
+    )?;
+    let id = tx.last_insert_rowid();
+    tx.commit()?;
+    Ok(id)
+}
+
+/// Mọi hàng `waiting`, cũ nhất trước (FIFO).
+pub fn waiting_actions(conn: &Connection) -> BrainResult<Vec<QueuedAction>> {
+    let sql = format!(
+        "SELECT {QUEUED_COLUMNS} FROM queued_actions WHERE status = 'waiting' ORDER BY created_at ASC, id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], row_to_queued)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+pub fn waiting_action_for_task(
+    conn: &Connection,
+    task_id: i64,
+) -> BrainResult<Option<QueuedAction>> {
+    let sql = format!(
+        "SELECT {QUEUED_COLUMNS} FROM queued_actions WHERE task_id = ?1 AND status = 'waiting'"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params![task_id])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(row_to_queued(r)?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Đổi trạng thái một hàng; trả `true` khi có hàng được đổi.
+pub fn set_queued_status(
+    conn: &Connection,
+    id: i64,
+    status: &str,
+    reason: Option<&str>,
+) -> BrainResult<bool> {
+    let n = conn.execute(
+        "UPDATE queued_actions SET status = ?2, reason = ?3, updated_at = ?4 WHERE id = ?1",
+        params![id, status, reason, now_ms()],
+    )?;
+    Ok(n > 0)
+}
+
+/// Đổi hành động của một hàng đang `waiting` (vd. `run_dev` lệch plan thành `relead`).
+pub fn retarget_queued(
+    conn: &Connection,
+    id: i64,
+    action_id: &str,
+    note: Option<&str>,
+    reason: Option<&str>,
+) -> BrainResult<bool> {
+    let n = conn.execute(
+        "UPDATE queued_actions SET action_id = ?2, note = ?3, reason = ?4, updated_at = ?5
+         WHERE id = ?1 AND status = 'waiting'",
+        params![id, action_id, note, reason, now_ms()],
+    )?;
+    Ok(n > 0)
 }
 
 pub fn get_intake(conn: &Connection, id: i64) -> BrainResult<Option<IntakeRow>> {
