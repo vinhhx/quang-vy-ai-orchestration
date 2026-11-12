@@ -254,3 +254,30 @@ fn markdown_renderer_is_served_and_loaded_by_index() {
         "task screen must have the Markdown preview container"
     );
 }
+
+#[test]
+fn assign_screen_queues_work_when_project_is_busy() {
+    let js = agent_brain::dashboard::assets::lookup("/js/assign.js").expect("assign.js asset");
+    let js = String::from_utf8(js.body.to_vec()).expect("assign.js is utf-8");
+    for needle in ["isBusyOnly", "queuedBusy", "busyHint", "preflight.kind === 'busy'"] {
+        assert!(js.contains(needle), "assign.js must contain {needle}");
+    }
+    // `canStart` no longer demands `preflight.can_start` on its own: a busy project queues.
+    assert!(
+        js.contains("(this.preflight.can_start || this.queuedBusy)"),
+        "canStart must also accept queuedBusy"
+    );
+    assert!(
+        !js.contains("this.preflight && this.preflight.can_start &&"),
+        "canStart must not require preflight.can_start alone"
+    );
+
+    let html =
+        agent_brain::dashboard::assets::lookup("/screens/assign.html").expect("assign screen");
+    let html = String::from_utf8(html.body.to_vec()).expect("assign.html is utf-8");
+    assert!(html.contains("busyHint"), "assign.html must show busyHint");
+    assert!(
+        html.contains("x-show=\"queuedBusy\""),
+        "assign.html must have the queued-busy callout"
+    );
+}

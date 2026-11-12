@@ -211,8 +211,13 @@
       <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100">Nhánh hiện tại: <span class="font-mono break-all" x-text="branchName"></span></p>
       <p class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="planLine"></p>
       <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200" x-show="warningText" x-text="warningText"></div>
+      <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 space-y-2" x-show="queuedBusy">
+        <p class="text-base font-semibold leading-normal" x-text="busyHint"></p>
+        <p class="text-base font-normal leading-normal" x-text="reasonHead"></p>
+      </div>
       <div class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 space-y-2" x-show="hasRefusal">
         <p class="text-base font-normal leading-normal" x-text="reasonHead"></p>
+        <p class="text-base font-normal leading-normal" x-show="isBusyOnly" x-text="busyHint"></p>
         <div class="rounded-xl bg-slate-100 p-4 font-mono text-sm leading-normal break-all whitespace-pre-wrap text-slate-900 dark:bg-slate-900 dark:text-slate-100" x-show="hasDirty" x-text="dirtyText"></div>
       </div>
     </div>
