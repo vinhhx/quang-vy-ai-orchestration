@@ -453,6 +453,85 @@ pub fn chain_wait_text(proposal_id: i64, title: &str, error: &str) -> String {
     format!("Đề xuất #{proposal_id} «{title}» đang {wait}.")
 }
 
+/// Revision of a proposal: changes when its title, team, workflow, priority, status or
+/// `updated_at` change, so a button sent earlier no longer matches once the proposal was edited
+/// (on the dashboard) or handled. 16 hex characters, like a task's `rev`.
+pub fn proposal_rev(p: &crate::db::ProposalRow) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    p.id.hash(&mut h);
+    p.title.hash(&mut h);
+    p.team.hash(&mut h);
+    p.workflow.hash(&mut h);
+    p.priority.hash(&mut h);
+    p.status.hash(&mut h);
+    p.updated_at.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+/// `pending` proposals of intakes created from Telegram (the dashboard's own proposals are not
+/// sent), with the project slug. Oldest first.
+fn pending_telegram_proposals(
+    conn: &Connection,
+) -> BrainResult<Vec<(crate::db::ProposalRow, String)>> {
+    let mut out = Vec::new();
+    for (id, slug) in pending_telegram_proposal_ids(conn)? {
+        if let Some(p) = crate::db::get_proposal(conn, id)? {
+            if p.status == "pending" {
+                out.push((p, slug));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn pending_telegram_proposal_ids(conn: &Connection) -> BrainResult<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT p.id, COALESCE(pr.slug, '') FROM proposals p
+         JOIN intake i ON i.id = p.intake_id
+         LEFT JOIN projects pr ON pr.id = p.project_id
+         WHERE i.source = 'telegram' AND p.status = 'pending' ORDER BY p.id",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// A message with `Duyệt đề xuất` / `Từ chối` for each `pending` proposal of a Telegram-created
+/// intake, once. Seeded at start-up (a serve restart never resends, TELE-04); an id that is no
+/// longer `pending` is forgotten.
+#[derive(Debug, Default)]
+pub struct ProposalNotices {
+    seen: HashSet<i64>,
+}
+
+impl ProposalNotices {
+    pub fn seed(conn: &Connection) -> BrainResult<ProposalNotices> {
+        let seen = pending_telegram_proposal_ids(conn)?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        Ok(ProposalNotices { seen })
+    }
+
+    pub fn scan(&mut self, conn: &Connection) -> BrainResult<Vec<Outgoing>> {
+        let mut out = Vec::new();
+        let mut now_seen = HashSet::new();
+        for (p, slug) in pending_telegram_proposals(conn)? {
+            if !self.seen.contains(&p.id) {
+                out.push(Outgoing::Prompt {
+                    text: render::proposal_text(&p, &slug),
+                    keyboard: render::keyboard_json(&render::proposal_keyboard(&p)),
+                });
+            }
+            now_seen.insert(p.id);
+        }
+        self.seen = now_seen;
+        Ok(out)
+    }
+}
+
 /// B3: approved proposals the scheduler holds until the earlier code task is merged
 /// (`proposals.error` = "Chờ task #N được merge vào …"): one message per `(proposal, error)`, so
 /// the 5-second scheduler tick never repeats it and a changed wait is reported again. Seeded at
@@ -616,17 +695,20 @@ fn run(ctx: Arc<BotCtx>) {
     let mut fails;
     let mut reruns;
     let mut waits;
+    let mut proposals;
     loop {
         match det
             .seed(&ctx.st, &conn)
             .and_then(|()| IntakeFailures::seed(&conn))
             .and_then(|f| EnvReruns::seed(&conn).map(|r| (f, r)))
             .and_then(|(f, r)| ChainWaits::seed(&conn).map(|w| (f, r, w)))
+            .and_then(|(f, r, w)| ProposalNotices::seed(&conn).map(|n| (f, r, w, n)))
         {
-            Ok((f, r, w)) => {
+            Ok((f, r, w, n)) => {
                 fails = f;
                 reruns = r;
                 waits = w;
+                proposals = n;
                 break;
             }
             Err(e) => {
@@ -683,6 +765,7 @@ fn run(ctx: Arc<BotCtx>) {
             fails.scan(&conn),
             reruns.scan(&conn),
             waits.scan(&conn),
+            proposals.scan(&conn),
             journal_mail.scan(&conn, &ctx.st.cfg.journal, crate::journal::now_ms()),
         ];
         let mut failed = false;
@@ -788,6 +871,69 @@ mod tests {
         // Seeded at start-up: not resent.
         let mut fresh = EnvReruns::seed(&conn).unwrap();
         assert!(fresh.scan(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn telegram_proposals_are_sent_once_and_rev_follows_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::open(&dir.path().join("brain.db")).unwrap();
+        conn.execute(
+            "INSERT INTO projects (slug, path, profile) VALUES ('p1', '/tmp/p1', 'work')",
+            [],
+        )
+        .unwrap();
+        let mk = |source: &str, title: &str| {
+            let intake =
+                crate::db::insert_intake(&conn, source, Some(1), "việc", "normal", true).unwrap();
+            crate::db::insert_proposal(
+                &conn,
+                &crate::db::NewProposal {
+                    intake_id: intake,
+                    project_id: 1,
+                    title,
+                    request: "việc",
+                    priority: "normal",
+                    team: "dev",
+                    workflow: "mac-dinh",
+                    reason: Some("vì cần"),
+                    level: "vua",
+                },
+            )
+            .unwrap()
+        };
+        let old = mk("telegram", "cũ");
+        let mut notices = ProposalNotices::seed(&conn).unwrap();
+        assert!(notices.scan(&conn).unwrap().is_empty(), "seeded proposals are not resent");
+
+        let tg = mk("telegram", "mới");
+        let _ui = mk("ui", "từ dashboard");
+        let got = notices.scan(&conn).unwrap();
+        assert_eq!(got.len(), 1, "{got:?}");
+        match &got[0] {
+            Outgoing::Prompt { text, keyboard } => {
+                assert!(text.starts_with(&format!("Đề xuất #{tg} — dự án p1")), "{text}");
+                assert!(text.contains("Tiêu đề: mới"), "{text}");
+                let rows = keyboard["inline_keyboard"][0].as_array().unwrap();
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0]["text"], "Duyệt đề xuất");
+                assert_eq!(rows[1]["text"], "Từ chối");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(notices.scan(&conn).unwrap().is_empty());
+
+        // A handled proposal is forgotten; a fresh seed does not resend the open one.
+        assert!(crate::db::set_proposal_status_reason(&conn, old, "rejected", None).unwrap());
+        assert!(notices.scan(&conn).unwrap().is_empty());
+        let mut fresh = ProposalNotices::seed(&conn).unwrap();
+        assert!(fresh.scan(&conn).unwrap().is_empty());
+
+        let before = proposal_rev(&crate::db::get_proposal(&conn, tg).unwrap().unwrap());
+        assert_eq!(before.len(), 16);
+        conn.execute("UPDATE proposals SET title = 'đã sửa' WHERE id = ?1", [tg])
+            .unwrap();
+        let after = proposal_rev(&crate::db::get_proposal(&conn, tg).unwrap().unwrap());
+        assert_ne!(before, after);
     }
 
     #[test]

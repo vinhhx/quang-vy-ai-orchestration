@@ -426,6 +426,106 @@ pub struct ApproveProposalBody {
     pub title: Option<String>,
 }
 
+/// Field overrides when approving a proposal. `Default` approves it as proposed.
+#[derive(Default)]
+pub struct ProposalOverrides {
+    pub team: Option<String>,
+    pub workflow: Option<String>,
+    pub priority: Option<String>,
+    pub title: Option<String>,
+}
+
+/// Approves a `pending` proposal through the same path the dashboard uses (including
+/// `triage::validate`). The outer `Err` is an internal error; the inner `Err` carries the
+/// HTTP status and the user-facing message the dashboard returns.
+pub(crate) fn approve_pending_proposal(
+    st: &AppState,
+    id: i64,
+    over: ProposalOverrides,
+) -> crate::error::BrainResult<Result<(), (StatusCode, String)>> {
+    let conn = crate::db::open(&st.db_path)?;
+    let prop = match crate::db::get_proposal(&conn, id)? {
+        Some(p) => p,
+        None => {
+            return Ok(Err((
+                StatusCode::NOT_FOUND,
+                format!("Không tìm thấy đề xuất #{id}"),
+            )));
+        }
+    };
+
+    if prop.status != "pending" {
+        return Ok(Err((
+            StatusCode::CONFLICT,
+            "Chỉ có thể duyệt đề xuất đang ở trạng thái pending".to_string(),
+        )));
+    }
+
+    let team = over.team.unwrap_or(prop.team);
+    let workflow = over.workflow.unwrap_or(prop.workflow);
+    let priority = over.priority.unwrap_or(prop.priority);
+    let title = over.title.unwrap_or(prop.title);
+
+    let project_slug: String = match conn.query_row(
+        "SELECT slug FROM projects WHERE id = ?1",
+        rusqlite::params![prop.project_id],
+        |r| r.get(0),
+    ) {
+        Ok(s) => s,
+        Err(_) => {
+            return Ok(Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("Không tìm thấy dự án với ID {}", prop.project_id),
+            )));
+        }
+    };
+
+    let draft = crate::orchestrator::triage::ProposalDraft {
+        project: project_slug,
+        title: title.clone(),
+        request: prop.request.clone(),
+        priority: priority.clone(),
+        level: prop.level.clone(),
+        team: team.clone(),
+        workflow: workflow.clone(),
+        reason: prop.reason.clone(),
+        after: None,
+        orig_index: None,
+    };
+
+    let map = crate::projects::load_map(&st.map_path)?;
+    let projects = crate::projects::projects_of(&map);
+    let (teams_loaded, _) = crate::teams::load();
+    let workflows_loaded = crate::workflows::load(&st.cfg);
+
+    if let Err(err_msg) = crate::orchestrator::triage::validate(
+        &draft,
+        &projects,
+        &teams_loaded,
+        &workflows_loaded,
+        &st.cfg.engines,
+    ) {
+        return Ok(Err((StatusCode::UNPROCESSABLE_ENTITY, err_msg)));
+    }
+
+    let updated = crate::db::approve_proposal_with(
+        &conn,
+        id,
+        &team,
+        &workflow,
+        &priority,
+        &title,
+    )?;
+    if !updated {
+        return Ok(Err((
+            StatusCode::CONFLICT,
+            "Chỉ có thể duyệt đề xuất đang ở trạng thái pending".to_string(),
+        )));
+    }
+
+    Ok(Ok(()))
+}
+
 async fn post_proposal_approve(
     State(st): State<Arc<AppState>>,
     AxumPath(id): AxumPath<i64>,
@@ -445,90 +545,13 @@ async fn post_proposal_approve(
         }
     };
 
-    let res = blocking(move || {
-        let conn = crate::db::open(&st.db_path)?;
-        let prop = match crate::db::get_proposal(&conn, id)? {
-            Some(p) => p,
-            None => {
-                return Ok(Err((
-                    StatusCode::NOT_FOUND,
-                    format!("Không tìm thấy đề xuất #{id}"),
-                )));
-            }
-        };
-
-        if prop.status != "pending" {
-            return Ok(Err((
-                StatusCode::CONFLICT,
-                "Chỉ có thể duyệt đề xuất đang ở trạng thái pending".to_string(),
-            )));
-        }
-
-        let team = b.team.unwrap_or(prop.team);
-        let workflow = b.workflow.unwrap_or(prop.workflow);
-        let priority = b.priority.unwrap_or(prop.priority);
-        let title = b.title.unwrap_or(prop.title);
-
-        let project_slug: String = match conn.query_row(
-            "SELECT slug FROM projects WHERE id = ?1",
-            rusqlite::params![prop.project_id],
-            |r| r.get(0),
-        ) {
-            Ok(s) => s,
-            Err(_) => {
-                return Ok(Err((
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    format!("Không tìm thấy dự án với ID {}", prop.project_id),
-                )));
-            }
-        };
-
-        let draft = crate::orchestrator::triage::ProposalDraft {
-            project: project_slug,
-            title: title.clone(),
-            request: prop.request.clone(),
-            priority: priority.clone(),
-            level: prop.level.clone(),
-            team: team.clone(),
-            workflow: workflow.clone(),
-            reason: prop.reason.clone(),
-            after: None,
-            orig_index: None,
-        };
-
-        let map = crate::projects::load_map(&st.map_path)?;
-        let projects = crate::projects::projects_of(&map);
-        let (teams_loaded, _) = crate::teams::load();
-        let workflows_loaded = crate::workflows::load(&st.cfg);
-
-        if let Err(err_msg) = crate::orchestrator::triage::validate(
-            &draft,
-            &projects,
-            &teams_loaded,
-            &workflows_loaded,
-            &st.cfg.engines,
-        ) {
-            return Ok(Err((StatusCode::UNPROCESSABLE_ENTITY, err_msg)));
-        }
-
-        let updated = crate::db::approve_proposal_with(
-            &conn,
-            id,
-            &team,
-            &workflow,
-            &priority,
-            &title,
-        )?;
-        if !updated {
-            return Ok(Err((
-                StatusCode::CONFLICT,
-                "Chỉ có thể duyệt đề xuất đang ở trạng thái pending".to_string(),
-            )));
-        }
-
-        Ok(Ok(()))
-    })
-    .await;
+    let over = ProposalOverrides {
+        team: b.team,
+        workflow: b.workflow,
+        priority: b.priority,
+        title: b.title,
+    };
+    let res = blocking(move || approve_pending_proposal(&st, id, over)).await;
 
     match res {
         Ok(Ok(())) => json_response(
@@ -545,27 +568,34 @@ pub struct RejectBody {
     pub reason: Option<String>,
 }
 
+/// Rejects a `pending` proposal. The inner `Err` is the HTTP status the dashboard returns
+/// (`NOT_FOUND` when the proposal does not exist, `CONFLICT` when it is not `pending`).
+pub(crate) fn reject_pending_proposal(
+    st: &AppState,
+    id: i64,
+    reason: Option<&str>,
+) -> crate::error::BrainResult<Result<(), StatusCode>> {
+    let conn = crate::db::open(&st.db_path)?;
+    let prop = match crate::db::get_proposal(&conn, id)? {
+        Some(p) => p,
+        None => return Ok(Err(StatusCode::NOT_FOUND)),
+    };
+
+    if prop.status != "pending" {
+        return Ok(Err(StatusCode::CONFLICT));
+    }
+
+    crate::db::set_proposal_status_reason(&conn, id, "rejected", reason)?;
+    Ok(Ok(()))
+}
+
 async fn post_proposal_reject(
     State(st): State<Arc<AppState>>,
     AxumPath(id): AxumPath<i64>,
     body: Option<Json<RejectBody>>,
 ) -> Response {
     let reason = body.and_then(|Json(b)| b.reason);
-    let res = blocking(move || {
-        let conn = crate::db::open(&st.db_path)?;
-        let prop = match crate::db::get_proposal(&conn, id)? {
-            Some(p) => p,
-            None => return Ok(Err(StatusCode::NOT_FOUND)),
-        };
-
-        if prop.status != "pending" {
-            return Ok(Err(StatusCode::CONFLICT));
-        }
-
-        crate::db::set_proposal_status_reason(&conn, id, "rejected", reason.as_deref())?;
-        Ok(Ok(()))
-    })
-    .await;
+    let res = blocking(move || reject_pending_proposal(&st, id, reason.as_deref())).await;
 
     match res {
         Ok(Ok(())) => json_response(

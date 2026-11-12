@@ -483,6 +483,18 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
         }
         return;
     }
+    // Proposal buttons (`w:` approve, `z:` reject) have their own grammar; neither code is an
+    // `Op` of the 05.3 grammar.
+    if data.starts_with("w:") || data.starts_with("z:") {
+        match (message_id, callback::decode_proposal(data)) {
+            (Some(m), Some(pcb)) => {
+                let press = press_of(ctx, id, m, msg);
+                on_proposal(ctx, &press, &pcb);
+            }
+            _ => answer(ctx, &id, INVALID_BUTTON, false),
+        }
+        return;
+    }
     let (message_id, cb) = match (message_id, callback::decode(data)) {
         (Some(m), Some(cb)) => (m, cb),
         _ => {
@@ -506,6 +518,156 @@ fn on_callback(ctx: &Arc<BotCtx>, state: &mut PollState, cq: &Value) {
         Op::ApproveQa => act(ctx, &press, &cb, "Duyệt → QA", "approve_qa"),
         Op::MergeAsk | Op::MergeConfirm | Op::MergeCancel => on_merge_push(ctx, &press, &cb),
     }
+}
+
+/// `Duyệt đề xuất` / `Từ chối` on a proposal message of a Telegram-created intake. Approving goes
+/// through the dashboard's own path (`approve_pending_proposal`, which runs `triage::validate`);
+/// it only lets the orchestrator start the task, the plan gate stays separate. Fails closed:
+/// a stale button, a proposal handled elsewhere or a project no longer in `telegram_projects`
+/// changes nothing.
+fn on_proposal(ctx: &Arc<BotCtx>, press: &Press, cb: &callback::ProposalCb) {
+    let id = cb.proposal_id;
+    let label = if cb.approve {
+        "Duyệt đề xuất"
+    } else {
+        "Từ chối đề xuất"
+    };
+    let strip = |suffix: &str| {
+        edit_result(
+            ctx,
+            press.message_id,
+            &press.text,
+            suffix,
+            render::no_keyboard(),
+        );
+    };
+    let conn = match crate::db::open(&ctx.st.db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            crate::term::emit(&format!("Telegram: lỗi mở CSDL: {}", e.message));
+            answer(ctx, &press.id, INTERNAL_TEXT, true);
+            return;
+        }
+    };
+    let prop = match crate::db::get_proposal(&conn, id) {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            answer(ctx, &press.id, "Đề xuất không còn", true);
+            audit_proposal(label, id, "đề xuất không còn");
+            return;
+        }
+        Err(e) => {
+            crate::term::emit(&format!("Telegram: lỗi đọc đề xuất {id}: {}", e.message));
+            answer(ctx, &press.id, INTERNAL_TEXT, true);
+            return;
+        }
+    };
+    if prop.status != "pending" {
+        answer(
+            ctx,
+            &press.id,
+            &format!("Đề xuất đã được xử lý ({}) ở nơi khác", prop.status),
+            false,
+        );
+        strip("\n\n— đã xử lý ngoài Telegram");
+        audit_proposal(label, id, &format!("đã xử lý ({})", prop.status));
+        return;
+    }
+    if detect::proposal_rev(&prop) != cb.rev {
+        answer(
+            ctx,
+            &press.id,
+            "Nút cũ — đề xuất đã đổi, xem lại trên dashboard",
+            true,
+        );
+        strip("\n\n— nút cũ, đề xuất đã đổi: xem lại trên dashboard");
+        audit_proposal(label, id, "nút cũ");
+        return;
+    }
+
+    if cb.approve {
+        let slug: Option<String> = conn
+            .query_row(
+                "SELECT slug FROM projects WHERE id = ?1",
+                rusqlite::params![prop.project_id],
+                |r| r.get(0),
+            )
+            .ok();
+        let allowed = slug
+            .as_deref()
+            .is_some_and(|s| intake::project_in_allowlist(&ctx.st.map_path, s));
+        if !allowed {
+            answer(
+                ctx,
+                &press.id,
+                "Dự án không còn trong danh sách Telegram — duyệt trên dashboard.",
+                true,
+            );
+            audit_proposal(label, id, "dự án không còn trong danh sách Telegram");
+            return;
+        }
+    }
+
+    let hhmm = crate::autopilot::view::fmt_hhmm(crate::db::now_ms());
+    if cb.approve {
+        match crate::dashboard::api_intake::approve_pending_proposal(
+            &ctx.st,
+            id,
+            crate::dashboard::api_intake::ProposalOverrides::default(),
+        ) {
+            Ok(Ok(())) => {
+                strip(&format!("\n\n✓ Đã duyệt từ Telegram lúc {hhmm}"));
+                answer(ctx, &press.id, "Đã duyệt", false);
+                audit_proposal(label, id, "đã duyệt");
+            }
+            Ok(Err((code, msg))) => {
+                if code == axum::http::StatusCode::CONFLICT
+                    || code == axum::http::StatusCode::NOT_FOUND
+                {
+                    // Handled elsewhere between the read and the approval.
+                    answer(ctx, &press.id, "Đề xuất đã được xử lý ở nơi khác", false);
+                    strip("\n\n— đã xử lý ngoài Telegram");
+                } else {
+                    // Validation error: the buttons stay, the proposal is unchanged.
+                    answer(ctx, &press.id, &render::clip(&msg, 180), true);
+                }
+                audit_proposal(label, id, &render::clip(&msg, 120));
+            }
+            Err(e) => {
+                crate::term::emit(&format!(
+                    "Telegram: lỗi nội bộ khi duyệt đề xuất {id} ({})",
+                    e.message
+                ));
+                answer(ctx, &press.id, INTERNAL_TEXT, true);
+                audit_proposal(label, id, INTERNAL_TEXT);
+            }
+        }
+        return;
+    }
+    match crate::dashboard::api_intake::reject_pending_proposal(&ctx.st, id, None) {
+        Ok(Ok(())) => {
+            strip(&format!("\n\n✗ Đã từ chối từ Telegram lúc {hhmm}"));
+            answer(ctx, &press.id, "Đã từ chối", false);
+            audit_proposal(label, id, "đã từ chối");
+        }
+        Ok(Err(_)) => {
+            answer(ctx, &press.id, "Đề xuất đã được xử lý ở nơi khác", false);
+            strip("\n\n— đã xử lý ngoài Telegram");
+            audit_proposal(label, id, "đã xử lý ở nơi khác");
+        }
+        Err(e) => {
+            crate::term::emit(&format!(
+                "Telegram: lỗi nội bộ khi từ chối đề xuất {id} ({})",
+                e.message
+            ));
+            answer(ctx, &press.id, INTERNAL_TEXT, true);
+            audit_proposal(label, id, INTERNAL_TEXT);
+        }
+    }
+}
+
+fn audit_proposal(label: &str, proposal_id: i64, result: &str) {
+    crate::term::emit_out(&format!("Telegram: {label} {proposal_id} — {result}"));
 }
 
 /// The pressed message of a callback query. Telegram sends only `chat`, `message_id` and
