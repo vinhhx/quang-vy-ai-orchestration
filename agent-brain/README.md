@@ -447,6 +447,16 @@ Khóa `test_commands` của dự án trong `projects_map.json` là danh sách m�
 - Dự án không khai khóa: QA và Dev chạy như trước.
 - Kết hợp với `container`: lệnh `php`, `composer` trong `test_commands` vẫn chạy trong container của dự án nhờ shim (mục trên).
 
+### Worktree của task và `node_modules`
+
+Dự án ở chế độ worktree (mặc định cho dự án git loại `code`) cho mỗi task một worktree riêng. Checkout mới không có `node_modules` (thư mục bị ignore), nên dự án node thì agent không chạy được công cụ của dự án. Vì vậy, khi tạo worktree (và khi một worktree có từ trước được dùng lại), agent-brain tự nối `node_modules` của repo gốc vào worktree:
+
+- **Điều kiện**: gốc dự án có file `package.json` và `node_modules` là thư mục thật (không phải symlink), và worktree chưa có `node_modules` nào (kể cả symlink hỏng). Không đủ điều kiện thì không làm gì, không báo lỗi.
+- **Cách nối**: `<worktree>/node_modules` là symlink tuyệt đối tới `<repo gốc>/node_modules`. Dòng `node_modules` (không có dấu `/`, nên khớp cả symlink) được nối thêm vào `.git/info/exclude` của repo (dùng chung cho mọi worktree), nên `git status` trong worktree vẫn sạch và Lead không bị chặn vì "thay đổi chưa commit". Lệnh kiểm tra thay đổi của agent-brain còn bỏ qua mọi symlink tên `node_modules` cho dự án cũ hoặc repo không có dòng exclude đó; thư mục `node_modules` thật có file chưa theo dõi vẫn được báo.
+- **Quyền đọc**: guard cho phép ĐỌC (không ghi; `Grep`/`Glob` giữ nguyên) các đường dẫn nằm dưới đích của symlink `node_modules` trong worktree, ví dụ `node_modules/.bin/<lệnh>`; các thành phần `.git`, `.planning`, `.env*` bên trong vẫn bị cấm. Không mở thêm thư mục nào khác của repo gốc.
+- **Tắt theo dự án**: đặt `"link_node_modules": false` ở mục dự án trong `projects_map.json` (sửa file, chưa có nút trên dashboard). Giá trị không phải boolean thì giữ mặc định (bật).
+- **Rủi ro**: `npm install` (hay công cụ ghi vào `node_modules`) chạy trong worktree sẽ ghi vào `node_modules` dùng chung của repo gốc và ảnh hưởng mọi worktree khác. Chỉ nối `node_modules` ở gốc dự án; `packages/*/node_modules` của monorepo không được nối.
+
 ### Nhật ký Obsidian (journal)
 
 `agent-brain` ghi một nhật ký công việc theo ngày vào một vault Obsidian (một repo git riêng). **Một chiều**: `brain.db` là nguồn duy nhất, vault chỉ là bản hiển thị dựng lại được bất kỳ lúc nào bằng `agent-brain journal export`; không có lệnh hay đường dẫn nào đọc vault ngược vào `brain.db`. Nhật ký **tắt** cho tới khi `config.json` có mục `journal` với `repo_url`.
