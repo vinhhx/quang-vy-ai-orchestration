@@ -718,7 +718,28 @@
         return idx !== -1 ? r.slice(0, idx) : r;
       },
 
+      // The only refusal is "project busy": the work can wait in the queue.
+      get isBusyOnly() {
+        return Boolean(this.preflight && !this.preflight.can_start && this.preflight.kind === 'busy');
+      },
+
+      // Busy project + orchestrator on: the assign button stays enabled and the work is queued.
+      get queuedBusy() {
+        return Boolean(this.isBusyOnly && this.orchestratorEnabled);
+      },
+
+      get busyHint() {
+        if (this.queuedBusy) {
+          return 'Dự án đang bận — việc sẽ vào hàng chờ và tự chạy khi dự án rảnh.';
+        }
+        if (this.isBusyOnly && !this.orchestratorEnabled) {
+          return 'Bật Điều phối ở Cài đặt để việc tự xếp hàng.';
+        }
+        return '';
+      },
+
       get hasRefusal() {
+        if (this.queuedBusy) return false;
         return Boolean(this.preflight && !this.preflight.can_start && this.preflight.reason);
       },
 
@@ -743,7 +764,7 @@
           this.selected &&
           this.request && this.request.trim() &&
           this.slug && this.slug.trim() &&
-          this.preflight && this.preflight.can_start &&
+          this.preflight && (this.preflight.can_start || this.queuedBusy) &&
           !this.preflightPending &&
           !this.submitting &&
           !this.accepted &&
@@ -761,7 +782,7 @@
         if (!this.request || !this.request.trim()) return 'Nhập yêu cầu';
         if (!this.slug || !this.slug.trim()) return 'Nhập tên task';
         if (this.preflightPending || !this.preflight) return 'Đang kiểm tra...';
-        if (this.reasonHead) return this.reasonHead;
+        if (this.reasonHead && !this.queuedBusy) return this.reasonHead;
         if (this.hasInputErrors()) return 'Kiểm tra lại tài liệu đầu vào (tên .md hoặc kích thước)';
         return '';
       },

@@ -882,3 +882,90 @@ fn retry_failed_intake() {
     let resp = srv.request("POST", &format!("/api/intake/{failed}/retry"), &[], b"{}");
     assert_eq!(resp.status, 401);
 }
+
+/// Giao việc khi dự án đang bận (worktree, `max_parallel_tasks = 1`, một run còn sống):
+/// preflight báo `busy`, nhưng `POST /api/intake` và `POST /api/tasks` `direct: true` vẫn nhận
+/// việc vào hàng chờ (màn Giao việc dựa vào đây để không khoá nút). Phía scheduler giữ đề xuất
+/// `approved` khi bận đã có test ở `orchestrator_scheduler.rs`
+/// (`test_scheduler_busy_project_skips_and_starts_next_project_proposal`).
+#[test]
+fn busy_project_still_accepts_intake_and_direct_tasks() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    // Worktree mode, one task at a time (the message "chờ một task xong" comes from this mode).
+    let mut map = sb.read_map();
+    let entry = map["projects"][0].as_object_mut().expect("project entry");
+    entry.insert("workspace".to_string(), json!("worktree"));
+    entry.insert("max_parallel_tasks".to_string(), json!(1));
+    sb.write_map(map["projects"].clone(), &[]);
+    sb.write_config(json!({ "orchestrator": { "enabled": true, "max_parallel": 3 } }));
+    let srv = sb.serve(&[]);
+
+    // Một run còn sống (pid của chính tiến trình test) giữ hết một chỗ của dự án.
+    let conn = sb.db();
+    let project_id = agent_brain::db::project_row_id(&conn, "web-ban-hang").expect("project row");
+    let me = std::process::id() as i32;
+    let start = agent_brain::procs::proc_id(me).expect("proc_id").start as i64;
+    agent_brain::db::insert_run(
+        &conn,
+        &agent_brain::db::NewRun {
+            task_id: None,
+            project_id,
+            role: "dev".to_string(),
+            profile: "work".to_string(),
+            model: None,
+            pid: me as i64,
+            pgid: me as i64,
+            pid_start: start,
+            base_commit: None,
+            run_dir: None,
+        },
+    )
+    .expect("insert_run");
+    drop(conn);
+
+    // (a) preflight: busy.
+    let resp = srv.get("/api/preflight?project=web-ban-hang&slug=viec-hai");
+    assert_eq!(resp.status, 200, "body: {}", resp.text());
+    let pre = resp.json();
+    assert_eq!(pre["can_start"], false, "{pre}");
+    assert_eq!(pre["kind"], "busy", "{pre}");
+    assert!(
+        pre["reason"].as_str().unwrap_or("").contains("chờ một task xong"),
+        "{pre}"
+    );
+
+    // (b1) intake thường: 201, vào hàng chờ.
+    let resp = srv.post_json(
+        "/api/intake",
+        &json!({ "request": "Việc thứ hai", "project": "web-ban-hang" }),
+    );
+    assert_eq!(resp.status, 201, "body: {}", resp.text());
+    let intake_id = resp.json()["id"].as_i64().expect("intake id");
+    let conn = sb.db();
+    let intake = agent_brain::db::get_intake(&conn, intake_id).unwrap().expect("intake");
+    assert_eq!(intake.status, "queued");
+
+    // (b2) giao trực tiếp: 201, đề xuất `approved`, không kiểm bận.
+    let resp = srv.post_json(
+        "/api/tasks",
+        &json!({
+            "project": "web-ban-hang",
+            "request": "Việc thứ ba",
+            "name": "viec-ba",
+            "direct": true
+        }),
+    );
+    assert_eq!(resp.status, 201, "body: {}", resp.text());
+    let body = resp.json();
+    assert_eq!(body["status"], "approved", "{body}");
+    let proposal_id = body["proposal_id"].as_i64().expect("proposal_id");
+    let proposal = agent_brain::db::get_proposal(&conn, proposal_id).unwrap().expect("proposal");
+    assert_eq!(proposal.status, "approved");
+
+    // Chưa có task nào được tạo: việc chờ scheduler.
+    let tasks: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(tasks, 0, "queued work must not create a task while busy");
+}
