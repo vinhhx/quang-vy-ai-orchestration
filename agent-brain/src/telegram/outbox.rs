@@ -44,6 +44,11 @@ pub enum Outgoing {
     },
     /// A new plain message with no buttons (e.g. a failed queue intake, plan triage-engine).
     Message { text: String },
+    /// A new message with an inline keyboard (a proposal to approve or reject).
+    Prompt {
+        text: String,
+        keyboard: serde_json::Value,
+    },
 }
 
 /// Bot API method and JSON body for an `Edit` / `Keyboard` / `Message` item, always on
@@ -56,6 +61,14 @@ pub fn edit_request(chat_id: i64, item: &Outgoing) -> Option<(&'static str, serd
             serde_json::json!({
                 "chat_id": chat_id,
                 "text": text,
+            }),
+        )),
+        Outgoing::Prompt { text, keyboard } => Some((
+            "sendMessage",
+            serde_json::json!({
+                "chat_id": chat_id,
+                "text": text,
+                "reply_markup": keyboard,
             }),
         )),
         Outgoing::Edit {
@@ -712,9 +725,10 @@ fn run(ctx: Arc<BotCtx>) {
         };
         let step = match &item {
             Outgoing::Notify(ev) => notify(&ctx, &mut conn, ev),
-            Outgoing::Edit { .. } | Outgoing::Keyboard { .. } | Outgoing::Message { .. } => {
-                edit(&ctx, &item)
-            }
+            Outgoing::Edit { .. }
+            | Outgoing::Keyboard { .. }
+            | Outgoing::Message { .. }
+            | Outgoing::Prompt { .. } => edit(&ctx, &item),
         };
         if let Step::Stopped = step {
             return;
@@ -876,6 +890,18 @@ mod tests {
             Some((
                 "sendMessage",
                 serde_json::json!({"chat_id": 5555, "text": "Hàng chờ #1 lỗi: x"})
+            ))
+        );
+        let kb = serde_json::json!({"inline_keyboard": [[{"text": "Duyệt đề xuất", "callback_data": "w:1:x"}]]});
+        let prompt = Outgoing::Prompt {
+            text: "Đề xuất #1".to_string(),
+            keyboard: kb.clone(),
+        };
+        assert_eq!(
+            edit_request(5555, &prompt),
+            Some((
+                "sendMessage",
+                serde_json::json!({"chat_id": 5555, "text": "Đề xuất #1", "reply_markup": kb})
             ))
         );
     }

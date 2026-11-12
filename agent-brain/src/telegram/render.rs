@@ -625,6 +625,70 @@ pub fn message_for(ev: &Event, s: &TaskState) -> Rendered {
     }
 }
 
+/// Longest proposal message, within `MAX_TEXT`.
+const PROPOSAL_TEXT_MAX: usize = 3500;
+
+/// Replaces each absolute path in free text (a title or reason written by an agent) by its last
+/// segment, so a proposal message never carries a full path.
+fn without_abs_paths(raw: &str) -> String {
+    raw.split_whitespace()
+        .map(|w| {
+            if w.starts_with('/') || w.starts_with("~/") {
+                let trimmed = w.trim_end_matches(|c: char| ".,;:)'\"".contains(c));
+                let tail = &w[trimmed.len()..];
+                let base = trimmed
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("");
+                format!("{base}{tail}")
+            } else {
+                w.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The message of a `pending` proposal of a Telegram-created intake: what the orchestrator wants
+/// to start, so it can be approved or rejected from the chat. Plain text, no absolute path.
+pub fn proposal_text(p: &crate::db::ProposalRow, project_slug: &str) -> String {
+    let mut text = format!(
+        "Đề xuất #{} — dự án {}\nTiêu đề: {}\nĐội hình: {}\nQuy trình: {}\nƯu tiên: {}\nCấp: {}",
+        p.id,
+        project_slug,
+        without_abs_paths(&p.title),
+        p.team,
+        p.workflow,
+        p.priority,
+        p.level
+    );
+    if let Some(reason) = p.reason.as_deref().filter(|r| !r.trim().is_empty()) {
+        text.push_str(&format!("\nLý do: {}", without_abs_paths(reason)));
+    }
+    if let Some(after) = p.after_proposal_id {
+        text.push_str(&format!("\nChạy sau đề xuất #{after}"));
+    }
+    clip(&text, PROPOSAL_TEXT_MAX)
+}
+
+/// `Duyệt đề xuất` and `Từ chối` on one row; both carry the proposal's current rev.
+pub fn proposal_keyboard(p: &crate::db::ProposalRow) -> Vec<Vec<Button>> {
+    let rev = super::detect::proposal_rev(p);
+    let button = |label: &str, approve: bool| Button {
+        label: label.to_string(),
+        data: callback::encode_proposal(&callback::ProposalCb {
+            approve,
+            proposal_id: p.id,
+            rev: rev.clone(),
+        }),
+    };
+    vec![vec![
+        button("Duyệt đề xuất", true),
+        button("Từ chối", false),
+    ]]
+}
+
 pub fn keyboard_json(rows: &[Vec<Button>]) -> serde_json::Value {
     let rows: Vec<serde_json::Value> = rows
         .iter()
@@ -717,6 +781,56 @@ mod tests {
         let cut = title_line_of(&"ă".repeat(121));
         assert_eq!(cut, format!("{}…", "ă".repeat(119)));
         assert_eq!(cut.chars().count(), 120);
+    }
+
+    fn proposal_row(title: &str, reason: Option<&str>) -> crate::db::ProposalRow {
+        crate::db::ProposalRow {
+            id: 9,
+            intake_id: 1,
+            project_id: 1,
+            title: title.to_string(),
+            request: "yêu cầu bí mật".to_string(),
+            priority: "normal".to_string(),
+            team: "dev".to_string(),
+            workflow: "mac-dinh".to_string(),
+            reason: reason.map(str::to_string),
+            status: "pending".to_string(),
+            task_id: None,
+            error: None,
+            created_at: 0,
+            updated_at: 0,
+            level: "vua".to_string(),
+            after_proposal_id: Some(4),
+        }
+    }
+
+    #[test]
+    fn proposal_text_has_no_path_and_stays_short() {
+        let p = proposal_row("Sửa /home/u/repo/src/app.py", Some(&"lý do ".repeat(2000)));
+        let text = proposal_text(&p, "web");
+        assert!(text.starts_with("Đề xuất #9 — dự án web\nTiêu đề: Sửa app.py"), "{text}");
+        assert!(!text.contains("/home/u"), "{text}");
+        assert!(!text.contains("yêu cầu bí mật"), "{text}");
+        assert!(text.contains("Chạy sau đề xuất #4") || text.ends_with('…'), "{text}");
+        assert!(text.chars().count() <= PROPOSAL_TEXT_MAX);
+
+        let short = proposal_text(&proposal_row("Việc", None), "web");
+        assert!(short.ends_with("Cấp: vua\nChạy sau đề xuất #4"), "{short}");
+        assert!(!short.contains("Lý do"), "{short}");
+    }
+
+    #[test]
+    fn proposal_keyboard_is_one_row_of_two_buttons() {
+        let rows = proposal_keyboard(&proposal_row("Việc", None));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 2);
+        assert_eq!(rows[0][0].label, "Duyệt đề xuất");
+        assert_eq!(rows[0][1].label, "Từ chối");
+        let a = callback::decode_proposal(&rows[0][0].data).unwrap();
+        let z = callback::decode_proposal(&rows[0][1].data).unwrap();
+        assert!(a.approve && !z.approve);
+        assert_eq!((a.proposal_id, z.proposal_id), (9, 9));
+        assert_eq!(a.rev, z.rev);
     }
 
     #[test]

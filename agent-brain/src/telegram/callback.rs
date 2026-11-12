@@ -688,3 +688,131 @@ mod tests {
         assert!(!codes.contains(&'i'));
     }
 }
+
+/// `w` approves a pending proposal, `z` rejects it. Neither collides with an `Op` code, the
+/// `i` intake prefix or the `t`/`u` team prefixes.
+const PROPOSAL_APPROVE: char = 'w';
+const PROPOSAL_REJECT: char = 'z';
+
+/// A button on a Telegram proposal message: `w:{proposal_id}:{rev}` (approve) or
+/// `z:{proposal_id}:{rev}` (reject). `rev` is the proposal's 16-hex revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposalCb {
+    pub approve: bool,
+    pub proposal_id: i64,
+    pub rev: String,
+}
+
+pub fn encode_proposal(cb: &ProposalCb) -> String {
+    let code = if cb.approve {
+        PROPOSAL_APPROVE
+    } else {
+        PROPOSAL_REJECT
+    };
+    format!("{code}:{}:{}", cb.proposal_id, cb.rev)
+}
+
+/// Strict parse: anything not produced by `encode_proposal` returns `None`.
+pub fn decode_proposal(data: &str) -> Option<ProposalCb> {
+    if data.is_empty() || data.len() > MAX_LEN {
+        return None;
+    }
+    let parts: Vec<&str> = data.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let approve = match parts[0] {
+        "w" => true,
+        "z" => false,
+        _ => return None,
+    };
+    let proposal_id = parse_id(parts[1])?;
+    if !valid_rev(parts[2]) {
+        return None;
+    }
+    Some(ProposalCb {
+        approve,
+        proposal_id,
+        rev: parts[2].to_string(),
+    })
+}
+
+#[cfg(test)]
+mod proposal_tests {
+    use super::*;
+
+    const REV: &str = "0123456789abcdef";
+
+    #[test]
+    fn proposal_round_trip() {
+        for approve in [true, false] {
+            let cb = ProposalCb {
+                approve,
+                proposal_id: 51,
+                rev: REV.to_string(),
+            };
+            let data = encode_proposal(&cb);
+            assert_eq!(decode_proposal(&data), Some(cb));
+        }
+        assert_eq!(
+            encode_proposal(&ProposalCb {
+                approve: true,
+                proposal_id: 7,
+                rev: REV.to_string()
+            }),
+            format!("w:7:{REV}")
+        );
+    }
+
+    #[test]
+    fn proposal_rejects_malformed_data() {
+        for bad in [
+            "".to_string(),
+            "w".to_string(),
+            "w:7".to_string(),
+            format!("w:{REV}"),
+            format!("a:7:{REV}"),
+            format!("W:7:{REV}"),
+            format!("ww:7:{REV}"),
+            format!("w:0:{REV}"),
+            format!("w:-1:{REV}"),
+            format!("w:x:{REV}"),
+            format!("w::{REV}"),
+            format!("w:7:{}", &REV[..15]),
+            format!("w:7:{REV}0"),
+            format!("w:7:{}", REV.to_uppercase()),
+            "w:7:g123456789abcdef".to_string(),
+            format!("w:7:{REV}:1"),
+            format!("z:7:{REV}:1"),
+            format!("w:{}:{REV}", "9".repeat(60)),
+        ] {
+            assert_eq!(decode_proposal(&bad), None, "{bad}");
+        }
+        // The other grammars do not decode as proposal buttons, and vice versa.
+        assert_eq!(decode(&format!("w:7:{REV}")), None);
+        assert_eq!(decode(&format!("z:7:{REV}")), None);
+        assert_eq!(decode_proposal(&format!("a:7:{REV}")), None);
+        assert_eq!(decode_proposal("ia:0123456789abcdef"), None);
+    }
+
+    #[test]
+    fn proposal_max_length_fits() {
+        let data = encode_proposal(&ProposalCb {
+            approve: false,
+            proposal_id: i64::MAX,
+            rev: REV.to_string(),
+        });
+        assert!(data.len() <= MAX_LEN, "{data}");
+        assert!(decode_proposal(&data).is_some());
+    }
+
+    #[test]
+    fn proposal_codes_do_not_collide() {
+        for c in [PROPOSAL_APPROVE, PROPOSAL_REJECT] {
+            assert!(Op::from_code(c).is_none(), "{c}");
+            assert!(!['i', 't', 'u'].contains(&c), "{c}");
+            assert_ne!(c, TeamOp::Pick.code());
+            assert_ne!(c, TeamOp::Confirm.code());
+        }
+    }
+}
