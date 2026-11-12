@@ -70,6 +70,91 @@ impl Default for MergeConfig {
     }
 }
 
+/// `doctor` block of config.json: the thresholds of `agent-brain doctor` and of the serve
+/// watchdog that runs the same scan (`crate::doctor`). A missing key keeps its default.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DoctorConfig {
+    /// `false` turns the watchdog in `agent-brain serve` off; the CLI command still runs by hand.
+    pub enabled: bool,
+    /// A live run whose engine already wrote its final `result` but did not exit for this long.
+    pub result_no_exit_minutes: u64,
+    /// Silence limit of a live run when `run_stall_minutes` is 0 (otherwise that limit plus 5).
+    pub silent_minutes: u64,
+    /// A run that has been `running` for longer than this.
+    pub run_max_minutes: u64,
+    /// An autopilot task marked running/stopping with no driver and no live run for this long.
+    pub driver_stale_minutes: u64,
+    /// A `waiting` queued action older than this while its project is not busy.
+    pub queue_stuck_minutes: u64,
+    /// Free space (GB) below which the disk warning fires; 0 turns the disk warning off.
+    pub disk_min_gb: u64,
+    /// A finding already reported is reported again after this many minutes.
+    pub realert_minutes: u64,
+}
+
+impl Default for DoctorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            result_no_exit_minutes: 3,
+            silent_minutes: 30,
+            run_max_minutes: 150,
+            driver_stale_minutes: 10,
+            queue_stuck_minutes: 60,
+            disk_min_gb: 20,
+            realert_minutes: 60,
+        }
+    }
+}
+
+/// Reads the optional `doctor` block; a missing key keeps its default.
+fn doctor_config_of(obj: &serde_json::Map<String, serde_json::Value>) -> BrainResult<DoctorConfig> {
+    let mut doctor = DoctorConfig::default();
+    let Some(val) = obj.get("doctor") else {
+        return Ok(doctor);
+    };
+    let Some(m) = val.as_object() else {
+        return Err(BrainError::error("Cấu hình doctor phải là object"));
+    };
+    if let Some(v) = m.get("enabled") {
+        match v.as_bool() {
+            Some(b) => doctor.enabled = b,
+            None => return Err(BrainError::error("Cấu hình doctor.enabled phải là boolean")),
+        }
+    }
+    let minutes: [(&str, &mut u64); 6] = [
+        ("result_no_exit_minutes", &mut doctor.result_no_exit_minutes),
+        ("silent_minutes", &mut doctor.silent_minutes),
+        ("run_max_minutes", &mut doctor.run_max_minutes),
+        ("driver_stale_minutes", &mut doctor.driver_stale_minutes),
+        ("queue_stuck_minutes", &mut doctor.queue_stuck_minutes),
+        ("realert_minutes", &mut doctor.realert_minutes),
+    ];
+    for (key, slot) in minutes {
+        if let Some(v) = m.get(key) {
+            match v.as_u64() {
+                Some(n) if (1..=1440).contains(&n) => *slot = n,
+                _ => {
+                    return Err(BrainError::error(format!(
+                        "Cấu hình doctor.{key} phải là số nguyên từ 1 đến 1440 (phút)"
+                    )))
+                }
+            }
+        }
+    }
+    if let Some(v) = m.get("disk_min_gb") {
+        match v.as_u64() {
+            Some(n) if n <= 2000 => doctor.disk_min_gb = n,
+            _ => {
+                return Err(BrainError::error(
+                    "Cấu hình doctor.disk_min_gb phải là số nguyên từ 0 (tắt) đến 2000 (GB)",
+                ))
+            }
+        }
+    }
+    Ok(doctor)
+}
+
 /// Reads the optional `merge` block; a missing key keeps its default.
 fn merge_config_of(obj: &serde_json::Map<String, serde_json::Value>) -> BrainResult<MergeConfig> {
     let mut merge = MergeConfig::default();
@@ -1196,6 +1281,8 @@ pub struct Config {
     /// `run_stall_minutes`: a run with no line from its engine for this long is stopped
     /// (`timed_out`). 0 = off.
     pub run_stall_minutes: u64,
+    /// `doctor` block: thresholds of `agent-brain doctor` and the serve watchdog.
+    pub doctor: DoctorConfig,
     pub inspect_max_diff_bytes: usize,
     pub dashboard_port: u16,
     pub autopilot: AutopilotDefaults,
@@ -1674,6 +1761,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
 
     let merge = merge_config_of(obj)?;
     let housekeeping = housekeeping_of(obj)?;
+    let doctor = doctor_config_of(obj)?;
 
     Ok(Config {
         claude_bin,
@@ -1686,6 +1774,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         runs_dir: runs_dir_opt,
         kill_grace_secs,
         run_stall_minutes,
+        doctor,
         inspect_max_diff_bytes,
         dashboard_port,
         autopilot,
@@ -2938,6 +3027,91 @@ mod tests {
             let e = config_from_value(&v).expect_err(&format!("run_stall_minutes={bad}"));
             assert!(e.message.contains("run_stall_minutes"), "{}", e.message);
             assert!(e.message.contains("5 đến 240"), "{}", e.message);
+        }
+    }
+
+    #[test]
+    fn doctor_block_defaults_range_and_types() {
+        let base: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        assert!(base.get("doctor").is_none());
+        let d = config_from_value(&base).unwrap().doctor;
+        assert_eq!(d, DoctorConfig::default());
+        assert!(d.enabled);
+        assert_eq!(
+            (
+                d.result_no_exit_minutes,
+                d.silent_minutes,
+                d.run_max_minutes,
+                d.driver_stale_minutes,
+                d.queue_stuck_minutes,
+                d.disk_min_gb,
+                d.realert_minutes
+            ),
+            (3, 30, 150, 10, 60, 20, 60)
+        );
+
+        // A valid block, with the bounds themselves; unset keys keep their default.
+        let mut v = base.clone();
+        v["doctor"] = serde_json::json!({
+            "enabled": false, "result_no_exit_minutes": 1, "silent_minutes": 1440,
+            "run_max_minutes": 200, "disk_min_gb": 0, "realert_minutes": 5
+        });
+        let d = config_from_value(&v).unwrap().doctor;
+        assert!(!d.enabled);
+        assert_eq!((d.result_no_exit_minutes, d.silent_minutes, d.run_max_minutes), (1, 1440, 200));
+        assert_eq!((d.disk_min_gb, d.realert_minutes), (0, 5));
+        assert_eq!((d.driver_stale_minutes, d.queue_stuck_minutes), (10, 60));
+        v["doctor"] = serde_json::json!({"disk_min_gb": 2000});
+        assert_eq!(config_from_value(&v).unwrap().doctor.disk_min_gb, 2000);
+
+        // Out of range or wrong type: a Vietnamese error that names the key.
+        for key in [
+            "result_no_exit_minutes",
+            "silent_minutes",
+            "run_max_minutes",
+            "driver_stale_minutes",
+            "queue_stuck_minutes",
+            "realert_minutes",
+        ] {
+            for bad in [
+                serde_json::json!(0),
+                serde_json::json!(1441),
+                serde_json::json!(-1),
+                serde_json::json!(2.5),
+                serde_json::json!("10"),
+                serde_json::json!(null),
+                serde_json::json!(true),
+            ] {
+                let mut v = base.clone();
+                v["doctor"] = serde_json::json!({ key: bad.clone() });
+                let e = config_from_value(&v).expect_err(&format!("{key}={bad}"));
+                assert!(e.message.contains(&format!("doctor.{key}")), "{}", e.message);
+                assert!(e.message.contains("1 đến 1440"), "{}", e.message);
+            }
+        }
+        for bad in [
+            serde_json::json!(2001),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("20"),
+            serde_json::json!(null),
+        ] {
+            let mut v = base.clone();
+            v["doctor"] = serde_json::json!({ "disk_min_gb": bad.clone() });
+            let e = config_from_value(&v).expect_err(&format!("disk_min_gb={bad}"));
+            assert!(e.message.contains("doctor.disk_min_gb"), "{}", e.message);
+        }
+        for bad in [serde_json::json!(1), serde_json::json!("true"), serde_json::json!(null)] {
+            let mut v = base.clone();
+            v["doctor"] = serde_json::json!({ "enabled": bad.clone() });
+            let e = config_from_value(&v).expect_err("enabled");
+            assert!(e.message.contains("doctor.enabled"), "{}", e.message);
+        }
+        for bad in [serde_json::json!([]), serde_json::json!("x"), serde_json::json!(null)] {
+            let mut v = base.clone();
+            v["doctor"] = bad;
+            let e = config_from_value(&v).expect_err("doctor not an object");
+            assert!(e.message.contains("doctor"), "{}", e.message);
         }
     }
 

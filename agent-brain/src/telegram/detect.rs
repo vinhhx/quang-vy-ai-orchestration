@@ -390,6 +390,59 @@ impl IntakeFailures {
     }
 }
 
+/// Watchdog of `agent-brain doctor` inside serve: every full scan (60 s) it runs
+/// `doctor::scan`, marks dead runs `lost` (the only repair) and sends one message with the
+/// findings that are new or due again after `realert_minutes`. The state is in memory; a finding
+/// that is gone is forgotten, so it is new again when it comes back. Never called on the 500 ms
+/// tick, only when `full` and `doctor.enabled`.
+#[derive(Debug, Default)]
+pub struct DoctorAlerts {
+    dedup: crate::doctor::Dedup,
+}
+
+impl DoctorAlerts {
+    pub fn new() -> DoctorAlerts {
+        DoctorAlerts::default()
+    }
+
+    /// The serve entry point: does nothing unless this is a full scan (`full`) and
+    /// `doctor.enabled`; otherwise measures the disk and runs `scan` now.
+    pub fn tick(
+        &mut self,
+        conn: &Connection,
+        cfg: &crate::config::Config,
+        full: bool,
+    ) -> BrainResult<Vec<Outgoing>> {
+        if !full || !cfg.doctor.enabled {
+            return Ok(Vec::new());
+        }
+        let mut opts = crate::doctor::DoctorOpts::from_config(cfg);
+        if opts.disk_min_gb > 0 {
+            opts.free_gb = crate::doctor::disk_free_gb();
+        }
+        self.scan(conn, crate::db::now_ms(), &opts)
+    }
+
+    /// One message for the findings to report now (at most `MAX_PER_MESSAGE` listed), also
+    /// written to the terminal; nothing when there is nothing new.
+    pub fn scan(
+        &mut self,
+        conn: &Connection,
+        now_ms: i64,
+        opts: &crate::doctor::DoctorOpts,
+    ) -> BrainResult<Vec<Outgoing>> {
+        let mut findings = crate::doctor::scan(conn, now_ms, opts)?;
+        crate::doctor::heal_dead_runs(conn, &mut findings)?;
+        let due = self.dedup.select(&findings, now_ms, opts.realert_ms());
+        if due.is_empty() {
+            return Ok(Vec::new());
+        }
+        let text = crate::doctor::alert_text(&due);
+        crate::term::emit(&text);
+        Ok(vec![Outgoing::Message { text }])
+    }
+}
+
 /// `Môi trường đã sẵn sàng · task N slug — autopilot chạy lại lúc HH:MM` (C2).
 pub fn env_rerun_text(task_id: i64, slug: &str, project: &str, at_ms: i64) -> String {
     format!(
@@ -726,6 +779,7 @@ fn run(ctx: Arc<BotCtx>) {
 
     // Journal mail queued while serve was stopped goes out now, not after the first 60 s rescan.
     let mut journal_mail = JournalMail;
+    let mut doctor_alerts = DoctorAlerts::new();
     match journal_mail.scan(&conn, &ctx.st.cfg.journal, crate::journal::now_ms()) {
         Ok(items) => {
             for item in items {
@@ -767,6 +821,7 @@ fn run(ctx: Arc<BotCtx>) {
             waits.scan(&conn),
             proposals.scan(&conn),
             journal_mail.scan(&conn, &ctx.st.cfg.journal, crate::journal::now_ms()),
+            doctor_alerts.tick(&conn, &ctx.st.cfg, full),
         ];
         let mut failed = false;
         for res in results {
@@ -934,6 +989,153 @@ mod tests {
             .unwrap();
         let after = proposal_rev(&crate::db::get_proposal(&conn, tg).unwrap().unwrap());
         assert_ne!(before, after);
+    }
+
+    /// Thresholds of the doctor tests: only `run-long` can fire for a live run with a stale start.
+    fn doctor_opts(dir: &std::path::Path) -> crate::doctor::DoctorOpts {
+        crate::doctor::DoctorOpts {
+            result_no_exit_minutes: 3,
+            silent_minutes: 1440,
+            run_stall_minutes: 0,
+            run_max_minutes: 150,
+            driver_stale_minutes: 10,
+            queue_stuck_minutes: 60,
+            disk_min_gb: 0,
+            realert_minutes: 60,
+            free_gb: None,
+            check_serve: false,
+            data_dir: dir.to_path_buf(),
+        }
+    }
+
+    fn doctor_run(conn: &Connection, role: &str, pid_start: i64, age_min: i64) -> i64 {
+        let pid = std::process::id() as i64;
+        let id = crate::db::insert_run(
+            conn,
+            &crate::db::NewRun {
+                task_id: None,
+                project_id: 1,
+                role: role.to_string(),
+                profile: "work".to_string(),
+                model: None,
+                pid,
+                pgid: pid,
+                pid_start,
+                base_commit: None,
+                run_dir: None,
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE runs SET started_at = ?1 WHERE id = ?2",
+            rusqlite::params![crate::db::now_ms() - age_min * 60_000, id],
+        )
+        .unwrap();
+        id
+    }
+
+    /// A `running` row whose process is this test process (alive), started `age_min` ago.
+    fn live_run(conn: &Connection, age_min: i64) -> i64 {
+        let start = crate::procs::proc_id(std::process::id() as i32)
+            .expect("own process")
+            .start;
+        doctor_run(conn, "dev", start as i64, age_min)
+    }
+
+    fn doctor_db(dir: &std::path::Path) -> Connection {
+        let conn = crate::db::open(&dir.join("brain.db")).unwrap();
+        conn.execute(
+            "INSERT INTO projects (slug, path, profile) VALUES ('p1', '/tmp/p1', 'work')",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn doctor_alerts_send_once_repeat_after_realert_forget_and_cap_at_five() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = doctor_db(dir.path());
+        let opts = doctor_opts(dir.path());
+        let now = crate::db::now_ms();
+        let mut alerts = DoctorAlerts::new();
+        assert!(alerts.scan(&conn, now, &opts).unwrap().is_empty(), "nothing to report");
+
+        let first = live_run(&conn, 200);
+        let got = texts(&alerts.scan(&conn, now, &opts).unwrap());
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].starts_with("agent-brain doctor: 1 cảnh báo mới"), "{}", got[0]);
+        assert!(got[0].contains(&format!("[run-long] Run {first} (dev, dự án p1)")), "{}", got[0]);
+        assert!(!got[0].contains('/'), "no path in the message: {}", got[0]);
+
+        // Not again inside realert_minutes, again after it.
+        assert!(alerts.scan(&conn, now + 30 * 60_000, &opts).unwrap().is_empty());
+        assert!(alerts.scan(&conn, now + 59 * 60_000, &opts).unwrap().is_empty());
+        let again = texts(&alerts.scan(&conn, now + 61 * 60_000, &opts).unwrap());
+        assert_eq!(again.len(), 1, "{again:?}");
+
+        // Gone: forgotten, so the next finding is new.
+        crate::db::mark_status(&conn, first, "succeeded").unwrap();
+        assert!(alerts.scan(&conn, now + 62 * 60_000, &opts).unwrap().is_empty());
+        let second = live_run(&conn, 200);
+        let got = texts(&alerts.scan(&conn, now + 63 * 60_000, &opts).unwrap());
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].contains(&format!("Run {second} ")), "{}", got[0]);
+
+        // Seven new findings in one scan: one message, five listed, the rest counted.
+        crate::db::mark_status(&conn, second, "succeeded").unwrap();
+        for _ in 0..7 {
+            live_run(&conn, 200);
+        }
+        let got = texts(&alerts.scan(&conn, now + 64 * 60_000, &opts).unwrap());
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].starts_with("agent-brain doctor: 7 cảnh báo mới"), "{}", got[0]);
+        assert_eq!(got[0].lines().filter(|l| l.starts_with("- [run-long]")).count(), 5);
+        assert!(got[0].contains("… và 2 cảnh báo nữa"), "{}", got[0]);
+        assert!(alerts.scan(&conn, now + 65 * 60_000, &opts).unwrap().is_empty());
+    }
+
+    #[test]
+    fn doctor_alerts_heal_a_dead_run_and_report_it_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = doctor_db(dir.path());
+        // This process's pid with a start time that does not match: the process "is gone".
+        let id = doctor_run(&conn, "qa", 1, 0);
+        let opts = doctor_opts(dir.path());
+        let mut alerts = DoctorAlerts::new();
+        let now = crate::db::now_ms();
+        let got = texts(&alerts.scan(&conn, now, &opts).unwrap());
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].contains(&format!("[run-dead] Run {id} (qa, dự án p1)")), "{}", got[0]);
+        assert!(got[0].contains("Đã đánh dấu lost"), "{}", got[0]);
+        let status: String = conn
+            .query_row("SELECT status FROM runs WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "lost");
+        assert!(alerts.scan(&conn, now + 1000, &opts).unwrap().is_empty());
+    }
+
+    #[test]
+    fn doctor_alerts_run_only_on_a_full_scan_and_when_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = doctor_db(dir.path());
+        live_run(&conn, 100_000);
+        let mut v: serde_json::Value =
+            serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap();
+        v["doctor"] = serde_json::json!({"disk_min_gb": 0});
+        let cfg = crate::config::config_from_value(&v).unwrap();
+        let mut alerts = DoctorAlerts::new();
+        assert!(alerts.tick(&conn, &cfg, false).unwrap().is_empty(), "not on the 500 ms tick");
+        assert_eq!(alerts.tick(&conn, &cfg, true).unwrap().len(), 1);
+
+        v["doctor"] = serde_json::json!({"disk_min_gb": 0, "enabled": false});
+        let off = crate::config::config_from_value(&v).unwrap();
+        let mut alerts = DoctorAlerts::new();
+        assert!(alerts.tick(&conn, &off, true).unwrap().is_empty(), "enabled = false turns it off");
+        let status: String = conn
+            .query_row("SELECT status FROM runs WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "running", "a disabled watchdog changes nothing");
     }
 
     #[test]

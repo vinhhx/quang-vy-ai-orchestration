@@ -153,6 +153,21 @@ enum Commands {
         #[arg(long)]
         port: Option<u16>,
     },
+    /// Quét run/task bị treo, driver mồ côi, hàng chờ kẹt, ổ đĩa đầy; chỉ cảnh báo (tự sửa chỉ run chết)
+    Doctor {
+        /// In mảng JSON {kind,key,task_id,run_id,text}
+        #[arg(long)]
+        json: bool,
+        /// Gửi tin Telegram tóm tắt các phát hiện mới (không gửi lặp trong realert_minutes)
+        #[arg(long)]
+        notify: bool,
+        /// Đánh dấu lost các run đang ghi "running" mà tiến trình đã chết (tự sửa duy nhất)
+        #[arg(long)]
+        heal: bool,
+        /// Kiểm tra thêm agent-brain serve còn chạy khi vẫn có việc đang chạy
+        #[arg(long)]
+        check_serve: bool,
+    },
     /// Telegram: ghép nối bot và gửi tin thử (thông báo + nút duyệt/dừng)
     Telegram {
         #[command(subcommand)]
@@ -419,6 +434,17 @@ fn main() {
         std::process::exit(agent_brain::dashboard::cmd_serve(*port));
     }
 
+    // Before `open_ctx`: that call marks dead runs `lost`, which doctor must only do with --heal.
+    if let Commands::Doctor {
+        json,
+        notify,
+        heal,
+        check_serve,
+    } = &cmd
+    {
+        std::process::exit(agent_brain::doctor::cmd_doctor(*json, *notify, *heal, *check_serve));
+    }
+
     if let Commands::Telegram { subcommand } = &cmd {
         std::process::exit(match subcommand {
             TelegramCommands::Setup => agent_brain::telegram::setup::cmd_setup(),
@@ -457,6 +483,7 @@ fn main() {
         Commands::Guard { .. } => unreachable!(),
         Commands::Serve { .. } => unreachable!(),
         Commands::Telegram { .. } => unreachable!(),
+        Commands::Doctor { .. } => unreachable!(),
         Commands::Container { .. } => unreachable!(),
         Commands::Human { action } => match action {
             HumanCommands::Done { task_id } => agent_brain::human::cmd_human(
