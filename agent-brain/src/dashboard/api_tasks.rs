@@ -1109,7 +1109,10 @@ fn start_response(outcome: StartOutcome) -> Response {
     }
 }
 
-async fn create_task(State(st): State<Arc<AppState>>, Json(body): Json<NewTask>) -> Response {
+async fn create_task(State(st): State<Arc<AppState>>, Json(mut body): Json<NewTask>) -> Response {
+    if let Some(items) = body.inputs.as_mut() {
+        crate::inputs::resolve_answer_refs(items);
+    }
     let input_items = body.inputs;
     let secrets = crate::inputs::collect_secrets(&st);
     if let Some(ref items) = input_items {

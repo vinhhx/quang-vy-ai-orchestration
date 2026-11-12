@@ -7,6 +7,8 @@
 
 use crate::db::now_ms;
 use rusqlite::{params, Connection};
+use std::io::Read;
+use std::path::Path;
 
 pub const MAX_INPUTS: usize = 3;
 pub const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -52,6 +54,52 @@ pub fn validate_name(name: &str) -> Result<(), String> {
         return Err("Tên tài liệu chỉ được chứa chữ thường [a-z], chữ số [0-9], gạch ngang (-), gạch dưới (_) và dấu chấm (.)".to_string());
     }
     Ok(())
+}
+
+/// Tài liệu dán chỉ là một đường dẫn tới file `.md` trong thư mục `answers` (câu trả lời của một
+/// analyst trước đó) thì trả về nội dung file đó; mọi trường hợp khác trả `None` (giữ nguyên chuỗi dán).
+///
+/// Điều kiện: nội dung sau `trim` là một dòng; đường dẫn tuyệt đối đuôi `.md`; sau `canonicalize`
+/// nằm trong `answers_root` đã `canonicalize` (symlink thoát ra ngoài bị loại); là file thường;
+/// kích thước không vượt `MAX_INPUT_BYTES`; đọc được UTF-8 và không rỗng. Chỉ đọc, không ghi đĩa.
+/// Kiểm tra bí mật vẫn do `validate_inputs` làm trên nội dung đã thay.
+pub fn resolve_answer_ref(content: &str, answers_root: &Path) -> Option<String> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') || trimmed.contains('\r') {
+        return None;
+    }
+    let path = Path::new(trimmed);
+    if !path.is_absolute() || path.extension().and_then(|e| e.to_str()) != Some("md") {
+        return None;
+    }
+    let root = std::fs::canonicalize(answers_root).ok()?;
+    let real = std::fs::canonicalize(path).ok()?;
+    if !real.starts_with(&root) || real.extension().and_then(|e| e.to_str()) != Some("md") {
+        return None;
+    }
+    let file = std::fs::File::open(&real).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > MAX_INPUT_BYTES as u64 {
+        return None;
+    }
+    let mut text = String::new();
+    // `take` giữ giới hạn kể cả khi file lớn lên giữa lúc kiểm tra và lúc đọc.
+    file.take(MAX_INPUT_BYTES as u64 + 1).read_to_string(&mut text).ok()?;
+    if text.len() > MAX_INPUT_BYTES || text.trim().is_empty() {
+        return None;
+    }
+    Some(text)
+}
+
+/// Thay nội dung các tài liệu là đường dẫn hợp lệ trong thư mục `answers` thật (`answers::root()`)
+/// bằng nội dung file; tên tài liệu không đổi. Gọi trước `validate_inputs`.
+pub fn resolve_answer_refs(items: &mut [InputItem]) {
+    let root = crate::answers::root();
+    for item in items.iter_mut() {
+        if let Some(text) = resolve_answer_ref(&item.content, &root) {
+            item.content = text;
+        }
+    }
 }
 
 /// Thu thập danh sách secret từ biến môi trường (khóa chứa key, token, secret, password).

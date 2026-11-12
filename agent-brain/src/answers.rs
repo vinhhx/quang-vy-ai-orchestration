@@ -2,9 +2,13 @@ use crate::config;
 use crate::error::{BrainError, BrainResult};
 use std::path::PathBuf;
 
+/// Thư mục gốc chứa file trả lời của analyst (`<data_dir>/answers`).
+pub fn root() -> PathBuf {
+    config::data_dir().join("answers")
+}
+
 pub fn path(project_id: &str, task_id: i64, slug: &str) -> PathBuf {
-    config::data_dir()
-        .join("answers")
+    root()
         .join(project_id)
         .join(format!("{task_id}-{slug}.md"))
 }

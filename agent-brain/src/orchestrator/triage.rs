@@ -398,6 +398,14 @@ pub fn triage(st: &AppState, intake: &IntakeRow) -> BrainResult<Vec<ProposalDraf
     Ok(proposals)
 }
 
+/// Quy tắc 4, ngăn thứ ba: việc thu thập / crawl / kiểm tra trên đích thật rồi giao kết quả không
+/// phải phân tích (analyst chỉ đọc code, không có mạng) và không chỉ là viết code.
+const TRIAGE_RULE_DELIVERABLE: &str = "   - Yêu cầu thu thập, crawl, lấy danh sách hoặc dữ liệu, chạy kiểm tra trên một website hoặc hệ thống thật rồi giao kết quả (danh sách, file, báo cáo) KHÔNG phải phân tích (workflow phân tích chỉ đọc code, không có mạng, chỉ giao tài liệu ước lượng) và không chỉ là viết code → chọn workflow loại code, ưu tiên workflow có chữ `e2e` hoặc kiểm thử trong tên hay tóm tắt khi danh sách có; 'request' phải nói rõ phải chạy thật trên đích đó và giao file kết quả.";
+
+/// Quy tắc 7: 'request' giữ ý định, URL, tên tệp đính kèm và định dạng xuất của người dùng.
+const TRIAGE_RULE_KEEP_INTENT: &str = "   - 'request' giữ đúng ý định của người dùng. Nếu người dùng muốn KẾT QUẢ thì 'request' mô tả việc lấy và giao kết quả đó; chỉ viết \"xây dựng chức năng/công cụ\" khi người dùng yêu cầu viết công cụ.
+   - Giữ nguyên mọi URL, tên file đính kèm và yêu cầu về định dạng xuất mà người dùng nêu; không thêm giả định thay cho thông tin thiếu: thông tin thiếu ghi thành câu hỏi trong 'request' hoặc 'reason'.";
+
 /// Dựng prompt hệ thống và input người dùng cho agent điều phối (B5).
 pub fn build_triage_prompt(st: &AppState, intake: &IntakeRow) -> BrainResult<(String, String)> {
     // 1. Tải danh sách dự án
@@ -494,12 +502,14 @@ QUY TẮC BẮT BUỘC:
 4. Chọn quy trình ('workflow') từ danh sách quy trình ở trên:
    - Câu hỏi/yêu cầu phân tích, ước lượng, đánh giá khả thi/rủi ro, hỏi hệ thống đã có chức năng chưa → workflow loại phân tích; chỉ chọn `phan-tich-review` khi yêu cầu ghi rõ cần review.
    - Yêu cầu sửa/làm code → workflow code như cũ.
+{TRIAGE_RULE_DELIVERABLE}
 5. Mức ưu tiên ('priority') chỉ nhận một trong 3 giá trị: "urgent", "normal", "low". Mặc định "normal" trừ khi người dùng yêu cầu gấp.
 6. Độ khó ('level') chỉ nhận một trong 3 giá trị: "de", "vua", "kho". Mặc định "vua":
    - "de": sửa chữ, cấu hình, một file, bug rõ nguyên nhân.
    - "vua": tính năng hoặc bug vài file trong một module.
    - "kho": nhiều module, kiến trúc, migration dữ liệu, bảo mật, hoặc nguyên nhân chưa rõ.
 7. 'title' là tiêu đề ngắn gọn cho công việc; 'request' là mô tả chi tiết công việc cần làm.
+{TRIAGE_RULE_KEEP_INTENT}
 8. 'reason' nêu lý do ngắn gọn vì sao chọn dự án/đội hình/quy trình.
 {task_split_rule}"#
     );
@@ -834,6 +844,18 @@ mod tests {
             agy: false,
             endpoint_key: None,
             config_dir: dir.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn triage_rules_keep_deliverable_intent() {
+        let d = TRIAGE_RULE_DELIVERABLE;
+        for key in ["thu thập", "crawl", "giao kết quả", "KHÔNG phải phân tích", "workflow loại code", "`e2e`", "giao file kết quả"] {
+            assert!(d.contains(key), "thiếu cụm {key:?} trong quy tắc giao kết quả: {d}");
+        }
+        let k = TRIAGE_RULE_KEEP_INTENT.to_lowercase();
+        for key in ["giữ đúng ý định", "giữ nguyên mọi url", "tên file đính kèm", "định dạng xuất", "không thêm giả định", "xây dựng chức năng/công cụ"] {
+            assert!(k.contains(key), "thiếu cụm {key:?} trong quy tắc giữ ý định: {k}");
         }
     }
 

@@ -85,7 +85,7 @@ pub struct CreateIntakeBody {
 
 async fn create_intake(
     State(st): State<Arc<AppState>>,
-    Json(body): Json<CreateIntakeBody>,
+    Json(mut body): Json<CreateIntakeBody>,
 ) -> Response {
     let trimmed = body.request.trim();
     if trimmed.is_empty() {
@@ -98,6 +98,7 @@ async fn create_intake(
         );
     }
 
+    crate::inputs::resolve_answer_refs(&mut body.inputs);
     let secrets = crate::inputs::collect_secrets(&st);
     if let Err(err_msg) = crate::inputs::validate_inputs(&body.inputs, &secrets) {
         return json_error(StatusCode::UNPROCESSABLE_ENTITY, &err_msg);
