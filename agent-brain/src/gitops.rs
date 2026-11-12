@@ -233,6 +233,17 @@ pub fn is_repo_root(path: &Path) -> bool {
     }
 }
 
+/// True for a path whose last component is `node_modules` and that is a symlink under `root`: the
+/// link the worktree setup makes to the repo's `node_modules`. A real `node_modules` folder, or
+/// any other path, is not one.
+fn is_node_modules_link(root: &Path, path: &str) -> bool {
+    let trimmed = path.trim_end_matches('/');
+    Path::new(trimmed).file_name().is_some_and(|n| n == "node_modules")
+        && std::fs::symlink_metadata(root.join(trimmed)).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// Changed and untracked paths of the working tree at `root`. A `node_modules` symlink is left
+/// out (a project whose `.gitignore` says `node_modules/` does not ignore a symlink).
 pub fn changed_paths(root: &Path) -> BrainResult<BTreeSet<String>> {
     let raw = git(
         root,
@@ -255,12 +266,12 @@ pub fn changed_paths(root: &Path) -> BrainResult<BTreeSet<String>> {
         }
         let status = if entry.len() >= 2 { &entry[..2] } else { "" };
         let path = if entry.len() >= 3 { &entry[3..] } else { "" };
-        if !path.is_empty() {
+        if !path.is_empty() && !is_node_modules_link(root, path) {
             paths.insert(path.to_string());
         }
         if status.contains('R') || status.contains('C') {
             i += 1;
-            if i < parts.len() && !parts[i].is_empty() {
+            if i < parts.len() && !parts[i].is_empty() && !is_node_modules_link(root, parts[i]) {
                 paths.insert(parts[i].to_string());
             }
         }
@@ -857,6 +868,38 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         head_sha(root).unwrap()
+    }
+
+    #[test]
+    fn changed_paths_skips_a_node_modules_symlink_only() {
+        let dir = repo();
+        let root = dir.path();
+        commit(root, &[("a.txt", "1")], "init");
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("node_modules")).unwrap();
+        // a symlink named node_modules at any depth is skipped too
+        std::fs::create_dir_all(root.join("packages/app")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("packages/app/node_modules")).unwrap();
+        // a symlink with another name is reported
+        std::os::unix::fs::symlink(outside.path(), root.join("other-link")).unwrap();
+        std::fs::write(root.join("untracked.txt"), "x").unwrap();
+        let paths = changed_paths(root).unwrap();
+        assert!(!paths.iter().any(|p| p.ends_with("node_modules")), "{paths:?}");
+        assert!(paths.contains("other-link"), "{paths:?}");
+        assert!(paths.contains("untracked.txt"), "{paths:?}");
+    }
+
+    #[test]
+    fn changed_paths_reports_a_real_node_modules_folder() {
+        let dir = repo();
+        let root = dir.path();
+        commit(root, &[("a.txt", "1")], "init");
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), "x").unwrap();
+        std::fs::write(root.join("untracked.txt"), "x").unwrap();
+        let paths = changed_paths(root).unwrap();
+        assert!(paths.contains("node_modules/pkg/index.js"), "{paths:?}");
+        assert!(paths.contains("untracked.txt"), "{paths:?}");
     }
 
     #[test]

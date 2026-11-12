@@ -282,6 +282,13 @@ pub fn decide(policy: &Policy, payload: &serde_json::Value) -> Decision {
                 path: raw_path_str,
                 reason: "in read allowlist".to_string(),
             }
+        } else if in_linked_node_modules(&policy.root, &resolved) {
+            Decision {
+                allow: true,
+                tool: tool_name.to_string(),
+                path: raw_path_str,
+                reason: "in linked node_modules".to_string(),
+            }
         } else if under_grant_any(
             &policy.root,
             &policy.read_dirs,
@@ -626,6 +633,29 @@ pub fn grant_denied_rel(rel: &str) -> bool {
         .split('/')
         .any(|c| c == ".git" || c == ".planning" || c.starts_with(".env"))
         || crate::report::sensitive_path(&lower)
+}
+
+/// True when `<root>/node_modules` is a symlink (the link a task worktree gets to the project's
+/// `node_modules`) and `resolved` (already resolved through symlinks) lies under the folder it
+/// points to. Read only: the caller uses it for `Read` and never for writes. Nothing else of the
+/// link target's surroundings opens up, a target not named `node_modules` grants nothing, and
+/// `.git`, `.planning` and `.env*` components stay denied.
+fn in_linked_node_modules(root: &Path, resolved: &Path) -> bool {
+    let link = root.join("node_modules");
+    if !std::fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink()) {
+        return false;
+    }
+    let target = realpath_nfc(&link);
+    if target.file_name().is_none_or(|n| n != "node_modules") || !target.is_dir() {
+        return false;
+    }
+    let Ok(rel) = resolved.strip_prefix(&target) else {
+        return false;
+    };
+    let lower = rel.to_string_lossy().to_lowercase();
+    !lower
+        .split('/')
+        .any(|c| c == ".git" || c == ".planning" || c.starts_with(".env"))
 }
 
 /// True when `resolved` (already resolved through symlinks) lies under one of the granted
@@ -3458,6 +3488,92 @@ mod tests {
         assert!(!agy_allows(&pol, "run_command", &[("CommandLine", "id")]));
         let text = std::fs::read_to_string(&log).unwrap();
         assert!(text.contains("\"decision\":\"block\""), "{text}");
+    }
+
+    /// A project repo with `node_modules/.bin/x`, `node_modules/pkg/package.json` and a sibling
+    /// `secret/key.txt`, plus a worktree whose `node_modules` links to the repo's. Returns
+    /// (repo, worktree), both canonical.
+    fn linked_worktree(td: &Path) -> (PathBuf, PathBuf) {
+        let repo = td.join("repo");
+        let wt = td.join("wt");
+        std::fs::create_dir_all(repo.join("node_modules/.bin")).unwrap();
+        std::fs::create_dir_all(repo.join("node_modules/pkg")).unwrap();
+        std::fs::create_dir_all(repo.join("secret")).unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(repo.join("node_modules/.bin/x"), "#!/bin/sh\n").unwrap();
+        std::fs::write(repo.join("node_modules/pkg/package.json"), "{}").unwrap();
+        std::fs::write(repo.join("secret/key.txt"), "k").unwrap();
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
+        let repo = repo.canonicalize().unwrap();
+        let wt = wt.canonicalize().unwrap();
+        std::os::unix::fs::symlink(repo.join("node_modules"), wt.join("node_modules")).unwrap();
+        (repo, wt)
+    }
+
+    #[test]
+    fn linked_node_modules_is_readable_through_the_symlink_only() {
+        let td = tempfile::tempdir().unwrap();
+        let (repo, wt) = linked_worktree(td.path());
+        let pol = grant_policy(&wt);
+        // reading through the symlink is allowed, and the reason says why
+        let d = decide(&pol, &file_payload("Read", &wt, "node_modules/.bin/x"));
+        assert!(d.allow, "{d:?}");
+        assert_eq!(d.reason, "in linked node_modules");
+        assert!(decide(&pol, &file_payload("Read", &wt, "node_modules/pkg/package.json")).allow);
+        // a sibling of the symlink target in the repo is still refused
+        assert!(!decide(&pol, &file_payload("Read", &repo, "secret/key.txt")).allow);
+        assert!(!decide(&pol, &file_payload("Read", &repo, "package.json")).allow);
+        assert!(!decide(&pol, &file_payload("Read", &wt, "node_modules/../secret/key.txt")).allow);
+        // a folder beside node_modules in the repo is refused too
+        assert!(!decide(&pol, &file_payload("Read", &repo, "secret")).allow);
+        // writes into node_modules are refused, through the link or directly
+        for tool in ["Write", "Edit"] {
+            assert!(!decide(&pol, &file_payload(tool, &wt, "node_modules/.bin/x")).allow);
+            assert!(!decide(&pol, &file_payload(tool, &wt, "node_modules/new.js")).allow);
+            assert!(!decide(&pol, &file_payload(tool, &repo, "node_modules/new.js")).allow);
+        }
+        // Grep / Glob are unchanged: refused while read_allow is set
+        for tool in ["Grep", "Glob"] {
+            let payload = serde_json::json!({
+                "tool_name": tool,
+                "tool_input": { "path": wt.join("node_modules").to_string_lossy() },
+                "cwd": wt.to_string_lossy(),
+            });
+            assert!(!decide(&pol, &payload).allow, "{tool}");
+        }
+        // denied components stay denied inside node_modules
+        std::fs::create_dir_all(repo.join("node_modules/.git")).unwrap();
+        std::fs::write(repo.join("node_modules/.git/config"), "x").unwrap();
+        std::fs::write(repo.join("node_modules/pkg/.env"), "x").unwrap();
+        assert!(!decide(&pol, &file_payload("Read", &wt, "node_modules/.git/config")).allow);
+        assert!(!decide(&pol, &file_payload("Read", &wt, "node_modules/pkg/.env")).allow);
+    }
+
+    #[test]
+    fn node_modules_grants_nothing_without_a_symlink() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("node_modules/.bin")).unwrap();
+        std::fs::write(root.join("node_modules/.bin/x"), "x").unwrap();
+        let pol = grant_policy(&root);
+        // a real node_modules folder is not opened by this rule
+        assert!(!decide(&pol, &file_payload("Read", &root, "node_modules/.bin/x")).allow);
+    }
+
+    #[test]
+    fn symlinked_node_modules_to_a_foreign_folder_grants_nothing() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("wt");
+        let other = td.path().join("elsewhere");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("f"), "x").unwrap();
+        let root = root.canonicalize().unwrap();
+        let other = other.canonicalize().unwrap();
+        // the link target is not named node_modules (could even be `/`)
+        std::os::unix::fs::symlink(&other, root.join("node_modules")).unwrap();
+        let pol = grant_policy(&root);
+        assert!(!decide(&pol, &file_payload("Read", &root, "node_modules/f")).allow);
     }
 
     #[test]
