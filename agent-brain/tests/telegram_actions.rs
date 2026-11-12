@@ -1711,9 +1711,17 @@ fn running_run_adds_kill_button() {
     std::thread::sleep(Duration::from_secs(2));
     let newest = edits_of(&tg, m).pop().unwrap();
     assert_eq!(newest, done, "{:#?}", tg.records());
+    // The bot may refresh the buttons once more before the one with Kill (the task's rev moves
+    // as soon as the Dev starts, before its run row shows as running); those earlier refreshes
+    // carry no Kill and are fine. After the Kill refresh nothing else may touch the markup.
+    let refresh_at = refresh["t"].as_f64().expect("refresh record time");
+    let later_markups: Vec<Value> = markups_of(&tg, m)
+        .into_iter()
+        .filter(|r| r["t"].as_f64().is_some_and(|t| t > refresh_at))
+        .collect();
     assert!(
-        markups_of(&tg, m).iter().all(|r| r == &refresh),
-        "{:#?}",
+        later_markups.is_empty(),
+        "markup edited again after the Kill refresh: {later_markups:#?}\n{:#?}",
         tg.records()
     );
     assert_eq!(srv.stop(libc::SIGINT, Duration::from_secs(10)), Some(0));

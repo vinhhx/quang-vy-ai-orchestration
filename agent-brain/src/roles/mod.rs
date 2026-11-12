@@ -788,6 +788,7 @@ pub fn execute_role_staged(
         finish_after_result: (ep.stream == crate::engine::StreamFormat::Agy)
             .then(|| Duration::from_secs(AGY_AFTER_RESULT_GRACE_SECS)),
         env_watch,
+        stall_after: ctx.cfg.stall_after(),
     };
 
     // An agy Dev is not behind claude's PreToolUse hook: every tool step it starts is checked
@@ -1081,6 +1082,13 @@ pub fn execute_role_staged(
     let mut outcome = crate::runner::supervise(&req, &mut obs)?;
     obs.summary.finish();
 
+    // The run was stopped for silence (`run_stall_minutes`); the status stays `timed_out` unless a
+    // later rule below turns it into a success (agy answered first).
+    let stall_error = outcome
+        .stalled_after
+        .filter(|_| outcome.stopped_by == Some(crate::runner::RunStop::Stalled))
+        .map(crate::runner::stall_message);
+
     // C2: the environment went down while the run ran (`preflight_interval_seconds`).
     let env_down = outcome
         .env_down
@@ -1223,7 +1231,12 @@ pub fn execute_role_staged(
                 )),
                 (None, None) => env_down
                     .as_ref()
-                    .map(|r| crate::secrets::redact_str(&env_down_message(r), &ep.redact)),
+                    .map(|r| crate::secrets::redact_str(&env_down_message(r), &ep.redact))
+                    .or_else(|| {
+                        stall_error
+                            .clone()
+                            .filter(|_| outcome.status == crate::runner::RunStatus::TimedOut)
+                    }),
             },
         };
         crate::db::finish_run(&ctx.conn, run_id, &finish)?;
