@@ -39,6 +39,8 @@ pub const BASE_BRANCH_MAX_CHARS: usize = 120;
 pub const WORKSPACE_KEY: &str = "workspace";
 /// Key of the parallel task limit in worktree mode (D2.1).
 pub const MAX_PARALLEL_KEY: &str = "max_parallel_tasks";
+/// Key of the project entry that turns the `node_modules` link of task worktrees off.
+pub const LINK_NODE_MODULES_KEY: &str = "link_node_modules";
 /// Accepted range of `max_parallel_tasks`.
 pub const MAX_PARALLEL_RANGE: std::ops::RangeInclusive<usize> = 1..=10;
 
@@ -86,6 +88,9 @@ pub struct WorkspaceOpts {
     pub mode: WorkspaceMode,
     /// `max_parallel_tasks`: tasks with a live run / driver at once in worktree mode.
     pub max_parallel_tasks: usize,
+    /// `link_node_modules`: a node project's task worktree gets a symlink to the repo's
+    /// `node_modules` (default on).
+    pub link_node_modules: bool,
 }
 
 impl Default for WorkspaceOpts {
@@ -96,6 +101,7 @@ impl Default for WorkspaceOpts {
             auto_checkout_on_approve: true,
             mode: WorkspaceMode::Worktree,
             max_parallel_tasks: 1,
+            link_node_modules: true,
         }
     }
 }
@@ -130,6 +136,10 @@ impl WorkspaceOpts {
                 .map(|n| n as usize)
                 .filter(|n| MAX_PARALLEL_RANGE.contains(n))
                 .unwrap_or(d.max_parallel_tasks),
+            link_node_modules: entry
+                .get(LINK_NODE_MODULES_KEY)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(d.link_node_modules),
         }
     }
 
@@ -1865,6 +1875,7 @@ mod tests {
         assert!(d.auto_checkout_on_approve);
         assert_eq!(d.mode, WorkspaceMode::Worktree);
         assert_eq!(d.max_parallel_tasks, 1);
+        assert!(d.link_node_modules);
         assert!(d.is_worktree());
         assert_eq!(WorkspaceOpts::from_value(&serde_json::json!({"id": "x"})), d);
         let shared = WorkspaceOpts::from_value(&serde_json::json!({"id": "x", "workspace": "shared"}));
@@ -1896,6 +1907,20 @@ mod tests {
             "id": "x", "base_branch": "a..b", "hold_project_at_gate": "no"
         }));
         assert_eq!(bad, d);
+        // `link_node_modules`: a bool is read, any other type keeps the default (on).
+        assert!(
+            !WorkspaceOpts::from_value(&serde_json::json!({"id": "x", "link_node_modules": false}))
+                .link_node_modules
+        );
+        assert!(
+            WorkspaceOpts::from_value(&serde_json::json!({"id": "x", "link_node_modules": true}))
+                .link_node_modules
+        );
+        for bad in [serde_json::json!("false"), serde_json::json!(0), serde_json::json!(null)] {
+            let o = WorkspaceOpts::from_value(&serde_json::json!({"id": "x", "link_node_modules": bad}));
+            assert!(o.link_node_modules, "{bad}");
+            assert_eq!(o, d);
+        }
         let map = serde_json::json!({"projects": [{"id": "x", "base_branch": "rel/1"}]});
         assert_eq!(workspace_of(&map, "x").base_branch.as_deref(), Some("rel/1"));
         assert_eq!(workspace_of(&map, "y"), d);

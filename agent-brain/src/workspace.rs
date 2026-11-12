@@ -45,12 +45,107 @@ fn prune(project_root: &Path) {
     let _ = crate::gitops::git(project_root, &["worktree", "prune"]);
 }
 
+/// Name of the dependency folder a node project's task worktree is linked to.
+const NODE_MODULES: &str = "node_modules";
+
+/// The exclude file git reads for every worktree of the repo (`<common dir>/info/exclude`),
+/// asked of git from inside `worktree`.
+fn info_exclude_path(worktree: &Path) -> Option<PathBuf> {
+    let out = crate::gitops::git(worktree, &["rev-parse", "--git-path", "info/exclude"]).ok()?;
+    let p = PathBuf::from(out.trim());
+    if p.as_os_str().is_empty() {
+        return None;
+    }
+    Some(if p.is_absolute() { p } else { worktree.join(p) })
+}
+
+/// Appends the line `node_modules` (no slash, so it also matches a symlink) to the repo's
+/// `info/exclude` when no such line is there yet. Only appends; other lines stay as they are.
+fn ensure_node_modules_excluded(worktree: &Path) -> std::io::Result<()> {
+    let Some(path) = info_exclude_path(worktree) else {
+        return Err(std::io::Error::other("git không cho biết đường dẫn info/exclude"));
+    };
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    if existing
+        .lines()
+        .any(|l| matches!(l.trim(), "node_modules" | "/node_modules"))
+    {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut add = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        add.push('\n');
+    }
+    add.push_str(NODE_MODULES);
+    add.push('\n');
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    f.write_all(add.as_bytes())
+}
+
+/// A node project's task worktree has no `node_modules` (the folder is ignored, so a checkout
+/// never has it). When `project_root` has a `package.json` and a real `node_modules` folder and
+/// the worktree has no `node_modules` of its own (not even a dangling link), links the worktree's
+/// to the project's (absolute target) and makes git ignore the link (`info/exclude`), so the
+/// worktree stays clean for the Lead's dirty check. Safe to call again. Problems are warnings:
+/// they never fail the creation of the worktree.
+pub fn link_node_modules(project_root: &Path, worktree: &Path) {
+    let source = project_root.join(NODE_MODULES);
+    let source_is_real_dir = std::fs::symlink_metadata(&source).is_ok_and(|m| m.file_type().is_dir());
+    if !project_root.join("package.json").is_file() || !source_is_real_dir {
+        return;
+    }
+    let link = worktree.join(NODE_MODULES);
+    match std::fs::symlink_metadata(&link) {
+        Ok(m) if !m.file_type().is_symlink() => return, // the worktree has its own
+        Ok(_) => {}                                      // already linked
+        Err(_) => {
+            let target = match std::fs::canonicalize(&source) {
+                Ok(t) => t,
+                Err(e) => {
+                    crate::term::emit(&format!("Cảnh báo: không nối được node_modules: {e}"));
+                    return;
+                }
+            };
+            if let Err(e) = std::os::unix::fs::symlink(&target, &link) {
+                crate::term::emit(&format!(
+                    "Cảnh báo: không nối được node_modules vào {}: {e}",
+                    worktree.display()
+                ));
+                return;
+            }
+        }
+    }
+    if let Err(e) = ensure_node_modules_excluded(worktree) {
+        crate::term::emit(&format!(
+            "Cảnh báo: không ghi được node_modules vào info/exclude: {e}"
+        ));
+    }
+}
+
 /// Creates the worktree of `branch` (an existing branch) at the task's path and returns it.
-/// An existing folder on the right branch is reused.
-fn add_worktree(project_root: &Path, project_id: &str, slug: &str, branch: &str) -> BrainResult<PathBuf> {
+/// An existing folder on the right branch is reused. `link`: link the project's `node_modules`
+/// into it (`link_node_modules`, the project's `link_node_modules` option).
+fn add_worktree(
+    project_root: &Path,
+    project_id: &str,
+    slug: &str,
+    branch: &str,
+    link: bool,
+) -> BrainResult<PathBuf> {
     let path = worktree_path(project_id, slug);
     if path.is_dir() {
         if crate::gitops::current_branch(&path).as_deref() == Some(branch) {
+            if link {
+                link_node_modules(project_root, &path);
+            }
             return Ok(path);
         }
         return Err(BrainError::error(format!(
@@ -60,22 +155,27 @@ fn add_worktree(project_root: &Path, project_id: &str, slug: &str, branch: &str)
     }
     prune(project_root);
     crate::gitops::worktree_add(project_root, &path, branch)?;
+    if link {
+        link_node_modules(project_root, &path);
+    }
     Ok(path)
 }
 
 /// D2.2: a new task in worktree mode. Creates `branch` from `start` without touching the main
-/// repo's checkout, then its worktree; returns the worktree path.
+/// repo's checkout, then its worktree; returns the worktree path. `link`: the project's
+/// `link_node_modules` option.
 pub fn create_task_worktree(
     project_root: &Path,
     project_id: &str,
     slug: &str,
     branch: &str,
     start: &str,
+    link: bool,
 ) -> BrainResult<PathBuf> {
     if !crate::gitops::branch_exists(project_root, branch) {
         crate::gitops::branch_from(project_root, branch, start)?;
     }
-    add_worktree(project_root, project_id, slug, branch)
+    add_worktree(project_root, project_id, slug, branch, link)
 }
 
 /// Worktree mode: makes sure the task has its worktree (re-created on its existing branch after
@@ -94,6 +194,9 @@ pub fn ensure_task_root(
     }
     if let Some(w) = task.workdir.as_deref().filter(|w| !w.trim().is_empty()) {
         if Path::new(w).is_dir() {
+            if project.workspace.link_node_modules {
+                link_node_modules(project_root, Path::new(w));
+            }
             return Ok(PathBuf::from(w));
         }
     }
@@ -105,7 +208,13 @@ pub fn ensure_task_root(
         }
         return Ok(project_root.to_path_buf());
     }
-    let path = add_worktree(project_root, &project.id, &task.slug, &task.branch)?;
+    let path = add_worktree(
+        project_root,
+        &project.id,
+        &task.slug,
+        &task.branch,
+        project.workspace.link_node_modules,
+    )?;
     crate::db::set_task_workdir(conn, task.id, Some(&path.to_string_lossy()))?;
     crate::term::emit(&format!(
         "Đã tạo worktree cho task {} tại {}",

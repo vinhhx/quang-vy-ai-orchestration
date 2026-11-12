@@ -553,8 +553,14 @@ pub fn cmd_lead(
             .clone()
             .or_else(|| base_commit.clone())
             .unwrap_or_else(|| "HEAD".to_string());
-        let made =
-            crate::workspace::create_task_worktree(&repo_root, &proj.id, &task_slug, &branch, &start)?;
+        let made = crate::workspace::create_task_worktree(
+            &repo_root,
+            &proj.id,
+            &task_slug,
+            &branch,
+            &start,
+            proj.workspace.link_node_modules,
+        )?;
         if &made != wt {
             return Err(BrainError::error(format!(
                 "Worktree tạo ở {} thay vì {}",
