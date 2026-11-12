@@ -587,6 +587,11 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         .route("/api/tasks/{id}/dev", post(post_task_dev))
         .route("/api/tasks/{id}/qa", post(post_task_qa))
         .route("/api/tasks/{id}/relead", post(post_task_relead))
+        .route("/api/tasks/{id}/queue-action", post(post_queue_action))
+        .route(
+            "/api/tasks/{id}/queue-action/cancel",
+            post(post_queue_action_cancel),
+        )
         .route("/api/tasks/{id}/team", post(post_change_team))
         .route("/api/tasks/{id}/quota-rerun", post(post_quota_rerun))
         .route("/api/tasks/{id}/human/done", post(post_human_done))
@@ -2807,6 +2812,7 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "created_at": task.created_at,
             "updated_at": task.updated_at,
             "inputs": inputs_meta,
+            "queued_action": queued_action_json(&conn, task.id)?,
             "project": {
                 "id": project.id,
                 "name_vi": project.name_vi,
@@ -3223,6 +3229,13 @@ pub fn lead_return_args(
     }
 }
 
+/// Lý do khoá của một hành động là đúng lý do bận của dự án (`state.busy`): phép so duy
+/// nhất mà `run_task_action`, `run_control_as` và hàng chờ (`queue_action`, scheduler)
+/// dùng để gọi một từ chối là `busy`.
+pub fn is_busy_reason(state: &TaskState, reason: &str) -> bool {
+    state.busy.as_deref() == Some(reason)
+}
+
 /// Hành động của task (Chạy Dev / Chạy QA / Chạy lại Lead). Trạng thái được đọc
 /// lại; chỉ chạy khi hành động có mặt và đang bật. `rev` (tùy chọn) phải khớp;
 /// ghi chú chỉ dùng cho `relead`. Dashboard truyền `None` cho cả hai.
@@ -3266,8 +3279,11 @@ pub fn run_task_action(
 
     if !action.enabled {
         let reason = action.reason.unwrap_or_default();
-        let is_busy = state.busy.as_ref().map_or(false, |b| b == &reason);
-        let kind = if is_busy { "busy" } else { "not_allowed" };
+        let kind = if is_busy_reason(&state, &reason) {
+            "busy"
+        } else {
+            "not_allowed"
+        };
         return Ok(ControlOutcome::Refused { reason, kind });
     }
     // Chạy lại Lead khi autopilot còn bật (quy trình `auto: true`, chưa `ended`):
@@ -3348,6 +3364,199 @@ async fn post_task_relead(
     Json(_body): Json<ActionBody>,
 ) -> Response {
     post_task_action(st, task_id, "relead", "lead").await
+}
+
+/// Hành động được phép xếp hàng chờ slot khi dự án bận (cũng là `CHECK` của `queued_actions`).
+pub const QUEUEABLE_ACTIONS: [&str; 4] = ["run_dev", "run_qa", "relead", "auto_start"];
+
+/// Vai trò của job mà `run_task_action` chạy cho một hành động xếp hàng.
+pub fn queued_action_role(action_id: &str) -> Option<&'static str> {
+    match action_id {
+        "run_dev" => Some("dev"),
+        "run_qa" => Some("qa"),
+        "relead" => Some("lead"),
+        _ => None,
+    }
+}
+
+/// Nhãn tiếng Việt của hành động xếp hàng (cho màn hình và log).
+pub fn queued_action_label(action_id: &str) -> &'static str {
+    match action_id {
+        "run_dev" => "Chạy Dev",
+        "run_qa" => "Chạy QA",
+        "relead" => "Chạy lại Lead",
+        "auto_start" => "Bật autopilot",
+        _ => "hành động",
+    }
+}
+
+/// Tìm hành động (nút) theo id trong `actions` rồi `controls` của task.
+pub fn find_task_action<'a>(
+    state: &'a TaskState,
+    action_id: &str,
+) -> Option<&'a taskstate::ActionView> {
+    state
+        .view
+        .actions
+        .iter()
+        .chain(state.view.controls.iter())
+        .find(|a| a.id == action_id)
+}
+
+/// Kết quả xếp hàng một hành động chờ slot.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QueueOutcome {
+    /// Đã ghi hàng `waiting` (id của hàng).
+    Queued { queued_id: i64 },
+    /// Không xếp hàng được; kèm lý do cho người dùng.
+    NotQueueable(String),
+    /// Task / dự án không có.
+    NotFound(String),
+    /// Đầu vào không hợp lệ (ghi chú quá dài, hành động lạ).
+    Invalid(String),
+}
+
+/// Xếp một hành động chạy lại bước của task vào hàng chờ slot. Chỉ khi hành động nằm trong
+/// `QUEUEABLE_ACTIONS` và đang bị khoá đúng vì dự án bận (`is_busy_reason`, cùng phép so mà
+/// `run_task_action` dùng để trả `kind = "busy"`); mọi lý do khoá khác không xếp hàng.
+pub fn queue_action(
+    st: &AppState,
+    task_id: i64,
+    action_id: &str,
+    note: Option<&str>,
+    source: ActionSource,
+) -> BrainResult<QueueOutcome> {
+    if !QUEUEABLE_ACTIONS.contains(&action_id) {
+        return Ok(QueueOutcome::Invalid(
+            "Hành động này không xếp hàng chờ slot được".to_string(),
+        ));
+    }
+    let note = match normalize_note(note) {
+        Ok(n) => n,
+        Err(msg) => return Ok(QueueOutcome::Invalid(msg)),
+    };
+
+    let conn = crate::db::open(&st.db_path)?;
+    let state = match load_task_state(st, &conn, task_id)? {
+        Ok(s) => s,
+        Err(msg) => return Ok(QueueOutcome::NotFound(msg)),
+    };
+
+    let action = match find_task_action(&state, action_id) {
+        Some(a) => a,
+        None => return Ok(QueueOutcome::NotQueueable(NOT_ALLOWED_MSG.to_string())),
+    };
+    if action.enabled {
+        return Ok(QueueOutcome::NotQueueable(
+            "Hành động chạy được ngay — bấm chạy".to_string(),
+        ));
+    }
+    let reason = action.reason.clone().unwrap_or_default();
+    if !is_busy_reason(&state, &reason) {
+        let msg = if reason.is_empty() {
+            NOT_ALLOWED_MSG.to_string()
+        } else {
+            reason
+        };
+        return Ok(QueueOutcome::NotQueueable(msg));
+    }
+
+    // Chỉ `relead` mang ghi chú (như `run_task_action`).
+    let note = if action_id == "relead" { note } else { None };
+    let queued_id =
+        crate::db::enqueue_action(&conn, task_id, action_id, note.as_deref(), source.as_str())?;
+    let _ = st.hints.send(0);
+    Ok(QueueOutcome::Queued { queued_id })
+}
+
+/// Huỷ hàng `waiting` của task. `Ok(Some(true))`: đã huỷ; `Ok(Some(false))`: không có hàng
+/// đang chờ (idempotent); `Ok(None)`: task không có.
+pub fn cancel_queued_action(st: &AppState, task_id: i64) -> BrainResult<Option<bool>> {
+    let conn = crate::db::open(&st.db_path)?;
+    if crate::db::get_task(&conn, task_id)?.is_none() {
+        return Ok(None);
+    }
+    let cancelled = match crate::db::waiting_action_for_task(&conn, task_id)? {
+        Some(row) => crate::db::set_queued_status(&conn, row.id, "cancelled", None)?,
+        None => false,
+    };
+    if cancelled {
+        let _ = st.hints.send(0);
+    }
+    Ok(Some(cancelled))
+}
+
+/// `queued_action` của `GET /api/tasks/{id}`: chỉ hàng `waiting`, không có đường dẫn.
+fn queued_action_json(conn: &rusqlite::Connection, task_id: i64) -> BrainResult<serde_json::Value> {
+    Ok(match crate::db::waiting_action_for_task(conn, task_id)? {
+        Some(q) => serde_json::json!({
+            "id": q.id,
+            "action": q.action_id,
+            "label": queued_action_label(&q.action_id),
+            "note": q.note,
+            "reason": q.reason,
+            "created_at": q.created_at,
+        }),
+        None => serde_json::Value::Null,
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QueueActionBody {
+    action: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+async fn post_queue_action(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<QueueActionBody>,
+) -> Response {
+    let action = body.action.clone();
+    let res = blocking(move || {
+        queue_action(
+            &st,
+            task_id,
+            &body.action,
+            body.note.as_deref(),
+            ActionSource::Dashboard,
+        )
+    })
+    .await;
+    match res {
+        Ok(QueueOutcome::Queued { queued_id }) => json_resp(
+            StatusCode::CREATED,
+            serde_json::json!({
+                "queued_id": queued_id,
+                "action": action,
+                "status": "waiting",
+            }),
+        ),
+        Ok(QueueOutcome::NotQueueable(reason)) => conflict(&reason, "not_queueable"),
+        Ok(QueueOutcome::NotFound(msg)) => json_error(StatusCode::NOT_FOUND, &msg),
+        Ok(QueueOutcome::Invalid(msg)) => json_error(StatusCode::BAD_REQUEST, &msg),
+        Err(e) => internal_error("xếp hàng hành động của task", &e),
+    }
+}
+
+async fn post_queue_action_cancel(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+) -> Response {
+    let res = blocking(move || cancel_queued_action(&st, task_id)).await;
+    match res {
+        Ok(Some(cancelled)) => json_resp(
+            StatusCode::OK,
+            serde_json::json!({ "cancelled": cancelled }),
+        ),
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            &format!("Không tìm thấy task {task_id}"),
+        ),
+        Err(e) => internal_error("huỷ hành động đang chờ slot", &e),
+    }
 }
 
 /// Lỗi 500 với thân cố định (W-3): chi tiết (đường dẫn, lỗi SQLite) chỉ in ra
@@ -3611,7 +3820,7 @@ pub fn run_control_as(
     };
     if !ctl.enabled {
         let reason = ctl.reason.unwrap_or_default();
-        let kind = if state.busy.as_deref() == Some(reason.as_str()) {
+        let kind = if is_busy_reason(&state, &reason) {
             "busy"
         } else if control == "merge_push" {
             let live = running_of(&state.runs).is_some() || state.driver_alive;

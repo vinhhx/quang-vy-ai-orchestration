@@ -709,6 +709,30 @@ pub fn diff_names(root: &Path, a: &str, b: &str) -> BrainResult<BTreeSet<String>
     Ok(set)
 }
 
+/// Tên file đổi giữa `from` (sha hoặc nhánh) và `to` (nhánh hoặc sha) bằng
+/// `git diff --name-only --no-renames from..to --`. Chỉ đọc. Từ chối chuỗi rỗng, chuỗi bắt
+/// đầu bằng `-` và tên không hợp lệ làm đối số git (không phải sha hex cũng không qua
+/// `valid_branch_name_syntax`).
+pub fn changed_names_between(root: &Path, from: &str, to: &str) -> BrainResult<BTreeSet<String>> {
+    for rev in [from, to] {
+        if rev.is_empty()
+            || rev.starts_with('-')
+            || !(is_hex_sha(rev) || valid_branch_name_syntax(rev))
+        {
+            return Err(BrainError::error(format!(
+                "Tham chiếu git không hợp lệ cho so sánh: '{rev}'"
+            )));
+        }
+    }
+    let range = format!("{from}..{to}");
+    let out = git(root, &["diff", "--name-only", "--no-renames", &range, "--"])?;
+    Ok(out
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
+}
+
 pub fn diff_code_names(root: &Path, a: &str, b: &str) -> BrainResult<BTreeSet<String>> {
     let mut names = diff_names(root, a, b)?;
     names.retain(|n| !crate::protocol_paths::is_protocol_file(n));
