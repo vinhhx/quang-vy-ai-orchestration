@@ -306,7 +306,7 @@ pub fn cleanup_refusal(
 }
 
 /// True when the task has a live run or a live autopilot driver.
-fn task_busy(conn: &Connection, task: &TaskRow) -> BrainResult<bool> {
+pub(crate) fn task_busy(conn: &Connection, task: &TaskRow) -> BrainResult<bool> {
     if let Some(r) = crate::db::running_run_for_task(conn, task.id)? {
         if let (Some(pid), Some(start)) = (r.pid, r.pid_start) {
             if crate::procs::alive(crate::procs::ProcId {
@@ -1138,10 +1138,14 @@ pub fn cmd_cleanup(
     task_id: Option<i64>,
     merged_only: bool,
     yes: bool,
+    branches: bool,
 ) -> BrainResult<i32> {
     match (task_id, merged_only) {
         (Some(_), true) | (None, false) => Err(BrainError::error(
             "task cleanup cần <ID task> hoặc --merged (không dùng cả hai)",
+        )),
+        (Some(_), false) if branches => Err(BrainError::error(
+            "--branches chỉ dùng cùng --merged (dọn mọi nhánh task đã merge)",
         )),
         (Some(id), false) => {
             let (task, project) = task_and_project(&ctx.conn, &ctx.projects, id)?;
@@ -1176,6 +1180,30 @@ pub fn cmd_cleanup(
                 }
             }
             crate::term::emit_out(&format!("Đã dọn {removed} worktree."));
+            if branches {
+                let mut deleted = 0;
+                for project in &projects {
+                    if !project.workspace.is_worktree() {
+                        continue;
+                    }
+                    let Ok(pid) = crate::db::project_row_id(&ctx.conn, &project.id) else { continue };
+                    if crate::db::tasks_of_project(&ctx.conn, pid)?.is_empty() {
+                        continue;
+                    }
+                    let Ok(root) = crate::projects::require_runnable(project, &ctx.cfg) else { continue };
+                    let out = crate::orchestrator::housekeeping::sweep_merged_branches(
+                        &ctx.conn, project, &root,
+                    )?;
+                    deleted += out.deleted.len();
+                    for line in &out.deleted {
+                        crate::term::emit_out(line);
+                    }
+                    for (id, reason) in &out.refused {
+                        crate::term::emit(&format!("Bỏ qua task {id}: {reason}"));
+                    }
+                }
+                crate::term::emit_out(&format!("Đã xoá {deleted} nhánh đã merge."));
+            }
             Ok(crate::error::EXIT_OK)
         }
     }

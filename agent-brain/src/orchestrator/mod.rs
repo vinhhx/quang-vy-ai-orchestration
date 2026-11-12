@@ -1,3 +1,4 @@
+pub mod housekeeping;
 pub mod plancheck;
 pub mod scheduler;
 pub mod triage;

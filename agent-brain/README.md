@@ -124,6 +124,7 @@ Quay lại bản cũ: dừng `serve`, rồi khôi phục **cùng lúc** binary c
 | **container** | `agent-brain container PROJECT` | In kết quả dò container docker đang chạy mount repo dự án: tên container, thư mục repo trên máy → trong container, lệnh được chuyển vào, lý do chọn khi nhiều container khớp, hoặc lý do không có. Chỉ gọi `docker ps` và `docker inspect` (lấy tên, trạng thái, mount; không in biến môi trường của container). Xem mục "Lệnh dự án trong container docker". |
 | **fixbug** | `agent-brain fixbug {check\|pull\|list\|deployed\|reject\|init\|import-legacy} PROJECT` | Quản lý nguồn bug từ Trello và Google Sheet: kiểm tra cấu hình (`check`), lấy bug vào hàng chờ intake (`pull`), xem danh sách bug kèm cột `đề xuất` và `task` (`list`), đánh dấu đã sửa và deploy (`deployed`), từ chối sửa (`reject`), khởi tạo file cấu hình (`init`), nhập trạng thái skill `/fix-bugs` cũ (`import-legacy`). Mỗi bug thành đúng một đề xuất (không tách); đề xuất giữ nguyên nội dung bug, tiêu đề `<KEY> <tiêu đề card>`, priority theo label. Mô tả, bình luận, đính kèm nằm trong khối `<<<DU_LIEU_QA <mã>` … `<<<HET_DU_LIEU_QA <mã>` và Lead nhận luật dữ liệu không tin cậy. Ảnh upload của card Trello (tối đa 5 ảnh, mỗi ảnh ≤ 5 MiB) được tải vào `<thư mục tri thức>/fix-bugs/images/<KEY>/` chỉ khi thư mục đó nằm trong `.gitignore`. `pull` (CLI, dashboard, Telegram) bị chặn khi có `fix-bugs/.lock` của skill cũ, hoặc khi còn `fix-bugs/tasks/*/state.json` mà chưa chạy `import-legacy` (CLI bỏ qua điều kiện sau bằng `--skip-legacy-check`). `import-legacy [--open skip\|take] [--dry-run]` chỉ đọc `tasks/*/state.json`: `done` → `deployed`; `rejected`/`duplicate` → `rejected`; `need_info`/`plan_ready` → `pulled` (`skip`, mặc định) hoặc không ghi để `pull` kéo thành task mới (`take`); `approved`/`review`/`ready_to_merge`/`merged`/`blocked`/`parked` → luôn `pulled` (skill cũ đang giữ nhánh). Không sửa file của skill cũ, không gọi Trello. |
 | **task merge --push** | `agent-brain task merge TASK_ID --push` | Merge & push task đã QA đạt: lấy `origin/<nhánh gốc>`, checkout nhánh gốc, `git merge --no-ff` nhánh task (bỏ file giao thức), push nhánh gốc lên origin không force, xoá nhánh task cục bộ (`git branch -d`). Thoát `0` khi đã push, đã xong từ trước, hoặc đã merge trong repo không có origin; thoát `1` khi bị từ chối hoặc push lỗi. Không có `--push`: `task merge` giữ hành vi cũ (merge, không push). Xem mục "Merge & push sau QA đạt". |
+| **task cleanup** | `agent-brain task cleanup [--merged [--branches]] [--yes] [TASK_ID]` | Dọn worktree của task đã xong (`git worktree remove`, không `--force`; worktree có thay đổi chưa commit bị từ chối). Với `TASK_ID`: dọn một task (nhánh chưa merge cần `--yes`). `--merged`: dọn mọi worktree có nhánh đã merge vào nhánh gốc. Chỉ khi có thêm `--branches` mới xoá luôn các nhánh `task/*`, `analysis/*` đã merge (`git branch -d`, không bao giờ `-D`); không có cờ thì không xoá nhánh nào. Server cũng tự làm việc này định kỳ, xem mục "Tự dọn worktree và nhánh đã merge". |
 
 ### Dự án loại `idea`
 
@@ -470,6 +471,37 @@ Dự án ở chế độ worktree (mặc định cho dự án git loại `code`)
 - **Quyền đọc**: guard cho phép ĐỌC (không ghi; `Grep`/`Glob` giữ nguyên) các đường dẫn nằm dưới đích của symlink `node_modules` trong worktree, ví dụ `node_modules/.bin/<lệnh>`; các thành phần `.git`, `.planning`, `.env*` bên trong vẫn bị cấm. Không mở thêm thư mục nào khác của repo gốc.
 - **Tắt theo dự án**: đặt `"link_node_modules": false` ở mục dự án trong `projects_map.json` (sửa file, chưa có nút trên dashboard). Giá trị không phải boolean thì giữ mặc định (bật).
 - **Rủi ro**: `npm install` (hay công cụ ghi vào `node_modules`) chạy trong worktree sẽ ghi vào `node_modules` dùng chung của repo gốc và ảnh hưởng mọi worktree khác. Chỉ nối `node_modules` ở gốc dự án; `packages/*/node_modules` của monorepo không được nối.
+
+### Tự dọn worktree và nhánh đã merge (housekeeping)
+
+Worktree của task nặng hàng trăm MB và nhánh `task/*` đã merge nằm lại mãi, nên khi `agent-brain serve` chạy nó tự dọn định kỳ (trong nhịp của bộ lập lịch, kể cả khi `orchestrator.enabled = false`; lần đầu ngay sau khi serve khởi động). Chỉ dự án ở chế độ worktree, chỉ task ĐÃ XONG (`qa_pass`, `answered`), và chỉ khi task không có run hay autopilot đang chạy:
+
+- **Đã merge**: worktree sạch của task có nhánh đã merge vào nhánh gốc thì bị dọn, rồi nhánh bị xoá (`git branch -d`, không bao giờ `-D`).
+- **Chưa merge**: nhánh KHÔNG BAO GIỜ tự bị xoá (mất việc); chỉ người dùng quyết. Worktree sạch của nó chỉ bị dọn (nhánh giữ) khi task đã xong quá `keep_unmerged_days` ngày, hoặc khi ổ chứa worktree còn dưới `min_free_gb` GB (dọn sớm).
+- **Luôn giữ**: worktree có thay đổi chưa commit (lý do ghi ra terminal một lần mỗi lần chạy serve), task chưa xong, nhánh đang là nhánh gốc (`base_branch`) của một task chưa xong, nhánh đang checkout ở repo chính, nhánh không có trong bảng task của agent-brain (nhánh bạn tự tạo), và nhánh có tên không bắt đầu bằng `task/` hoặc `analysis/`. Git từ chối xoá nhánh thì bỏ qua.
+- Mỗi lần dọn ghi một dòng `Dọn tự động: …` ra terminal. Không bao giờ dùng `--force`, `-D`, `git clean` hay `rm`.
+
+Khối `housekeeping` ở cấp trên cùng của `config.json` (mọi khóa tùy chọn; thiếu khóa hay thiếu cả khối thì dùng mặc định; sai kiểu hoặc ngoài khoảng thì báo lỗi cấu hình):
+
+```json
+"housekeeping": {
+  "enabled": true,
+  "interval_minutes": 10,
+  "keep_unmerged_days": 7,
+  "delete_merged_branches": true,
+  "min_free_gb": 20
+}
+```
+
+| Khóa | Mặc định | Khoảng | Ý nghĩa |
+|---|---|---|---|
+| `enabled` | `true` | boolean | `false` tắt hẳn dọn tự động |
+| `interval_minutes` | `10` | 1–1440 | số phút giữa hai lần dọn |
+| `keep_unmerged_days` | `7` | 1–365 | worktree sạch của task xong mà nhánh chưa merge được dọn sau chừng này ngày (nhánh giữ) |
+| `delete_merged_branches` | `true` | boolean | `false` giữ lại mọi nhánh, chỉ dọn worktree |
+| `min_free_gb` | `20` | 0–2000 | ổ chứa worktree (`df -Pk`) còn dưới chừng này GB thì dọn sớm mọi worktree sạch của task xong; `0` tắt luật này |
+
+Dọn tay cùng logic: `agent-brain task cleanup --merged` dọn worktree đã merge; thêm `--branches` để xoá luôn các nhánh task đã merge. Tắt dọn tự động: đặt `"housekeeping": {"enabled": false}`; chỉ muốn giữ nhánh: `"delete_merged_branches": false`. Nhánh đã xoá có thể tạo lại từ nhánh gốc khi cần sửa tiếp.
 
 ### Nhật ký Obsidian (journal)
 

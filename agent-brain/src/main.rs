@@ -207,6 +207,9 @@ enum TaskCommands {
         /// Xác nhận dọn dù nhánh chưa merge
         #[arg(long)]
         yes: bool,
+        /// Với --merged: sau khi dọn, xoá luôn các nhánh task đã merge (git branch -d, không bao giờ -D)
+        #[arg(long)]
+        branches: bool,
     },
     /// Merge nhánh task (đã qua QA) vào nhánh gốc trên repo chính (git merge --no-ff; --push: fetch, merge, push không force, xoá nhánh task)
     Merge {
@@ -526,7 +529,8 @@ fn main() {
                 task_id,
                 merged,
                 yes,
-            } => agent_brain::workspace::cmd_cleanup(&mut ctx, task_id, merged, yes),
+                branches,
+            } => agent_brain::workspace::cmd_cleanup(&mut ctx, task_id, merged, yes, branches),
             TaskCommands::Merge { task_id, push: false } => {
                 agent_brain::workspace::cmd_merge(&mut ctx, task_id)
             }
