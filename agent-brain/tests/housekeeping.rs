@@ -364,12 +364,72 @@ fn base_of_an_unfinished_task_keeps_its_branch() {
     assert!(wb.is_dir());
     assert_eq!(env.row(b).workdir.as_deref(), wb.to_str());
     assert!(branch_exists(&env.repo, "task/g2"));
-    // the stacked task finishes: now nothing uses the base branch
+    // the stacked task finishes but is not merged yet (and has its worktree): it still needs its base
     db::set_task_status(&env.conn, b, "qa_pass").unwrap();
     env.run(None);
-    assert!(!branch_exists(&env.repo, "task/g1"));
+    assert!(branch_exists(&env.repo, "task/g1"), "a finished, unmerged child keeps its base");
     assert!(branch_exists(&env.repo, "task/g2"), "g2 is not merged");
     assert!(wb.is_dir(), "g2 is unmerged and recent");
+}
+
+// A finished child whose own branch is not merged into its base still needs that base branch.
+// `parent` (finished, merged into main, no worktree) is the base of `child` (qa_pass).
+fn parent_and_finished_child(env: &Env) -> (i64, i64) {
+    let parent = env.task("p", "qa_pass", true);
+    let child = env.task_from("c", "task/p", "qa_pass", false);
+    env.remove_worktree(parent);
+    env.remove_worktree(child);
+    (parent, child)
+}
+
+#[test]
+fn base_of_a_finished_but_unmerged_child_is_kept() {
+    let env = Env::new();
+    let (parent, _child) = parent_and_finished_child(&env);
+    let lines = env.run(None);
+    assert!(lines.is_empty(), "{lines:?}");
+    assert!(branch_exists(&env.repo, &branch_of(parent, &env)), "parent branch kept");
+    assert!(branch_exists(&env.repo, "task/c"), "unmerged child kept");
+    // the helper path used by `task cleanup --merged --branches` agrees
+    assert!(delete_merged_branches(&env.conn, &env.project, &env.repo).is_empty());
+    assert!(branch_exists(&env.repo, "task/p"));
+}
+
+#[test]
+fn base_of_a_child_merged_into_it_is_deleted() {
+    let env = Env::new();
+    let (_parent, _child) = parent_and_finished_child(&env);
+    // the parent branch moves onto the child's commit: the child is now merged into it; then the
+    // parent (with the child's work) is merged into main
+    git(&env.repo, &["branch", "-f", "task/p", "task/c"]);
+    git(&env.repo, &["merge", "--no-ff", "--no-edit", "task/p"]);
+    env.run(None);
+    assert!(!branch_exists(&env.repo, "task/p"), "child merged into the parent: parent is free");
+}
+
+#[test]
+fn base_of_a_child_with_a_missing_branch_is_deleted() {
+    let env = Env::new();
+    let (_parent, _child) = parent_and_finished_child(&env);
+    // the child's branch is gone (plain ref deletion in the temp repo)
+    git(&env.repo, &["update-ref", "-d", "refs/heads/task/c"]);
+    env.run(None);
+    assert!(!branch_exists(&env.repo, "task/p"), "the child's branch is gone: parent is free");
+}
+
+#[test]
+fn base_of_a_child_with_a_worktree_is_kept() {
+    let env = Env::new();
+    let parent = env.task("p", "qa_pass", true);
+    let child = env.task_from("c", "task/p", "qa_pass", false);
+    env.remove_worktree(parent);
+    // the child's branch is merged into the parent, but the child still has its worktree
+    git(&env.repo, &["branch", "-f", "task/p", "task/c"]);
+    git(&env.repo, &["merge", "--no-ff", "--no-edit", "task/p"]);
+    let lines = delete_merged_branches(&env.conn, &env.project, &env.repo);
+    assert!(lines.is_empty(), "{lines:?}");
+    assert!(branch_exists(&env.repo, "task/p"));
+    assert!(env.wt(child).is_some_and(|w| w.is_dir()));
 }
 
 // (h) the branch checked out in the main repo is never deleted.

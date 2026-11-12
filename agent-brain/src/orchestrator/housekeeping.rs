@@ -231,8 +231,9 @@ fn is_task_branch(branch: &str) -> bool {
 }
 
 /// Xoá nhánh của task xong KHÔNG còn worktree khi nhánh `task/*` hoặc `analysis/*` ghi trong DB
-/// còn tồn tại, đã merge vào nhánh gốc, không đang checkout ở repo chính, và không task chưa xong
-/// nào dùng nó làm `base_branch`. Chỉ `git branch -d -- <nhánh>`: git từ chối thì ghi vào
+/// còn tồn tại, đã merge vào nhánh gốc, không đang checkout ở repo chính, và không task nào khác
+/// còn cần nó làm `base_branch` (task chưa xong, task còn worktree, hoặc task có nhánh còn tồn tại
+/// mà chưa merge vào nó). Chỉ `git branch -d -- <nhánh>`: git từ chối thì ghi vào
 /// `refused`. Không đụng nhánh không có trong bảng `tasks`.
 pub fn sweep_merged_branches(
     conn: &Connection,
@@ -264,11 +265,18 @@ pub fn sweep_merged_branches(
         if current.as_deref() == Some(branch) {
             continue;
         }
-        let is_base_of_unfinished = tasks.iter().any(|o| {
-            !crate::tasks::is_success_status(&o.status)
+        // Another task still needs this branch as its base (for its diff and its later merge):
+        // it is unfinished, or has a worktree, or its own branch exists and is not merged into
+        // this branch yet. A task whose branch is merged into it, or gone, does not protect it.
+        let needed_as_base = tasks.iter().any(|o| {
+            o.id != task.id
                 && o.base_branch.as_deref().map(str::trim) == Some(branch)
+                && (!crate::tasks::is_success_status(&o.status)
+                    || has_workdir(o)
+                    || (crate::gitops::branch_exists(root, &o.branch)
+                        && !crate::gitops::is_merged_into(root, &o.branch, branch)))
         });
-        if is_base_of_unfinished {
+        if needed_as_base {
             continue;
         }
         match crate::gitops::git(root, &["branch", "-d", "--", branch]) {
