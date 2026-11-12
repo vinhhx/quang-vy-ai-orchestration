@@ -220,6 +220,18 @@ pub struct RunRequest {
     /// C2: re-check the project's environment every `interval` while the run runs;
     /// `preflight::FAILS_TO_STOP` failures in a row stop it (`RunStop::EnvDown`). `None` = off.
     pub env_watch: Option<EnvWatch>,
+    /// `run_stall_minutes`: when the engine writes no line at all for this long (counted from the
+    /// spawn, reset by every stdout/stream line, never by stderr) the run is stopped like a
+    /// timeout (`RunStop::Stalled`, status `timed_out`). `None` = off.
+    pub stall_after: Option<Duration>,
+}
+
+/// Text of a run stopped for silence: the notice and `runs.error`.
+pub fn stall_message(after: Duration) -> String {
+    format!(
+        "Run không có hoạt động nào trong {} phút (có thể một lệnh bị treo) — đã dừng",
+        after.as_secs().div_ceil(60).max(1)
+    )
 }
 
 /// Periodic environment check during a run (project `preflight_interval_seconds`).
@@ -283,6 +295,8 @@ pub enum RunStop {
     Observer,
     /// The environment watcher (`RunRequest::env_watch`) saw the environment down.
     EnvDown,
+    /// `RunRequest::stall_after` passed with no line from the engine.
+    Stalled,
 }
 
 /// What one stop of a run did: the container part (dsh only) and the host process tree.
@@ -315,6 +329,8 @@ pub struct RunOutcome {
     pub stopped_by: Option<RunStop>,
     /// `RunStop::EnvDown`: why (no URL path or query in it).
     pub env_down: Option<String>,
+    /// `RunStop::Stalled`: the silence limit that was exceeded.
+    pub stalled_after: Option<Duration>,
 }
 
 pub trait RunObserver {
@@ -561,8 +577,12 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         .clone()
         .map(|w| spawn_env_watch(w, env_done.clone()));
     let mut env_down: Option<String> = None;
+    // Silence clock: starts at the spawn, reset by every engine line (stderr never counts).
+    let mut last_activity = tokio::time::Instant::now();
+    let mut stalled_after: Option<Duration> = None;
 
     loop {
+        let stall_deadline = req.stall_after.map(|d| last_activity + d);
         tokio::select! {
             reason = async {
                 match env_rx.as_mut() {
@@ -586,6 +606,7 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
             line = rx.recv() => {
                 match line {
                     Some(line) => {
+                        last_activity = tokio::time::Instant::now();
                         let line = if req.redact.is_empty() {
                             line
                         } else {
@@ -691,6 +712,23 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
                     ));
                 }
             }
+            _ = async {
+                match stall_deadline {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            }, if stall_deadline.is_some() && stopping.is_none() => {
+                let after = req.stall_after.unwrap_or_default();
+                stopping = Some(RunStop::Stalled);
+                stalled_after = Some(after);
+                obs.on_notice(&stall_message(after));
+                kill_task = Some(spawn_stop(
+                    root,
+                    req.kill_grace,
+                    force.clone(),
+                    req.container_stop.clone(),
+                ));
+            }
             _ = &mut sleep_fut, if stopping.is_none() => {
                 stopping = Some(RunStop::Timeout);
                 obs.on_notice(&format!("Quá thời gian {}s — dừng run", req.timeout.as_secs()));
@@ -794,6 +832,8 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
     let status = match stopping {
         Some(RunStop::Signal) => RunStatus::Killed,
         Some(RunStop::Timeout) => RunStatus::TimedOut,
+        // Silence is a timeout for every consumer (autopilot, dashboard, Telegram).
+        Some(RunStop::Stalled) => RunStatus::TimedOut,
         // The run had already answered: it counts as ended by itself (the exit code stays the
         // real one, for the log), unless a kill from another process arrived meanwhile.
         Some(RunStop::AfterResult) => {
@@ -824,5 +864,6 @@ async fn supervise_async(req: &RunRequest, obs: &mut dyn RunObserver) -> BrainRe
         elapsed,
         stopped_by: stopping,
         env_down,
+        stalled_after,
     })
 }

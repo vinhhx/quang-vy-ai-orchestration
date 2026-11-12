@@ -1104,6 +1104,12 @@ pub fn parse_role_timeouts(v: &serde_json::Value) -> Result<BTreeMap<String, u64
     }
 }
 
+/// `run_stall_minutes` when config.json has none.
+pub const DEFAULT_RUN_STALL_MINUTES: u64 = 20;
+/// Bounds of `run_stall_minutes` (0 = off is always allowed).
+pub const RUN_STALL_MIN_MINUTES: u64 = 5;
+pub const RUN_STALL_MAX_MINUTES: u64 = 240;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub claude_bin: String,
@@ -1115,6 +1121,9 @@ pub struct Config {
     pub timeout_seconds: BTreeMap<String, u64>,
     pub runs_dir: Option<String>,
     pub kill_grace_secs: u64,
+    /// `run_stall_minutes`: a run with no line from its engine for this long is stopped
+    /// (`timed_out`). 0 = off.
+    pub run_stall_minutes: u64,
     pub inspect_max_diff_bytes: usize,
     pub dashboard_port: u16,
     pub autopilot: AutopilotDefaults,
@@ -1131,6 +1140,11 @@ pub struct Config {
 }
 
 impl Config {
+    /// The silence limit of one run (`run_stall_minutes`); `None` when it is 0 (off).
+    pub fn stall_after(&self) -> Option<Duration> {
+        (self.run_stall_minutes > 0).then(|| Duration::from_secs(self.run_stall_minutes * 60))
+    }
+
     pub fn timeout_for(&self, role: &str) -> Duration {
         let role = match role {
             "analyst" => "lead",
@@ -1324,6 +1338,19 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         .get("kill_grace_secs")
         .and_then(|n| n.as_u64())
         .unwrap_or(3);
+
+    let run_stall_minutes = match obj.get("run_stall_minutes") {
+        None => DEFAULT_RUN_STALL_MINUTES,
+        Some(v) => match v.as_u64() {
+            Some(0) => 0,
+            Some(n) if (RUN_STALL_MIN_MINUTES..=RUN_STALL_MAX_MINUTES).contains(&n) => n,
+            _ => {
+                return Err(BrainError::error(format!(
+                    "Cấu hình run_stall_minutes phải là 0 (tắt) hoặc số nguyên từ {RUN_STALL_MIN_MINUTES} đến {RUN_STALL_MAX_MINUTES}"
+                )))
+            }
+        },
+    };
 
     let inspect_max_diff_bytes = obj
         .get("inspect_max_diff_bytes")
@@ -1583,6 +1610,7 @@ pub fn config_from_value(v: &serde_json::Value) -> BrainResult<Config> {
         timeout_seconds,
         runs_dir: runs_dir_opt,
         kill_grace_secs,
+        run_stall_minutes,
         inspect_max_diff_bytes,
         dashboard_port,
         autopilot,
@@ -2807,6 +2835,34 @@ mod tests {
         let mut bad = base;
         bad["orchestrator"]["restore_team_after_quota"] = serde_json::json!("yes");
         assert!(config_from_value(&bad).is_err());
+    }
+
+    #[test]
+    fn run_stall_minutes_default_range_and_off() {
+        let base: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        assert!(base.get("run_stall_minutes").is_none());
+        assert_eq!(config_from_value(&base).unwrap().run_stall_minutes, 20);
+        for n in [0u64, 5, 20, 240] {
+            let mut v = base.clone();
+            v["run_stall_minutes"] = serde_json::json!(n);
+            assert_eq!(config_from_value(&v).unwrap().run_stall_minutes, n);
+        }
+        for bad in [
+            serde_json::json!(1),
+            serde_json::json!(4),
+            serde_json::json!(241),
+            serde_json::json!(-1),
+            serde_json::json!(7.5),
+            serde_json::json!("20"),
+            serde_json::json!(null),
+            serde_json::json!(true),
+        ] {
+            let mut v = base.clone();
+            v["run_stall_minutes"] = bad.clone();
+            let e = config_from_value(&v).expect_err(&format!("run_stall_minutes={bad}"));
+            assert!(e.message.contains("run_stall_minutes"), "{}", e.message);
+            assert!(e.message.contains("5 đến 240"), "{}", e.message);
+        }
     }
 
     #[test]

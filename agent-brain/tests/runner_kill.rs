@@ -812,6 +812,7 @@ fn hanging_after_result_request(
         container_stop: None,
         finish_after_result,
         env_watch: None,
+        stall_after: None,
     }
 }
 
