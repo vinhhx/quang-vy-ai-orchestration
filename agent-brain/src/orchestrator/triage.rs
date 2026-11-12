@@ -105,9 +105,14 @@ impl crate::runner::RunObserver for TriageObserver {
         false
     }
 
-    /// Lets `finish_after_result` stop an agy that stays alive after its answer.
+    /// Lets `finish_after_result` stop an engine that stays alive after its answer.
     fn result_seen(&self) -> bool {
         self.summary.result_seen()
+    }
+
+    /// A `result` that reports an error is not turned into a success by `finish_after_result`.
+    fn result_is_error(&self) -> bool {
+        self.summary.result_is_error()
     }
 }
 
@@ -680,6 +685,7 @@ pub fn triage_with_warnings(
         config_dir: ep.env.get("CLAUDE_CONFIG_DIR").cloned(),
     };
 
+    let ep_stream = ep.stream;
     let req = crate::runner::RunRequest {
         argv: ep.argv,
         cwd: triage_dir,
@@ -691,9 +697,7 @@ pub fn triage_with_warnings(
         stdout_file: ep.stdout_file,
         redact: ep.redact,
         container_stop: ep.dsh,
-        finish_after_result: agy.then(|| {
-            std::time::Duration::from_secs(crate::roles::AGY_AFTER_RESULT_GRACE_SECS)
-        }),
+        finish_after_result: Some(crate::roles::after_result_grace(ep_stream)),
         env_watch: None,
         stall_after: st.cfg.stall_after(),
     };

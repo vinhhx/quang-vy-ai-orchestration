@@ -63,6 +63,19 @@ pub const ANALYSIS_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/anal
 /// as ended by itself.
 pub const AGY_AFTER_RESULT_GRACE_SECS: u64 = 15;
 
+/// Same for every other engine (claude, claude-format endpoints): a CLI that already printed its
+/// final `result` but does not exit is stopped after this many seconds.
+pub const AFTER_RESULT_GRACE_SECS: u64 = 30;
+
+/// Seconds a run of `stream` gets to exit after its final `result` event.
+pub fn after_result_grace(stream: crate::engine::StreamFormat) -> Duration {
+    Duration::from_secs(if stream == crate::engine::StreamFormat::Agy {
+        AGY_AFTER_RESULT_GRACE_SECS
+    } else {
+        AFTER_RESULT_GRACE_SECS
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum FixInput {
     Qa,
@@ -785,8 +798,7 @@ pub fn execute_role_staged(
         stdout_file: ep.stdout_file,
         redact: ep.redact.clone(),
         container_stop: ep.dsh.clone(),
-        finish_after_result: (ep.stream == crate::engine::StreamFormat::Agy)
-            .then(|| Duration::from_secs(AGY_AFTER_RESULT_GRACE_SECS)),
+        finish_after_result: Some(after_result_grace(ep.stream)),
         env_watch,
         stall_after: ctx.cfg.stall_after(),
     };
@@ -1026,6 +1038,10 @@ pub fn execute_role_staged(
             self.summary.result_seen()
         }
 
+        fn result_is_error(&self) -> bool {
+            self.summary.result_is_error()
+        }
+
         fn stop_requested(&self) -> Option<String> {
             self.violation.as_ref().map(|_| {
                 self.stop_reason
@@ -1116,8 +1132,7 @@ pub fn execute_role_staged(
         agy_stream && agy_print_timeout_hit(&crate::quota::stderr_tail(&quota_stderr_path, 4096));
     // The run was stopped by the runner after agy had answered (it did not exit by itself): what
     // the role code sees is a run that ended by itself, the stored exit code stays the real one.
-    let mut ended_after_answer = agy_stream
-        && outcome.status == crate::runner::RunStatus::Succeeded
+    let mut ended_after_answer = outcome.status == crate::runner::RunStatus::Succeeded
         && outcome.stopped_by == Some(crate::runner::RunStop::AfterResult);
     // A timeout that came after a complete SUCCESS answer loses nothing: the answer is used as if
     // agy had exited. A `--print-timeout` expiry (empty partial answer) stays a timeout.

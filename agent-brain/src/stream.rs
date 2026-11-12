@@ -312,6 +312,17 @@ impl Summary {
         self.result_seen
     }
 
+    /// The final `result` event was seen and reports an error: `is_error` (claude, agy non-SUCCESS)
+    /// or a claude `subtype` other than `success` (`error_max_turns`, `error_during_execution`).
+    pub fn result_is_error(&self) -> bool {
+        self.result_seen
+            && (self.is_error
+                || self
+                    .subtype
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with("error")))
+    }
+
     pub fn feed(&mut self, line: &[u8]) -> Option<StreamEvent> {
         self.total_lines += 1;
         let ev = classify(line)?;

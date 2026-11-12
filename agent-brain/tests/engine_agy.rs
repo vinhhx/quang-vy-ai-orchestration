@@ -1002,7 +1002,7 @@ fn agy_lead_hung_after_result_is_stopped_and_plan_written() {
     );
     assert!(
         res.stderr
-            .contains("agy đã trả kết quả nhưng chưa thoát sau 15s"),
+            .contains("Run đã trả kết quả nhưng tiến trình chưa thoát sau 15s"),
         "stderr: {}",
         res.stderr
     );
