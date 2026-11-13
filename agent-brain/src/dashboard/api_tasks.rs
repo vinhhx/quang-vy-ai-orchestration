@@ -598,6 +598,8 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         .route("/api/tasks/{id}/human/return", post(post_human_return))
         .route("/api/tasks/{id}/approve", post(post_approve))
         .route("/api/tasks/{id}/reopen", post(post_reopen))
+        .route("/api/tasks/{id}/rerun", post(post_rerun))
+        .route("/api/tasks/{id}/rerun-info", get(get_rerun_info))
         .route("/api/tasks/{id}/cleanup-worktree", post(post_cleanup_worktree))
         .route("/api/tasks/{id}/merge-push", post(post_merge_push))
         .route("/api/tasks/{id}/plan-diff", get(get_plan_diff))
@@ -1000,6 +1002,9 @@ pub fn start_new_task(st: &AppState, req: &StartRequest) -> BrainResult<StartOut
         base_branch_opt.as_deref(),
         None,
     )?;
+
+    // Yêu cầu gốc: để "Chạy lại (task mới)" dựng lại yêu cầu mà không phải đoán từ plan.
+    crate::db::set_task_request(&conn, task_id, trimmed_req)?;
 
     if let Some(lvl) = valid_level {
         crate::db::set_task_level(&conn, task_id, lvl)?;
@@ -2815,6 +2820,8 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "created_at": task.created_at,
             "updated_at": task.updated_at,
             "inputs": inputs_meta,
+            // Task này là bản "Chạy lại (task mới)" của task nào (`null` = không phải clone).
+            "cloned_from": crate::db::task_cloned_from(&conn, task.id)?,
             "queued_action": queued_action_json(&conn, task.id)?,
             // Lý do bận của dự án (chuỗi đúng bằng `reason` của hành động bị khoá vì bận): màn
             // Task dựa vào đó để hiện nút "Xếp hàng chờ slot".
@@ -4026,7 +4033,10 @@ pub fn run_control_as(
             // Autopilot chờ ở cổng duyệt plan (không có driver): tắt autopilot cho
             // task (`ended`). Không bỏ qua cổng — vẫn phải bấm Duyệt plan (D-03);
             // Bật autopilot bật lại. Chỉ ghi khi task vẫn `gate` (WR-04).
-            if !claim::end_autopilot(&conn, task_id, "gate", &state.aj)? {
+            // Dừng ở cổng là chuyển sang làm tay, KHÔNG phải hủy: xóa cờ `cancelled` cũ.
+            let mut aj = state.aj.clone();
+            aj.cancelled = false;
+            if !claim::end_autopilot(&conn, task_id, "gate", &aj)? {
                 return Ok(ControlOutcome::Stale);
             }
             Ok(ControlOutcome::Ended { at_gate: true })
@@ -4034,7 +4044,10 @@ pub fn run_control_as(
         "auto_end" => {
             // Dừng hẳn: giữ auto_json.stop làm lịch sử; Bật autopilot chạy lại sau.
             // Chỉ ghi khi task vẫn `stopped` và không có driver (WR-04).
-            if !claim::end_autopilot(&conn, task_id, "stopped", &state.aj)? {
+            // Cờ `cancelled` + auto_state `ended` = trạng thái "Đã hủy" (suy ra ở taskstate).
+            let mut aj = state.aj.clone();
+            aj.cancelled = true;
+            if !claim::end_autopilot(&conn, task_id, "stopped", &aj)? {
                 return Ok(ControlOutcome::Stale);
             }
             Ok(ControlOutcome::Ended { at_gate: false })
@@ -4083,7 +4096,10 @@ pub fn run_control_as(
             }
             if !state.git.branch_exists {
                 return Ok(ControlOutcome::Refused {
-                    reason: format!("Nhánh '{}' không còn tồn tại trên repo.", state.task.branch),
+                    reason: format!(
+                        "Nhánh '{}' không còn tồn tại trên repo. Dùng \"Chạy lại (task mới)\".",
+                        state.task.branch
+                    ),
                     kind: "not_allowed",
                 });
             }
@@ -4588,5 +4604,446 @@ async fn get_job(State(st): State<Arc<AppState>>, AxumPath(job_id): AxumPath<u64
     match res {
         Ok(resp) => resp,
         Err(e) => internal_error("đọc job", &e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Chạy lại bằng clone: tạo task mới từ cấu hình của task cũ
+// ---------------------------------------------------------------------------
+
+/// Tên tài liệu đầu vào chứa plan của task cũ (tham chiếu cho Lead của task mới).
+pub const RERUN_PLAN_INPUT: &str = "plan-cu.md";
+/// `plan_mode`: dùng lại plan cũ nguyên văn.
+pub const RERUN_MODE_REUSE: &str = "reuse";
+/// `plan_mode`: lập plan mới (plan cũ chỉ để tham khảo).
+pub const RERUN_MODE_REPLAN: &str = "replan";
+
+/// Thân yêu cầu chạy lại. Mọi trường tùy chọn.
+#[derive(Debug, Clone, Default)]
+pub struct RerunRequest {
+    /// Mô tả thay đổi (tùy chọn); có nội dung thì mặc định chế độ `replan`.
+    pub description: Option<String>,
+    /// `reuse` | `replan`; thiếu = mặc định theo `RerunInfo::default_mode` và mô tả.
+    pub plan_mode: Option<String>,
+    /// `rev` của task mà màn hình đang hiển thị; lệch = `stale`.
+    pub rev: Option<String>,
+}
+
+/// Dữ kiện cho hộp thoại "Chạy lại (task mới)" (`GET /api/tasks/{id}/rerun-info`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RerunInfo {
+    /// Yêu cầu gốc: `tasks.request`, rồi `request:` trong meta của plan, rồi tiêu đề task.
+    pub request: String,
+    /// Nhánh task đã merge vào nhánh gốc (nhánh không còn mà task đã xong cũng tính là đã merge).
+    pub merged: bool,
+    pub plan_available: bool,
+    pub plan_unavailable_reason: Option<String>,
+    /// Chế độ mặc định khi ô mô tả trống: `reuse` khi chưa merge và lấy lại được plan, ngược lại `replan`.
+    pub default_mode: String,
+    pub branch_exists: bool,
+    pub cloned_from: Option<i64>,
+}
+
+/// Mọi thứ `rerun_task` và `rerun-info` cần biết về task nguồn.
+struct RerunSource {
+    state: TaskState,
+    info: RerunInfo,
+    /// Nội dung plan cũ (đã qua kiểm tra kích thước và secret) khi lấy lại được.
+    plan: Option<String>,
+}
+
+/// Lấy plan của task cũ, theo thứ tự: (a) file plan trong worktree của task nếu còn; (b) `git show`
+/// trên nhánh task nếu nhánh còn; (c) commit plan `<slug>: plan` gần nhất trong mọi ref (task đã
+/// merge rồi xóa nhánh). `Err` = lý do không lấy được.
+fn old_plan_text(project: &Project, task: &TaskRow, branch_exists: bool) -> Result<String, String> {
+    let rel = crate::protocol_paths::paths_in(&project.protocol_dir, &task.slug).plan;
+    let proj_root = project.root();
+
+    // (a) worktree của chính task (chế độ shared không có: file ở gốc repo là của task đang checkout).
+    if let Some(wd) = task.workdir.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+        let p = std::path::Path::new(wd).join(&rel);
+        if p.is_file() {
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                return Ok(text);
+            }
+        }
+    }
+
+    // (b) nhánh task còn.
+    if branch_exists {
+        let spec = format!("{}:{}", task.branch, rel);
+        if let Ok(bytes) = crate::gitops::git_bytes(&proj_root, &["show", &spec]) {
+            if let Ok(text) = String::from_utf8(bytes) {
+                return Ok(text);
+            }
+        }
+    }
+
+    // (c) commit plan trong lịch sử (task đã merge, nhánh đã xóa). `--full-history`: merge --no-ff
+    // bỏ file giao thức nên bản đơn giản hóa mặc định sẽ che mất commit plan ở nhánh phụ. Đường dẫn
+    // mặc định (`.plan.md`) dùng chung cho mọi task nên lọc thêm theo tiêu đề `<slug>: plan`.
+    let slug_specific = rel != crate::protocol_paths::paths_in(&project.protocol_dir, "").plan;
+    let grep = format!("--grep=^{}: plan", task.slug);
+    let mut attempts: Vec<Vec<&str>> = vec![vec![
+        "log",
+        "--all",
+        "--full-history",
+        "-1",
+        "--format=%H",
+        &grep,
+        "--",
+        &rel,
+    ]];
+    if slug_specific {
+        attempts.push(vec!["log", "--all", "--full-history", "-1", "--format=%H", "--", &rel]);
+    }
+    for args in attempts {
+        let sha = match crate::gitops::git(&proj_root, &args) {
+            Ok(out) => out.trim().to_string(),
+            Err(_) => continue,
+        };
+        if !crate::gitops::is_hex_sha(&sha) {
+            continue;
+        }
+        let spec = format!("{sha}:{rel}");
+        if let Ok(bytes) = crate::gitops::git_bytes(&proj_root, &["show", &spec]) {
+            if let Ok(text) = String::from_utf8(bytes) {
+                return Ok(text);
+            }
+        }
+    }
+
+    Err(format!(
+        "Không tìm lại được plan cũ: worktree đã dọn, nhánh {} không còn và lịch sử git không có commit plan của task.",
+        task.branch
+    ))
+}
+
+fn rerun_source(
+    st: &AppState,
+    conn: &rusqlite::Connection,
+    task_id: i64,
+) -> BrainResult<Result<RerunSource, String>> {
+    let state = match load_task_state(st, conn, task_id)? {
+        Ok(s) => s,
+        Err(msg) => return Ok(Err(msg)),
+    };
+    let task = &state.task;
+    let project = &state.project;
+    let branch_exists = state.git.branch_exists;
+
+    // Plan cũ phải dùng được làm tài liệu đầu vào (<= 64 KiB, không secret).
+    let secrets = crate::inputs::collect_secrets(st);
+    let plan_res = old_plan_text(project, task, branch_exists).and_then(|text| {
+        crate::inputs::validate_content(&text, &secrets)
+            .map(|_| text)
+            .map_err(|e| format!("Plan cũ không dùng được làm tài liệu đầu vào: {e}"))
+    });
+    let (plan, plan_unavailable_reason) = match plan_res {
+        Ok(text) => (Some(text), None),
+        Err(reason) => (None, Some(reason)),
+    };
+
+    let request = crate::db::task_request(conn, task.id)?
+        .filter(|r| !r.trim().is_empty())
+        .or_else(|| {
+            plan.as_deref()
+                .and_then(crate::planfile::read_meta)
+                .and_then(|m| m.get("request").and_then(|v| v.as_str().map(str::to_string)))
+                .filter(|r| !r.trim().is_empty())
+        })
+        .unwrap_or_else(|| task.title.clone());
+
+    let merged = if branch_exists {
+        worktree_merged(project, task)
+    } else {
+        crate::tasks::is_success_status(&task.status)
+    };
+    let plan_available = plan.is_some();
+    let default_mode = if !merged && plan_available {
+        RERUN_MODE_REUSE
+    } else {
+        RERUN_MODE_REPLAN
+    };
+    let info = RerunInfo {
+        request,
+        merged,
+        plan_available,
+        plan_unavailable_reason,
+        default_mode: default_mode.to_string(),
+        branch_exists,
+        cloned_from: crate::db::task_cloned_from(conn, task.id)?,
+    };
+    Ok(Ok(RerunSource { state, info, plan }))
+}
+
+/// `GET /api/tasks/{id}/rerun-info`. `Err(thông báo)` = task / dự án không có.
+pub fn rerun_info(st: &AppState, task_id: i64) -> BrainResult<Result<RerunInfo, String>> {
+    let conn = crate::db::open(&st.db_path)?;
+    Ok(rerun_source(st, &conn, task_id)?.map(|s| s.info))
+}
+
+/// `<slug gốc>-r2`, `-r3`, … : số nhỏ nhất mà `task/<slug>` và `analysis/<slug>` chưa có hàng trong
+/// DB của dự án và chưa có nhánh trong repo. Task đã là bản chạy lại (`x-r2`) tính từ `x`.
+fn pick_rerun_slug(
+    conn: &rusqlite::Connection,
+    project: &Project,
+    project_row_id: i64,
+    old_slug: &str,
+) -> BrainResult<String> {
+    let base = match old_slug.rfind("-r") {
+        Some(i)
+            if i > 0
+                && old_slug.len() > i + 2
+                && old_slug[i + 2..].bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            &old_slug[..i]
+        }
+        _ => old_slug,
+    };
+    let root = project.root();
+    for n in 2..10_000u32 {
+        let suffix = format!("-r{n}");
+        let keep = crate::routing::SLUG_MAX_LEN.saturating_sub(suffix.len());
+        let head = if base.len() > keep {
+            base[..keep].trim_end_matches('-')
+        } else {
+            base
+        };
+        let cand = format!("{head}{suffix}");
+        let mut free = true;
+        for prefix in ["task", "analysis"] {
+            let branch = format!("{prefix}/{cand}");
+            if crate::db::find_task_by_branch(conn, project_row_id, &branch)?.is_some()
+                || crate::gitops::branch_exists(&root, &branch)
+            {
+                free = false;
+                break;
+            }
+        }
+        if free {
+            return Ok(cand);
+        }
+    }
+    Err(BrainError::error(
+        "Không chọn được tên cho task chạy lại (quá nhiều bản -rN)".to_string(),
+    ))
+}
+
+/// Chạy lại bằng clone: tạo task MỚI (nhánh mới tách từ nhánh gốc hiện tại) cùng đội hình, quy
+/// trình và độ khó với task `task_id`, qua đúng đường `start_new_task` của Giao việc. Task cũ giữ
+/// nguyên; không copy duyệt plan, auto_json, run, quota hay liên kết ngoài. Task mới luôn qua cổng
+/// duyệt plan.
+pub fn rerun_task(
+    st: &AppState,
+    task_id: i64,
+    req: &RerunRequest,
+) -> BrainResult<StartOutcome> {
+    let conn = crate::db::open(&st.db_path)?;
+    let src = match rerun_source(st, &conn, task_id)? {
+        Ok(s) => s,
+        Err(msg) => {
+            return Ok(StartOutcome::ProjectRefused {
+                status: 404,
+                body: serde_json::json!({ "error": msg }),
+            })
+        }
+    };
+    let task = &src.state.task;
+    let project = &src.state.project;
+
+    if let Some(r) = req.rev.as_deref() {
+        if r != src.state.rev {
+            return Ok(StartOutcome::PreflightRefused {
+                reason: STALE_MSG.to_string(),
+                kind: "stale".to_string(),
+            });
+        }
+    }
+    let busy = running_of(&src.state.runs).is_some() || src.state.driver_alive;
+    if let Some(reason) = taskstate::rerun_refusal(&src.state.view.group, busy) {
+        return Ok(StartOutcome::PreflightRefused {
+            reason,
+            kind: "not_allowed".to_string(),
+        });
+    }
+
+    let desc = req
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+    let mode = match req.plan_mode.as_deref() {
+        Some(RERUN_MODE_REUSE) => RERUN_MODE_REUSE,
+        Some(RERUN_MODE_REPLAN) => RERUN_MODE_REPLAN,
+        Some(other) => {
+            return Ok(StartOutcome::Invalid(format!(
+                "plan_mode không hợp lệ: '{other}' (chấp nhận: {RERUN_MODE_REUSE}, {RERUN_MODE_REPLAN})"
+            )))
+        }
+        None if desc.is_some() || src.info.default_mode == RERUN_MODE_REPLAN => RERUN_MODE_REPLAN,
+        None => RERUN_MODE_REUSE,
+    };
+    if mode == RERUN_MODE_REUSE && !src.info.plan_available {
+        return Ok(StartOutcome::Invalid(format!(
+            "Không dùng lại plan cũ được: {}",
+            src.info
+                .plan_unavailable_reason
+                .as_deref()
+                .unwrap_or("không có plan cũ")
+        )));
+    }
+
+    // Yêu cầu của task mới: yêu cầu gốc + chỉ thị về plan cũ + mô tả thay đổi.
+    let directive = match (mode, src.plan.is_some()) {
+        (RERUN_MODE_REUSE, _) => format!(
+            "Dùng lại plan trong tài liệu đầu vào `{RERUN_PLAN_INPUT}`: chép nguyên nội dung vào file plan, chỉ cập nhật phần meta (task, branch, base_commit, request). Không đổi bước/tiêu chí nghiệm thu."
+        ),
+        (_, true) => format!(
+            "Lập plan mới. `{RERUN_PLAN_INPUT}` chỉ để tham khảo, code nền có thể đã đổi (task cũ đã merge: {}).",
+            if src.info.merged { "có" } else { "không" }
+        ),
+        (_, false) => format!(
+            "Lập plan mới. Không lấy lại được plan cũ để tham khảo, code nền có thể đã đổi (task cũ đã merge: {}).",
+            if src.info.merged { "có" } else { "không" }
+        ),
+    };
+    let mut text = format!(
+        "{}\n\n--- Chạy lại từ task #{} ({}) ---\n{}\n",
+        src.info.request.trim(),
+        task.id,
+        task.slug,
+        directive
+    );
+    if let Some(d) = desc {
+        text.push_str(&format!("Yêu cầu bổ sung: {d}\n"));
+    }
+    if text.trim().chars().count() > MAX_REQUEST_CHARS {
+        return Ok(StartOutcome::Invalid(format!(
+            "Yêu cầu gốc cộng mô tả thay đổi quá dài (tối đa {MAX_REQUEST_CHARS} ký tự) — hãy rút gọn mô tả thay đổi"
+        )));
+    }
+
+    // Tài liệu đầu vào: plan cũ trước, rồi các tài liệu cũ theo id tăng dần cho đến MAX_INPUTS.
+    let secrets = crate::inputs::collect_secrets(st);
+    let mut warnings: Vec<String> = Vec::new();
+    let mut items: Vec<crate::inputs::InputItem> = Vec::new();
+    if let Some(plan_text) = src.plan.as_ref() {
+        items.push(crate::inputs::InputItem {
+            name: RERUN_PLAN_INPUT.to_string(),
+            content: plan_text.clone(),
+        });
+    }
+    let mut dropped: Vec<String> = Vec::new();
+    for row in crate::inputs::list_for_task(&conn, task.id).unwrap_or_default() {
+        if row.name == RERUN_PLAN_INPUT {
+            dropped.push(format!("{} (trùng tên với plan cũ)", row.name));
+        } else if items.len() >= crate::inputs::MAX_INPUTS {
+            dropped.push(row.name);
+        } else if let Err(e) = crate::inputs::validate_name(&row.name)
+            .and_then(|_| crate::inputs::validate_content(&row.content, &secrets))
+        {
+            dropped.push(format!("{} ({e})", row.name));
+        } else {
+            items.push(crate::inputs::InputItem {
+                name: row.name,
+                content: row.content,
+            });
+        }
+    }
+    if !dropped.is_empty() {
+        warnings.push(format!(
+            "Không mang sang task mới {} tài liệu đầu vào của task cũ (tối đa {} tài liệu): {}",
+            dropped.len(),
+            crate::inputs::MAX_INPUTS,
+            dropped.join(", ")
+        ));
+    }
+
+    let pid = task.project_id;
+    let slug = pick_rerun_slug(&conn, project, pid, &task.slug)?;
+    let team_name = src.state.team.as_ref().map(|t| t.name.clone());
+    let workflow_name = src.state.workflow.as_ref().map(|w| w.name.clone());
+    let sr = StartRequest {
+        project: &project.id,
+        request: &text,
+        name: Some(&slug),
+        workflow: workflow_name.as_deref(),
+        level: Some(&task.level),
+        team: team_name.as_deref(),
+        inputs: Some(items.as_slice()),
+        origin: Origin::Dashboard,
+        dry_run: false,
+    };
+    let mut outcome = start_new_task(st, &sr)?;
+    if let StartOutcome::Started {
+        info, task_id: new_id, ..
+    } = &mut outcome
+    {
+        // Ghi nguồn gốc sau khi task mới đã có hàng: không lỗi nào ở đây được làm hỏng một task
+        // đã được giao.
+        let note = |what: &str, e: crate::error::BrainError| {
+            crate::term::emit(&format!("task {new_id}: không ghi được {what}: {}", e.message))
+        };
+        if let Err(e) = crate::db::set_task_cloned_from(&conn, *new_id, task.id) {
+            note("cloned_from", e);
+        }
+        // Yêu cầu gốc (không kèm chỉ thị chạy lại) để chạy lại tiếp không chồng chỉ thị.
+        if let Err(e) = crate::db::set_task_request(&conn, *new_id, &src.info.request) {
+            note("request", e);
+        }
+        if let Err(e) = crate::db::set_task_title(&conn, *new_id, &task.title) {
+            note("tiêu đề", e);
+        }
+        if let Some(w) = info.warning.take() {
+            warnings.insert(0, w);
+        }
+        if !warnings.is_empty() {
+            info.warning = Some(warnings.join("\n"));
+        }
+    }
+    Ok(outcome)
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RerunBody {
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub plan_mode: Option<String>,
+    #[serde(default)]
+    pub rev: Option<String>,
+}
+
+/// `POST /api/tasks/{id}/rerun`: trả như `start_response` (202 kèm `task_id` mới và `job_id`).
+async fn post_rerun(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<RerunBody>,
+) -> Response {
+    let req = RerunRequest {
+        description: body.description,
+        plan_mode: body.plan_mode,
+        rev: body.rev,
+    };
+    match blocking(move || rerun_task(&st, task_id, &req)).await {
+        Ok(outcome) => start_response(outcome),
+        Err(e) => internal_error("chạy lại task", &e),
+    }
+}
+
+/// `GET /api/tasks/{id}/rerun-info`.
+async fn get_rerun_info(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+) -> Response {
+    match blocking(move || rerun_info(&st, task_id)).await {
+        Ok(Ok(info)) => json_resp(
+            StatusCode::OK,
+            serde_json::to_value(&info).unwrap_or(serde_json::Value::Null),
+        ),
+        Ok(Err(msg)) => json_error(StatusCode::NOT_FOUND, &msg),
+        Err(e) => internal_error("đọc thông tin chạy lại", &e),
     }
 }

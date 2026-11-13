@@ -1,6 +1,6 @@
 // js/queue.js — Màn hình Điều phối (Orchestrator Console)
 (function () {
-  var SIDE_GROUPS = ['intake', 'approval', 'slot', 'running', 'stopped', 'done'];
+  var SIDE_GROUPS = ['intake', 'approval', 'slot', 'running', 'stopped', 'cancelled', 'done'];
 
   window.AB.onReady('queue', function () {
     return {
@@ -522,9 +522,13 @@
         return map;
       },
 
-      // Single-column task classification: Dừng > Đang chạy > Cần duyệt > Đã xong
+      // Single-column task classification: Đã hủy > Dừng > Đang chạy > Cần duyệt > Đã xong
       classifyTask: function (t) {
         var qMap = this.quotaStopsMap();
+        // "Dừng hẳn" (task hủy) has its own group, ahead of the stopped one.
+        if (t.group === 'cancelled' || t.auto_state === 'cancelled') {
+          return 'cancelled';
+        }
         if (t.quota_detail || qMap[t.id] || t.auto_state === 'stopped' || t.group === 'attention') {
           return 'stopped';
         }
@@ -692,6 +696,7 @@
         if (g === 'slot') return this.countSlot;
         if (g === 'running') return this.countRunning;
         if (g === 'stopped') return this.countStopped;
+        if (g === 'cancelled') return this.countCancelled;
         if (g === 'done') return this.countDone;
         return 0;
       },
@@ -729,6 +734,10 @@
 
       get countStopped() {
         return this.stoppedTasks.length;
+      },
+
+      get countCancelled() {
+        return this.cancelledTasks.length;
       },
 
       get countDone() {
@@ -1084,6 +1093,14 @@
       // Recent items
       get recentItems() {
         return (this.board && this.board.recent) || [];
+      },
+
+      // Cancelled tasks (Dừng hẳn): sidebar group Đã hủy
+      get cancelledTasks() {
+        var self = this;
+        return (this.tasks || []).filter(function (t) {
+          return self.classifyTask(t) === 'cancelled';
+        });
       },
 
       // All done tasks among the loaded ones (sidebar group Đã xong)

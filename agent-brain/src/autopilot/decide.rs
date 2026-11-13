@@ -243,6 +243,10 @@ pub struct AutoJson {
     /// (Telegram reports each value once).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_rerun_at: Option<i64>,
+    /// Set only by the "Dừng hẳn" control (`auto_end`): together with `auto_state = 'ended'` it
+    /// marks the task as cancelled. Ending autopilot at the plan gate leaves it `false`.
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 impl AutoJson {
@@ -2120,11 +2124,14 @@ mod tests {
             budget_extra_usd: 0.0,
             skip_build_once: false,
             env_rerun_at: None,
+            cancelled: true,
         };
 
         let json = aj.to_json();
         let parsed = AutoJson::parse(Some(&json));
         assert_eq!(parsed, aj);
+        // auto_json written before the flag existed reads as not cancelled.
+        assert!(!AutoJson::parse(Some("{\"bypass_stages\":1}")).cancelled);
 
         assert_eq!(AutoJson::parse(Some("not json")), AutoJson::default());
         assert_eq!(AutoJson::parse(None), AutoJson::default());

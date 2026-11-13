@@ -76,6 +76,15 @@
       handoffError: '',
       handoffSuccess: false,
       reopenNote: '',
+      // "Chạy lại (task mới)" dialog
+      rerunOpen: false,
+      rerunInfo: null,
+      rerunLoading: false,
+      rerunLoadError: '',
+      rerunDesc: '',
+      rerunModePick: '',
+      rerunBusy: false,
+      rerunError: '',
       approveNext: 'auto',
       planDiff: null,
       planDiffLoading: false,
@@ -452,6 +461,8 @@
           return 'loi';
         }
         if (g === 'done') return 'xong';
+        // "Đã hủy" (Dừng hẳn): neutral badge, never the waiting / attention colours.
+        if (g === 'cancelled') return 'cho';
         return 'cho';
       },
 
@@ -1863,6 +1874,173 @@
         return this.message;
       },
 
+      // ---- "Chạy lại (task mới)": clones the task, so it needs no old branch or worktree ----
+      get clonedFrom() {
+        var c = this.task ? this.task.cloned_from : null;
+        return (c === null || c === undefined) ? null : c;
+      },
+
+      get hasClonedFrom() {
+        return this.clonedFrom !== null;
+      },
+
+      get clonedFromHref() {
+        return this.hasClonedFrom ? '#/task/' + this.clonedFrom : '';
+      },
+
+      get clonedFromText() {
+        return this.hasClonedFrom ? 'chạy lại từ #' + this.clonedFrom : '';
+      },
+
+      get rerunTitle() {
+        return 'Chạy lại task ' + ((this.task && this.task.slug) ? this.task.slug : '') + ' bằng task mới?';
+      },
+
+      get rerunBody() {
+        return 'Tạo một task mới cùng đội hình, quy trình và độ khó. Task này giữ nguyên; task mới có nhánh mới tách từ nhánh gốc hiện tại và vẫn phải qua bước duyệt plan.';
+      },
+
+      get rerunReady() {
+        return Boolean(this.rerunInfo) && !this.rerunLoading;
+      },
+
+      get rerunPlanLocked() {
+        return Boolean(this.rerunInfo && !this.rerunInfo.plan_available);
+      },
+
+      // The user's pick wins; otherwise a description, a merged task or a missing old plan means
+      // a new plan, and an unmerged task with an empty description reuses the old one.
+      get rerunMode() {
+        if (this.rerunModePick) return this.rerunModePick;
+        var info = this.rerunInfo;
+        if (!info) return 'replan';
+        if ((this.rerunDesc || '').trim() !== '') return 'replan';
+        return info.default_mode === 'reuse' ? 'reuse' : 'replan';
+      },
+
+      get rerunMergedWarning() {
+        return Boolean(this.rerunInfo && this.rerunInfo.merged);
+      },
+
+      get rerunReuseReason() {
+        if (!this.rerunPlanLocked) return '';
+        return this.rerunInfo.plan_unavailable_reason || 'Không lấy lại được plan cũ.';
+      },
+
+      get rerunOkDisabled() {
+        return this.rerunBusy || !this.rerunReady || Boolean(this.busyAction);
+      },
+
+      get rerunOkLabel() {
+        return this.rerunBusy ? 'Đang giao...' : 'Chạy lại';
+      },
+
+      get hasRerunError() {
+        return this.rerunError !== '';
+      },
+
+      get hasRerunLoadError() {
+        return this.rerunLoadError !== '' && !this.rerunLoading;
+      },
+
+      rerunModeChecked: function (mode) {
+        return this.rerunMode === mode;
+      },
+
+      rerunOptionClass: function (mode) {
+        if (this.rerunModeChecked(mode)) {
+          return 'bg-indigo-50 ring-2 ring-indigo-600 dark:bg-indigo-900/20 dark:ring-indigo-400';
+        }
+        if (mode === 'reuse' && this.rerunPlanLocked) {
+          return 'ring-1 ring-slate-300 dark:ring-slate-600';
+        }
+        return 'ring-1 ring-slate-300 hover:bg-slate-50 dark:ring-slate-600 dark:hover:bg-slate-700/50';
+      },
+
+      onRerunModeChange: function (event) {
+        var target = event && event.target;
+        var value = target ? target.value : '';
+        if (value !== 'reuse' && value !== 'replan') return;
+        if (value === 'reuse' && this.rerunPlanLocked) return;
+        this.rerunModePick = value;
+        this.rerunError = '';
+      },
+
+      openRerun: function (a) {
+        var self = this;
+        if (this.busyAction || !this.task || !a) return;
+        this.lastFocusId = this.actionId(a);
+        this.rerunOpen = true;
+        this.rerunInfo = null;
+        this.rerunLoading = true;
+        this.rerunLoadError = '';
+        this.rerunDesc = '';
+        this.rerunModePick = '';
+        this.rerunBusy = false;
+        this.rerunError = '';
+        window.AB.lockScroll(true);
+        window.AB.focusLater('ab-rerun-cancel');
+        return window.AB.api('GET', '/api/tasks/' + this.id + '/rerun-info').then(function (res) {
+          if (!self.rerunOpen) return;
+          self.rerunLoading = false;
+          if (res && res.status === 200 && res.data) {
+            self.rerunInfo = res.data;
+            window.AB.focusLater('ab-rerun-desc', 'ab-rerun-cancel');
+          } else {
+            self.rerunLoadError = (res && res.data && res.data.error) ? res.data.error : window.AB.errorText(res);
+          }
+        });
+      },
+
+      closeRerun: function (skipFocus) {
+        var back = this.lastFocusId;
+        this.rerunOpen = false;
+        this.rerunInfo = null;
+        this.rerunLoading = false;
+        this.rerunLoadError = '';
+        this.rerunDesc = '';
+        this.rerunModePick = '';
+        this.rerunBusy = false;
+        this.rerunError = '';
+        this.lastFocusId = '';
+        window.AB.lockScroll(false);
+        if (!skipFocus) window.AB.focusLater(back || 'screen', 'screen');
+      },
+
+      rerunCancel: function () {
+        if (this.rerunBusy) return;
+        this.closeRerun(false);
+      },
+
+      // One POST with the chosen mode and the task's rev; success moves on to the new task like
+      // Giao việc does. A refused request (409 / 422) shows the server's own message and stays open.
+      rerunOk: function () {
+        var self = this;
+        if (this.rerunOkDisabled) return;
+        var body = {
+          plan_mode: this.rerunMode,
+          rev: (this.task && this.task.rev !== undefined) ? this.task.rev : null,
+        };
+        var desc = (this.rerunDesc || '').trim();
+        if (desc) body.description = desc;
+        this.rerunBusy = true;
+        this.rerunError = '';
+        return window.AB.api('POST', '/api/tasks/' + this.id + '/rerun', body).then(function (res) {
+          self.rerunBusy = false;
+          if (res && res.status === 202 && res.data && res.data.task_id) {
+            self.closeRerun(true);
+            window.location.hash = '#/task/' + res.data.task_id;
+          } else if (res && (res.status === 409 || res.status === 422) && res.data && res.data.error) {
+            self.rerunError = res.data.error;
+            if (res.data.kind === 'stale') {
+              self.load();
+            }
+          } else {
+            self.rerunError = window.AB.errorText(res);
+          }
+        });
+      },
+
       get dialogOpen() {
         return Boolean(this.dialog);
       },
@@ -2377,6 +2555,9 @@
         if (this.autoState === 'waiting_human') {
           return { text: 'Autopilot: chờ ' + this.humanName + ' làm', key: 'cho_nguoi' };
         }
+        if (this.autoState === 'cancelled') {
+          return { text: 'Đã hủy', key: 'cho' };
+        }
         return window.AB.autoBadge(this.autoView);
       },
 
@@ -2605,6 +2786,10 @@
         if (reopen) {
           acts = acts.concat([reopen]);
         }
+        var rerun = this.controlById('rerun');
+        if (rerun) {
+          acts = acts.concat([rerun]);
+        }
         var cleanup = this.controlById('cleanup_worktree');
         if (cleanup) {
           acts = acts.concat([cleanup]);
@@ -2832,6 +3017,8 @@
           this.dialog = a;
           window.AB.lockScroll(true);
           window.AB.focusLater('ab-return-note');
+        } else if (a.id === 'rerun') {
+          this.openRerun(a);
         } else if (a.id === 'reopen') {
           this.lastFocusId = this.actionId(a);
           this.reopenNote = '';

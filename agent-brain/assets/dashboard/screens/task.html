@@ -21,6 +21,7 @@
     <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
       <a href="#/queue" class="text-indigo-700 underline hover:text-indigo-900 dark:text-indigo-300 dark:hover:text-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">← Điều phối</a>
       <h1 class="text-2xl font-semibold leading-normal line-clamp-3 break-words" :title="title" x-text="title"></h1>
+      <p data-cloned-from x-show="hasClonedFrom" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400"><a :href="clonedFromHref" class="text-indigo-700 underline hover:text-indigo-900 dark:text-indigo-300 dark:hover:text-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-text="clonedFromText"></a></p>
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="projectLine"></span>
         <span :class="profileBadgeClass" x-text="profile"></span>
@@ -725,6 +726,47 @@
       <div class="flex flex-wrap justify-end gap-2">
         <button id="ab-dlg-cancel" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="dialogCancel" x-text="dialogCancelLabel"></button>
         <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :class="dialogOkClass" @click="dialogOk" x-text="dialogOkLabel"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rerun dialog: Chạy lại (task mới) -->
+  <div x-show="rerunOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-6">
+    <div role="dialog" aria-modal="true" aria-labelledby="ab-rerun-title" aria-describedby="ab-rerun-body" @keydown.escape="rerunCancel" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 w-full max-w-lg space-y-4">
+      <h2 id="ab-rerun-title" class="text-xl font-semibold leading-[1.2] break-words" x-text="rerunTitle"></h2>
+      <p id="ab-rerun-body" class="text-base font-normal leading-normal text-slate-900 dark:text-slate-100" x-text="rerunBody"></p>
+      <p class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-show="rerunLoading">Đang tải thông tin task...</p>
+      <div role="alert" class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-base font-normal leading-normal break-words" x-show="hasRerunLoadError" x-text="rerunLoadError"></div>
+      <div class="space-y-4" x-show="rerunReady">
+        <div class="space-y-2">
+          <label for="ab-rerun-desc" class="block text-sm font-semibold leading-normal">Mô tả thay đổi (không bắt buộc)</label>
+          <p id="ab-rerun-help" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Thêm yêu cầu mới hoặc điều chỉnh so với lần trước. Có mô tả thì mặc định lập plan mới.</p>
+          <textarea id="ab-rerun-desc" rows="3" maxlength="4000" aria-describedby="ab-rerun-help" class="w-full min-h-12 rounded-xl bg-white px-4 py-2 text-base text-slate-900 ring-1 ring-slate-500 placeholder:text-slate-500 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-400 dark:placeholder:text-slate-400 resize-y focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-model="rerunDesc" :disabled="rerunBusy"></textarea>
+        </div>
+        <fieldset class="space-y-2 min-w-0" :disabled="rerunBusy">
+          <legend class="text-sm font-semibold leading-normal">Plan của task mới</legend>
+          <label class="flex min-h-12 cursor-pointer items-start gap-2 rounded-xl p-4 motion-safe:transition-colors" :class="rerunOptionClass('reuse')">
+            <input type="radio" name="rerun-mode" id="ab-rerun-reuse" value="reuse" :checked="rerunModeChecked('reuse')" :disabled="rerunPlanLocked" aria-describedby="ab-rerun-reuse-help" @change="onRerunModeChange" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+            <span class="block min-w-0 space-y-1">
+              <span class="block text-base font-semibold leading-normal">Dùng lại plan cũ</span>
+              <span id="ab-rerun-reuse-help" class="block text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Lead chép nguyên plan cũ, chỉ cập nhật phần meta. Vẫn phải qua bước duyệt plan.</span>
+              <span class="block text-sm font-semibold leading-normal text-amber-900 dark:text-amber-200 break-words" x-show="rerunPlanLocked" x-text="rerunReuseReason"></span>
+            </span>
+          </label>
+          <label class="flex min-h-12 cursor-pointer items-start gap-2 rounded-xl p-4 motion-safe:transition-colors" :class="rerunOptionClass('replan')">
+            <input type="radio" name="rerun-mode" id="ab-rerun-replan" value="replan" :checked="rerunModeChecked('replan')" aria-describedby="ab-rerun-replan-help" @change="onRerunModeChange" class="h-4 w-4 shrink-0 accent-indigo-600 dark:accent-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">
+            <span class="block min-w-0 space-y-1">
+              <span class="block text-base font-semibold leading-normal">Phân tích lại</span>
+              <span id="ab-rerun-replan-help" class="block text-sm font-normal leading-normal text-slate-600 dark:text-slate-400 break-words">Lead lập plan mới; plan cũ chỉ để tham khảo.</span>
+            </span>
+          </label>
+        </fieldset>
+        <div class="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-300 text-amber-900 dark:bg-amber-900/20 dark:ring-amber-700 dark:text-amber-200 text-base font-normal leading-normal break-words" x-show="rerunMergedWarning">Task cũ đã merge vào nhánh gốc: code nền có thể đã đổi, nên mặc định là lập plan mới.</div>
+      </div>
+      <div role="alert" class="rounded-xl bg-rose-50 p-4 ring-1 ring-rose-300 text-rose-900 dark:bg-rose-900/20 dark:ring-rose-700 dark:text-rose-200 text-base font-normal leading-normal break-words" x-show="hasRerunError" x-text="rerunError"></div>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button id="ab-rerun-cancel" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="rerunBusy" @click="rerunCancel">Hủy</button>
+        <button id="ab-rerun-ok" type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 motion-safe:transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="rerunOkDisabled" @click="rerunOk" x-text="rerunOkLabel"></button>
       </div>
     </div>
   </div>

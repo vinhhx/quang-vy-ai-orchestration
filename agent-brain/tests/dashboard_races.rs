@@ -196,6 +196,7 @@ fn auto_end_ok_then_duplicate() {
     assert_eq!(task_auto_pid(&sb, 1), None);
     // auto_json.stop giữ lại làm lịch sử.
     assert_eq!(task_auto_json(&sb, 1)["stop"]["reason"], "het_vong");
+    assert_eq!(task_auto_json(&sb, 1)["cancelled"], true);
 
     let again = srv.post_json("/api/tasks/1/auto/end", &json!({}));
     assert_eq!(again.status, 409, "{}", again.text());

@@ -1393,8 +1393,12 @@ fn auto_start_stop_end() {
     // auto_json.stop giữ lại làm lịch sử.
     assert_eq!(task_auto_json(&sb, 1)["stop"]["reason"], "het_vong");
 
+    // Dừng hẳn marks the task cancelled (flag in auto_json, derived state "cancelled").
+    assert_eq!(task_auto_json(&sb, 1)["cancelled"], true);
     let t = srv.get("/api/tasks/1").json();
-    assert_eq!(t["auto"]["state"], "off", "{}", t["auto"]);
+    assert_eq!(t["auto"]["state"], "cancelled", "{}", t["auto"]);
+    assert_eq!(t["group"], "cancelled", "{t}");
+    assert_eq!(t["banner"], "Đã hủy", "{t}");
     assert!(t["auto"]["stop_reason"].is_null(), "{}", t["auto"]);
     let banner = t["banner"].as_str().unwrap_or("");
     assert!(
@@ -1408,7 +1412,8 @@ fn auto_start_stop_end() {
         .iter()
         .map(|c| c["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, vec!["approve", "return_lead", "auto_start"], "{t}");
+    // Task hủy còn "Chạy lại (task mới)".
+    assert_eq!(ids, vec!["approve", "return_lead", "auto_start", "rerun"], "{t}");
 
     let again = srv.post_json("/api/tasks/1/auto/end", &json!({}));
     assert_eq!(again.status, 409, "{}", again.text());
@@ -1512,8 +1517,12 @@ fn gate_stop_turns_autopilot_off() {
     assert_eq!(body["ok"], true, "{body}");
     assert_eq!(body["ended"], true, "{body}");
 
+    // Ending autopilot at the gate is not a cancel: the flag stays off and the state is "off".
+    assert_eq!(task_auto_json(&sb, 1)["cancelled"], false);
     let t = srv.get("/api/tasks/1").json();
     assert_eq!(t["auto"]["state"], "off", "{}", t["auto"]);
+    assert_ne!(t["group"], "cancelled", "{t}");
+    assert_ne!(t["banner"], "Đã hủy", "{t}");
     assert_eq!(
         control_ids(&t),
         vec!["approve", "return_lead", "auto_start"],
