@@ -226,9 +226,28 @@ CREATE UNIQUE INDEX queued_actions_one_waiting ON queued_actions(task_id) WHERE 
     // 14: chạy lại bằng clone: task nguồn (`cloned_from`) và yêu cầu gốc (`request`)
     r#"ALTER TABLE tasks ADD COLUMN cloned_from INTEGER REFERENCES tasks(id);
 ALTER TABLE tasks ADD COLUMN request TEXT;"#,
+    // 15: tách việc thành task con
+    r#"ALTER TABLE tasks ADD COLUMN parent_id INTEGER REFERENCES tasks(id);
+CREATE INDEX tasks_parent ON tasks(parent_id) WHERE parent_id IS NOT NULL;
+CREATE TABLE split_items (
+  id INTEGER PRIMARY KEY,
+  parent_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  idx INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  request TEXT NOT NULL,
+  after_idx INTEGER,
+  plan_commit TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'waiting' CHECK (state IN ('waiting','started','failed','skipped','cancelled')),
+  child_task_id INTEGER REFERENCES tasks(id),
+  reason TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(parent_id, idx)
+);
+CREATE INDEX split_items_waiting ON split_items(state) WHERE state = 'waiting';"#,
 ];
 
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -1023,6 +1042,28 @@ pub fn set_task_cloned_from(conn: &Connection, task_id: i64, source_id: i64) -> 
     Ok(())
 }
 
+/// Task cha của task con (`None` = không phải task con hoặc chưa gán).
+pub fn task_parent(conn: &Connection, task_id: i64) -> BrainResult<Option<i64>> {
+    let mut stmt = conn.prepare("SELECT parent_id FROM tasks WHERE id = ?1")?;
+    let mut rows = stmt.query(params![task_id])?;
+    match rows.next()? {
+        Some(r) => Ok(r.get(0)?),
+        None => Ok(None),
+    }
+}
+
+/// Ghi task cha của một task con.
+pub fn set_task_parent(conn: &Connection, task_id: i64, parent_id: i64) -> BrainResult<()> {
+    let changes = conn.execute(
+        "UPDATE tasks SET parent_id = ?1 WHERE id = ?2",
+        params![parent_id, task_id],
+    )?;
+    if changes == 0 {
+        return Err(BrainError::error(format!("Không tìm thấy task #{task_id}")));
+    }
+    Ok(())
+}
+
 /// Đổi tiêu đề hiển thị của task (dùng cho task clone: giữ tiêu đề của task nguồn).
 pub fn set_task_title(conn: &Connection, task_id: i64, title: &str) -> BrainResult<()> {
     conn.execute(
@@ -1455,6 +1496,152 @@ pub fn retarget_queued(
         params![id, action_id, note, reason, now_ms()],
     )?;
     Ok(n > 0)
+}
+
+/// Dữ liệu một việc con để chèn vào `split_items` (migration 15).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSplitItem {
+    pub idx: usize,
+    pub title: String,
+    pub request: String,
+    pub after_idx: Option<usize>,
+}
+
+/// Một hàng trong bảng `split_items` (migration 15).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitItemRow {
+    pub id: i64,
+    pub parent_id: i64,
+    pub idx: usize,
+    pub title: String,
+    pub request: String,
+    pub after_idx: Option<usize>,
+    pub plan_commit: String,
+    pub state: String,
+    pub child_task_id: Option<i64>,
+    pub reason: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+const SPLIT_ITEM_COLUMNS: &str =
+    "id, parent_id, idx, title, request, after_idx, plan_commit, state, child_task_id, reason, created_at, updated_at";
+
+fn row_to_split_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<SplitItemRow> {
+    let idx_i64: i64 = r.get(2)?;
+    let after_i64: Option<i64> = r.get(5)?;
+    Ok(SplitItemRow {
+        id: r.get(0)?,
+        parent_id: r.get(1)?,
+        idx: idx_i64 as usize,
+        title: r.get(3)?,
+        request: r.get(4)?,
+        after_idx: after_i64.map(|a| a as usize),
+        plan_commit: r.get(6)?,
+        state: r.get(7)?,
+        child_task_id: r.get(8)?,
+        reason: r.get(9)?,
+        created_at: r.get(10)?,
+        updated_at: r.get(11)?,
+    })
+}
+
+/// Thêm các việc con đã duyệt vào `split_items`. Dùng `INSERT OR IGNORE` trên UNIQUE(parent_id, idx)
+/// để gọi lại là idempotent, không tạo dòng thừa. Trả về số dòng mới được chèn.
+pub fn insert_split_items(
+    conn: &Connection,
+    parent_id: i64,
+    plan_commit: &str,
+    items: &[NewSplitItem],
+) -> BrainResult<usize> {
+    let now = now_ms();
+    let tx = conn.unchecked_transaction()?;
+    let mut inserted = 0;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT OR IGNORE INTO split_items (parent_id, idx, title, request, after_idx, plan_commit, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'waiting', ?7, ?8)",
+        )?;
+        for item in items {
+            let after_i64 = item.after_idx.map(|a| a as i64);
+            inserted += stmt.execute(params![
+                parent_id,
+                item.idx as i64,
+                item.title,
+                item.request,
+                after_i64,
+                plan_commit,
+                now,
+                now,
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(inserted)
+}
+
+/// Lấy tất cả việc con của task cha, sắp theo `idx ASC`.
+pub fn split_items_of(conn: &Connection, parent_id: i64) -> BrainResult<Vec<SplitItemRow>> {
+    let sql = format!(
+        "SELECT {SPLIT_ITEM_COLUMNS} FROM split_items WHERE parent_id = ?1 ORDER BY idx ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params![parent_id], row_to_split_item)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Lấy tất cả việc con đang `waiting`, sắp theo `parent_id ASC, idx ASC`.
+pub fn waiting_split_items(conn: &Connection) -> BrainResult<Vec<SplitItemRow>> {
+    let sql = format!(
+        "SELECT {SPLIT_ITEM_COLUMNS} FROM split_items WHERE state = 'waiting' ORDER BY parent_id ASC, idx ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map([], row_to_split_item)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Đánh dấu việc con đã được khởi động với task con tương ứng.
+pub fn set_split_item_started(conn: &Connection, id: i64, child_task_id: i64) -> BrainResult<()> {
+    let changes = conn.execute(
+        "UPDATE split_items SET state = 'started', child_task_id = ?1, updated_at = ?2 WHERE id = ?3",
+        params![child_task_id, now_ms(), id],
+    )?;
+    if changes == 0 {
+        return Err(BrainError::error(format!("Không tìm thấy split_item #{id}")));
+    }
+    Ok(())
+}
+
+/// Đổi trạng thái việc con (failed, skipped, cancelled, v.v.).
+pub fn set_split_item_state(
+    conn: &Connection,
+    id: i64,
+    state: &str,
+    reason: Option<&str>,
+) -> BrainResult<()> {
+    let changes = conn.execute(
+        "UPDATE split_items SET state = ?1, reason = ?2, updated_at = ?3 WHERE id = ?4",
+        params![state, reason, now_ms(), id],
+    )?;
+    if changes == 0 {
+        return Err(BrainError::error(format!("Không tìm thấy split_item #{id}")));
+    }
+    Ok(())
+}
+
+/// Danh sách task id có `auto_state = 'waiting_children'`.
+pub fn parents_waiting_children(conn: &Connection) -> BrainResult<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM tasks WHERE auto_state = 'waiting_children' ORDER BY id ASC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<Vec<i64>, _>>()?;
+    Ok(rows)
 }
 
 pub fn get_intake(conn: &Connection, id: i64) -> BrainResult<Option<IntakeRow>> {
@@ -2641,5 +2828,75 @@ mod tests {
             params![task_id],
         ).expect("setup null auto_state");
         assert!(!end_stopped_autopilot(&conn, task_id).expect("end_stopped_autopilot null"));
+    }
+
+    #[test]
+    fn test_split_items_and_parent_helpers() {
+        let (_dir, conn, project_id) = fresh_db();
+        let parent_id = upsert_task(&conn, project_id, "parent", "Parent Task", "parent-branch", Some("main"), None)
+            .expect("upsert parent");
+        let child_id = upsert_task(&conn, project_id, "child", "Child Task", "child-branch", Some("main"), None)
+            .expect("upsert child");
+
+        // parent_id helpers
+        assert_eq!(task_parent(&conn, child_id).unwrap(), None);
+        set_task_parent(&conn, child_id, parent_id).unwrap();
+        assert_eq!(task_parent(&conn, child_id).unwrap(), Some(parent_id));
+
+        // insert_split_items
+        let items = vec![
+            NewSplitItem {
+                idx: 1,
+                title: "Việc con 1".to_string(),
+                request: "Yêu cầu 1".to_string(),
+                after_idx: None,
+            },
+            NewSplitItem {
+                idx: 2,
+                title: "Việc con 2".to_string(),
+                request: "Yêu cầu 2".to_string(),
+                after_idx: Some(1),
+            },
+        ];
+        let inserted = insert_split_items(&conn, parent_id, "commit123", &items).unwrap();
+        assert_eq!(inserted, 2);
+
+        // Idempotency: calling again inserts 0 rows
+        let inserted2 = insert_split_items(&conn, parent_id, "commit123", &items).unwrap();
+        assert_eq!(inserted2, 0);
+
+        let list = split_items_of(&conn, parent_id).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].idx, 1);
+        assert_eq!(list[0].title, "Việc con 1");
+        assert_eq!(list[0].state, "waiting");
+        assert_eq!(list[1].idx, 2);
+        assert_eq!(list[1].after_idx, Some(1));
+
+        let waiting = waiting_split_items(&conn).unwrap();
+        assert_eq!(waiting.len(), 2);
+
+        // set_split_item_started
+        set_split_item_started(&conn, list[0].id, child_id).unwrap();
+        let list_after_start = split_items_of(&conn, parent_id).unwrap();
+        assert_eq!(list_after_start[0].state, "started");
+        assert_eq!(list_after_start[0].child_task_id, Some(child_id));
+
+        let waiting2 = waiting_split_items(&conn).unwrap();
+        assert_eq!(waiting2.len(), 1);
+        assert_eq!(waiting2[0].idx, 2);
+
+        // set_split_item_state
+        set_split_item_state(&conn, list[1].id, "skipped", Some("Bỏ qua do việc 1")).unwrap();
+        let list_after_state = split_items_of(&conn, parent_id).unwrap();
+        assert_eq!(list_after_state[1].state, "skipped");
+        assert_eq!(list_after_state[1].reason.as_deref(), Some("Bỏ qua do việc 1"));
+
+        // parents_waiting_children
+        assert_eq!(parents_waiting_children(&conn).unwrap(), Vec::<i64>::new());
+        set_auto_state(&conn, parent_id, Some("waiting_children")).unwrap();
+        assert_eq!(parents_waiting_children(&conn).unwrap(), vec![parent_id]);
+        set_auto_state(&conn, parent_id, Some("done")).unwrap();
+        assert_eq!(parents_waiting_children(&conn).unwrap(), Vec::<i64>::new());
     }
 }

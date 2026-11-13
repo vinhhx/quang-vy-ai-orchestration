@@ -979,7 +979,7 @@ fn v3_db_gains_team_json() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
-    assert_eq!(agent_brain::db::SCHEMA_VERSION, 14);
+    assert_eq!(agent_brain::db::SCHEMA_VERSION, 15);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 
     let n: i64 = conn
@@ -1032,7 +1032,7 @@ fn fresh_db_has_team_json_at_current_version() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
-    assert_eq!(user_ver, 14);
+    assert_eq!(user_ver, 15);
     assert!(task_columns(&conn).contains(&"team_json".to_string()));
 }
 
@@ -1068,7 +1068,7 @@ fn v4_db_upgrades_to_v5_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 14);
+    assert_eq!(user_ver, 15);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Verify existing data preserved
@@ -1146,7 +1146,7 @@ fn v5_db_upgrades_to_v6_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 14);
+    assert_eq!(user_ver, 15);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong intake phải được giữ nguyên
@@ -1247,7 +1247,7 @@ fn v6_db_upgrades_to_v7_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 14);
+    assert_eq!(user_ver, 15);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong runs phải được giữ nguyên
@@ -1333,7 +1333,7 @@ fn v7_db_upgrades_to_v8_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 14);
+    assert_eq!(user_ver, 15);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong tasks phải được giữ nguyên và cột level mặc định là 'vua'
@@ -1426,7 +1426,7 @@ fn v8_db_upgrades_to_v9_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 14);
+    assert_eq!(user_ver, 15);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Dữ liệu cũ trong proposals phải có after_proposal_id = None
@@ -1495,7 +1495,7 @@ fn v9_db_upgrades_to_v10_keeping_data() {
     let user_ver: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(user_ver, 14);
+    assert_eq!(user_ver, 15);
     assert_eq!(user_ver, agent_brain::db::SCHEMA_VERSION);
 
     // Existing intake row has default split = true (1)
@@ -1668,7 +1668,7 @@ fn v11_db_upgrades_to_v12_keeping_data() {
 
     let conn = agent_brain::db::open(&db_path).expect("open v11 DB upgrades to v12");
 
-    assert_eq!(user_version(&conn), 14);
+    assert_eq!(user_version(&conn), 15);
     assert_eq!(user_version(&conn), agent_brain::db::SCHEMA_VERSION);
     for table in [
         "projects",
@@ -1754,7 +1754,7 @@ fn v12_reopen_runs_no_migration() {
     build_v11(&db_path);
 
     let first = agent_brain::db::open(&db_path).expect("first open upgrades");
-    assert_eq!(user_version(&first), 14);
+    assert_eq!(user_version(&first), 15);
     first
         .execute(
             "INSERT INTO journal_state(key, value, updated_at) VALUES ('k', 'v', 1)",
@@ -1764,7 +1764,7 @@ fn v12_reopen_runs_no_migration() {
     drop(first);
 
     let second = agent_brain::db::open(&db_path).expect("reopen of a v12 DB");
-    assert_eq!(user_version(&second), 14);
+    assert_eq!(user_version(&second), 15);
     assert_eq!(count_rows(&second, "journal_state"), 1);
 }
 
@@ -2004,7 +2004,7 @@ fn v12_db_upgrades_to_v13_keeping_data() {
 
     let conn = agent_brain::db::open(&db_path).expect("open v12 DB upgrades to v13");
 
-    assert_eq!(user_version(&conn), 14);
+    assert_eq!(user_version(&conn), 15);
     assert_eq!(user_version(&conn), agent_brain::db::SCHEMA_VERSION);
     for table in [
         "projects",
@@ -2031,6 +2031,14 @@ fn build_v13(path: &Path) {
     conn.pragma_update(None, "user_version", 13).unwrap();
 }
 
+/// A v14 DB: the v13 fixture plus migration 14 applied by hand (cloned_from, request).
+fn build_v14(path: &Path) {
+    build_v13(path);
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(agent_brain::db::MIGRATIONS[13]).unwrap();
+    conn.pragma_update(None, "user_version", 14).unwrap();
+}
+
 fn column_exists(conn: &rusqlite::Connection, table: &str, column: &str) -> bool {
     conn.query_row(
         "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
@@ -2055,7 +2063,7 @@ fn v13_db_upgrades_to_v14_keeping_data() {
 
     let conn = agent_brain::db::open(&db_path).expect("open v13 DB upgrades to v14");
 
-    assert_eq!(user_version(&conn), 14);
+    assert_eq!(user_version(&conn), 15);
     assert_eq!(user_version(&conn), agent_brain::db::SCHEMA_VERSION);
     assert!(column_exists(&conn, "tasks", "cloned_from"));
     assert!(column_exists(&conn, "tasks", "request"));
@@ -2095,6 +2103,62 @@ fn v13_db_upgrades_to_v14_keeping_data() {
         conn.execute("UPDATE tasks SET cloned_from = 999 WHERE id = 2", [])
             .is_err(),
         "cloned_from must reference an existing task"
+    );
+}
+
+#[test]
+fn v14_db_upgrades_to_v15_keeping_data() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("brain.db");
+    build_v14(&db_path);
+    {
+        let old = rusqlite::Connection::open(&db_path).unwrap();
+        assert!(!column_exists(&old, "tasks", "parent_id"));
+        assert!(!object_exists(&old, "table", "split_items"));
+        assert!(!object_exists(&old, "index", "tasks_parent"));
+        assert!(!object_exists(&old, "index", "split_items_waiting"));
+    }
+    let before = snapshot(&rusqlite::Connection::open(&db_path).unwrap());
+
+    let conn = agent_brain::db::open(&db_path).expect("open v14 DB upgrades to v15");
+
+    assert_eq!(user_version(&conn), 15);
+    assert_eq!(user_version(&conn), agent_brain::db::SCHEMA_VERSION);
+    assert!(column_exists(&conn, "tasks", "parent_id"));
+    assert!(object_exists(&conn, "table", "split_items"));
+    assert!(object_exists(&conn, "index", "tasks_parent"));
+    assert!(object_exists(&conn, "index", "split_items_waiting"));
+
+    // Existing rows keep their data; the new column reads NULL.
+    assert_eq!(snapshot(&conn), before);
+    for table in [
+        "projects",
+        "tasks",
+        "runs",
+        "events",
+        "intake",
+        "proposals",
+        "plan_approvals",
+    ] {
+        assert_eq!(count_rows(&conn, table), 1, "{table} keeps its row");
+    }
+    assert_eq!(agent_brain::db::task_parent(&conn, 1).unwrap(), None);
+    assert_eq!(fk_violation_count(&conn), 0);
+
+    // The new column round-trips, and parent_id is a real foreign key to tasks(id).
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, slug, title, branch, status, created_at, updated_at, level)
+         VALUES (2, 1, 'task-child', 'Child Task', 'task/child', 'open', 3000, 3000, 'vua')",
+        [],
+    )
+    .unwrap();
+    agent_brain::db::set_task_parent(&conn, 2, 1).unwrap();
+    assert_eq!(agent_brain::db::task_parent(&conn, 2).unwrap(), Some(1));
+    assert_eq!(agent_brain::db::task_parent(&conn, 1).unwrap(), None);
+    assert!(
+        conn.execute("UPDATE tasks SET parent_id = 999 WHERE id = 2", [])
+            .is_err(),
+        "parent_id must reference an existing task"
     );
 }
 
