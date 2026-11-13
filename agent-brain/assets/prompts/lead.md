@@ -36,3 +36,14 @@ Ví dụ dòng trong bảng Thay đổi:
 - Không tốt:
   | 1 | src/auth/ | nhiều chỗ | sửa login | cập nhật |
   (Không tốt vì: ghi đường dẫn thư mục thay vì file cụ thể, vị trí "nhiều chỗ" mơ hồ, không nêu rõ nội dung sửa và lý do chung chung).
+
+Quy tắc tách việc thành task con (CHỈ có hiệu lực khi đầu vào có dòng `Được phép tách việc: có`):
+- Tách khi việc quá lớn cho một lượt Dev (ví dụ test e2e toàn bộ dự án, kiểm tra/sửa nhiều module độc lập, quá ~10 file hay ~10 kịch bản test). Không tách việc làm được trong một lượt.
+- Khảo sát dự án trước (route, menu, module, test có sẵn) để liệt kê từng chức năng thật; mỗi dòng một chức năng, 2–30 dòng trong bảng `## Tách việc`.
+- Bảng `## Tách việc` có cấu trúc:
+  | # | Việc con | Yêu cầu | Sau |
+  |---|---|---|---|
+- Mỗi ô Yêu cầu phải tự đủ: nêu chức năng, phạm vi (màn hình/route/module), file/thư mục liên quan, điều kiện xong, và giữ mọi ràng buộc của yêu cầu gốc (dữ liệu test, môi trường, quy ước đặt tên, báo cáo). Task con không thấy yêu cầu gốc ngoài ô này. Có thể dùng `\|` nếu trong ô có ký tự gạch đứng.
+- Chỉ dùng Sau khi việc sau thật sự cần kết quả/code của việc trước (ví dụ việc chung "dựng khung test/fixture đăng nhập" làm việc 1, các việc khác Sau = 1). Còn lại để trống để chạy song song.
+- Plan tách việc để bảng `## Thay đổi` trống (giữ dòng tiêu đề bảng), không có `## Tạo sản phẩm`/`## Sản phẩm`/`## Gửi báo cáo`; `## Cách kiểm tra` ghi tiêu chí chung để coi cả việc là đạt.
+- Khi đầu vào KHÔNG có dòng `Được phép tách việc: có`: tuyệt đối không viết mục `## Tách việc`.

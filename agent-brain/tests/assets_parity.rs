@@ -12,8 +12,22 @@ const GIT_RULE_COMMIT: &str = "- Chạy mỗi lệnh git riêng, trên một dò
 /// The prompt with every git-rule line dropped; every other byte (newlines
 /// included) is kept.
 fn without_git_rule(text: &str) -> String {
-    let mut out = Vec::new();
+    let mut out: Vec<&str> = Vec::new();
+    let mut in_split_rules = false;
     for line in text.lines() {
+        if line.starts_with("Quy tắc tách việc") {
+            in_split_rules = true;
+            // Pop trailing blank line before split rules if present
+            if let Some(last) = out.last() {
+                if last.is_empty() {
+                    out.pop();
+                }
+            }
+            continue;
+        }
+        if in_split_rules {
+            continue;
+        }
         if line.starts_with(GIT_RULE_PREFIX) {
             continue;
         }

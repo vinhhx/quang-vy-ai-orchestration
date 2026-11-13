@@ -335,6 +335,33 @@ pub fn cmd_lead(
         s
     };
 
+    let existing_task_row = crate::db::project_row_id(&ctx.conn, &proj.id)
+        .ok()
+        .and_then(|pid| crate::db::find_task_by_branch(&ctx.conn, pid, &branch).ok().flatten());
+    let parent_id = existing_task_row
+        .as_ref()
+        .and_then(|t| crate::db::task_parent(&ctx.conn, t.id).ok().flatten());
+    let can_split = parent_id.is_none()
+        && resolved.workflow.auto
+        && resolved.workflow.kind != "analysis"
+        && resolved.workflow.stages.iter().any(|st| st == "implement");
+
+    if let Some(pid) = parent_id {
+        let parent_title: String = ctx
+            .conn
+            .query_row(
+                "SELECT title FROM tasks WHERE id = ?1",
+                rusqlite::params![pid],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        user_input.push_str(&format!(
+            "\nTask này là việc con của task #{pid} \"{parent_title}\"; không được tách tiếp."
+        ));
+    } else if can_split {
+        user_input.push_str("\nĐược phép tách việc: có");
+    }
+
     let existing_task_team = crate::db::project_row_id(&ctx.conn, &proj.id)
         .ok()
         .and_then(|pid| {
@@ -830,7 +857,16 @@ pub fn cmd_lead(
         }
 
         let plan = crate::planfile::parse_plan(&text);
-        let errors = crate::planfile::validate_plan(&plan, Some(&proj_path));
+        let mut errors = crate::planfile::validate_plan(&plan, Some(&proj_path));
+        if errors.is_empty() {
+            let split_ctx = crate::planfile::SplitCtx {
+                is_child: parent_id.is_some(),
+                workflow_auto: resolved.workflow.auto,
+            };
+            if let Err(e) = crate::planfile::validate_split_allowed(&plan, split_ctx) {
+                errors.push(e);
+            }
+        }
         if !errors.is_empty() {
             if attempt == 1 {
                 crate::db::set_run_outcome(&ctx.conn, role_run.run_id, "plan_invalid")?;
@@ -857,6 +893,21 @@ pub fn cmd_lead(
                 );
                 if let Some(n) = note {
                     retry_input.push_str(&format!("\nGhi chú của người dùng: {n}"));
+                }
+                if let Some(pid) = parent_id {
+                    let parent_title: String = ctx
+                        .conn
+                        .query_row(
+                            "SELECT title FROM tasks WHERE id = ?1",
+                            rusqlite::params![pid],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or_default();
+                    retry_input.push_str(&format!(
+                        "\nTask này là việc con của task #{pid} \"{parent_title}\"; không được tách tiếp."
+                    ));
+                } else if can_split {
+                    retry_input.push_str("\nĐược phép tách việc: có");
                 }
                 if is_agy_lead && !git_block.is_empty() {
                     retry_input.push_str("\n\n");
