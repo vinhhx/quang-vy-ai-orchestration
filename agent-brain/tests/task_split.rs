@@ -161,6 +161,10 @@ fn lead_task_con_rejects_nested_split_plan() {
 }
 
 fn app_state(sb: &Sandbox) -> std::sync::Arc<agent_brain::dashboard::AppState> {
+    app_state_with_exe(sb, common::bin())
+}
+
+fn app_state_with_exe(sb: &Sandbox, exe: std::path::PathBuf) -> std::sync::Arc<agent_brain::dashboard::AppState> {
     let text = std::fs::read_to_string(&sb.config_path).expect("read config");
     let value: serde_json::Value = serde_json::from_str(&text).expect("parse config");
     let cfg = agent_brain::config::config_from_value(&value).expect("config_from_value");
@@ -171,11 +175,24 @@ fn app_state(sb: &Sandbox) -> std::sync::Arc<agent_brain::dashboard::AppState> {
         token: "0".repeat(64),
         map_path: sb.map_path(),
         db_path: sb.db_path.clone(),
-        exe: common::bin(),
+        exe: exe.clone(),
         hints: tokio::sync::broadcast::channel(16).0,
         shutdown: tokio::sync::watch::channel(false).1,
-        jobs: agent_brain::dashboard::jobs::JobManager::new(common::bin()),
+        jobs: agent_brain::dashboard::jobs::JobManager::new(exe),
     })
+}
+
+fn setup_fake_job(sb: &Sandbox) -> std::path::PathBuf {
+    let script = sb.root.join("fake_job.sh");
+    std::fs::write(&script, "#!/bin/sh\nexit 0\n").expect("write fake_job.sh");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).expect("meta").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).expect("chmod");
+    }
+    script
 }
 
 #[test]
@@ -385,4 +402,171 @@ fn child_task_auto_approves_plan_when_started_by_split() {
     let auto_after = agent_brain::db::task_auto(&conn, child_id).unwrap().unwrap();
     assert!(auto_after.approved_at.is_some(), "child plan must be approved");
     assert_eq!(auto_after.approved_commit.as_deref().map(|c| c.len()), Some(40));
+}
+
+#[test]
+fn scheduler_handles_split_queue_respecting_parallel_and_dependencies() {
+    let sb = Sandbox::new();
+    let repo = setup_project(&sb, "work");
+
+    // Enable worktree mode on project so child tasks can run in parallel
+    let mut map = sb.read_map();
+    map["projects"][0]["workspace"] = serde_json::json!("worktree");
+    map["projects"][0]["max_parallel_tasks"] = serde_json::json!(3);
+    sb.write_map(map["projects"].clone(), &[]);
+
+    let fake_job = setup_fake_job(&sb);
+
+    let (conn, pid) = init_test_db(&sb);
+    let parent_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "parent-sch",
+        "Parent Scheduler Task",
+        "task/parent-sch",
+        Some("main"),
+        None,
+    )
+    .unwrap();
+
+    let cfg_default = agent_brain::config::config_from_value(
+        &serde_json::from_str(agent_brain::config::DEFAULT_CONFIG_JSON).unwrap(),
+    )
+    .unwrap();
+    let wfs = agent_brain::workflows::load_from(None, &cfg_default);
+    let nhanh = wfs.get("nhanh").unwrap();
+    agent_brain::db::set_task_workflow_if_null(&conn, parent_id, &nhanh.to_snapshot()).unwrap();
+    agent_brain::db::set_auto_state(&conn, parent_id, Some("waiting_children")).unwrap();
+
+    let st = app_state_with_exe(&sb, fake_job);
+    st.orch.write().unwrap().max_parallel = 2;
+
+    // 4 items:
+    // Item 1: independent
+    // Item 2: independent
+    // Item 3: after 1
+    // Item 4: after 2
+    let items = vec![
+        agent_brain::db::NewSplitItem {
+            idx: 1,
+            title: "Item 1".to_string(),
+            request: "Req 1".to_string(),
+            after_idx: None,
+        },
+        agent_brain::db::NewSplitItem {
+            idx: 2,
+            title: "Item 2".to_string(),
+            request: "Req 2".to_string(),
+            after_idx: None,
+        },
+        agent_brain::db::NewSplitItem {
+            idx: 3,
+            title: "Item 3".to_string(),
+            request: "Req 3".to_string(),
+            after_idx: Some(1),
+        },
+        agent_brain::db::NewSplitItem {
+            idx: 4,
+            title: "Item 4".to_string(),
+            request: "Req 4".to_string(),
+            after_idx: Some(2),
+        },
+    ];
+    agent_brain::db::insert_split_items(&conn, parent_id, "commit_plan", &items).unwrap();
+
+    // Tick 1: limit is 2 -> starts items 1 and 2
+    agent_brain::orchestrator::scheduler::schedule_tick(&st).unwrap();
+
+    let items_after_t1 = agent_brain::db::split_items_of(&conn, parent_id).unwrap();
+    assert_eq!(items_after_t1[0].state, "started");
+    assert_eq!(items_after_t1[1].state, "started");
+    assert_eq!(items_after_t1[2].state, "waiting");
+    assert_eq!(items_after_t1[3].state, "waiting");
+
+    let c1_id = items_after_t1[0].child_task_id.unwrap();
+    let c2_id = items_after_t1[1].child_task_id.unwrap();
+    assert_eq!(agent_brain::db::task_parent(&conn, c1_id).unwrap(), Some(parent_id));
+    assert_eq!(agent_brain::db::task_parent(&conn, c2_id).unwrap(), Some(parent_id));
+
+    // Let fake jobs exit
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // Commit a file on child 1's branch so it is not yet merged into main
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo.to_str().unwrap(), "checkout", "-b", "task/parent-sch-c1"])
+        .output()
+        .unwrap();
+    std::fs::write(repo.join("c1.txt"), "c1 content").unwrap();
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo.to_str().unwrap(), "add", "c1.txt"])
+        .output()
+        .unwrap();
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo.to_str().unwrap(), "commit", "-m", "c1 work"])
+        .output()
+        .unwrap();
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo.to_str().unwrap(), "checkout", "main"])
+        .output()
+        .unwrap();
+
+    // Now child 1 finishes: Passed
+    conn.execute("UPDATE runs SET status = 'succeeded' WHERE task_id = ?1", rusqlite::params![c1_id]).unwrap();
+    agent_brain::db::set_task_status(&conn, c1_id, "qa_pass").unwrap();
+    agent_brain::db::set_auto_state(&conn, c1_id, Some("done")).unwrap();
+
+    // And child 2 finishes: Failed
+    conn.execute("UPDATE runs SET status = 'failed' WHERE task_id = ?1", rusqlite::params![c2_id]).unwrap();
+    agent_brain::db::set_task_status(&conn, c2_id, "failed").unwrap();
+    agent_brain::db::set_auto_state(&conn, c2_id, Some("stopped")).unwrap();
+
+    // For child 1: its branch task/parent-sch-c1 needs to be merged into main for item 3 to proceed
+    // Before merge: tick should skip item 3 because branch is not merged
+    agent_brain::orchestrator::scheduler::schedule_tick(&st).unwrap();
+    let items_after_t2 = agent_brain::db::split_items_of(&conn, parent_id).unwrap();
+    assert_eq!(items_after_t2[2].state, "waiting", "item 3 waits for branch merge");
+    assert_eq!(items_after_t2[3].state, "skipped", "item 4 skipped because item 2 failed");
+    assert_eq!(items_after_t2[3].reason.as_deref(), Some("Việc #2 không đạt"));
+
+    // Now merge child 1 branch into main
+    let merge_out = std::process::Command::new("git")
+        .args(["-C", repo.to_str().unwrap(), "merge", "--no-ff", "task/parent-sch-c1", "-m", "merge c1"])
+        .output()
+        .unwrap();
+    assert!(merge_out.status.success(), "merge c1 branch succeeds: {}", String::from_utf8_lossy(&merge_out.stderr));
+
+    // Tick 3: now item 3 can start!
+    agent_brain::orchestrator::scheduler::schedule_tick(&st).unwrap();
+    let items_after_t3 = agent_brain::db::split_items_of(&conn, parent_id).unwrap();
+    assert_eq!(items_after_t3[2].state, "started", "item 3 started after merge");
+    let c3_id = items_after_t3[2].child_task_id.unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    conn.execute("UPDATE runs SET status = 'succeeded' WHERE task_id = ?1", rusqlite::params![c3_id]).unwrap();
+
+    // Child 3 passes
+    agent_brain::db::set_task_status(&conn, c3_id, "qa_pass").unwrap();
+    agent_brain::db::set_auto_state(&conn, c3_id, Some("done")).unwrap();
+
+    // Tick 4: all settled -> aggregate report!
+    agent_brain::orchestrator::scheduler::schedule_tick(&st).unwrap();
+    let parent_after = agent_brain::db::get_task(&conn, parent_id).unwrap().unwrap();
+    assert_eq!(parent_after.status, "split_done");
+    let parent_auto = agent_brain::db::task_auto(&conn, parent_id).unwrap().unwrap();
+    assert_eq!(parent_auto.auto_state.as_deref(), Some("done"));
+
+    // Check report file exists and has 4 rows
+    let report_content = agent_brain::answers::read("web-ban-hang", parent_id, &parent_after.slug).unwrap().unwrap();
+    assert!(report_content.contains("# Báo cáo gộp: Parent Scheduler Task"));
+    assert!(report_content.contains("| 1 | Item 1 |"));
+    assert!(report_content.contains("| 2 | Item 2 |"));
+    assert!(report_content.contains("| 3 | Item 3 |"));
+    assert!(report_content.contains("| 4 | Item 4 |"));
+
+    // Tick 5: tick again doesn't start anything new or overwrite status
+    agent_brain::orchestrator::scheduler::schedule_tick(&st).unwrap();
+    let parent_after_t5 = agent_brain::db::get_task(&conn, parent_id).unwrap().unwrap();
+    assert_eq!(parent_after_t5.status, "split_done");
+
+    st.jobs.kill_all_now();
 }

@@ -58,6 +58,9 @@ pub fn schedule_tick(st: &AppState) -> BrainResult<()> {
     {
         let conn = crate::db::open(&st.db_path)?;
         handle_queued_actions(st, &conn)?;
+        if let Err(e) = handle_split_items(st, &conn) {
+            crate::term::emit(&format!("Hàng chờ việc con: lỗi — {}", e.message));
+        }
         // Tự dọn worktree task xong và nhánh đã merge (cũng khi orchestrator tắt); lỗi chỉ ghi
         // ra terminal, không làm hỏng tick.
         if let Err(e) = crate::orchestrator::housekeeping::run_if_due(st, &conn, crate::db::now_ms()) {
@@ -880,6 +883,296 @@ fn clip_note(note: &str) -> String {
     let mut s: String = note.chars().take(max.saturating_sub(1)).collect();
     s.push('…');
     s
+}
+
+/// `<slug cha>-c<idx>`, `-r2`, `-r3`, … : slug chưa có hàng trong DB và chưa có nhánh trong repo.
+fn pick_child_slug(
+    conn: &rusqlite::Connection,
+    project: &crate::projects::Project,
+    parent_slug: &str,
+    idx: usize,
+) -> BrainResult<String> {
+    let base = format!("{parent_slug}-c{idx}");
+    let project_row_id = crate::db::project_row_id(conn, &project.id)?;
+    let root = project.root();
+
+    let mut candidate = base.clone();
+    let mut rerun_num = 1;
+    loop {
+        let mut free = true;
+        for prefix in ["task", "analysis"] {
+            let branch = format!("{prefix}/{candidate}");
+            if crate::db::find_task_by_branch(conn, project_row_id, &branch)?.is_some()
+                || crate::gitops::branch_exists(&root, &branch)
+            {
+                free = false;
+                break;
+            }
+        }
+        if free {
+            return Ok(candidate);
+        }
+        rerun_num += 1;
+        candidate = format!("{base}-r{rerun_num}");
+    }
+}
+
+/// Khởi động các việc con từ bảng `split_items` khi có slot và đủ điều kiện phụ thuộc.
+pub fn handle_split_items(st: &AppState, conn: &rusqlite::Connection) -> BrainResult<()> {
+    let orch = st.orch();
+    let limit = orch.max_parallel;
+    let mut active = active_task_count(st, conn)?;
+
+    let map = crate::projects::load_map(&st.map_path)?;
+    let projects = crate::projects::projects_of(&map);
+
+    let waiting_items = crate::db::waiting_split_items(conn)?;
+
+    for item in waiting_items {
+        if active >= limit {
+            break;
+        }
+
+        let Some(parent_task) = crate::db::get_task(conn, item.parent_id)? else {
+            continue;
+        };
+
+        let parent_auto = crate::db::task_auto(conn, item.parent_id)?.unwrap_or_default();
+        let parent_aj = crate::autopilot::decide::AutoJson::parse(parent_auto.auto_json.as_deref());
+
+        // Task cha không còn auto_state = 'waiting_children' hoặc đã hủy → bỏ qua
+        // (item giữ nguyên trừ khi cha bị hủy: cancelled).
+        if parent_aj.cancelled
+            || (parent_auto.auto_state.as_deref() == Some("ended") && parent_aj.cancelled)
+        {
+            crate::db::set_split_item_state(conn, item.id, "cancelled", Some("Task cha đã hủy"))?;
+            continue;
+        }
+
+        if parent_auto.auto_state.as_deref() != Some("waiting_children") {
+            continue;
+        }
+
+        // Có after_idx: lấy outcome của item đó; Pending → bỏ qua lượt này;
+        // Failed/Cancelled → item skipped, lý do Việc #<after_idx> không đạt; Passed → đi tiếp.
+        if let Some(after_idx) = item.after_idx {
+            let parent_items = crate::db::split_items_of(conn, item.parent_id)?;
+            let prior = parent_items.iter().find(|it| it.idx == after_idx as usize);
+            match prior {
+                None => {
+                    crate::db::set_split_item_state(
+                        conn,
+                        item.id,
+                        "skipped",
+                        Some(&format!("Việc #{after_idx} không đạt")),
+                    )?;
+                    continue;
+                }
+                Some(prior_item) => {
+                    let outcome = crate::split::child_outcome(conn, prior_item);
+                    match outcome {
+                        crate::split::ChildOutcome::Pending => {
+                            continue;
+                        }
+                        crate::split::ChildOutcome::Failed(_)
+                        | crate::split::ChildOutcome::Cancelled => {
+                            crate::db::set_split_item_state(
+                                conn,
+                                item.id,
+                                "skipped",
+                                Some(&format!("Việc #{after_idx} không đạt")),
+                            )?;
+                            continue;
+                        }
+                        crate::split::ChildOutcome::Passed => {
+                            // Nếu workflow là code, việc sau cần code của việc trước:
+                            // chỉ đi tiếp khi nhánh task con trước đã merge vào nhánh gốc
+                            let parent_wf = parent_auto
+                                .workflow_json
+                                .as_deref()
+                                .and_then(crate::workflows::Workflow::from_snapshot);
+                            let is_code = parent_wf.as_ref().map_or(true, |w| w.kind == "code");
+                            if is_code {
+                                if let Some(prior_tid) = prior_item.child_task_id {
+                                    let project_slug: String = conn.query_row(
+                                        "SELECT slug FROM projects WHERE id = ?1",
+                                        rusqlite::params![parent_task.project_id],
+                                        |r| r.get(0),
+                                    )?;
+                                    if let Some(_wait) =
+                                        code_prior_wait(conn, &map, &project_slug, prior_tid)?
+                                    {
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let project_slug: String = match conn.query_row(
+            "SELECT slug FROM projects WHERE id = ?1",
+            rusqlite::params![parent_task.project_id],
+            |r| r.get(0),
+        ) {
+            Ok(s) => s,
+            Err(_) => {
+                crate::db::set_split_item_state(
+                    conn,
+                    item.id,
+                    "failed",
+                    Some("Dự án của task cha không tồn tại"),
+                )?;
+                continue;
+            }
+        };
+
+        let Some(project) = projects.iter().find(|p| p.id == project_slug) else {
+            crate::db::set_split_item_state(
+                conn,
+                item.id,
+                "failed",
+                Some("Dự án không còn trong danh sách"),
+            )?;
+            continue;
+        };
+
+        let child_slug = match pick_child_slug(conn, project, &parent_task.slug, item.idx) {
+            Ok(s) => s,
+            Err(e) => {
+                crate::db::set_split_item_state(conn, item.id, "failed", Some(&e.message))?;
+                continue;
+            }
+        };
+
+        let child_request = format!(
+            "{}\n\n{}\n\n(Việc con #{} của task #{} \"{}\")",
+            item.title, item.request, item.idx, item.parent_id, parent_task.title
+        );
+
+        let parent_wf = parent_auto
+            .workflow_json
+            .as_deref()
+            .and_then(crate::workflows::Workflow::from_snapshot);
+        let wf_name = parent_wf.as_ref().map(|w| w.name.as_str());
+
+        let team_json = crate::db::task_team_json(conn, item.parent_id)?;
+        let team = crate::teams::TaskTeam::parse(team_json.as_deref()).map(|t| t.name);
+
+        let parent_inputs: Vec<crate::inputs::InputItem> =
+            crate::inputs::list_for_task(conn, item.parent_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| crate::inputs::InputItem {
+                    name: r.name,
+                    content: r.content,
+                })
+                .collect();
+        let inputs_opt = if parent_inputs.is_empty() {
+            None
+        } else {
+            Some(parent_inputs.as_slice())
+        };
+
+        let parent_origin = match crate::db::task_origin(conn, item.parent_id)?.as_deref() {
+            Some(crate::db::ORIGIN_TELEGRAM) => crate::dashboard::api_tasks::Origin::Telegram,
+            _ => crate::dashboard::api_tasks::Origin::Dashboard,
+        };
+
+        let start_req = crate::dashboard::api_tasks::StartRequest {
+            project: &project_slug,
+            request: &child_request,
+            name: Some(&child_slug),
+            workflow: wf_name,
+            level: Some(&parent_task.level),
+            team: team.as_deref(),
+            inputs: inputs_opt,
+            origin: parent_origin,
+            dry_run: false,
+        };
+
+        match crate::dashboard::api_tasks::start_new_task(st, &start_req) {
+            Ok(crate::dashboard::api_tasks::StartOutcome::Started {
+                task_id: child_task_id,
+                ..
+            }) => {
+                crate::db::set_task_parent(conn, child_task_id, item.parent_id)?;
+                crate::db::set_task_request(conn, child_task_id, &item.request)?;
+                crate::db::set_split_item_started(conn, item.id, child_task_id)?;
+                active += 1;
+            }
+            Ok(crate::dashboard::api_tasks::StartOutcome::Busy(_)) => {
+                continue;
+            }
+            Ok(crate::dashboard::api_tasks::StartOutcome::PreflightRefused { ref kind, .. })
+                if kind == "busy" =>
+            {
+                continue;
+            }
+            Ok(crate::dashboard::api_tasks::StartOutcome::PreflightRefused { reason, .. })
+            | Ok(crate::dashboard::api_tasks::StartOutcome::Invalid(reason)) => {
+                crate::db::set_split_item_state(conn, item.id, "failed", Some(&reason))?;
+            }
+            Ok(crate::dashboard::api_tasks::StartOutcome::ProjectRefused { body, .. }) => {
+                let reason = body
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Dự án từ chối")
+                    .to_string();
+                crate::db::set_split_item_state(conn, item.id, "failed", Some(&reason))?;
+            }
+            Ok(crate::dashboard::api_tasks::StartOutcome::Unavailable) => {
+                crate::db::set_split_item_state(
+                    conn,
+                    item.id,
+                    "failed",
+                    Some("Dashboard không sẵn sàng"),
+                )?;
+            }
+            Ok(crate::dashboard::api_tasks::StartOutcome::Ready(_)) => {}
+            Err(e) => {
+                crate::db::set_split_item_state(conn, item.id, "failed", Some(&e.message))?;
+            }
+        }
+    }
+
+    // 3. Với mỗi parents_waiting_children: nếu split::settled -> split::aggregate
+    let parents = crate::db::parents_waiting_children(conn)?;
+    for parent_id in parents {
+        match crate::split::settled(conn, parent_id) {
+            Ok(true) => {
+                if let Ok(Some(parent_task)) = crate::db::get_task(conn, parent_id) {
+                    match crate::split::aggregate(conn, &parent_task) {
+                        Ok(path) => {
+                            crate::term::emit(&format!(
+                                "Tách việc xong: task #{} -> {}",
+                                parent_id,
+                                path.display()
+                            ));
+                            let _ = st.hints.send(0);
+                        }
+                        Err(e) => {
+                            crate::term::emit(&format!(
+                                "Tổng hợp việc con task {parent_id}: lỗi — {}",
+                                e.message
+                            ));
+                        }
+                    }
+                }
+            }
+            Ok(false) => {}
+            Err(e) => {
+                crate::term::emit(&format!(
+                    "Kiểm tra settled việc con task {parent_id}: lỗi — {}",
+                    e.message
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
