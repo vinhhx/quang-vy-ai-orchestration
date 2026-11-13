@@ -43,6 +43,7 @@ pub enum EventKind {
     /// The latest step stopped on a quota or rate limit (Phase 6, D-17): the user picks a team.
     Quota,
     Answered,
+    SplitDone,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +120,10 @@ pub fn current_event(s: &TaskState) -> Option<Event> {
             .map(|r| r.id)
             .unwrap_or(0);
         return ev(EventKind::Answered, format!("answer:{last_id}"));
+    }
+
+    if s.task.status == "split_done" {
+        return ev(EventKind::SplitDone, format!("split:{}:{}", task_id, s.task.updated_at));
     }
 
     let latest = s.runs.iter().max_by_key(|r| (r.started_at, r.id));
@@ -285,7 +290,7 @@ impl Detector {
         let mut out = Vec::new();
         for (task_id, sig) in rows {
             let changed = self.sigs.get(&task_id) != Some(&sig);
-            if !changed && !(full && status_of(&sig) != "qa_pass" && status_of(&sig) != "answered") {
+            if !changed && !(full && status_of(&sig) != "qa_pass" && status_of(&sig) != "answered" && status_of(&sig) != "split_done") {
                 continue;
             }
             match self.eval(st, conn, task_id) {
@@ -298,13 +303,18 @@ impl Detector {
                         out.push(item);
                     }
                     if let Some(mut ev) = ev {
-                        if ev.kind == EventKind::Gate
-                            && self
+                        if ev.kind == EventKind::Gate {
+                            if crate::db::task_parent(conn, task_id).ok().flatten().is_some() {
+                                // Task con tự duyệt plan -> không gửi thông báo Chờ duyệt plan
+                                continue;
+                            }
+                            if self
                                 .seen
                                 .iter()
                                 .any(|(tid, k)| *tid == ev.task_id && k.starts_with("gate:") && k != &ev.key)
-                        {
-                            ev.is_update = true;
+                            {
+                                ev.is_update = true;
+                            }
                         }
                         if self.seen.insert((ev.task_id, ev.key.clone()))
                             && !self.unseeded.contains(&task_id)

@@ -244,6 +244,7 @@ fn kind_word(kind: EventKind) -> &'static str {
         EventKind::RunFailed => "run lỗi",
         EventKind::Quota => "hết quota",
         EventKind::Answered => "đã phân tích",
+        EventKind::SplitDone => "tách việc xong",
     }
 }
 
@@ -387,6 +388,9 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
         if current_event(&s).map(|e| e.key) != Some(ev.key.clone()) {
             return Step::Done;
         }
+        if ev.kind == EventKind::Gate && crate::db::task_parent(conn, task_id).ok().flatten().is_some() {
+            return Step::Done;
+        }
         let mut r = render::message_for(ev, &s);
         // QA pass: the summary file goes first, like the gate's plan. Built once (git/file IO).
         if ev.kind == EventKind::QaPass && !doc_done && r.document.is_none() {
@@ -445,11 +449,16 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
             }
         }
 
-        if ev.kind == EventKind::Answered && !doc_done {
+        if (ev.kind == EventKind::Answered || ev.kind == EventKind::SplitDone) && !doc_done {
             let path = crate::answers::path(&s.project.id, task_id, &s.task.slug);
             if path.is_file() {
+                let label = if ev.kind == EventKind::SplitDone {
+                    "Báo cáo gộp"
+                } else {
+                    "Phân tích"
+                };
                 let caption = render::clip(
-                    &format!("Phân tích task {task_id} — {}", s.project.id),
+                    &format!("{label} task {task_id} — {}", s.project.id),
                     CAPTION_MAX,
                 );
                 let body = Body::UploadFile {
@@ -481,7 +490,7 @@ fn notify(ctx: &BotCtx, slot: &mut Option<Connection>, ev: &Event) -> Step {
                             }
                             None => {
                                 crate::term::emit(&format!(
-                                    "Telegram: không gửi được file phân tích cho task {task_id} — {}",
+                                    "Telegram: không gửi được file {label} cho task {task_id} — {}",
                                     e.text()
                                 ));
                                 doc_done = true;

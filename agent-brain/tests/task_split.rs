@@ -2,6 +2,9 @@ mod common;
 #[allow(unused)]
 #[path = "support/protocol.rs"]
 mod protocol;
+#[allow(unused)]
+#[path = "support/telegram.rs"]
+mod tg;
 
 use common::Sandbox;
 use protocol::setup_project;
@@ -569,4 +572,207 @@ fn scheduler_handles_split_queue_respecting_parallel_and_dependencies() {
     assert_eq!(parent_after_t5.status, "split_done");
 
     st.jobs.kill_all_now();
+}
+
+#[test]
+fn test_telegram_render_split_plan_and_detect_split_done() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+    let (conn, pid) = init_test_db(&sb);
+    let st = app_state(&sb);
+
+    let parent_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "parent-tg",
+        "Parent Telegram Task",
+        "task/parent-tg",
+        Some("main"),
+        None,
+    )
+    .unwrap();
+
+    let plan_text = r#"# Plan: Demo task tách việc
+
+## Tách việc
+| # | Việc con | Yêu cầu | Phụ thuộc |
+|---|---|---|---|
+| 1 | Đăng nhập CMS | Làm form login | — |
+| 2 | Quản lý sản phẩm | CRUD sản phẩm | Sau #1 |
+| 3 | Xuất báo cáo | Xuất Excel | Sau #2 |
+"#;
+
+    // Test Gate message rendering with split plan
+    let mut state = agent_brain::dashboard::api_tasks::load_task_state(&st, &conn, parent_id).unwrap().unwrap();
+    state.plan_text = Some(plan_text.to_string());
+    state.view.controls.push(agent_brain::dashboard::taskstate::ActionView {
+        id: "approve".to_string(),
+        label: "Duyệt".to_string(),
+        enabled: true,
+        reason: None,
+        run_id: None,
+    });
+
+    let ev_gate = agent_brain::telegram::detect::Event {
+        task_id: parent_id,
+        kind: agent_brain::telegram::detect::EventKind::Gate,
+        key: "gate:commit123".to_string(),
+        is_update: false,
+    };
+    let rendered_gate = agent_brain::telegram::render::message_for(&ev_gate, &state);
+    assert!(rendered_gate.text.contains("Tách thành 3 việc con:"), "text: {}", rendered_gate.text);
+    assert!(rendered_gate.text.contains("1. Đăng nhập CMS (Phụ thuộc: —)"), "text: {}", rendered_gate.text);
+    assert!(rendered_gate.text.contains("2. Quản lý sản phẩm (Phụ thuộc: #1)"), "text: {}", rendered_gate.text);
+    assert!(rendered_gate.text.contains("3. Xuất báo cáo (Phụ thuộc: #2)"), "text: {}", rendered_gate.text);
+    let gate_btns = agent_brain::telegram::render::buttons_for(&ev_gate, &state);
+    assert!(!gate_btns.is_empty(), "Gate buttons must be present");
+
+    // Test child task gate skip in scan
+    let child_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "child-tg",
+        "Child Telegram Task",
+        "task/child-tg",
+        Some("main"),
+        None,
+    )
+    .unwrap();
+    agent_brain::db::set_task_parent(&conn, child_id, parent_id).unwrap();
+
+    // Detector scan skips Gate when task has parent
+    let mut detector = agent_brain::telegram::detect::Detector::default();
+    let reg = std::sync::Mutex::new(agent_brain::telegram::outbox::Registry::default());
+    // Simulate detector having seen or not seen
+    let scan_out = detector.scan(&st, &conn, true, &reg).unwrap();
+    assert!(
+        scan_out.iter().all(|item| match item {
+            agent_brain::telegram::outbox::Outgoing::Notify(ev) => ev.task_id != child_id,
+            _ => true,
+        }),
+        "Child task gate notification must be skipped"
+    );
+
+    // Test SplitDone detection and rendering
+    std::env::set_var("XDG_DATA_HOME", &sb.xdg_data);
+    let report_content = r#"# Báo cáo gộp: Parent Telegram Task
+- **Tổng kết**: Đạt 2 / Không đạt 1 / Hủy 0 / Tổng 3 · Chi phí: $0.1500
+
+| # | Việc con | Task | Kết quả | Ghi chú |
+|---|---|---|---|---|
+| 1 | Đăng nhập CMS | #2 dang-nhap-cms | Đạt | Xong login |
+| 2 | Quản lý sản phẩm | #3 quan-ly-san-pham | Đạt | Xong CRUD |
+| 3 | Xuất báo cáo | #4 xuat-bao-cao | Không đạt | Lỗi export |
+
+## Lỗi nổi bật
+- #3: Không tìm thấy thư viện excel
+"#;
+    agent_brain::answers::save("web-ban-hang", parent_id, "parent-tg", report_content).unwrap();
+    agent_brain::db::set_task_status(&conn, parent_id, "split_done").unwrap();
+
+    let parent_split_state = agent_brain::dashboard::api_tasks::load_task_state(&st, &conn, parent_id).unwrap().unwrap();
+    let ev_split = agent_brain::telegram::detect::current_event(&parent_split_state).expect("current_event for split_done");
+    assert_eq!(ev_split.kind, agent_brain::telegram::detect::EventKind::SplitDone);
+    assert_eq!(ev_split.key, format!("split:{}:{}", parent_id, parent_split_state.task.updated_at));
+
+    let rendered_split = agent_brain::telegram::render::message_for(&ev_split, &parent_split_state);
+    assert!(rendered_split.text.contains("Tách việc xong: Parent Telegram Task — Đạt 2 / Không đạt 1 / Hủy 0 / Tổng 3"), "text: {}", rendered_split.text);
+    assert!(rendered_split.text.contains("Lỗi nổi bật:"), "text: {}", rendered_split.text);
+    assert!(rendered_split.text.contains("- #3: Không tìm thấy thư viện excel"), "text: {}", rendered_split.text);
+    assert!(rendered_split.text.contains("Báo cáo gộp chi tiết ở file đính kèm ngay trên."), "text: {}", rendered_split.text);
+
+    let split_btns = agent_brain::telegram::render::buttons_for(&ev_split, &parent_split_state);
+    assert!(split_btns.is_empty(), "SplitDone has no buttons");
+}
+
+#[test]
+fn telegram_split_done_notifies_with_document_and_no_dup() {
+    let sb = Sandbox::new();
+    let tg = tg::FakeTelegram::start(&sb);
+    tg::write_config(&sb, tg::PAIRED_CHAT, 0o600);
+    let _repo = setup_project(&sb, "work");
+
+    let (conn, pid) = init_test_db(&sb);
+    let parent_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "parent-e2e",
+        "Parent E2E Task",
+        "task/parent-e2e",
+        Some("main"),
+        None,
+    )
+    .unwrap();
+
+    // Write report in answers dir before status split_done
+    let report_path = sb.xdg_data.join("agent-brain/answers/web-ban-hang").join(format!("{parent_id}-parent-e2e.md"));
+    std::fs::create_dir_all(report_path.parent().unwrap()).unwrap();
+    let report_content = r#"# Báo cáo gộp: Parent E2E Task
+- **Tổng kết**: Đạt 1 / Không đạt 0 / Hủy 0 / Tổng 1 · Chi phí: $0.0500
+
+| # | Việc con | Task | Kết quả | Ghi chú |
+|---|---|---|---|---|
+| 1 | Child 1 | #2 child-1 | Đạt | OK |
+"#;
+    std::fs::write(&report_path, report_content).unwrap();
+
+    // Also insert child task with gate to verify it is NOT notified
+    let child_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "child-e2e",
+        "Child E2E Task",
+        "task/child-e2e",
+        Some("main"),
+        None,
+    )
+    .unwrap();
+    agent_brain::db::set_task_parent(&conn, child_id, parent_id).unwrap();
+
+    let mut srv = tg.serve(&sb, &[]);
+    assert!(
+        common::wait_until(std::time::Duration::from_secs(10), || {
+            srv.stdout.lock().unwrap().contains("Telegram: đã kết nối (@ab_fake_bot)")
+        }),
+        "Telegram failed to connect"
+    );
+
+    // After serve is connected, update task status to split_done
+    agent_brain::db::set_task_status(&conn, parent_id, "split_done").unwrap();
+
+    // Wait for SplitDone message
+    let msg = tg
+        .wait_call("sendMessage", std::time::Duration::from_secs(15), |r| {
+            r["json"]["text"].as_str().unwrap_or("").starts_with("Tách việc xong")
+        })
+        .expect("expected sendMessage for SplitDone");
+
+    let text = msg["json"]["text"].as_str().unwrap();
+    assert!(text.contains("Parent E2E Task — Đạt 1 / Không đạt 0 / Hủy 0 / Tổng 1"), "unexpected text: {text}");
+    assert!(text.contains("Báo cáo gộp chi tiết ở file đính kèm ngay trên."), "missing file attachment notice in text: {text}");
+
+    // Verify sendDocument was called
+    let docs = tg.calls("sendDocument");
+    assert_eq!(docs.len(), 1, "sendDocument: {docs:#?}");
+    assert_eq!(docs[0]["form"]["document"]["filename"], serde_json::json!(format!("{parent_id}-parent-e2e.md")));
+    assert_eq!(docs[0]["form"]["caption"], serde_json::json!(format!("Báo cáo gộp task {parent_id} — web-ban-hang")));
+
+    // Child task with gate must not have sent any message
+    let gate_msgs: Vec<_> = tg
+        .calls("sendMessage")
+        .into_iter()
+        .filter(|r| r["json"]["text"].as_str().unwrap_or("").starts_with("Chờ duyệt plan"))
+        .collect();
+    assert!(gate_msgs.is_empty(), "Child task gate must not be notified: {gate_msgs:#?}");
+
+    // Rescan does not send duplicate
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let split_msgs: Vec<_> = tg
+        .calls("sendMessage")
+        .into_iter()
+        .filter(|r| r["json"]["text"].as_str().unwrap_or("").starts_with("Tách việc xong"))
+        .collect();
+    assert_eq!(split_msgs.len(), 1, "SplitDone must be sent exactly once: {split_msgs:#?}");
+
+    assert_eq!(srv.stop(libc::SIGINT, std::time::Duration::from_secs(10)), Some(0));
 }

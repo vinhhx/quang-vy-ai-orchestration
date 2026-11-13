@@ -483,6 +483,20 @@ pub fn is_split_plan(plan: &Plan) -> bool {
     false
 }
 
+pub fn parse_after_dep(s: &str) -> Option<usize> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() || trimmed == "-" || trimmed == "—" {
+        return None;
+    }
+    let cleaned = trimmed
+        .trim_start_matches("Sau")
+        .trim_start_matches("sau")
+        .trim()
+        .trim_start_matches('#')
+        .trim();
+    cleaned.parse::<usize>().ok()
+}
+
 /// Trích xuất danh sách việc con từ plan tách việc.
 pub fn split_items(plan: &Plan) -> Vec<SplitItem> {
     let mut items = Vec::new();
@@ -505,11 +519,7 @@ pub fn split_items(plan: &Plan) -> Vec<SplitItem> {
             let title = cells[1].trim().to_string();
             let request = cells[2].trim().to_string();
             let after_str = cells[3].trim();
-            let after = if after_str.is_empty() {
-                None
-            } else {
-                after_str.parse::<usize>().ok()
-            };
+            let after = parse_after_dep(after_str);
             items.push(SplitItem {
                 idx,
                 title,
@@ -661,9 +671,10 @@ pub fn validate_plan(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String>
                         if req.chars().count() > 4000 {
                             split_req_too_long.push(split_rows_count);
                         }
-                        if !after_str.is_empty() {
-                            match after_str.parse::<usize>() {
-                                Ok(u) if u >= 1 && u < split_rows_count => {}
+                        let trimmed_after = after_str.trim();
+                        if !trimmed_after.is_empty() && trimmed_after != "-" && trimmed_after != "—" {
+                            match parse_after_dep(trimmed_after) {
+                                Some(u) if u >= 1 && u < split_rows_count => {}
                                 _ => split_bad_afters.push(split_rows_count),
                             }
                         }

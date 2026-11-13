@@ -259,13 +259,28 @@ fn plan_lines(s: &TaskState, lines: &mut Vec<String>) {
                 plan.title.clone()
             };
             lines.push(format!("Plan: {title}"));
-            let files = crate::planfile::plan_files(&plan);
-            lines.push(format!("Thay đổi ({} file):", files.len()));
-            for f in files.iter().take(MAX_FILES) {
-                lines.push(format!("- {f}"));
-            }
-            if files.len() > MAX_FILES {
-                lines.push(format!("… và {} file khác", files.len() - MAX_FILES));
+            let split = crate::planfile::split_items(&plan);
+            if !split.is_empty() {
+                lines.push(format!("Tách thành {} việc con:", split.len()));
+                for it in split.iter().take(10) {
+                    let dep = it
+                        .after
+                        .map(|i| format!(" (Phụ thuộc: #{i})"))
+                        .unwrap_or_else(|| " (Phụ thuộc: —)".to_string());
+                    lines.push(format!("{}. {}{}", it.idx, it.title, dep));
+                }
+                if split.len() > 10 {
+                    lines.push(format!("… và {} việc nữa", split.len() - 10));
+                }
+            } else {
+                let files = crate::planfile::plan_files(&plan);
+                lines.push(format!("Thay đổi ({} file):", files.len()));
+                for f in files.iter().take(MAX_FILES) {
+                    lines.push(format!("- {f}"));
+                }
+                if files.len() > MAX_FILES {
+                    lines.push(format!("… và {} file khác", files.len() - MAX_FILES));
+                }
             }
             lines.extend(grant_lines(
                 &crate::planfile::run_grants(&plan),
@@ -492,6 +507,50 @@ fn text_for(ev: &Event, s: &TaskState, now_ms: i64) -> String {
                 ));
             }
         }
+        EventKind::SplitDone => {
+            if let Ok(Some(content)) = crate::answers::read(&s.project.id, id, &s.task.slug) {
+                let mut summary_found = false;
+                for l in content.lines() {
+                    let trimmed = l.trim();
+                    if trimmed.starts_with("- **Tổng kết**:") {
+                        let summary_text = trimmed.trim_start_matches("- **Tổng kết**:").trim();
+                        lines.push(format!("Tách việc xong: {} — {}", s.task.title, summary_text));
+                        summary_found = true;
+                        break;
+                    }
+                }
+                if !summary_found {
+                    lines.push(format!("Tách việc xong: {}", s.task.title));
+                }
+
+                let mut err_lines = Vec::new();
+                let mut in_err = false;
+                for l in content.lines() {
+                    let trimmed = l.trim();
+                    if trimmed.starts_with("## Lỗi nổi bật") {
+                        in_err = true;
+                        continue;
+                    } else if in_err && trimmed.starts_with("## ") {
+                        break;
+                    }
+                    if in_err && !trimmed.is_empty() && trimmed != "Không có lỗi." {
+                        err_lines.push(trimmed.to_string());
+                        if err_lines.len() >= 5 {
+                            break;
+                        }
+                    }
+                }
+                if !err_lines.is_empty() {
+                    lines.push(String::new());
+                    lines.push("Lỗi nổi bật:".to_string());
+                    lines.extend(err_lines);
+                }
+                lines.push(String::new());
+                lines.push("Báo cáo gộp chi tiết ở file đính kèm ngay trên.".to_string());
+            } else {
+                lines.push(format!("Tách việc xong: {}", s.task.title));
+            }
+        }
     }
     clip(&lines.join("\n"), MAX_TEXT)
 }
@@ -580,7 +639,7 @@ pub fn buttons_for(ev: &Event, s: &TaskState) -> Vec<Vec<Button>> {
                 rows.push(button("Mở lại task", Op::Reopen, s, None));
             }
         }
-        EventKind::Answered => {}
+        EventKind::Answered | EventKind::SplitDone => {}
         EventKind::Quota => {
             let names = team_names(s);
             let ver = callback::team_list_ver(&names);
