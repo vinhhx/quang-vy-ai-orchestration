@@ -452,6 +452,8 @@
           return 'loi';
         }
         if (g === 'done') return 'xong';
+        // "Đã hủy" (Dừng hẳn): neutral badge, never the waiting / attention colours.
+        if (g === 'cancelled') return 'cho';
         return 'cho';
       },
 
@@ -2376,6 +2378,9 @@
         // 06-18: a person holds the step; autopilot continues by itself after Xong.
         if (this.autoState === 'waiting_human') {
           return { text: 'Autopilot: chờ ' + this.humanName + ' làm', key: 'cho_nguoi' };
+        }
+        if (this.autoState === 'cancelled') {
+          return { text: 'Đã hủy', key: 'cho' };
         }
         return window.AB.autoBadge(this.autoView);
       },

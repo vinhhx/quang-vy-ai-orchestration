@@ -140,6 +140,10 @@ export function classifyU1Task(task, boardOrQuotaMap) {
     ? buildQuotaStopsMap(boardOrQuotaMap)
     : (boardOrQuotaMap || {});
 
+  // "Dừng hẳn" (task hủy): neither stopped nor needing attention.
+  if (task.group === 'cancelled' || task.auto_state === 'cancelled') {
+    return 'cancelled';
+  }
   if (
     task.quota_detail ||
     qMap[task.id] ||
@@ -214,6 +218,15 @@ export function placeTask(task, board, projects) {
       room: 'kho_luu',
       desk: 'archive',
       flags: { done: true },
+    };
+  }
+
+  // Task hủy ngồi ở Kho lưu cùng task đã xong (không phải phòng nghỉ)
+  if (u1Group === 'cancelled') {
+    return {
+      room: 'kho_luu',
+      desk: 'archive',
+      flags: { cancelled: true },
     };
   }
 

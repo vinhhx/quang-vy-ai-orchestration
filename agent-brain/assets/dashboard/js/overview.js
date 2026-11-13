@@ -142,6 +142,12 @@
             hint: 'QA đạt',
             empty: 'Chưa có task nào xong.',
           },
+          {
+            key: 'cancelled',
+            title: 'Đã hủy',
+            hint: 'Đã bấm Dừng hẳn',
+            empty: 'Không có task nào bị hủy.',
+          },
         ];
 
         return groupDefs.map(function (g) {

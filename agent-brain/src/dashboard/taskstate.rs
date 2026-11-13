@@ -524,6 +524,18 @@ fn auto_state_of(a: &AutoFacts) -> &'static str {
     }
 }
 
+/// Nhãn của trạng thái "Đã hủy" (banner, nhóm `cancelled`).
+pub const CANCELLED_WORD: &str = "Đã hủy";
+
+/// Task ở trạng thái "Đã hủy": quy trình có autopilot, `auto_state = 'ended'`, cờ
+/// `auto_json.cancelled` (chỉ `auto_end` bật) và task chưa thuộc `SUCCESS_STATUSES`.
+pub fn is_cancelled(a: &AutoFacts, status: &str) -> bool {
+    a.workflow.is_some()
+        && a.auto.and_then(|auto| auto.auto_state.as_deref()) == Some("ended")
+        && a.auto_json.is_some_and(|aj| aj.cancelled)
+        && !crate::tasks::is_success_status(status)
+}
+
 /// Autopilot còn bật cho task: quy trình `auto: true` và bạn chưa tắt autopilot
 /// (auto_state khác `ended` — Dừng autopilot ở cổng hoặc Dừng hẳn). Quyết định
 /// Duyệt plan có chạy tiếp autopilot không, Trả về Lead / Chạy lại Lead chạy
@@ -920,8 +932,15 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
 
     let current_step = current_step_of(f, running_run);
 
-    let auto_state = auto_state_of(a);
     let legacy = a.workflow.is_none();
+    // "Đã hủy": Dừng hẳn (`auto_end`) ghi `auto_state = 'ended'` kèm cờ `aj.cancelled`; Dừng
+    // autopilot ở cổng cũng ghi `ended` nhưng xóa cờ. Task đã xong thì không bao giờ là "hủy".
+    let cancelled = is_cancelled(a, &f.task.status);
+    let auto_state = if cancelled {
+        "cancelled"
+    } else {
+        auto_state_of(a)
+    };
     let workflow_auto = a.workflow.map_or(false, |w| w.auto);
     let stop_requested =
         !legacy && a.auto.map_or(false, |auto| auto.auto_stop_at.is_some()) && a.driver_alive;
@@ -955,6 +974,8 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
         Some(human_waiting_banner(human_name))
     } else if a.human_mode == Some(HUMAN_REJECTED) {
         Some(human_rejected_banner(human_name))
+    } else if cancelled {
+        Some(CANCELLED_WORD.to_string())
     } else if auto_state == "stopped" {
         if let Some(word) = &stop_word {
             Some(format!("Chờ bạn · {word}"))
@@ -996,6 +1017,9 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
         "waiting".to_string()
     } else if running_run.is_some() || a.driver_alive {
         "running".to_string()
+    } else if cancelled {
+        // Trước attention / waiting: task hủy ở `blocked` / `qa_fix` không còn "cần chú ý".
+        "cancelled".to_string()
     } else if auto_state == "stopped" || quota_stop {
         "waiting".to_string()
     } else if f.task.status == "qa_pass" || f.task.status == "answered" {
@@ -2848,6 +2872,102 @@ mod tests {
             control_ids,
             vec!["auto_start", "auto_more_round", "auto_end"]
         );
+    }
+
+    /// "Đã hủy" (Dừng hẳn) is derived: `ended` + `aj.cancelled` + not a success status.
+    #[test]
+    fn test_cancelled_state() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+        let git = GitFacts {
+            current_branch: Some("task/sua-app".to_string()),
+            plan_exists: true,
+            plan_commit: Some("abc".to_string()),
+            ..Default::default()
+        };
+        let view_of = |status: &str, auto_state: &str, cancelled: bool| {
+            let task = dummy_task(status);
+            let facts = TaskFacts {
+                task: &task,
+                lead: None,
+                dev: None,
+                qa: None,
+                git: &git,
+                busy: None,
+                now_ms: 2000,
+            };
+            let auto = dummy_task_auto(Some(auto_state), None);
+            let aj = AutoJson {
+                cancelled,
+                ..Default::default()
+            };
+            let af = AutoFacts {
+                workflow: Some(mac_dinh),
+                auto: Some(&auto),
+                auto_json: Some(&aj),
+                ..Default::default()
+            };
+            derive_with(&facts, &af)
+        };
+
+        // Dừng hẳn on a blocked task: its own group, not "attention".
+        let v = view_of("blocked", "ended", true);
+        assert_eq!(v.auto.state, "cancelled");
+        assert_eq!(v.group, "cancelled");
+        assert_eq!(v.banner.as_deref(), Some("Đã hủy"));
+        let ids: Vec<&str> = v.controls.iter().map(|c| c.id.as_str()).collect();
+        assert!(ids.contains(&"auto_start"), "Bật autopilot stays: {ids:?}");
+        assert!(!ids.contains(&"auto_end"), "no Dừng hẳn on a cancelled task: {ids:?}");
+        let qa_fix = view_of("qa_fix", "ended", true);
+        assert_eq!((qa_fix.auto.state.as_str(), qa_fix.group.as_str()), ("cancelled", "cancelled"));
+
+        // Autopilot ended at the plan gate (no flag): "off", never "cancelled".
+        let v = view_of("blocked", "ended", false);
+        assert_eq!(v.auto.state, "off");
+        assert_eq!(v.group, "attention");
+        assert_ne!(v.banner.as_deref(), Some("Đã hủy"));
+
+        // Cancelled, then autopilot turned back on (auto_state leaves `ended`): no longer cancelled
+        // even though the flag is still in auto_json.
+        for st in ["running", "stopped", "gate"] {
+            let v = view_of("blocked", st, true);
+            assert_ne!(v.auto.state, "cancelled", "auto_state {st}");
+            assert_ne!(v.group, "cancelled", "auto_state {st}");
+        }
+
+        // A task that already passed QA stays done even when its autopilot was ended for good.
+        let v = view_of("qa_pass", "ended", true);
+        assert_eq!(v.group, "done");
+        assert_ne!(v.auto.state, "cancelled");
+        assert_ne!(v.banner.as_deref(), Some("Đã hủy"));
+
+        // Legacy task (no workflow snapshot) cannot be cancelled.
+        let task = dummy_task("blocked");
+        let facts = TaskFacts {
+            task: &task,
+            lead: None,
+            dev: None,
+            qa: None,
+            git: &git,
+            busy: None,
+            now_ms: 2000,
+        };
+        let auto = dummy_task_auto(Some("ended"), None);
+        let aj = AutoJson {
+            cancelled: true,
+            ..Default::default()
+        };
+        let af = AutoFacts {
+            workflow: None,
+            auto: Some(&auto),
+            auto_json: Some(&aj),
+            ..Default::default()
+        };
+        assert_ne!(derive_with(&facts, &af).group, "cancelled");
     }
 
     #[test]

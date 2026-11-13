@@ -4026,7 +4026,10 @@ pub fn run_control_as(
             // Autopilot chờ ở cổng duyệt plan (không có driver): tắt autopilot cho
             // task (`ended`). Không bỏ qua cổng — vẫn phải bấm Duyệt plan (D-03);
             // Bật autopilot bật lại. Chỉ ghi khi task vẫn `gate` (WR-04).
-            if !claim::end_autopilot(&conn, task_id, "gate", &state.aj)? {
+            // Dừng ở cổng là chuyển sang làm tay, KHÔNG phải hủy: xóa cờ `cancelled` cũ.
+            let mut aj = state.aj.clone();
+            aj.cancelled = false;
+            if !claim::end_autopilot(&conn, task_id, "gate", &aj)? {
                 return Ok(ControlOutcome::Stale);
             }
             Ok(ControlOutcome::Ended { at_gate: true })
@@ -4034,7 +4037,10 @@ pub fn run_control_as(
         "auto_end" => {
             // Dừng hẳn: giữ auto_json.stop làm lịch sử; Bật autopilot chạy lại sau.
             // Chỉ ghi khi task vẫn `stopped` và không có driver (WR-04).
-            if !claim::end_autopilot(&conn, task_id, "stopped", &state.aj)? {
+            // Cờ `cancelled` + auto_state `ended` = trạng thái "Đã hủy" (suy ra ở taskstate).
+            let mut aj = state.aj.clone();
+            aj.cancelled = true;
+            if !claim::end_autopilot(&conn, task_id, "stopped", &aj)? {
                 return Ok(ControlOutcome::Stale);
             }
             Ok(ControlOutcome::Ended { at_gate: false })
