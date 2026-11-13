@@ -62,6 +62,14 @@ pub struct ActionView {
     pub run_id: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
+pub struct SplitProgress {
+    pub total: usize,
+    pub settled: usize,
+    pub done: usize,
+    pub running: usize,
+}
+
 #[derive(Default)]
 pub struct AutoFacts<'a> {
     pub workflow: Option<&'a Workflow>,
@@ -79,6 +87,7 @@ pub struct AutoFacts<'a> {
     /// Display name of the person the marker waits for.
     pub human_name: Option<&'a str>,
     pub budget_exhausted_reason: Option<String>,
+    pub split_progress: Option<SplitProgress>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -516,6 +525,7 @@ fn auto_state_of(a: &AutoFacts) -> &'static str {
                 "gate"
             }
         }
+        Some("waiting_children") => "waiting_children",
         Some("stopped") => "stopped",
         Some("done") => "done",
         // The driver released the task for a person (06-12): nothing runs until Xong.
@@ -792,6 +802,21 @@ fn build_auto_end() -> ActionView {
     }
 }
 
+/// Dựng nút điều khiển Tổng hợp ngay cho task tách việc.
+pub fn build_split_aggregate(running: bool) -> ActionView {
+    ActionView {
+        id: "split_aggregate".to_string(),
+        label: "Tổng hợp ngay".to_string(),
+        enabled: true,
+        reason: if running {
+            Some("Còn việc con đang chạy".to_string())
+        } else {
+            None
+        },
+        run_id: None,
+    }
+}
+
 /// Dựng nút điều khiển Mở lại task đã xong (B1).
 pub fn build_reopen(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) -> ActionView {
     let mut enabled = true;
@@ -1009,7 +1034,27 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
     } else if a.human_mode == Some(HUMAN_REJECTED) {
         Some(human_rejected_banner(human_name))
     } else if cancelled {
-        Some(CANCELLED_WORD.to_string())
+        if let Some(sp) = a.split_progress {
+            if sp.running > 0 {
+                Some(format!("Đã hủy — còn {} việc con đang chạy", sp.running))
+            } else {
+                Some(CANCELLED_WORD.to_string())
+            }
+        } else {
+            Some(CANCELLED_WORD.to_string())
+        }
+    } else if auto_state == "waiting_children" {
+        if let Some(sp) = a.split_progress {
+            Some(format!("Chờ việc con: {}/{} xong", sp.settled, sp.total))
+        } else {
+            Some("Chờ việc con".to_string())
+        }
+    } else if f.task.status == "split_done" {
+        if let Some(sp) = a.split_progress {
+            Some(format!("Tách việc: Đạt {}/{}", sp.done, sp.total))
+        } else {
+            Some("Tách việc xong".to_string())
+        }
     } else if auto_state == "stopped" {
         if let Some(word) = &stop_word {
             Some(format!("Chờ bạn · {word}"))
@@ -1054,9 +1099,11 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
     } else if cancelled {
         // Trước attention / waiting: task hủy ở `blocked` / `qa_fix` không còn "cần chú ý".
         "cancelled".to_string()
+    } else if auto_state == "waiting_children" {
+        "waiting".to_string()
     } else if auto_state == "stopped" || quota_stop {
         "waiting".to_string()
-    } else if f.task.status == "qa_pass" || f.task.status == "answered" {
+    } else if f.task.status == "qa_pass" || f.task.status == "answered" || f.task.status == "split_done" {
         "done".to_string()
     } else if f.task.status == "blocked" || f.task.status == "qa_fix" {
         "attention".to_string()
@@ -1136,6 +1183,8 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
             // Trả về Lead (hoặc Dừng autopilot). Chạy Dev / Chạy lại Lead tay quay
             // lại sau khi tắt autopilot; server cũng từ chối POST (UI fix 2).
             acts.retain(|act| act.id != "run_dev" && act.id != "relead");
+        } else if auto_state == "waiting_children" {
+            acts.clear();
         }
         acts
     };
@@ -1166,6 +1215,9 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
             // Autopilot đang chờ ở cổng duyệt plan: Dừng autopilot tắt autopilot
             // cho task (không bỏ qua cổng — D-03); Bật autopilot bật lại.
             controls.push(build_auto_stop(false));
+        } else if auto_state == "waiting_children" {
+            controls.push(build_auto_end());
+            controls.push(build_split_aggregate(a.split_progress.map_or(false, |sp| sp.running > 0)));
         } else if auto_state != "running" && auto_state != "stopping" {
             controls.push(build_auto_start(f, a, running_run));
         }
@@ -1183,6 +1235,9 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
             }
             controls.push(build_auto_more_round(f, a, running_run));
             controls.push(build_auto_end());
+            if a.split_progress.is_some() && f.task.status != "split_done" {
+                controls.push(build_split_aggregate(a.split_progress.map_or(false, |sp| sp.running > 0)));
+            }
         }
     }
 
@@ -3836,5 +3891,85 @@ mod tests {
             busy: None,
             now_ms: 6000,
         }
+    }
+
+    #[test]
+    fn waiting_children_and_split_done_state() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+
+        let auto = dummy_task_auto(Some("waiting_children"), None);
+        let af = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto),
+            split_progress: Some(SplitProgress {
+                total: 5,
+                settled: 2,
+                done: 2,
+                running: 1,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(auto_state_of(&af), "waiting_children");
+
+        let task = dummy_task("planned");
+        let git = GitFacts {
+            current_branch: Some("task/sua-app".to_string()),
+            ..Default::default()
+        };
+        let facts = facts_without(&task, &git);
+        let view = derive_with(&facts, &af);
+        assert_eq!(view.auto.state, "waiting_children");
+        assert_eq!(view.group, "waiting");
+        assert_eq!(view.banner.as_deref(), Some("Chờ việc con: 2/5 xong"));
+        assert!(view.actions.is_empty(), "no dev/relead actions while waiting for children");
+        assert!(view.controls.iter().any(|c| c.id == "auto_end"), "has auto_end control");
+        assert!(view.controls.iter().any(|c| c.id == "split_aggregate"), "has split_aggregate control");
+        assert!(!view.controls.iter().any(|c| c.id == "auto_start"), "no auto_start control");
+
+        // Split done task
+        let done_task = dummy_task("split_done");
+        let done_facts = facts_without(&done_task, &git);
+        let done_auto = dummy_task_auto(Some("done"), None);
+        let done_af = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&done_auto),
+            split_progress: Some(SplitProgress {
+                total: 5,
+                settled: 5,
+                done: 4,
+                running: 0,
+            }),
+            ..Default::default()
+        };
+        let done_view = derive_with(&done_facts, &done_af);
+        assert_eq!(done_view.group, "done");
+        assert_eq!(done_view.banner.as_deref(), Some("Tách việc: Đạt 4/5"));
+
+        // Cancelled task with running children
+        let auto_ended = dummy_task_auto(Some("ended"), None);
+        let aj_cancelled = AutoJson {
+            cancelled: true,
+            ..Default::default()
+        };
+        let cancel_af = AutoFacts {
+            workflow: Some(mac_dinh),
+            auto: Some(&auto_ended),
+            auto_json: Some(&aj_cancelled),
+            split_progress: Some(SplitProgress {
+                total: 5,
+                settled: 2,
+                done: 1,
+                running: 2,
+            }),
+            ..Default::default()
+        };
+        let cancel_view = derive_with(&facts, &cancel_af);
+        assert_eq!(cancel_view.group, "cancelled");
+        assert_eq!(cancel_view.banner.as_deref(), Some("Đã hủy — còn 2 việc con đang chạy"));
     }
 }

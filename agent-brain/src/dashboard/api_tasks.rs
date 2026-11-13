@@ -612,6 +612,7 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         )
         .route("/api/tasks/{id}/auto/extend-budget", post(post_auto_extend_budget))
         .route("/api/tasks/{id}/auto/end", post(post_auto_end))
+        .route("/api/tasks/{id}/split-aggregate", post(post_split_aggregate))
         .route("/api/preflight", get(get_preflight))
         .route("/api/slug", get(get_slug))
         .route("/api/jobs/{id}", get(get_job))
@@ -1491,6 +1492,19 @@ async fn list_tasks(
             let human = crate::teams::TaskTeam::parse(team_json.as_deref())
                 .and_then(|t| t.wait)
                 .map(|w| (w.mode.clone(), staff.display_name_of(&w.staff)));
+            let split_items_raw = crate::db::split_items_of(&conn, task.id).unwrap_or_default();
+            let split_progress = if split_items_raw.is_empty() {
+                None
+            } else {
+                let total = split_items_raw.len();
+                let settled = split_items_raw
+                    .iter()
+                    .filter(|it| matches!(it.state.as_str(), "done" | "failed" | "cancelled" | "skipped"))
+                    .count();
+                let done = split_items_raw.iter().filter(|it| it.state == "done").count();
+                let running = split_items_raw.iter().filter(|it| it.state == "started").count();
+                Some(crate::dashboard::taskstate::SplitProgress { total, settled, done, running })
+            };
             let auto_facts = AutoFacts {
                 workflow: workflow.as_ref(),
                 auto: Some(&auto),
@@ -1503,6 +1517,7 @@ async fn list_tasks(
                 human_mode: human.as_ref().map(|(m, _)| m.as_str()),
                 human_name: human.as_ref().map(|(_, n)| n.as_str()),
                 budget_exhausted_reason: None,
+                split_progress,
             };
             let view = taskstate::derive_with(&facts, &auto_facts);
             // Tổng quan shows the reason line of a quota stop for manual tasks (UI-SPEC).
@@ -1857,6 +1872,25 @@ pub fn load_task_state(
         crate::pricing::budget_exhausted_reason(&runs, &st.cfg.pricing, wf, &aj, now)
     });
 
+    let split_items_raw = crate::db::split_items_of(conn, task.id).unwrap_or_default();
+    let split_progress = if split_items_raw.is_empty() {
+        None
+    } else {
+        let total = split_items_raw.len();
+        let settled = split_items_raw
+            .iter()
+            .filter(|it| matches!(it.state.as_str(), "done" | "failed" | "cancelled" | "skipped"))
+            .count();
+        let done = split_items_raw.iter().filter(|it| it.state == "done").count();
+        let running = split_items_raw.iter().filter(|it| it.state == "started").count();
+        Some(crate::dashboard::taskstate::SplitProgress {
+            total,
+            settled,
+            done,
+            running,
+        })
+    };
+
     let mut view = {
         let facts = TaskFacts {
             task: &task,
@@ -1879,6 +1913,7 @@ pub fn load_task_state(
             human_mode: human_wait.as_ref().map(|(m, _)| m.as_str()),
             human_name: human_wait.as_ref().map(|(_, n)| n.as_str()),
             budget_exhausted_reason,
+            split_progress,
         };
         taskstate::derive_with(&facts, &auto_facts)
     };
@@ -2807,6 +2842,60 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
 
         let inputs_meta = crate::inputs::list_meta_for_task(&conn, task.id).unwrap_or_default();
 
+        let parent_obj = match crate::db::task_parent(&conn, task.id)? {
+            Some(parent_id) => {
+                let parent_info: Option<(i64, String, String)> = conn
+                    .query_row(
+                        "SELECT id, slug, title FROM tasks WHERE id = ?1",
+                        rusqlite::params![parent_id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .ok();
+                parent_info.map(|(p_id, p_slug, p_title)| {
+                    serde_json::json!({
+                        "id": p_id,
+                        "slug": p_slug,
+                        "title": p_title,
+                    })
+                })
+            }
+            None => None,
+        };
+
+        let split_items_raw = crate::db::split_items_of(&conn, task.id).unwrap_or_default();
+        let children_obj: Option<Vec<serde_json::Value>> = if split_items_raw.is_empty() {
+            None
+        } else {
+            let mut items = Vec::new();
+            for it in &split_items_raw {
+                let child_task = it
+                    .child_task_id
+                    .and_then(|cid| crate::db::get_task(&conn, cid).ok().flatten());
+                let outcome = crate::split::child_outcome(&conn, it);
+                let outcome_str = match outcome {
+                    crate::split::ChildOutcome::Passed => "passed",
+                    crate::split::ChildOutcome::Failed(_) => "failed",
+                    crate::split::ChildOutcome::Cancelled => "cancelled",
+                    crate::split::ChildOutcome::Pending => "pending",
+                };
+                items.push(serde_json::json!({
+                    "idx": it.idx,
+                    "title": it.title,
+                    "prompt": it.request,
+                    "after_idx": it.after_idx,
+                    "state": it.state,
+                    "reason": it.reason,
+                    "task_id": it.child_task_id,
+                    "slug": child_task.as_ref().map(|t| t.slug.clone()),
+                    "status": child_task.as_ref().map(|t| t.status.clone()),
+                    "outcome": outcome_str,
+                    "created_at": it.created_at,
+                    "updated_at": it.updated_at,
+                }));
+            }
+            Some(items)
+        };
+
         let resp_json = serde_json::json!({
             "id": task.id,
             "project_id": task.project_id,
@@ -2858,6 +2947,8 @@ async fn get_task(State(st): State<Arc<AppState>>, AxumPath(id): AxumPath<i64>) 
             "workdir_merged": task.workdir.is_some() && worktree_merged(project, task),
             // Base branch Merge & push merges into (task, project, else merge.default_base_branch).
             "merge_base": crate::workspace::merge_push_base(&st.cfg, project, task),
+            "parent": parent_obj,
+            "children": children_obj,
         });
 
         Ok((
@@ -4206,6 +4297,21 @@ pub fn run_control_as(
                 }),
             }
         }
+        "split_aggregate" => {
+            let _ = crate::split::cancel_waiting(&conn, task_id);
+            match crate::split::aggregate(&conn, &state.task) {
+                Ok(path) => {
+                    let path_str = path.to_string_lossy().to_string();
+                    crate::term::emit(&format!(
+                        "Tách việc xong: task #{} -> {}",
+                        task_id,
+                        path_str
+                    ));
+                    Ok(ControlOutcome::Ended { at_gate: false })
+                }
+                Err(e) => Ok(ControlOutcome::Invalid(format!("Không thể tổng hợp: {e}"))),
+            }
+        }
         "run_dev" => {
             if source == ActionSource::Telegram
                 && state.origin.as_deref() == Some(crate::db::ORIGIN_TELEGRAM)
@@ -4576,6 +4682,14 @@ async fn post_auto_end(
     Json(body): Json<ControlBody>,
 ) -> Response {
     post_control(st, task_id, "auto_end", body.rev, None).await
+}
+
+async fn post_split_aggregate(
+    State(st): State<Arc<AppState>>,
+    AxumPath(task_id): AxumPath<i64>,
+    Json(body): Json<ControlBody>,
+) -> Response {
+    post_control(st, task_id, "split_aggregate", body.rev, None).await
 }
 
 async fn get_job(State(st): State<Arc<AppState>>, AxumPath(job_id): AxumPath<u64>) -> Response {

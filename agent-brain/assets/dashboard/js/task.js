@@ -162,7 +162,7 @@
             self.error = '';
             self.notFound = false;
 
-            if (self.isAnalysis() || self.task.status === 'answered') {
+            if (self.isAnalysis() || self.task.status === 'answered' || self.task.status === 'split_done') {
               self.loadAnswer();
             }
 
@@ -1389,10 +1389,13 @@
       },
 
       get isDone() {
-        return Boolean(this.task && (this.task.status === 'qa_pass' || this.task.status === 'answered'));
+        return Boolean(this.task && (this.task.status === 'qa_pass' || this.task.status === 'answered' || this.task.status === 'split_done'));
       },
 
       get doneText() {
+        if (this.task && this.task.status === 'split_done') {
+          return 'Tách việc đã hoàn tất. Xem báo cáo gộp bên dưới.';
+        }
         if (this.task && this.task.status === 'answered') {
           return 'Đã phân tích xong câu hỏi và gửi tài liệu qua Telegram.';
         }
@@ -1892,6 +1895,107 @@
         return this.hasClonedFrom ? 'chạy lại từ #' + this.clonedFrom : '';
       },
 
+      // ---- Task con / Task cha (Tách việc) ----
+      get parentTask() {
+        return (this.task && this.task.parent) ? this.task.parent : null;
+      },
+
+      get hasParentTask() {
+        return this.parentTask !== null;
+      },
+
+      get parentTaskHref() {
+        return this.hasParentTask ? '#/task/' + this.parentTask.id : '';
+      },
+
+      get parentTaskText() {
+        if (!this.hasParentTask) return '';
+        return '#' + this.parentTask.id + (this.parentTask.title ? ' ' + this.parentTask.title : '');
+      },
+
+      get children() {
+        return (this.task && Array.isArray(this.task.children)) ? this.task.children : [];
+      },
+
+      get hasChildren() {
+        return this.children.length > 0;
+      },
+
+      get isSplitDone() {
+        return Boolean(this.task && this.task.status === 'split_done');
+      },
+
+      get splitAggregateControl() {
+        if (!this.task || !Array.isArray(this.task.controls)) return [];
+        return this.task.controls.filter(function (c) {
+          return c.id === 'split_aggregate';
+        });
+      },
+
+      childStateLabel: function (state, reason) {
+        switch (state) {
+          case 'waiting':
+            return 'Chờ';
+          case 'started':
+            return 'Đang chạy';
+          case 'done':
+            return 'Xong';
+          case 'failed':
+            return reason ? 'Lỗi: ' + reason : 'Lỗi';
+          case 'cancelled':
+            return 'Đã hủy';
+          case 'skipped':
+            return reason ? 'Bỏ qua: ' + reason : 'Bỏ qua';
+          default:
+            return state || '—';
+        }
+      },
+
+      childStateBadgeClass: function (state) {
+        switch (state) {
+          case 'started':
+            return 'inline-flex items-center rounded-md bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-700/10 dark:bg-blue-900/30 dark:text-blue-300';
+          case 'done':
+            return 'inline-flex items-center rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-900/30 dark:text-emerald-300';
+          case 'failed':
+            return 'inline-flex items-center rounded-md bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700 ring-1 ring-inset ring-rose-600/10 dark:bg-rose-900/30 dark:text-rose-300';
+          case 'cancelled':
+            return 'inline-flex items-center rounded-md bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-900/30 dark:text-amber-300';
+          case 'skipped':
+            return 'inline-flex items-center rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-500/10 dark:bg-slate-800 dark:text-slate-400';
+          default:
+            return 'inline-flex items-center rounded-md bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-500/10 dark:bg-slate-800 dark:text-slate-400';
+        }
+      },
+
+      childOutcomeLabel: function (outcome) {
+        switch (outcome) {
+          case 'passed':
+            return 'Đạt';
+          case 'failed':
+            return 'Không đạt';
+          case 'cancelled':
+            return 'Hủy';
+          case 'pending':
+            return 'Chờ';
+          default:
+            return outcome || '—';
+        }
+      },
+
+      childOutcomeBadgeClass: function (outcome) {
+        switch (outcome) {
+          case 'passed':
+            return 'font-semibold text-emerald-600 dark:text-emerald-400';
+          case 'failed':
+            return 'font-semibold text-rose-600 dark:text-rose-400';
+          case 'cancelled':
+            return 'text-amber-600 dark:text-amber-400';
+          default:
+            return 'text-slate-500 dark:text-slate-400';
+        }
+      },
+
       get rerunTitle() {
         return 'Chạy lại task ' + ((this.task && this.task.slug) ? this.task.slug : '') + ' bằng task mới?';
       },
@@ -2068,6 +2172,9 @@
         if (this.dialog.id === 'merge_push') {
           return 'Merge nhánh ' + this.mergeBranch + ' vào ' + this.mergeBase + ' rồi push lên origin?';
         }
+        if (this.dialog.id === 'split_aggregate') {
+          return 'Tổng hợp ngay kết quả các việc con?';
+        }
         return '';
       },
 
@@ -2110,6 +2217,9 @@
         if (this.dialog.id === 'merge_push') {
           return 'agent-brain lấy origin/' + this.mergeBase + ', checkout ' + this.mergeBase + ', merge --no-ff nhánh ' + this.mergeBranch + ' (bỏ file giao thức), push lên origin không force, rồi xoá nhánh task cục bộ (git branch -d). Repo ở lại nhánh ' + this.mergeBase + '.';
         }
+        if (this.dialog.id === 'split_aggregate') {
+          return 'Các việc con chưa chạy sẽ được hủy và chốt kết quả hiện tại để tạo báo cáo gộp.';
+        }
         return '';
       },
 
@@ -2129,6 +2239,7 @@
         if (this.dialog.id === 'reopen') return 'Mở lại task';
         if (this.dialog.id === 'cleanup_worktree') return 'Dọn worktree';
         if (this.dialog.id === 'merge_push') return 'Merge & push';
+        if (this.dialog.id === 'split_aggregate') return 'Tổng hợp ngay';
         return '';
       },
 
@@ -2136,7 +2247,7 @@
         if (!this.dialog) return '';
         if (this.dialog.id === 'kill') return 'Giữ chạy tiếp';
         if (this.dialog.id === 'relead' || this.dialog.id === 'return_lead') return 'Giữ plan hiện tại';
-        if (this.dialog.id === 'reopen' || this.dialog.id === 'cleanup_worktree' || this.dialog.id === 'merge_push') return 'Hủy';
+        if (this.dialog.id === 'reopen' || this.dialog.id === 'cleanup_worktree' || this.dialog.id === 'merge_push' || this.dialog.id === 'split_aggregate') return 'Hủy';
         return '';
       },
 
@@ -2145,7 +2256,7 @@
         if (this.dialog.id === 'kill') {
           return 'bg-rose-600 text-white hover:bg-rose-700';
         }
-        if (this.dialog.id === 'reopen' || this.dialog.id === 'cleanup_worktree' || this.dialog.id === 'merge_push') {
+        if (this.dialog.id === 'reopen' || this.dialog.id === 'cleanup_worktree' || this.dialog.id === 'merge_push' || this.dialog.id === 'split_aggregate') {
           return 'bg-amber-600 text-white hover:bg-amber-700';
         }
         return 'bg-indigo-600 text-white hover:bg-indigo-700';
@@ -2798,6 +2909,10 @@
         if (mergePush) {
           acts = [mergePush].concat(acts);
         }
+        var splitAggregate = this.controlById('split_aggregate');
+        if (splitAggregate) {
+          acts = acts.concat([splitAggregate]);
+        }
         return acts;
       },
 
@@ -3025,8 +3140,8 @@
           this.dialog = a;
           window.AB.lockScroll(true);
           window.AB.focusLater('ab-reopen-note');
-        } else if (a.id === 'cleanup_worktree' || a.id === 'merge_push') {
-          // Removes a folder / pushes to origin: always asked first; the dialog is the confirmation.
+        } else if (a.id === 'cleanup_worktree' || a.id === 'merge_push' || a.id === 'split_aggregate') {
+          // Removes a folder / pushes to origin / aggregate: always asked first; the dialog is the confirmation.
           this.lastFocusId = this.actionId(a);
           this.dialog = a;
           window.AB.lockScroll(true);
@@ -3049,6 +3164,7 @@
         auto_more_round: '/auto/more-round',
         auto_extend_budget: '/auto/extend-budget',
         auto_end: '/auto/end',
+        split_aggregate: '/split-aggregate',
       },
 
       controlSuccess: function (a, data) {
@@ -3075,6 +3191,8 @@
             return 'Đã giao thêm 1 vòng.';
           case 'auto_end':
             return 'Đã dừng hẳn autopilot. Bật autopilot để chạy tiếp.';
+          case 'split_aggregate':
+            return 'Đã tổng hợp kết quả các việc con thành báo cáo gộp.';
         }
         return '';
       },
@@ -3135,7 +3253,7 @@
         var act = this.dialog;
         this.closeDialog();
         if (!act) return;
-        if (act.id === 'return_lead' || act.id === 'reopen' || act.id === 'cleanup_worktree' || act.id === 'merge_push') {
+        if (act.id === 'return_lead' || act.id === 'reopen' || act.id === 'cleanup_worktree' || act.id === 'merge_push' || act.id === 'split_aggregate') {
           this.postControl(act);
         } else {
           this.runAction(act);

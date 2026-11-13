@@ -21,6 +21,7 @@
     <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
       <a href="#/queue" class="text-indigo-700 underline hover:text-indigo-900 dark:text-indigo-300 dark:hover:text-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400">← Điều phối</a>
       <h1 class="text-2xl font-semibold leading-normal line-clamp-3 break-words" :title="title" x-text="title"></h1>
+      <p data-parent-task x-show="hasParentTask" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400">Việc con của <a :href="parentTaskHref" class="text-indigo-700 underline hover:text-indigo-900 dark:text-indigo-300 dark:hover:text-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-text="parentTaskText"></a></p>
       <p data-cloned-from x-show="hasClonedFrom" class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400"><a :href="clonedFromHref" class="text-indigo-700 underline hover:text-indigo-900 dark:text-indigo-300 dark:hover:text-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-text="clonedFromText"></a></p>
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-sm font-normal leading-normal text-slate-600 dark:text-slate-400" x-text="projectLine"></span>
@@ -580,6 +581,56 @@
       </div>
     </div>
 
+    <!-- Split children card -->
+    <div data-split-children x-show="hasChildren" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <h2 class="text-xl font-semibold leading-[1.2]">Việc con</h2>
+        <template x-for="c in splitAggregateControl" :key="c.id">
+          <button type="button" class="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" :disabled="!c.enabled" :title="c.reason || ''" @click="runAction(c)">Tổng hợp ngay</button>
+        </template>
+      </div>
+      <div x-show="isSplitDone" class="rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 text-sm">
+        <span class="font-semibold text-emerald-700 dark:text-emerald-400">Đã hoàn thành:</span> Báo cáo gộp đã được lưu và hiển thị trong mục Câu trả lời.
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm">
+          <thead>
+            <tr class="border-b border-slate-200 dark:border-slate-700">
+              <th class="py-2 pr-4 font-semibold">#</th>
+              <th class="py-2 pr-4 font-semibold">Tiêu đề</th>
+              <th class="py-2 pr-4 font-semibold">Phụ thuộc</th>
+              <th class="py-2 pr-4 font-semibold">Trạng thái</th>
+              <th class="py-2 pr-4 font-semibold">Kết quả</th>
+              <th class="py-2 pr-4 font-semibold">Task</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+            <template x-for="item in children" :key="item.idx">
+              <tr>
+                <td class="py-2 pr-4 font-mono text-slate-500" x-text="item.idx"></td>
+                <td class="py-2 pr-4 font-medium" x-text="item.title"></td>
+                <td class="py-2 pr-4 text-slate-500 font-mono" x-text="item.after_idx ? '#' + item.after_idx : '—'"></td>
+                <td class="py-2 pr-4">
+                  <span :class="childStateBadgeClass(item.state)" x-text="childStateLabel(item.state, item.reason)"></span>
+                </td>
+                <td class="py-2 pr-4">
+                  <span :class="childOutcomeBadgeClass(item.outcome)" x-text="childOutcomeLabel(item.outcome)"></span>
+                </td>
+                <td class="py-2 pr-4">
+                  <template x-if="item.task_id">
+                    <a :href="'#/task/' + item.task_id" class="text-indigo-600 hover:underline dark:text-indigo-400 font-mono focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" x-text="'#' + item.task_id + (item.slug ? ' ' + item.slug : '')"></a>
+                  </template>
+                  <template x-if="!item.task_id">
+                    <span class="text-slate-400">—</span>
+                  </template>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Plan card -->
     <div x-show="showPlanCard()" class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700 space-y-4">
       <h2 class="text-xl font-semibold leading-[1.2]">Kế hoạch (.plan.md)</h2>
@@ -671,8 +722,8 @@
           <button type="button" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-4 py-2 text-base font-semibold text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-100 dark:ring-slate-600 dark:hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="copyAnswerPath">Sao chép</button>
           <button type="button" aria-label="Gửi kết quả sang dự án khác" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-base font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:focus-visible:outline-indigo-400" @click="openHandoffDialog">Gửi kết quả sang dự án khác</button>
           <div role="group" aria-label="Chế độ xem câu trả lời" class="inline-flex overflow-hidden rounded-xl ring-1 ring-slate-300 dark:ring-slate-600 sm:ml-auto">
-            <button type="button" id="ab-answer-view-preview" :aria-pressed="isAnswerPreview()" :class="answerViewBtnClass('preview')" @click="setAnswerView('preview')">Xem trước</button>
-            <button type="button" id="ab-answer-view-raw" :aria-pressed="isAnswerRaw()" :class="answerViewBtnClass('raw')" @click="setAnswerView('raw')">Raw</button>
+            <button type="button" id="ab-answer-view-preview" class="focus-visible:outline-2" :aria-pressed="isAnswerPreview()" :class="answerViewBtnClass('preview')" @click="setAnswerView('preview')">Xem trước</button>
+            <button type="button" id="ab-answer-view-raw" class="focus-visible:outline-2" :aria-pressed="isAnswerRaw()" :class="answerViewBtnClass('raw')" @click="setAnswerView('raw')">Raw</button>
           </div>
         </div>
         <div id="ab-answer-body" class="max-h-[70vh] min-h-0 overflow-y-auto rounded-xl bg-slate-50 p-4 text-base text-slate-900 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-800 xl:max-h-none xl:flex-1">
