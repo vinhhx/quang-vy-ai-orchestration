@@ -156,6 +156,25 @@ pub fn cmd_kill(ctx: &mut Ctx, task_id: i64) -> BrainResult<i32> {
     let force = std::sync::atomic::AtomicBool::new(false);
     let report = crate::procs::kill_tree(root, grace, &force);
 
+    // Dọn container tạm nếu run dùng chế độ tạm (2.5)
+    if let Some(metrics_str) = run.metrics_json.as_deref() {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(metrics_str) {
+            if let Some(cont) = val.get("container") {
+                if cont.get("mode").and_then(|m| m.as_str()) == Some("ephemeral") {
+                    let run_tag = run
+                        .run_dir
+                        .as_deref()
+                        .and_then(|d| std::path::Path::new(d).file_name())
+                        .and_then(|f| f.to_str())
+                        .unwrap_or("");
+                    if !run_tag.is_empty() {
+                        crate::container::cleanup_ephemeral_containers(None, run_tag);
+                    }
+                }
+            }
+        }
+    }
+
     let wait_start = std::time::Instant::now();
     let mut still_running = true;
     while wait_start.elapsed() < Duration::from_secs(2) {

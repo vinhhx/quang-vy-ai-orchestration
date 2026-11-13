@@ -648,10 +648,10 @@ pub fn execute_role_staged(
     for w in &run_container.warnings {
         crate::term::emit(&format!("Cảnh báo: {w}"));
     }
-    if let Some((info, cmds)) = &run_container.active {
+    if let Some((info, cmds, target)) = &run_container.active {
         crate::engine::append_to_system_prompt(
             &mut plan.argv,
-            &crate::container::prompt_block(info, cmds),
+            &crate::container::prompt_block(info, cmds, target),
         );
     }
 
@@ -733,17 +733,29 @@ pub fn execute_role_staged(
         let _ = std::fs::write(run_dir.join(DEADLINE_FILE), deadline_ms.to_string());
     }
 
-    if let Some((info, cmds)) = &run_container.active {
-        let bin = crate::container::write_shims(&run_dir, info, cmds).map_err(|e| {
+    if let Some((info, cmds, target)) = &run_container.active {
+        let bin = crate::container::write_shims(&run_dir, info, cmds, target).map_err(|e| {
             BrainError::error(format!("Không tạo được shim container {}: {e}", info.name))
         })?;
         crate::container::prepend_path(&mut ep.env, &bin);
-        crate::term::emit(&format!(
-            "[agent-brain] lệnh {} chạy trong container {} ({})",
-            cmds.join(", "),
-            info.name,
-            info.dest
-        ));
+        match target {
+            crate::container::ContainerTarget::Exec => {
+                crate::term::emit(&format!(
+                    "[agent-brain] lệnh {} chạy trong container {} ({})",
+                    cmds.join(", "),
+                    info.name,
+                    info.dest
+                ));
+            }
+            crate::container::ContainerTarget::Ephemeral { worktree } => {
+                crate::term::emit(&format!(
+                    "[agent-brain] lệnh {} chạy trong container tạm từ image {} ({})",
+                    cmds.join(", "),
+                    info.image,
+                    worktree.display()
+                ));
+            }
+        }
     }
 
     if let Some((_, prompt)) = crate::engine::claude_argv_parts(&plan.argv) {
@@ -1255,6 +1267,10 @@ pub fn execute_role_staged(
             },
         };
         crate::db::finish_run(&ctx.conn, run_id, &finish)?;
+        if let Some((info, _, crate::container::ContainerTarget::Ephemeral { .. })) = &run_container.active {
+            let run_tag = run_dir.file_name().and_then(|f| f.to_str()).unwrap_or("");
+            crate::container::cleanup_ephemeral_containers(Some(&info.docker_bin), run_tag);
+        }
         if ep.stream == crate::engine::StreamFormat::Agy {
             crate::db::merge_run_metrics(
                 &ctx.conn,

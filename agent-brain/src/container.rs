@@ -28,14 +28,15 @@ const MAX_COMPOSE_DEPTH: usize = 6;
 pub const SHIM_OUTSIDE_EXIT: i32 = 97;
 
 /// The `docker inspect` form used for detection: one JSON object per container with only the
-/// name, the running flag and the mounts. A bare inspect would print the container env (secrets).
+/// name, the running flag, the mounts and the image. A bare inspect would print the container env (secrets).
 const INSPECT_FORMAT: &str =
-    r#"{"Name":{{json .Name}},"State":{"Running":{{json .State.Running}}},"Mounts":{{json .Mounts}}}"#;
+    r#"{"Name":{{json .Name}},"State":{"Running":{{json .State.Running}}},"Mounts":{{json .Mounts}},"Config":{"Image":{{json .Config.Image}}}}"#;
 
 /// A running container that mounts the project repo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerInfo {
     pub name: String,
+    pub image: String,
     /// The project repo root on this machine (realpath).
     pub source: PathBuf,
     /// The same folder inside the container.
@@ -46,6 +47,8 @@ pub struct ContainerInfo {
     pub mount_dest: String,
     /// Absolute path of the docker client found in `PATH` while detecting.
     pub docker_bin: PathBuf,
+    /// Extra bind mounts of the container except the chosen repo mount (`mount_for`).
+    pub extra_binds: Vec<(PathBuf, String)>,
 }
 
 /// Result of one detection: the chosen container, or why there is none.
@@ -137,6 +140,7 @@ impl Probe for DockerProbe {
 #[derive(Debug, Clone)]
 struct Inspected {
     name: String,
+    image: String,
     running: bool,
     /// `(Source, Destination)` of each bind mount.
     binds: Vec<(String, String)>,
@@ -147,6 +151,12 @@ fn inspected_of(v: &serde_json::Value) -> Option<Inspected> {
     if name.is_empty() {
         return None;
     }
+    let image = v
+        .get("Config")
+        .and_then(|c| c.get("Image"))
+        .and_then(|i| i.as_str())
+        .unwrap_or("")
+        .to_string();
     let state = v.get("State");
     let running = state
         .and_then(|s| s.get("Running"))
@@ -175,6 +185,7 @@ fn inspected_of(v: &serde_json::Value) -> Option<Inspected> {
         .unwrap_or_default();
     Some(Inspected {
         name,
+        image,
         running,
         binds,
     })
@@ -375,13 +386,29 @@ pub fn detect_with(
     matches.sort_by(|a, b| a.0.name.cmp(&b.0.name));
     let candidates: Vec<String> = matches.iter().map(|m| m.0.name.clone()).collect();
 
-    let build = |m: &(Inspected, PathBuf, String, String)| ContainerInfo {
-        name: m.0.name.clone(),
-        source: root.clone(),
-        dest: m.3.clone(),
-        mount_source: m.1.clone(),
-        mount_dest: m.2.clone(),
-        docker_bin: docker.clone(),
+    let build = |m: &(Inspected, PathBuf, String, String)| {
+        let chosen_ms = &m.1;
+        let chosen_md = &m.2;
+        let extra_binds: Vec<(PathBuf, String)> = m
+            .0
+            .binds
+            .iter()
+            .filter(|(src, dst)| {
+                let src_real = realpath(src);
+                !(src_real == *chosen_ms && dst == chosen_md)
+            })
+            .map(|(src, dst)| (PathBuf::from(src), dst.clone()))
+            .collect();
+        ContainerInfo {
+            name: m.0.name.clone(),
+            image: m.0.image.clone(),
+            source: root.clone(),
+            dest: m.3.clone(),
+            mount_source: m.1.clone(),
+            mount_dest: m.2.clone(),
+            docker_bin: docker.clone(),
+            extra_binds,
+        }
     };
 
     if let ContainerMode::Named(want) = mode {
@@ -480,7 +507,7 @@ pub fn shim_safe(s: &str) -> bool {
             .any(|c| c.is_control() || "'\"$\\`*?[]".contains(c))
 }
 
-/// The shim script for `cmd`. `Err` when a value cannot be written safely.
+/// The shim script for `cmd` in standard container exec mode. `Err` when a value cannot be written safely.
 pub fn shim_script(info: &ContainerInfo, cmd: &str) -> Result<String, String> {
     let source = info.mount_source.to_string_lossy().to_string();
     let docker = info.docker_bin.to_string_lossy().to_string();
@@ -519,14 +546,109 @@ pub fn shim_script(info: &ContainerInfo, cmd: &str) -> Result<String, String> {
     ))
 }
 
+/// The shim script for `cmd` in ephemeral container mode (2.3). `Err` when a value cannot be written safely.
+pub fn ephemeral_shim_script(
+    info: &ContainerInfo,
+    cmd: &str,
+    worktree: &Path,
+    run_id: &str,
+) -> Result<String, String> {
+    let wt = worktree.to_string_lossy().to_string();
+    let docker = info.docker_bin.to_string_lossy().to_string();
+    let image = info.image.clone();
+    let name = info.name.clone();
+
+    for (what, v) in [
+        ("thư mục worktree", wt.as_str()),
+        ("docker", docker.as_str()),
+        ("tên container", name.as_str()),
+        ("image container", image.as_str()),
+        ("định danh run", run_id),
+        ("lệnh", cmd),
+    ] {
+        if !shim_safe(v) {
+            return Err(format!("{what} '{v}' có ký tự không an toàn cho shim"));
+        }
+    }
+    if wt == "/" || !worktree.is_absolute() || !info.docker_bin.is_absolute() {
+        return Err("thư mục worktree hoặc đường dẫn docker không hợp lệ cho shim".to_string());
+    }
+    if !crate::projects::valid_container_name(&name) {
+        return Err(format!("tên container '{name}' không hợp lệ"));
+    }
+    crate::projects::validate_container_command(cmd)?;
+
+    let mut env_mount = String::new();
+    let main_env = info.source.join(".env");
+    let wt_env = worktree.join(".env");
+    if main_env.is_file() && !wt_env.exists() {
+        let env_src = main_env.to_string_lossy().to_string();
+        let env_dst = wt_env.to_string_lossy().to_string();
+        if !shim_safe(&env_src) || !shim_safe(&env_dst) {
+            return Err("đường dẫn file .env có ký tự không an toàn cho shim".to_string());
+        }
+        env_mount = format!("  -v \"{env_src}:{env_dst}:ro\" \\\n");
+    }
+
+    let mut extra_mounts = String::new();
+    for (src, dst) in &info.extra_binds {
+        let src_str = src.to_string_lossy().to_string();
+        if !shim_safe(&src_str) || !shim_safe(dst) {
+            return Err(format!("extra bind mount '{src_str}:{dst}' có ký tự không an toàn cho shim"));
+        }
+        extra_mounts.push_str(&format!("  -v \"{src_str}:{dst}:ro\" \\\n"));
+    }
+
+    Ok(format!(
+        "#!/bin/sh\n\
+         # agent-brain: chạy '{cmd}' trong container tạm từ image {image} (mạng của {name})\n\
+         case \"$PWD/\" in\n  \
+         \"{wt}/\"*) ;;\n  \
+         *) echo \"agent-brain: $PWD không nằm trong worktree {wt}\" >&2; exit {SHIM_OUTSIDE_EXIT} ;;\n\
+         esac\n\
+         exec \"{docker}\" run --rm -i \\\n  \
+         --label agent-brain.run={run_id} \\\n  \
+         -u \"$(id -u):$(id -g)\" -e HOME=/tmp \\\n  \
+         --network \"container:{name}\" \\\n  \
+         -v \"{wt}:{wt}\" \\\n\
+         {env_mount}\
+         {extra_mounts}\
+         -w \"$PWD\" \"{image}\" {cmd} \"$@\"\n"
+    ))
+}
+
+/// Target execution mode of the container shims.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainerTarget {
+    Exec,
+    Ephemeral { worktree: PathBuf },
+}
+
 /// Writes one shim per command into `<run_dir>/bin` (0700 folder, 0700 files) and returns the
 /// folder. Every script is checked before anything is written.
-pub fn write_shims(run_dir: &Path, info: &ContainerInfo, commands: &[String]) -> Result<PathBuf, String> {
+pub fn write_shims(
+    run_dir: &Path,
+    info: &ContainerInfo,
+    commands: &[String],
+    target: &ContainerTarget,
+) -> Result<PathBuf, String> {
     use std::os::unix::fs::PermissionsExt;
+    let run_id = run_dir
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("run");
     let scripts: Vec<(String, String)> = commands
         .iter()
-        .map(|c| shim_script(info, c).map(|s| (c.clone(), s)))
-        .collect::<Result<_, _>>()?;
+        .map(|c| {
+            let script = match target {
+                ContainerTarget::Exec => shim_script(info, c),
+                ContainerTarget::Ephemeral { worktree } => {
+                    ephemeral_shim_script(info, c, worktree, run_id)
+                }
+            }?;
+            Ok((c.clone(), script))
+        })
+        .collect::<Result<_, String>>()?;
     let bin = run_dir.join("bin");
     std::fs::create_dir_all(&bin).map_err(|e| format!("không tạo được {}: {e}", bin.display()))?;
     let _ = std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700));
@@ -558,20 +680,28 @@ fn commands_text(commands: &[String]) -> String {
 }
 
 /// The block appended to the role's system prompt when the shim is on.
-pub fn prompt_block(info: &ContainerInfo, commands: &[String]) -> String {
-    format!(
-        "Môi trường: lệnh {} của dự án này chạy trong container docker `{}` (thư mục repo = `{}`). Gọi chúng như bình thường từ thư mục repo; đường dẫn trong output là đường dẫn trong container. Không gọi `docker` trực tiếp.",
-        commands_text(commands),
-        info.name,
-        info.dest
-    )
+pub fn prompt_block(info: &ContainerInfo, commands: &[String], target: &ContainerTarget) -> String {
+    match target {
+        ContainerTarget::Exec => format!(
+            "Môi trường: lệnh {} của dự án này chạy trong container docker `{}` (thư mục repo = `{}`). Gọi chúng như bình thường từ thư mục repo; đường dẫn trong output là đường dẫn trong container. Không gọi `docker` trực tiếp.",
+            commands_text(commands),
+            info.name,
+            info.dest
+        ),
+        ContainerTarget::Ephemeral { worktree } => format!(
+            "Môi trường: lệnh {} của dự án này chạy trong container docker tạm từ image `{}` (thư mục làm việc = `{}`). Gọi chúng như bình thường từ thư mục repo; đường dẫn trong output là đường dẫn giống máy. Không gọi `docker` trực tiếp.",
+            commands_text(commands),
+            info.image,
+            worktree.display()
+        ),
+    }
 }
 
 /// The container of one run, decided before the engine starts.
 #[derive(Debug, Clone, Default)]
 pub struct RunContainer {
-    /// The container and the commands to shim; `None` = commands run on the machine.
-    pub active: Option<(ContainerInfo, Vec<String>)>,
+    /// The container, the commands to shim, and the target mode (Exec or Ephemeral).
+    pub active: Option<(ContainerInfo, Vec<String>, ContainerTarget)>,
     /// Warnings stored in the run's `metrics_json.warnings`.
     pub warnings: Vec<String>,
 }
@@ -579,14 +709,28 @@ pub struct RunContainer {
 impl RunContainer {
     /// `{"name", "dest", "commands"}` for the run's `metrics_json.container`.
     pub fn metrics(&self) -> Option<serde_json::Value> {
-        self.active.as_ref().map(|(info, cmds)| {
-            serde_json::json!({"name": info.name, "dest": info.dest, "commands": cmds})
+        self.active.as_ref().map(|(info, cmds, target)| {
+            match target {
+                ContainerTarget::Exec => {
+                    serde_json::json!({"name": info.name, "dest": info.dest, "commands": cmds})
+                }
+                ContainerTarget::Ephemeral { worktree } => {
+                    serde_json::json!({
+                        "name": info.name,
+                        "dest": info.dest,
+                        "commands": cmds,
+                        "mode": "ephemeral",
+                        "image": info.image,
+                        "worktree": worktree.to_string_lossy(),
+                    })
+                }
+            }
         })
     }
 }
 
 /// Decides the container of a run from a setting and a detection: the run's `cwd` must lie
-/// inside the mounted folder, and every shim value must be safe.
+/// inside the mounted folder (Exec mode) or be a task worktree when the image is known (Ephemeral mode).
 pub fn decide(setting: &ContainerSetting, det: &Detection, cwd: &Path) -> RunContainer {
     let mut out = RunContainer {
         active: None,
@@ -595,29 +739,124 @@ pub fn decide(setting: &ContainerSetting, det: &Detection, cwd: &Path) -> RunCon
     let Some(info) = det.info.clone() else {
         return out;
     };
-    let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    if !cwd.starts_with(&info.mount_source) {
+    let cwd_canon = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let mount_canon = std::fs::canonicalize(&info.mount_source).unwrap_or_else(|_| info.mount_source.clone());
+    let in_mount = cwd_canon.starts_with(&mount_canon) || cwd.starts_with(&info.mount_source);
+
+    if in_mount {
+        if let Some(e) = setting
+            .commands
+            .iter()
+            .find_map(|c| shim_script(&info, c).err())
+        {
+            out.warnings.push(format!(
+                "Không tạo shim container {}: {e} — lệnh {} chạy trên máy",
+                info.name,
+                setting.commands.join(", ")
+            ));
+            return out;
+        }
+        out.active = Some((info, setting.commands.clone(), ContainerTarget::Exec));
+        return out;
+    }
+
+    let wt_base = crate::workspace::worktrees_dir();
+    let wt_base_canon = std::fs::canonicalize(&wt_base).unwrap_or_else(|_| wt_base.clone());
+    let is_worktree = cwd_canon.starts_with(&wt_base_canon) || cwd.starts_with(&wt_base);
+
+    if is_worktree && !info.image.trim().is_empty() {
+        let mut script_err = None;
+        for cmd in &setting.commands {
+            if let Err(e) = ephemeral_shim_script(&info, cmd, cwd, "validation") {
+                script_err = Some(e);
+                break;
+            }
+        }
+        if let Some(e) = script_err {
+            out.warnings.push(format!(
+                "Không tạo shim container tạm {}: {e} — lệnh {} chạy trên máy",
+                info.name,
+                setting.commands.join(", ")
+            ));
+            return out;
+        }
+
         out.warnings.push(format!(
-            "Container {} không mount worktree của task — lệnh {} chạy trên máy",
+            "Container {} không mount worktree — lệnh {} chạy trong container tạm từ image {}",
             info.name,
-            setting.commands.join(", ")
+            setting.commands.join(", "),
+            info.image
+        ));
+        out.active = Some((
+            info,
+            setting.commands.clone(),
+            ContainerTarget::Ephemeral {
+                worktree: cwd.to_path_buf(),
+            },
         ));
         return out;
     }
-    if let Some(e) = setting
-        .commands
-        .iter()
-        .find_map(|c| shim_script(&info, c).err())
-    {
-        out.warnings.push(format!(
-            "Không tạo shim container {}: {e} — lệnh {} chạy trên máy",
-            info.name,
-            setting.commands.join(", ")
-        ));
-        return out;
-    }
-    out.active = Some((info, setting.commands.clone()));
+
+    out.warnings.push(format!(
+        "Container {} không mount worktree của task — lệnh {} chạy trên máy",
+        info.name,
+        setting.commands.join(", ")
+    ));
     out
+}
+
+/// Cleans up orphaned ephemeral containers labeled `agent-brain.run=<run_id>` (2.5).
+pub fn cleanup_ephemeral_containers(docker_bin: Option<&Path>, run_id: &str) {
+    if run_id.is_empty() {
+        return;
+    }
+    let docker = docker_bin
+        .map(PathBuf::from)
+        .or_else(find_docker_in_path);
+    let Some(docker) = docker else {
+        return;
+    };
+    let docker_str = docker.to_string_lossy().to_string();
+    let env = crate::dsh::scrubbed_current_env();
+    let ps_args = vec![
+        "ps".to_string(),
+        "-q".to_string(),
+        "--filter".to_string(),
+        format!("label=agent-brain.run={run_id}"),
+    ];
+    let cap = Duration::from_secs(10);
+    let out = match crate::dsh::docker_capture(&docker_str, &ps_args, &env, cap) {
+        Some((true, out)) => out,
+        Some((false, err)) => {
+            crate::term::emit(&format!("Cảnh báo: không liệt kê được container tạm: {err}"));
+            return;
+        }
+        None => {
+            crate::term::emit("Cảnh báo: timeout khi tìm container tạm");
+            return;
+        }
+    };
+    let ids: Vec<String> = out
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let mut rm_args = vec!["rm".to_string(), "-f".to_string()];
+    rm_args.extend(ids.clone());
+    match crate::dsh::docker_capture(&docker_str, &rm_args, &env, cap) {
+        Some((true, _)) => {
+            crate::term::emit(&format!("Đã dọn {} container tạm của run {run_id}", ids.len()));
+        }
+        Some((false, err)) => {
+            crate::term::emit(&format!("Cảnh báo: lỗi khi dọn container tạm: {err}"));
+        }
+        None => {
+            crate::term::emit("Cảnh báo: timeout khi dọn container tạm");
+        }
+    }
 }
 
 /// The container of a run of `project` working in `cwd`, from the projects map and a cached
@@ -729,7 +968,7 @@ mod tests {
                 serde_json::json!({
                     "Name": format!("/{name}"),
                     "State": {"Status": if *running {"running"} else {"exited"}, "Running": running},
-                    "Config": {"Env": ["SECRET=x"]},
+                    "Config": {"Env": ["SECRET=x"], "Image": "test-image:latest"},
                     "Mounts": [
                         {"Type": "volume", "Source": "/var/lib/docker/volumes/x", "Destination": "/data"},
                         {"Type": "bind", "Source": src, "Destination": dst}
@@ -816,6 +1055,7 @@ mod tests {
         let root = real(t.path());
         let line = serde_json::json!({
             "Name": "/x_app", "State": {"Running": true},
+            "Config": {"Image": "test-image:latest"},
             "Mounts": [{"Type": "bind", "Source": root.to_str().unwrap(), "Destination": "/var/www"}]
         });
         let pr = FakeProbe {
@@ -942,11 +1182,13 @@ mod tests {
     fn info(source: &Path, docker: &Path, name: &str) -> ContainerInfo {
         ContainerInfo {
             name: name.to_string(),
+            image: "test-image:latest".to_string(),
             source: source.to_path_buf(),
             dest: "/var/www".to_string(),
             mount_source: source.to_path_buf(),
             mount_dest: "/var/www".to_string(),
             docker_bin: docker.to_path_buf(),
+            extra_binds: Vec::new(),
         }
     }
 
@@ -957,7 +1199,7 @@ mod tests {
         let run_dir = src.join("run");
         let i = info(&src, Path::new("/usr/bin/docker"), "x_app");
         let cmds = vec!["php".to_string(), "composer".to_string()];
-        let bin = write_shims(&run_dir, &i, &cmds).unwrap();
+        let bin = write_shims(&run_dir, &i, &cmds, &ContainerTarget::Exec).unwrap();
         assert_eq!(bin, run_dir.join("bin"));
         let mode = std::fs::metadata(&bin).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
@@ -974,7 +1216,7 @@ mod tests {
         prepend_path(&mut env, &bin);
         assert_eq!(env["PATH"], format!("{}:/usr/bin:/bin", bin.display()));
 
-        let block = prompt_block(&i, &cmds);
+        let block = prompt_block(&i, &cmds, &ContainerTarget::Exec);
         assert!(block.contains("`php`, `composer`"));
         assert!(block.contains("`x_app`"));
         assert!(block.contains("`/var/www`"));
@@ -994,7 +1236,7 @@ mod tests {
         ] {
             let i = info(&src, Path::new(docker), name);
             let run_dir = src.join(format!("run{}", name.len() + docker.len()));
-            assert!(write_shims(&run_dir, &i, &["php".to_string()]).is_err(), "{name} {docker}");
+            assert!(write_shims(&run_dir, &i, &["php".to_string()], &ContainerTarget::Exec).is_err(), "{name} {docker}");
             assert!(!run_dir.join("bin").exists());
             let setting = ContainerSetting::default();
             let det = Detection {
@@ -1048,7 +1290,7 @@ mod tests {
         std::fs::write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
         let i = info(&src, &fake, "x_app");
-        let bin = write_shims(&base.join("run"), &i, &["php".to_string()]).unwrap();
+        let bin = write_shims(&base.join("run"), &i, &["php".to_string()], &ContainerTarget::Exec).unwrap();
 
         let out = std::process::Command::new(bin.join("php"))
             .arg("-v")
@@ -1096,5 +1338,93 @@ mod tests {
         assert_eq!(find_in_path("docker", &path), None);
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(find_in_path("docker", &path), Some(f));
+    }
+
+    #[test]
+    fn ephemeral_mode_detection_and_shims() {
+        let t = tempfile::tempdir().unwrap();
+        let src = real(t.path());
+
+        // 1. parse_inspect reads Config.Image
+        let inspect_json = r#"[{"Name":"/x_app","State":{"Running":true},"Config":{"Image":"laravel-app:latest"},"Mounts":[{"Type":"bind","Source":"/tmp/src","Destination":"/var/www"}]}]"#;
+        let inspected = parse_inspect(inspect_json);
+        assert_eq!(inspected.len(), 1);
+        assert_eq!(inspected[0].image, "laravel-app:latest");
+
+        // 2. decide with cwd in task worktree -> ephemeral mode and new warning
+        let mut i = info(&src, Path::new("/usr/bin/docker"), "x_app");
+        i.image = "laravel-app:latest".to_string();
+        i.extra_binds = vec![(src.join("custom.ini"), "/etc/php/conf.d/custom.ini".to_string())];
+        let det = Detection {
+            info: Some(i.clone()),
+            ..Default::default()
+        };
+        let wt = crate::workspace::worktrees_dir().join("test_proj/test_task");
+        let setting = ContainerSetting::default();
+        let rc = decide(&setting, &det, &wt);
+        assert!(matches!(rc.active, Some((_, _, ContainerTarget::Ephemeral { .. }))));
+        assert_eq!(
+            rc.warnings,
+            vec!["Container x_app không mount worktree — lệnh php, composer chạy trong container tạm từ image laravel-app:latest"]
+        );
+        let m = rc.metrics().unwrap();
+        assert_eq!(m["mode"], "ephemeral");
+        assert_eq!(m["image"], "laravel-app:latest");
+
+        // 3. image empty -> old warning
+        let mut i_no_img = i.clone();
+        i_no_img.image = String::new();
+        let det_no_img = Detection {
+            info: Some(i_no_img),
+            ..Default::default()
+        };
+        let rc_no_img = decide(&setting, &det_no_img, &wt);
+        assert!(rc_no_img.active.is_none());
+        assert_eq!(
+            rc_no_img.warnings,
+            vec!["Container x_app không mount worktree của task — lệnh php, composer chạy trên máy"]
+        );
+
+        // 4. cwd in mount -> Exec mode as before
+        let rc_exec = decide(&setting, &det, &src);
+        assert!(matches!(rc_exec.active, Some((_, _, ContainerTarget::Exec))));
+        assert!(rc_exec.warnings.is_empty());
+
+        // 5. Ephemeral shim content checks
+        let wt_dir = t.path().join("wt_real");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+        // Without .env in main repo
+        let script = ephemeral_shim_script(&i, "php", &wt_dir, "run-123").unwrap();
+        assert!(script.contains("exec \"/usr/bin/docker\" run --rm -i"));
+        assert!(script.contains("--label agent-brain.run=run-123"));
+        assert!(script.contains("--network \"container:x_app\""));
+        assert!(script.contains(&format!("-v \"{}:{}\"", wt_dir.display(), wt_dir.display())));
+        assert!(script.contains("custom.ini:/etc/php/conf.d/custom.ini:ro"));
+        assert!(!script.contains(".env"));
+
+        // With .env in main repo and no .env in worktree -> includes .env mount
+        std::fs::write(src.join(".env"), "APP_KEY=secret\n").unwrap();
+        let script = ephemeral_shim_script(&i, "php", &wt_dir, "run-123").unwrap();
+        assert!(script.contains(&format!("-v \"{}/.env:{}/.env:ro\"", src.display(), wt_dir.display())));
+
+        // With .env already in worktree -> does not mount main repo .env
+        std::fs::write(wt_dir.join(".env"), "APP_KEY=local\n").unwrap();
+        let script = ephemeral_shim_script(&i, "php", &wt_dir, "run-123").unwrap();
+        assert!(!script.contains(&format!("-v \"{}/.env:{}/.env:ro\"", src.display(), wt_dir.display())));
+
+        // 6. Values with $, ", ` -> rejected
+        for bad in ["bad$img", "bad\"img", "bad`img"] {
+            let mut i_bad = i.clone();
+            i_bad.image = bad.to_string();
+            assert!(ephemeral_shim_script(&i_bad, "php", &wt_dir, "run-123").is_err());
+        }
+        for bad in ["bad$name", "bad\"name", "bad`name"] {
+            let mut i_bad = i.clone();
+            i_bad.name = bad.to_string();
+            assert!(ephemeral_shim_script(&i_bad, "php", &wt_dir, "run-123").is_err());
+        }
+        for bad in ["run$id", "run\"id", "run`id"] {
+            assert!(ephemeral_shim_script(&i, "php", &wt_dir, bad).is_err());
+        }
     }
 }
