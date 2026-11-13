@@ -776,3 +776,58 @@ fn telegram_split_done_notifies_with_document_and_no_dup() {
 
     assert_eq!(srv.stop(libc::SIGINT, std::time::Duration::from_secs(10)), Some(0));
 }
+
+#[test]
+fn test_cli_split_status_and_aggregate() {
+    let sb = Sandbox::new();
+    let _repo = setup_project(&sb, "work");
+
+    let (conn, pid) = init_test_db(&sb);
+    let parent_id = agent_brain::db::upsert_task(
+        &conn,
+        pid,
+        "parent-cli",
+        "Parent CLI Task",
+        "task/parent-cli",
+        Some("main"),
+        None,
+    )
+    .unwrap();
+
+    // Split status when no items
+    let out0 = sb.run(&["split", "status", &parent_id.to_string()], None);
+    assert_eq!(out0.code, 0);
+    assert!(out0.stdout.contains("không có danh sách việc con"), "stdout: {}", out0.stdout);
+
+    // Insert split items
+    let items = vec![
+        agent_brain::db::NewSplitItem {
+            idx: 1,
+            title: "CLI Item 1".to_string(),
+            request: "Do 1".to_string(),
+            after_idx: None,
+        },
+        agent_brain::db::NewSplitItem {
+            idx: 2,
+            title: "CLI Item 2".to_string(),
+            request: "Do 2".to_string(),
+            after_idx: Some(1),
+        },
+    ];
+    agent_brain::db::insert_split_items(&conn, parent_id, "commit_cli", &items).unwrap();
+
+    // Split status with items
+    let out1 = sb.run(&["split", "status", &parent_id.to_string()], None);
+    assert_eq!(out1.code, 0);
+    assert!(out1.stdout.contains("CLI Item 1"), "stdout: {}", out1.stdout);
+    assert!(out1.stdout.contains("CLI Item 2"), "stdout: {}", out1.stdout);
+    assert!(out1.stdout.contains("chờ"), "stdout: {}", out1.stdout);
+
+    // Split aggregate
+    let out2 = sb.run(&["split", "aggregate", &parent_id.to_string()], None);
+    assert_eq!(out2.code, 0, "stderr: {}", out2.stderr);
+    assert!(out2.stdout.contains("Đã tổng hợp báo cáo gộp cho task #"), "stdout: {}", out2.stdout);
+
+    let parent_row = agent_brain::db::get_task(&conn, parent_id).unwrap().unwrap();
+    assert_eq!(parent_row.status, "split_done");
+}

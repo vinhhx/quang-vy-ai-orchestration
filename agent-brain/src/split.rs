@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
 use crate::db::{NewSplitItem, SplitItemRow, TaskRow};
-use crate::error::BrainResult;
+use crate::error::{BrainError, BrainResult};
 use crate::planfile::{self, SplitItem};
 use crate::protocol_paths::ProtocolPaths;
 
@@ -376,6 +376,53 @@ pub fn aggregate(conn: &Connection, parent: &TaskRow) -> BrainResult<PathBuf> {
     crate::db::set_auto_state(conn, parent.id, Some("done"))?;
     crate::db::set_auto_driver(conn, parent.id, None, None)?;
     Ok(path)
+}
+
+pub fn cmd_status(ctx: &crate::app::Ctx, task_id: i64) -> BrainResult<i32> {
+    let conn = &ctx.conn;
+    let parent = match crate::db::get_task(conn, task_id)? {
+        Some(t) => t,
+        None => return Err(BrainError::error(format!("Không tìm thấy task #{task_id}"))),
+    };
+    let items = crate::db::split_items_of(conn, task_id)?;
+    if items.is_empty() {
+        crate::term::emit_out(&format!("Task #{task_id} \"{}\" không có danh sách việc con.", parent.title));
+        return Ok(0);
+    }
+    crate::term::emit_out(&format!("Danh sách việc con của task #{task_id} \"{}\":", parent.title));
+    crate::term::emit_out(&format!("{:<4} {:<30} {:<12} {:<12} {:<12}", "#", "Tiêu đề", "Trạng thái", "Task con", "Kết quả"));
+    crate::term::emit_out(&"-".repeat(76));
+    for it in &items {
+        let child_str = it.child_task_id.map(|id| format!("#{id}")).unwrap_or_else(|| "—".to_string());
+        let outcome_str = if it.state == "skipped" {
+            "bỏ qua"
+        } else {
+            let outcome = child_outcome(conn, it);
+            match outcome {
+                ChildOutcome::Pending => "chờ",
+                ChildOutcome::Passed => "đạt",
+                ChildOutcome::Failed(_) => "không đạt",
+                ChildOutcome::Cancelled => "hủy",
+            }
+        };
+        crate::term::emit_out(&format!("{:<4} {:<30} {:<12} {:<12} {:<12}", it.idx, it.title, it.state, child_str, outcome_str));
+    }
+    Ok(0)
+}
+
+pub fn cmd_aggregate(ctx: &crate::app::Ctx, task_id: i64) -> BrainResult<i32> {
+    let conn = &ctx.conn;
+    let parent = match crate::db::get_task(conn, task_id)? {
+        Some(t) => t,
+        None => return Err(BrainError::error(format!("Không tìm thấy task #{task_id}"))),
+    };
+    let items = crate::db::split_items_of(conn, task_id)?;
+    if items.is_empty() {
+        return Err(BrainError::error(format!("Task #{task_id} không có danh sách việc con để tổng hợp")));
+    }
+    let path = aggregate(conn, &parent)?;
+    crate::term::emit_out(&format!("Đã tổng hợp báo cáo gộp cho task #{task_id}: {}", path.display()));
+    Ok(0)
 }
 
 #[cfg(test)]

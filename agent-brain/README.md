@@ -126,6 +126,8 @@ Quay lại bản cũ: dừng `serve`, rồi khôi phục **cùng lúc** binary c
 | **fixbug** | `agent-brain fixbug {check\|pull\|list\|deployed\|reject\|init\|import-legacy} PROJECT` | Quản lý nguồn bug từ Trello và Google Sheet: kiểm tra cấu hình (`check`), lấy bug vào hàng chờ intake (`pull`), xem danh sách bug kèm cột `đề xuất` và `task` (`list`), đánh dấu đã sửa và deploy (`deployed`), từ chối sửa (`reject`), khởi tạo file cấu hình (`init`), nhập trạng thái skill `/fix-bugs` cũ (`import-legacy`). Mỗi bug thành đúng một đề xuất (không tách); đề xuất giữ nguyên nội dung bug, tiêu đề `<KEY> <tiêu đề card>`, priority theo label. Mô tả, bình luận, đính kèm nằm trong khối `<<<DU_LIEU_QA <mã>` … `<<<HET_DU_LIEU_QA <mã>` và Lead nhận luật dữ liệu không tin cậy. Ảnh upload của card Trello (tối đa 5 ảnh, mỗi ảnh ≤ 5 MiB) được tải vào `<thư mục tri thức>/fix-bugs/images/<KEY>/` chỉ khi thư mục đó nằm trong `.gitignore`. `pull` (CLI, dashboard, Telegram) bị chặn khi có `fix-bugs/.lock` của skill cũ, hoặc khi còn `fix-bugs/tasks/*/state.json` mà chưa chạy `import-legacy` (CLI bỏ qua điều kiện sau bằng `--skip-legacy-check`). `import-legacy [--open skip\|take] [--dry-run]` chỉ đọc `tasks/*/state.json`: `done` → `deployed`; `rejected`/`duplicate` → `rejected`; `need_info`/`plan_ready` → `pulled` (`skip`, mặc định) hoặc không ghi để `pull` kéo thành task mới (`take`); `approved`/`review`/`ready_to_merge`/`merged`/`blocked`/`parked` → luôn `pulled` (skill cũ đang giữ nhánh). Không sửa file của skill cũ, không gọi Trello. |
 | **task merge --push** | `agent-brain task merge TASK_ID --push` | Merge & push task đã QA đạt: lấy `origin/<nhánh gốc>`, checkout nhánh gốc, `git merge --no-ff` nhánh task (bỏ file giao thức), push nhánh gốc lên origin không force, xoá nhánh task cục bộ (`git branch -d`). Thoát `0` khi đã push, đã xong từ trước, hoặc đã merge trong repo không có origin; thoát `1` khi bị từ chối hoặc push lỗi. Không có `--push`: `task merge` giữ hành vi cũ (merge, không push). Xem mục "Merge & push sau QA đạt". |
 | **task cleanup** | `agent-brain task cleanup [--merged [--branches]] [--yes] [TASK_ID]` | Dọn worktree của task đã xong (`git worktree remove`, không `--force`; worktree có thay đổi chưa commit bị từ chối). Với `TASK_ID`: dọn một task (nhánh chưa merge cần `--yes`). `--merged`: dọn mọi worktree có nhánh đã merge vào nhánh gốc. Chỉ khi có thêm `--branches` mới xoá luôn các nhánh `task/*`, `analysis/*` đã merge (`git branch -d`, không bao giờ `-D`); không có cờ thì không xoá nhánh nào. Server cũng tự làm việc này định kỳ, xem mục "Tự dọn worktree và nhánh đã merge". |
+| **split status** | `agent-brain split status TASK_ID` | In bảng danh sách việc con của task cha: số thứ tự (#), tiêu đề, trạng thái hàng chờ, id task con và kết quả thực thi. Xem mục "Tách việc thành task con". |
+| **split aggregate** | `agent-brain split aggregate TASK_ID` | Tổng hợp kết quả các task con thành file báo cáo markdown tại `answers/`, chuyển trạng thái task cha thành `split_done`. Có thể chạy lại để cập nhật báo cáo. |
 
 ### Dự án loại `idea`
 
@@ -175,6 +177,47 @@ Một cú bấm (nút `Merge & push` ở màn task, nút trên tin `QA đạt` c
 ```cron
 */5 * * * * agent-brain doctor --notify --heal --check-serve >> ~/.local/share/agent-brain/doctor.log 2>&1
 ```
+
+### Tách việc thành task con
+
+Tính năng cho phép Lead phân rã một yêu cầu lớn hoặc gồm nhiều phần độc lập / phụ thuộc tuần tự thành danh sách các việc con (child tasks), chạy song song hoặc nối tiếp có kiểm soát theo slot điều phối.
+
+- **Khi nào Lead tách việc**:
+  - Chỉ Lead của **task gốc** trong quy trình tự động (`auto: true`) có bước code/dev mới nhận chỉ thị `Được phép tách việc: có`.
+  - Lead chủ động tách việc khi yêu cầu phức tạp gồm nhiều module độc lập, cần kiểm soát rủi ro hoặc chạy song song để tối ưu thời gian.
+  - **Task con không được tách việc tiếp** (`split_nested`): nếu Lead của task con cố tình viết plan tách việc, plan sẽ bị từ chối ở bước kiểm tra.
+- **Định dạng `## Tách việc` trong `.plan.md`**:
+  Plan chứa mục `## Tách việc` dạng bảng markdown:
+  ```markdown
+  ## Tách việc
+  | # | Việc con | Yêu cầu | Sau |
+  |---|---|---|---|
+  | 1 | Đăng nhập CMS | Làm form login và xử lý auth | — |
+  | 2 | Quản lý sản phẩm | CRUD sản phẩm trong admin | Sau #1 |
+  | 3 | Xuất báo cáo | Xuất Excel danh sách sản phẩm | Sau #2 |
+  ```
+  - Cột `#`: số thứ tự từ `1` đến `N`.
+  - Cột `Việc con`: tiêu đề việc con (tối đa 120 ký tự).
+  - Cột `Yêu cầu`: mô tả chi tiết yêu cầu công việc cho việc con (tối đa 4000 ký tự).
+  - Cột `Sau`: để trống (`—`) nếu việc con độc lập có thể chạy ngay; hoặc ghi số thứ tự việc cần hoàn thành trước (ví dụ `1` hoặc `Sau #1`).
+  - **Quy tắc bắt buộc**: Bảng `Thay đổi` phải để trống (task cha chỉ lập kế hoạch và điều phối, không trực tiếp sửa code). Plan phải có tối thiểu 2 và tối đa 30 việc con; không được chứa các mục sản phẩm / báo cáo (`Tạo sản phẩm`, `Sản phẩm`, `Gửi báo cáo`).
+- **Duyệt một lần (Gate)**:
+  - Người dùng chỉ cần duyệt một lần duy nhất ở task cha (qua lệnh CLI `agent-brain approve <id>`, nút Duyệt trên Dashboard, hoặc nút Duyệt trên Telegram).
+  - Khi duyệt, danh sách việc con được vật chất hóa vào CSDL (`split_items`) và task cha chuyển sang trạng thái chờ việc con (`waiting_children`).
+- **Hàng chờ và slot song song (`orchestrator.max_parallel`)**:
+  - Bộ lập lịch (`scheduler`) tự động khởi chạy các việc con khi có slot rảnh, tuân thủ nghiêm ngặt giới hạn `orchestrator.max_parallel` (mặc định 2).
+  - Việc con có ràng buộc `Sau #k` sẽ đợi đến khi việc con `#k` đạt kết quả `Passed`. Nếu việc trước thất bại (`Failed`), việc sau sẽ tự động chuyển sang trạng thái bỏ qua (`skipped`) kèm lý do rõ ràng.
+  - Với quy trình code: việc sau chỉ bắt đầu khi nhánh của việc trước đã merge vào nhánh gốc, đảm bảo code hoàn thiện cho các bước kế tiếp.
+- **Task con tự duyệt plan**:
+  - Khi các việc con chạy đến cổng duyệt plan, hệ thống tự động kiểm tra và duyệt plan cho task con mà không cần sự can thiệp của người dùng hay gửi tin nhắn làm phiền trên Telegram.
+- **Dừng hẳn task cha**:
+  - Nếu người dùng bấm Dừng hẳn (`auto_end` / cancel) ở task cha, các việc con đang ở trạng thái chờ (`waiting`) sẽ chuyển thành `cancelled` (không khởi động thêm việc mới). Các việc con đang chạy tiếp tục chạy đến khi kết thúc.
+- **Báo cáo gộp tự động**:
+  - Khi toàn bộ việc con đã kết thúc (settled), hệ thống tự động tạo file báo cáo markdown tổng hợp tại `<data_dir>/answers/<dự_án>/<task_id>-<slug>.md`, ghi nhận số lượng Đạt / Không đạt / Hủy, bảng chi tiết kết quả từng việc con, tổng chi phí các run và các lỗi nổi bật (nếu có).
+  - Task cha chuyển trạng thái thành `split_done`, đồng thời gửi thông báo hoàn tất qua Telegram kèm file báo cáo gộp đính kèm.
+- **Lệnh CLI**:
+  - `agent-brain split status <task-id>`: hiển thị bảng trạng thái chi tiết của các việc con trong task cha.
+  - `agent-brain split aggregate <task-id>`: chủ động tổng hợp hoặc làm mới báo cáo gộp bất cứ lúc nào.
 
 ---
 

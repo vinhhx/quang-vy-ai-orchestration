@@ -208,6 +208,25 @@ enum Commands {
         #[command(subcommand)]
         subcommand: TaskCommands,
     },
+    /// Quản lý tách việc thành task con
+    Split {
+        #[command(subcommand)]
+        subcommand: SplitCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SplitCommands {
+    /// In bảng danh sách việc con (idx, tiêu đề, state, task con, outcome)
+    Status {
+        /// ID của task cha
+        task_id: i64,
+    },
+    /// Tổng hợp kết quả các task con thành báo cáo gộp
+    Aggregate {
+        /// ID của task cha
+        task_id: i64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -563,6 +582,12 @@ fn main() {
             }
             TaskCommands::Merge { task_id, push: true } => {
                 agent_brain::workspace::cmd_merge_push(&mut ctx, task_id)
+            }
+        },
+        Commands::Split { subcommand } => match subcommand {
+            SplitCommands::Status { task_id } => agent_brain::split::cmd_status(&ctx, task_id),
+            SplitCommands::Aggregate { task_id } => {
+                agent_brain::split::cmd_aggregate(&ctx, task_id)
             }
         },
         Commands::Dept { subcommand } => match subcommand {
