@@ -59,9 +59,9 @@ fn info_exclude_path(worktree: &Path) -> Option<PathBuf> {
     Some(if p.is_absolute() { p } else { worktree.join(p) })
 }
 
-/// Appends the line `node_modules` (no slash, so it also matches a symlink) to the repo's
-/// `info/exclude` when no such line is there yet. Only appends; other lines stay as they are.
-fn ensure_node_modules_excluded(worktree: &Path) -> std::io::Result<()> {
+/// Appends patterns to the repo's `info/exclude` when not already present. Only appends;
+/// other lines stay as they are.
+fn ensure_patterns_excluded(worktree: &Path, patterns: &[&str]) -> std::io::Result<()> {
     let Some(path) = info_exclude_path(worktree) else {
         return Err(std::io::Error::other("git không cho biết đường dẫn info/exclude"));
     };
@@ -70,10 +70,20 @@ fn ensure_node_modules_excluded(worktree: &Path) -> std::io::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    if existing
-        .lines()
-        .any(|l| matches!(l.trim(), "node_modules" | "/node_modules"))
-    {
+    let existing_lines: Vec<&str> = existing.lines().map(str::trim).collect();
+    let mut to_add = Vec::new();
+    for &p in patterns {
+        let p_trimmed = p.trim().trim_matches('/');
+        let p_slash = format!("{p_trimmed}/");
+        let p_lead_slash = format!("/{p_trimmed}");
+        let p_both_slash = format!("/{p_trimmed}/");
+        if !existing_lines.iter().any(|&l| {
+            l == p_trimmed || l == p_slash.as_str() || l == p_lead_slash.as_str() || l == p_both_slash.as_str()
+        }) {
+            to_add.push(p);
+        }
+    }
+    if to_add.is_empty() {
         return Ok(());
     }
     if let Some(dir) = path.parent() {
@@ -83,11 +93,19 @@ fn ensure_node_modules_excluded(worktree: &Path) -> std::io::Result<()> {
     if !existing.is_empty() && !existing.ends_with('\n') {
         add.push('\n');
     }
-    add.push_str(NODE_MODULES);
-    add.push('\n');
+    for p in to_add {
+        add.push_str(p);
+        add.push('\n');
+    }
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
     f.write_all(add.as_bytes())
+}
+
+/// Appends the line `node_modules` (no slash, so it also matches a symlink) to the repo's
+/// `info/exclude` when no such line is there yet. Only appends; other lines stay as they are.
+fn ensure_node_modules_excluded(worktree: &Path) -> std::io::Result<()> {
+    ensure_patterns_excluded(worktree, &[NODE_MODULES])
 }
 
 /// A node project's task worktree has no `node_modules` (the folder is ignored, so a checkout
@@ -130,21 +148,106 @@ pub fn link_node_modules(project_root: &Path, worktree: &Path) {
     }
 }
 
+/// Copies `vendor` into `worktree` for PHP projects. Symlinks inside (e.g. `vendor/modules/x -> ../../app-modules/x/`)
+/// are preserved as relative links, resolving within the worktree. Safe to call again.
+/// Problems are warnings: they never fail the creation of the worktree.
+pub fn copy_vendor(project_root: &Path, worktree: &Path) {
+    if !project_root.join("composer.json").is_file() {
+        return;
+    }
+    let source = project_root.join("vendor");
+    let source_is_real_dir = std::fs::symlink_metadata(&source).is_ok_and(|m| m.file_type().is_dir());
+    if !source_is_real_dir {
+        return;
+    }
+    let dest = worktree.join("vendor");
+    if let Ok(m) = std::fs::symlink_metadata(&dest) {
+        if m.file_type().is_symlink() {
+            crate::term::emit(&format!(
+                "Cảnh báo: worktree {} có vendor là symlink (làm autoload trỏ về repo chính), đang xoá symlink để copy thật",
+                worktree.display()
+            ));
+            if let Err(e) = std::fs::remove_file(&dest) {
+                crate::term::emit(&format!("Cảnh báo: không xoá được symlink vendor cũ: {e}"));
+                return;
+            }
+        } else if m.file_type().is_dir() {
+            let _ = ensure_patterns_excluded(worktree, &["vendor/", ".vendor.agent-brain-tmp/"]);
+            return;
+        }
+    }
+    let tmp = worktree.join(".vendor.agent-brain-tmp");
+    if std::fs::symlink_metadata(&tmp).is_ok() {
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+    let res = std::process::Command::new("cp")
+        .arg("-a")
+        .arg("--reflink=auto")
+        .arg(&source)
+        .arg(&tmp)
+        .output();
+    match res {
+        Ok(out) if out.status.success() => {
+            if let Err(e) = std::fs::rename(&tmp, &dest) {
+                crate::term::emit(&format!(
+                    "Cảnh báo: không đổi tên .vendor.agent-brain-tmp sang vendor: {e}"
+                ));
+                let _ = std::fs::remove_dir_all(&tmp);
+                return;
+            }
+            let mb_str = match std::process::Command::new("du").arg("-sm").arg(&dest).output() {
+                Ok(du_out) if du_out.status.success() => {
+                    let stdout = String::from_utf8_lossy(&du_out.stdout);
+                    if let Some(n) = stdout.split_whitespace().next() {
+                        format!(" ({n} MB)")
+                    } else {
+                        String::new()
+                    }
+                }
+                _ => String::new(),
+            };
+            crate::term::emit(&format!("Đã copy vendor vào worktree{mb_str}"));
+        }
+        Ok(out) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            let err = String::from_utf8_lossy(&out.stderr);
+            let err_short = err.trim().lines().next().unwrap_or("cp thất bại");
+            crate::term::emit(&format!("Cảnh báo: copy vendor thất bại: {err_short}"));
+            return;
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            crate::term::emit(&format!("Cảnh báo: không chạy được lệnh cp vendor: {e}"));
+            return;
+        }
+    }
+    if let Err(e) = ensure_patterns_excluded(worktree, &["vendor/", ".vendor.agent-brain-tmp/"]) {
+        crate::term::emit(&format!(
+            "Cảnh báo: không ghi được vendor vào info/exclude: {e}"
+        ));
+    }
+}
+
 /// Creates the worktree of `branch` (an existing branch) at the task's path and returns it.
 /// An existing folder on the right branch is reused. `link`: link the project's `node_modules`
-/// into it (`link_node_modules`, the project's `link_node_modules` option).
+/// into it (`link_node_modules`, the project's `link_node_modules` option). `copy_vendor_opt`: copy
+/// the project's `vendor` folder into it.
 fn add_worktree(
     project_root: &Path,
     project_id: &str,
     slug: &str,
     branch: &str,
     link: bool,
+    copy_vendor_opt: bool,
 ) -> BrainResult<PathBuf> {
     let path = worktree_path(project_id, slug);
     if path.is_dir() {
         if crate::gitops::current_branch(&path).as_deref() == Some(branch) {
             if link {
                 link_node_modules(project_root, &path);
+            }
+            if copy_vendor_opt {
+                copy_vendor(project_root, &path);
             }
             return Ok(path);
         }
@@ -158,12 +261,15 @@ fn add_worktree(
     if link {
         link_node_modules(project_root, &path);
     }
+    if copy_vendor_opt {
+        copy_vendor(project_root, &path);
+    }
     Ok(path)
 }
 
 /// D2.2: a new task in worktree mode. Creates `branch` from `start` without touching the main
 /// repo's checkout, then its worktree; returns the worktree path. `link`: the project's
-/// `link_node_modules` option.
+/// `link_node_modules` option. Defaults `copy_vendor` to true.
 pub fn create_task_worktree(
     project_root: &Path,
     project_id: &str,
@@ -172,10 +278,23 @@ pub fn create_task_worktree(
     start: &str,
     link: bool,
 ) -> BrainResult<PathBuf> {
+    create_task_worktree_opts(project_root, project_id, slug, branch, start, link, true)
+}
+
+/// `create_task_worktree` with explicit options for `link_node_modules` and `copy_vendor`.
+pub fn create_task_worktree_opts(
+    project_root: &Path,
+    project_id: &str,
+    slug: &str,
+    branch: &str,
+    start: &str,
+    link: bool,
+    copy_vendor_opt: bool,
+) -> BrainResult<PathBuf> {
     if !crate::gitops::branch_exists(project_root, branch) {
         crate::gitops::branch_from(project_root, branch, start)?;
     }
-    add_worktree(project_root, project_id, slug, branch, link)
+    add_worktree(project_root, project_id, slug, branch, link, copy_vendor_opt)
 }
 
 /// Worktree mode: makes sure the task has its worktree (re-created on its existing branch after
@@ -197,6 +316,9 @@ pub fn ensure_task_root(
             if project.workspace.link_node_modules {
                 link_node_modules(project_root, Path::new(w));
             }
+            if project.workspace.copy_vendor {
+                copy_vendor(project_root, Path::new(w));
+            }
             return Ok(PathBuf::from(w));
         }
     }
@@ -214,6 +336,7 @@ pub fn ensure_task_root(
         &task.slug,
         &task.branch,
         project.workspace.link_node_modules,
+        project.workspace.copy_vendor,
     )?;
     crate::db::set_task_workdir(conn, task.id, Some(&path.to_string_lossy()))?;
     crate::term::emit(&format!(
@@ -1417,5 +1540,79 @@ mod tests {
         assert!(conflicts_unresolvable(&[], &[]));
         assert!(conflicts_unresolvable(&[".plan.md".into()], &["a".into()]));
         assert!(!conflicts_unresolvable(&[".plan.md".into()], &[]));
+    }
+
+    #[test]
+    fn copy_vendor_rules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let wt = tmp.path().join("wt");
+        std::fs::create_dir_all(repo.join("vendor/modules")).unwrap();
+        std::fs::create_dir_all(repo.join("app-modules/x")).unwrap();
+        std::fs::write(repo.join("composer.json"), "{}").unwrap();
+        std::fs::write(repo.join("vendor/autoload.php"), "<?php // repo").unwrap();
+        std::os::unix::fs::symlink("../../app-modules/x", repo.join("vendor/modules/x")).unwrap();
+
+        std::fs::create_dir_all(wt.join("app-modules/x")).unwrap();
+
+        // 1. Initial copy: autoload.php exists, relative symlink resolves inside worktree, tmp dir cleaned
+        copy_vendor(&repo, &wt);
+        assert!(wt.join("vendor/autoload.php").is_file());
+        assert!(!wt.join(".vendor.agent-brain-tmp").exists());
+        let resolved = std::fs::canonicalize(wt.join("vendor/modules/x")).unwrap();
+        let expected_wt_app = std::fs::canonicalize(wt.join("app-modules/x")).unwrap();
+        assert_eq!(resolved, expected_wt_app);
+
+        // 2. Second call does not overwrite (idempotent, keeps old version)
+        std::fs::write(repo.join("vendor/autoload.php"), "<?php // new").unwrap();
+        copy_vendor(&repo, &wt);
+        assert_eq!(
+            std::fs::read_to_string(wt.join("vendor/autoload.php")).unwrap(),
+            "<?php // repo"
+        );
+
+        // 3. Worktree has vendor as a symlink -> replaced with real dir
+        let wt2 = tmp.path().join("wt2");
+        std::fs::create_dir_all(wt2.join("app-modules/x")).unwrap();
+        std::os::unix::fs::symlink(repo.join("vendor"), wt2.join("vendor")).unwrap();
+        assert!(std::fs::symlink_metadata(wt2.join("vendor")).unwrap().file_type().is_symlink());
+        copy_vendor(&repo, &wt2);
+        assert!(std::fs::symlink_metadata(wt2.join("vendor")).unwrap().file_type().is_dir());
+        assert!(!std::fs::symlink_metadata(wt2.join("vendor")).unwrap().file_type().is_symlink());
+        assert!(wt2.join("vendor/autoload.php").is_file());
+
+        // 4. Missing composer.json -> does not copy
+        let repo_no_composer = tmp.path().join("repo_no_composer");
+        let wt_no_composer = tmp.path().join("wt_no_composer");
+        std::fs::create_dir_all(repo_no_composer.join("vendor")).unwrap();
+        std::fs::create_dir_all(&wt_no_composer).unwrap();
+        copy_vendor(&repo_no_composer, &wt_no_composer);
+        assert!(!wt_no_composer.join("vendor").exists());
+
+        // 5. Git status --porcelain in real worktree ignores vendor
+        let git_run = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            out
+        };
+        let git_repo = tmp.path().join("git_repo");
+        std::fs::create_dir_all(git_repo.join("vendor")).unwrap();
+        std::fs::write(git_repo.join("composer.json"), "{}").unwrap();
+        std::fs::write(git_repo.join("vendor/autoload.php"), "<?php").unwrap();
+        git_run(&git_repo, &["init", "-q", "-b", "main"]);
+        git_run(&git_repo, &["add", "composer.json"]);
+        git_run(&git_repo, &["commit", "-q", "-m", "init"]);
+        let git_wt = tmp.path().join("git_wt");
+        git_run(&git_repo, &["worktree", "add", "-q", &git_wt.to_string_lossy(), "-b", "task/test"]);
+        copy_vendor(&git_repo, &git_wt);
+        let status = git_run(&git_wt, &["status", "--porcelain"]);
+        let status_out = String::from_utf8_lossy(&status.stdout);
+        assert!(!status_out.contains("vendor"), "git status should not show vendor, got: {status_out}");
     }
 }

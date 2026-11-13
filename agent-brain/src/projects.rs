@@ -41,6 +41,8 @@ pub const WORKSPACE_KEY: &str = "workspace";
 pub const MAX_PARALLEL_KEY: &str = "max_parallel_tasks";
 /// Key of the project entry that turns the `node_modules` link of task worktrees off.
 pub const LINK_NODE_MODULES_KEY: &str = "link_node_modules";
+/// Key of the project entry that turns the `vendor` copy of task worktrees off.
+pub const COPY_VENDOR_KEY: &str = "copy_vendor";
 /// Accepted range of `max_parallel_tasks`.
 pub const MAX_PARALLEL_RANGE: std::ops::RangeInclusive<usize> = 1..=10;
 
@@ -91,6 +93,9 @@ pub struct WorkspaceOpts {
     /// `link_node_modules`: a node project's task worktree gets a symlink to the repo's
     /// `node_modules` (default on).
     pub link_node_modules: bool,
+    /// `copy_vendor`: a PHP project's task worktree gets a real copy of the repo's
+    /// `vendor` folder (default on).
+    pub copy_vendor: bool,
 }
 
 impl Default for WorkspaceOpts {
@@ -102,6 +107,7 @@ impl Default for WorkspaceOpts {
             mode: WorkspaceMode::Worktree,
             max_parallel_tasks: 1,
             link_node_modules: true,
+            copy_vendor: true,
         }
     }
 }
@@ -140,6 +146,10 @@ impl WorkspaceOpts {
                 .get(LINK_NODE_MODULES_KEY)
                 .and_then(|v| v.as_bool())
                 .unwrap_or(d.link_node_modules),
+            copy_vendor: entry
+                .get(COPY_VENDOR_KEY)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(d.copy_vendor),
         }
     }
 
@@ -1876,6 +1886,7 @@ mod tests {
         assert_eq!(d.mode, WorkspaceMode::Worktree);
         assert_eq!(d.max_parallel_tasks, 1);
         assert!(d.link_node_modules);
+        assert!(d.copy_vendor);
         assert!(d.is_worktree());
         assert_eq!(WorkspaceOpts::from_value(&serde_json::json!({"id": "x"})), d);
         let shared = WorkspaceOpts::from_value(&serde_json::json!({"id": "x", "workspace": "shared"}));
@@ -1919,6 +1930,20 @@ mod tests {
         for bad in [serde_json::json!("false"), serde_json::json!(0), serde_json::json!(null)] {
             let o = WorkspaceOpts::from_value(&serde_json::json!({"id": "x", "link_node_modules": bad}));
             assert!(o.link_node_modules, "{bad}");
+            assert_eq!(o, d);
+        }
+        // `copy_vendor`: a bool is read, any other type keeps the default (on).
+        assert!(
+            !WorkspaceOpts::from_value(&serde_json::json!({"id": "x", "copy_vendor": false}))
+                .copy_vendor
+        );
+        assert!(
+            WorkspaceOpts::from_value(&serde_json::json!({"id": "x", "copy_vendor": true}))
+                .copy_vendor
+        );
+        for bad in [serde_json::json!("false"), serde_json::json!(0), serde_json::json!(null)] {
+            let o = WorkspaceOpts::from_value(&serde_json::json!({"id": "x", "copy_vendor": bad}));
+            assert!(o.copy_vendor, "{bad}");
             assert_eq!(o, d);
         }
         let map = serde_json::json!({"projects": [{"id": "x", "base_branch": "rel/1"}]});

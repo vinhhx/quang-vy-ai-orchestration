@@ -580,13 +580,14 @@ pub fn cmd_lead(
             .clone()
             .or_else(|| base_commit.clone())
             .unwrap_or_else(|| "HEAD".to_string());
-        let made = crate::workspace::create_task_worktree(
+        let made = crate::workspace::create_task_worktree_opts(
             &repo_root,
             &proj.id,
             &task_slug,
             &branch,
             &start,
             proj.workspace.link_node_modules,
+            proj.workspace.copy_vendor,
         )?;
         if &made != wt {
             return Err(BrainError::error(format!(
