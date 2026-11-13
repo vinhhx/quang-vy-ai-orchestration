@@ -542,6 +542,12 @@ Dự án ở chế độ worktree (mặc định cho dự án git loại `code`)
 - **Tắt theo dự án**: đặt `"link_node_modules": false` ở mục dự án trong `projects_map.json` (sửa file, chưa có nút trên dashboard). Giá trị không phải boolean thì giữ mặc định (bật).
 - **Rủi ro**: `npm install` (hay công cụ ghi vào `node_modules`) chạy trong worktree sẽ ghi vào `node_modules` dùng chung của repo gốc và ảnh hưởng mọi worktree khác. Chỉ nối `node_modules` ở gốc dự án; `packages/*/node_modules` của monorepo không được nối.
 
+### Worktree của task PHP (`vendor`) và container tạm
+
+Với dự án PHP dùng Composer (`composer.json` ở gốc):
+- **Copy `vendor` vào worktree**: Thay vì tạo symlink (dễ gây lỗi autoload khi có package dùng symlink tương đối như `vendor/modules/*`), agent-brain sao chép đệ quy thư mục `vendor/` từ repo gốc sang worktree (`cp -a --reflink=auto`). Dòng `vendor` được ghi vào `.git/info/exclude` của repo để `git status` trong worktree luôn sạch. Có thể tắt theo dự án bằng cách khai `"workspace": { "copy_vendor": false }` trong `projects_map.json`.
+- **Container tạm cho lệnh task**: Khi dự án cấu hình chạy lệnh trong container docker (`container`) mà container chính chỉ mount repo gốc, các lệnh chạy trong task worktree sẽ tự động được thực thi trong một container tạm (`docker run --rm -i`) dùng chung image và network (`--network "container:<tên>"`) với container chính, đồng thời mount task worktree vào đúng đường dẫn tương ứng. File `.env` của repo chính được mount đọc vào container tạm nếu tồn tại (không copy vào worktree, không in nội dung). Khi run kết thúc hoặc bị kill, các container tạm được dọn sạch tự động dựa trên nhãn `agent-brain.run=<run_id>`.
+
 ### Tự dọn worktree và nhánh đã merge (housekeeping)
 
 Worktree của task nặng hàng trăm MB và nhánh `task/*` đã merge nằm lại mãi, nên khi `agent-brain serve` chạy nó tự dọn định kỳ (trong nhịp của bộ lập lịch, kể cả khi `orchestrator.enabled = false`; lần đầu ngay sau khi serve khởi động). Chỉ dự án ở chế độ worktree, chỉ task ĐÃ XONG (`qa_pass`, `answered`), và chỉ khi task không có run hay autopilot đang chạy:

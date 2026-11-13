@@ -382,6 +382,16 @@ pub fn plan_commit_on_branch(
     all_plan_commits_on_branch(root, branch, slug, base_commit).map(|v| v.into_iter().next())
 }
 
+#[allow(clippy::result_unit_err)]
+pub fn first_plan_commit_on_branch(
+    root: &Path,
+    branch: &str,
+    slug: &str,
+    base_commit: Option<&str>,
+) -> Result<Option<String>, ()> {
+    all_plan_commits_on_branch(root, branch, slug, base_commit).map(|v| v.into_iter().last())
+}
+
 pub fn commit_time_ms(root: &Path, sha: &str) -> Option<i64> {
     if !is_hex_sha(sha) {
         return None;
@@ -992,6 +1002,39 @@ mod tests {
         );
 
         commit(root, &[("rev.txt", "1")], "x: plan-review");
+        assert_eq!(
+            plan_commit_on_branch(root, "task/x", "x", Some(&base)),
+            Ok(Some(p2))
+        );
+    }
+
+    #[test]
+    fn first_plan_commit_returns_oldest_plan_after_replan() {
+        let dir = repo();
+        let root = dir.path();
+        let base = commit(root, &[("init.txt", "1")], "init");
+
+        let status = std::process::Command::new("git")
+            .args(["checkout", "-b", "task/x", &base])
+            .current_dir(root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        // 1. Initial plan
+        let p1 = commit(root, &[(".plan.md", "v1")], "x: plan");
+        // 2. Dev commits code
+        commit(root, &[("src/app.php", "code")], "x: implement feature");
+        // 3. Replan
+        let p2 = commit(root, &[(".plan.md", "v2")], "x: plan");
+
+        // first_plan_commit_on_branch returns p1 (oldest plan)
+        assert_eq!(
+            first_plan_commit_on_branch(root, "task/x", "x", Some(&base)),
+            Ok(Some(p1))
+        );
+        // plan_commit_on_branch returns p2 (newest plan)
         assert_eq!(
             plan_commit_on_branch(root, "task/x", "x", Some(&base)),
             Ok(Some(p2))

@@ -398,6 +398,36 @@ pub fn plan_commit_for(
     crate::gitops::find_commit_by_subject(root, &format!("{task_slug}: plan"))
 }
 
+/// Commit anchor dùng để kiểm tra "có code sau plan" và tính diff code cho Review / QA (3.2).
+/// Neo ở commit plan ĐẦU TIÊN của task trên nhánh hiện tại (first_plan_commit_on_branch)
+/// để không mất code làm ở các round trước khi Lead lập lại plan.
+/// Không tìm được trên nhánh task → fallback về `find_commit_by_subject`.
+pub fn code_anchor_for(
+    conn: &rusqlite::Connection,
+    project_slug: &str,
+    root: &Path,
+    task_slug: &str,
+) -> BrainResult<Option<String>> {
+    if let Some(branch) = crate::gitops::current_branch(root) {
+        let row = match crate::db::project_row_id(conn, project_slug) {
+            Ok(pid) => crate::db::find_task_by_branch(conn, pid, &branch)?,
+            Err(_) => None,
+        };
+        if let Some(row) = row {
+            return crate::gitops::first_plan_commit_on_branch(
+                root,
+                &row.branch,
+                &row.slug,
+                row.base_commit.as_deref(),
+            )
+            .map_err(|_| {
+                BrainError::error(format!("Không đọc được lịch sử git của nhánh {branch}"))
+            });
+        }
+    }
+    crate::gitops::find_commit_by_subject(root, &format!("{task_slug}: plan"))
+}
+
 /// File in the run dir holding the run's deadline (epoch ms).
 pub const DEADLINE_FILE: &str = "deadline";
 
@@ -1765,5 +1795,128 @@ mod tests {
             serde_json::from_str(row.metrics_json.as_deref().unwrap()).unwrap();
         assert_eq!(metrics["violation"]["kind"], "missing_plan");
         assert_eq!(metrics["violation"]["checked_paths"][0], ".plan.md");
+    }
+
+    #[test]
+    fn test_task_66_replan_scenario_code_anchor() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        let init = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+
+        let do_commit = |files: &[(&str, &str)], msg: &str| -> String {
+            for (rel, content) in files {
+                let p = root.join(rel);
+                if let Some(parent) = p.parent() {
+                    std::fs::create_dir_all(parent).unwrap();
+                }
+                std::fs::write(&p, content).unwrap();
+            }
+            let add = std::process::Command::new("git")
+                .args(["add", "."])
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(add.status.success());
+            let commit = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-m",
+                    msg,
+                ])
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(commit.status.success());
+            crate::gitops::head_sha(root).unwrap()
+        };
+
+        let base = do_commit(&[("README.md", "hello")], "init");
+
+        let checkout = std::process::Command::new("git")
+            .args(["checkout", "-b", "task/t-66"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(checkout.status.success());
+
+        // 1. Plan 1
+        let p1 = do_commit(&[(".plan.md", "v1")], "t-66: plan");
+
+        // Set up brain.db
+        let conn = crate::db::open(&dir.path().join("brain.db")).unwrap();
+        let project = crate::projects::Project {
+            id: "p".to_string(),
+            path: root.to_string_lossy().to_string(),
+            name_vi: "P".to_string(),
+            aliases: vec![],
+            kind: "code".to_string(),
+            profile: "default".to_string(),
+            repo: None,
+            missing: false,
+            hidden: false,
+            stack: vec![],
+            read_sources: vec![],
+            protocol_dir: String::new(),
+            workspace: Default::default(),
+        };
+        crate::db::sync_projects(&conn, &[project.clone()]).unwrap();
+        let pid = crate::db::project_row_id(&conn, "p").unwrap();
+        let _tid = crate::db::upsert_task(
+            &conn,
+            pid,
+            "t-66",
+            "req",
+            "task/t-66",
+            Some(&base),
+            None,
+        )
+        .unwrap();
+
+        // Case A: No code after Plan 1
+        let anchor_a = code_anchor_for(&conn, "p", root, "t-66").unwrap().unwrap();
+        assert_eq!(anchor_a, p1);
+        let diff_a = crate::gitops::diff_code_names(root, &anchor_a, "HEAD").unwrap();
+        assert!(diff_a.is_empty(), "No code yet after plan 1");
+
+        // 2. Dev commits code
+        do_commit(&[("src/App.php", "<?php echo 1;")], "t-66: add feature");
+
+        // 3. Lead replans (Plan 2)
+        let p2 = do_commit(&[(".plan.md", "v2")], "t-66: plan");
+
+        // Case B: Task 66 scenario — base -> plan 1 -> code -> plan 2 -> HEAD
+        // plan_commit_for returns newest plan (p2)
+        let latest_plan = plan_commit_for(&conn, "p", root, "t-66").unwrap().unwrap();
+        assert_eq!(latest_plan, p2);
+
+        // code diff from latest_plan to HEAD is empty (HEAD is plan 2)
+        let diff_latest = crate::gitops::diff_code_names(root, &latest_plan, "HEAD").unwrap();
+        assert!(diff_latest.is_empty(), "latest plan to HEAD has no code");
+
+        // code_anchor_for returns oldest plan (p1)
+        let anchor_b = code_anchor_for(&conn, "p", root, "t-66").unwrap().unwrap();
+        assert_eq!(anchor_b, p1);
+
+        // code diff from anchor_b to HEAD contains src/App.php
+        let diff_b = crate::gitops::diff_code_names(root, &anchor_b, "HEAD").unwrap();
+        assert!(diff_b.contains("src/App.php"));
+        assert!(!diff_b.is_empty(), "code_after_plan must be true");
+
+        // Check protocol code_diff_command uses anchor
+        let protocol = crate::protocol_paths::paths(&project, "t-66");
+        let diff_cmd = protocol.code_diff_command(&anchor_b);
+        assert!(diff_cmd.contains(&p1));
     }
 }

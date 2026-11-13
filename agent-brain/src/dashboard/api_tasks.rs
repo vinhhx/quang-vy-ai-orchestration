@@ -1753,9 +1753,14 @@ pub fn load_task_state(
     .ok()
     .flatten();
 
+    let code_anchor = crate::roles::code_anchor_for(conn, &project_slug, &root, &task.slug)
+        .ok()
+        .flatten()
+        .or_else(|| plan_commit.clone());
+
     // RESEARCH Pitfall 6: commit báo cáo review không tính là thay đổi code.
-    let code_after_plan = match (is_on_branch, plan_commit.as_deref()) {
-        (true, Some(pc)) => match crate::gitops::diff_code_names(&root, pc, "HEAD") {
+    let code_after_plan = match (is_on_branch, code_anchor.as_deref()) {
+        (true, Some(ca)) => match crate::gitops::diff_code_names(&root, ca, "HEAD") {
             Ok(diff) => !diff.is_empty(),
             Err(_) => false,
         },

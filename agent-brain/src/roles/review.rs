@@ -176,14 +176,17 @@ pub fn cmd_review(
         }
     };
 
+    let code_anchor = crate::roles::code_anchor_for(&ctx.conn, &proj.id, &proj_path, &task)?
+        .unwrap_or_else(|| plan_commit.clone());
+
     if kind == ReviewKind::Code {
-        let code = crate::gitops::diff_code_names(&proj_path, &plan_commit, "HEAD")?;
+        let code = crate::gitops::diff_code_names(&proj_path, &code_anchor, "HEAD")?;
         if code.is_empty() {
             return Err(BrainError::error("chưa có thay đổi code sau plan"));
         }
     }
 
-    let diff_cmd = protocol.code_diff_command(&plan_commit);
+    let diff_cmd = protocol.code_diff_command(&code_anchor);
 
     let file = report_file.as_str();
     let mut allowed = REVIEW_ALLOWED_BASE

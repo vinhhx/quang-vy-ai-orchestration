@@ -500,8 +500,12 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
             }
         };
         let is_on_branch = crate::gitops::current_branch(&root).as_deref() == Some(task.branch.as_str());
-        let code_after_plan = match (is_on_branch, plan_commit.as_deref()) {
-            (true, Some(pc)) => match crate::gitops::diff_code_names(&root, pc, "HEAD") {
+        let code_anchor = crate::roles::code_anchor_for(&ctx.conn, &project.id, &root, &task.slug)
+            .ok()
+            .flatten()
+            .or_else(|| plan_commit.clone());
+        let code_after_plan = match (is_on_branch, code_anchor.as_deref()) {
+            (true, Some(ca)) => match crate::gitops::diff_code_names(&root, ca, "HEAD") {
                 Ok(diff) => !diff.is_empty(),
                 Err(_) => false,
             },
