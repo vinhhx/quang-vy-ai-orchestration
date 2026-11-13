@@ -537,7 +537,7 @@ pub fn approve_check(
                 .to_string(),
         );
     }
-    if driver_alive(&auto) {
+    if driver_alive(&auto) && auto.auto_pid != Some(std::process::id() as i64) {
         return Err("Autopilot đang chạy task này — chờ autopilot dừng".to_string());
     }
     if let Some(r) = crate::db::running_run_for_task(conn, task.id).map_err(db_err)? {

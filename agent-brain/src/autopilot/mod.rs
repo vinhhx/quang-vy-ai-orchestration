@@ -507,6 +507,15 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
             },
             _ => false,
         };
+        let split_items_opt = match plan_commit.as_deref() {
+            Some(pc) => crate::split::plan_split_items(
+                &root,
+                &crate::protocol_paths::paths(&project, &task.slug),
+                pc,
+            ).unwrap_or(None),
+            None => None,
+        };
+        let is_split_plan = split_items_opt.is_some();
         let mut facts = decide::build_facts(
             &wf,
             &runs,
@@ -518,6 +527,7 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
             resume,
         );
         facts.code_after_plan = code_after_plan;
+        facts.split_plan = is_split_plan;
         facts.dev_dirty_in_plan =
             wf.finalize_on_timeout.enabled && is_on_branch
                 && dirty_in_plan(&root, &crate::protocol_paths::paths(&project, &task.slug));
@@ -587,7 +597,54 @@ fn run_loop(ctx: &mut Ctx, task_id: i64, resume_first: bool) -> BrainResult<i32>
                     return Ok(stop_with(ctx, task_id, &task.slug, aj, info));
                 }
             }
+            Decision::Split => {
+                let pc = plan_commit.as_deref().unwrap_or_default();
+                let items = split_items_opt.unwrap_or_default();
+                crate::split::materialize(&ctx.conn, &task, pc, &items)?;
+                claim::release(&ctx.conn, task_id, "waiting_children", &aj)?;
+                crate::term::emit(&format!(
+                    "Autopilot · task {task_id} · chuyển sang chờ việc con ({} việc).",
+                    items.len()
+                ));
+                return Ok(EXIT_OK);
+            }
             Decision::Gate => {
+                let parent_id_opt = crate::db::task_parent(&ctx.conn, task_id)?;
+                let is_started_child = if let Some(parent_id) = parent_id_opt {
+                    crate::db::split_items_of(&ctx.conn, parent_id)?
+                        .into_iter()
+                        .any(|it| it.child_task_id == Some(task_id) && it.state == "started")
+                } else {
+                    false
+                };
+
+                if is_started_child {
+                    match claim::approve_check(
+                        &ctx.conn,
+                        &task,
+                        &root,
+                        &ctx.cfg.pricing,
+                        &crate::protocol_paths::paths(&project, &task.slug),
+                    ) {
+                        Ok(sha) => {
+                            claim::approve_record(&ctx.conn, task_id, &sha, "parent", false)?;
+                            crate::term::emit(&format!(
+                                "Autopilot · task {task_id} · tự duyệt plan việc con ({}).",
+                                &sha[..7.min(sha.len())]
+                            ));
+                            continue;
+                        }
+                        Err(reason) => {
+                            claim::release(&ctx.conn, task_id, "gate", &aj)?;
+                            crate::term::emit(&format!(
+                                "Autopilot · task {task_id} · từ chối tự duyệt plan: {reason}"
+                            ));
+                            crate::term::emit(&view::gate_line(task_id));
+                            return Ok(EXIT_OK);
+                        }
+                    }
+                }
+
                 claim::release(&ctx.conn, task_id, "gate", &aj)?;
                 crate::term::emit(&view::gate_line(task_id));
                 return Ok(EXIT_OK);
@@ -955,6 +1012,13 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
     )
         .map_err(BrainError::error)?;
 
+    let split_items_opt = crate::split::plan_split_items(
+        &root,
+        &crate::protocol_paths::paths(&project, &task.slug),
+        &plan_commit,
+    )?;
+    let is_split = split_items_opt.is_some();
+
     let auto = crate::db::task_auto(&ctx.conn, task_id)?.unwrap_or_default();
     let wf_auto = auto
         .workflow_json
@@ -964,7 +1028,7 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
         .unwrap_or(false);
     // Autopilot đã tắt cho task (`ended`): duyệt chỉ ghi nhận, không chạy tiếp (D-15 sửa đổi).
     let ended = auto.auto_state.as_deref() == Some("ended");
-    let cont = wf_auto && !no_continue && !ended;
+    let cont = !is_split && wf_auto && !no_continue && !ended;
     if cont {
         // Kiểm tra bận và nhánh trước khi ghi, để một lần từ chối không để lại nửa chừng.
         if let Some(reason) = claim::busy_reason_ws(
@@ -1004,6 +1068,10 @@ pub fn cmd_approve(ctx: &mut Ctx, task_id: i64, no_continue: bool) -> BrainResul
         "Đã duyệt plan {sha7} lúc {} (task {task_id}).",
         view::fmt_hhmm(at)
     ));
+    if let Some(items) = split_items_opt {
+        crate::split::materialize(&ctx.conn, &task, &plan_commit, &items)?;
+        return Ok(EXIT_OK);
+    }
     if !cont {
         if wf_auto && !no_continue && ended {
             crate::term::emit(&format!(

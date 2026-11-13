@@ -3849,12 +3849,6 @@ pub fn run_control_as(
         };
         return Ok(ControlOutcome::Refused { reason, kind });
     }
-    if control == "approve_qa" && !state.git.code_after_plan {
-        return Ok(ControlOutcome::Refused {
-            reason: "Chưa có thay đổi code sau plan để chạy QA".to_string(),
-            kind: "not_allowed",
-        });
-    }
 
     let id_str = task_id.to_string();
     match control {
@@ -3877,10 +3871,28 @@ pub fn run_control_as(
                     })
                 }
             };
+            let split_items_opt = crate::split::plan_split_items(
+                &state.root,
+                &state.protocol(),
+                &plan_commit,
+            )?;
+            let is_split = split_items_opt.is_some();
+            if is_split && (control == "approve_dev" || control == "approve_qa") {
+                return Ok(ControlOutcome::Invalid(
+                    "Plan tách việc: chỉ dùng Duyệt".to_string(),
+                ));
+            }
+            if control == "approve_qa" && !state.git.code_after_plan {
+                return Ok(ControlOutcome::Refused {
+                    reason: "Chưa có thay đổi code sau plan để chạy QA".to_string(),
+                    kind: "not_allowed",
+                });
+            }
             // D2.3b: off the task branch with a clean tree and no other task holding the
             // project, check the task branch out before approving (`auto_checkout_on_approve`).
             // An approval that runs on needs the branch; one that only records does not.
-            let runs_on = control != "approve_none"
+            let runs_on = !is_split
+                && control != "approve_none"
                 && taskstate::autopilot_continues(state.workflow.as_ref(), Some(&state.auto));
             // D2.2: in worktree mode the task's worktree (re-created when missing) is on the
             // task branch; nothing is ever checked out in the main repo.
@@ -3918,6 +3930,15 @@ pub fn run_control_as(
                 source.as_str(),
                 control == "approve_qa",
             )?;
+
+            if let Some(items) = split_items_opt {
+                crate::split::materialize(&conn, &state.task, &plan_commit, &items)?;
+                return Ok(ControlOutcome::Approved {
+                    approved_at,
+                    plan_commit,
+                    job_id: None,
+                });
+            }
 
             let job_id = match control {
                 "approve_none" => {
@@ -4043,13 +4064,18 @@ pub fn run_control_as(
         }
         "auto_end" => {
             // Dừng hẳn: giữ auto_json.stop làm lịch sử; Bật autopilot chạy lại sau.
-            // Chỉ ghi khi task vẫn `stopped` và không có driver (WR-04).
+            // Chỉ ghi khi task vẫn `stopped` (hoặc `waiting_children`) và không có driver (WR-04).
             // Cờ `cancelled` + auto_state `ended` = trạng thái "Đã hủy" (suy ra ở taskstate).
+            let expect_state = match state.auto.auto_state.as_deref() {
+                Some("waiting_children") => "waiting_children",
+                _ => "stopped",
+            };
             let mut aj = state.aj.clone();
             aj.cancelled = true;
-            if !claim::end_autopilot(&conn, task_id, "stopped", &aj)? {
+            if !claim::end_autopilot(&conn, task_id, expect_state, &aj)? {
                 return Ok(ControlOutcome::Stale);
             }
+            crate::split::cancel_waiting(&conn, task_id)?;
             Ok(ControlOutcome::Ended { at_gate: false })
         }
         "auto_extend_budget" => {

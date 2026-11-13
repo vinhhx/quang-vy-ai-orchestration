@@ -209,6 +209,7 @@ impl StageRun {
 pub enum Decision {
     Run(StageRun),
     Gate,
+    Split,
     Done,
     Stop(StopInfo),
 }
@@ -371,11 +372,17 @@ pub struct Facts {
     pub code_after_plan: bool,
     /// The working tree has uncommitted changes to files of the plan (set by the driver).
     pub dev_dirty_in_plan: bool,
+    pub split_plan: bool,
 }
 
 impl Facts {
     pub fn with_code_after_plan(mut self, code_after_plan: bool) -> Self {
         self.code_after_plan = code_after_plan;
+        self
+    }
+
+    pub fn with_split_plan(mut self, split_plan: bool) -> Self {
+        self.split_plan = split_plan;
         self
     }
 }
@@ -461,6 +468,7 @@ pub fn build_facts(
         skip_build_once: aj.skip_build_once,
         code_after_plan: false,
         dev_dirty_in_plan: false,
+        split_plan: false,
     }
 }
 
@@ -1581,6 +1589,10 @@ pub fn decide(wf: &Workflow, f: &Facts) -> Decision {
     // Quy tắc D5: Cổng duyệt plan (Gate)
     if let Some(dec) = rule_d5_gate(wf, f) {
         return dec;
+    }
+
+    if f.split_plan && f.approved {
+        return Decision::Split;
     }
 
     // Quy tắc D6: Giai đoạn build (implement và code-review)
@@ -2986,6 +2998,59 @@ mod tests {
         let facts = build_facts(wf, &runs, &auto, &aj, Some("p1"), &pricing, 20000, false);
         assert_eq!(
             decide(wf, &facts),
+            Decision::Run(StageRun {
+                stage: Stage::Implement,
+                round: 1,
+                fix_for: None,
+                review_input: false,
+                note: None,
+                fresh_plan: false,
+                finalize: false,
+            })
+        );
+    }
+
+    #[test]
+    fn split_plan_decisions() {
+        let cfg = test_cfg();
+        let loaded = load_from(None, &cfg);
+        let wf = loaded.get("mac-dinh").unwrap();
+        let pricing = crate::config::default_pricing();
+        let aj = AutoJson::default();
+        let r1 = dummy_run(1, "lead", Some("plan"), Some(1), "succeeded", None, None);
+        let r2 = dummy_run(
+            2,
+            "plan-review",
+            Some("plan-review"),
+            Some(1),
+            "succeeded",
+            Some("review:approve"),
+            None,
+        );
+        let runs = vec![r1, r2];
+
+        // 1. Split plan, unapproved -> Decision::Gate
+        let auto_unapproved = TaskAuto::default();
+        let facts_unapproved = build_facts(wf, &runs, &auto_unapproved, &aj, Some("p1"), &pricing, 5000, false)
+            .with_split_plan(true);
+        assert!(!facts_unapproved.approved);
+        assert_eq!(decide(wf, &facts_unapproved), Decision::Gate);
+
+        // 2. Split plan, approved -> Decision::Split
+        let auto_approved = TaskAuto {
+            approved_commit: Some("p1".to_string()),
+            ..Default::default()
+        };
+        let facts_approved = build_facts(wf, &runs, &auto_approved, &aj, Some("p1"), &pricing, 5000, false)
+            .with_split_plan(true);
+        assert!(facts_approved.approved);
+        assert_eq!(decide(wf, &facts_approved), Decision::Split);
+
+        // 3. Normal plan, approved -> Decision::Run(Stage::Implement)
+        let facts_normal = build_facts(wf, &runs, &auto_approved, &aj, Some("p1"), &pricing, 5000, false);
+        assert!(facts_normal.approved);
+        assert_eq!(
+            decide(wf, &facts_normal),
             Decision::Run(StageRun {
                 stage: Stage::Implement,
                 round: 1,
