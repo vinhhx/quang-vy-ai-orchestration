@@ -116,6 +116,27 @@ pub const MAX_PRODUCT_FILES: usize = 5;
 /// At most this many commands in `## Tạo sản phẩm`.
 pub const MAX_PRODUCE_COMMANDS: usize = 20;
 
+/// Mục kế hoạch tách việc thành task con.
+pub const SPLIT_SECTION: &str = "Tách việc";
+/// Số lượng việc con tối đa trong một plan tách việc.
+pub const MAX_SPLIT_ITEMS: usize = 30;
+
+/// Một việc con trong plan tách việc (`## Tách việc`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitItem {
+    pub idx: usize,
+    pub title: String,
+    pub request: String,
+    pub after: Option<usize>,
+}
+
+/// Ngữ cảnh kiểm tra xem task có được phép tách việc hay không.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SplitCtx {
+    pub is_child: bool,
+    pub workflow_auto: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
     pub file: String,
@@ -438,6 +459,115 @@ pub fn path_error(f: &str, root: Option<&std::path::Path>) -> Option<String> {
     }
 }
 
+pub fn split_section_text<'a>(plan: &'a Plan) -> Option<&'a str> {
+    plan.sections
+        .iter()
+        .find(|(k, _)| k.starts_with(SPLIT_SECTION))
+        .map(|(_, v)| v.as_str())
+}
+
+/// Plan tách việc: mục `## Tách việc` tồn tại và có ít nhất 1 dòng dữ liệu.
+pub fn is_split_plan(plan: &Plan) -> bool {
+    let text = match split_section_text(plan) {
+        Some(t) => t,
+        None => return false,
+    };
+    for line in text.lines() {
+        if let Some(cells) = split_table_row(line) {
+            if is_separator_row(&cells) || cells.first().map(|s| s.trim()) == Some("#") {
+                continue;
+            }
+            return true;
+        }
+    }
+    false
+}
+
+/// Trích xuất danh sách việc con từ plan tách việc.
+pub fn split_items(plan: &Plan) -> Vec<SplitItem> {
+    let mut items = Vec::new();
+    let text = match split_section_text(plan) {
+        Some(t) => t,
+        None => return items,
+    };
+    for line in text.lines() {
+        if let Some(cells) = split_table_row(line) {
+            if is_separator_row(&cells) || cells.first().map(|s| s.trim()) == Some("#") {
+                continue;
+            }
+            if cells.len() < 4 {
+                continue;
+            }
+            let idx_str = cells[0].trim();
+            let Ok(idx) = idx_str.parse::<usize>() else {
+                continue;
+            };
+            let title = cells[1].trim().to_string();
+            let request = cells[2].trim().to_string();
+            let after_str = cells[3].trim();
+            let after = if after_str.is_empty() {
+                None
+            } else {
+                after_str.parse::<usize>().ok()
+            };
+            items.push(SplitItem {
+                idx,
+                title,
+                request,
+                after,
+            });
+        }
+    }
+    items
+}
+
+/// Kiểm tra xem task có được phép viết plan tách việc không.
+pub fn validate_split_allowed(plan: &Plan, ctx: SplitCtx) -> Result<(), String> {
+    if !is_split_plan(plan) {
+        return Ok(());
+    }
+    if ctx.is_child {
+        return Err("split_nested".to_string());
+    }
+    if !ctx.workflow_auto {
+        return Err("split_needs_auto".to_string());
+    }
+    Ok(())
+}
+
+/// Dịch mã lỗi xác thực plan sang thông điệp tiếng Việt.
+pub fn plan_error_vietnamese(err: &str) -> String {
+    if err == "no_changes" {
+        "Bảng Thay đổi không có dòng nào".to_string()
+    } else if err == "missing_title" {
+        "Thiếu tiêu đề (# Plan: <tiêu đề>)".to_string()
+    } else if let Some(sec) = err.strip_prefix("missing_section:") {
+        format!("Thiếu mục bắt buộc: ## {sec}")
+    } else if err == "split_with_changes" {
+        "Plan tách việc không được có dòng trong bảng Thay đổi".to_string()
+    } else if err == "split_too_few" {
+        "Plan tách việc phải có ít nhất 2 việc con".to_string()
+    } else if err == "split_too_many" {
+        "Plan tách việc có quá nhiều việc con (tối đa 30)".to_string()
+    } else if let Some(r) = err.strip_prefix("split_bad_row:") {
+        format!("Dòng #{r} trong bảng Tách việc không hợp lệ (thiếu cột, tiêu đề/yêu cầu rỗng hoặc sai thứ tự #)")
+    } else if let Some(r) = err.strip_prefix("split_bad_after:") {
+        format!("Cột 'Sau' ở dòng #{r} phải là số nhỏ hơn số thứ tự của chính dòng đó")
+    } else if let Some(r) = err.strip_prefix("split_title_too_long:") {
+        format!("Tiêu đề việc con ở dòng #{r} quá dài (tối đa 120 ký tự)")
+    } else if let Some(r) = err.strip_prefix("split_request_too_long:") {
+        format!("Yêu cầu việc con ở dòng #{r} quá dài (tối đa 4000 ký tự)")
+    } else if err == "split_with_products" {
+        "Plan tách việc không được có mục Tạo sản phẩm, Sản phẩm hoặc Gửi báo cáo".to_string()
+    } else if err == "split_nested" {
+        "Task con không được tách việc tiếp".to_string()
+    } else if err == "split_needs_auto" {
+        "Chỉ quy trình tự động (auto) mới được phép tách việc".to_string()
+    } else {
+        err.to_string()
+    }
+}
+
 pub fn validate_plan(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String> {
     let mut errors = Vec::new();
 
@@ -452,6 +582,8 @@ pub fn validate_plan(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String>
             errors.push(format!("missing_section:{sec}"));
         }
     }
+
+    let split_plan = is_split_plan(plan);
 
     // Check table rows in Thay đổi
     let thay_doi_text = plan
@@ -489,34 +621,113 @@ pub fn validate_plan(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String>
         }
     }
 
-    for r in &bad_rows {
-        errors.push(format!("bad_row:{r}"));
-    }
-    for r in &empty_cells {
-        errors.push(format!("empty_file_cell:{r}"));
-    }
-
-    // 3. no_changes
-    if data_rows_count == 0
-        || (plan.changes.is_empty() && bad_rows.is_empty() && empty_cells.is_empty())
-    {
-        errors.push("no_changes".to_string());
-    }
-
-    // 4. File path errors for each change
-    let mut seen_outside_root = std::collections::HashSet::new();
-    for change in &plan.changes {
-        let f = &change.file;
-        if f.is_empty() {
-            continue;
+    if split_plan {
+        if data_rows_count > 0 || !plan.changes.is_empty() || !bad_rows.is_empty() || !empty_cells.is_empty() {
+            errors.push("split_with_changes".to_string());
         }
-        if let Some(err) = path_error(f, root) {
-            if err.starts_with("outside_root:") {
-                if seen_outside_root.insert(f.clone()) {
+
+        // Validate split items
+        let mut split_rows_count = 0;
+        let mut split_bad_rows = Vec::new();
+        let mut split_bad_afters = Vec::new();
+        let mut split_title_too_long = Vec::new();
+        let mut split_req_too_long = Vec::new();
+
+        if let Some(text) = split_section_text(plan) {
+            for line in text.lines() {
+                if let Some(cells) = split_table_row(line) {
+                    if is_separator_row(&cells) || cells.first().map(|s| s.trim()) == Some("#") {
+                        continue;
+                    }
+
+                    split_rows_count += 1;
+                    if cells.len() < 4 {
+                        split_bad_rows.push(split_rows_count);
+                        continue;
+                    }
+
+                    let idx_str = cells[0].trim();
+                    let title = cells[1].trim();
+                    let req = cells[2].trim();
+                    let after_str = cells[3].trim();
+
+                    let parsed_idx = idx_str.parse::<usize>().ok();
+                    if parsed_idx != Some(split_rows_count) || title.is_empty() || req.is_empty() {
+                        split_bad_rows.push(split_rows_count);
+                    } else {
+                        if title.chars().count() > 120 {
+                            split_title_too_long.push(split_rows_count);
+                        }
+                        if req.chars().count() > 4000 {
+                            split_req_too_long.push(split_rows_count);
+                        }
+                        if !after_str.is_empty() {
+                            match after_str.parse::<usize>() {
+                                Ok(u) if u >= 1 && u < split_rows_count => {}
+                                _ => split_bad_afters.push(split_rows_count),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if split_rows_count < 2 {
+            errors.push("split_too_few".to_string());
+        } else if split_rows_count > MAX_SPLIT_ITEMS {
+            errors.push("split_too_many".to_string());
+        }
+        for r in split_bad_rows {
+            errors.push(format!("split_bad_row:{r}"));
+        }
+        for r in split_bad_afters {
+            errors.push(format!("split_bad_after:{r}"));
+        }
+        for r in split_title_too_long {
+            errors.push(format!("split_title_too_long:{r}"));
+        }
+        for r in split_req_too_long {
+            errors.push(format!("split_request_too_long:{r}"));
+        }
+
+        let has_products = plan.sections.keys().any(|k| {
+            k.starts_with(PRODUCE_SECTION)
+                || k.starts_with(PRODUCT_SECTION)
+                || k.starts_with(REPORT_SECTION)
+        });
+        if has_products {
+            errors.push("split_with_products".to_string());
+        }
+    } else {
+        for r in &bad_rows {
+            errors.push(format!("bad_row:{r}"));
+        }
+        for r in &empty_cells {
+            errors.push(format!("empty_file_cell:{r}"));
+        }
+
+        // 3. no_changes
+        if data_rows_count == 0
+            || (plan.changes.is_empty() && bad_rows.is_empty() && empty_cells.is_empty())
+        {
+            errors.push("no_changes".to_string());
+        }
+
+        // 4. File path errors for each change
+        let mut seen_outside_root = std::collections::HashSet::new();
+        for change in &plan.changes {
+            let f = &change.file;
+            if f.is_empty() {
+                continue;
+            }
+            if let Some(err) = path_error(f, root) {
+                if err.starts_with("outside_root:") {
+                    if seen_outside_root.insert(f.clone()) {
+                        errors.push(err);
+                    }
+                } else {
                     errors.push(err);
                 }
-            } else {
-                errors.push(err);
             }
         }
     }
@@ -525,7 +736,7 @@ pub fn validate_plan(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String>
     errors.extend(validate_grants(&run_grants(plan), root));
 
     // 6. optional report section
-    if plan.sections.keys().any(|k| k.starts_with(REPORT_SECTION)) {
+    if !split_plan && plan.sections.keys().any(|k| k.starts_with(REPORT_SECTION)) {
         let raw_items = grant_items(grant_section(plan, REPORT_SECTION), false);
         let r_files = report_files(plan);
         if raw_items.len() > 5 || r_files.len() > 5 {
@@ -575,7 +786,9 @@ pub fn validate_plan(plan: &Plan, root: Option<&std::path::Path>) -> Vec<String>
     }
 
     // 7. optional product sections
-    errors.extend(validate_products(plan, root));
+    if !split_plan {
+        errors.extend(validate_products(plan, root));
+    }
 
     errors
 }
@@ -1882,5 +2095,226 @@ mod tests {
         // in a write dir or in the change table: fine
         let ok = plan_with(&format!("{base}- `out/x/v.mp4`\n- `a.txt`\n"));
         assert!(validate_plan(&ok, None).is_empty());
+    }
+
+    // ---- split plan tests (D-split) ----
+
+    fn make_split_plan(thay_doi_body: &str, split_body: &str, extra: &str) -> Plan {
+        let text = format!(
+            "# Plan: Test Tách Việc\n<!-- brain-meta: {{\"task\":\"t\"}} -->\n## Mục tiêu\nKiểm tra chức năng\n## Thay đổi\n| # | File | Dòng / hàm | Sửa gì | Lý do |\n|---|---|---|---|---|\n{thay_doi_body}\n## Không được đụng tới\n-\n## Cách kiểm tra\nChạy e2e\n## Vướng mắc\n## Tách việc\n| # | Việc con | Yêu cầu | Sau |\n|---|---|---|---|\n{split_body}\n{extra}"
+        );
+        parse_plan(&text)
+    }
+
+    #[test]
+    fn valid_split_plan_passes_validation_and_is_exempt_from_no_changes() {
+        let p = make_split_plan(
+            "",
+            "| 1 | Đăng nhập CMS | Chạy e2e đăng nhập | |\n| 2 | Quản lý bài viết | Chạy e2e bài viết | 1 |\n",
+            "",
+        );
+        assert!(is_split_plan(&p));
+        let errs = validate_plan(&p, None);
+        assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
+
+        let items = split_items(&p);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].idx, 1);
+        assert_eq!(items[0].title, "Đăng nhập CMS");
+        assert_eq!(items[0].request, "Chạy e2e đăng nhập");
+        assert_eq!(items[0].after, None);
+
+        assert_eq!(items[1].idx, 2);
+        assert_eq!(items[1].title, "Quản lý bài viết");
+        assert_eq!(items[1].request, "Chạy e2e bài viết");
+        assert_eq!(items[1].after, Some(1));
+
+        let ctx = SplitCtx {
+            is_child: false,
+            workflow_auto: true,
+        };
+        assert!(validate_split_allowed(&p, ctx).is_ok());
+    }
+
+    #[test]
+    fn split_plan_errors() {
+        // 1. split_with_changes
+        let p = make_split_plan(
+            "| 1 | a.txt | - | sửa | lý do |\n",
+            "| 1 | Task 1 | Req 1 | |\n| 2 | Task 2 | Req 2 | 1 |\n",
+            "",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(errs.contains(&"split_with_changes".to_string()), "{errs:?}");
+
+        // 2. split_too_few
+        let p = make_split_plan("", "| 1 | Task 1 | Req 1 | |\n", "");
+        let errs = validate_plan(&p, None);
+        assert!(errs.contains(&"split_too_few".to_string()), "{errs:?}");
+
+        // 3. split_too_many (> 30)
+        let mut many_items = String::new();
+        for i in 1..=31 {
+            many_items.push_str(&format!("| {i} | Task {i} | Req {i} | |\n"));
+        }
+        let p = make_split_plan("", &many_items, "");
+        let errs = validate_plan(&p, None);
+        assert!(errs.contains(&"split_too_many".to_string()), "{errs:?}");
+
+        // 4. split_bad_row: thiếu cột
+        let p = make_split_plan(
+            "",
+            "| 1 | Task 1 | Req 1 |\n| 2 | Task 2 | Req 2 | 1 |\n",
+            "",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(errs.contains(&"split_bad_row:1".to_string()), "{errs:?}");
+
+        // 4b. split_bad_row: tiêu đề rỗng
+        let p = make_split_plan(
+            "",
+            "| 1 | | Req 1 | |\n| 2 | Task 2 | Req 2 | 1 |\n",
+            "",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(errs.contains(&"split_bad_row:1".to_string()), "{errs:?}");
+
+        // 4c. split_bad_row: yêu cầu rỗng
+        let p = make_split_plan(
+            "",
+            "| 1 | Task 1 | | |\n| 2 | Task 2 | Req 2 | 1 |\n",
+            "",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(errs.contains(&"split_bad_row:1".to_string()), "{errs:?}");
+
+        // 4d. split_bad_row: # không phải số thứ tự đúng
+        let p = make_split_plan(
+            "",
+            "| 2 | Task 1 | Req 1 | |\n| 3 | Task 2 | Req 2 | 1 |\n",
+            "",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(errs.contains(&"split_bad_row:1".to_string()), "{errs:?}");
+
+        // 5. split_bad_after: Sau không phải số nhỏ hơn # của chính dòng đó
+        let p = make_split_plan(
+            "",
+            "| 1 | Task 1 | Req 1 | 1 |\n| 2 | Task 2 | Req 2 | 2 |\n",
+            "",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(errs.contains(&"split_bad_after:1".to_string()), "{errs:?}");
+        assert!(errs.contains(&"split_bad_after:2".to_string()), "{errs:?}");
+
+        // Sau là số lớn hơn hoặc chữ
+        let p = make_split_plan(
+            "",
+            "| 1 | Task 1 | Req 1 | |\n| 2 | Task 2 | Req 2 | 3 |\n",
+            "",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(errs.contains(&"split_bad_after:2".to_string()), "{errs:?}");
+
+        let p = make_split_plan(
+            "",
+            "| 1 | Task 1 | Req 1 | |\n| 2 | Task 2 | Req 2 | không |\n",
+            "",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(errs.contains(&"split_bad_after:2".to_string()), "{errs:?}");
+
+        // 6. split_title_too_long (> 120 ký tự)
+        let long_title = "a".repeat(121);
+        let p = make_split_plan(
+            "",
+            &format!("| 1 | {long_title} | Req 1 | |\n| 2 | Task 2 | Req 2 | 1 |\n"),
+            "",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(errs.contains(&"split_title_too_long:1".to_string()), "{errs:?}");
+
+        // 7. split_request_too_long (> 4000 ký tự)
+        let long_req = "b".repeat(4001);
+        let p = make_split_plan(
+            "",
+            &format!("| 1 | Task 1 | {long_req} | |\n| 2 | Task 2 | Req 2 | 1 |\n"),
+            "",
+        );
+        let errs = validate_plan(&p, None);
+        assert!(errs.contains(&"split_request_too_long:1".to_string()), "{errs:?}");
+
+        // 8. split_with_products: không được có Tạo sản phẩm, Sản phẩm, Gửi báo cáo
+        let p1 = make_split_plan(
+            "",
+            "| 1 | Task 1 | Req 1 | |\n| 2 | Task 2 | Req 2 | 1 |\n",
+            "## Tạo sản phẩm\n- `make video`\n",
+        );
+        assert!(validate_plan(&p1, None).contains(&"split_with_products".to_string()));
+
+        let p2 = make_split_plan(
+            "",
+            "| 1 | Task 1 | Req 1 | |\n| 2 | Task 2 | Req 2 | 1 |\n",
+            "## Sản phẩm\n- `out.mp4`\n",
+        );
+        assert!(validate_plan(&p2, None).contains(&"split_with_products".to_string()));
+
+        let p3 = make_split_plan(
+            "",
+            "| 1 | Task 1 | Req 1 | |\n| 2 | Task 2 | Req 2 | 1 |\n",
+            "## Gửi báo cáo\n- `report.md`\n",
+        );
+        assert!(validate_plan(&p3, None).contains(&"split_with_products".to_string()));
+    }
+
+    #[test]
+    fn split_allowed_validation() {
+        let p = make_split_plan(
+            "",
+            "| 1 | Task 1 | Req 1 | |\n| 2 | Task 2 | Req 2 | 1 |\n",
+            "",
+        );
+        // Task cha trong workflow auto -> Ok
+        assert_eq!(
+            validate_split_allowed(&p, SplitCtx { is_child: false, workflow_auto: true }),
+            Ok(())
+        );
+        // Task con không được tách tiếp -> split_nested
+        assert_eq!(
+            validate_split_allowed(&p, SplitCtx { is_child: true, workflow_auto: true }),
+            Err("split_nested".to_string())
+        );
+        // Quy trình không auto -> split_needs_auto
+        assert_eq!(
+            validate_split_allowed(&p, SplitCtx { is_child: false, workflow_auto: false }),
+            Err("split_needs_auto".to_string())
+        );
+
+        // Plan bình thường: luôn Ok kể cả khi is_child hoặc !workflow_auto
+        let normal = parse_plan(PLAN_BASE);
+        assert_eq!(
+            validate_split_allowed(&normal, SplitCtx { is_child: true, workflow_auto: false }),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn split_escaped_pipe_in_request() {
+        let p = make_split_plan(
+            "",
+            "| 1 | Task 1 | Chạy: cmd1 \\| cmd2 | |\n| 2 | Task 2 | Req 2 | 1 |\n",
+            "",
+        );
+        let items = split_items(&p);
+        assert_eq!(items[0].request, "Chạy: cmd1 | cmd2");
+    }
+
+    #[test]
+    fn split_error_translations() {
+        assert_eq!(plan_error_vietnamese("split_with_changes"), "Plan tách việc không được có dòng trong bảng Thay đổi");
+        assert_eq!(plan_error_vietnamese("split_too_few"), "Plan tách việc phải có ít nhất 2 việc con");
+        assert_eq!(plan_error_vietnamese("split_too_many"), "Plan tách việc có quá nhiều việc con (tối đa 30)");
+        assert_eq!(plan_error_vietnamese("split_nested"), "Task con không được tách việc tiếp");
+        assert_eq!(plan_error_vietnamese("split_needs_auto"), "Chỉ quy trình tự động (auto) mới được phép tách việc");
     }
 }
