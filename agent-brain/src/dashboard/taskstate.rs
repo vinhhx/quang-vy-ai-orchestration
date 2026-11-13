@@ -809,7 +809,7 @@ pub fn build_reopen(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) 
     } else if !f.git.branch_exists {
         enabled = false;
         reason = Some(format!(
-            "Nhánh '{}' không còn tồn tại trên repo.",
+            "Nhánh '{}' không còn tồn tại trên repo. Dùng \"Chạy lại (task mới)\".",
             f.task.branch
         ));
     }
@@ -818,6 +818,40 @@ pub fn build_reopen(f: &TaskFacts, a: &AutoFacts, running_run: Option<&RunRow>) 
         id: "reopen".to_string(),
         label: "Mở lại task".to_string(),
         enabled,
+        reason,
+        run_id: None,
+    }
+}
+
+/// Nhóm (`TaskView.group`) của task được chạy lại bằng clone: đã xong (`done`), đã hủy
+/// (`cancelled`) hoặc đang cần xử lý (`attention`: blocked / qa_fix / run lỗi). Task còn đang
+/// chờ bước kế tiếp (`waiting`) chưa "kết thúc" — hủy (Dừng hẳn) trước rồi chạy lại.
+pub fn rerun_group_ok(group: &str) -> bool {
+    matches!(group, "done" | "cancelled" | "attention")
+}
+
+/// Vì sao task không chạy lại bằng clone được (`None` = được). Dùng chung cho nút `rerun` và
+/// lõi `rerun_task`, nên hai nơi luôn cùng một luật: không có run hoặc driver nào chạy, và task
+/// đã kết thúc theo `rerun_group_ok`.
+pub fn rerun_refusal(group: &str, busy: bool) -> Option<String> {
+    if busy {
+        return Some("Task đang có run hoặc autopilot chạy — chờ xong rồi chạy lại.".to_string());
+    }
+    if !rerun_group_ok(group) {
+        return Some(
+            "Task chưa kết thúc — bấm Dừng hẳn (hủy) hoặc chờ task xong rồi chạy lại.".to_string(),
+        );
+    }
+    None
+}
+
+/// Nút "Chạy lại (task mới)": tạo task mới từ cấu hình của task này (không dựng lại nhánh cũ).
+pub fn build_rerun(group: &str, busy: bool) -> ActionView {
+    let reason = rerun_refusal(group, busy);
+    ActionView {
+        id: "rerun".to_string(),
+        label: "Chạy lại (task mới)".to_string(),
+        enabled: reason.is_none(),
         reason,
         run_id: None,
     }
@@ -1154,6 +1188,11 @@ pub fn derive_with(f: &TaskFacts, a: &AutoFacts) -> TaskView {
 
     if crate::tasks::is_success_status(&f.task.status) {
         controls.push(build_reopen(f, a, running_run));
+    }
+
+    // Chạy lại bằng clone: task đã xong / đã hủy / cần xử lý, kể cả khi nhánh và worktree đã dọn.
+    if rerun_group_ok(&group) {
+        controls.push(build_rerun(&group, running_run.is_some() || a.driver_alive));
     }
 
     if let Some(mode) = a.human_mode {
@@ -2968,6 +3007,83 @@ mod tests {
             ..Default::default()
         };
         assert_ne!(derive_with(&facts, &af).group, "cancelled");
+    }
+
+    /// "Chạy lại (task mới)": offered for done / cancelled / attention tasks, never for a task
+    /// that is still waiting for its next step or is running; one rule for the button and the core.
+    #[test]
+    fn test_rerun_control() {
+        let cfg = crate::config::config_from_value(
+            &serde_json::from_str(crate::config::DEFAULT_CONFIG_JSON).unwrap(),
+        )
+        .unwrap();
+        let wfs = crate::workflows::load_from(None, &cfg);
+        let mac_dinh = wfs.get("mac-dinh").unwrap();
+        // The branch is gone (cleaned up): reopen is refused, the clone is not.
+        let git = GitFacts {
+            current_branch: None,
+            branch_exists: false,
+            plan_exists: false,
+            ..Default::default()
+        };
+        let controls_of = |status: &str, auto_state: Option<&str>, cancelled: bool| {
+            let task = dummy_task(status);
+            let facts = TaskFacts {
+                task: &task,
+                lead: None,
+                dev: None,
+                qa: None,
+                git: &git,
+                busy: None,
+                now_ms: 2000,
+            };
+            let auto = dummy_task_auto(auto_state, None);
+            let aj = AutoJson {
+                cancelled,
+                ..Default::default()
+            };
+            let af = AutoFacts {
+                workflow: Some(mac_dinh),
+                auto: Some(&auto),
+                auto_json: Some(&aj),
+                ..Default::default()
+            };
+            derive_with(&facts, &af).controls
+        };
+        let rerun = |cs: &[ActionView]| cs.iter().find(|c| c.id == "rerun").cloned();
+
+        // Done task with no branch: reopen says why and points at the clone; rerun is on.
+        let cs = controls_of("qa_pass", Some("done"), false);
+        let reopen = cs.iter().find(|c| c.id == "reopen").unwrap();
+        assert!(!reopen.enabled);
+        assert!(reopen
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("Chạy lại (task mới)"));
+        let r = rerun(&cs).expect("rerun on a done task");
+        assert_eq!(r.label, "Chạy lại (task mới)");
+        assert!(r.enabled, "{r:?}");
+
+        // Cancelled, blocked and qa_fix tasks can be re-run too.
+        assert!(rerun(&controls_of("planned", Some("ended"), true)).unwrap().enabled);
+        assert!(rerun(&controls_of("blocked", Some("ended"), false)).unwrap().enabled);
+        assert!(rerun(&controls_of("qa_fix", Some("stopped"), false)).is_none());
+        assert!(rerun(&controls_of("qa_fix", Some("ended"), false)).unwrap().enabled);
+
+        // A task still waiting for its next step is not finished: no button.
+        assert!(rerun(&controls_of("planned", Some("gate"), false)).is_none());
+        assert!(rerun(&controls_of("open", None, false)).is_none());
+
+        // The shared rule.
+        assert_eq!(rerun_refusal("done", false), None);
+        assert_eq!(rerun_refusal("cancelled", false), None);
+        assert_eq!(rerun_refusal("attention", false), None);
+        assert!(rerun_refusal("done", true).unwrap().contains("chạy"));
+        assert!(rerun_refusal("waiting", false).unwrap().contains("chưa kết thúc"));
+        assert!(rerun_refusal("running", false).is_some());
+        assert!(!build_rerun("running", false).enabled);
+        assert!(!build_rerun("cancelled", true).enabled);
     }
 
     #[test]

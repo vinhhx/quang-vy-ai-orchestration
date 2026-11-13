@@ -223,9 +223,12 @@ CREATE VIRTUAL TABLE journal_fts USING fts5(
   updated_at INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX queued_actions_one_waiting ON queued_actions(task_id) WHERE status = 'waiting';"#,
+    // 14: chạy lại bằng clone: task nguồn (`cloned_from`) và yêu cầu gốc (`request`)
+    r#"ALTER TABLE tasks ADD COLUMN cloned_from INTEGER REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN request TEXT;"#,
 ];
 
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 impl From<rusqlite::Error> for BrainError {
     fn from(e: rusqlite::Error) -> Self {
@@ -973,6 +976,60 @@ pub fn mark_task_origin(conn: &Connection, task_id: i64, origin: &str) -> BrainR
         params![task_id, origin],
     )?;
     Ok(changes == 1)
+}
+
+/// Yêu cầu gốc của task (`None` cho task thiếu, tạo trước lược đồ 14 hoặc không qua `start_new_task`).
+pub fn task_request(conn: &Connection, task_id: i64) -> BrainResult<Option<String>> {
+    let mut stmt = conn.prepare("SELECT request FROM tasks WHERE id = ?1")?;
+    let mut rows = stmt.query(params![task_id])?;
+    match rows.next()? {
+        Some(r) => Ok(r.get(0)?),
+        None => Ok(None),
+    }
+}
+
+/// Ghi yêu cầu gốc của task. Không đổi `updated_at`: đây là ghi chú về nguồn gốc, không phải
+/// thay đổi trạng thái nên không làm đổi `rev` của dashboard hay chữ ký của Telegram.
+pub fn set_task_request(conn: &Connection, task_id: i64, request: &str) -> BrainResult<()> {
+    let changes = conn.execute(
+        "UPDATE tasks SET request = ?1 WHERE id = ?2",
+        params![request, task_id],
+    )?;
+    if changes == 0 {
+        return Err(BrainError::error(format!("Không tìm thấy task #{task_id}")));
+    }
+    Ok(())
+}
+
+/// Task mà task này được tạo bằng "Chạy lại (task mới)" từ đó (`None` = không phải clone).
+pub fn task_cloned_from(conn: &Connection, task_id: i64) -> BrainResult<Option<i64>> {
+    let mut stmt = conn.prepare("SELECT cloned_from FROM tasks WHERE id = ?1")?;
+    let mut rows = stmt.query(params![task_id])?;
+    match rows.next()? {
+        Some(r) => Ok(r.get(0)?),
+        None => Ok(None),
+    }
+}
+
+/// Ghi nguồn của một task clone.
+pub fn set_task_cloned_from(conn: &Connection, task_id: i64, source_id: i64) -> BrainResult<()> {
+    let changes = conn.execute(
+        "UPDATE tasks SET cloned_from = ?1 WHERE id = ?2",
+        params![source_id, task_id],
+    )?;
+    if changes == 0 {
+        return Err(BrainError::error(format!("Không tìm thấy task #{task_id}")));
+    }
+    Ok(())
+}
+
+/// Đổi tiêu đề hiển thị của task (dùng cho task clone: giữ tiêu đề của task nguồn).
+pub fn set_task_title(conn: &Connection, task_id: i64, title: &str) -> BrainResult<()> {
+    conn.execute(
+        "UPDATE tasks SET title = ?1 WHERE id = ?2",
+        params![title, task_id],
+    )?;
+    Ok(())
 }
 
 /// The task's team JSON (`None` for a missing task or a NULL column).

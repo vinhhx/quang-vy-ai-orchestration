@@ -1412,7 +1412,8 @@ fn auto_start_stop_end() {
         .iter()
         .map(|c| c["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, vec!["approve", "return_lead", "auto_start"], "{t}");
+    // Task hủy còn "Chạy lại (task mới)".
+    assert_eq!(ids, vec!["approve", "return_lead", "auto_start", "rerun"], "{t}");
 
     let again = srv.post_json("/api/tasks/1/auto/end", &json!({}));
     assert_eq!(again.status, 409, "{}", again.text());
