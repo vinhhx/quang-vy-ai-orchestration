@@ -625,6 +625,168 @@ fn agy_tool_decision_inner(
     Some(decide(policy, &payload))
 }
 
+/// Returns `Some(description)` when an agy tool step is a safe read operation:
+/// - `Read`, `Glob`, `Grep` (or agy tools mapping to them) accessing a path inside the project root
+///   or a source root, not matching any denied pattern (`.git`, `.planning`, `.env*`, sensitive).
+/// - `Bash` (`run_command`) executing a safe read-only command in the project root without shell
+///   operators or redirections, where arguments (treated as paths) are also safe read paths.
+/// Returns `None` for writes, edits, forbidden commands/paths, or any other tool.
+pub fn agy_soft_read(
+    policy: &Policy,
+    tool_name: &str,
+    params: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    if tool_name.starts_with("browser_") {
+        return None;
+    }
+    let payload = agy_tool_payload(tool_name, params, &policy.root)?;
+    let claude_tool = payload.get("tool_name").and_then(|v| v.as_str())?;
+
+    match claude_tool {
+        "Read" => {
+            let raw_path = payload
+                .get("tool_input")
+                .and_then(|ti| ti.get("file_path").or_else(|| ti.get("path")))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if is_safe_read_path(policy, raw_path) {
+                Some(format!("đọc an toàn: {raw_path}"))
+            } else {
+                None
+            }
+        }
+        "Glob" | "Grep" => {
+            let raw_path = payload
+                .get("tool_input")
+                .and_then(|ti| ti.get("path").or_else(|| ti.get("file_path")))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if is_safe_read_path(policy, raw_path) {
+                Some(format!("đọc an toàn: {raw_path}"))
+            } else {
+                None
+            }
+        }
+        "Bash" => {
+            if let Some(cwd) = params.get(AGY_CWD_KEY).and_then(|v| v.as_str()) {
+                if !cwd.is_empty() {
+                    let cwd_path = Path::new(cwd);
+                    let resolved = if cwd_path.is_absolute() {
+                        realpath_nfc(cwd_path)
+                    } else {
+                        realpath_nfc(&policy.root.join(cwd_path))
+                    };
+                    if resolved != realpath_nfc(&policy.root) {
+                        return None;
+                    }
+                }
+            }
+
+            let cmd = payload
+                .get("tool_input")
+                .and_then(|ti| ti.get("command"))
+                .and_then(|v| v.as_str())?;
+            let cmd = cmd.trim();
+            if cmd.is_empty() {
+                return None;
+            }
+
+            if cmd.contains(';')
+                || cmd.contains('|')
+                || cmd.contains('&')
+                || cmd.contains('>')
+                || cmd.contains('<')
+                || cmd.contains("$(")
+                || cmd.contains('`')
+                || cmd.contains('\n')
+                || cmd.contains('\r')
+            {
+                return None;
+            }
+
+            let words = match shell_words(cmd) {
+                Ok(w) => w,
+                Err(_) => return None,
+            };
+            if words.is_empty() || is_env_assignment(&words[0].text) {
+                return None;
+            }
+
+            const SAFE_READ_COMMANDS: &[&str] = &[
+                "ls", "cat", "head", "tail", "wc", "stat", "file", "tree", "pwd", "grep", "rg",
+                "find",
+            ];
+            let prog = words[0].text.as_str();
+            if !SAFE_READ_COMMANDS.contains(&prog) {
+                return None;
+            }
+
+            if prog == "find" {
+                const FORBIDDEN_FIND_FLAGS: &[&str] = &[
+                    "-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0",
+                    "-fprintf", "-fls",
+                ];
+                if words[1..].iter().any(|w| {
+                    FORBIDDEN_FIND_FLAGS.contains(&w.text.as_str())
+                        || w.text.starts_with("-exec")
+                        || w.text.starts_with("-ok")
+                        || w.text.starts_with("-fprint")
+                        || w.text.starts_with("-fprintf")
+                        || w.text.starts_with("-fls")
+                        || w.text == "-delete"
+                }) {
+                    return None;
+                }
+            }
+
+            let is_grep_or_rg = prog == "grep" || prog == "rg";
+            let mut seen_grep_pattern = false;
+
+            for w in &words[1..] {
+                if w.text.starts_with('-') {
+                    continue;
+                }
+                if is_grep_or_rg && !seen_grep_pattern {
+                    seen_grep_pattern = true;
+                    continue;
+                }
+                if !is_safe_read_path(policy, &w.text) {
+                    return None;
+                }
+            }
+
+            Some(format!("lệnh chỉ đọc an toàn: {cmd}"))
+        }
+        _ => None,
+    }
+}
+
+fn is_safe_read_path(policy: &Policy, raw_path: &str) -> bool {
+    let norm: String = raw_path.nfc().collect();
+    let joined = if Path::new(&norm).is_absolute() {
+        PathBuf::from(&norm)
+    } else {
+        policy.root.join(&norm)
+    };
+    let resolved = realpath_nfc(&joined);
+
+    for sr in &policy.source_roots {
+        let sr_real = realpath_nfc(sr);
+        if let Ok(rel) = resolved.strip_prefix(&sr_real) {
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            return !grant_denied_rel(&rel_str);
+        }
+    }
+
+    let root_real = realpath_nfc(&policy.root);
+    if let Ok(rel) = resolved.strip_prefix(&root_real) {
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        return !grant_denied_rel(&rel_str);
+    }
+
+    false
+}
+
 /// True when the root-relative path is one a directory grant never covers: anything under
 /// `.git` or `.planning`, any `.env*` component, and the sensitive paths of `report`.
 pub fn grant_denied_rel(rel: &str) -> bool {
@@ -3488,6 +3650,144 @@ mod tests {
         assert!(!agy_allows(&pol, "run_command", &[("CommandLine", "id")]));
         let text = std::fs::read_to_string(&log).unwrap();
         assert!(text.contains("\"decision\":\"block\""), "{text}");
+    }
+
+    struct SoftReadEnv {
+        _td: tempfile::TempDir,
+        _outside_td: tempfile::TempDir,
+        root: PathBuf,
+        pol: Policy,
+    }
+
+    fn setup_soft_read_env() -> SoftReadEnv {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.txt"), "hello").unwrap();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/b.txt"), "world").unwrap();
+        std::fs::write(root.join(".env.x"), "SECRET=1").unwrap();
+
+        let outside_td = tempfile::tempdir().unwrap();
+        let outside_file = outside_td.path().canonicalize().unwrap().join("outside.env");
+        std::fs::write(&outside_file, "OUTSIDE=1").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_file, root.join("link.env")).unwrap();
+
+        let pol = grant_policy(&root);
+        SoftReadEnv {
+            _td: td,
+            _outside_td: outside_td,
+            root,
+            pol,
+        }
+    }
+
+    fn soft_read(pol: &Policy, tool: &str, pairs: &[(&str, &str)]) -> Option<String> {
+        agy_soft_read(pol, tool, &agy_params(pairs))
+    }
+
+    #[test]
+    fn agy_soft_read_read_file_existing() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "read_file", &[("Path", "a.txt")]).is_some());
+        assert!(soft_read(
+            &env.pol,
+            "read_file",
+            &[("Path", &env.root.join("a.txt").to_string_lossy())]
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn agy_soft_read_read_file_nonexistent() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "read_file", &[("Path", "khong-ton-tai.json")]).is_some());
+    }
+
+    #[test]
+    fn agy_soft_read_read_file_env() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "read_file", &[("Path", ".env.x")]).is_none());
+    }
+
+    #[test]
+    fn agy_soft_read_read_file_outside_etc_passwd() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "read_file", &[("Path", "/etc/passwd")]).is_none());
+    }
+
+    #[test]
+    fn agy_soft_read_read_file_symlink_outside() {
+        let env = setup_soft_read_env();
+        #[cfg(unix)]
+        assert!(soft_read(&env.pol, "read_file", &[("Path", "link.env")]).is_none());
+    }
+
+    #[test]
+    fn agy_soft_read_list_dir() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "list_dir", &[("DirectoryPath", "sub")]).is_some());
+    }
+
+    #[test]
+    fn agy_soft_read_run_command_ls() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "ls -la sub")]).is_some());
+    }
+
+    #[test]
+    fn agy_soft_read_run_command_cat_env() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "cat .env.x")]).is_none());
+    }
+
+    #[test]
+    fn agy_soft_read_run_command_semicolon() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "ls; rm -rf x")]).is_none());
+    }
+
+    #[test]
+    fn agy_soft_read_run_command_find_delete() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "find . -delete")]).is_none());
+    }
+
+    #[test]
+    fn agy_soft_read_run_command_grep_pattern() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "grep -rn foo sub")]).is_some());
+    }
+
+    #[test]
+    fn agy_soft_read_run_command_rm() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "rm a.txt")]).is_none());
+    }
+
+    #[test]
+    fn agy_soft_read_write_file() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "write_file", &[("Path", "a.txt")]).is_none());
+    }
+
+    #[test]
+    fn agy_soft_read_all_cases() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "read_file", &[("Path", "a.txt")]).is_some());
+        assert!(soft_read(&env.pol, "read_file", &[("Path", "khong-ton-tai.json")]).is_some());
+        assert!(soft_read(&env.pol, "read_file", &[("Path", ".env.x")]).is_none());
+        assert!(soft_read(&env.pol, "read_file", &[("Path", "/etc/passwd")]).is_none());
+        #[cfg(unix)]
+        assert!(soft_read(&env.pol, "read_file", &[("Path", "link.env")]).is_none());
+        assert!(soft_read(&env.pol, "list_dir", &[("DirectoryPath", "sub")]).is_some());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "ls -la sub")]).is_some());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "cat .env.x")]).is_none());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "ls; rm -rf x")]).is_none());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "find . -delete")]).is_none());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "grep -rn foo sub")]).is_some());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "rm a.txt")]).is_none());
+        assert!(soft_read(&env.pol, "write_file", &[("Path", "a.txt")]).is_none());
     }
 
     /// A project repo with `node_modules/.bin/x`, `node_modules/pkg/package.json` and a sibling
