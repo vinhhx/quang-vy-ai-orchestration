@@ -744,12 +744,51 @@ pub fn agy_soft_read(
 
             for w in &words[1..] {
                 if w.text.starts_with('-') {
+                    if prog == "grep" {
+                        if w.text == "--dereference-recursive"
+                            || (!w.text.starts_with("--") && w.text[1..].contains('R'))
+                        {
+                            return None;
+                        }
+                    } else if prog == "rg" {
+                        if w.text == "--follow"
+                            || (!w.text.starts_with("--") && w.text[1..].contains('L'))
+                        {
+                            return None;
+                        }
+                    } else if prog == "find" {
+                        if w.text == "-L" || w.text == "-follow" || w.text == "-H" {
+                            return None;
+                        }
+                    } else if prog == "tree" {
+                        if w.text == "-l"
+                            || (!w.text.starts_with("--") && w.text[1..].contains('l'))
+                        {
+                            return None;
+                        }
+                    } else if prog == "ls" {
+                        if w.text == "-L"
+                            || (!w.text.starts_with("--") && w.text[1..].contains('L'))
+                        {
+                            return None;
+                        }
+                    }
                     continue;
                 }
+
+                if w.glob
+                    || w.text
+                        .chars()
+                        .any(|c| matches!(c, '*' | '?' | '[' | ']' | '{' | '}'))
+                {
+                    return None;
+                }
+
                 if is_grep_or_rg && !seen_grep_pattern {
                     seen_grep_pattern = true;
                     continue;
                 }
+
                 if !is_safe_read_path(policy, &w.text) {
                     return None;
                 }
@@ -3772,6 +3811,21 @@ mod tests {
     }
 
     #[test]
+    fn agy_soft_read_run_command_glob_blocked() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "cat .gsd/.e*")]).is_none());
+    }
+
+    #[test]
+    fn agy_soft_read_run_command_symlink_following_flags_blocked() {
+        let env = setup_soft_read_env();
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "grep -Rn foo sub")]).is_none());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "rg --follow foo sub")]).is_none());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "find -L . -name x")]).is_none());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "grep -rn foo sub")]).is_some());
+    }
+
+    #[test]
     fn agy_soft_read_all_cases() {
         let env = setup_soft_read_env();
         assert!(soft_read(&env.pol, "read_file", &[("Path", "a.txt")]).is_some());
@@ -3783,9 +3837,13 @@ mod tests {
         assert!(soft_read(&env.pol, "list_dir", &[("DirectoryPath", "sub")]).is_some());
         assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "ls -la sub")]).is_some());
         assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "cat .env.x")]).is_none());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "cat .gsd/.e*")]).is_none());
         assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "ls; rm -rf x")]).is_none());
         assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "find . -delete")]).is_none());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "find -L . -name x")]).is_none());
         assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "grep -rn foo sub")]).is_some());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "grep -Rn foo sub")]).is_none());
+        assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "rg --follow foo sub")]).is_none());
         assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "rm a.txt")]).is_none());
         assert!(soft_read(&env.pol, "write_file", &[("Path", "a.txt")]).is_none());
     }
