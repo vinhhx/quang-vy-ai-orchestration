@@ -1616,6 +1616,19 @@ pub fn set_split_item_started(conn: &Connection, id: i64, child_task_id: i64) ->
     Ok(())
 }
 
+/// Đặt lại các việc con có state IN ('failed','skipped') và chưa có task con về 'waiting', reason = NULL.
+pub fn reset_retryable_split_items(conn: &Connection, parent_id: i64) -> BrainResult<usize> {
+    let count = conn.execute(
+        "UPDATE split_items
+         SET state = 'waiting', reason = NULL, updated_at = ?1
+         WHERE parent_id = ?2
+           AND state IN ('failed', 'skipped')
+           AND child_task_id IS NULL",
+        params![now_ms(), parent_id],
+    )?;
+    Ok(count)
+}
+
 /// Đổi trạng thái việc con (failed, skipped, cancelled, v.v.).
 pub fn set_split_item_state(
     conn: &Connection,

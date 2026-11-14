@@ -227,6 +227,11 @@ enum SplitCommands {
         /// ID của task cha
         task_id: i64,
     },
+    /// Chạy lại các việc con đã failed hoặc skipped (chưa có task con)
+    Retry {
+        /// ID của task cha
+        task_id: i64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -589,6 +594,7 @@ fn main() {
             SplitCommands::Aggregate { task_id } => {
                 agent_brain::split::cmd_aggregate(&ctx, task_id)
             }
+            SplitCommands::Retry { task_id } => agent_brain::split::cmd_retry(&ctx, task_id),
         },
         Commands::Dept { subcommand } => match subcommand {
             DeptCommands::List => agent_brain::departments::cmd_list(&ctx),

@@ -425,6 +425,50 @@ pub fn cmd_aggregate(ctx: &crate::app::Ctx, task_id: i64) -> BrainResult<i32> {
     Ok(0)
 }
 
+/// Chạy lại các việc con đã failed hoặc skipped (chưa có task con):
+/// - Kiểm tra task cha có `split_items`. Không có thì báo lỗi.
+/// - Đặt các item `state IN ('failed', 'skipped') AND child_task_id IS NULL` về `state = 'waiting'`, `reason = NULL`.
+/// - Nếu có ít nhất 1 item được đặt lại:
+///   + Đặt `auto_state = 'waiting_children'`, `auto_driver = NULL`.
+///   + Đưa `status` về giá trị trước khi `aggregate` đặt `split_done` (tức `"planned"`).
+/// - Trả về số item đã đặt lại.
+pub fn retry(conn: &Connection, parent: &TaskRow) -> BrainResult<usize> {
+    let items = crate::db::split_items_of(conn, parent.id)?;
+    if items.is_empty() {
+        return Err(BrainError::error(format!(
+            "Task #{} không có danh sách việc con",
+            parent.id
+        )));
+    }
+
+    let reset_count = crate::db::reset_retryable_split_items(conn, parent.id)?;
+    if reset_count > 0 {
+        crate::db::set_auto_state(conn, parent.id, Some("waiting_children"))?;
+        crate::db::set_auto_driver(conn, parent.id, None, None)?;
+        crate::db::set_task_status(conn, parent.id, "planned")?;
+    }
+    Ok(reset_count)
+}
+
+pub fn cmd_retry(ctx: &crate::app::Ctx, task_id: i64) -> BrainResult<i32> {
+    let conn = &ctx.conn;
+    let parent = match crate::db::get_task(conn, task_id)? {
+        Some(t) => t,
+        None => return Err(BrainError::error(format!("Không tìm thấy task #{task_id}"))),
+    };
+    let count = retry(conn, &parent)?;
+    if count == 0 {
+        crate::term::emit_out(&format!(
+            "Task #{task_id} không có việc con nào ở trạng thái failed/skipped cần chạy lại."
+        ));
+    } else {
+        crate::term::emit_out(&format!(
+            "Đã đặt lại {count} việc con của task #{task_id} về trạng thái chờ (waiting)."
+        ));
+    }
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +645,107 @@ mod tests {
         assert_eq!(updated_parent.status, "split_done");
         let auto = crate::db::task_auto(&conn, parent.id).unwrap().unwrap();
         assert_eq!(auto.auto_state.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn test_retry_split_items() {
+        let (_dir, conn, parent) = fresh_task();
+        let items = vec![
+            SplitItem {
+                idx: 1,
+                title: "Viec 1".to_string(),
+                request: "Req 1".to_string(),
+                after: None,
+            },
+            SplitItem {
+                idx: 2,
+                title: "Viec 2".to_string(),
+                request: "Req 2".to_string(),
+                after: Some(1),
+            },
+            SplitItem {
+                idx: 3,
+                title: "Viec 3".to_string(),
+                request: "Req 3".to_string(),
+                after: Some(2),
+            },
+        ];
+        materialize(&conn, &parent, "commit_sha", &items).unwrap();
+        let list = crate::db::split_items_of(&conn, parent.id).unwrap();
+        assert_eq!(list.len(), 3);
+
+        // item 1 failed (không child)
+        crate::db::set_split_item_state(&conn, list[0].id, "failed", Some("Lỗi slug")).unwrap();
+
+        // item 2 skipped
+        crate::db::set_split_item_state(&conn, list[1].id, "skipped", Some("Việc #1 không đạt")).unwrap();
+
+        // item 3 failed có child_task_id
+        let child3_id = crate::db::upsert_task(
+            &conn,
+            parent.project_id,
+            "child-3",
+            "Req 3",
+            "task/child-3",
+            Some("main"),
+            None,
+        )
+        .unwrap();
+        crate::db::set_split_item_started(&conn, list[2].id, child3_id).unwrap();
+        crate::db::set_split_item_state(&conn, list[2].id, "failed", Some("Test run fail")).unwrap();
+
+        // aggregate đặt status = 'split_done' và auto_state = 'done'
+        aggregate(&conn, &parent).unwrap();
+        let p_done = crate::db::get_task(&conn, parent.id).unwrap().unwrap();
+        assert_eq!(p_done.status, "split_done");
+
+        // Gọi retry
+        let count = retry(&conn, &p_done).unwrap();
+        assert_eq!(count, 2);
+
+        // Sau retry:
+        // item 1 và 2 là waiting, reason = None
+        let list_after = crate::db::split_items_of(&conn, parent.id).unwrap();
+        assert_eq!(list_after[0].state, "waiting");
+        assert_eq!(list_after[0].reason, None);
+
+        assert_eq!(list_after[1].state, "waiting");
+        assert_eq!(list_after[1].reason, None);
+
+        // item 3 giữ nguyên failed và child_task_id
+        assert_eq!(list_after[2].state, "failed");
+        assert_eq!(list_after[2].child_task_id, Some(child3_id));
+        assert_eq!(list_after[2].reason.as_deref(), Some("Test run fail"));
+
+        // task cha auto_state = 'waiting_children', auto_driver = None, status != 'split_done'
+        let p_after = crate::db::get_task(&conn, parent.id).unwrap().unwrap();
+        assert_ne!(p_after.status, "split_done");
+        assert_eq!(p_after.status, "planned");
+
+        let auto_after = crate::db::task_auto(&conn, parent.id).unwrap().unwrap();
+        assert_eq!(auto_after.auto_state.as_deref(), Some("waiting_children"));
+        assert_eq!(auto_after.auto_pid, None);
+    }
+
+    #[test]
+    fn test_retry_without_split_items_fails() {
+        let (_dir, conn, parent) = fresh_task();
+        let res = retry(&conn, &parent);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_retry_when_no_items_need_retry() {
+        let (_dir, conn, parent) = fresh_task();
+        let items = vec![SplitItem {
+            idx: 1,
+            title: "Viec 1".to_string(),
+            request: "Req 1".to_string(),
+            after: None,
+        }];
+        materialize(&conn, &parent, "commit_sha", &items).unwrap();
+        // Item đang ở waiting, không có failed/skipped
+        let count = retry(&conn, &parent).unwrap();
+        assert_eq!(count, 0);
     }
 }
