@@ -12,7 +12,7 @@ use crate::dashboard::api_tasks::{
 };
 use crate::orchestrator::plancheck::{plan_check, PlanCheck};
 use crate::dashboard::AppState;
-use crate::error::BrainResult;
+use crate::error::{BrainError, BrainResult};
 use crate::tracing;
 
 /// Tính số task đang chạy trong hệ thống: bao gồm các task có run hoặc auto_state đang 'running' trong CSDL,
@@ -885,6 +885,27 @@ fn clip_note(note: &str) -> String {
     s
 }
 
+/// Sinh slug ứng viên cho việc con từ slug cha, số thứ tự `idx` và số lượt chạy lại `rerun_num`.
+/// Kết quả luôn ổn định qua `routing::slugify`, độ dài <= SLUG_MAX_LEN, khác slug cha khi parent_slug != "task".
+pub(crate) fn child_slug_candidate(parent_slug: &str, idx: usize, rerun_num: usize) -> String {
+    let suffix = if rerun_num <= 1 {
+        format!("-c{idx}")
+    } else {
+        format!("-c{idx}-r{rerun_num}")
+    };
+    let max_head_len = crate::routing::SLUG_MAX_LEN.saturating_sub(suffix.len());
+    let head = if parent_slug.len() <= max_head_len {
+        parent_slug
+    } else {
+        &parent_slug[..max_head_len]
+    };
+    let mut head = head.trim_end_matches('-');
+    if head.is_empty() {
+        head = "task";
+    }
+    format!("{head}{suffix}")
+}
+
 /// `<slug cha>-c<idx>`, `-r2`, `-r3`, … : slug chưa có hàng trong DB và chưa có nhánh trong repo.
 fn pick_child_slug(
     conn: &rusqlite::Connection,
@@ -892,28 +913,33 @@ fn pick_child_slug(
     parent_slug: &str,
     idx: usize,
 ) -> BrainResult<String> {
-    let base = format!("{parent_slug}-c{idx}");
     let project_row_id = crate::db::project_row_id(conn, &project.id)?;
     let root = project.root();
 
-    let mut candidate = base.clone();
     let mut rerun_num = 1;
     loop {
-        let mut free = true;
-        for prefix in ["task", "analysis"] {
-            let branch = format!("{prefix}/{candidate}");
-            if crate::db::find_task_by_branch(conn, project_row_id, &branch)?.is_some()
-                || crate::gitops::branch_exists(&root, &branch)
-            {
-                free = false;
-                break;
+        if rerun_num > 1000 {
+            return Err(BrainError::error(format!(
+                "Không tìm được slug trống cho việc con #{idx} của task {parent_slug}"
+            )));
+        }
+        let candidate = child_slug_candidate(parent_slug, idx, rerun_num);
+        let mut free = candidate != parent_slug;
+        if free {
+            for prefix in ["task", "analysis"] {
+                let branch = format!("{prefix}/{candidate}");
+                if crate::db::find_task_by_branch(conn, project_row_id, &branch)?.is_some()
+                    || crate::gitops::branch_exists(&root, &branch)
+                {
+                    free = false;
+                    break;
+                }
             }
         }
         if free {
             return Ok(candidate);
         }
         rerun_num += 1;
-        candidate = format!("{base}-r{rerun_num}");
     }
 }
 
@@ -1047,6 +1073,18 @@ pub fn handle_split_items(st: &AppState, conn: &rusqlite::Connection) -> BrainRe
             }
         };
 
+        let child_branch = format!("task/{child_slug}");
+        let project_row_id = crate::db::project_row_id(conn, &project.id)?;
+        if crate::db::find_task_by_branch(conn, project_row_id, &child_branch)?.is_some() {
+            crate::db::set_split_item_state(
+                conn,
+                item.id,
+                "failed",
+                Some(&format!("Nhánh {child_branch} đã tồn tại")),
+            )?;
+            continue;
+        }
+
         let child_request = format!(
             "{}\n\n{}\n\n(Việc con #{} của task #{} \"{}\")",
             item.title, item.request, item.idx, item.parent_id, parent_task.title
@@ -1098,6 +1136,42 @@ pub fn handle_split_items(st: &AppState, conn: &rusqlite::Connection) -> BrainRe
                 task_id: child_task_id,
                 ..
             }) => {
+                if child_task_id == item.parent_id {
+                    crate::db::set_split_item_state(
+                        conn,
+                        item.id,
+                        "failed",
+                        Some(&format!("Slug việc con trùng task cha #{child_task_id}")),
+                    )?;
+                    continue;
+                }
+                let existing_parent = crate::db::task_parent(conn, child_task_id)?;
+                if existing_parent.is_some() && existing_parent != Some(item.parent_id) {
+                    crate::db::set_split_item_state(
+                        conn,
+                        item.id,
+                        "failed",
+                        Some(&format!("Slug việc con trùng task #{child_task_id}")),
+                    )?;
+                    continue;
+                }
+                let in_split_item: bool = conn
+                    .query_row(
+                        "SELECT 1 FROM split_items WHERE child_task_id = ?1 AND id != ?2 LIMIT 1",
+                        rusqlite::params![child_task_id, item.id],
+                        |_| Ok(true),
+                    )
+                    .unwrap_or(false);
+                if in_split_item {
+                    crate::db::set_split_item_state(
+                        conn,
+                        item.id,
+                        "failed",
+                        Some(&format!("Slug việc con trùng task #{child_task_id}")),
+                    )?;
+                    continue;
+                }
+
                 crate::db::set_task_parent(conn, child_task_id, item.parent_id)?;
                 crate::db::set_task_request(conn, child_task_id, &item.request)?;
                 crate::db::set_split_item_started(conn, item.id, child_task_id)?;
@@ -1265,5 +1339,30 @@ mod tests {
         assert!(!left.contains(&rerun));
         assert!(left.contains(&marked));
         assert!(left.contains(&kept));
+    }
+
+    #[test]
+    fn child_slug_candidate_rules() {
+        let parent = "viet-test-case-va-test-playwright-cho-toan-bo-r2";
+        assert_eq!(parent.len(), 48);
+
+        // slug cha 48 ký tự, idx 1 -> kết quả <= 48, kết thúc bằng -c1, khác slug cha, slugify(x) == x
+        let c1 = child_slug_candidate(parent, 1, 1);
+        assert!(c1.len() <= crate::routing::SLUG_MAX_LEN);
+        assert!(c1.ends_with("-c1"));
+        assert_ne!(c1, parent);
+        assert_eq!(crate::routing::slugify(&c1), c1);
+
+        // idx 20 và rerun -r3 cũng thỏa các điều kiện trên
+        let c20_r3 = child_slug_candidate(parent, 20, 3);
+        assert!(c20_r3.len() <= crate::routing::SLUG_MAX_LEN);
+        assert!(c20_r3.ends_with("-c20-r3"));
+        assert_ne!(c20_r3, parent);
+        assert_eq!(crate::routing::slugify(&c20_r3), c20_r3);
+
+        // slug cha ngắn (abc) -> abc-c1 (giữ hành vi cũ)
+        let c_short = child_slug_candidate("abc", 1, 1);
+        assert_eq!(c_short, "abc-c1");
+        assert_eq!(crate::routing::slugify(&c_short), c_short);
     }
 }
