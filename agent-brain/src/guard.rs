@@ -826,6 +826,52 @@ fn is_safe_read_path(policy: &Policy, raw_path: &str) -> bool {
     false
 }
 
+/// True when `conversation_id` is a valid identifier ([A-Za-z0-9-]) and `raw_path` resolves to a
+/// path under `<HOME>/.gemini/antigravity-cli/brain/<conversation_id>/`.
+pub fn agy_own_brain_read(conversation_id: &str, raw_path: &str) -> bool {
+    if conversation_id.is_empty() {
+        return false;
+    }
+    if !conversation_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return false;
+    }
+    let raw_trimmed = raw_path.trim();
+    if raw_trimmed.is_empty() {
+        return false;
+    }
+    let home = crate::config::home_dir();
+    let brain_dir = home
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("brain")
+        .join(conversation_id);
+    let brain_real = normalize_path_components(&realpath_nfc(&brain_dir));
+
+    let norm: String = raw_trimmed.nfc().collect();
+    let p = crate::config::expand_tilde(&norm, &home);
+    let resolved = normalize_path_components(&realpath_nfc(&p));
+
+    resolved.strip_prefix(&brain_real).is_ok()
+}
+
+fn normalize_path_components(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// True when the root-relative path is one a directory grant never covers: anything under
 /// `.git` or `.planning`, any `.env*` component, and the sensitive paths of `report`.
 pub fn grant_denied_rel(rel: &str) -> bool {
@@ -3846,6 +3892,67 @@ mod tests {
         assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "rg --follow foo sub")]).is_none());
         assert!(soft_read(&env.pol, "run_command", &[("CommandLine", "rm a.txt")]).is_none());
         assert!(soft_read(&env.pol, "write_file", &[("Path", "a.txt")]).is_none());
+    }
+
+    #[test]
+    fn agy_own_brain_read_matches_own_conversation() {
+        let home = crate::config::home_dir();
+        let conv = "a5b20063-2501-473b-aeaa-d155dcc8f874";
+        let task_log = home
+            .join(".gemini")
+            .join("antigravity-cli")
+            .join("brain")
+            .join(conv)
+            .join(".system_generated")
+            .join("tasks")
+            .join("task-92.log");
+        assert!(agy_own_brain_read(conv, &task_log.to_string_lossy()));
+    }
+
+    #[test]
+    fn agy_own_brain_read_rejects_other_conversation() {
+        let home = crate::config::home_dir();
+        let conv1 = "conv-1111";
+        let conv2 = "conv-2222";
+        let task_log = home
+            .join(".gemini")
+            .join("antigravity-cli")
+            .join("brain")
+            .join(conv2)
+            .join("task.log");
+        assert!(!agy_own_brain_read(conv1, &task_log.to_string_lossy()));
+    }
+
+    #[test]
+    fn agy_own_brain_read_rejects_empty_or_path_traversal_id() {
+        let home = crate::config::home_dir();
+        let path = home
+            .join(".gemini")
+            .join("antigravity-cli")
+            .join("brain")
+            .join("c1")
+            .join("task.log");
+        let path_str = path.to_string_lossy();
+        assert!(!agy_own_brain_read("", &path_str));
+        assert!(!agy_own_brain_read("../c1", &path_str));
+        assert!(!agy_own_brain_read("..", &path_str));
+        assert!(!agy_own_brain_read("c1/..", &path_str));
+        assert!(!agy_own_brain_read("c1/../c2", &path_str));
+    }
+
+    #[test]
+    fn agy_own_brain_read_rejects_paths_outside_brain() {
+        let conv = "conv-1111";
+        assert!(!agy_own_brain_read(conv, "/etc/passwd"));
+        assert!(!agy_own_brain_read(conv, "/tmp/task.log"));
+        let home = crate::config::home_dir();
+        let traversal = home
+            .join(".gemini")
+            .join("antigravity-cli")
+            .join("brain")
+            .join(conv)
+            .join("../outside.log");
+        assert!(!agy_own_brain_read(conv, &traversal.to_string_lossy()));
     }
 
     /// A project repo with `node_modules/.bin/x`, `node_modules/pkg/package.json` and a sibling

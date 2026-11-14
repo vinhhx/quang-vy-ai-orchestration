@@ -888,6 +888,7 @@ pub fn execute_role_staged(
         violation_record: Option<(&'static str, serde_json::Value)>,
         /// The project root an agy run must report as `init.cwd` (C4).
         agy_root: Option<PathBuf>,
+        agy_conversation_id: Option<String>,
         source_warnings: Vec<String>,
         soft_reads: Vec<String>,
         /// project-container: `{"name", "dest", "commands"}` for `metrics_json.container`.
@@ -934,6 +935,45 @@ pub fn execute_role_staged(
                 self.soft_reads.push(entry);
                 return;
             }
+            if let Some(payload) = crate::guard::agy_tool_payload(&tool, &params_clone, &policy.root) {
+                let claude_tool = payload.get("tool_name").and_then(|v| v.as_str());
+                if matches!(claude_tool, Some("Read") | Some("Glob") | Some("Grep")) {
+                    let path = payload
+                        .get("tool_input")
+                        .and_then(|ti| ti.get("file_path").or_else(|| ti.get("path")))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let conv = self
+                        .agy_conversation_id
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| {
+                            if !self.summary.session_id.is_empty() {
+                                Some(self.summary.session_id.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .or_else(|| {
+                            value
+                                .get("step_update")
+                                .and_then(|s| s.get("conversation_id"))
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                        })
+                        .unwrap_or("");
+                    if crate::guard::agy_own_brain_read(conv, path) {
+                        let msg = format!(
+                            "agy Dev đọc ngoài danh sách của plan (cho qua, không dừng): {tool} {shown} — {}",
+                            decision.reason
+                        );
+                        crate::term::emit(&msg);
+                        let entry: String = msg.chars().take(200).collect();
+                        self.soft_reads.push(entry);
+                        return;
+                    }
+                }
+            }
             let msg = format!(
                 "agy Dev dùng công cụ ngoài quyền của plan: {tool} {shown} — {}",
                 decision.reason
@@ -946,6 +986,15 @@ pub fn execute_role_staged(
         /// C4: agy must run with the project root as its workspace. An `init.cwd` that differs
         /// from the root (after canonicalize) stops the run as a `wrong_cwd` violation.
         fn check_agy_init(&mut self, value: &serde_json::Value) {
+            if let Some(cid) = value
+                .get("conversation_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                self.agy_conversation_id = Some(cid.to_string());
+            } else if !self.summary.session_id.is_empty() {
+                self.agy_conversation_id = Some(self.summary.session_id.clone());
+            }
             if self.violation.is_some() {
                 return;
             }
@@ -1145,6 +1194,7 @@ pub fn execute_role_staged(
         stop_reason: None,
         violation_record: None,
         agy_root: (ep.stream == crate::engine::StreamFormat::Agy).then(|| root.to_path_buf()),
+        agy_conversation_id: None,
         source_warnings: source_warnings.clone(),
         soft_reads: Vec::new(),
         container: run_container.metrics(),
