@@ -889,6 +889,7 @@ pub fn execute_role_staged(
         /// The project root an agy run must report as `init.cwd` (C4).
         agy_root: Option<PathBuf>,
         source_warnings: Vec<String>,
+        soft_reads: Vec<String>,
         /// project-container: `{"name", "dest", "commands"}` for `metrics_json.container`.
         container: Option<serde_json::Value>,
     }
@@ -911,6 +912,7 @@ pub fn execute_role_staged(
                     return;
                 }
             }
+            let params_clone = params.clone();
             let Some(decision) = crate::guard::agy_tool_decision(policy, &tool, &params) else {
                 return;
             };
@@ -922,6 +924,16 @@ pub fn execute_role_staged(
                 .chars()
                 .take(200)
                 .collect();
+            if let Some(_desc) = crate::guard::agy_soft_read(policy, &tool, &params_clone) {
+                let msg = format!(
+                    "agy Dev đọc ngoài danh sách của plan (cho qua, không dừng): {tool} {shown} — {}",
+                    decision.reason
+                );
+                crate::term::emit(&msg);
+                let entry: String = msg.chars().take(200).collect();
+                self.soft_reads.push(entry);
+                return;
+            }
             let msg = format!(
                 "agy Dev dùng công cụ ngoài quyền của plan: {tool} {shown} — {}",
                 decision.reason
@@ -1134,6 +1146,7 @@ pub fn execute_role_staged(
         violation_record: None,
         agy_root: (ep.stream == crate::engine::StreamFormat::Agy).then(|| root.to_path_buf()),
         source_warnings: source_warnings.clone(),
+        soft_reads: Vec::new(),
         container: run_container.metrics(),
     };
 
@@ -1302,10 +1315,19 @@ pub fn execute_role_staged(
             crate::container::cleanup_ephemeral_containers(Some(&info.docker_bin), run_tag);
         }
         if ep.stream == crate::engine::StreamFormat::Agy {
+            let mut agy_metrics = serde_json::Map::new();
+            agy_metrics.insert(
+                "thinking_tokens".to_string(),
+                serde_json::to_value(obs.summary.thinking_tokens).unwrap_or(serde_json::Value::Null),
+            );
+            if !obs.soft_reads.is_empty() {
+                let soft: Vec<String> = obs.soft_reads.iter().take(50).cloned().collect();
+                agy_metrics.insert("agy_soft_reads".to_string(), serde_json::json!(soft));
+            }
             crate::db::merge_run_metrics(
                 &ctx.conn,
                 run_id,
-                &serde_json::json!({"thinking_tokens": obs.summary.thinking_tokens}),
+                &serde_json::Value::Object(agy_metrics),
             )?;
             // The permission_mode agy reports is compared with what the probe showed for the
             // flag used (S7b). A difference is stored and printed, never silently accepted.
